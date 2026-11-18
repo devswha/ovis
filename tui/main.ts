@@ -53,6 +53,7 @@ const loop = startLoop({
   host,
   clock: { now: () => performance.now(), arm: (at, fire) => { const timer = setTimeout(fire, Math.max(0, at - performance.now())); return () => clearTimeout(timer); } },
   socket: target.path,
+  version,
   session: target.session,
   cwd: screenFolder(env, process.cwd()),
   keys: readKeys(),

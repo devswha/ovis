@@ -59,6 +59,9 @@ export const STRINGS = {
   emptyCoreTitle: "No workspaces yet",
   emptyCoreOffer: (folder: string, key: string | null): string => `New workspace in ${folder}${key === null ? "" : ` (${key})`}`,
 
+  /** the focused pane's id on its bottom border; `key` is the text of the key that copies it (null: unbound) */
+  paneIdLabel: (id: string, key: string | null): string => ` id ${id}${key === null ? "" : ` (${key} copies)`} `,
+
   // Pane states & border notices
   endedCode: (code: number | null): string => `ended (${code ?? "none"})`,
   waitingNewShell: "waiting for its new shell",
@@ -76,6 +79,16 @@ export const STRINGS = {
   helpUnset: "unset",
   helpCloseLabel: (keys: readonly string[]): string => `close: ${keys.join(" / ")}`,
   helpParityPrefix: "not built",
+  /** the help's bottom line: Ovis's version, the version herdr-core reported (null: no live line) and the hc session */
+  aboutLine: (ovis: string, core: string | null, session: string): string => ` Ovis ${ovis} · herdr-core ${core ?? "not connected"} · ${STRINGS.sessionHeader(session)} `,
+  /** the five terms of CONTRIBUTING.md's terminology, as the screen uses them */
+  glossary: [
+    { term: "Pane", meaning: "a herdr terminal and the program in it" },
+    { term: "Tab", meaning: "panes split inside one workspace; not a browser tab" },
+    { term: "Workspace", meaning: "a project's group of tabs, one sidebar row" },
+    { term: "PC", meaning: "this computer, or one joined through herdr-core" },
+    { term: "Agent session", meaning: "an agent's own conversation; not a pane or an hc session" },
+  ] as const,
   helpRefusalsTitle: "Config Diagnostics",
   helpMoreRefusals: (more: number): string => `+${more} more config diagnostics`,
   textRenameWorkspace: "Rename workspace",
@@ -173,6 +186,7 @@ export const STRINGS = {
     lock: "lock",
     menu: "menu",
     agents: "agents",
+    copy_pane_id: "copy pane id",
     navigate_workspace_up: "workspace ^",
     navigate_workspace_down: "workspace v",
     navigate_pane_left: "pane <",

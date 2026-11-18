@@ -58,6 +58,8 @@ export interface LoopOptions {
   readKeys?: () => unknown;
   /** one attempt at the socket: the real socket transport unless a test wraps it */
   connect?: (path: string) => Promise<HcTransport>;
+  /** Ovis's own version, shown in the help's about line */
+  version: string;
   /** the hc session joined, shown in the header */
   session?: string;
   /** the folder the command was typed in, shown when the core has no workspaces */
@@ -513,6 +515,9 @@ export function startLoop(options: LoopOptions): Loop {
         act("quit");
         quit();
         return;
+      case "copy":
+        writeCopy(effect.text);
+        return;
       case "reload_keys":
         act("reload_keys");
         dispatch({ type: "keys", keys: options.readKeys ? options.readKeys() : options.keys, at: clock.now() });
@@ -574,7 +579,6 @@ export function startLoop(options: LoopOptions): Loop {
     }
   }
 
-  /** The selected text to the host's clipboard as OSC 52, with a notice: `copied`, or `copy_refused` over the size cap. */
   function copy(pane: string, range: ScreenRange): void {
     const text = panes.view(pane)?.emulator?.textOf(range);
     if (text?.ok) writeCopy(text.value);
@@ -745,6 +749,8 @@ export function startLoop(options: LoopOptions): Loop {
       link: shown,
       session,
       cwd,
+      ovis: options.version,
+      core: shown.online ? hello?.version ?? null : null,
       theme,
       colors: host.colorDepth,
       copying,

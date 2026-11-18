@@ -639,6 +639,10 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction | CopyAction>
     case "agents":
       acc.s = { ...s, overlays: [...s.overlays, { kind: "agents", agents: s.world.agents ?? [], cursor: 0 }] };
       return;
+    case "copy_pane_id":
+      if (shown.pane === null) notice(acc, "nothing_focused", { action }, at);
+      else acc.effects.push({ type: "copy", text: shown.pane.id });
+      return;
     case "navigate_workspace_up":
     case "navigate_workspace_down": {
       if (s.mode.name !== "navigate") return;

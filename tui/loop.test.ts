@@ -107,7 +107,7 @@ describe("the loop", () => {
     try {
       const host = new HeadlessHost();
       const clock = new ManualClock();
-      const loop = startLoop({ host, clock, socket: join(folder, "none.sock"), keys: undefined });
+      const loop = startLoop({ host, clock, socket: join(folder, "none.sock"), version: "0.0.0", keys: undefined });
       const end = await loop.done;
       expect(end).toMatchObject({ kind: "no_core", code: "no_core" });
       expect(clock.armed()).toBe(0);

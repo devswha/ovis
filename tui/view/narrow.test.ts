@@ -32,7 +32,7 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     expect(grid[0]).toBe("·1:ovis 1/2:main hc:default            [menu]");
     expect(grid[1]).toBe(`+- shell / ${"-".repeat(33)}+`);
     expect(grid[2]).toBe(`|$ echo 안녕${" ".repeat(32)}|`);
-    expect(grid[28]).toBe(`+${"-".repeat(43)}+`);
+    expect(grid[28]).toBe(`+${"-".repeat(17)} id t1 (prefix+i copies) -+`);
     expect(grid[29]).toBe(" TERMINAL  ctrl+b prefix prefix+enter menu");
     expect(run.loop.screen()!.cols).toBe(45);
     expect(attached(run)).toEqual(["t1"]);

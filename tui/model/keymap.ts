@@ -14,7 +14,7 @@ export type Mode = "terminal" | "navigate" | "resize" | "copy";
 /** Actions only the screen's modes and its lock know. */
 /** Navigate mode's moves (herdr has no key for them): the workspace pointed at one place up or down, the focused pane into it. */
 export type MoveAction = "navigate_move_up" | "navigate_move_down" | "navigate_move_pane";
-export type LocalAction = "lock" | "menu" | "agents" | "navigate_focus" | "navigate_cancel" | "navigate_index" | "navigate_cycle_next" | "navigate_cycle_previous" | "resize_leave" | CopyAction | MoveAction;
+export type LocalAction = "lock" | "menu" | "agents" | "copy_pane_id" | "navigate_focus" | "navigate_cancel" | "navigate_index" | "navigate_cycle_next" | "navigate_cycle_previous" | "resize_leave" | CopyAction | MoveAction;
 export type KeyAction = HerdrAction | HerdrNavigateKey | LocalAction;
 
 export interface KeyRow {
@@ -107,6 +107,12 @@ const LOCK_KEY = "ctrl+alt+g";
  * fixed keys do: a binding of the config on it is dropped with a `fixed_key` note.
  */
 const MENU_KEY = "prefix+enter";
+
+/** The screen's copy of the focused pane's id to the host's clipboard (herdr has none): `i` for id, free in herdr's defaults. Fixed like the menu's key. */
+const COPY_ID_KEY = "prefix+i";
+
+/** The screen's own keys after the prefix, claimed before the config's bindings. */
+const FIXED_AFTER_PREFIX = [{ action: "menu", key: MENU_KEY }, { action: "copy_pane_id", key: COPY_ID_KEY }] as const;
 
 /**
  * The screen's full-screen agent list (herdr has none). Unlike the menu's it never takes a key: it is claimed after the
@@ -289,12 +295,14 @@ export function buildKeymap(keys: unknown): Keymap {
   const afterPrefix: Record<string, Bound> = {};
   const direct: Record<string, Bound> = {};
   const rows: KeyRow[] = [];
-  // the menu's key, claimed first (no prefix at all: nothing after it fires, and the menu opens by a click)
-  const menuChord = parseHerdrBinding(MENU_KEY)!.chord;
-  const menuId = matchId(menuChord);
-  const menuHeld = prefixes.length > 0 && !Object.hasOwn(prefixIds, menuId);
-  if (menuHeld) afterPrefix[menuId] = { action: "menu", index: null };
-  const afterFixed: ReadonlySet<string> = menuHeld ? new Set([menuId]) : NOTHING_FIXED;
+  // the screen's own keys after the prefix, claimed first (no prefix at all: nothing after it fires, and the menu opens by a click)
+  const own = FIXED_AFTER_PREFIX.map(({ action, key }) => {
+    const chord = parseHerdrBinding(key)!.chord;
+    const id = matchId(chord);
+    return { action, key, chord, id, held: prefixes.length > 0 && !Object.hasOwn(prefixIds, id) };
+  });
+  for (const { action, id, held: claimed } of own) if (claimed) afterPrefix[id] = { action, index: null };
+  const afterFixed: ReadonlySet<string> = new Set(own.filter(({ held: claimed }) => claimed).map(({ id }) => id));
   /** What holds the key `chord` arrives as in `lookup` (in Terminal mode a prefix holds its own key), or null. */
   const holderIn = (lookup: Record<string, Bound>, chord: HerdrChord): string | null => {
     const id = matchId(chord);
@@ -354,7 +362,7 @@ export function buildKeymap(keys: unknown): Keymap {
   if (lockHolder === null) claim(direct, "lock")(lockBinding.chords[0]!.chord, null);
   else notes.push({ code: "lock_taken", holder: lockHolder });
   rows.push({ action: "lock", default: LOCK_KEY, mode: "terminal", source: "fixed", bindings: lockHolder === null ? [lockBinding] : [] });
-  rows.push({ action: "menu", default: MENU_KEY, mode: "terminal", source: "fixed", bindings: menuHeld ? [{ text: MENU_KEY, prefixed: true, range: false, chords: [{ chord: menuChord, index: null }] }] : [] });
+  for (const { action, key, chord, held: claimed } of own) rows.push({ action, default: key, mode: "terminal", source: "fixed", bindings: claimed ? [{ text: key, prefixed: true, range: false, chords: [{ chord, index: null }] }] : [] });
   const agentsChord = parseHerdrBinding(AGENTS_KEY)!.chord;
   const agentsFree = prefixes.length > 0 && !commands.afterPrefix.has(matchId(agentsChord)) && claim(afterPrefix, "agents")(agentsChord, null);
   rows.push({ action: "agents", default: AGENTS_KEY, mode: "terminal", source: "fixed", bindings: agentsFree ? [{ text: AGENTS_KEY, prefixed: true, range: false, chords: [{ chord: agentsChord, index: null }] }] : [] });

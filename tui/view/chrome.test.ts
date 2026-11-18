@@ -67,6 +67,8 @@ interface Setup {
   link?: ShownLink;
   cwd?: string;
   session?: string;
+  /** the version herdr-core reported (null: no live line) */
+  core?: string | null;
 }
 
 function setup(options: Setup): { state: ModelState; shape: ScreenShape; input: Parameters<typeof buildChrome>[0] } {
@@ -78,7 +80,7 @@ function setup(options: Setup): { state: ModelState; shape: ScreenShape; input: 
   const panes = new Map(Object.entries(options.panes ?? Object.fromEntries(shape.spots.map((spot) => [spot.pane, pane(spot.pane)]))));
   return {
     state, shape,
-    input: { regions: shape.regions, spots: shape.spots, splits: shape.splits, state, world: view, panes, link: options.link ?? ONLINE, session: options.session ?? "work", cwd: options.cwd ?? "/home/u/my-project", theme: "dark", colors: "truecolor" },
+    input: { regions: shape.regions, spots: shape.spots, splits: shape.splits, state, world: view, panes, link: options.link ?? ONLINE, session: options.session ?? "work", cwd: options.cwd ?? "/home/u/my-project", ovis: "9.9.9", core: options.core === undefined ? "0.1.18" : options.core, theme: "dark", colors: "truecolor" },
   };
 }
 
@@ -133,7 +135,7 @@ describe("chrome frames as rows of cells", () => {
       " Done (1)              ||                                              ||                                              |",
       " * claude /proj        ||                                              ||                                              |",
     ]);
-    expect(shot.rows[38]).toBe(`                       |+${"-".repeat(46)}++${"-".repeat(46)}+`);
+    expect(shot.rows[38]).toBe(`                       |+${"-".repeat(20)} id t1 (prefix+i copies) -++${"-".repeat(46)}+`);
     expect(shot.rows[39]).toBe(` TERMINAL  ctrl+b prefix prefix+enter menu prefix+? help${" ".repeat(64)}`);
     expect(cell(shot, 0, 0)).toEqual({ text: "h", fg: TEXT_STRONG, bg: BG_ELEVATED, bold: true });
     expect(cell(shot, 21, 0)).toMatchObject({ text: "<", fg: ACCENT, bold: true });
@@ -172,7 +174,7 @@ describe("each visible state has its own mark, told apart without colour", () =>
   const TWO = [term("t1", "w1", "work", "tab1", "tab", {}, "one"), term("t2", "w1", "work", "tab1", "tab", {}, "two")];
   // the first pane's bottom border at 120x40: row 38, its banner from column 26
   const states: [name: string, setup: Partial<Setup>, mark: string, col: number, row: number][] = [
-    ["live", {}, `+${"-".repeat(46)}+`, 24, 38],
+    ["live", {}, `+${"-".repeat(20)} id t1 (prefix+i copies) -+`, 24, 38],
     ["sized by another viewer", { panes: { t1: pane("t1", { kind: "Live" }, { cols: 150, rows: 50 }), t2: pane("t2") } }, " sized by another viewer (150x50) ", 26, 38],
     ["not attached", { panes: { t1: pane("t1", { kind: "Idle" }), t2: pane("t2") } }, " not attached ", 26, 38],
     ["opening", { panes: { t1: pane("t1", { kind: "Opening" }), t2: pane("t2") } }, " opening terminal ", 26, 38],
@@ -332,6 +334,37 @@ describe("each part is drawn again exactly when what it shows changed", () => {
     picture(120, 40, buildChrome(setup(empty).input).parts, [], [], null, painter);
     expect(picture(120, 40, buildChrome(setup(reloaded).input).parts, [], [], null, painter).rows[20]).toBe(`${" ".repeat(23)}|  New workspace in my-project (prefix+m)${" ".repeat(56)}`);
     expect(draw({ ...empty, keys: { new_workspace: "" } }).rows[20]).toBe(`${" ".repeat(23)}|  New workspace in my-project${" ".repeat(67)}`);
+  });
+});
+
+describe("the focused pane's id, the glossary and the about line", () => {
+  const help = (cols: number, rows: number, extra: Partial<Setup> = {}) => draw({ cols, rows, events: [{ type: "action", action: "help", at: 1 }], ...extra });
+  const TERMS = ["Pane", "Tab", "Workspace", "PC", "Agent session"];
+
+  it("the id sits on the focused pane's bottom border only: not on the other pane, not offline", () => {
+    const focusFirst = draw({ cols: 120, rows: 40 });
+    expect(focusFirst.rows[38]!.slice(24, 72)).toBe(`+${"-".repeat(20)} id t1 (prefix+i copies) -+`);
+    expect(focusFirst.rows[38]!.includes("id t2")).toBe(false);
+    const focusSecond = draw({ cols: 120, rows: 40, events: [{ type: "select", target: { kind: "pane", id: "t2" }, at: 1 }] });
+    expect(focusSecond.rows[38]!.slice(72, 120)).toBe(`+${"-".repeat(20)} id t2 (prefix+i copies) -+`);
+    expect(focusSecond.rows[38]!.includes("id t1")).toBe(false);
+    const offline = draw({ cols: 200, rows: 40, link: { online: false, code: "closed" } });
+    expect(offline.rows.some((row) => row.includes(" id t"))).toBe(false);
+  });
+
+  it("the glossary lists the five terms at the foot of the help; a small screen keeps its keys and draws no glossary", () => {
+    const large = help(120, 40);
+    expect(TERMS.map((term, at) => large.rows[32 + at]!.slice(6, 6 + term.length))).toEqual(TERMS);
+    expect(help(66, 12).rows.some((row) => TERMS.some((term) => row.slice(6).startsWith(term)) && row.includes("|"))).toBe(false);
+  });
+
+  it("the about line is the help frame's bottom edge at every size, with the versions it was handed", () => {
+    for (const [cols, rows, edge, x] of [[120, 40, 37, 6], [80, 24, 21, 6], [66, 12, 11, 6]] as const) {
+      const line = " Ovis 9.9.9 · herdr-core 0.1.18 · hc:work ";
+      expect({ cols, row: help(cols, rows).rows[edge]!.slice(x, x + [...line].length) }).toEqual({ cols, row: line });
+    }
+    const offline = " Ovis 9.9.9 · herdr-core not connected · hc:other ";
+    expect(help(120, 40, { core: null, session: "other" }).rows[37]!.slice(6, 6 + [...offline].length)).toBe(offline);
   });
 });
 

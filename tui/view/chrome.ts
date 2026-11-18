@@ -134,6 +134,9 @@ interface ChromeInput {
   readonly session: string;
   /** the folder `ovis` was typed in, offered for a first workspace on an empty core */
   readonly cwd: string;
+  /** Ovis's version and the one herdr-core reported on the live line (null: none), for the help's about line */
+  readonly ovis: string;
+  readonly core: string | null;
   readonly theme?: TuiThemeMode;
   readonly colors?: ColorDepth;
 }
@@ -433,6 +436,7 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
       outer,
       bordered: outer.width !== inner.width && outer.height !== inner.height,
       focused: spot.pane === shown.pane?.id && link.online,
+      idLabel: spot.pane === shown.pane?.id && link.online ? STRINGS.paneIdLabel(spot.pane, keyText(state, "copy_pane_id")) : null,
       title: ` ${name}${folder}${agent}${zoom}${word} `,
       banner: paneBanner(panes.get(spot.pane), link),
     };
@@ -464,6 +468,12 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
       if (pane.banner && room > 0) {
         const fg = pane.banner.tone === "error" ? colors.dangerText : pane.banner.tone === "warn" ? colors.notice : colors.textDim;
         printFit(canvas, outer.x + 2, outer.y + outer.height - 1, ` ${pane.banner.text} `, room, canvas.style({ fg, bg: colors.bgElevated, flags: STYLE_BOLD }), true);
+      }
+      // the focused pane's id, at the right of its bottom border: whole, and only where the banner leaves it room
+      if (pane.idLabel !== null) {
+        const width = measure(pane.idLabel).width;
+        const taken = pane.banner ? measure(` ${pane.banner.text} `).width : 0;
+        if (room >= width + taken) printFit(canvas, outer.x + outer.width - 2 - width, outer.y + outer.height - 1, pane.idLabel, width, canvas.style({ fg: colors.accent, bg: colors.bg, flags: STYLE_BOLD }));
       }
     }
     for (const { id, divider } of seams) canvas.hit(divider, id);
@@ -633,7 +643,10 @@ function toastPart(width: number, height: number, state: ModelState, colors: Col
   };
 }
 
-function helpPart(width: number, height: number, state: ModelState, world: CoreView, colors: Colors): Part {
+/** The glossary shows when this many key rows of the help still fit beside it; a small screen keeps its keys. */
+const GLOSSARY_MIN_KEY_ROWS = 10;
+
+function helpPart(width: number, height: number, state: ModelState, world: CoreView, about: string, colors: Colors): Part {
   const rect = centred(width, height, Math.max(44, width - 8), Math.max(12, height - 4));
   const refusals = shownRefusals(state.keymap);
   const notes = state.keymap.notes.map((note) => ({ text: noteText(note), unreachable: note.code === "prefix_unreachable" || note.code === "detach_unreachable" }));
@@ -652,6 +665,7 @@ function helpPart(width: number, height: number, state: ModelState, world: CoreV
       const warn = canvas.style({ fg: colors.dangerText, bg: colors.bgElevated, flags: STYLE_BOLD });
       const note = canvas.style({ fg: colors.notice, bg: colors.bgElevated });
       const dim = canvas.style({ fg: colors.textDim, bg: colors.bgElevated });
+      const textStyle = canvas.style({ fg: colors.text, bg: colors.bgElevated });
       let r = inner.y;
       if (!world.ownsLayout && r < bottom) printFit(canvas, inner.x + 1, r++, STRINGS.appOwnedCore, room, note, true);
       for (const line of notes) if (r < bottom) printFit(canvas, inner.x + 1, r++, line.text, room, line.unreachable ? warn : note, true);
@@ -660,17 +674,27 @@ function helpPart(width: number, height: number, state: ModelState, world: CoreV
         for (const refusal of refusals.shown) if (r < bottom) printFit(canvas, inner.x + 1, r++, STRINGS.refusalLine(refusal.code, refusal.action, refusal.binding, refusal.holder), room, note, true);
         if (refusals.more > 0 && r < bottom) printFit(canvas, inner.x + 1, r++, STRINGS.helpMoreRefusals(refusals.more), room, dim, true);
       }
-      const space = bottom - r;
+      printFit(canvas, rect.x + 2, rect.y + rect.height - 1, about, Math.max(0, rect.width - 4), canvas.style({ fg: colors.textDim, bg: colors.bgElevated }), true);
+      const glossary = bottom - r >= STRINGS.glossary.length + GLOSSARY_MIN_KEY_ROWS;
+      if (glossary) {
+        const termWidth = Math.max(...STRINGS.glossary.map((entry) => measure(entry.term).width));
+        const term = canvas.style({ fg: colors.accent, bg: colors.bgElevated, flags: STYLE_BOLD });
+        STRINGS.glossary.forEach((entry, at) => {
+          const y = bottom - STRINGS.glossary.length + at;
+          printFit(canvas, inner.x + 1, y, entry.term, termWidth, term);
+          printFit(canvas, inner.x + 2 + termWidth, y, entry.meaning, Math.max(0, inner.width - 3 - termWidth), textStyle, true);
+        });
+      }
+      const space = bottom - r - (glossary ? STRINGS.glossary.length : 0);
       if (space <= 0) return;
       const two = inner.width >= 76 && rows.length > space;
       const columnWidth = two ? Math.floor((inner.width - 3) / 2) : Math.max(1, inner.width - 2);
       const keyWidth = Math.min(18, Math.max(8, Math.floor(columnWidth * 0.42)));
       const keyStyle = canvas.style({ fg: colors.accent, bg: colors.bgElevated, flags: STYLE_BOLD });
-      const textStyle = canvas.style({ fg: colors.text, bg: colors.bgElevated });
       rows.forEach((row, at) => {
         const column = two ? Math.floor(at / space) : 0;
         const y = r + (two ? at % space : at);
-        if (column > 1 || y >= bottom) return;
+        if (column > 1 || y >= r + space) return;
         const x = inner.x + 1 + column * (columnWidth + 1);
         printFit(canvas, x, y, row.keys ?? STRINGS.helpUnset, keyWidth, row.keys === null ? dim : keyStyle, true);
         printFit(canvas, x + keyWidth + 1, y, row.text, Math.max(0, x + columnWidth - (x + keyWidth + 1)), row.parity ? dim : textStyle, true);
@@ -680,7 +704,7 @@ function helpPart(width: number, height: number, state: ModelState, world: CoreV
 }
 
 /** The overlays of one frame: the notice toast in the top right corner, and the overlay on top of the stack. */
-function buildOverlays(width: number, height: number, state: ModelState, world: CoreView, colors: Colors): { overlays: Part[]; input: Scene["input"] } {
+function buildOverlays(width: number, height: number, state: ModelState, world: CoreView, about: string, colors: Colors): { overlays: Part[]; input: Scene["input"] } {
   const toast = state.mode.name === "copy" ? null : toastPart(width, height, state, colors);
   const overlays: Part[] = toast ? [toast] : [];
   const top: Overlay | undefined = state.overlays.at(-1);
@@ -688,7 +712,7 @@ function buildOverlays(width: number, height: number, state: ModelState, world: 
   const closeKeys = OVERLAYS[top.kind].closeKeys;
   switch (top.kind) {
     case "help":
-      return { overlays: [...overlays, helpPart(width, height, state, world, colors)], input: "overlay" };
+      return { overlays: [...overlays, helpPart(width, height, state, world, about, colors)], input: "overlay" };
     case "text": {
       const title = top.purpose === "rename_workspace" ? STRINGS.textRenameWorkspace
         : top.purpose === "rename_tab" ? STRINGS.textRenameTab
@@ -886,7 +910,7 @@ export function buildChrome(input: ChromeInput): BuiltChrome {
   const colors = themeColors(theme, depth);
   const look = `${theme}/${depth}`;
   const parts = [sidebarPart(input, colors, look), tabBarPart(input, colors, look), bordersPart(input, colors, look), modeBarPart(input, colors, look)];
-  const { overlays, input: sceneInput } = buildOverlays(input.regions.screen.width, input.regions.screen.height, input.state, input.world, colors);
+  const { overlays, input: sceneInput } = buildOverlays(input.regions.screen.width, input.regions.screen.height, input.state, input.world, STRINGS.aboutLine(input.ovis, input.core, input.session), colors);
   const copying = input.copying;
   if (!copying) return { parts, overlays, input: sceneInput };
   for (const hint of copying.hints) {
