@@ -363,9 +363,12 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
       if (w0.base !== null) out.push([`the reconcile's reading is told to the queue as its baseline: ${w0.base.s}`, (w, inst) => {
         const base = w.base!;
         w.base = null;
-        // status.ts onBaseline: PendingInputs.baseline, for a pane with no event since the snapshot was asked for. Asked for
-        // before the Enter it may be older than its turn, and is then only the pane's status
-        if (resting(base.s) && !base.stale) inst.baseline(base.p, base.s, Number.NEGATIVE_INFINITY);
+        // status.ts onBaseline: PendingInputs.baseline, for a pane with no event since the snapshot was asked for
+        // asked for before any commit of the class's clock (gates are saved as committed at 0) and after no reading the class
+        // keeps (readAt is not saved): the class takes it as the pane's status under an open wait, and as a snapshot read
+        // with none. Its other cases (asked after the Enter, or before a later reading) are the unit tests' of
+        // server/core/pending-turn-gate.test.ts
+        if (resting(base.s) && !base.stale) inst.baseline(base.p, base.s, -1);
       }]);
     }
 
