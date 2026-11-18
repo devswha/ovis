@@ -45,6 +45,42 @@ function sends(pane: string, answer: SubmitResult, shown: string[], extra: Parti
   return actions;
 }
 
+it.each([true, false])("uncertain display dismissal connected=%p sends no pending action, submit or draft restore", async (connected) => {
+  const saved = savedStorage();
+  const pane = `dismiss-${connected}`, owner = paneStorageId("local", pane);
+  const wire: unknown[] = [], shown: string[] = [];
+  const socket = { connected, pendingAction: (...args: unknown[]) => { wire.push(args); throw new Error("display dismissal must never call the backend"); } } as unknown as HerdrSocket;
+  const key = `ovis:composer-draft:${owner}`;
+  composerDrafts.set(key, "keep my existing draft");
+  const pending = { id: `display-${connected}`, request_id: 7, text: "/thinking high", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
+  pendingMessages.accept(owner, pending, "scope");
+  expect(pendingMessages.read(owner)[0]!.serverOwned).toBe(true);
+  try {
+    const actions = sends(pane, { ok: true }, shown, { agent: "pi", socketRef: { current: socket }, submitComposerMessage: (...args) => { wire.push(args); return Promise.resolve({ ok: true }); } });
+    await actions.actOnPending(pending.id, "dismiss");
+    await actions.actOnPending(pending.id, "steer");
+    pendingMessages.publish(owner, [pending], [], "next-scope");
+    expect(wire).toEqual([]); expect(shown).toEqual([]);
+    expect(composerDrafts.read(key).text).toBe("keep my existing draft");
+    expect(pendingMessages.read(owner)).toEqual([]);
+    expect(new PendingMessageStore(() => saved.storage).read(owner)).toEqual([]);
+  } finally { composerDrafts.set(key, ""); saved.restore(); }
+});
+
+it("display-only intent never turns into a queue discard after an uncertain row changes", async () => {
+  const saved = savedStorage(), pane = "dismiss-race", owner = paneStorageId("local", pane), wire: unknown[] = [];
+  const pending = { id: "changed-row", request_id: 8, text: "question", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
+  pendingMessages.accept(owner, pending, "scope");
+  // The user's click came from an uncertain display; a publish arrived before its handler.
+  pendingMessages.accept(owner, { ...pending, state: "queued" }, "scope");
+  const socket = { connected: true, pendingAction: (...args: unknown[]) => { wire.push(args); return Promise.resolve({ ok: true }); } } as unknown as HerdrSocket;
+  try {
+    await sends(pane, { ok: true }, [], { socketRef: { current: socket } }).actOnPending(pending.id, "dismiss");
+    expect(wire).toEqual([]);
+    expect(pendingMessages.read(owner)).toMatchObject([{ id: pending.id, state: "queued" }]);
+  } finally { pendingMessages.publish(owner, [], [{ id: pending.id, outcome: "discarded" }], "scope"); saved.restore(); }
+});
+
 const waiting = "Waiting for 2 background agents to finish";
 const idleBox = ["─".repeat(40), "❯", "─".repeat(40)];
 const closedClaude = readFileSync(new URL("../../server/fixtures/claude-rewind-2.1.304-closed-40.txt", import.meta.url), "utf8");
