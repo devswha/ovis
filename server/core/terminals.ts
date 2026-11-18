@@ -127,7 +127,12 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
 
   const { spawnAttachment } = createSpawnAttachment({ herdrFailure: options.herdrFailure, attachments, retiringAttachments, terminalAttach, isStopped: stopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor });
 
-  function closeAttachment(paneId: string): void {
+  /**
+   * `left`: its last viewer left on its own. What that viewer typed and was answered for may still be on its way
+   * through the attach, which a kill would end with it unread, so the attach is asked to leave by itself, after all
+   * of it. Nothing more is written to it either way, and the next attach waits for its exit as after a kill.
+   */
+  function closeAttachment(paneId: string, left = false): void {
     const attachment = attachments.get(paneId);
     if (!attachment) return;
     for (const member of attachment.clients) holdPending(member, paneId);
@@ -147,7 +152,9 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       if (retiringAttachments.get(paneId) === retired) retiringAttachments.delete(paneId);
     });
     retiringAttachments.set(paneId, retired);
-    attachment.process.kill();
+    // only a ready attach this bridge holds took any typing
+    if (left && attachment.kind === "pty" && attachment.ready && !attachment.held) attachment.process.leave();
+    else attachment.process.kill();
   }
 
   /**
@@ -232,7 +239,8 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     return created;
   }
 
-  function detach(paneId: string, client: Client): void {
+  /** `own`: the client asked to leave (its `detach`), where a closed, stalled or revoked connection is taken out. */
+  function detach(paneId: string, client: Client, own = false): void {
     holdPending(client, paneId);
     client.data.conversationInterests.delete(paneId);
     client.data.output.delete(paneId);
@@ -244,7 +252,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     attachment.grids.delete(client);
     if (attachment.kind === "mirror") attachment.unscreened.delete(client);
     if (attachment.driver === client) attachment.driver = undefined;
-    if (attachment.clients.size === 0) closeAttachment(paneId);
+    if (attachment.clients.size === 0) closeAttachment(paneId, own);
     else reconcileOutput(paneId);
   }
 
@@ -381,7 +389,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     },
     detach(client: Client, message: Frame<"detach">): void {
       client.data.attached.delete(message.pane_id);
-      detach(message.pane_id, client);
+      detach(message.pane_id, client, true);
       return;
     },
     "conversation-watch"(client: Client, message: Frame<"conversation-watch">): void {
