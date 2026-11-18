@@ -238,15 +238,11 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     saveSharedPins(base.current.pins === null ? null : { pins: [...base.current.pins], revision: remote.revision, ...(remote.state_id === undefined ? {} : { stateId: remote.state_id }) });
     latest.current = { settings: local.settings, pins: taken.pins ?? local.pins, muted: taken.muted === undefined ? local.muted : taken.muted, tabLabels: taken.tabLabels ?? local.tabLabels };
     if (Object.keys(remote.settings).length > 0) update((_stored, own) => {
-      // A held document can queue behind the answer before either renders. Judge it against the
-      // settings the tab actually took from earlier documents, and keep its own newer edits unless it cannot send.
-      const judged = latest.current.settings;
-      const patch = judged === local.settings ? taken.patch : take({ ...local, settings: judged }).patch;
-      const accepted = force ? patch : Object.fromEntries(SHARED_SETTING_KEYS
-        .filter((key) => key in patch && same(own[key], judged[key]))
-        .map((key) => [key, patch[key]]));
-      if (Object.keys(accepted).length > 0) latest.current.settings = sanitizeSettings({ ...judged, ...accepted });
-      return accepted;
+      // judged where React applies it, after every edit and document queued before it, as if each had been drawn;
+      // update runs this once (`made`), so StrictMode's second run of the updater does not judge again
+      const { patch } = take({ ...local, settings: own });
+      latest.current.settings = sanitizeSettings({ ...own, ...patch });
+      return patch;
     });
     if (taken.pins !== null) setSidebarPins(taken.pins);
     if (taken.muted !== undefined) setPaneMutes(taken.muted);

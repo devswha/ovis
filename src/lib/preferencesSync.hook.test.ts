@@ -423,7 +423,7 @@ describe("preferences sync real send path", () => {
     expect(store.get().settings.darkTheme).toBe("gruvbox");
   });
 
-  it("keeps and sends an unrendered pick that matches the save answer when a newer stream value is held", async () => {
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a pick %s that the save's answer already holds gives way to a newer save held behind it", async (_name, drawn) => {
     const gate = Promise.withResolvers<void>();
     releaseAnswer = () => gate.promise;
     const client = await open();
@@ -435,17 +435,18 @@ describe("preferences sync real send path", () => {
     await windows();
     await act(async () => { store.set({ settings: { darkTheme: "tokyo-night" } }); });
 
+    if (drawn) await act(async () => { client.update({ darkTheme: "gruvbox" }); });
     const absorbed = nextAbsorbed();
     await act(async () => {
-      client.update({ darkTheme: "gruvbox" });
+      if (!drawn) client.update({ darkTheme: "gruvbox" });
       gate.resolve();
       await absorbed;
     });
     releaseAnswer = undefined;
-    expect(client.settings.darkTheme).toBe("gruvbox");
-    await windows();
-    expect(sent.map((body) => body.settings.darkTheme)).toEqual([undefined, "gruvbox"]);
-    expect(store.get().settings.darkTheme).toBe("gruvbox");
+    expect(client.settings.darkTheme).toBe("tokyo-night");
+    await windows(3);
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual([undefined]);
+    expect(store.get().settings.darkTheme).toBe("tokyo-night");
   });
 
   it("a tab takes a save's value from the server while the tab that sent it has already stored a newer pick", async () => {
@@ -471,6 +472,29 @@ describe("preferences sync real send path", () => {
     expect([a.settings.darkTheme, b.settings.darkTheme]).toEqual(["gruvbox", "gruvbox"]);
   });
 
+  it("a return to the value on its way, not drawn yet, gives way to a newer save held behind the answer, as it does once drawn", async () => {
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await windows();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      client.update({ darkTheme: "tokyo-night" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseAnswer = undefined;
+
+    expect(client.settings.darkTheme).toBe("catppuccin");
+    await windows(3);
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual(["tokyo-night"]);
+    expect(store.get().settings.darkTheme).toBe("catppuccin");
+  });
+
   it("a reloaded page keeps an edit it has not drawn yet when the answer to the change it sent again lands", async () => {
     const client = await open();
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
@@ -483,7 +507,8 @@ describe("preferences sync real send path", () => {
     releaseAnswer = () => gate.promise;
     const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
     await windows();
-    expect(bodies.at(-1)?.settings).toMatchObject({ darkTheme: "tokyo-night" });
+    expect(keepalives).toEqual([true, false]);
+    expect(bodies[1]?.settings).toMatchObject({ darkTheme: "tokyo-night" });
 
     const absorbed = nextAbsorbed();
     await act(async () => {
