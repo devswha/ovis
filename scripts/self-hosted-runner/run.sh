@@ -267,8 +267,11 @@ if [ -n "$BUILD_CACHE" ]; then
         # takes its directory's label: without this, no job could hand in a build or read the cache. The
         # cache holds only this user's files; an outbox may hold an earlier job's, which this user may not
         # relabel, so each slot's outbox is labelled once it is emptied (build_cache_args).
+        # Only directories this user owns are relabelled (a path through a link elsewhere is not), and at
+        # level s0, which every container may use: a level a `:Z` mount once gave stays one container's.
         if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
-          if chcon -R -t container_file_t "$BUILD_CACHE_ROOT" && chcon -t container_file_t "$BUILD_CACHE_OUTBOXES"; then
+          if [ -O "$BUILD_CACHE_ROOT" ] && [ -O "$BUILD_CACHE_OUTBOXES" ] &&
+            chcon -R -t container_file_t -l s0 "$BUILD_CACHE_ROOT" && chcon -t container_file_t -l s0 "$BUILD_CACHE_OUTBOXES"; then
             BUILD_CACHE_LABEL=1
           else
             echo "[build-cache] cannot label $BUILD_CACHE_ROOT and its outboxes container_file_t for SELinux: running without it" >&2
@@ -308,7 +311,7 @@ build_cache_args() {
     fi
   fi
   mkdir -p "$outbox" && chmod 1777 "$outbox" || return 0
-  if [ -n "$BUILD_CACHE_LABEL" ] && ! chcon -t container_file_t "$outbox"; then
+  if [ -n "$BUILD_CACHE_LABEL" ] && ! chcon -t container_file_t -l s0 "$outbox"; then
     echo "[$1] cannot label its build cache outbox container_file_t for SELinux: starting it without the build cache" >&2
     return 0
   fi

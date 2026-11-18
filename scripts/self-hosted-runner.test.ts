@@ -700,9 +700,9 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       expect(on.result.status).toBe(0);
       const lines = on.calls.split("\n");
       const before = (call: string) => lines.indexOf(call) >= 0 && lines.indexOf(call) < lines.findIndex((line) => runnerRun.test(line));
-      expect(before(`chcon -R -t container_file_t ${join(home, "cache/owner/repo")}`)).toBe(true);
-      expect(before(`chcon -t container_file_t ${outboxes}`)).toBe(true);
-      expect(before(`chcon -t container_file_t ${slot}`)).toBe(true);
+      expect(before(`chcon -R -t container_file_t -l s0 ${join(home, "cache/owner/repo")}`)).toBe(true);
+      expect(before(`chcon -t container_file_t -l s0 ${outboxes}`)).toBe(true);
+      expect(before(`chcon -t container_file_t -l s0 ${slot}`)).toBe(true);
       expect(on.result.stderr).not.toContain("container_file_t for SELinux");
       expect(runs(on.calls)[0]).toContain(":/build-cache:ro ");
 
