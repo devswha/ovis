@@ -610,6 +610,21 @@ describe("shared/ghostty engine", () => {
     }
   });
 
+  it("rowContinues distinguishes soft wraps, hard breaks and absent kept rows", () => {
+    const { engine } = screenEngine(8, 2, { scrollbackLines: 1000 });
+    try {
+      engine.write(bytesOf("0123456789\r\n01234567\r\n89"));
+      expect(engine.rowContinues(-1)).toBeNull();
+      expect(engine.rowContinues(0)).toBe(false);
+      expect(engine.rowContinues(1)).toBe(true);
+      expect(engine.rowContinues(2)).toBe(false);
+      expect(engine.rowContinues(3)).toBe(false);
+      expect(engine.rowContinues(4)).toBeNull();
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it("engine history", () => {
     const { engine } = screenEngine(80, 6, { scrollbackLines: 1000 });
     try {
