@@ -2054,8 +2054,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             ]);
             if (!read || !asks() || request.signal.aborted || Date.now() >= deadline) return false;
             if (inlineEditorMatches(null, read.text, draft)) return true;
-            const before = parsedByPublicPrompt.get(parseFallbackPrompt("gjc", read.text));
-            if (before?.id !== parsed.id || before.selectedIndex !== parsed.customMenuIndex) return false;
+            // the same editor, still empty: the paste has not been drawn yet
+            const waiting = draft !== "" && inlineEditorMatches(null, read.text, "");
+            const before = waiting ? undefined : parsedByPublicPrompt.get(parseFallbackPrompt("gjc", read.text));
+            if (!waiting && (before?.id !== parsed.id || before.selectedIndex !== parsed.customMenuIndex)) return false;
             await Bun.sleep(50);
           }
           return false;
@@ -2079,7 +2081,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             // incrementally; it gets the same settling wait before the final verify-and-send.
             if (editorAnswer && committed && !customTyped && checkBeforeText && (responder !== "agy-question" || agyWriteInOpened)
               && !(await customEditorReady(""))) return promptChanged();
-            if (editorAnswer && customTyped && responder === "dsh-question" && !(await customEditorReady(editorAnswer.text))) return promptChanged();
+            // the paste can show a moment after its write: wait, bounded, for the editor to hold it before the fresh check of
+            // the Enter (gjc's menu and agy redraw late; pi's readers look once)
+            if (editorAnswer && customTyped && (responder === "dsh-question" || checkBeforeText) && !(await customEditorReady(editorAnswer.text))) return promptChanged();
             if (responder === "letta-model" && body.custom_text !== undefined && committed && !(await customEditorReady(lettaSearch))) return promptChanged();
             // GJC's selector can close under the answer: its composer must not take the moves.
             if (move && walked && (list || reader?.reread === "each-move" || responder === "fallback-gjc-menu") && !(await onRow())) return promptChanged();

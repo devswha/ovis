@@ -4993,16 +4993,21 @@ ${omoRule}
     expect(gjcCustomEditorMatches(gjcCustomScreen(1, "", `${body}Changed details\nWhich scope?`), expected, "")).toBe(false);
   });
 
-  test.each(["editor stays open", "editor closes during the look"])("GJC submits a pasted draft only if the %s", async (state) => {
+  test.each(["editor stays open", "editor closes during the look", "editor shows the paste a read late"])("GJC submits a pasted draft only if the %s", async (state) => {
     await withPane("gjc", "blocked", gjcCustomScreen(), async (pane) => {
       let at = 0;
       let opened = false;
+      let shown: string | undefined;
       pane.onSent = (sent) => {
         if (sent === "down") at++;
         if (sent === "enter") opened = true;
         const draft = sent.startsWith("text:") ? sent.slice(5).replace("\u001b[200~", "").replace("\u001b[201~", "") : "";
+        // GJC redraws a paste a moment after its write (#3999 keeps the bounded wait for it)
+        if (draft && state === "editor shows the paste a read late") { shown = draft; pane.screen = gjcCustomScreen(at, ""); return; }
         pane.screen = gjcCustomScreen(at, opened ? draft : null);
       };
+      let reads = 0;
+      pane.onRead = () => { if (shown !== undefined && ++reads === 3) { pane.screen = gjcCustomScreen(at, shown); shown = undefined; } };
       const prompt = (await card())!;
       expect(prompt.custom_option_index).toBe(1);
       const closes = state === "editor closes during the look";
