@@ -61,6 +61,8 @@ describe("the admission before a first link", () => {
     readonly replaceAtForget?: boolean;
     /** the second admission (the changed key's) waits until the test releases it */
     readonly holdSecondPost?: boolean;
+    /** the code was typed and matched on this device (sessionStorage), so the pairing goes with no confirm and no press */
+    readonly typedConfirmed?: boolean;
     /** the first read of the saved record after the PAIR waits until the test releases it */
     readonly holdReadAfterPair?: boolean;
     /** the PC ends the new row's sessions just before it answers the first link, so that end arrives first */
@@ -157,6 +159,7 @@ describe("the admission before a first link", () => {
     };
     const current = (): RelayShellProps => { if (!props) throw new TypeError("Shell not rendered"); return props; };
     const listedPc = { server_id: offer.server_id, label: "Desk", added_at: "2026-11-01T00:00:00Z", last_seen_at: null };
+    if (options.typedConfirmed) sessionStorage.setItem("ovis-confirmed-pc", offer.server_id);
     await mountRelayShell({
       container: Object.create(null), entryUrl: options.reopen ? `https://app.ovis.sh/s/${offer.server_id}/` : encodeOffer(offer, "https://app.ovis.sh"), shellVersion: "1.0.0", store, accountStore,
       accountService: "https://account.ovis.sh",
@@ -206,7 +209,7 @@ describe("the admission before a first link", () => {
       },
     });
     const press = (): void => { events.push("pressed"); current().onPair(); };
-    if (!options.reopen) {
+    if (!options.reopen && !options.typedConfirmed) {
       await until(() => current().state.kind === "confirm" && (current().state as { account?: string }).account !== "checking");
       if (!options.hold) press();
     }
@@ -461,6 +464,17 @@ describe("the admission before a first link", () => {
     expect(run.events.filter((event) => event !== "pressed").slice(0, 5)).toEqual(["list Bearer access-acct-test", "admission Bearer access-acct-test", "admission answered", "pair", "link"]);
     expect(run.events.indexOf("pressed")).toBeLessThan(run.events.indexOf("list Bearer access-acct-test"));
     expect(run.failure()).toBeNull();
+  });
+
+  // a typed code that matched pairs with no confirm, so no press of Add and pair: nothing is listed for it. Its admission
+  // goes, and an account that does not list the PC refuses it (a known limit of the typed path)
+  it("with the mark, lists nothing for a typed code that pairs with no confirm pressed", async () => {
+    const run = await pairing({ mark: true, typedConfirmed: true });
+    run.admissionGate.resolve();
+    await until(() => run.current().state.kind === "failed");
+    expect(run.failure()).toBe("account-unlisted");
+    expect(run.events.filter((event) => event.startsWith("list"))).toEqual([]);
+    expect(run.opens()).toBe(0);
   });
 
   it("with the mark, lists nothing and posts nothing while Add and pair is not pressed", async () => {
