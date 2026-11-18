@@ -2104,7 +2104,9 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     startScreenMetadata(source, await bottomViewport(paneId));
   const notBegun = async (source: RecognizedConversation["source"], id: string, read?: ConversationMetadata, fromScreen = false): Promise<RecognizedConversation> => {
     const screen = fromScreen || readsStartScreen(source);
-    const metadata = read ?? (screen ? await screenMetadata(source) : { model: null, reasoning_effort: null });
+    // agy's greeting names a model only from the frame its unused session was proven on (passed in
+    // as `read`): a later frame can already show another conversation, or another agy's.
+    const metadata = read ?? (screen && source !== "agy-transcript" ? await screenMetadata(source) : { model: null, reasoning_effort: null });
     return { source, turns: [], metadata, ...(screen ? { screen: true as const } : {}), cursor: null, history_id: id, version: answerVersion(id, `${metadata.model}\0${metadata.reasoning_effort}`) };
   };
 
@@ -2115,14 +2117,6 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     // /clear reports working for a moment (#2550)
     const status = snapshot.panes.find((pane) => pane.pane_id === paneId)?.agent_status;
     if ((status === "working" && error.source !== "claude-transcript" && error.source !== "agy-transcript") || status === "blocked") throw error;
-    if (error.source === "agy-transcript") {
-      // The status-row read waits on herdr: a pane agy moved to another conversation meanwhile has
-      // not this greeting, and not the model its screen shows now.
-      const metadata = await screenMetadata("agy-transcript");
-      const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
-      if (pane === undefined || (await resolveAgyStore(pane))?.path !== error.identity) throw new ConversationUnavailable("no_session_path");
-      return notBegun(error.source, `unwritten:${error.sessionId}`, metadata);
-    }
     return notBegun(error.source, `unwritten:${error.sessionId}`);
   };
 

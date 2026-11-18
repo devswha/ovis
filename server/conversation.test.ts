@@ -3931,7 +3931,7 @@ describe("Agy native ledger through shared paging", () => {
       expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
     } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
-  it("refuses an unwritten conversation's greeting when the pane moved to another conversation while its status row was read", async () => {
+  it("names no model on an unwritten conversation's greeting, whose screen may already show another conversation", async () => {
     const session = "00000000-0000-4000-8000-000000000001";
     rmSync(path);
     const other = join(root, "other.jsonl");
@@ -3942,18 +3942,15 @@ describe("Agy native ledger through shared paging", () => {
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
       ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } }
       : { process_info: { foreground_processes: [] } }) as never);
-    let switches = false;
+    // agy moves the pane to another conversation as its screen is read
     const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
-      if (!switches) return { text: " ? for shortcuts   Gemini 3.8 Flash \u00b7 high\n" } as never;
       store.mockResolvedValue({ root, session: "other", path: other, pid: 3, started: "other" });
       return { text: " ? for shortcuts   Gemini 4 Hydrogen \u00b7 medium\n" } as never;
     });
     try {
-      expect(await paneConversation(pane.pane_id)).toMatchObject({ history_id: `unwritten:${session}`, metadata: { model: "Gemini 3.8 Flash" } });
-      switches = true;
-      const error = await paneConversation(pane.pane_id).catch((caught: unknown) => caught);
-      expect(error).toMatchObject({ name: "ConversationUnavailable", message: "no_session_path" });
-      expect(JSON.stringify(error)).not.toContain("Gemini 4 Hydrogen");
+      const greeting = await paneConversation(pane.pane_id);
+      expect(greeting).toMatchObject({ history_id: `unwritten:${session}`, turns: [], screen: true, metadata: { model: null, reasoning_effort: null } });
+      expect(JSON.stringify(greeting)).not.toContain("Gemini 4 Hydrogen");
     } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
   });
   it("reads the live status row after a conversation exists, and not a scrolled frame", async () => {
