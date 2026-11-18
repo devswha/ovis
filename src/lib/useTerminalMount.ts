@@ -42,7 +42,7 @@ import { visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import type { ShortcutOverrides } from "./shortcutBindings.ts";
 import { takeTypeAhead, type TypeAheadItem } from "./typeAhead.ts";
-import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_MS, VIEW_BUFFER_MAX, afterSwitch, dropViewChange, holdViews, inUse, keepsCoreGrid as keptCoreGrid, connectedSockets, plainError, releaseViews, CONTROL_CHARACTER } from "./paneTerminalShared.ts";
+import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_MS, VIEW_BUFFER_MAX, afterSwitch, dropViewChange, holdViews, inUse, keepsCoreGrid as keptCoreGrid, takeKeptCoreGrid, connectedSockets, plainError, releaseViews, CONTROL_CHARACTER } from "./paneTerminalShared.ts";
 import { copyOnSelect, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
 import { captureForGhostty } from "./ghostty/capture.ts";
 import { holdForPictures } from "./terminalImages.ts";
@@ -1958,7 +1958,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const across = touchX - first.clientX;
         touchX = first.clientX;
         touchY = first.clientY;
-        const edged = scrollableMirror() || keepsCoreGrid() || (fold.active && !adopted());
+        const edged = scrollableMirror() || (fold.active && !adopted());
         if ((adopted() || fold.active) && (!edged || canPanTerminalGrid(host, delta))) {
           touchPixels = 0;
           touchVelocity.reset();
@@ -2291,14 +2291,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (cachedRef.current) { release(); return; }
         const current = paneRef.current;
         if (current && !observeRef.current && !fixedGridRef.current) socket.keepSize(current, document.visibilityState === "hidden");
-        // the pty's grid as last heard: another device may have sized it while this page did
-        const shared = sharedGridRef.current;
-        if (keepsCoreGrid() && shared && (term.cols !== shared.cols || term.rows !== shared.rows)) {
-          term.resize(shared.cols, shared.rows);
-          panned = false;
-          fold.sync();
-          followCursor();
-        }
+        if (!keyboardHeld && takeKeptCoreGrid(term, socket, current, sharedGridRef.current)) followCursorRef.current();
         if (releaseAwayRef.current && releaseTimer === null && !releasedRef.current) releaseTimer = window.setTimeout(() => {
           if (paneRef.current === current) release();
         }, RELEASE_AFTER_MS);

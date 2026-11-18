@@ -1,3 +1,4 @@
+import type { Terminal } from "@xterm/xterm";
 import { HerdrSocket } from "./ws.ts";
 import { userErrorMessage } from "./userError.ts";
 
@@ -57,6 +58,13 @@ export const inUse = (): boolean => document.visibilityState === "visible" && do
  */
 export const keepsCoreGrid = (socket: HerdrSocket | null, pane: string | null): boolean =>
   pane !== null && socket !== null && socket.hasTerminalHistory() && socket.keepsSize(pane);
+
+/** Draws a kept herdr-core pty in its grid as last heard (another device may have sized it meanwhile): whether that moved the grid. */
+export function takeKeptCoreGrid(term: Terminal, socket: HerdrSocket | null, pane: string | null, shared: { cols: number; rows: number } | null): boolean {
+  if (!shared || !keepsCoreGrid(socket, pane) || (term.cols === shared.cols && term.rows === shared.rows)) return false;
+  term.resize(shared.cols, shared.rows);
+  return true;
+}
 
 export const connectedSockets = new WeakSet<HerdrSocket>();
 
