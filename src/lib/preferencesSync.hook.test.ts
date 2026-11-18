@@ -1266,7 +1266,11 @@ describe("preferences sync real send path", () => {
     expect([client.settings.darkTheme, store.get().settings.darkTheme]).toEqual(["gruvbox", "gruvbox"]);
   });
 
-  it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pin and mute taken back, %s, and then made again are new edits: they show no save error and go over a list another browser saves next", async (_name, drawn) => {
+  it.each([
+    ["drawn", true, false],
+    ["not drawn yet, the mute last", false, false],
+    ["not drawn yet, the pin last", false, true],
+  ] as const)("a refused pin and mute taken back, %s, and then made again are new edits: they show no save error and go over a list another browser saves next", async (_name, drawn, pinLast) => {
     store.set({ settings: {}, pins: ["local:w1:p1"] });
     const client = await open();
     refuse = unwritable();
@@ -1274,7 +1278,12 @@ describe("preferences sync real send path", () => {
     await send();
     expect(client.saveError).not.toBeNull();
 
-    const takeBack = (): void => { setSidebarPins(["local:w1:p1"]); setPaneMutes([]); };
+    // the last of the two to go back is the one that leaves nothing unsent
+    const takeBack = (): void => {
+      if (pinLast) setPaneMutes([]);
+      setSidebarPins(["local:w1:p1"]);
+      if (!pinLast) setPaneMutes([]);
+    };
     if (drawn) await act(async () => { takeBack(); });
     await act(async () => {
       if (!drawn) takeBack();

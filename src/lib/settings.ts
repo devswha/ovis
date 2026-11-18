@@ -1043,16 +1043,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     applyToDocument(settings, resolvedEntry, resolvedLanguage);
   }, [settings, resolvedEntry, resolvedLanguage]);
 
-  // Gone with the tree (the crash screen replaces it in a live page): a save answered after that must not write this
-  // tab's old view over what another tab stored since. A React updater never ran then either.
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
-
   const update = useCallback((patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => {
-    if (!mounted.current) return;
     const current = held.current;
     const differs = (key: string, value: unknown, from: Settings): boolean => JSON.stringify(value) !== JSON.stringify(from[key as keyof Settings]);
     const readable = (): boolean => {

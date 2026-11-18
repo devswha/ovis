@@ -242,6 +242,14 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     return () => { for (const stop of stops) stop(); };
   }, [watch, quiet]);
 
+  // Gone with the tree (the crash screen replaces it in a live page). A save can still be answered after that: its
+  // document sets no setting here then, or this tab's old view would be stored over what another tab stored since.
+  const gone = useRef(false);
+  useEffect(() => {
+    gone.current = false;
+    return () => { gone.current = true; };
+  }, []);
+
   const absorb = useCallback((remote: SharedPreferences) => {
     if (off.current || (loadedRef.current && remote.revision <= revision.current)) return;
     const local = here();
@@ -264,7 +272,7 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     // Taken at once, as the stores below are: the next document, answer or edit is judged against it before React draws it.
     // Each of the four tells `quiet` as it lands. A list not in yet is still this tab's old one, which differs from the
     // new baseline wherever the one taken will, so what is unsent reads as nothing before the last is in only if it is nothing after.
-    if (Object.keys(taken.patch).length > 0) update(taken.patch);
+    if (Object.keys(taken.patch).length > 0 && !gone.current) update(taken.patch);
     if (taken.pins !== null) setSidebarPins(taken.pins);
     if (taken.muted !== undefined) setPaneMutes(taken.muted);
     if (taken.tabLabels !== null) setTabLabels(taken.tabLabels);
