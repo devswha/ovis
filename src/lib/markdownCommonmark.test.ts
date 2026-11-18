@@ -58,6 +58,29 @@ describe("parsePreviewMarkdown", () => {
     ]);
   });
 
+  it("ends an HTML line in a list item with the item", () => {
+    expect(parsePreviewMarkdown("- a\n- <b>x</b>\n- c")).toEqual([
+      { type: "list", ordered: false, items: [
+        { content: [{ type: "text", value: "a" }] },
+        { content: [{ type: "strong", children: [{ type: "text", value: "x" }] }] },
+        { content: [{ type: "text", value: "c" }] },
+      ] },
+    ]);
+  });
+
+  it("links a bare web or file address whole, and no bare domain or mail address", () => {
+    expect(parsePreviewMarkdown("https://a.dev/a*b*c, www.ovis.sh/a_b_c_, file:///tmp/a_b.md, ovis.sh, me@ovis.sh")).toEqual([
+      { type: "paragraph", lines: [[
+        { type: "link", href: "https://a.dev/a*b*c", children: [{ type: "text", value: "https://a.dev/a*b*c" }] },
+        { type: "text", value: ", " },
+        { type: "link", href: "https://www.ovis.sh/a_b_c_", children: [{ type: "text", value: "www.ovis.sh/a_b_c_" }] },
+        { type: "text", value: ", " },
+        { type: "file", path: "/tmp/a_b.md", children: [{ type: "text", value: "file:///tmp/a_b.md" }] },
+        { type: "text", value: ", ovis.sh, me@ovis.sh" },
+      ]] },
+    ]);
+  });
+
   it("reads formulas as the chat does", () => {
     expect(parsePreviewMarkdown("$$\nx^2\n$$\n\n\\[y\\]\n\nIt costs $5 and $6, $a$ and \\(b\\).")).toEqual([
       { type: "math", value: "x^2", dollar: true },

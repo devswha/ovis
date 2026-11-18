@@ -90,6 +90,8 @@ describe("parsePreviewOffThread", () => {
     ["a 100,000-character label", `[${"a".repeat(100_000)}]: https://a.dev\n\n[${"a".repeat(100_000)}]`],
     ["a line of 300,000 formula openers closed on the next line", `${"\\(".repeat(300_000)}\n\\)`],
     ["10,000 formula openers that never close", "$$ x\n".repeat(10_000)],
+    ["25,000 bare `www.` in a row", "www.".repeat(25_000)],
+    ["a bare address of 50,000 open parentheses", `https://a.dev/${"(".repeat(50_000)}`],
   ])("previews %s", async (_, text) => {
     expect(await parsePreviewOffThread(text).promise).not.toBeNull();
   });

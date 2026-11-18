@@ -1,6 +1,5 @@
 import MarkdownIt, { type StateBlock, type StateInline, type Token } from "markdown-it";
 
-import { fileUriPath } from "../../shared/fileUri.ts";
 import { type InlineNode, LIST_NUMBER_LIMIT, type ListBlock, type ListItem, type MarkdownBlock, markdownFileNode, safeMarkdownHref, trimUrl, webLikeHref } from "../../shared/markdown.ts";
 import { parseHtmlBlock, startsHtml } from "../../shared/markdownHtml.ts";
 
@@ -16,7 +15,16 @@ import { parseHtmlBlock, startsHtml } from "../../shared/markdownHtml.ts";
 
 type Env = { unclosedMath: Record<string, number>; found: { src: string; close: number; lineBreak: number } | null };
 
-const md = new MarkdownIt("default", { html: true, linkify: false, typographer: false });
+const md = new MarkdownIt("default", { html: true, linkify: true, typographer: false });
+// bare `https://`, `www.` and `file:///` addresses link, as in chat; a bare domain or e-mail
+// address stays text (`linkNode` gets only those three kinds from `autoLinkAddress`)
+md.linkify.set({ fuzzyEmail: false, fuzzyIP: false });
+const fileTail = /\/\/\/[!#-;=?-_a-~]+/y;
+md.linkify.add("file:", { validate: (text: string, pos: number) => {
+  fileTail.lastIndex = pos;
+  const tail = fileTail.exec(text)?.[0];
+  return tail === undefined ? 0 : trimUrl(tail).length;
+} });
 // every address stays as written for `linkNode`, the one place that decides what may link (the
 // library's own check is a deny-list, and its encoding would change a file path)
 md.validateLink = () => true;
@@ -47,9 +55,9 @@ function htmlBlock(state: StateBlock, startLine: number, endLine: number, silent
   if (silent) return true;
   let next = startLine;
   if (first.startsWith("<!--")) {
-    while (next < endLine && !lineText(state, next++).includes("-->"));
+    while (next < endLine && state.sCount[next]! >= state.blkIndent && !lineText(state, next++).includes("-->"));
   } else {
-    while (next < endLine && !state.isEmpty(next)) next += 1;
+    while (next < endLine && state.sCount[next]! >= state.blkIndent && !state.isEmpty(next)) next += 1;
   }
   const token = state.push("html_block", "", 0);
   token.content = state.getLines(startLine, next, state.blkIndent, false);
@@ -252,7 +260,7 @@ function joinLines(lines: InlineNode[][]): InlineNode[] {
 
 type Holder =
   | { kind: "strong" | "em" | "del"; children: InlineNode[] }
-  | { kind: "link"; href: string; title: string | null; children: InlineNode[] };
+  | { kind: "link"; href: string; title: string | null; auto: boolean; children: InlineNode[] };
 
 const HOLDERS: Record<string, "strong" | "em" | "del"> = { strong_open: "strong", em_open: "em", s_open: "del" };
 
@@ -267,12 +275,8 @@ function inlineLines(tokens: Token[]): InlineNode[][] {
       else into.push(node);
     }
   };
-  const inLink = (): boolean => holders.some((holder) => holder.kind === "link");
   for (const token of tokens) {
     switch (token.type) {
-      case "text":
-        push(...(inLink() ? [{ type: "text", value: token.content } as InlineNode] : bareLinks(token.content)));
-        break;
       case "softbreak": case "hardbreak":
         if (holders.length === 0) lines.push([]);
         else push({ type: "text", value: " " });
@@ -287,13 +291,17 @@ function inlineLines(tokens: Token[]): InlineNode[][] {
         holders.push({ kind: HOLDERS[token.type]!, children: [] });
         break;
       case "link_open":
-        holders.push({ kind: "link", href: token.attrGet("href") ?? "", title: token.attrGet("title"), children: [] });
+        holders.push({ kind: "link", href: token.attrGet("href") ?? "", title: token.attrGet("title"), auto: token.markup === "linkify", children: [] });
         break;
       case "strong_close": case "em_close": case "s_close": case "link_close": {
         const holder = holders.pop();
         if (holder === undefined) break;
-        if (holder.kind === "link") push(...linkNode(holder.href, holder.title, holder.children));
-        else push({ type: holder.kind, children: holder.children });
+        if (holder.kind !== "link") push({ type: holder.kind, children: holder.children });
+        else if (!holder.auto) push(...linkNode(holder.href, holder.title, holder.children));
+        else {
+          const address = autoLinkAddress(holder.children);
+          push(...(address === null ? holder.children : linkNode(address, null, holder.children)));
+        }
         break;
       }
       case "image": {
@@ -316,22 +324,10 @@ function linkNode(address: string, title: string | null, children: InlineNode[])
   return file === null ? children : [file];
 }
 
-function bareLinks(text: string): InlineNode[] {
-  const nodes: InlineNode[] = [];
-  const pattern = /file:\/\/\/[!#-;=?-_a-~]+|https?:\/\/[!-;=?-~]+|www\.[!-;=?-~]+/gi;
-  let offset = 0;
-  for (const match of text.matchAll(pattern)) {
-    const start = match.index;
-    if (/^www\./i.test(match[0]) && /[\w.@/-]/.test(text[start - 1] ?? "")) continue;
-    const token = trimUrl(match[0]);
-    if (token === "") continue;
-    const path = /^file:/i.test(token) ? fileUriPath(token) : null;
-    if (/^file:/i.test(token) && path === null) continue;
-    if (start > offset) nodes.push({ type: "text", value: text.slice(offset, start) });
-    nodes.push(path !== null ? { type: "file", path, children: [{ type: "text", value: token }] }
-      : { type: "link", href: /^www\./i.test(token) ? `https://${token}` : token, children: [{ type: "text", value: token }] });
-    offset = start + token.length;
-  }
-  if (offset < text.length) nodes.push({ type: "text", value: text.slice(offset) });
-  return nodes;
+/** A bare address read by linkify, by what it shows: the chat links `https://`, `www.` and `file:///` ones. */
+function autoLinkAddress(children: InlineNode[]): string | null {
+  const shown = children.length === 1 && children[0]!.type === "text" ? children[0]!.value : null;
+  if (shown === null) return null;
+  if (/^www\./i.test(shown)) return `https://${shown}`;
+  return /^(?:https?:\/\/|file:\/\/\/)/i.test(shown) ? shown : null;
 }
