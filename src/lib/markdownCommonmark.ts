@@ -41,8 +41,9 @@ export function parsePreviewMarkdown(source: string): MarkdownBlock[] {
 }
 
 /**
- * Quotes and lists nested this deep (the chat's 32 quotes inside one) keep the rest of their lines
- * as written text: past its own limit markdown-it drops what is left of the file.
+ * Containers nested this deep keep the rest of their lines as written text: past its own limit
+ * markdown-it drops what is left of the file. markdown-it counts a quote as one level and a list
+ * item as two, so this is 33 quotes (the chat's 32 inside one) or about 17 lists.
  */
 const MAX_LEVEL = 33;
 
