@@ -52,6 +52,17 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
     commit(stage: StagedRead) {
       const binding = pc.binding();
       if (binding === null) throw new Error("Snapshot commit requires a current binding");
+      const blocks = new Map(stage.snapshot.blocks.map((block) => [block.id, block]));
+      for (const line of stage.snapshot.freezes) {
+        const block = blocks.get(line.block);
+        if (!block || safetyLog.receipt(line.block) || devices.isTombstoned(block.signer)) continue;
+        const id = `f:${line.block}`;
+        if (safetyLog.receipt(id)) continue;
+        const receipt = safetyLog.append({ got: "snapshot", record: { v: 1, kind: "freeze", id, account: block.account,
+          target: line.target, after: line.after, signer: "service", signed_at: block.signed_at, signature: "" } });
+        if (receipt.outcome !== "applied") throw new Error("Cannot record the snapshot freeze line");
+        pc.raiseGen();
+      }
       let lifted = false;
       for (const lift of stage.lifts) if (safetyLog.append({ record: lift, got: "snapshot" }).outcome === "applied") lifted = true;
       if (lifted) pc.raiseGen();

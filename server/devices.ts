@@ -835,8 +835,14 @@ export class DeviceStore {
     // a key confirm on this PC's own screen, or ovis recover --admit, of this very key passes a freeze (P23, rule R1)
     if (confirmed) return true;
     const rows = key === undefined ? [] : this.devices.filter((d) => d.relay_public_key === key);
-    return rows.length > 0 && state.freezes.every((freeze) =>
-      key !== freeze.record.target && rows.every((row) => !this.newerThanFreeze(row, freeze.asof)));
+    return state.freezes.every(({ record, asof }) => {
+      if (key === record.target) return false;
+      if (record.kind === "freeze") {
+        const no = key === undefined ? null : this.accountOrder?.no(key);
+        return key !== undefined && no != null && !this.accountOrder?.late(key) && no <= record.after;
+      }
+      return rows.length > 0 && rows.every((row) => !this.newerThanFreeze(row, asof));
+    });
   }
 
   /** Hears every end of a code (cancel, expiry, an admission, Revoke all, a relay identity reset), by its id (T71). */
@@ -1074,8 +1080,16 @@ export class DeviceStore {
     if (record.kind !== "lift" || record.signer === "pc" || this.safety === null) return false;
     if (!await verifySafetyRecord(record as DeviceSafetyRecord)) return false;
     const blocked = this.safety.state().blocks.find((entry) => entry.record.id === record.target);
-    const joined = blocked?.asof?.joined;
-    if (blocked === undefined || joined === null || joined === undefined) return false;
+    if (blocked === undefined) {
+      const line = this.safety.state().freezes.find((entry) => entry.record.id === `f:${record.target}`)?.record;
+      if (line?.kind !== "freeze" || line.account !== record.account || !this.accountOrder || this.accountOrder.late(record.signer)) return false;
+      const signerNo = this.accountOrder.no(record.signer);
+      const targetNo = this.accountOrder.no(line.target);
+      return signerNo !== null && targetNo !== null && signerNo < Math.min(targetNo, line.after)
+        && this.memberRows(record.signer, record.account).some((row) => !this.frozen(row));
+    }
+    const joined = blocked.asof?.joined;
+    if (joined === null || joined === undefined) return false;
     // a key the account's order marks late is not trusted as older than the key it would free (P21, T52)
     if (this.accountOrder?.late(record.signer) ?? false) return false;
     const signers = this.memberRows(record.signer, record.account);
