@@ -33,14 +33,19 @@ const KINDS = [
   { kind: "confirm", action: "close_workspace", control: " esc cancel ", keys: ["esc", "n"] },
   { kind: "goto", action: "goto", control: null, keys: ["esc"] },
   { kind: "menu", action: "menu", control: null, keys: ["esc"] },
+  // herdr's switcher: what the menu's key opens on a narrow screen
+  { kind: "switcher", action: "menu", control: "close", keys: ["esc"], narrow: true },
 ] as const;
 
 describe("the overlays' close keys", () => {
   it("every overlay registry entry shows its close control, and each of its close keys closes it", async () => {
     // a kind added to the registry without a row here fails this line
     expect(Object.keys(OVERLAYS).sort()).toEqual(KINDS.map(({ kind }) => kind).sort());
-    const run = await start();
-    for (const { kind, action, control, keys } of KINDS) {
+    const wide = await start();
+    const narrow = await start(undefined, 45, 30);
+    for (const row of KINDS) {
+      const { kind, action, control, keys } = row;
+      const run = "narrow" in row ? narrow : wide;
       for (const key of keys) {
         run.loop.dispatch({ type: "action", action, at: run.clock.current });
         await run.advance(20);

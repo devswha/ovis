@@ -260,7 +260,7 @@ describe("a rerun of the screen on the same core", () => {
     for (const secret of ["typed-secret", "printed-secret", "\"ovis\"", "\"main\"", "\"logs\"", "shell", "files", "문서", "안녕"]) expect({ secret, found: text.includes(secret) }).toEqual({ secret, found: false });
     const again = await first(core, folder, 45, 30);
     expect(again.loop.model().focus.panes["t-main"]).toBe("t2");
-    expect(again.loop.panes.views().map((view) => view.terminal)).toEqual(["t2"]);
+    expect(again.loop.panes.views().map((view) => view.terminal).sort()).toEqual(["t1", "t2"]);
     expect(again.loop.model().notices).toEqual([]);
   }, TEST_MS);
 
