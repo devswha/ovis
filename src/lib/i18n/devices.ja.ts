@@ -290,4 +290,10 @@ export const DEVICES_JA: Record<string, string> = {
   "{pc}: waiting for its answer": "{pc}: 応答待ち",
   "{pc}: not reached; it applies the block at its next check": "{pc}: 未接続。次の確認時にブロックされます",
   "{pc}: needs an Ovis update to block": "{pc}: ブロックには Ovis の更新が必要です",
+  "It's me": "自分です",
+  "{pc} opens in {seconds} s": "{seconds} 秒後に {pc} が開きます",
+  "{pc} holds this device after a Not me from another device": "{pc}: 別のデバイスで「自分ではない」が押されたため止まっています",
+  "{pc} is checking your account first": "{pc}: 先にアカウントを確認しています",
+  "Your other devices are told first. One of them can let this device in now.": "先にほかのデバイスに知らせます。ほかのデバイスからすぐに入れることもできます。",
+  "{pc} is telling your other devices first": "{pc}: 先にほかのデバイスに知らせています",
 };
