@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { OWN_UPDATE_OFFER, type Machine, type RemoteOvis } from "../../shared/machines.ts";
-import { manageActions, ownOvisAction, ownUpdateFailure, pcListExit } from "./MachineSidebar.tsx";
+import { manageActions, ownOvisAction, ownUpdateFailure, pcListExit, removablePc } from "./MachineSidebar.tsx";
 
 const offer = (updatable: boolean): RemoteOvis => ({ version: "0.4.16", latest_version: updatable ? "0.4.18" : null, updatable, reason: updatable ? null : "it cannot", address: "pc.invalid:4000", url: null });
 const pc = (patch: Partial<Pick<Machine, "remote_ovis" | "action_required" | "error">>) => ({ remote_ovis: null, action_required: null, error: null, ...patch });
@@ -36,6 +36,14 @@ describe("a PC's own Ovis on its card", () => {
     expect(ownUpdateFailure(pc({ remote_ovis: offer(true), action_required: "update_bridge", error: `${OWN_UPDATE_OFFER} to v0.4.18.` }))).toBeNull();
     expect(ownUpdateFailure(pc({ remote_ovis: offer(true), action_required: "update_bridge" }))).toBeNull();
     expect(ownUpdateFailure(pc({ remote_ovis: offer(false), action_required: "setup", error: failed }))).toBeNull();
+  });
+});
+
+describe("Remove in Settings", () => {
+  it("offers it for a PC added here over SSH, through the relay or by its address once it is not connected", () => {
+    const removable = (kind: Machine["kind"], state: Machine["state"] = "error", herdr_profile_id?: string) => removablePc({ kind, state, herdr_profile_id });
+    expect(["ssh", "relay", "address"].map((kind) => removable(kind as Machine["kind"]))).toEqual([true, true, true]);
+    expect([removable("address", "connected"), removable("ssh", "disconnected", "p1"), removable("hc"), removable("local")]).toEqual([false, false, false, false]);
   });
 });
 

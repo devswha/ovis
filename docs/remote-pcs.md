@@ -144,7 +144,10 @@ PCs**) and type the six-digit code it shows here with its address. This PC's ser
 only the code and the label `Ovis on <this PC's name>` (`POST /api/devices/pair`), and keeps the
 device token it answers in `<stateDir>/address-pcs/<pc id>.json` (mode `0600`), never in a PC list, a
 log or an answer. That PC lists it under Devices as one more paired device that **drives** it. The
-PC itself is saved in `<stateDir>/address-pcs.json`, apart from `machines.json`.
+PC itself is saved in `<stateDir>/address-pcs.json`, apart from `machines.json`. Like the relay PCs'
+keys and SSH keys beside it, that token file is readable to whoever may drive this PC (through its
+terminals or file view), and so is the control of the other PC it gives: add a PC by its address only
+on a PC whose driving devices you would trust with that one.
 
 The address is an origin only: `https://`, or plain `http://` to this PC itself (`localhost`,
 `127.0.0.1`, `[::1]`, for a second Ovis on the same machine), with no path, query, fragment or user name,

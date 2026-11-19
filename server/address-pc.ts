@@ -101,7 +101,7 @@ export async function checkAddressTarget(origin: string, resolve: typeof lookup 
 export async function addressBootId(origin: string): Promise<string | null> {
   try {
     const response = await fetch(`${origin}/api/health?scope=bridge`, { redirect: "error", signal: AbortSignal.timeout(PAIR_MS) });
-    const health = await response.json() as { web_ui?: { boot_id?: unknown } } | null;
+    const health = await readCappedJson<{ web_ui?: { boot_id?: unknown } } | null>(response, REMOTE_LIMITS.health);
     return typeof health?.web_ui?.boot_id === "string" ? health.web_ui.boot_id : null;
   } catch { return null; }
 }
@@ -185,8 +185,8 @@ export function openAddressPcForward(origin: string, deviceToken: string, onLost
   };
   let closed = false;
   let forced = false;
-  // the refusal's own answer is still on its way out: the forward stops taking requests and lets that one finish,
-  // until the PC is disconnected or removed (close), which ends whatever is left
+  // the forward stops taking requests at once; what is still in flight ends when the manager disconnects the PC on
+  // hearing the refusal (close), which stops the listener outright
   const refused = (): void => {
     if (closed) return;
     close(false);

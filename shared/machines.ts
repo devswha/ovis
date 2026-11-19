@@ -23,6 +23,8 @@ export interface SshTarget {
 /** Why POST /api/machines/address added no PC, answered as `address_pc_<failure>`: the app words each one. */
 export const ADDRESS_PC_FAILURES = ["address", "target", "code", "wrong_code", "waiting", "unreachable", "not_ovis", "added", "self"] as const;
 export type AddressPcFailure = typeof ADDRESS_PC_FAILURES[number];
+/** A PC this server is paired with as one of its devices (relay, address): it runs its own Ovis, which it is revoked on. */
+export function pairedPc(machine: Pick<Machine, "kind">): boolean { return machine.kind === "relay" || machine.kind === "address"; }
 export interface Machine {
   /** Read-only identity inherited from the local herdr catalog. */
   herdr_profile_id?: string;
