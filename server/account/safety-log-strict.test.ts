@@ -118,5 +118,11 @@ describe("the safety log's endings and its failed writes (P24, S19)", () => {
     expect(existsSync(join(at, "account-tombstones.pending.json"))).toBe(false);
     expect((JSON.parse(readFileSync(join(at, "account-tombstones.json"), "utf8")) as { tombstones: { key: string }[] }).tombstones.map((t) => t.key)).toEqual([phone.spki]);
   });
+
+  test("S19: a log a merge could not make reads as locked", () => {
+    const log = SafetyLog.open(dir(), "the sibling folder's log could not be read");
+    expect(log.strict).not.toBeNull();
+    expect(log.inForce.locked).toBe(true);
+  });
 });
 

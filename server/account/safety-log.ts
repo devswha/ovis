@@ -180,6 +180,7 @@ export class SafetyLog {
     log.readError = mergeProblem;
     log.writeError = null;
     if (mergeProblem === null) log.load();
+    else log.inForce = STRICT_STATE;
     return log;
   }
 
@@ -314,10 +315,9 @@ export class SafetyLog {
     for (const { record } of this.file.entries) {
       if ((record.kind !== "lift" && record.kind !== "unlock")) continue;
       const named = at(record.account, record.target);
-      // a lift folds only with the record it ends: never while a block it lifts is still whole here
-      const blockWhole = this.file.entries.some((entry) => entry.record.id === record.target && entry.record.account === record.account && !folds.has(named));
-      if (blockWhole) continue;
-      if (folds.has(named) || folds.has(at(record.account, `f:${record.target}`)) || this.file.base.some((line) => line.id === record.target && line.account === record.account)) folds.add(at(record.account, record.id));
+      // a lift or an unlock folds only in the pass that folds the record it ends, whose body is here: a lift kept whole
+      // still ends that block when a sibling folder brings it whole (P24, T48)
+      if (folds.has(named)) folds.add(at(record.account, record.id));
     }
     if (folds.size === 0) return 0;
     const folded = (record: SafetyRecord) => folds.has(at(record.account, record.id));
