@@ -204,6 +204,8 @@ export class HerdrSocket {
   private markProbeDone: () => void = () => {};
   /** the key clock's tick when this connection's link was last confirmed up; null while it is not (see markTyped) */
   private linkUpAt: number | null = null;
+  /** the current network loss was noted (noteNetwork); the network coming back or the link confirmed opens the next */
+  private lossNoted = false;
   /** keys queued before the network went (an attach's resume, a new tab's catch) are held even when none is typed during it */
   private readonly onOffline = (): void => { this.noteNetwork(); };
   private probeDrops = 0;
@@ -213,7 +215,7 @@ export class HerdrSocket {
   private nextPing = 1;
   private readonly onWake = (event?: Event): void => {
     if (event?.type === "pageshow") { this.left = false; this.trace.record("pageshow"); }
-    if (event?.type === "online") this.trace.record("online");
+    if (event?.type === "online") { this.trace.record("online"); this.lossNoted = false; }
     if (event?.type === "visibilitychange") this.trace.record(document.visibilityState === "hidden" ? "hidden" : "visible");
     // a page on its way into the back/forward cache connects again only when it is shown
     if (this.left) return;
@@ -675,9 +677,11 @@ export class HerdrSocket {
    * browser or the network and reach the pane after the network is back, typed by nobody. Unless the server is on
    * this device, the link counts as lost at once, and the connection is probed so a dead socket is dropped. A probe
    * already in flight pinged while the network was there, so it asks again: an earlier ping's pong proves nothing.
+   * Each loss counts once (lossNoted), so a second loss before the first probe's pong invalidates that probe too.
    */
   noteNetwork(): void {
-    if (this.linkUpAt === null || typeof navigator === "undefined" || navigator.onLine !== false || deviceLocal(this.url)) return;
+    if (this.lossNoted || typeof navigator === "undefined" || navigator.onLine !== false || deviceLocal(this.url)) return;
+    this.lossNoted = true;
     this.linkUpAt = null;
     const socket = this.socket;
     if (this.probeTimer !== null && socket !== null) {
@@ -695,6 +699,7 @@ export class HerdrSocket {
     if (this.linkUpAt !== null || !this.connected || this.probing) return;
     if (typeof navigator !== "undefined" && navigator.onLine === false && !deviceLocal(this.url)) return;
     this.linkUpAt = ++keyClock;
+    this.lossNoted = false;
   }
 
   private async probeSettled(socket: WebSocketLike): Promise<boolean> {
@@ -1043,7 +1048,8 @@ export class HerdrSocket {
    * now when absent) goes only over a link confirmed up before it was captured and not lost since: nothing typed while
    * the link was down, or queued before it went down, reaches the pane by itself once it is back. It is held instead.
    * "Down" is what this connection knows: a stall it has no sign of yet (the browser reports a network, the socket
-   * reads OPEN) is found only by the liveness probe, and keys typed before that go as usual.
+   * reads OPEN) is found only by the liveness probe: keys typed before the probe starts go as usual, and keys typed
+   * while it waits for its pong are held.
    */
   private takesKey(paneId: string, typedAt?: number): boolean {
     this.noteNetwork();

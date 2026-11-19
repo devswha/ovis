@@ -1896,6 +1896,36 @@ it("reopens input after the network is back only on the pong of a ping sent once
   }
 });
 
+it("lets a probe answer only for the outage it was sent in, when the network goes again before its pong", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    network.set(false);
+    globalThis.dispatchEvent(new Event("offline"));
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }]);
+    network.set(true);
+    globalThis.dispatchEvent(new Event("online"));
+    // the network goes again before the first probe's pong: that ping was sent in the earlier outage
+    network.set(false);
+    globalThis.dispatchEvent(new Event("offline"));
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }, { type: "ping", id: 2 }]);
+    network.set(true);
+    globalThis.dispatchEvent(new Event("online"));
+    socket.receive({ type: "pong", id: 1 });
+    expect(client.canInput("w1:p1")).toBe(false);
+    expect(client.sendInput("w1:p1", "ls", false, false, false, markTyped())).toBe(false);
+    // only the pong of the ping sent after the latest loss restores the link
+    socket.receive({ type: "pong", id: 2 });
+    expect(client.canInput("w1:p1")).toBe(true);
+    expect(submissions(socket)).toEqual([]);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
 it("holds a key the socket took just before the network went, and sends it on no new connection by itself", () => {
   jest.useFakeTimers();
   const network = networkSwitch();
