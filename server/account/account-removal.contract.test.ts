@@ -52,6 +52,14 @@ async function expectRemoval(remove: Removal) {
   }
 }
 
+test("T19, T37, P8: revoking the account row by ID closes its session and survives restart", async () => {
+  await expectRemoval(async ({ fixture }, key, serverId) => {
+    const { devices } = fixture.app.context.services;
+    expect(devices.revoke(accountDeviceId(serverId, key))).toBe(true);
+    expect(devices.isTombstoned(key)).toBe(true);
+  });
+});
+
 test("T36, P8: signed removal closes the account session before persistence and survives restart", async () => {
   await expectRemoval(async ({ fixture, member }, key, serverId) => {
     const record = await signAccountRecord({ v: 1, kind: "remove", account, key, signer: member.publicKey,
