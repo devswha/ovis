@@ -74,6 +74,8 @@ async function serve(core: boolean, status: AgentStatus, shown: string, refuses:
 
 it("takes a message sent right after a card is answered in the terminal, the card's wait not yet ended", async () => {
   const { daemon, port, tickCards } = await serve(true, "working", approval);
+  const reader = spyOn(prompt, "waitingCard");
+  cleanups.push(() => reader.mockRestore());
   const seen: any[] = [];
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   cleanups.push(() => ws.close());
@@ -92,6 +94,10 @@ it("takes a message sent right after a card is answered in the terminal, the car
   await frame((seen) => seen.type === "snapshot");
   ws.send(JSON.stringify({ type: "attach", pane_id: "t1", cols: 100, rows: 30 }));
   await frame((seen) => seen.type === "input-ready" && seen.pane_id === "t1" && seen.ready !== false);
+  // the page is in use, so the terminal it shows is read on every tick: the pong says the server has taken that in
+  ws.send(JSON.stringify({ type: "presence", active: true }));
+  ws.send(JSON.stringify({ type: "ping", id: 1 }));
+  await frame((seen) => seen.type === "pong" && seen.id === 1);
 
   // the card is read and waited on, then answered in the terminal itself: the next read finds no card, the wait holds
   let shown = frame((seen) => seen.type === "pane-status" && seen.pane_id === "t1" && seen.agent_status === "blocked");
@@ -99,11 +105,15 @@ it("takes a message sent right after a card is answered in the terminal, the car
   await shown;
   daemon.screen = inputBox;
   await tickCards();
+  expect(reader).toHaveBeenCalledTimes(2);
   // the next read would end the wait: the message goes in before it, the pages still showing the pane blocked
   expect(seen.filter((seen) => seen.type === "pane-status" && seen.pane_id === "t1").at(-1)?.agent_status).toBe("blocked");
+  const from = daemon.methods.length;
   ws.send(JSON.stringify({ type: "submit", id: 1, pane_id: "t1", text: "next step", payload: "next step", delivery: "queue" }));
   const result = await frame((seen) => seen.type === "submit-result" && seen.id === 1);
-  expect(result, JSON.stringify({ result, methods: [...new Set(daemon.methods)] })).toMatchObject({ ok: true });
+  // Codex works, by its own report: the message waits for its turn's end as a queued row, and nothing is typed
+  expect(result, JSON.stringify({ result, methods: [...new Set(daemon.methods)] })).toMatchObject({ ok: true, pending: { text: "next step", state: "queued" } });
+  expect(daemon.written(from)).toEqual([]);
 }, 30_000);
 
 async function page(port: number) {

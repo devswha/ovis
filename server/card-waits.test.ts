@@ -74,67 +74,80 @@ describe("which cards are an agent waiting for its user", () => {
 describe("a wait on a card", () => {
   it("begins once, and the same card redrawn five times is the same wait", async () => {
     const { cards, told } = waits([card("question"), card("question"), card("question"), card("question"), card("question"), card("question")]);
-    for (let read = 0; read < 6; read++) await cards.tick([pane("codex")], all);
+    for (let read = 0; read < 6; read++) await cards.tick(() => [pane("codex")], all);
     expect(told).toEqual([["t1", true]]);
     expect(cards.kindOf("t1")).toBe("question");
   });
 
   it("survives one read caught mid-repaint and ends at the second read without a card", async () => {
     const { cards, told } = waits([card("permission"), null, card("permission"), null, null]);
-    for (let read = 0; read < 3; read++) await cards.tick([pane("claude")], all);
+    for (let read = 0; read < 3; read++) await cards.tick(() => [pane("claude")], all);
     expect(told).toEqual([["t1", true]]);
-    await cards.tick([pane("claude")], all);
+    await cards.tick(() => [pane("claude")], all);
     expect(cards.waiting("t1")).toBe(true);
-    await cards.tick([pane("claude")], all);
+    await cards.tick(() => [pane("claude")], all);
     expect(told).toEqual([["t1", true], ["t1", false]]);
   });
 
   it("ends at the first read without a card after an answer from a card", async () => {
     const { cards, told } = waits([card("question"), card("question"), null]);
-    await cards.tick([pane("codex")], all);
-    cards.answer("t1");
+    await cards.tick(() => [pane("codex")], all);
+    cards.answer("t1", "c1");
     // the answered card can still be drawn for a moment
-    await cards.tick([pane("codex")], all);
+    await cards.tick(() => [pane("codex")], all);
     expect(cards.waiting("t1")).toBe(true);
-    await cards.tick([pane("codex")], all);
+    await cards.tick(() => [pane("codex")], all);
     expect(told).toEqual([["t1", true], ["t1", false]]);
   });
 
   it("keeps a wait through reads that say nothing, and ends it after ten in a row rather than stay stuck", async () => {
     const { cards, told } = waits([card("question"), ...Array<CardRead>(9).fill(undefined), card("question"), ...Array<CardRead>(10).fill(undefined)]);
-    for (let read = 0; read < 11; read++) await cards.tick([pane("codex")], all);
+    for (let read = 0; read < 11; read++) await cards.tick(() => [pane("codex")], all);
     expect(told).toEqual([["t1", true]]);
-    for (let read = 0; read < 10; read++) await cards.tick([pane("codex")], all);
+    for (let read = 0; read < 10; read++) await cards.tick(() => [pane("codex")], all);
     expect(told).toEqual([["t1", true], ["t1", false]]);
   });
 
   it("is another wait for another card in its place: told anew, and an answer to the first does not end it", async () => {
     const { cards, told } = waits([card("question", "asked"), card("permission", "next"), null, null]);
-    await cards.tick([pane("codex")], all);
-    cards.answer("t1");
+    await cards.tick(() => [pane("codex")], all);
+    cards.answer("t1", "asked");
     // the answer brought Codex's next asking before any read found the screen without a card
-    await cards.tick([pane("codex")], all);
+    await cards.tick(() => [pane("codex")], all);
     expect(told).toEqual([["t1", true], ["t1", false], ["t1", true]]);
     expect(cards.kindOf("t1")).toBe("permission");
-    await cards.tick([pane("codex")], all);
+    await cards.tick(() => [pane("codex")], all);
     expect(cards.waiting("t1")).toBe(true);
-    await cards.tick([pane("codex")], all);
+    await cards.tick(() => [pane("codex")], all);
     expect(cards.waiting("t1")).toBe(false);
+  });
+
+  const session = (agent: string, value: string) => ({ agent_session: { agent, kind: "id", source: "test", value } });
+  it.each([
+    ["another agent", pane("codex"), pane("claude"), false],
+    ["another session of the agent", pane("codex", "working", session("codex", "one")), pane("codex", "working", session("codex", "two")), false],
+    ["the same agent, its session now known", pane("codex"), pane("codex", "working", session("codex", "one")), true],
+    ["the same agent, the session left over from the one before it", pane("codex"), pane("codex", "working", session("claude", "one")), true],
+  ] as const)("keeps a wait only for the agent it began with: %s", async (_who, began, now, kept) => {
+    const { cards, told } = waits([card("question"), null]);
+    await cards.tick(() => [began], all);
+    await cards.tick(() => [now], all);
+    expect(told).toEqual(kept ? [["t1", true]] : [["t1", true], ["t1", false]]);
   });
 
   it("never reads a terminal no agent runs in, nor one another tracker tells", async () => {
     const { cards, told, read } = waits([card("question"), card("question")]);
-    await cards.tick([pane(null, "unknown")], all);
-    await cards.tick([pane("omo")], all, () => true);
+    await cards.tick(() => [pane(null, "unknown")], all);
+    await cards.tick(() => [pane("omo")], all, () => true);
     expect(read).toEqual([]);
     expect(told).toEqual([]);
   });
 
   it("ends a wait begun before a tracker of its own took the pane, without reading it again", async () => {
     const { cards, told, read } = waits([card("question"), card("question")]);
-    await cards.tick([pane("claude")], all);
+    await cards.tick(() => [pane("claude")], all);
     // OmO is found in the pane: its own status stands from now on
-    await cards.tick([pane("claude")], all, () => true);
+    await cards.tick(() => [pane("claude")], all, () => true);
     expect(told).toEqual([["t1", true], ["t1", false]]);
     expect(read).toEqual(["t1"]);
   });
@@ -144,7 +157,7 @@ describe("a wait on a card", () => {
     const told: [string, boolean][] = [];
     const cards = new CardWaits(() => held.promise, (paneId, waiting) => { told.push([paneId, waiting]); });
     let owned = false;
-    const tick = cards.tick([pane("claude")], all, () => owned);
+    const tick = cards.tick(() => [pane("claude")], all, () => owned);
     owned = true;
     held.resolve(card("question"));
     await tick;
@@ -154,15 +167,15 @@ describe("a wait on a card", () => {
 
   it("forgets a pane no longer listed, telling nobody", async () => {
     const { cards, told } = waits([card("question")]);
-    await cards.tick([pane("codex")], all);
-    await cards.tick([], all);
+    await cards.tick(() => [pane("codex")], all);
+    await cards.tick(() => [], all);
     expect(cards.waiting("t1")).toBe(false);
     expect(told).toEqual([["t1", true]]);
   });
 
   it("shows a waiting pane blocked with the card's kind, and leaves the agent's own blocked and its words alone", async () => {
     const { cards } = waits([card("question")]);
-    await cards.tick([pane("codex")], all);
+    await cards.tick(() => [pane("codex")], all);
     expect(cards.status("t1", "working")).toBe("blocked");
     const snapshot = (panes: HerdrPane[]) => ({ panes, agents: panes.map(({ pane_id, agent, agent_status }) => ({ pane_id, agent, agent_status })) }) as unknown as SessionSnapshot;
     expect(cards.apply(snapshot([pane("codex", "working")])).panes[0]).toMatchObject({ agent_status: "blocked", agent_kind: "question" });
@@ -173,9 +186,9 @@ describe("a wait on a card", () => {
 
   it("ends a wait at once when the pane's agent is gone, without reading it", async () => {
     const { cards, told, read } = waits([card("question"), card("question")]);
-    await cards.tick([pane("codex")], all);
+    await cards.tick(() => [pane("codex")], all);
     // Ctrl-C at its question, or its folder trust answered "No, exit": a shell is back, no agent runs there
-    await cards.tick([pane(null, "unknown")], all);
+    await cards.tick(() => [pane(null, "unknown")], all);
     expect(told).toEqual([["t1", true], ["t1", false]]);
     expect(read).toEqual(["t1"]);
     expect(cards.status("t1", "unknown")).toBe("unknown");
@@ -187,7 +200,7 @@ describe("a wait on a card", () => {
     const told: string[] = [];
     const cards = new CardWaits(async (seen) => { read.push(seen.pane_id); if (read.length <= 4) await first.promise; return card("question"); }, (paneId) => { told.push(paneId); });
     const five = ["t1", "t2", "t3", "t4", "t5"].map((pane_id) => pane("codex", "working", { pane_id }));
-    const tick = cards.tick(five, all);
+    const tick = cards.tick(() => five, all);
     // the fifth pane's agent exits while the first four are read
     cards.forget("t5");
     first.resolve();
@@ -200,11 +213,11 @@ describe("a wait on a card", () => {
   it("reads only the panes the rule picks, and every pane that waits", async () => {
     const { cards, read } = waits([card("question"), null, null]);
     const atRest = (seen: HerdrPane) => seen.agent_status === "working" || seen.agent_status === "unknown";
-    await cards.tick([pane("codex", "idle")], atRest);
+    await cards.tick(() => [pane("codex", "idle")], atRest);
     expect(read).toEqual([]);
-    await cards.tick([pane("codex", "working")], atRest);
+    await cards.tick(() => [pane("codex", "working")], atRest);
     // a pane that waits is read whatever its agent says now, so that its wait can end
-    await cards.tick([pane("codex", "idle")], atRest);
+    await cards.tick(() => [pane("codex", "idle")], atRest);
     expect(read).toEqual(["t1", "t1"]);
   });
 });

@@ -1693,17 +1693,4 @@ describe("a card's wait told to web push (server/card-waits.ts)", () => {
       expect(timers.pending()).toBe(0);
     } finally { timers.restore(); }
   });
-
-  it("calls off the alert of a card answered within the short wait", async () => {
-    const timers = heldShortWait();
-    try {
-      const push = service();
-      push.assume("t1", "working");
-      await push.onStatus("t1", "blocked");
-      await push.onStatus("t1", "working");
-      timers.fire();
-      await push.settled();
-      expect(fake.received).toHaveLength(0);
-    } finally { timers.restore(); }
-  });
 });

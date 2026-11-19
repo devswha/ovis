@@ -77,7 +77,7 @@ describe("a herdr-core pane whose agent asks on screen what it did not report", 
     const h = await started(pane("codex", "working"));
     const shown = screen(question);
     await h.status.cardTick();
-    h.status.cards.answer("t1");
+    h.status.cards.answer("t1", question.id);
     shown.show(null);
     await h.status.cardTick();
     expect(h.last().status).toBe("working");
@@ -226,7 +226,7 @@ describe("what ends a card's wait, and what it leaves", () => {
     // the turn ends while the card is still drawn: still waiting, and the finish is kept for after
     handlers.onStatus("t1", "idle", "hermes");
     expect(h.last().status).toBe("blocked");
-    h.status.cards.answer("t1");
+    h.status.cards.answer("t1", question.id);
     shown.show(null);
     await h.status.cardTick();
     expect(h.last().status).toBe("done");
@@ -329,7 +329,7 @@ describe("what ends a card's wait, and what it leaves", () => {
     await h.status.cardTick();
     // the agent reports idle; herdr's last snapshot still says working
     handlers.onStatus("t1", "idle", "codex");
-    h.status.cards.answer("t1");
+    h.status.cards.answer("t1", question.id);
     shown.show(null);
     await h.status.cardTick();
     expect(h.last().status).not.toBe("working");
@@ -342,12 +342,95 @@ describe("what ends a card's wait, and what it leaves", () => {
     const sent = pushHears(h);
     const shown = screen(question);
     await h.status.cardTick();
-    h.status.cards.answer("t1");
+    h.status.cards.answer("t1", question.id);
     // the answer brought Codex's next asking, a command to approve, before any read found the screen without a card
     shown.show({ kind: "permission", id: "p1" });
     await h.status.cardTick();
     expect(sent()).toBe(2);
     expect((await h.snapshot()).panes[0]).toMatchObject({ agent_status: "blocked", agent_kind: "permission" });
+  });
+
+  it("does not take an answer that settled after the next card came for an answer to that card", async () => {
+    serving(true);
+    const h = await started(pane("codex", "working"));
+    const shown = screen(question);
+    await h.status.cardTick();
+    shown.show({ kind: "permission", id: "p1" });
+    await h.status.cardTick();
+    // the question's answer is told only now, its form having settled while the approval was already read
+    h.status.cards.answer("t1", question.id);
+    shown.show(null);
+    await h.status.cardTick();
+    expect(h.status.cards.waiting("t1")).toBe(true);
+  });
+
+  it("starts no wait for an agent from the read of the one it replaced in the pane", async () => {
+    serving(true);
+    const h = await started(pane("codex", "working"));
+    const read = heldRead();
+    const tick = h.status.cardTick();
+    await read.begun;
+    // Codex left and Claude Code runs in the pane, by its status event and by the snapshot
+    h.herdrSays(pane("claude", "working"));
+    handlers.onStatus("t1", "working", "claude");
+    await h.snapshot();
+    read.answer(question);
+    await tick;
+    expect(h.status.cards.waiting("t1")).toBe(false);
+    expect(h.alerts).not.toContain("blocked");
+  });
+
+  it("reads no agent only its status events had named, from a snapshot begun before it exited at its card", async () => {
+    serving(true);
+    // the shell, in the snapshot; Codex is known from its own status event alone
+    const h = await started(pane(null, "unknown"), null);
+    handlers.onStatus("t1", "working", "codex");
+    const sent = pushHears(h);
+    const shown = screen(question);
+    await h.status.cardTick();
+    expect(sent()).toBe(1);
+    // a snapshot read begins while Codex still runs, and lands after its exit was told
+    h.herdrSays(pane("codex", "working"));
+    const land = await h.heldSnapshot();
+    h.herdrSays(pane(null, "unknown"));
+    handlers.onStatus("t1", "unknown", null);
+    await land();
+    const reads = shown.read.length;
+    for (let tick = 0; tick < 3; tick++) await h.status.cardTick();
+    expect(shown.read.length).toBe(reads);
+    expect(h.status.cards.waiting("t1")).toBe(false);
+    expect(sent()).toBe(1);
+  });
+
+  it("reads no pane closed after the snapshot that lists it was asked for", async () => {
+    serving(true);
+    const h = await started(pane("codex", "working"));
+    const shown = screen(question);
+    const land = await h.heldSnapshot();
+    handlers.onPaneEnded("t1");
+    await land();
+    await h.status.cardTick();
+    expect(shown.read).toEqual([]);
+    expect(h.status.cards.waiting("t1")).toBe(false);
+  });
+
+  it("does not read a pane a tracker of its own took while it waited behind the panes read before it", async () => {
+    serving(true);
+    const h = hub();
+    const panes = ["t1", "t2", "t3", "t4", "t5"].map((pane_id) => pane("codex", "working", { pane_id }));
+    h.herdrSays(...panes);
+    handlers.onBaseline(panes);
+    for (const shown of panes) handlers.onStatus(shown.pane_id, "working", "codex");
+    await h.snapshot();
+    const read: string[] = [];
+    const held = Promise.withResolvers<CardRead>();
+    spies.push(spyOn(prompt, "waitingCard").mockImplementation((shown) => { read.push(shown.pane_id); return held.promise; }));
+    const tick = h.status.cardTick();
+    // OmO is found in the fifth pane while the first four are read
+    spies.push(spyOn(h.status.omo, "runs").mockImplementation((paneId: string) => paneId === "t5"));
+    held.resolve(null);
+    await tick;
+    expect(read).toEqual(["t1", "t2", "t3", "t4"]);
   });
 
   it("ends a wait once OmO is found in the pane, whose own status shows from then on, and reads it no more", async () => {
@@ -456,7 +539,7 @@ describe("a card's wait across a resync of herdr's events, and across an exit", 
     const shown = screen(card);
     await h.status.cardTick();
     expect(sent()).toBe(1);
-    if (answered) h.status.cards.answer("t1");
+    if (answered && card) h.status.cards.answer("t1", card.id);
     if (!left) shown.show(null);
     const reads = shown.read.length;
     // the shell is back: its event names no agent, and the core's next snapshot names none either
@@ -477,7 +560,7 @@ describe("a card's wait across a resync of herdr's events, and across an exit", 
     const sent = pushHears(h);
     const shown = screen(card);
     await h.status.cardTick();
-    if (answered) h.status.cards.answer("t1");
+    if (answered && card) h.status.cards.answer("t1", card.id);
     if (!left) shown.show(null);
     h.herdrSays(pane(null, "unknown"));
     handlers.onStatus("t1", "unknown", null);

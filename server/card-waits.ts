@@ -15,6 +15,10 @@
  * be (closed, or its agent gone), drops that read. The same card redrawn is the same wait. Another card in its
  * place is the next wait: the first one ends and that one begins, alerted as any other. Nothing is kept across a
  * restart of the server: a card still shown then is waited on, and alerted, once more.
+ *
+ * A read and a wait are one agent's (`Asker`): the screen read for Codex says nothing of the Claude Code that runs in
+ * the terminal once the read comes back. So the panes are asked for anew (`roster`) right before a read starts and
+ * when it returns, and a wait whose agent is no longer the terminal's ends.
  */
 import type { AgentStatus, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
@@ -28,14 +32,24 @@ const EMPTY_READS_END = 2;
 const FAILED_READS_END = 10;
 const READS_AT_ONCE = 4;
 
-interface Wait { readonly kind: WaitingKind; readonly id: string; empty: number; failed: number }
+/** the agent a read or a wait is for: its name, and its session where the pane says one */
+interface Asker { readonly agent: string; readonly session: string | undefined }
+interface Wait { readonly kind: WaitingKind; readonly id: string; asker: Asker; empty: number; failed: number }
+
+function askerOf(pane: HerdrPane): Asker | null {
+  return pane.agent ? { agent: pane.agent, session: pane.agent_session?.agent === pane.agent ? pane.agent_session.value : undefined } : null;
+}
+/** another name is another agent, and so is another session of it; a session not known on one side tells nothing */
+function sameAsker(one: Asker, other: Asker): boolean {
+  return one.agent === other.agent && (one.session === undefined || other.session === undefined || one.session === other.session);
+}
 
 export class CardWaits {
   private readonly waits = new Map<string, Wait>();
   /** panes a card's answer went to since their last read that found no card */
   private readonly answered = new Set<string>();
-  /** panes picked for a read under way or still queued, that still count: forgetting a pane drops its read (ticks never overlap: the caller runs one at a time) */
-  private readonly reading = new Set<string>();
+  /** panes picked for a read under way or still queued, that still count, and whom each read is for: forgetting a pane drops its read (ticks never overlap: the caller runs one at a time) */
+  private readonly reading = new Map<string, Asker>();
 
   constructor(
     private readonly read: (pane: HerdrPane, panes: HerdrPane[]) => Promise<CardRead>,
@@ -51,9 +65,12 @@ export class CardWaits {
     return this.waits.get(paneId)?.kind;
   }
 
-  /** An answer from a card went to the pane: its next read that finds no card ends the wait. */
-  answer(paneId: string): void {
-    if (this.waits.has(paneId)) this.answered.add(paneId);
+  /**
+   * An answer went to the pane's card `cardId`: where that card is the one waited on, its next read that finds no card
+   * ends the wait. An answer that settled only after the next card came is not that card's.
+   */
+  answer(paneId: string, cardId: string): void {
+    if (this.waits.get(paneId)?.id === cardId) this.answered.add(paneId);
   }
 
   /** The pane is gone, or what is reported next tells its status: what it waited on goes, told to nobody. */
@@ -64,26 +81,45 @@ export class CardWaits {
   }
 
   /**
-   * One read of each pane `reads` picks (`only`: of those panes alone), and of each pane that waits. A pane no longer
-   * listed is forgotten, and a waiting pane no agent runs in any more ends its wait. So does one a tracker of its own
-   * tells the status of (`owned`): such a pane is never read, and a read of it under way when the tracker took it
-   * counts for nothing.
+   * One read of each pane of `roster` that `reads` picks (`only`: of those panes alone), and of each pane that waits. A
+   * pane no longer listed is forgotten, and a waiting pane ends its wait once no agent runs in it, another one does, or
+   * a tracker of its own tells its status (`owned`). Such a pane is never read: not when it became one while it waited
+   * its turn behind the panes read before it, and a read of it under way then counts for nothing.
    */
-  async tick(panes: HerdrPane[], reads: (pane: HerdrPane) => boolean, owned: (paneId: string) => boolean = () => false, only?: ReadonlySet<string>): Promise<void> {
+  async tick(roster: () => HerdrPane[], reads: (pane: HerdrPane) => boolean, owned: (paneId: string) => boolean = () => false, only?: ReadonlySet<string>): Promise<void> {
+    const panes = roster();
     const listed = new Set(panes.map((pane) => pane.pane_id));
     for (const paneId of [...this.waits.keys()]) if (!listed.has(paneId)) this.forget(paneId);
-    for (const pane of panes) if (this.waits.has(pane.pane_id) && (!pane.agent || owned(pane.pane_id))) this.end(pane.pane_id);
-    const candidates = panes.filter((pane) => pane.agent && !owned(pane.pane_id) && (only === undefined || only.has(pane.pane_id)) && (this.waits.has(pane.pane_id) || reads(pane)));
-    for (const pane of candidates) this.reading.add(pane.pane_id);
+    for (const pane of panes) {
+      const wait = this.waits.get(pane.pane_id);
+      if (!wait) continue;
+      const asker = askerOf(pane);
+      if (asker === null || owned(pane.pane_id) || !sameAsker(wait.asker, asker)) this.end(pane.pane_id);
+      else if (wait.asker.session === undefined) wait.asker = asker;
+    }
+    const candidates = panes.flatMap((pane) => {
+      const asker = askerOf(pane);
+      return asker !== null && !owned(pane.pane_id) && (only === undefined || only.has(pane.pane_id)) && (this.waits.has(pane.pane_id) || reads(pane)) ? [{ pane, asker }] : [];
+    });
+    for (const { pane, asker } of candidates) this.reading.set(pane.pane_id, asker);
+    /** the pane is still this read's: not forgotten since it was picked, and the same agent's, with no tracker of its own, as listed now */
+    const still = (now: HerdrPane[], { pane, asker }: { pane: HerdrPane; asker: Asker }): boolean => {
+      const current = now.find((shown) => shown.pane_id === pane.pane_id);
+      const runs = current ? askerOf(current) : null;
+      return this.reading.get(pane.pane_id) === asker && runs !== null && sameAsker(asker, runs) && !owned(pane.pane_id);
+    };
     for (let at = 0; at < candidates.length; at += READS_AT_ONCE) {
-      // a pane forgotten while the reads before it ran is not read
-      const batch = candidates.slice(at, at + READS_AT_ONCE).filter((pane) => this.reading.has(pane.pane_id));
-      const found = await Promise.all(batch.map((pane) => this.read(pane, panes).catch((): CardRead => undefined)));
-      batch.forEach((pane, index) => { if (this.reading.delete(pane.pane_id) && !owned(pane.pane_id)) this.settle(pane.pane_id, found[index]); });
+      const picked = candidates.slice(at, at + READS_AT_ONCE);
+      const before = roster();
+      const batch = picked.filter((candidate) => still(before, candidate));
+      const found = await Promise.all(batch.map(({ pane }) => this.read(pane, before).catch((): CardRead => undefined)));
+      const after = roster();
+      batch.forEach((candidate, index) => { if (still(after, candidate)) this.settle(candidate.pane.pane_id, candidate.asker, found[index]); });
+      for (const { pane, asker } of picked) if (this.reading.get(pane.pane_id) === asker) this.reading.delete(pane.pane_id);
     }
   }
 
-  private settle(paneId: string, read: CardRead): void {
+  private settle(paneId: string, asker: Asker, read: CardRead): void {
     const wait = this.waits.get(paneId);
     if (read === undefined) {
       if (wait && ++wait.failed >= FAILED_READS_END) this.end(paneId);
@@ -103,7 +139,7 @@ export class CardWaits {
     // another card where one was waited on (its answer brought the next asking before a read found the screen
     // without a card): that wait is over, an answer to it with it, and this card's begins
     if (wait) this.end(paneId);
-    this.waits.set(paneId, { kind: read.kind, id: read.id, empty: 0, failed: 0 });
+    this.waits.set(paneId, { kind: read.kind, id: read.id, asker, empty: 0, failed: 0 });
     this.changed(paneId, true);
   }
 
