@@ -43,6 +43,9 @@ export function signedInAccount(): AccountPcsSource {
   };
 }
 
+/** one listing of one account on this PC: the PCs asked so far, and those this PC cannot use */
+type Round = { asked: Set<string>; invalid: Set<string>; scope: string | null };
+
 export type Pairing = { server_id: string; digits: string | null; abort: AbortController };
 
 export const spaced = (digits: string): string => `${digits.slice(0, 3)} ${digits.slice(3)}`;
@@ -81,7 +84,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
   const [failure, setFailure] = useState<{ server_id: string; message: string } | null>(null);
   const own = machines.find((machine) => machine.kind === "local")?.server_id;
   const added = (serverId: string): Machine | undefined => machines.find((machine) => machine.kind !== "local" && (machine.relay?.server_id ?? machine.server_id) === serverId);
-  const listed = useRef<{ asked: Set<string>; scope: string | null }>({ asked: new Set(), scope: null });
+  const listed = useRef<Round>({ asked: new Set(), invalid: new Set(), scope: null });
   // closing the list cancels a comparison under way: that PC's server ends it, and nothing is kept
   const running = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -89,10 +92,11 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       running.current?.abort();
       setPairing(null);
       setPcs(null);
-      listed.current = { asked: new Set(), scope: null };
+      listed.current = { asked: new Set(), invalid: new Set(), scope: null };
       return;
     }
-    if (own === undefined) return;
+    // the sidebar lists nothing until it knows which PC it is on, so it never lists itself; the relay tab, as before
+    if (expect !== undefined && own === undefined) return;
     let live = true;
     account.current!.list().then((read) => {
       if (!live || read === null) return;
@@ -101,10 +105,11 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       // or the list coming back after it was off, starts over
       const scope = `${own}\n${read.account}`;
       if (listed.current.scope !== scope) {
-        listed.current = { asked: new Set(), scope };
+        listed.current = { asked: new Set(), invalid: new Set(), scope };
         setStates(new Map());
       }
-      setPcs(read.pcs.filter((pc) => pc.server_id !== own));
+      const round = listed.current;
+      setPcs(read.pcs.filter((pc) => pc.server_id !== own && !round.invalid.has(pc.server_id)));
     }).catch((error: unknown) => {
       console.warn("Ovis: the account's PCs could not be read", error instanceof Error ? error.name : error);
       if (live) setPcs(null);
@@ -118,7 +123,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     asks.current.set(serverId, ask);
     return ask;
   };
-  const check = (pc: AccountPcEntry, round: { asked: Set<string>; scope: string | null }): void => {
+  const check = (pc: AccountPcEntry, round: Round): void => {
     round.asked.add(pc.server_id);
     const ask = nextAsk(pc.server_id);
     checkAccountPcs([pc]).then(({ pcs: [checked] }) => {
@@ -127,11 +132,19 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       if (listed.current !== round) return;
       // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) leaves only its own row; anything
       // else (a window this PC will not answer, owner_only) leaves no list rather than rows that say Checking… for good
-      if (error instanceof ApiError && error.code === "account_pc_invalid") setPcs((current) => current?.filter((entry) => entry.server_id !== pc.server_id) ?? null);
-      // a pairing under way keeps its row, its digits and its Cancel: the list stays as it is
-      else if (running.current !== null && !running.current.signal.aborted) console.warn("Ovis: the account's PCs could not be checked", error instanceof Error ? error.name : error);
+      // an entry this PC cannot use stays out of this round's list, also after a refresh reads it again
+      if (error instanceof ApiError && error.code === "account_pc_invalid") {
+        round.invalid.add(pc.server_id);
+        setPcs((current) => current?.filter((entry) => entry.server_id !== pc.server_id) ?? null);
+        return;
+      }
+      // not answered: asked again by the next look (a refresh, or Check again)
+      round.asked.delete(pc.server_id);
+      console.warn("Ovis: the account's PCs could not be checked", error instanceof Error ? error.name : error);
+      // a pairing under way keeps its row, its digits and its Cancel: that PC reads as not answering, with Check again
+      if (running.current !== null && !running.current.signal.aborted) setStates((current) => new Map(current).set(pc.server_id, "offline"));
       else {
-        console.warn("Ovis: the account's PCs could not be checked", error instanceof Error ? error.name : error);
+        listed.current = { asked: new Set(), invalid: new Set(), scope: null };
         setPcs(null);
       }
     });
@@ -141,7 +154,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     const round = listed.current;
     for (const pc of pcs) if (added(pc.server_id) === undefined && !round.asked.has(pc.server_id)) check(pc, round);
   }, [pcs, machines]);
-  useEffect(() => () => { listed.current = { asked: new Set(), scope: null }; }, []);
+  useEffect(() => () => { listed.current = { asked: new Set(), invalid: new Set(), scope: null }; }, []);
   useEffect(() => () => running.current?.abort(), []);
   /** this page is still signed in to the account the list was read for */
   const stillOurs = async (): Promise<boolean> => expect === undefined || await account.current!.account() === expect;

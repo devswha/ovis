@@ -34,6 +34,7 @@ describe("the account's PCs in the sidebar", () => {
   let failAwayCheck: boolean;
   let awayHold: Promise<void> | null;
   let statusFails: boolean;
+  let invalidAway: boolean;
   // Check again's hold is per PC for the page's life (MachineOffLine.tsx): each test starts a minute after the last
   let clock = 0;
   let events: EventTarget;
@@ -52,6 +53,7 @@ describe("the account's PCs in the sidebar", () => {
     failAwayCheck = false;
     awayHold = null;
     statusFails = false;
+    invalidAway = false;
     clock += 60_000;
     const realNow = performance.now.bind(performance);
     spyOn(performance, "now").mockImplementation(() => realNow() + clock);
@@ -86,6 +88,8 @@ describe("the account's PCs in the sidebar", () => {
       if (path === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [] });
       if (path === "/api/machines/relay/account/check") {
         const asked = (body as { pcs: AccountPcEntry[] }).pcs;
+        if (invalidAway && asked[0]?.server_id === AWAY.server_id) return Response.json({ error: { code: "account_pc_invalid", message: "no" } }, { status: 400 });
+        if (failAwayCheck && asked[0]?.server_id === AWAY.server_id && awayHold !== null) await awayHold;
         if (failAwayCheck && asked[0]?.server_id === AWAY.server_id) return Response.json({ error: { code: "relay_unavailable", message: "The relay did not answer." } }, { status: 503 });
         const states: Record<string, string> = { [DESK.server_id]: "ready", [LAB.server_id]: "ready", [OLD.server_id]: "outdated" };
         if (asked[0]?.server_id === AWAY.server_id) {
@@ -320,5 +324,51 @@ describe("the account's PCs in the sidebar", () => {
     await comeBack();
     expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
     expect(requests.some((request) => request.path.endsWith("/pair/cancel"))).toBe(false);
+  });
+  it("asks a PC again when the window comes back after its first check failed, instead of leaving it on Checking…", async () => {
+    failAwayCheck = true;
+    await mount();
+    // the failure clears the list (nothing is shown that says Checking… for good)
+    expect(groups()).toEqual([]);
+    failAwayCheck = false;
+    await comeBack();
+    expect(groups().map(([name, state]) => [name, state])).toEqual([["PC Desk", "ready"], ["PC Old box", "outdated"], ["PC Away", "offline"]]);
+  });
+
+  it("during a pairing, a PC whose first check fails reads as not answering, with Check again, and the pairing stays", async () => {
+    let releaseAway = () => {};
+    // Away's first check is still out while Desk is being paired, and then fails
+    awayHold = new Promise<void>((resolve) => { releaseAway = resolve; });
+    failAwayCheck = true;
+    await mount();
+    await act(async () => { button("Add Desk").props.onClick(); });
+    await settle();
+    await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
+    await act(async () => { releaseAway(); });
+    await settle();
+    expect(groups()[2]).toEqual(["PC Away", "offline", "Check again"]);
+    expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
+  });
+
+
+  it("keeps a PC this PC cannot use out of the list after a refresh reads it again", async () => {
+    invalidAway = true;
+    await mount();
+    expect(groups().map(([name]) => name)).toEqual(["PC Desk", "PC Old box"]);
+    await comeBack();
+    expect(groups().map(([name]) => name)).toEqual(["PC Desk", "PC Old box"]);
+  });
+
+  it("keeps the rows and a pairing under way while the relay only reconnects, and ends them when it is off", async () => {
+    await mount();
+    await act(async () => { button("Add Desk").props.onClick(); });
+    await settle();
+    await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
+    relayPhase = "connecting";
+    await comeBack();
+    expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
+    relayPhase = "off";
+    await comeBack();
+    expect(groups()).toEqual([]);
   });
 });

@@ -174,4 +174,8 @@ describe("the account's PCs in the relay tab", () => {
     expect(renderer!.toJSON()).toBeNull();
     expect(requests).toEqual([]);
   });
+  it("lists the account's PCs before this PC's own entry is in the roster, as before", async () => {
+    await mount(() => {}, [lab]);
+    expect(rows().map(([name]) => name)).toContain("Desk");
+  });
 });

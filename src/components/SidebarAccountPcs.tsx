@@ -65,7 +65,11 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, source, hidden }:
   useEffect(() => {
     let live = true;
     Promise.all([fetchRelay(), pcAccountStatus(apiFetch)]).then(([relay, pc]) => {
-      if (live) setJoined(relay.phase === "online" && relay.blocked === null && pc.account === account);
+      if (!live) return;
+      // the relay off or blocked, or this PC in another account, ends the list (and a pairing under way); a relay still
+      // reconnecting (a PC waking up) leaves it as it was
+      if (relay.blocked !== null || relay.phase === "off" || pc.account !== account) setJoined(false);
+      else if (relay.phase === "online") setJoined(true);
     // a read that failed says nothing of the relay or the account: what was known stays, and a pairing under way with it
     }, () => undefined);
     return () => { live = false; };
