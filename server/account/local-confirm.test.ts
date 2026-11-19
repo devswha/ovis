@@ -63,6 +63,28 @@ test("T46: a confirmation of one key approves no other key", async () => {
   expect(confirms.consume(id, action)).toBe(true);
 });
 
+test("T46: an act is held as it was asked for, whatever its asker changes afterwards", async () => {
+  const { confirms } = clocked();
+  const screen = desktop(confirms);
+  const action = { kind: "approve_key" as const, pending: "p1", fingerprint: "AAAA-BBBB" };
+  const shown = { title: "Approve this device", lines: ["Phone"] };
+  const { id } = confirms.request(action, shown);
+  action.fingerprint = "CCCC-DDDD";
+  shown.lines.push("changed");
+  expect(confirms.pending()[0]!.shown.lines).toEqual(["Phone"]);
+  screen.send({ approve: id });
+  expect(await bounded(confirms.answer(id))).toBe("approved");
+  expect(confirms.consume(id, action)).toBe(false);
+  expect(confirms.consume(id, { kind: "approve_key", pending: "p1", fingerprint: "AAAA-BBBB" })).toBe(true);
+});
+
+test("T46: an act that admits a key shows that key's fingerprint, whatever the asker passed to show", () => {
+  const { confirms } = clocked();
+  confirms.request({ kind: "approve_key", pending: "p1", fingerprint: "AAAA-BBBB" }, { title: "Approve this device", lines: [], fingerprint: "EEEE-FFFF" });
+  confirms.request({ kind: "approve_replacement", row: "r1", fingerprint: "1111-2222" }, { title: "Replace this key", lines: [] });
+  expect(confirms.pending().map((open) => open.shown.fingerprint)).toEqual(["AAAA-BBBB", "1111-2222"]);
+});
+
 test("T46: a confirmation expires unused and is then neither approved nor consumed", async () => {
   const { confirms, advance } = clocked();
   const screen = desktop(confirms);
@@ -137,7 +159,7 @@ test.if(linux)("R8: the local confirm listener approves an act from its own page
   const { confirms } = clocked();
   const { origin } = listener(confirms);
   const action: ScreenAction = { kind: "approve_key", pending: "p1", fingerprint: "AAAA-BBBB" };
-  const { id } = confirms.request(action, { title: "Approve this device", lines: ["Phone"], fingerprint: "AAAA-BBBB" });
+  const { id } = confirms.request(action, { title: "Approve this device", lines: ["Phone"] });
   const shown = await page(origin, id);
   expect(shown.response.status).toBe(200);
   expect(shown.html).toContain("Approve this device");
