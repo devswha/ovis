@@ -75,6 +75,7 @@ import { useT } from "../lib/i18n.ts";
 import { offersRetry, userFailure, type UserFailure } from "../lib/userError.ts";
 import { AttachmentTooLargeError } from "../lib/api.ts";
 import { modalOpen } from "../lib/focus.ts";
+import { isAcceptSwipe } from "../lib/swipeAccept.ts";
 
 export interface ComposerProps {
   connected: boolean;
@@ -541,6 +542,28 @@ export function Composer({
     if (activeRef.current) element.focus();
   }, []);
 
+  // a forward swipe across the empty box takes the suggestion, as Tab does; a phone has no Tab
+  const swipe = useRef<{ x: number; y: number } | null>(null);
+  const swipeable = offered !== null && text === "";
+  const swipeAccept = useMemo(() => ({
+    onTouchStart: (event: React.TouchEvent<HTMLTextAreaElement>) => {
+      const touch = event.touches[0];
+      swipe.current = swipeable && event.touches.length === 1 && touch ? { x: touch.clientX, y: touch.clientY } : null;
+    },
+    onTouchMove: (event: React.TouchEvent<HTMLTextAreaElement>) => {
+      const start = swipe.current, touch = event.touches[0];
+      if (!start || !touch) return;
+      const rtl = window.getComputedStyle?.(event.currentTarget).direction === "rtl";
+      if (event.touches.length > 1) swipe.current = null;
+      else if (isAcceptSwipe({ startX: start.x, startY: start.y, x: touch.clientX, y: touch.clientY, viewportWidth: window.innerWidth, rtl, touches: 1 })) {
+        swipe.current = null;
+        acceptSuggestionRef.current();
+      }
+    },
+    onTouchEnd: () => { swipe.current = null; },
+    onTouchCancel: () => { swipe.current = null; },
+  }), [swipeable]);
+
   const acceptSuggestion = useCallback(() => {
     if (offered === null || textRef.current !== "" || composingRef.current) return;
     if (offered.length > MAX_COMPOSER_CHARS) {
@@ -549,6 +572,8 @@ export function Composer({
     }
     setTextAndCaret(offered, offered.length);
   }, [offered, setTextAndCaret]);
+  const acceptSuggestionRef = useRef(acceptSuggestion);
+  acceptSuggestionRef.current = acceptSuggestion;
 
   useEffect(() => onQuoted(paneStorageId(machineId, paneId), () => {
     const element = textareaRef.current;
@@ -1340,7 +1365,7 @@ export function Composer({
           // in a frame, after the caret of dictation held through the composition has landed
           setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
         }}
-          className="composer-text"
+          className={`composer-text${swipeable ? " has-swipe-hint" : ""}`}
           rows={1}
           maxLength={MAX_COMPOSER_CHARS}
           value={text}
@@ -1358,6 +1383,7 @@ export function Composer({
           // and a disabled box would lose its focus and the dictated text with it
           onPaste={onPaste}
           onKeyDown={onKeyDown}
+          {...swipeAccept}
           onClick={(event) => {
             setCaret(event.currentTarget.selectionStart);
             setMenuDismissed(false);
@@ -1371,9 +1397,14 @@ export function Composer({
             setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
           }}
         />
+        {/* a dim arrow at the end of the first line says the suggestion can be swiped in; it is also the action for a screen reader */}
+        {swipeable && (
+          <button type="button" tabIndex={-1} className="composer-swipe-hint" title={t("Swipe or tap to use the suggestion")} aria-label={t("Swipe or tap to use the suggestion")}
+            onClick={acceptSuggestion}>→</button>
+        )}
         <textarea
           ref={measurementRef}
-          className="composer-measure"
+          className={`composer-measure${swipeable ? " has-swipe-hint" : ""}`}
           rows={1}
           value={text}
           placeholder={placeholder}
