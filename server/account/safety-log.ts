@@ -266,6 +266,11 @@ export class SafetyLog {
     const lifted = new Set<string>();
     const forgotten = new Set<string>();
     const unlocked = new Set<string>();
+    // a lift or an unlock already folded still ends what it names (P24)
+    for (const line of this.file.base) {
+      if (line.kind === "lift" && line.target !== null) lifted.add(at(line.account ?? "", line.target));
+      else if (line.kind === "unlock" && line.target !== null) unlocked.add(at(line.account ?? "", line.target));
+    }
     for (const { record } of this.file.entries) {
       if (record.kind === "lift") {
         lifted.add(at(record.account, record.target));
@@ -360,20 +365,28 @@ export function mergeSafetyLogs(active: string, sibling: string): string | null 
       if (known !== undefined && !sameRecord(known, entry.record)) return `The account safety logs of ${active} and ${sibling} hold two different records under the id ${entry.record.id}`;
       records.set(entry.record.id, entry.record);
     }
+    // folded lines under one id, in either folder, are one record only when they agree on what it was (T48)
+    for (const line of a.base) {
+      const theirs = b.base.find((other) => other.id === line.id);
+      if (theirs !== undefined && (theirs.kind !== line.kind || theirs.account !== line.account || theirs.target !== line.target)) return `The account safety logs of ${active} and ${sibling} hold two different records under the id ${line.id}`;
+    }
     // a folded line and a whole record under one id are one record only when they agree on what it was (T48)
     for (const line of [...a.base, ...b.base]) {
       const whole = records.get(line.id);
       if (whole !== undefined && (whole.kind !== line.kind || whole.account !== line.account || whole.target !== line.target)) return `The account safety logs of ${active} and ${sibling} hold two different records under the id ${line.id}`;
     }
     const base = [...a.base, ...b.base.filter((line) => !a.base.some((own) => own.id === line.id))];
-    // one block noted with two freeze lines: both folders keep the stricter, lower one (P24)
-    const after = new Map<string, number>();
+    // one block noted twice: both folders keep one arrival note, the stricter (lower freeze line, signer removed if
+    // either saw it so) (P21, P24)
+    const notes = new Map<string, BlockAsOf>();
     for (const entry of [...a.entries, ...b.entries]) {
-      const line = entry.asof?.after;
-      if (line == null) continue;
-      after.set(entry.record.id, Math.min(after.get(entry.record.id) ?? line, line));
+      if (entry.asof === undefined) continue;
+      const known = notes.get(entry.record.id);
+      if (known === undefined) { notes.set(entry.record.id, entry.asof); continue; }
+      const lower = (x: number | null, y: number | null) => x === null ? y : y === null ? x : Math.min(x, y);
+      notes.set(entry.record.id, { ...known, after: lower(known.after, entry.asof.after), signer_removed: known.signer_removed || entry.asof.signer_removed });
     }
-    const strictest = (entry: SafetyEntry): SafetyEntry => entry.asof === undefined || entry.asof.after === null || after.get(entry.record.id) === entry.asof.after ? entry : { ...entry, asof: { ...entry.asof, after: after.get(entry.record.id)! } };
+    const strictest = (entry: SafetyEntry): SafetyEntry => entry.asof === undefined ? entry : { ...entry, asof: notes.get(entry.record.id)! };
     const folded = new Set(base.map((line) => line.id));
     const merged = (mine: typeof a, theirs: typeof a): LogFile => {
       const held = new Set(mine.entries.map((entry) => entry.record.id));
