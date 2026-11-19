@@ -119,7 +119,13 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // a removal whose signer is not a member here yet waits for it, as one from the mailbox does; only
       // a member's session (a client relaying the account's removals) may leave one waiting
       const member = peer.kind === "relay" && devices.isAccountApproverSession(peer.device.id, peer.key);
-      return reply({ results: await applyAccountRecords(devices, records, serverId, Date.now(), mailbox.gates(), member ? (record) => mailbox.wait(record) : undefined) });
+      // with the release flag on a block applies at once, each with its own receipt (T51, T60); an app that sends none
+      // gets today's answer
+      const blocks = context.services.safetyLog === null ? [] : records.filter((record) => (record as { kind?: unknown } | null)?.kind === "block");
+      const receipts = [];
+      for (const block of blocks) receipts.push(await devices.applyBlock(block, "handed"));
+      const results = await applyAccountRecords(devices, records.filter((record) => !blocks.includes(record)), serverId, Date.now(), mailbox.gates(), member ? (record) => mailbox.wait(record) : undefined);
+      return reply({ results, ...(blocks.length > 0 ? { receipts } : {}) });
     }
     case "/api/account/enroll": {
       setRequestRoute(pathname);

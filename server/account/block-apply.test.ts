@@ -144,7 +144,7 @@ describe("blocks and freezes on the PC (P16, P21, T51)", () => {
     const f = relayFixture(false, { accountOpensAll: true });
     fixtures.push(f);
     const devices = f.app.context.services.devices;
-    const [older, target] = [await member(devices), await member(devices)];
+    const [older, target, another] = [await member(devices), await member(devices), await member(devices)];
     const link = await relayConnection(f);
     await link.auth({ keys: older.keys, publicKey: older.spki, id: older.id });
     const post = async (body: unknown) => {
@@ -158,5 +158,19 @@ describe("blocks and freezes on the PC (P16, P21, T51)", () => {
     const record = await block(target.spki, older);
     expect(await post({ records: [record] })).toEqual({ results: [], receipts: [{ outcome: "applied", id: record.id, n: 1 }] });
     expect(devices.has(target.id)).toBe(false);
+
+    // the notice's own PC: "Not me" over the events socket answers with the receipts, the same block again included
+    const notMe = await block(another.spki, older);
+    const socket = new WebSocket(`ws://127.0.0.1:${f.app.port}/ws`);
+    const result = new Promise<{ id: string; receipts: unknown[] }>((resolve) => {
+      socket.onmessage = (event) => {
+        const frame = JSON.parse(String(event.data)) as { type: string; id: string; receipts: unknown[] };
+        if (frame.type === "features") socket.send(JSON.stringify({ type: "notice-answer", id: "n1", answer: "not_me", blocks: [notMe, record] }));
+        if (frame.type === "notice-answer-result") resolve(frame);
+      };
+    });
+    expect(await result).toEqual({ type: "notice-answer-result", id: "n1", receipts: [{ outcome: "applied", id: notMe.id, n: 2 }, { outcome: "applied", id: record.id, n: 1 }] } as never);
+    socket.close();
+    expect(devices.has(another.id)).toBe(false);
   });
 });

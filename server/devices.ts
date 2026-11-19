@@ -13,13 +13,14 @@
 import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { isRowOrigin, legacyOrigin, type RowOrigin } from "./account/admission-order.ts";
+import { compareAdmission, isRowOrigin, legacyOrigin, type RowOrigin } from "./account/admission-order.ts";
 import { type ClearReason, PcAccountState } from "./account/pc-binding.ts";
-import type { SafetyLog } from "./account/safety-log.ts";
+import type { SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import type { DeviceJournal, JournalEntry } from "./account/device-journal.ts";
 import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
-import { AccountRecordError, isIsoTime, parseAccountRecord, type AddRecord, type RemoveRecord } from "../shared/account-records.ts";
+import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
+import type { BlockReceipt } from "../shared/account-devices-api.ts";
 import { type AccountPairing, type AccountPairingEnd, type AccountPairingState, type AccountPairingTurnedAway, type DevicePairedEvent, type DeviceRemovedEvent, type DevicePairToken, type DeviceRole, type DevicesRevokedAll, type PairedDevice, type DeviceConnection, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts";
 import type { MuxClock } from "../shared/relay-mux-engine.ts";
 import type { Access } from "./access.ts";
@@ -704,7 +705,7 @@ export class DeviceStore {
     // the evidence in or skipped it (P13, rule 1)
     const tombstoned = device.relay_public_key !== undefined
       && this.tombstones.some((t) => t.key === device.relay_public_key && (!pairedHere(device) || this.later(t.removed_at, device.created_at, true)));
-    return tombstoned || (this.evidence !== null && this.coveredByEvidence(device));
+    return tombstoned || (this.evidence !== null && (this.coveredByEvidence(device) || this.frozen(device)));
   }
 
   get accountError(): string | null {
@@ -856,6 +857,71 @@ export class DeviceStore {
     this.enroll(device, now, [], true, { confirm: proof, pairingHere, ...(confirm.by === undefined ? {} : { by: confirm.by }) });
     if (revokes.length > 0) this.clearTombstone(confirm.key);
     return { id: device.id, label: device.label, role: device.role };
+  }
+
+  /**
+   * Whether a block in force freezes this row (P16, S22): it joined this PC after the block's target did. A row with no
+   * place in this PC's order counts as newer. A freeze the service states names no row here and freezes none (P24).
+   */
+  private frozen(device: StoredDevice): boolean {
+    const blocks = this.safety?.state().blocks ?? [];
+    return blocks.some((entry) => entry.asof?.joined != null && (device.origin === undefined || device.origin.admit_no > entry.asof.joined) && device.relay_public_key !== entry.record.target);
+  }
+
+  /**
+   * "Not me" (T51): a block record, its signature verified before anything else, then committed in one turn. Valid on
+   * this PC only when the signer is a drive member here, not frozen, and every row of the target joined this PC after
+   * the signer's row, by this PC's own admission order: the record's numbers are claims and decide nothing (P21). A
+   * target this PC has no row of waits for the order table (S2-10) and applies nothing.
+   */
+  async applyBlock(value: unknown, got: SafetyGot): Promise<BlockReceipt> {
+    const refused = (id: string, reason: Extract<BlockReceipt, { outcome: "refused" }>["reason"]): BlockReceipt => ({ outcome: "refused", id, reason });
+    let record: SafetyRecord;
+    try { record = parseSafetyRecord(value); } catch (error) {
+      if (error instanceof AccountRecordError) return refused(typeof (value as { id?: unknown })?.id === "string" ? (value as { id: string }).id : "", "record_invalid");
+      throw error;
+    }
+    if (record.kind !== "block" || this.safety === null) return refused(record.id, "record_invalid");
+    const known = this.safety.receipt(record.id);
+    if (known !== null && known.outcome !== "refused") return known;
+    if (!await verifySafetyRecord(record)) return refused(record.id, "record_invalid");
+    return this.commitBlock(record, got);
+  }
+
+  /** The commit turn of a verified block, in P8's order, with no wait inside. */
+  private commitBlock(record: BlockRecord, got: SafetyGot): BlockReceipt {
+    const refused = (reason: Extract<BlockReceipt, { outcome: "refused" }>["reason"]): BlockReceipt => ({ outcome: "refused", id: record.id, reason });
+    if (this.safety === null || this.evidence === null || this.failsClosed() || record.account !== this.account()) return refused("record_invalid");
+    const signers = this.devices.filter((d) => d.relay_public_key === record.signer && d.role === "drive" && d.account === record.account && d.origin !== undefined && !this.coveredByEvidence(d));
+    if (signers.length === 0) return refused("signer_not_member");
+    if (signers.some((d) => this.frozen(d))) return refused("frozen");
+    const targets = this.devices.filter((d) => d.relay_public_key === record.target);
+    if (targets.length === 0) return refused("unknown_target");
+    // every row of the target, duplicates included, joined after every row of the signer: else nothing applies
+    if (!targets.every((target) => signers.every((signer) => compareAdmission(signer, target) === "older"))) return refused("signer_not_older");
+    const joined = Math.min(...targets.map((d) => d.origin!.admit_no));
+    const signerNo = Math.min(...signers.map((d) => d.origin!.admit_no));
+    // (1) the deny: the block in the log, gen raised, the target's marker
+    const appended = this.safety.append({ record, got, asof: { signer_no: signerNo, target_no: joined, after: joined, joined, signer_removed: false } });
+    if (appended.outcome !== "applied") {
+      this.denyProblem = `A block could not be written to the safety log: only this PC itself gets in until one is.`;
+      this.drop(targets, "pc");
+      return refused("record_invalid");
+    }
+    this.deny(() => {
+      this.evidence!.addRemoval(record.target, record.account, { id: record.id, at: new Date().toISOString(), records: [record] });
+      this.refreshTombstones();
+    });
+    // (2, 3) the newer rows frozen in place, their sessions ended; the target's rows out, theirs ended too (T64)
+    for (const device of this.devices.filter((d) => !targets.includes(d) && this.frozen(d))) {
+      const listeners = this.revocations.get(device.id);
+      this.revocations.delete(device.id);
+      for (const close of listeners ?? []) close();
+    }
+    this.dropWaiting([record.target]);
+    try { this.drop(targets, "pc"); }
+    catch (error) { console.error(`[devices] the registry write of a block failed after its deny; the next start finishes it: ${error instanceof Error ? error.message : String(error)}`); }
+    return appended;
   }
 
   /** The PC leaves its account, for one of the three named reasons (P12); nothing else clears the binding. */
@@ -1750,7 +1816,8 @@ export class DeviceStore {
       if (waiting !== undefined) return verified && this.provisional(deviceId) === waiting ? { id: waiting.id, label: waiting.label, role: "watch" } : null;
       // Authorization changes during WebCrypto invalidate the proof; a rename does not.
       const current = this.devices.find((d) => d.id === deviceId);
-      if (!verified || !current || device === undefined || current.role !== device.role || current.relay_public_key !== device.relay_public_key) return null;
+      // a block, a freeze or a removal that came while the proof was checked ends it here, before any stream (T66)
+      if (!verified || !current || device === undefined || current.role !== device.role || current.relay_public_key !== device.relay_public_key || this.stale(current)) return null;
       this.noteSeen(current, now);
       return { id: current.id, label: current.label, role: current.role };
     } catch (error) {
@@ -1891,6 +1958,9 @@ export class DeviceStore {
   }
 
   openNotices(): readonly JournalEntry[] { return this.journal?.openNotices() ?? []; }
+
+  /** An admission notice was decided ("Not me" applied, T51): it leaves `open`. */
+  decideNotice(id: string): void { this.journal?.decide(id); }
 
   revoke(id: string, by: DeviceRemovedEvent["by"] = "pc"): boolean {
     this.assertWritable();

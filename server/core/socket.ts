@@ -1,6 +1,6 @@
 import type { WebSocketHandler } from "bun";
 import { ACCOUNT_OPENS_ALL_CAPABILITY, accountOpensAll } from "../../shared/account-devices-api.ts";
-import type { NoticeReplay } from "../../shared/account-devices-api.ts";
+import type { BlockReceipt, NoticeReplay } from "../../shared/account-devices-api.ts";
 import type { ClientMessage, ClientRole, ServerFeature, SessionSnapshot } from "../../shared/protocol.ts";
 import { ConnectionDiagnostics } from "../connection-diagnostics.ts";
 import { faultOf, HerdrError, type HerdrFailureView, LARGE_REPLY_BYTES } from "../herdr/client.ts";
@@ -72,7 +72,7 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
   drainOutput: (client: Client) => void;
   frames: Omit<FrameHandlers, ConnectionFrame>;
   /** the device journal's notices for a paired device (server/devices.ts), with OVIS_ACCOUNT_OPENS_ALL on */
-  notices?: { replay(deviceId: string): NoticeReplay | null; seen(deviceId: string, seq: number): void };
+  notices?: { replay(deviceId: string): NoticeReplay | null; seen(deviceId: string, seq: number): void; block(record: unknown): Promise<BlockReceipt>; decide(id: string): void };
 }): SocketHandler {
   const websocketDiagnostics = new ConnectionDiagnostics("websocket");
   const connectionFrames = {
@@ -196,6 +196,17 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       if (message.type === "notice-seen") {
         // an acknowledgement moves this device's `seen` and decides nothing (T57)
         if (client.data.deviceId !== undefined && Number.isSafeInteger(message.seq)) notices?.seen(client.data.deviceId, message.seq);
+        return;
+      }
+      if (message.type === "notice-answer") {
+        // "Not me": each block applies at once and is answered with its receipt; one that applied decides the notice (T51).
+        // "It's me" is the join hold's to judge (T53) and decides nothing here
+        // with the release flag off the store refuses every block, so nothing applies
+        if (notices === undefined || message.answer !== "not_me" || !Array.isArray(message.blocks) || message.blocks.length > 2) return;
+        const receipts: BlockReceipt[] = [];
+        for (const block of message.blocks) receipts.push(await notices.block(block));
+        if (receipts.some((receipt) => receipt.outcome !== "refused")) notices.decide(message.id);
+        send(client, { type: "notice-answer-result", id: message.id, receipts });
         return;
       }
       try {
