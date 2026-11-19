@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
 import { DeviceStore } from "../devices.ts";
+import { applyAccountRecords } from "./records.ts";
+import { signAccountRecord } from "../../shared/account-records.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { readFileSync } from "node:fs";
 import { AccountDeviceStore } from "./account-devices.ts";
@@ -148,4 +150,18 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
       expect((JSON.parse(readFileSync(join(dir, ACCOUNT_DEVICES_FILE), "utf8")) as { devices: unknown[] }).devices).toEqual([]);
     });
   }
+
+  test("P5, S25, T36: a held account key's own signed leave applies on the records path and ends its row", async () => {
+    const { devices, rows, dir } = pc();
+    await member(devices);
+    const phone = await key();
+    rows.commitList(listed(phone));
+    const [row] = rows.rows();
+    expect(rows.access(row!.id)).toMatchObject({ refused: "join_hold" });
+    const leave = await signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: phone.spki, issued_at: new Date().toISOString(), id: newRecordId(), signer: phone.spki }, phone.keys.privateKey);
+    const [outcome] = await applyAccountRecords(devices, [leave], SERVER);
+    expect(outcome).toMatchObject({ outcome: "applied" });
+    expect(rows.rows()).toEqual([]);
+    expect((JSON.parse(readFileSync(join(dir, ACCOUNT_DEVICES_FILE), "utf8")) as { devices: unknown[] }).devices).toEqual([]);
+  });
 });
