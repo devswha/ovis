@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bounded } from "../relay/test-helpers.ts";
 import {
-  CONFIRM_MS, LOCAL_CONFIRM_FILE, LocalConfirms, desktopOwnerChannel, dropDesktopOwnerFd, openConfirmListener, peerUidOnLinux, takeDesktopOwnerFd,
+  CONFIRM_MS, LOCAL_CONFIRM_FILE, LocalConfirms, desktopOwnerChannel, dropDesktopOwnerFd, peerUidInTable, openConfirmListener, peerUidOnLinux, takeDesktopOwnerFd,
   type ScreenAction,
 } from "./local-confirm.ts";
 
@@ -320,7 +320,7 @@ test("N6: a descriptor that is not a pipe or a socket gives no channel", () => {
   }
 });
 
-test("N6: a process that is not the server drops the argument and closes only a socket it names", async () => {
+test.if(linux)("N6: a process that is not the server drops the argument and closes only a socket it names", async () => {
   const dir = stateDir();
   const fd = openSync(join(dir, "plain"), "w");
   ends.push(() => closeSync(fd));
@@ -363,4 +363,30 @@ test("N6: a channel that fails ends loudly and answers nothing more", async () =
     confirms.request(LOCK, { title: "Lock this PC", lines: [] });
     expect(logged.join("\n")).toContain("EPIPE");
   } finally { console.error = original; }
+});
+
+const TCP_HEADER = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode";
+const tcpRow = (local: string, remote: string, uid: number) => `   0: ${local} ${remote} 01 00000000:00000000 00:00000000 00000000  ${uid}        0 1`;
+
+test("Q20: the peer's user is the one of the exact connection, not of another loopback address on the same ports", () => {
+  const listener = 0x9c40;
+  const peer = 0xa000;
+  const table = [TCP_HEADER,
+    tcpRow(`0200007F:${peer.toString(16).toUpperCase()}`, `0100007F:${listener.toString(16).toUpperCase()}`, 2000),
+    tcpRow(`0100007F:${peer.toString(16).toUpperCase()}`, `0100007F:${listener.toString(16).toUpperCase()}`, 1000)].join("\n");
+  expect(peerUidInTable(table, listener, peer)).toBe(1000);
+  expect(peerUidInTable([TCP_HEADER, tcpRow(`0200007F:${peer.toString(16).toUpperCase()}`, `0100007F:${listener.toString(16).toUpperCase()}`, 2000)].join("\n"), listener, peer)).toBeNull();
+});
+
+test.if(linux)("Q20: the confirm page lets a browser's own form send its origin", async () => {
+  const { confirms } = clocked();
+  const { origin } = listener(confirms);
+  const { id } = confirms.request(LOCK, { title: "Lock this PC", lines: [] });
+  expect((await page(origin, id)).response.headers.get("referrer-policy")).toBe("same-origin");
+});
+
+test("N6: a switch with no number after it leaves the next argument alone", () => {
+  const argv = ["serve", "--desktop-owner-fd", "--other"];
+  expect(takeDesktopOwnerFd(argv)).toBeNull();
+  expect(argv).toEqual(["serve", "--other"]);
 });

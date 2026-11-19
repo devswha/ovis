@@ -36,9 +36,7 @@ test("T47: a relay session, a bare loopback window, a forwarded window or the br
     await made.local(path, { method: "POST", headers: { "x-herdr-machine": "1", authorization: `Bearer ${BRIDGE_TOKEN}` }, body }),
     await ask((await signedInWith(made, await made.offerCode())).session, path, { method: "POST", body }),
   ];
-  for (const tried of tries) expect(tried.status).toBeGreaterThanOrEqual(400);
-  expect(tries[0]!.body.error?.code).toBe("local_required");
-  expect(tries[3]!.body.error?.code).toBe("local_required");
+  for (const tried of tries) expect([tried.status, tried.body.error?.code]).toEqual([403, "local_required"]);
   expect(confirms.pending().map((open) => open.id)).toEqual([id]);
   expect(confirms.consume(id, UNLOCK)).toBe(false);
 });
