@@ -176,4 +176,41 @@ describe("merging and folding the PC safety log", () => {
     expect(log.receipt(x.id)).toEqual({ outcome: "already_applied", id: x.id });
     expect(log.append({ record: x, got: "mailbox", asof: asof(3) })).toEqual({ outcome: "already_applied", id: x.id });
   });
+
+  test("P24: folding a service freeze keeps the lift its block still needs", async () => {
+    const dir = stateDir();
+    const log = SafetyLog.open(dir);
+    const x = await block(await key(), await signer());
+    log.append({ record: x, got: "handed", asof: asof(3) });
+    log.append({ record: { v: 1, id: `f:${x.id}`, kind: "freeze", account: ACCOUNT, target: (x as { target: string }).target, after: 3, signer: "service", signed_at: AT, signature: "" } as SafetyRecord, got: "snapshot" });
+    log.append({ record: pc("lift", x.id), got: "pc" });
+    expect(log.state().blocks).toHaveLength(0);
+    log.fold();
+    const reopened = SafetyLog.open(dir);
+    expect(reopened.state().blocks).toHaveLength(0);
+    expect(reopened.state().freezes).toHaveLength(0);
+  });
+
+  test("T48: one id folded in one folder and whole with other content in the other fails closed and writes neither", async () => {
+    const [own, other] = [stateDir(), stateDir()];
+    const k = await key();
+    const forget = (account: string) => ({ v: 1, id: "c".repeat(32), kind: "forget", account, target: k, signer: "pc", signed_at: AT, signature: "" }) as SafetyRecord;
+    SafetyLog.open(own).append({ record: forget(ACCOUNT), got: "pc" });
+    SafetyLog.open(own).fold();
+    SafetyLog.open(other).append({ record: forget("acct_9"), got: "pc" });
+    const [ownBefore, otherBefore] = [readFileSync(join(own, SAFETY_LOG_FILE), "utf8"), readFileSync(join(other, SAFETY_LOG_FILE), "utf8")];
+    expect(mergeSafetyLogs(own, other)).not.toBeNull();
+    expect(readFileSync(join(own, SAFETY_LOG_FILE), "utf8")).toBe(ownBefore);
+    expect(readFileSync(join(other, SAFETY_LOG_FILE), "utf8")).toBe(otherBefore);
+  });
+
+  test("P24: one block noted with two freeze lines keeps the stricter one in both folders", async () => {
+    const [own, other] = [stateDir(), stateDir()];
+    const x = await block(await key(), await signer());
+    SafetyLog.open(own).append({ record: x, got: "handed", asof: asof(7) });
+    SafetyLog.open(other).append({ record: x, got: "mailbox", asof: asof(4) });
+    expect(mergeSafetyLogs(own, other)).toBeNull();
+    for (const dir of [own, other]) expect(SafetyLog.open(dir).entries().find((e) => e.record.id === x.id)?.asof?.after).toBe(4);
+  });
 });
+
