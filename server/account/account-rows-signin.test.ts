@@ -33,7 +33,8 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
   const safety = SafetyLog.open(dir);
   const binding = PcAccountState.open(dir);
   const journal = DeviceJournal.open(dir, () => safety.ensureFile());
-  const devices = new DeviceStore(dir, null, null, { safety, pc: binding, removals: RemovalEvidence.open(dir, safety), journal });
+  const evidence = RemovalEvidence.open(dir, safety);
+  const devices = new DeviceStore(dir, null, null, { safety, pc: binding, removals: evidence, journal });
   const clock = { now: Date.now() };
   const rows = new AccountDeviceStore(dir, SERVER, {
     journal: (entry) => { journal.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: entry.reason ?? "list", key: entry.key, no: entry.no ?? null, row: entry.row, label: entry.label ?? "", by: null, account: ACCOUNT }); },
@@ -44,7 +45,7 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
     admitOrigin: (at) => binding.admit("remote", "list", null, at),
   });
   devices.attachAccountRows(rows);
-  return { devices, rows, clock, dir };
+  return { devices, rows, clock, dir, evidence };
 }
 
 async function member(devices: DeviceStore): Promise<Key & { id: string }> {
@@ -76,6 +77,16 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     expect(await signIn(devices, row!.id, await key())).toBeNull();
     expect(devices.sessionRow(row!.id)).toBeNull();
     expect(devices.has(row!.id)).toBe(true);
+  });
+
+  test("T34, G6: standing evidence alone keeps a key off the list before its tombstone is materialized", async () => {
+    const { devices, rows, evidence } = pc();
+    await member(devices);
+    const phone = await key();
+    evidence.addRemoval(phone.spki, ACCOUNT, { id: newRecordId(), at: "2026-11-01T00:00:00.000Z" });
+    expect(devices.isTombstoned(phone.spki)).toBe(false);
+    expect(rows.commitList(listed(phone)).admitted).toEqual([]);
+    expect(rows.rowsByKey(phone.spki)).toEqual([]);
   });
 
   test("T35: a list drop reaches the row's revoke listeners through the device store, and the row is gone", async () => {

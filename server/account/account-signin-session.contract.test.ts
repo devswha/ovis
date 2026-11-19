@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DeviceJournal } from "./device-journal.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { accountDeviceId, exportAccountKey } from "../../shared/account-records.ts";
+import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
+import { applyAccountRecords } from "./records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { FrameType, type MuxFrame, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
@@ -66,6 +67,23 @@ describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
       expect(existsSync(intent)).toBe(false);
     } finally { recovered.app.stop(); }
   });
+
+  for (const deny of ["local revoke", "account removal"] as const) {
+    test(`T34, G6: a valid list cannot restore a key covered by its ${deny}`, async () => {
+      const { fixture, device, serverId } = await listedPc();
+      const { services } = fixture.app.context;
+      if (deny === "local revoke") {
+        expect(services.devices.revoke(device.id)).toBe(true);
+      } else {
+        const record = await signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, signer: device.publicKey, key: device.publicKey,
+          id: newRecordId(), issued_at: "2026-11-01T00:00:00.000Z" }, device.keys.privateKey);
+        expect(await applyAccountRecords(services.devices, [record], serverId)).toMatchObject([{ outcome: "applied" }]);
+      }
+      expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+      expect(services.devices.isTombstoned(device.publicKey)).toBe(true);
+      expect(services.devices.has(device.id)).toBe(false);
+    });
+  }
 
   test("S25: the whole read admits the listed device as an account row, held until its notice is out", async () => {
     const pc = await listedPc();
