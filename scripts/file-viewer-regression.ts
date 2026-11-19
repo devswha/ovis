@@ -878,13 +878,18 @@ try {
   await rowOf(sidePane).waitFor();
   const sameStart = await entryIndex();
   const sideNotes = page.getByRole("button", { name: "side notes", exact: true });
+  const activatePaneNotes = async (paneId: string, link: Locator) => {
+    await onPane(paneId);
+    // The URL moves before the selected pane has fetched and drawn its conversation.
+    const chat = page.locator(`.pane-frame.is-current[data-layout-pane=${JSON.stringify(paneId)}] .chat-view[data-conversation-source="codex-transcript"]`);
+    await chat.locator("[data-chat-row]").first().waitFor({ state: "attached" });
+    await chat.locator(link).dispatchEvent("click");
+  };
   await rowOf(sidePane).click();
-  await onPane(sidePane);
-  await activateInTranscript(page, sideNotes);
+  await activatePaneNotes(sidePane, sideNotes);
   await panel.getByText("Side pane notes", { exact: true }).waitFor();
   await rowOf(pane).click();
-  await onPane(pane);
-  await activateInTranscript(page, notesLink);
+  await activatePaneNotes(pane, notesLink);
   await panel.getByText("File preview history regression", { exact: true }).waitFor();
   // the viewer showing the first pane's file is marked: a viewer the switch reused would keep that
   // file's loaded content, and show it for the side pane's file until it read its own
