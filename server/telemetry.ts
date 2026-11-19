@@ -29,6 +29,8 @@ export const COUNTS_URL = "https://herdr-web-ui-telemetry.devswha.workers.dev/v1
 const FILE = "telemetry.json";
 /** Each off replaces this mark. An on acknowledges the mark it saw without removing it. */
 const OFF_FILE = "telemetry-off";
+/** A mark written for an off an older build kept in FILE alone: no off happened then, so an on asked before it still goes. */
+const MIGRATED_MARK = "migrated:";
 const LOCK_FILE = "telemetry.lock";
 /** how long a server waits for another's lock before it skips its write (an off is not skipped: it is marked before this wait, and goes without the lock after it) */
 const LOCK_WAIT_MS = 200;
@@ -331,6 +333,14 @@ function offMark(offFile: string): string | null | undefined {
   } catch { return undefined; }
 }
 
+/** Whether FILE itself says on, whatever the mark says; false when it cannot be read. */
+function fileSaysOn(file: string): boolean {
+  try {
+    const value: unknown = JSON.parse(readFileSync(file, "utf8"));
+    return isJsonObject(value) && value["enabled"] !== false;
+  } catch { return false; }
+}
+
 function keptDiffers(file: string, saved: Saved): boolean {
   try {
     const value = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
@@ -347,7 +357,7 @@ function readSaved(file: string, offFile: string): Saved | null {
     // on; a read that cannot write it now still reads off, and the next read tries again
     const mark = offMark(offFile);
     if (value["enabled"] === false && mark === null) {
-      try { writeFileSync(offFile, randomUUID(), { flag: "wx", mode: 0o600 }); } catch { /* already marked or read-only: still off */ }
+      try { writeFileSync(offFile, `${MIGRATED_MARK}${randomUUID()}`, { flag: "wx", mode: 0o600 }); } catch { /* already marked or read-only: still off */ }
     }
     // a notice from before it said what is sent now does not count: it is shown again first
     const noticeSeenAt = value["notice_version"] === NOTICE_VERSION && typeof value["notice_seen_at"] === "string" ? value["notice_seen_at"] : null;
@@ -603,11 +613,18 @@ export class Telemetry {
     // the off mark an on was asked against: an off marked after it, even one done before this server gets the lock, wins
     const markAsked = clean.enabled === true ? offMark(this.offFile) : null;
     const apply = () => this.locked((): "applied" | "superseded" => {
-      const markAtStart = offMark(this.offFile);
-      if (clean.enabled === true && markAtStart !== markAsked) return "superseded";
+      let markAtStart = offMark(this.offFile);
+      if (clean.enabled === true && markAtStart !== markAsked && !(markAsked === null && markAtStart?.startsWith(MIGRATED_MARK))) return "superseded";
       this.refresh();
+      // the read just now marked an older build's off: that mark is the one this change found
+      if (markAtStart === null) {
+        const migrated = offMark(this.offFile);
+        if (migrated?.startsWith(MIGRATED_MARK)) markAtStart = migrated;
+      }
       // the counter as the request found it: settings told with the generation the page heard last are from now
       const heard = this.saved.forgotten;
+      // an off another server marked and has not written yet: no page heard it, so settings told now may be from before it
+      const offUnwritten = !this.saved.enabled && fileSaysOn(this.file);
       // off is marked before FILE is written, whatever another server writes to FILE meanwhile
       if (clean.enabled === false) this.markOff();
       // nothing kept before an off is sent after it: the off, and an on after an off (one another server marked), drop every
@@ -625,7 +642,7 @@ export class Telemetry {
       // acknowledgement) and while the counts are on; telling it sends nothing by itself
       // a request that names no generation, or one from before an off the page had not heard, keeps none: they may be from
       // before it (a request delayed while another page turned the counts off and on)
-      if (clean.settings !== undefined && clean.generation === heard && this.saved.notice_seen_at !== null && this.saved.enabled && !this.blocked()) this.saved.settings = clean.settings;
+      if (clean.settings !== undefined && clean.generation === heard && !offUnwritten && this.saved.notice_seen_at !== null && this.saved.enabled && !this.blocked()) this.saved.settings = clean.settings;
       if (clean.enabled !== false && offMark(this.offFile) !== markAtStart) return "superseded";
       if (!this.persist()) throw new FileBusyError(CHANGE_BUSY);
       // and again after: an on from another server between the two writes cannot leave this off without its mark
@@ -793,6 +810,8 @@ export class Telemetry {
             this.refresh();
             if (abort.signal.aborted || !this.saved.enabled || this.saved.forgotten !== generation
               || !this.saved.counts.some((entry) => entry.day === day && entry.claim?.id === next.claim.id)) return;
+            // last, the statement before the POST: an off marked since the reads above
+            if (offMark(this.offFile) !== this.saved.enabled_mark) return;
             const response = await this.options.fetch(this.options.countsUrl ?? COUNTS_URL, {
               method: "POST",
               headers: { "content-type": "application/json" },
@@ -1019,7 +1038,8 @@ export class Telemetry {
               return this.saved.enabled && this.saved.forgotten === forgotten
                 && this.saved.active.some((entry) => entry.day === day && entry.claim?.id === claim.id);
             }, () => false);
-            if (!current || abort.signal.aborted) return;
+            // last, after the lock is let go and right before the POST: an off marked meanwhile
+            if (!current || abort.signal.aborted || offMark(this.offFile) !== this.saved.enabled_mark) return;
             const response = await this.options.fetch(this.options.activeUrl ?? ACTIVE_URL, {
               method: "POST",
               headers: { "content-type": "application/json" },
@@ -1082,13 +1102,14 @@ export class Telemetry {
     this.abort = abort;
     this.sending = (async () => {
       try {
-        // right before it goes: turned off by another server on the same state directory since the read above
+        // turned off by another server on the same state directory since the read above
         if (offMark(this.offFile) !== this.saved.enabled_mark) return;
         const current = this.locked(() => {
           this.refresh();
           return this.saved.enabled && this.saved.forgotten === forgotten;
         }, () => false);
-        if (!current || abort.signal.aborted) return;
+        // right before it goes, after the lock is let go: turned off by another server on the same state directory meanwhile
+        if (!current || abort.signal.aborted || offMark(this.offFile) !== this.saved.enabled_mark) return;
         const response = await this.options.fetch(this.options.url ?? TELEMETRY_URL, {
           method: "POST",
           headers: { "content-type": "application/json" },

@@ -1248,6 +1248,75 @@ describe("another server on the same state directory", () => {
     expect(event === "active" ? actives : sent).toEqual([]);
   });
 
+  test("an off marked while the final check lets go of the lock stops the install POST", async () => {
+    const lock = (stateDir: string) => join(stateDir, "telemetry.lock");
+    const releasesBeforeSend = async (offAt?: number) => {
+      const { telemetry, sent, clock, stateDir } = setup({ grace: 60_000 });
+      const other = setup({ stateDir, grace: 60_000 });
+      seen(telemetry);
+      clock.now += 60_000;
+      const rmSync = fs.rmSync;
+      let releases = 0;
+      let atSend = -1;
+      const remove = spyOn(fs, "rmSync").mockImplementation((path, options) => {
+        rmSync(path, options);
+        if (path !== lock(stateDir)) return;
+        releases += 1;
+        // the other server's off, between this one letting go of the lock and starting its POST
+        if (releases === offAt) other.telemetry.change({ enabled: false });
+      });
+      const before = sent.length;
+      try {
+        const going = telemetry.report();
+        atSend = releases;
+        await going;
+        await settled();
+      } finally { remove.mockRestore(); telemetry.stop(); }
+      return { atSend, sent: sent.slice(before), off: other.telemetry.status().enabled === false };
+    };
+    const control = await releasesBeforeSend();
+    expect(control.sent).toHaveLength(1);
+    const raced = await releasesBeforeSend(control.atSend);
+    expect(raced.off).toBe(true);
+    expect(raced.sent).toEqual([]);
+  });
+
+  test("an on told while another server's off is marked but not written keeps no settings", () => {
+    const { telemetry, stateDir } = setup();
+    seen(telemetry);
+    const generation = telemetry.status().counts_generation;
+    // the other server's off has marked, and is paused before it writes telemetry.json
+    writeFileSync(join(stateDir, "telemetry-off"), "paused off");
+    const browser = setup({ stateDir });
+    browser.telemetry.change({ enabled: true, settings: settingsSnapshot({ theme: "light" }), generation });
+    expect(savedFile(stateDir).settings).toBeNull();
+  });
+
+  test("an on asked before a status read marks an older build's off still turns the counts on", () => {
+    const { telemetry, stateDir } = setup();
+    const other = setup({ stateDir });
+    const file = join(stateDir, "telemetry.json");
+    // an older build turned the counts off: FILE alone says so, with no mark
+    writeFileSync(file, JSON.stringify({ ...savedFile(stateDir), enabled: false }));
+    rmSync(join(stateDir, "telemetry-off"), { force: true });
+    const off = join(stateDir, "telemetry-off");
+    const lstatSync = fs.lstatSync;
+    let read = false;
+    const lstat = spyOn(fs, "lstatSync").mockImplementation(((path: fs.PathLike, options?: fs.StatSyncOptions) => {
+      try { return lstatSync(path, options); } finally {
+        if (path === off && !read) {
+          read = true;
+          // the on has looked at the mark (there is none); another server's read marks the older off before the on gets the lock
+          other.telemetry.counting();
+        }
+      }
+    }) as typeof fs.lstatSync);
+    try { expect(telemetry.change({ enabled: true }).enabled).toBe(true); }
+    finally { lstat.mockRestore(); }
+    expect(read).toBe(true);
+    expect(existsSync(off)).toBe(true);
+  });
+
   test("an on cannot erase an off marked after its last observation of the old mark", () => {
     const { telemetry, stateDir } = setup();
     const other = setup({ stateDir });
@@ -1282,7 +1351,7 @@ describe("another server on the same state directory", () => {
     expect(other.telemetry.status().enabled).toBe(false);
   });
 
-  test("an off done while an on waits for the lock wins over that on", () => {
+  test("an off marked after an on was asked wins over it, also once the on holds the lock", () => {
     const { telemetry, stateDir } = setup();
     const other = setup({ stateDir });
     telemetry.change({ enabled: false });
