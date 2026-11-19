@@ -8,11 +8,12 @@ const memory = () => {
 };
 
 describe("the guide's usage read", () => {
-  it("waits for Continue, and once usage was on reads only while it stays on", () => {
-    expect(usageReadAllowed(null, true)).toBe(false);
-    expect(usageReadAllowed("1", false)).toBe(true);
-    expect(usageReadAllowed("on", true)).toBe(true);
-    expect(usageReadAllowed("on", false)).toBe(false);
+  it("waits for Continue, and once usage was on reads only while the server's settings say it stays on", () => {
+    expect(usageReadAllowed(null, true, true)).toBe(false);
+    expect(usageReadAllowed("1", false, false)).toBe(true);
+    expect(usageReadAllowed("on", true, true)).toBe(true);
+    expect(usageReadAllowed("on", true, false)).toBe(false);
+    expect(usageReadAllowed("on", false, true)).toBe(false);
   });
 });
 

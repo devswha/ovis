@@ -293,12 +293,13 @@ export interface RelayOffer {
  * The relay actions answer with the state they left the relay in, a refusal too: a start that
  * serve-only blocks is a 409 whose body is still the RelayStatus, so it is the answer, not an error.
  * Only a body without a phase (the origin gate, a watching device, an older server) is one.
- * Each gives up after 20 s, so a press that never answers does not hold its button, or the setup guide's other ways.
+ * A start gives up after 20 s (the server starts the relay at once and answers), so one that never answers does not
+ * hold Turn on, or the setup guide's other ways. A stop or a reset may take the server longer, and is waited for.
  */
 export async function requestRelay(action: "start" | "stop" | "reset-identity"): Promise<RelayStatus> {
   const url = `/api/relay/${action}`;
   const bounded = new AbortController();
-  const timer = setTimeout(() => bounded.abort(new DOMException(t("No answer"), "TimeoutError")), 20_000);
+  const timer = action === "start" ? setTimeout(() => bounded.abort(new DOMException(t("No answer"), "TimeoutError")), 20_000) : undefined;
   try {
     const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" }, signal: bounded.signal });
     if (!response.ok) {

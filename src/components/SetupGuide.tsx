@@ -65,6 +65,8 @@ export interface SetupGuideProps {
   onEnableAlerts: () => Promise<PushActionResult>;
   settingsOpen?: boolean;
   pushOn?: boolean;
+  /** the server's shared settings were read (lib/preferencesSync.ts `known`): plan usage this browser saw on may be off by now */
+  sharedSettingsKnown?: boolean;
   notifications: NotificationState;
   onStarting?: () => void;
   onOpened: (paneId: string, agentStarted: boolean) => void;
@@ -158,7 +160,7 @@ export function SetupGuide(props: SetupGuideProps) {
 
   const notice = <TelemetryNotice inline enabled={!hidden} onOpen={props.onOpenTelemetry} />;
   let body: ReactNode;
-  if (view === "agents" && catalog !== null) body = <Steps page={page} setPage={setPage} onEnableAlerts={props.onEnableAlerts} notifications={props.notifications} settingsOpen={props.settingsOpen} pushOn={props.pushOn} catalog={catalog} ready={ready} machineId={machineId} onClose={onClose} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} security={props.security} onStarting={props.onStarting} onPaired={props.onPaired} usageOn={turnsUsageOn(props.state)} phoneFirst={!phoneClosed && phoneBoxOpensFirst(props.state, isLoopbackHost(window.location.hostname))} onPhoneClosed={() => setPhoneClosed(true)} notice={notice} firstFocus={firstFocus} />;
+  if (view === "agents" && catalog !== null) body = <Steps page={page} setPage={setPage} onEnableAlerts={props.onEnableAlerts} notifications={props.notifications} settingsOpen={props.settingsOpen} pushOn={props.pushOn} sharedSettingsKnown={props.sharedSettingsKnown} catalog={catalog} ready={ready} machineId={machineId} onClose={onClose} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} security={props.security} onStarting={props.onStarting} onPaired={props.onPaired} usageOn={turnsUsageOn(props.state)} phoneFirst={!phoneClosed && phoneBoxOpensFirst(props.state, isLoopbackHost(window.location.hostname))} onPhoneClosed={() => setPhoneClosed(true)} notice={notice} firstFocus={firstFocus} />;
   else body = <CheckStep onClose={onClose} notice={notice} firstFocus={firstFocus}>{view === "failed" ? <CheckFailed error={catalogError} onLookAgain={loadCatalog} /> : <Checking known={known} catalog={catalog} />}</CheckStep>;
 
   return (
@@ -254,7 +256,7 @@ function CheckFailed({ error, onLookAgain }: { error: string | null; onLookAgain
   );
 }
 
-interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuideProps, "onEnableAlerts" | "notifications" | "settingsOpen" | "pushOn" | "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "security" | "onStarting" | "onPaired" | "onClose"> {
+interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuideProps, "onEnableAlerts" | "notifications" | "settingsOpen" | "pushOn" | "sharedSettingsKnown" | "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "security" | "onStarting" | "onPaired" | "onClose"> {
   notice: ReactNode;
   usageOn: boolean;
   phoneFirst: boolean;
@@ -267,7 +269,7 @@ interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuid
   firstFocus: FirstFocus;
 }
 
-function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = false, pushOn = false, catalog, ready, machineId, notice, onClose, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, security, onStarting, onPaired, usageOn, phoneFirst, onPhoneClosed, firstFocus }: StepsProps) {
+function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = false, pushOn = false, sharedSettingsKnown = false, catalog, ready, machineId, notice, onClose, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, security, onStarting, onPaired, usageOn, phoneFirst, onPhoneClosed, firstFocus }: StepsProps) {
   const t = useT();
   const { settings, update } = useSettings();
   const agents = agentRows(catalog, ready);
@@ -283,7 +285,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   }, [page]);
   // plan usage: nothing is read from the PC's sign-ins, nor turned on, before the user's own press on the agent step
   // (Continue); Set up later from the first step reads nothing
-  // (usageReadAllowed: once usage is on, the guide reads it only while it stays on)
+  // (usageReadAllowed: once usage is on, the guide reads it only while it stays on, as the server's settings say)
   const [usageArmed, setUsageArmed] = useState(() => browserStorage()?.getItem(USAGE_ARMED_KEY) ?? null);
   useEffect(() => { if (settings.showUsage && usageArmed === "1") setUsageArmed("on"); }, [settings.showUsage, usageArmed]);
   const armUsage = (): void => {
@@ -291,7 +293,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
     setUsageArmed(armed);
     try { browserStorage()?.setItem(USAGE_ARMED_KEY, armed); } catch { /* not kept: the next press arms it again */ }
   };
-  const signedIn = useSignedInUsage(ready, (refresh) => fetchUsage(refresh).then((report) => signedInAgents(report.providers)), settings.showUsage || !usageOn, () => update({ showUsage: true }), usageReadAllowed(usageArmed, settings.showUsage));
+  const signedIn = useSignedInUsage(ready, (refresh) => fetchUsage(refresh).then((report) => signedInAgents(report.providers)), settings.showUsage || !usageOn, () => update({ showUsage: true }), usageReadAllowed(usageArmed, settings.showUsage, sharedSettingsKnown));
   // Accounts are read on the server's PC, so only its own guide offers it, and a
   // watching device signs in to nothing
   const [signedHere, setSignedHere] = useState<readonly string[]>([]);

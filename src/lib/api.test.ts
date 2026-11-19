@@ -261,6 +261,11 @@ it("ends a relay start that never answers after 20 s, so Turn on can be pressed 
   expect(requests[0]!.signal.aborted).toBe(false);
   jest.advanceTimersByTime(1);
   expect(await stalled).toBeInstanceOf(Error);
+
+  // a stop may take the server longer: it is waited for
+  void requestRelay("stop").catch(() => undefined);
+  jest.advanceTimersByTime(60_000);
+  expect(requests[1]!.signal.aborted).toBe(false);
 });
 
 it("ends an agent catalog read that never answers after 30 s, so Check again can try again", async () => {

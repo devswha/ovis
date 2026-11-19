@@ -531,7 +531,12 @@ try {
       let inner = window.fetch.bind(window);
       const recorder = ((input: RequestInfo | URL, init?: RequestInit) => {
         const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
-        if (url.pathname.startsWith("/api/")) sent.push(`${(init?.method ?? "GET").toUpperCase()} ${url.pathname}`);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url.pathname.startsWith("/api/")) sent.push(`${method} ${url.pathname}`);
+        // plan usage turned off on another device: the server's shared settings say so, this browser's copy does not
+        if (url.pathname === "/api/preferences" && method === "GET" && sessionStorage.getItem("usage-off-elsewhere") !== null) {
+          return Promise.resolve(Response.json({ revision: 1000, settings: { showUsage: false }, muted_panes: [] }));
+        }
         return inner(input, init);
       }) as typeof window.fetch;
       Object.defineProperty(window, "fetch", { configurable: true, get: () => recorder, set: (next: typeof window.fetch) => { inner = next; } });
@@ -566,19 +571,26 @@ try {
     assert.equal((await page.evaluate(() => (window as unknown as { sent: string[] }).sent)).includes("GET /api/usage"), false, "no usage read while the agent step only shows");
     await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
     await page.waitForFunction(() => (window as unknown as { sent: string[] }).sent.includes("GET /api/usage"));
-    // the guide turned plan usage on; then it is turned off on another device while this browser is closed, so this
-    // browser's next start already reads it off: the remembered Continue no longer reads the usage
+    // the guide turned plan usage on; then it is turned off on another device while this browser is closed: this
+    // browser's copy still says on, the server's settings say off, and the remembered Continue reads no usage
     await page.waitForFunction(() => localStorage.getItem("ovis:setup-usage-armed") === "on");
     await page.evaluate((guide) => {
-      localStorage.setItem("ovis:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("ovis:settings") ?? "{}"), showUsage: false }));
+      sessionStorage.setItem("usage-off-elsewhere", "1");
       localStorage.setItem("ovis:setup-guide", guide);
     }, WELCOME);
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").showUsage), true, "this browser's copy still says plan usage is on");
     await page.reload();
     await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
     await dialog.locator(".setup-found .setup-tile").first().waitFor();
+    await page.waitForFunction(() => localStorage.getItem("ovis:setup-usage-armed") === null);
     await settled(page);
+    // the sidebar still reads the usage once from this browser's stale copy; the guide's steps draw only once the
+    // agent catalog is in, so a read after it is the guide's
     const offElsewhere = await page.evaluate(() => (window as unknown as { sent: string[] }).sent);
-    assert.equal(offElsewhere.includes("GET /api/usage"), false, `usage turned off while this browser was closed is not read again: ${offElsewhere.join(", ")}`);
+    const catalogAt = offElsewhere.indexOf("GET /api/agent-catalog");
+    assert.ok(catalogAt >= 0, `the guide read the agent catalog: ${offElsewhere.join(", ")}`);
+    const byGuide = offElsewhere.slice(catalogAt);
+    assert.equal(byGuide.includes("GET /api/usage"), false, `usage turned off while this browser was closed is not read again by the guide: ${offElsewhere.join(", ")}`);
     await context.close();
     console.log("PASS opening the guide and Set up later read no usage, write no shared setting and leave the settings as they were; Continue reads the usage, until usage is turned off");
   }
