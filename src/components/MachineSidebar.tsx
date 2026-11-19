@@ -33,6 +33,8 @@ import { changePc, inNativeApp } from "../lib/nativeApp.ts";
 import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
 import { canHideMachine, HIDDEN_MACHINES_MAX, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
+import { MachineOffLine, useRecheck } from "./MachineOffLine.tsx";
+import { outOfReachReason } from "./relayPcState.tsx";
 
 export const DRAWER_QUERY = "(max-width: 768px)";
 
@@ -257,6 +259,27 @@ function SidebarCount({ className, n, words, tooltip = true }: { className: stri
   return <span className={className} title={tooltip ? words : undefined}><span aria-hidden="true">{n}</span><span className="visually-hidden">{words}</span></span>;
 }
 
+const RELAY_UNREACHABLE = /^The relay (could not be reached|connection failed|closed the connection|did not answer)/;
+const RELAY_PC_SILENT = /^(The PC did not answer through the relay|Relay connection to this PC was lost|The PC did not finish the connection|Relay carrier lost during admission)/;
+
+/**
+ * Whether a PC this server added keeps failing to connect for a reason a later try may clear (it retries on its
+ * own: `reconnecting` with the last failure), and which: nothing answered for it (`off`), or the relay between
+ * did not (`unreachable`, `refused` when the relay turned this server away). Null for anything a reconnect cannot
+ * fix (a refusal for good, a sign-in, a setup) and for a PC Check again cannot reconnect: herdr's, herdr-core's.
+ */
+export function machineAway(machine: Pick<Machine, "kind" | "enabled" | "state" | "error" | "action_required" | "updating" | "herdr_profile_id">): "off" | "unreachable" | "refused" | null {
+  if (!machine.enabled || machine.state !== "reconnecting" || machine.error === null || machine.action_required || machine.updating || machine.herdr_profile_id) return null;
+  if (machine.kind === "relay") {
+    if (machine.error.startsWith("The relay turned this device away")) return "refused";
+    if (RELAY_UNREACHABLE.test(machine.error)) return "unreachable";
+    return RELAY_PC_SILENT.test(machine.error) ? "off" : null;
+  }
+  if (machine.kind !== "ssh") return null;
+  const reason = sshFailure(machine.error)?.reason;
+  return reason === "refused" || reason === "timeout" || reason === "unreachable" ? "off" : null;
+}
+
 export type ManageAction = "rename" | "toggle" | "setup" | "update" | "hide" | "remove";
 
 export function manageActions(machine: Pick<Machine, "kind" | "herdr_profile_id" | "enabled" | "target" | "action_required">, { busy, canHide }: { busy: boolean; canHide: boolean }): { id: ManageAction; disabled: boolean }[] {
@@ -299,6 +322,10 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
       case "auth": return t("{where} did not accept this web server's SSH key or password.", { where });
     }
   })();
+  const away = props.watching ? null : machineAway(machine);
+  const awayReason = away === null ? null
+    : machine.kind === "ssh" ? sshWords
+    : outOfReachReason({ displayState: away === "off" ? "offline" : "unreachable", last_seen_at: null, check: away === "refused" ? { kind: "offline", reason: "refused" } : null }, t);
   const nextStep = !noticed && machine.kind === "local" && machine.error !== null && saysHerdrAway(machine.error) ? t("Start herdr on this PC, or check HERDR_SOCKET.")
     : ssh !== null ? t("Reconnect or change its address from Manage PC, the sliders beside its name.") : null;
   // one request at a time: a double-clicked Disconnect/Connect can otherwise race and leave this
@@ -323,6 +350,8 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     }
     finally { inFlight.current = false; setBusy(false); }
   };
+  // turning on a PC that is on is the server's reconnect now (MachineManager.patch); only offered while it is away
+  const recheck = useRecheck(() => mutate("PATCH", { enabled: true }));
   const closeMenu = useCallback(() => setMenu(null), []);
   const endRename = (save: boolean) => {
     setRenaming(false);
@@ -385,7 +414,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
           }}
     /> : <span className="machine-name" title={machine.name}>{machine.name}</span>}
     {machine.kind === "local" && <span className="machine-kind" title={t("The computer this app runs on")}>{t("Host")}</span>}
-    <span className={`machine-dot is-${machine.action_required === "setup" || asksWhatToConnect(machine) ? "setup" : machine.state}`} title={stateWords} aria-hidden="true" />
+    <span className={`machine-dot is-${machine.action_required === "setup" || asksWhatToConnect(machine) ? "setup" : away !== null ? "disconnected" : machine.state}`} title={stateWords} aria-hidden="true" />
   </>;
   return <section className={`machine-group${current ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}${compact ? "" : " is-two-line"}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
     {!headerless && <header className={`machine-header${compact ? " is-compact" : ""}`}>
@@ -398,12 +427,13 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
       <button className="sidebar-row-action machine-new" disabled={!canCreate} aria-label={t("New workspace on {name}", { name: machine.name })} title={createTitle} onClick={() => props.onNew(machine.id)}><Plus aria-hidden="true" /></button>
     </header>}
     {noticed && <MachineActionNotice machine={machine} onSetup={props.onSetup} />}
-    <p className={`machine-state is-${machine.state}${online || stateWord === null ? " visually-hidden" : ""}`} role={machine.state === "error" ? "alert" : "status"} title={noticed || machine.error === null ? undefined : machineErrorText(machine.error, t)}>
+    {away !== null ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} onCheck={recheck.check} />
+    : <p className={`machine-state is-${machine.state}${online || stateWord === null ? " visually-hidden" : ""}`} role={machine.state === "error" ? "alert" : "status"} title={noticed || machine.error === null ? undefined : machineErrorText(machine.error, t)}>
       <span className="machine-state-word">{stateWord}</span>
       {!noticed && machine.error && <span className="machine-state-detail">{sshWords ?? machineErrorText(machine.error, t)}</span>}
       {sshWords !== null && <code className="machine-state-raw">{machine.error}</code>}
       {nextStep !== null && <span className="machine-state-next">{nextStep}</span>}
-    </p>
+    </p>}
     {menu && <RowMenu anchor={menu} title={machine.name} items={manageItems()} onClose={closeMenu} header={<span className="machine-menu-head">
       <span className="machine-menu-name">{machine.name}</span>
       <span className="machine-menu-state">{stateLine}</span>

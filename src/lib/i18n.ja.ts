@@ -550,6 +550,7 @@ const BASE: Record<string, string> = {
   "Ready · not in the account yet": "準備完了 · まだアカウント外",
   "Machine offline": "マシンがオフライン",
   "Could not reach this machine": "このマシンに接続できません",
+  "Switched off": "電源オフ",
   "Last seen {when}.": "最終確認: {when}。",
   "It is off, has no network, or Ovis is not running on it.": "電源が切れているか、ネットワークがないか、Ovis が実行されていません。",
   "This device could not reach the relay. Check this device's network.": "このデバイスからリレーに接続できませんでした。このデバイスのネットワークを確認してください。",

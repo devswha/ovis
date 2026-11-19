@@ -264,6 +264,34 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   color: var(--text);
 }
 
+.machine-off {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 0 var(--side-gutter) var(--space-2) var(--machine-indent);
+}
+
+.machine-off .machine-state {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+}
+
+.machine-recheck {
+  flex: none;
+}
+
+.btn.machine-recheck[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .btn.machine-recheck[aria-disabled="true"]:hover {
+    background: var(--bg-elevated);
+  }
+}
+
 .machine-empty {
   padding: 0 var(--side-gutter) var(--space-2) var(--machine-indent);
 }
