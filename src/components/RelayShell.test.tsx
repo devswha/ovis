@@ -364,8 +364,8 @@ describe("the dashboard", () => {
       it("cancels the pairing from its round Back on the confirm, the comparison and the connection, each named for what it does", async () => {
         const steps: [RelayShellProps["state"], string, number][] = [
           [{ kind: "confirm", offer, account: "unlisted" }, "Back", 1],
-          [{ kind: "compare", name: "Desk", digits: "123456", confirmed: false }, "Cancel", 2],
-          [{ kind: "compare", name: "Desk", digits: "123456", confirmed: true }, "Cancel", 2],
+          [{ kind: "compare", name: "Desk", digits: "123456", confirmed: false }, "Back", 2],
+          [{ kind: "compare", name: "Desk", digits: "123456", confirmed: true }, "Back", 2],
           [{ kind: "connecting", name: "Desk" }, "Cancel", 2],
           [{ kind: "connecting", name: "Desk", approved: true }, "Cancel", 3],
         ];
