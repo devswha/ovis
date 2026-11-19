@@ -1,7 +1,7 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SIGN_IN, APP_ORIGIN, localize, openFailure, parseAddress, publicHttp, relayLink, shell, t } from "./shell.js";
+import { ACCOUNT_SIGN_IN, APP_ORIGIN, korean, localize, openFailure, parseAddress, publicHttp, relayLink, shell, t } from "./shell.js";
 
 localize();
 
@@ -113,6 +113,7 @@ cancel.addEventListener("click", () => {
 form.addEventListener("submit", (event) => { event.preventDefault(); void open(input.value); });
 
 const account = document.getElementById("account");
+if (korean) document.getElementById("privacy").href = "https://ovis.sh/ko/privacy/";
 // a build without the account (OVIS_APP_ACCOUNT unset, build-web.ts) opens the direct screen first
 if (!ACCOUNT_SIGN_IN) {
   home.hidden = true;
@@ -121,7 +122,8 @@ if (!ACCOUNT_SIGN_IN) {
   document.getElementById("open").before(feedback);
 }
 else {
-  account.addEventListener("click", async () => {
+  // the sign-in itself runs on the hosted app, which this opens; it asks for the provider again
+  for (const button of account.querySelectorAll("[data-provider]")) button.addEventListener("click", async () => {
     error.textContent = "";
     try { await shell("open", { url: `${APP_ORIGIN}/`, name: t("Your PCs", "내 PC") }); }
     catch (err) { error.textContent = String(err?.message ?? err); }
