@@ -2317,7 +2317,7 @@ export class DeviceStore {
       if (key !== undefined) this.dropWaiting([key]);
       // a deny not on disk writes nothing else: the row stays where a restart still shows the Revoke failed (P8)
       if (denied !== null) { this.keepOut(rows); throw denied; }
-      this.dropBeforeWrite(rows, by, undefined, undefined, { key });
+      this.dropBeforeWrite(rows, by, undefined, undefined, undefined, { key });
       return true;
     }
     // a revoke on this PC wins over the account: its key cannot come back by a record (docs/account.md, rule 1)
@@ -2349,7 +2349,7 @@ export class DeviceStore {
     // a deny not on disk writes nothing else: the rows stay out by row for this run and the PC closed (P8)
     if (denied !== null) { this.keepOut(gone); throw denied; }
     // a removal of a signer here, by its own key: the blocks it signed go with it (P23 way 3, T73)
-    if (gone.length > 0) this.dropBeforeWrite(gone, "pc", "recover", input.user, { key });
+    if (gone.length > 0) this.dropBeforeWrite(gone, "pc", "recover", undefined, input.user, { key });
     else {
       try { this.journalEvent({ kind: "remove", how: "recover", key: key!, no: null, row: null, label: "", by: input.user ?? null, account: null }); } catch (error) {
         this.denyProblem = `A removal could not be journalled (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until one is.`;
@@ -2362,7 +2362,7 @@ export class DeviceStore {
 
   /** The rows `gone` lose their access in one write; their sessions close and each removal is announced. */
   private drop(gone: readonly StoredDevice[], by: DeviceRemovedEvent["by"], why?: string, user?: string): void {
-    if (this.evidence !== null) { this.dropBeforeWrite(gone, by, why, user); return; }
+    if (this.evidence !== null) { this.dropBeforeWrite(gone, by, why, undefined, user); return; }
     const next = this.devices.filter((d) => !gone.includes(d));
     // A valid older/manual registry can have devices without a gate timestamp. Removing its
     // last device must still leave durable evidence that this store was once gated.
@@ -2489,17 +2489,17 @@ export class DeviceStore {
    * P8 steps 2 to 5 for rows the deny already covers: the gate in memory, the rows out of memory, their sessions and
    * codes ended, each removal told; then the registry write, whose failure is thrown only after all of that.
    */
-  private dropBeforeWrite(gone: readonly StoredDevice[], by: DeviceRemovedEvent["by"], why?: string, user?: string, removedSigner?: { key: string | undefined; account?: string }): void {
-    if (gone.length === 0) return;
+  private dropBeforeWrite(gone: readonly StoredDevice[], by: DeviceRemovedEvent["by"], why?: string, joined?: { ids: string[]; reason: "remove" | "revoke" }, user?: string, removedSigner?: { key: string | undefined; account?: string }): void {
+    if (gone.length === 0 && !joined?.ids.length) return;
     const next = this.devices.filter((d) => !gone.includes(d));
     const gate = this.gateClosedAt ?? this.devices[0]?.created_at ?? new Date().toISOString();
     this.devices = next;
     this.gateClosedAt = gate;
     if (gone.some((d) => this.pending?.holders.has(d.id))) this.endPairing(undefined, "revoked");
-    for (const device of gone) {
-      const listeners = this.revocations.get(device.id);
-      this.revocations.delete(device.id);
-      for (const close of listeners ?? []) close();
+    for (const device of gone) this.closeAccountSessions(device.id);
+    if (joined?.ids.length) {
+      for (const id of joined.ids) this.closeAccountSessions(id);
+      this.joinedRows?.removeRows(joined.ids, joined.reason);
     }
     try { for (const device of gone) this.journalRemoval(device, by, why, user); } catch (error) {
       // a removal its journal does not hold writes nothing more: its rows stay out by row and the PC closed (P24, P8)
@@ -2743,10 +2743,15 @@ export class DeviceStore {
       });
       this.dropWaiting([key]);
       // with no deny on disk the evidence cannot say which rows it covers: every row of the key goes for this run
-      if (denied !== null) { this.keepOut(this.devices.filter((d) => d.relay_public_key === key), false); throw denied; }
+      if (denied !== null) {
+        this.keepOut(this.devices.filter((d) => d.relay_public_key === key), false);
+        for (const row of this.joinedRows?.rowsByKey(key) ?? []) this.closeAccountSessions(row.id);
+        throw denied;
+      }
       const gone = this.devices.filter((d) => d.relay_public_key === key && this.coveredByEvidence(d));
-      this.dropBeforeWrite(gone, record.by, undefined, undefined, { key, account });
-      return added || gone.length > 0;
+      const ids = (this.joinedRows?.rowsByKey(key) ?? []).filter((row) => this.coveredByEvidence(this.joinedAsStored(row))).map((row) => row.id);
+      this.dropBeforeWrite(gone, record.by, undefined, { ids, reason: "remove" }, undefined, { key, account });
+      return added || gone.length > 0 || ids.length > 0;
     }
     // a pairing of this key made on this PC after the removal was signed wins: a replayed or late remove
     // leaves it and its key be, and takes only the key's other rows. Any other row goes, however late the remove
