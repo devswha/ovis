@@ -14,6 +14,7 @@ import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { AccountHolds } from "./holds.ts";
+import type { PageAnswer } from "./snapshot-read.ts";
 import { applyAccountRecords, type AddGates, type RecordOutcome } from "./records.ts";
 
 export const MAILBOX_PULL_MS = 5 * 60_000;
@@ -553,21 +554,39 @@ export class AccountMailbox {
     early.splice(0, over);
   }
 
-  private async page(identity: RelayIdentity, account: string, ack: number | null): Promise<{ entries: { seq: number; record: unknown }[]; waiting: { key: string; at: string }[] }> {
-    const call = async (path: string, body: unknown) => {
-      const response = await (this.options.fetch ?? fetch)(new Request(String(this.options.service) + path, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
-      }));
-      if (!response.ok) throw new Error(`The account service answered ${response.status} to ${path}`);
-      return await response.json() as Record<string, unknown>;
-    };
-    const publicKey = bytesToHex(importPublicKey(identity.public_key));
-    const challenge = await call("/v1/pc/challenge", { server_id: identity.server_id, public_key: publicKey });
-    if (typeof challenge.challenge_id !== "string") throw new Error("The account service sent no challenge");
+  /** One POST to the account service; `gone` answers 410 with null instead of throwing. */
+  private async call(path: string, body: unknown, gone = false): Promise<Record<string, unknown> | null> {
+    const response = await (this.options.fetch ?? fetch)(new Request(String(this.options.service) + path, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+    }));
+    if (gone && response.status === 410) return null;
+    if (!response.ok) throw new Error(`The account service answered ${response.status} to ${path}`);
+    return await response.json() as Record<string, unknown>;
+  }
+
+  /** A PC route called with a fresh proof of this PC's relay key for the `account` role. */
+  private async proved(identity: RelayIdentity, path: string, body: Record<string, unknown>, gone = false): Promise<Record<string, unknown> | null> {
+    const challenge = await this.call("/v1/pc/challenge", { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)) });
+    if (typeof challenge?.challenge_id !== "string") throw new Error("The account service sent no challenge");
     const proof = answerServerChallenge(challenge.frame, importSecretKey(identity.secret_key),
       { server_id: identity.server_id, role: "account", connection_id: challenge.challenge_id });
     if (!proof) throw new Error("The account service sent a malformed challenge");
-    const mailbox = await call("/v1/pc/mailbox", { server_id: identity.server_id, challenge_id: challenge.challenge_id, proof, account, ack });
+    return await this.call(path, { server_id: identity.server_id, challenge_id: challenge.challenge_id, proof, ...body }, gone);
+  }
+
+  /**
+   * One page of the account's snapshot (Step 2, G1; only with OVIS_ACCOUNT_OPENS_ALL): page 0 asks for a new snapshot,
+   * every later page names the first page's id. The page is checked by readSnapshot, never here.
+   */
+  async snapshotPage(account: string, cursor: { snapshot: string | null; page: number }): Promise<PageAnswer> {
+    const identity = this.options.identity();
+    if (!identity) throw new Error("This PC has no relay identity");
+    const page = await this.proved(identity, "/v1/pc/snapshot", { account, page: cursor.page, ...(cursor.snapshot === null ? {} : { snapshot: cursor.snapshot }) }, true);
+    return page === null ? { snapshot_gone: true } : { page };
+  }
+
+  private async page(identity: RelayIdentity, account: string, ack: number | null): Promise<{ entries: { seq: number; record: unknown }[]; waiting: { key: string; at: string }[] }> {
+    const mailbox = (await this.proved(identity, "/v1/pc/mailbox", { account, ack }))!;
     const records = mailbox.records;
     if (!Array.isArray(records) || !records.every((entry) => typeof entry === "object" && entry !== null && Number.isSafeInteger((entry as { seq?: unknown }).seq))) {
       throw new Error("The account service sent a malformed mailbox");
