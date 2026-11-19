@@ -985,17 +985,20 @@ export class DeviceStore {
     const known = safety.receipt(record.id);
     if (known !== null && known.outcome !== "refused") return known;
     if (evidence === null || record.account !== this.account()) return refused("record_invalid");
-    const signers = this.devices.filter((d) => d.relay_public_key === record.signer && d.role === "drive" && d.account === record.account && d.origin !== undefined && !this.coveredByEvidence(d));
+    const signers = this.memberRows(record.signer, record.account);
     if (signers.length === 0) return refused("signer_not_member");
     if (signers.some((d) => this.frozen(d))) return refused("frozen");
+    // the target's rows in both stores: the account rows (S2-25) are targets as devices.json rows are
+    const allTargets = this.rowsOfKey(record.target);
     const targets = this.devices.filter((d) => d.relay_public_key === record.target);
+    const joinedTargets = allTargets.filter((d) => !targets.includes(d));
     // a target this PC has no row of: the block waits, ends nobody, and is judged when its target is here (P19)
-    if (targets.length === 0) {
+    if (allTargets.length === 0) {
       if (!safety.wait({ record, got, signer_removed: false })) return refused("record_invalid");
       return refused("unknown_target");
     }
     let cutoff: AdmissionPosition | null = null;
-    for (const target of targets) {
+    for (const target of allTargets) {
       const position = admissionPosition(target);
       if (position === null || !signers.every((signer) => compareAdmission(signer, target) === "older")) return refused("signer_not_older");
       if (cutoff === null || compareAdmissionPositions(position, cutoff) === "older") cutoff = position;
@@ -1016,10 +1019,19 @@ export class DeviceStore {
     }, { genFirst: true });
     if (denied !== null) {
       this.keepOut([...targets, ...affected], false);
+      for (const target of joinedTargets) this.closeAccountSessions(target.id);
       return refused("record_invalid");
     }
     if (this.pc !== null) onRaise?.();
     this.keepOut(affected, false);
+    // the account rows it freezes end their sessions in this turn too; its account-row targets end and leave their store
+    const joinedIds = new Set(joinedTargets.map((d) => d.id));
+    for (const row of this.joinedRows?.rows() ?? []) if (!joinedIds.has(row.id) && this.frozen(this.joinedAsStored(row))) this.closeAccountSessions(row.id);
+    for (const id of joinedIds) this.closeAccountSessions(id);
+    if (joinedIds.size > 0) {
+      try { this.joinedRows!.removeRows([...joinedIds], "block"); }
+      catch (error) { console.error(`[devices] the account rows of a blocked key could not be written after its deny; they stay denied by its marker: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     this.dropWaiting([record.target], "block");
     safety.unwait(record.id);
     try { this.drop(targets, "pc"); }
@@ -1029,7 +1041,7 @@ export class DeviceStore {
 
   /** The drive member rows of `key` in `account` that stand here: what a signer of the account is on this PC. */
   private memberRows(key: string, account: string): StoredDevice[] {
-    return this.devices.filter((d) => d.relay_public_key === key && d.role === "drive" && d.account === account && d.origin !== undefined && !this.coveredByEvidence(d));
+    return this.rowsOfKey(key).filter((d) => d.role === "drive" && d.account === account && d.origin !== undefined && !this.coveredByEvidence(d));
   }
 
   /**
@@ -1054,7 +1066,7 @@ export class DeviceStore {
       if (this.failsClosed) return;
       if (this.safety.receipt(record.id) !== null) { this.safety.unwait(record.id); continue; }
       if (signerRemoved || this.memberRows(record.signer, record.account).length === 0) { this.safety.unwait(record.id); continue; }
-      if (!this.devices.some((d) => d.relay_public_key === record.target)) continue;
+      if (this.rowsOfKey(record.target).length === 0) continue;
       const receipt = this.commitBlock(record, got);
       if (!this.failsClosed && receipt.outcome === "refused" && receipt.reason !== "unknown_target") this.safety.unwait(record.id);
     }
@@ -1110,10 +1122,10 @@ export class DeviceStore {
 
   /** R1/T19: Revoke is key-wide, so a remote caller may revoke its own row alone or a set of entirely newer rows. */
   remoteRevoke(callerId: string | null, targetId: string): "allowed" | "older" | "unorderable" {
-    const caller = callerId === null ? undefined : this.devices.find((d) => d.id === callerId);
-    const target = this.devices.find((d) => d.id === targetId);
+    const caller = callerId === null ? undefined : this.anyRow(callerId);
+    const target = this.anyRow(targetId);
     if (caller === undefined || target === undefined) return "unorderable";
-    const rows = target.relay_public_key === undefined ? [target] : this.devices.filter((d) => d.relay_public_key === target.relay_public_key);
+    const rows = target.relay_public_key === undefined ? [target] : this.rowsOfKey(target.relay_public_key);
     if (rows.some((row) => row.id === caller.id)) return rows.length === 1 ? "allowed" : "unorderable";
     const verdicts = rows.map((row) => compareAdmission(caller, row));
     if (verdicts.every((verdict) => verdict === "older")) return "allowed";
@@ -1127,7 +1139,7 @@ export class DeviceStore {
   removeAuthority(signer: string, key: string, account: string): boolean {
     if (signer === key) return true;
     const signers = this.memberRows(signer, account);
-    const targets = this.devices.filter((d) => d.relay_public_key === key);
+    const targets = this.rowsOfKey(key);
     return signers.length > 0 && targets.length > 0 && targets.every((target) => signers.every((row) => compareAdmission(row, target) === "older"));
   }
 
@@ -1714,19 +1726,34 @@ export class DeviceStore {
    */
   attachAccountRows(source: AccountRowSource | null): void { this.joinedRows = source; }
 
-  /** An account row as the evidence and freeze checks see a row: its key, this PC's account, its admission order. */
+  /** An account row as the order, evidence and freeze checks see a row: its key, this PC's account, its admission order. */
+  private joinedAsStored(row: AccountRow): StoredDevice {
+    return { id: row.id, label: row.label, role: "drive", token_hash: "", relay_public_key: row.key, created_at: row.confirmed_at, last_seen_at: null, account: this.account() ?? undefined, origin: row.origin };
+  }
+
   private accountRowStale(row: AccountRow): boolean {
     if (this.evidence === null) return false;
-    const stored: StoredDevice = { id: row.id, label: row.label, role: "drive", token_hash: "", relay_public_key: row.key, created_at: row.confirmed_at, last_seen_at: null, account: this.account() ?? undefined, origin: row.origin };
+    const stored = this.joinedAsStored(row);
     return this.coveredByEvidence(stored) || this.frozen(stored);
+  }
+
+  /** A row of either store by id, an account row as the order checks see it. */
+  private anyRow(id: string): StoredDevice | undefined {
+    const row = this.joinedRows?.row(id) ?? null;
+    return this.devices.find((d) => d.id === id) ?? (row === null ? undefined : this.joinedAsStored(row));
+  }
+
+  /** Every row of `key` in either store, the account rows as the order checks see them. */
+  private rowsOfKey(key: string): StoredDevice[] {
+    return [...this.devices.filter((d) => d.relay_public_key === key), ...(this.joinedRows?.rowsByKey(key) ?? []).map((row) => this.joinedAsStored(row))];
   }
 
   /**
    * A relay AUTH for an account-joined row: null when no such row stands here or the signature is not its key's, so a
    * caller without the key learns nothing; else the row's own verdict, read after the proof (T66).
    */
-  async matchAccountRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string): Promise<{ match: DeviceMatch } | { refused: Exclude<AccessAnswer, { ok: true }> } | null> {
-    if (this.joinedRows === null || this.failsClosed() || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
+  async matchAccountRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string): Promise<{ match: DeviceMatch } | { refused: Exclude<AccessAnswer, { ok: true }>; holdUntil: string | null } | null> {
+    if (this.joinedRows === null || this.failsClosed || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
     if (this.devices.some((d) => d.id === deviceId)) return null;
     const row = this.joinedRows.row(deviceId);
     if (row === null || this.accountRowStale(row)) return null;
@@ -1745,7 +1772,7 @@ export class DeviceStore {
     const current = this.joinedRows.row(deviceId);
     if (!verified || current === null || current.key !== row.key || this.accountRowStale(current)) return null;
     const answer = this.joinedRows.access(deviceId);
-    return "ok" in answer ? { match: { id: current.id, label: current.label, role: "drive" } } : { refused: answer };
+    return "ok" in answer ? { match: { id: current.id, label: current.label, role: "drive" } } : { refused: answer, holdUntil: current.hold_until };
   }
 
   /** The account rows' store ends the sessions of a row it dropped (P8 step 3 for a list drop, T35). */

@@ -8,11 +8,11 @@ import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_C
 import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import { PairingRateLimitedError, type DeviceMatch, type PairingPath } from "../devices.ts";
-import { ACCOUNT_OPENS_ALL_MUX_FEATURE, accountOpensAll } from "../../shared/account-devices-api.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { SIGN_IN_WAIT_MS } from "../account/mailbox.ts";
 import type { KeyProofPairings } from "../account/key-proof.ts";
 import { PENDING_MS } from "../account/pending.ts";
+import { accountSignInRefusal } from "../account/account-signin.ts";
 import { handleRequest } from "../dispatch.ts";
 import type { RequestServices, ServerContext } from "../dispatch.ts";
 import { jsonResponse } from "../http.ts";
@@ -367,6 +367,17 @@ export class RelaySession {
           : devices.pairRelay(frame.payload.code, frame.payload.label, frame.payload.public_key, undefined, this.admitNewDevice)?.device;
         // no auth_failed: the code held and was not spent, and the relay closes this client for the pass
         if (this.refused) return;
+        if (frame.type === FrameType.AUTH && device === null) {
+          // Step 2 (S2-25): an account-joined row signs in with its registered key; its refusal is told only after the proof
+          const joined = await devices.matchAccountRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId);
+          if (joined !== null && "refused" in joined) {
+            if (!this.mux.active) return;
+            const refusal = accountSignInRefusal(joined.refused, joined.holdUntil, this.accountCodes);
+            this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
+            return;
+          }
+          if (joined !== null) { this.enter(joined.match); return; }
+        }
         if (!device && this.authReceipts && frame.type === FrameType.AUTH) {
           const receipts = await devices.refusedRelayReceipts(frame.payload.device_id, { nonce: this.nonce, signature: frame.payload.signature, serverId: this.options.serverId });
           this.close("auth_failed", receipts.slice(-AUTH_RECEIPTS_MAX));

@@ -67,7 +67,7 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     const phone = await key();
     rows.commitList(listed(phone));
     const [row] = rows.rows();
-    expect(await signIn(devices, row!.id, phone)).toEqual({ refused: { refused: "join_hold", seconds: null } });
+    expect(await signIn(devices, row!.id, phone)).toEqual({ refused: { refused: "join_hold", seconds: null }, holdUntil: null });
     expect(await signIn(devices, row!.id, await key())).toBeNull();
     expect(devices.sessionRow(row!.id)).toBeNull();
     expect(devices.has(row!.id)).toBe(true);

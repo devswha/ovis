@@ -24,6 +24,7 @@ export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset"
  * On a deny the device store closes the sessions itself (P8 step 3); removeRows only journals and writes.
  */
 export interface AccountRowSource {
+  rows(): readonly AccountRow[];
   row(id: string): AccountRow | null;
   rowsByKey(key: string): readonly AccountRow[];
   access(id: string): AccessAnswer;
