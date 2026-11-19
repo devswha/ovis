@@ -277,8 +277,8 @@ export function RelayShell(props: RelayShellProps) {
 
 /**
  * A pairing's steps, drawn on the step frame: the confirm (1), the comparison and the connection before
- * the PC's approval (2), the connection after it and the ready PC (3), and a pairing that failed (no
- * step). `undefined`: the screen is not a pairing step.
+ * the PC's approval (2), the connection after it (3), and a pairing that failed (no step). `undefined`:
+ * the screen is not a pairing step (the ready checkpoint too: a saved PC's enrollment retry reaches it).
  */
 function pairingStep(state: RelayShellState): 1 | 2 | 3 | null | undefined {
   switch (state.kind) {
@@ -286,7 +286,6 @@ function pairingStep(state: RelayShellState): 1 | 2 | 3 | null | undefined {
     case "compare": return 2;
     // a saved PC opening again connects, and fails, on the card: only a new pairing has steps
     case "connecting": return state.pairing ? (state.approved ? 3 : 2) : undefined;
-    case "ready": return 3;
     case "failed": return state.pairing ? null : undefined;
     default: return undefined;
   }

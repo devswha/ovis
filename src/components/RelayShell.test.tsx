@@ -380,6 +380,18 @@ describe("the dashboard", () => {
         }
       });
 
+      it("moves the focus to the heading when the press takes the focused button away", async () => {
+        const focused: string[] = [];
+        const nodes = (element: { type: unknown }) => element.type === "h1" ? { ...node(), focus: () => { focused.push("h1"); } } : node();
+        const draw = (confirmed: boolean) => createElement(SettingsProvider, { children: createElement(RelayShell, props({ kind: "compare", name: "Desk", digits: "123456", confirmed })) });
+        await act(async () => { renderer = create(draw(false), { createNodeMock: nodes as never }); });
+        expect(focused).toEqual([]);
+        Object.defineProperty(document, "activeElement", { configurable: true, value: null });
+        await act(async () => { renderer!.update(draw(true)); });
+        expect(focused).toEqual(["h1"]);
+        expect(textOf(renderer!.root.find((n) => n.type === "h1"))).toBe("Approve on the PC if it shows the same number");
+      });
+
       it("drops the round Back once this phone confirmed the digits, leaving the comparison's own Cancel", async () => {
         let cancelled = 0;
         await mount({ ...props({ kind: "compare", name: "Desk", digits: "123456", confirmed: true }), onCancel: () => { cancelled++; } });
@@ -400,10 +412,12 @@ describe("the dashboard", () => {
         expect([bar.props["aria-label"], bar.props["aria-valuetext"]]).toEqual(["Pair", "Step 3 of 3"]);
       });
 
-      it("offers no Back once the PC is ready or the pairing failed, and draws the failure without a step", async () => {
+      it("keeps the ready checkpoint on the card, offers no Back once the pairing failed, and draws the failure without a step", async () => {
+        // a saved PC's enrollment retry reaches ready too: it is not drawn as a pairing step
         await mount(props({ kind: "ready", name: "Desk", server_id: EXPECTED, enrollment: "local" }));
+        expect(renderer!.root.findAll((node) => node.props.className === "relay-step")).toEqual([]);
         expect(backOf()).toEqual([]);
-        expect(stepOf()).toBe(3);
+        expect(stepOf()).toBeNull();
         await act(async () => { renderer!.unmount(); });
         await mount(props({ kind: "failed", failure: "pair-declined", name: "Desk", detail: null, server_id: EXPECTED, pairing: true }));
         expect(backOf()).toEqual([]);

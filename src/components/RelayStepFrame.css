@@ -48,7 +48,11 @@
 .relay-step-back::before {
   content: "";
   position: absolute;
-  inset: calc((var(--space-8) - var(--touch-target)) / 2);
+  top: 50%;
+  left: 50%;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  transform: translate(-50%, -50%);
 }
 
 .relay-step-back > svg {
@@ -204,6 +208,8 @@
 }
 
 .relay-step-details > summary {
+  min-height: var(--touch-target);
+  line-height: var(--touch-target);
   color: var(--text);
   cursor: pointer;
 }

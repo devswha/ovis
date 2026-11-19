@@ -179,12 +179,17 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
     : state.kind === "outdated" && state.update.phase === "reading" ? t("Checking {name}…", { name: pc })
     : state.kind === "outdated" && state.update.phase === "installing" ? (progress ? `${progress.step}: ${t(progress.label)}` : t("Asking the PC to update…"))
     : state.kind === "outdated" && state.update.phase === "restarting" ? t("Waiting for {name} to restart…", { name: pc }) : null;
+  // the press removes the button that had the focus: the heading of what follows takes it, so a keyboard keeps its place
+  const pressedTitle = useRef<HTMLHeadingElement>(null);
+  const pressed = state.kind === "compare" && state.confirmed;
+  useEffect(() => {
+    if (pressed && (document.activeElement === null || document.activeElement === document.body)) pressedTitle.current?.focus();
+  }, [pressed]);
   const announcedStatus = useAnnouncedText(statusText);
 
   return (
     <>
       <div className="visually-hidden" role="status">{announcedStatus}</div>
-      {state.kind === "ready" && <SheepMascot screen="done" size={56} badge />}
       {state.kind === "ready" && onOpenPc && <ReadyCheckpoint open={onOpenPc} cancel={onCancel} state={state} retry={onRetry} />}
       {signInFirst && (
         <>
@@ -274,7 +279,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
       {state.kind === "compare" && !(state.typed && !state.confirmed) && (
         <>
           <SheepMascot screen="waiting" size={56} badge />
-          <h1 className="relay-shell-title">{state.confirmed ? t("Approve on the PC if it shows the same number") : t("Does {name} show this number?", { name: pc })}</h1>
+          <h1 className="relay-shell-title" ref={pressedTitle} tabIndex={-1}>{state.confirmed ? t("Approve on the PC if it shows the same number") : t("Does {name} show this number?", { name: pc })}</h1>
           {!state.confirmed && <p className="relay-shell-copy">{t("If they match, approve this device on {name}.", { name: pc })}</p>}
           <div className="relay-step-cards">
             <div className="relay-step-card relay-step-number">
