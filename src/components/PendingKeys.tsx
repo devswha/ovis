@@ -37,14 +37,18 @@ export function PendingKeys({ pending, onDecline }: { pending: readonly PendingK
   );
 }
 
-/** The device's side while its key waits (T71): the same fingerprint the PC's screen shows. */
-export function KeyFingerprintWait({ pc, fingerprint }: { pc: string; fingerprint: string }) {
+/**
+ * The device's side while its key waits (T71): the fingerprint this device computed itself from its own pairing
+ * target, the PC's challenge and its own key; never a value a PC or relay sent. Null where the PC has no screen
+ * proof (macOS, Windows): then there is nothing true to compare, and the device only says to approve on the PC.
+ */
+export function KeyFingerprintWait({ pc, fingerprint }: { pc: string; fingerprint: string | null }) {
   const t = useT();
   return (
     <div className="pending-keys" role="status">
       <p>{t("Approve this device on {pc}'s screen", { pc })}</p>
-      <p className="pending-key-fingerprint">{fingerprint}</p>
-      <p className="settings-hint">{t("The PC shows the same code.")}</p>
+      {fingerprint !== null && <p className="pending-key-fingerprint">{fingerprint}</p>}
+      {fingerprint !== null && <p className="settings-hint">{t("The PC shows the same code.")}</p>}
     </div>
   );
 }
