@@ -8,6 +8,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PcAccountState } from "./pc-binding.ts";
 import { pairingPc, memberRow, signIn, ask, type Pc } from "./pairing.test-helpers.ts";
+import { bounded } from "../relay/test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -99,4 +100,16 @@ test("P11: a lock taken under the PC's account holds after that binding is clear
   binding.clear("left_on_pc", "pc");
   binding.bind("acct_2", made.member.key.spki);
   expect((await made.local("/api/devices")).body.error?.code).toBe("locked");
+});
+
+test("S19: while the log cannot be read, the PC's screen still confirms acts", async () => {
+  let push!: (line: string) => void;
+  const input = new ReadableStream<Uint8Array>({ start(controller) { push = (line) => controller.enqueue(new TextEncoder().encode(line)); } });
+  const made = await pairingPc({ startRelay: false, server: { accountOpensAll: true, desktopOwner: { input, write: () => {} } },
+    prepare: (dir) => { writeFileSync(join(dir, "account-log.json"), "not json", { mode: 0o600 }); } });
+  pcs.push(made);
+  const confirms = made.app.context.services.localConfirms!;
+  const { id } = confirms.request({ kind: "leave_account" }, { title: "Leave the account", lines: [] });
+  push(`${JSON.stringify({ approve: id })}\n`);
+  expect(await bounded(confirms.answer(id))).toBe("approved");
 });
