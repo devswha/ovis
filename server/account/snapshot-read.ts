@@ -40,8 +40,11 @@ export interface SnapshotPorts {
   classify(record: unknown): RecordClass;
   /** Applies a block or a remove now; true when it raised `gen`. */
   deny(record: BlockRecord | unknown): Promise<boolean>;
-  /** This PC's own age authority for a lift the service took: its signer is older here than the blocked key. */
-  liftAuthority(lift: DeviceLiftRecord): boolean;
+  /**
+   * This PC's own authority for a lift the service took (DeviceStore.liftAuthority): its signature holds and its signer
+   * is older here than the blocked key and not removed. Asked before the commit turn; a change it relied on raises gen.
+   */
+  liftAuthority(lift: DeviceLiftRecord): Promise<boolean>;
   /** Synchronous: every guard again, then the journal, the files and memory, in one turn. */
   commit(stage: StagedRead): void;
   methodsVersion(): number | null;
@@ -109,14 +112,16 @@ export async function readSnapshot(
     throw error;
   }
 
+  const authorized: DeviceLiftRecord[] = [];
+  for (const lift of snapshot.lifts) if (await ports.liftAuthority(lift)) authorized.push(lift);
+
   // the commit turn: nothing below awaits, so no denial can land between these checks and the write
   const now = ports.scope();
   if (now === null || now.account !== noted.account || now.serverId !== noted.serverId || now.lock !== noted.lock) return refused("scope_changed");
   if (now.gen !== noted.gen + raised) return refused("generation_changed");
-  const lifts = snapshot.lifts.filter((lift) => ports.liftAuthority(lift));
-  ports.commit({ snapshot, adds, lifts });
+  ports.commit({ snapshot, adds, lifts: authorized });
   if (ports.methodsVersion() !== snapshot.methods_version) ports.journalMethod(snapshot.methods_version);
-  return { committed: true, snapshot: snapshot.snapshot, denials, liftsRefused: snapshot.lifts.length - lifts.length };
+  return { committed: true, snapshot: snapshot.snapshot, denials, liftsRefused: snapshot.lifts.length - authorized.length };
 }
 
 export type HandedOutcome =

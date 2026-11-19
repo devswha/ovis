@@ -39,7 +39,7 @@ async function setup(opensAll: boolean, devices: number) {
     knownBlocks: () => new Set(),
     classify: () => "invalid",
     deny: async () => false,
-    liftAuthority: () => false,
+    liftAuthority: async () => false,
     commit: (stage) => { committed.push(stage); },
     methodsVersion: () => null,
     journalMethod: () => {},
