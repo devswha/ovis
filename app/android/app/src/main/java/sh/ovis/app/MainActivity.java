@@ -391,9 +391,10 @@ public class MainActivity extends BridgeActivity {
                         // Chromium reports a page that failed as loaded too, before the error page;
                         // only a page of this very PC (its scheme, host and port, and its scope for a relay PC) counts
                         String url = webView.getUrl();
-                        if (pageFailed || url == null || !PCStore.belongs(url, pc)) return;
+                        // a page that finishes once this activity is leaving (reopen) is not the page the app shows next
+                        if (leaving || pageFailed || url == null || !PCStore.belongs(url, pc)) return;
                         signingIn = false;
-                        PCStore.pendingStart = null;
+                        PCStore.startLoaded(pc);
                         PCStore.fail(null, null);
                         PCStore.redirects = 0;
                         pageLoaded = true;
