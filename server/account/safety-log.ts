@@ -376,17 +376,17 @@ export function mergeSafetyLogs(active: string, sibling: string): string | null 
       if (whole !== undefined && (whole.kind !== line.kind || whole.account !== line.account || whole.target !== line.target)) return `The account safety logs of ${active} and ${sibling} hold two different records under the id ${line.id}`;
     }
     const base = [...a.base, ...b.base.filter((line) => !a.base.some((own) => own.id === line.id))];
-    // one block noted twice: both folders keep one arrival note, the stricter (lower freeze line, signer removed if
-    // either saw it so) (P21, P24)
-    const notes = new Map<string, BlockAsOf>();
+    // one block noted in both folders (P21): the lower freeze line in both, and the signer not removed if either folder
+    // saw it a member when the block arrived; `joined` and the numbers stay each folder's own, as admit_no is
+    const lower = (x: number | null, y: number | null) => x === null ? y : y === null ? x : Math.min(x, y);
+    const shared = new Map<string, { after: number | null; signer_removed: boolean }>();
     for (const entry of [...a.entries, ...b.entries]) {
       if (entry.asof === undefined) continue;
-      const known = notes.get(entry.record.id);
-      if (known === undefined) { notes.set(entry.record.id, entry.asof); continue; }
-      const lower = (x: number | null, y: number | null) => x === null ? y : y === null ? x : Math.min(x, y);
-      notes.set(entry.record.id, { ...known, after: lower(known.after, entry.asof.after), signer_removed: known.signer_removed || entry.asof.signer_removed });
+      const known = shared.get(entry.record.id);
+      shared.set(entry.record.id, known === undefined ? { after: entry.asof.after, signer_removed: entry.asof.signer_removed }
+        : { after: lower(known.after, entry.asof.after), signer_removed: known.signer_removed && entry.asof.signer_removed });
     }
-    const strictest = (entry: SafetyEntry): SafetyEntry => entry.asof === undefined ? entry : { ...entry, asof: notes.get(entry.record.id)! };
+    const strictest = (entry: SafetyEntry): SafetyEntry => entry.asof === undefined ? entry : { ...entry, asof: { ...entry.asof, ...shared.get(entry.record.id)! } };
     const folded = new Set(base.map((line) => line.id));
     const merged = (mine: typeof a, theirs: typeof a): LogFile => {
       const held = new Set(mine.entries.map((entry) => entry.record.id));
