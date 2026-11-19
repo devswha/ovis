@@ -71,7 +71,12 @@ export async function tryWindowsProcessTable(timeoutMs = 10_000, command: string
   try {
     const probe = Bun.spawn(command, { windowsHide: true, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: timeoutMs, killSignal: "SIGKILL" });
     const [code, out] = await Promise.all([probe.exited, new Response(probe.stdout).text()]);
-    return code === 0 ? parseProcessTable(out) : null;
+    if (code !== 0 || out.trim().length === 0) return null;
+    let value: unknown;
+    try { value = JSON.parse(out); } catch { return null; }
+    const entries = Array.isArray(value) ? value : [value];
+    const valid = entries.every((entry) => entry !== null && typeof entry === "object" && typeof (entry as Record<string, unknown>).ProcessId === "number" && typeof (entry as Record<string, unknown>).ParentProcessId === "number");
+    return valid ? parseProcessTable(out) : null;
   } catch { return null; }
 }
 

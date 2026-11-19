@@ -187,6 +187,11 @@ it("refuses a Windows lock from before the process started and a pane without Ki
 
 it("distinguishes an unavailable Windows process table from a successful empty one", async () => {
   expect(await tryWindowsProcessTable(1_000, [process.execPath, "-e", "console.log('[]')"])).toEqual([]);
+  expect(await tryWindowsProcessTable(1_000, [process.execPath, "-e", "console.log('not json')"])).toBeNull();
+  expect(await tryWindowsProcessTable(1_000, [process.execPath, "-e", "console.log('null')"])).toBeNull();
+  expect(await tryWindowsProcessTable(1_000, [process.execPath, "-e", "console.log('{}')"])).toBeNull();
+  expect(await tryWindowsProcessTable(1_000, [process.execPath, "-e", "console.log('[{}]')"])).toBeNull();
+  expect(await tryWindowsProcessTable(1_000, [process.execPath, "-e", ""])).toBeNull();
   expect(await tryWindowsProcessTable(1_000, [process.execPath, "-e", "process.exit(1)"])).toBeNull();
 });
 
