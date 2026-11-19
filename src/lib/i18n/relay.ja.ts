@@ -18,6 +18,7 @@ export const RELAY_JA: Record<string, string> = {
   "{name} is off, has no network, or Ovis is not running on it. Start it, or wait for it to come back, then try again.": "{name}は電源が切れているか、ネットワークがないか、Ovis が実行されていません。起動するか、戻るのを待ってから、もう一度お試しください。",
   "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name}は応答しましたが、時間内に接続を完了できませんでした。ビジー状態か、再起動中の可能性があります。もう一度お試しください。繰り返す場合は{name}で Ovis を再起動してください。",
   "This device could not reach the relay. Check this device's network, then try again.": "このデバイスからリレーに接続できませんでした。このデバイスのネットワークを確認してから、もう一度お試しください。",
+  "The relay turned this device away. Wait a minute, then try again.": "リレーがこのデバイスの接続を断りました。1分ほど待ってから、もう一度お試しください。",
   "{name} and this app speak different versions of the relay protocol. Update Ovis on the PC, then try again.": "{name}とこのアプリのリレープロトコルのバージョンが異なります。PCのOvisを更新してから、もう一度お試しください。",
   "Its pairing was revoked on the PC, so this device's key for it is gone. To pair again, scan a new QR code on the PC.": "PC側でペアリングが取り消されたため、このデバイスのキーも削除されました。再度ペアリングするには、PCで新しいQRコードをスキャンしてください。",
   "This phone forgot {name}": "このスマホは{name}を削除しました",

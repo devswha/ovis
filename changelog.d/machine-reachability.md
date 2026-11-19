@@ -9,3 +9,6 @@
 - In the PCs table, a long state wraps to a second line instead of being cut off.
 - When the account service cannot be reached, the PCs it listed no longer turn "Machine offline" fifteen
   minutes later by this device's clock: they keep what the account last said.
+- When the relay turns this device away (it is busy), a PC reads "Could not reach this machine" and says the
+  relay turned this device away, instead of blaming this device's network or calling the PC offline. Open says the
+  same.

@@ -17,13 +17,17 @@ export function outOfReachWord(state: OutOfReach, t: Translate): string {
   }
 }
 
-export function outOfReachReason(pc: { readonly displayState: DashboardState; readonly last_seen_at: string | null }, t: Translate, now?: number): string | null {
+export function outOfReachReason(pc: { readonly displayState: DashboardState; readonly last_seen_at: string | null; readonly check?: PcStatus | null }, t: Translate, now?: number): string | null {
   switch (pc.displayState) {
     case "offline": {
       const cause = t("It is off, has no network, or Ovis is not running on it.");
       return pc.last_seen_at === null ? cause : `${t("Last seen {when}.", { when: lastSeen(pc.last_seen_at, now) })} ${cause}`;
     }
-    case "unreachable": return t("This device could not reach the relay. Check this device's network.");
+    case "unreachable": {
+      const found = pc.check?.kind === "checking" ? pc.check.previous : pc.check;
+      return found?.kind === "offline" && found.reason === "refused" ? t("The relay turned this device away. Wait a minute, then check again.")
+        : t("This device could not reach the relay. Check this device's network.");
+    }
     case "paired": case "unchecked": case "needs-approval": case "needs-update": return null;
   }
 }

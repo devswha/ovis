@@ -267,7 +267,7 @@ export function PcStatusLine({ status, lastSeenAt = null }: { readonly status: P
   if (status.kind === "answered") return <ConnectionLine state={{ kind: "answered", route: status.route, ...(status.relay === undefined ? {} : { relay: status.relay }), rttMs: status.rttMs }} />;
   if (status.kind === "checking") return <ConnectionLine state={{ kind: "checking" }} />;
   const away = status.reason === "pc" ? "offline" : "unreachable";
-  return <ConnectionLine state={{ kind: "offline", text: outOfReachWord(away, t) }} reason={outOfReachReason({ displayState: away, last_seen_at: lastSeenAt }, t)} />;
+  return <ConnectionLine state={{ kind: "offline", text: outOfReachWord(away, t) }} reason={outOfReachReason({ displayState: away, last_seen_at: lastSeenAt, check: status }, t)} />;
 }
 
 export function CheckPcsButton({ status, onCheck }: { readonly status: ReadonlyMap<string, PcStatus>; readonly onCheck: () => void }) {

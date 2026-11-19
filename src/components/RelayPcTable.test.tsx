@@ -466,14 +466,20 @@ describe("RelayPcTable", () => {
       // the table's row keeps one line and says why in its state word's title; a phone's row says it on a line of its own
       return {
         state: /data-pc-state="([^"]+)"/.exec(row)?.[1],
+        dot: /class="status-dot" data-state="([^"]+)"/.exec(row)?.[1],
         word,
         why: phone ? /class="relay-pc-probe-line">([^<]+)</.exec(row)?.[1] : title.slice(`${word} · `.length),
         action: /data-pc-action="([^"]+)"/.exec(row)?.[1],
       };
     };
-    const offline = { state: "offline", word: "Machine offline", why: "Last seen just now. It is off, has no network, or Ovis is not running on it.", action: "details" };
-    const unreached = { state: "unreachable", word: "Could not reach this machine", why: "This device could not reach the relay. Check this device's network.", action: "check" };
-    for (const phone of [false, true]) expect([said({ kind: "offline", reason: "pc" }, phone), said({ kind: "offline", reason: "relay" }, phone)]).toEqual([offline, unreached]);
+    const offline = { state: "offline", dot: "offline", word: "Machine offline", why: "Last seen just now. It is off, has no network, or Ovis is not running on it.", action: "details" };
+    const unreached = { state: "unreachable", dot: "failed", word: "Could not reach this machine", why: "This device could not reach the relay. Check this device's network.", action: "check" };
+    const turnedAway = { ...unreached, why: "The relay turned this device away. Wait a minute, then check again." };
+    for (const phone of [false, true]) {
+      expect([said({ kind: "offline", reason: "pc" }, phone), said({ kind: "offline", reason: "relay" }, phone), said({ kind: "offline", reason: "refused" }, phone)]).toEqual([offline, unreached, turnedAway]);
+      // a re-check in flight keeps the last finished check's word and why; only the dot says Checking
+      expect(said({ kind: "checking", previous: { kind: "offline", reason: "refused" } }, phone)).toEqual({ ...turnedAway, dot: "checking" });
+    }
     phoneMatches = false;
     // Check again checks this PC alone
     const checked: string[] = [];

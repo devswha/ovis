@@ -12,7 +12,8 @@ export type PcStatus =
   | { readonly kind: "checking"; readonly previous?: PcFinding }
   /** the PC finished the encrypted handshake on `route`; the check stops before signing in, so this device's own admission is not known */
   | { readonly kind: "answered"; readonly route: DeviceRoute; readonly relay?: string; readonly rttMs: number }
-  | { readonly kind: "offline"; readonly reason: "pc" | "relay" };
+  /** `pc`: the relay had nobody for it; `refused`: the relay turned this device away; `relay`: no relay was reached, or one failed saying nothing */
+  | { readonly kind: "offline"; readonly reason: "pc" | "refused" | "relay" };
 
 /** A finished check's result. */
 export type PcFinding = Exclude<PcStatus, { kind: "checking" }>;
@@ -55,5 +56,5 @@ export async function checkPc(device: RelayDevice, sockets: PcCheckSockets, prob
     else if (first.kind === "silent" && found.kind === "silent") found = first;
   }
   return found.kind === "answered" ? { kind: "answered", route: "relay", relay, rttMs: found.ms }
-    : { kind: "offline", reason: found.kind === "silent" ? "pc" : "relay" };
+    : { kind: "offline", reason: found.kind === "silent" ? "pc" : found.kind === "refused" ? "refused" : "relay" };
 }

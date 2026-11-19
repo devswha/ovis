@@ -18,6 +18,7 @@ export const RELAY_KO: Record<string, string> = {
   "{name} is off, has no network, or Ovis is not running on it. Start it, or wait for it to come back, then try again.": "{name}의 전원이 꺼져 있거나, 네트워크가 없거나, Ovis가 실행되고 있지 않습니다. 켜거나 다시 연결될 때까지 기다린 뒤 다시 시도하세요.",
   "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name}에서 응답이 왔지만 제때 연결을 마치지 못했습니다. 바쁘거나 다시 시작하는 중일 수 있습니다. 다시 시도하고, 계속 그러면 {name}에서 Ovis를 다시 시작하세요.",
   "This device could not reach the relay. Check this device's network, then try again.": "이 기기에서 릴레이에 연결하지 못했습니다. 이 기기의 네트워크를 확인한 뒤 다시 시도하세요.",
+  "The relay turned this device away. Wait a minute, then try again.": "릴레이가 이 기기의 연결을 거절했습니다. 1분 뒤 다시 시도하세요.",
   "{name} and this app speak different versions of the relay protocol. Update Ovis on the PC, then try again.": "{name}의 릴레이 프로토콜 버전이 이 앱과 다릅니다. PC의 Ovis를 업데이트한 뒤 다시 시도하세요.",
   "Its pairing was revoked on the PC, so this device's key for it is gone. To pair again, scan a new QR code on the PC.": "PC에서 페어링이 폐기되어 이 기기의 해당 키도 삭제되었습니다. 다시 페어링하려면 PC에서 새 QR 코드를 스캔하세요.",
   "This phone forgot {name}": "이 폰에서 {name}의 페어링을 지웠습니다",

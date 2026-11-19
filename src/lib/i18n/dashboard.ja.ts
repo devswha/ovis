@@ -89,6 +89,7 @@ export const DASHBOARD_JA: Record<string, string> = {
   "It is off, has no network, or Ovis is not running on it.": "電源が切れているか、ネットワークがないか、Ovis が実行されていません。",
   "Last seen {when}.": "最終確認: {when}。",
   "This device could not reach the relay. Check this device's network.": "このデバイスからリレーに接続できませんでした。このデバイスのネットワークを確認してください。",
+  "The relay turned this device away. Wait a minute, then check again.": "リレーがこのデバイスの接続を断りました。1分ほど待ってから、もう一度確認してください。",
   "View all {count}": "すべて表示 ({count})",
   "No PCs yet": "まだ PC がありません",
   "1 relay": "リレー 1 か所",

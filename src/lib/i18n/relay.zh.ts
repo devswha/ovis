@@ -18,6 +18,7 @@ export const RELAY_ZH: Record<string, string> = {
   "{name} is off, has no network, or Ovis is not running on it. Start it, or wait for it to come back, then try again.": "{name} 已关机、没有网络，或者其上的 Ovis 没有运行。请启动它，或等待它恢复，然后重试。",
   "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name} 有响应，但没有及时完成连接。它可能正忙或正在重启。请重试；如果一直这样，请在 {name} 上重启 Ovis。",
   "This device could not reach the relay. Check this device's network, then try again.": "此设备无法连接中继。请检查此设备的网络，然后重试。",
+  "The relay turned this device away. Wait a minute, then try again.": "中继拒绝了此设备的连接。请等一分钟后重试。",
   "{name} and this app speak different versions of the relay protocol. Update Ovis on the PC, then try again.": "{name} 与此应用使用的中继协议版本不同。请更新电脑上的 Ovis，然后重试。",
   "Its pairing was revoked on the PC, so this device's key for it is gone. To pair again, scan a new QR code on the PC.": "电脑上已撤销配对，此设备对应的密钥也已删除。要重新配对，请在电脑上扫描新的二维码。",
   "This phone forgot {name}": "此手机已忘记 {name}",

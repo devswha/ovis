@@ -38,7 +38,7 @@ export interface RelayPcDetailsProps {
 /** Why this device's check got no answer, where the State row does not say it already (a PC that needs an update). */
 function checkCauseText(check: PcStatus | null, t: ReturnType<typeof useT>): string | null {
   if (check === null || check.kind !== "offline") return null;
-  return outOfReachReason({ displayState: check.reason === "pc" ? "offline" : "unreachable", last_seen_at: null }, t);
+  return outOfReachReason({ displayState: check.reason === "pc" ? "offline" : "unreachable", last_seen_at: null, check }, t);
 }
 
 export function RelayPcDetails({
