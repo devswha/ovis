@@ -1,3 +1,4 @@
+import { AccountMailbox } from "./mailbox.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
@@ -83,6 +84,25 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
       expect(services.devices.hasKey(key)).toBe(delivery === "handed before a read");
     });
   }
+
+  test("T60: the mailbox acknowledges a block only after the PC has its numbered receipt", async () => {
+    const { services, service, identity, member, fixture } = await server(true);
+    const target = await relayDevice(fixture);
+    const record = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.publicKey, target_no: 2,
+      signer: member.publicKey, signer_no: 1, signed_at: "2026-11-01T00:00:00.000Z", nonce: newRecordId() }, member.keys.privateKey);
+    const acknowledged: unknown[] = [];
+    const mailbox = new AccountMailbox({ devices: services.devices, identity: () => identity, service: "https://account.test",
+      fetch: async (request) => {
+        if (new URL(request.url).pathname !== "/v1/pc/mailbox") return service.fetch(request);
+        const { ack } = await request.json();
+        if (ack === 1) acknowledged.push(services.safetyLog?.receipt(record.id));
+        return Response.json({ records: ack === null ? [{ seq: 1, record }] : [] });
+      },
+    });
+    await mailbox.pull();
+    expect(acknowledged).toEqual([{ outcome: "applied", id: record.id, n: 1 }]);
+    expect(services.devices.has(target.id)).toBe(false);
+  });
 
   test("T60: only a negotiated refusal with the signer's valid proof carries its PC receipts", async () => {
     const { services, service, member, identity, fixture } = await server(true);
