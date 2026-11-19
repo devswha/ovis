@@ -139,11 +139,9 @@ describe("todayMachinesView: what today's data does not know", () => {
   });
 });
 
-test("a failed check the directory has seen the PC after says nothing of it now: the row reads as today's directory does", () => {
+test("a failed check by this device offers a new try whatever the directory saw since: it is this device's own word", () => {
   for (const reason of ["pc", "relay"] as const) {
     const failed = checkOf({ kind: "offline", reason });
-    expect(machineStateOf(pc("paired", true, { last_seen_at: LATER }), failed)).toEqual({ kind: "unchecked", checking: false, lastSeenAt: LATER });
-    // seen before the check failed: the check still says it
-    expect(machineStateOf(pc("paired", true), failed)).toEqual(reason === "pc" ? noAnswer : unreachable);
+    expect(machineStateOf(pc("paired", true, { last_seen_at: LATER }), failed).kind).toBe("unreachable");
   }
 });

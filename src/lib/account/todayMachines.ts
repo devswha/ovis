@@ -47,9 +47,7 @@ export function machineStateOf(pc: MyPc, check: MachineCheck): MachineState {
   if (pc.state === "needs-update") return { kind: "needs-update", knowsThisDevice: pc.paired };
   // only paired PCs are checked (pcSweep.ts), and asking to join a PC that is off can only fail
   if (!pc.paired) return pc.state === "offline" ? offline : { kind: "needs-approval", canAsk: pc.join !== undefined };
-  // a failed check the directory has seen the PC after says nothing of it now
-  const settled = check.settled !== null && check.settled.status.kind === "offline" && pc.last_seen_at !== null
-    && Date.parse(pc.last_seen_at) > Date.parse(check.settled.at) ? null : check.settled;
+  const settled = check.settled;
   if (settled !== null) {
     switch (settled.status.kind) {
       case "answered": return { kind: "ready", route: { via: settled.status.route === "relay" ? "relay" : "direct", delayMs: settled.status.rttMs } };
