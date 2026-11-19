@@ -7,6 +7,7 @@ import { fixtureView } from "../lib/account/machinesView.fixtures.ts";
 import type { Machine } from "../lib/account/machinesView.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { MyMachinesList } from "./MyMachinesList.tsx";
+import { opensFromHere } from "./myMachinesWords.ts";
 
 const NOW = Date.parse("2026-11-14T04:20:00Z");
 const none = (): void => {};
@@ -40,5 +41,13 @@ describe("a machine that needs an update", () => {
   it("offers only Details to a device it does not know", () => {
     const stranger: Machine = { ...behind, state: { kind: "needs-update", knowsThisDevice: false } };
     expect(rowActions(list([stranger])).get(behind.id)).toBe("details");
+  });
+});
+
+describe("opensFromHere", () => {
+  it("offers Open for a machine this device's check could not reach: opening waits longer than a check", () => {
+    expect(opensFromHere({ kind: "unreachable", reason: "no-answer", triedAt: "2026-11-14T04:19:00Z" })).toBe(true);
+    expect(opensFromHere({ kind: "unreachable", reason: "relay-unreachable", triedAt: "2026-11-14T04:19:00Z" })).toBe(true);
+    expect(opensFromHere({ kind: "offline", reason: "not-connected", lastSeenAt: null })).toBe(false);
   });
 });

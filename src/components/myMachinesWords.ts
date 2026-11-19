@@ -50,12 +50,15 @@ export function signerName(signer: DeviceRef, t: Translate): string {
   return signer.name ?? t("A key with no name");
 }
 
-/** Whether Open is offered: a ready or unchecked machine, or one that needs an update and still knows this device. */
+/**
+ * Whether Open is offered: a ready or unchecked machine, one that needs an update and still knows this device, and
+ * one this device's check could not reach, since opening waits longer than a check does.
+ */
 export function opensFromHere(state: MachineState): boolean {
   switch (state.kind) {
-    case "ready": case "unchecked": return true;
+    case "ready": case "unchecked": case "unreachable": return true;
     case "needs-update": return state.knowsThisDevice;
-    case "offline": case "unreachable": case "joining": case "removed": case "needs-approval": return false;
+    case "offline": case "joining": case "removed": case "needs-approval": return false;
     default: return unreachableMember(state);
   }
 }
