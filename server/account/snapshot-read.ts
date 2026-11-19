@@ -103,7 +103,8 @@ export async function readSnapshot(
   }
 
   const authorized: DeviceLiftRecord[] = [];
-  for (const lift of snapshot.lifts) if (await ports.liftAuthority(lift)) authorized.push(lift);
+  const removed = new Set(snapshot.removed.map((row) => row.key));
+  for (const lift of snapshot.lifts) if (!removed.has(lift.signer) && await ports.liftAuthority(lift)) authorized.push(lift);
 
   // the commit turn: nothing below awaits, so no denial can land between these checks and the write
   const now = ports.scope();

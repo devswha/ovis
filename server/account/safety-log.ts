@@ -353,6 +353,36 @@ export class SafetyLog {
     return { outcome: "applied", id, n: entry.n };
   }
 
+  /** Number a whole read's lifts together; no new receipt counts until the single replacement succeeds. */
+  commitLifts(lifts: readonly import("../../shared/account-records.ts").DeviceLiftRecord[]): { added: number; receipts: SafetyReceipt[] } {
+    if (lifts.length === 0) return { added: 0, receipts: [] };
+    const unavailable = () => ({ added: 0, receipts: lifts.map((record): SafetyReceipt => ({ outcome: "refused", id: record?.id ?? "", code: "log_unavailable" })) });
+    if (this.strict !== null || !this.load()) return unavailable();
+    const next = { ...this.file, entries: [...this.file.entries] };
+    const receipts = lifts.map((record): SafetyReceipt => {
+      const id = typeof record?.id === "string" ? record.id : "";
+      if (recordProblem(record, undefined) !== null || record.kind !== "lift" || record.signer === "pc") return { outcome: "refused", id, code: "record_invalid" };
+      const held = next.entries.find((entry) => entry.record.id === id);
+      if (held) return sameRecord(held.record, record) ? { outcome: "applied", id, n: held.n } : { outcome: "refused", id, code: "conflict" };
+      if (next.base.some((line) => line.id === id)) return { outcome: "already_applied", id };
+      const n = next.next++;
+      next.entries.push({ n, record: { ...record }, got: "snapshot" });
+      return { outcome: "applied", id, n };
+    });
+    const refused = receipts.filter((receipt) => receipt.outcome === "refused");
+    if (refused.length) return { added: 0, receipts: refused };
+    const added = next.next - this.file.next;
+    if (added) {
+      try { this.writeFile(next); } catch (error) {
+        this.writeError = `Cannot write ${this.path} (${error instanceof Error ? error.message : String(error)})`;
+        this.inForce = STRICT_STATE;
+        return unavailable();
+      }
+      this.inForce = this.state();
+    }
+    return { added, receipts };
+  }
+
 
   /** What is in force, worked out from the log alone. Each ending ends only the record it names, and only of its kind. */
   state(): SafetyState {

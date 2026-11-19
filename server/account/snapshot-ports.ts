@@ -46,7 +46,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       const entry = safetyLog.state().freezes.find(({ record }) => record.account === lift.account &&
         (record.kind === "block" ? record.id === lift.target : record.kind === "freeze" && record.id === `f:${lift.target}`));
       const target = entry?.record.target;
-      if (!target || deps.order.late(lift.signer)) return false;
+      if (!target || deps.order.late(lift.signer) || !deps.order.registered(lift.signer, lift.account)) return false;
       const signerNo = deps.order.no(lift.signer);
       const targetNo = deps.order.no(target);
       return signerNo !== null && targetNo !== null && signerNo < targetNo && devices.liftAuthority(lift);
@@ -70,12 +70,12 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
         if (receipt.outcome !== "applied") throw new Error("Cannot record the snapshot freeze line");
         pc.raiseGen();
       }
-      for (const lift of stage.lifts) {
-        const receipt = safetyLog.append({ record: lift, got: "snapshot" });
-        if (receipt.outcome === "refused") throw new SnapshotWriteRefused(receipt.code);
-        if (receipt.outcome === "applied") pc.raiseGen();
-      }
+      const { added, receipts } = safetyLog.commitLifts(stage.lifts);
+      const refused = receipts.find((receipt) => receipt.outcome === "refused");
+      if (refused) throw new SnapshotWriteRefused(refused.code);
+      if (added > 0) pc.raiseGen();
       recordOrder();
+      devices.handedLifts.decide(stage.snapshot.lifts);
     },
     methodsVersion: () => deps.order.methodsVersion(),
     journalMethod(version) {

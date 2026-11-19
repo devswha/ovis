@@ -1,4 +1,5 @@
 import { AccountMailbox } from "./mailbox.ts";
+import { HandedLifts } from "./handed-lift.ts";
 import { SafetyLog } from "./safety-log.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -127,7 +128,7 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
     await services.accountMailbox.settle();
     expect(requests()).toBe(before + 1);
     expect(answer.body.results).toEqual([{ id: lift.id, outcome: "refused", code: "read_pending" }]);
-    const waiting = () => SafetyLog.open(fixture.stateDir).snapshot().waiting.map(({ record }) => record);
+    const waiting = () => new HandedLifts(fixture.stateDir).pending();
     expect(waiting()).toEqual([lift]);
     service.opensAll = true;
     expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });

@@ -12,7 +12,13 @@ import { accountDeviceId } from "../../shared/account-records.ts";
 
 export const ACCOUNT_ORDER_FILE = "account-order.json";
 
-interface OrderEntry { readonly no: number; readonly late: boolean }
+interface OrderEntry {
+  readonly no: number | null;
+  readonly late: boolean;
+  /** Unknown for a local-only key or a pin from before membership was recorded. */
+  readonly removed: boolean | null;
+  readonly joined: number | null;
+}
 interface OrderDoc {
   readonly v: 1;
   readonly account: string | null;
@@ -47,8 +53,14 @@ function parse(value: unknown): OrderDoc | null {
     if (typeof doc.bind_id !== "string" || typeof doc.server_id !== "string" || typeof doc.last_version !== "number" || !Number.isSafeInteger(doc.last_version) || doc.last_version < 1) return null;
   }
   if (doc.methods_version !== undefined && (!Number.isSafeInteger(doc.methods_version) || doc.methods_version < 0)) return null;
-  const valid = Object.values(doc.keys).every((entry) => Number.isSafeInteger(entry?.no) && typeof entry?.late === "boolean");
-  return valid ? doc as OrderDoc : null;
+  const keys: Record<string, OrderEntry> = {};
+  for (const [key, entry] of Object.entries(doc.keys)) {
+    if (!entry || (entry.no !== null && !Number.isSafeInteger(entry.no)) || typeof entry.late !== "boolean") return null;
+    if (entry.removed != null && typeof entry.removed !== "boolean") return null;
+    if (entry.joined != null && (!Number.isSafeInteger(entry.joined) || entry.joined < 0)) return null;
+    keys[key] = { ...entry, removed: entry.removed ?? null, joined: entry.joined ?? null };
+  }
+  return { ...doc as OrderDoc, keys };
 }
 
 export class AccountOrder {
@@ -72,6 +84,25 @@ export class AccountOrder {
   /** The key's number in the account's order as this PC saw it, null for a key no whole read listed. */
   no(key: string): number | null {
     return this.doc.keys[key]?.no ?? null;
+  }
+
+  registered(key: string, account: string): boolean {
+    return this.doc.account === account && this.doc.keys[key]?.removed === false;
+  }
+
+  /** A local admission can precede the key's first listing, or even the PC's first binding. */
+  recordJoins(rows: readonly { relay_public_key?: string; origin?: { admit_no: number } }[]): void {
+    if (this.problem !== null) return;
+    const additions: Record<string, OrderEntry> = {};
+    for (const { relay_public_key: key, origin } of rows) {
+      if (key === undefined || origin === undefined || this.doc.keys[key]?.joined != null) continue;
+      const joined = Math.min(origin.admit_no, additions[key]?.joined ?? origin.admit_no);
+      additions[key] = { ...(this.doc.keys[key] ?? { no: null, late: false, removed: null }), joined };
+    }
+    if (Object.keys(additions).length === 0) return;
+    const next = { ...this.doc, keys: { ...this.doc.keys, ...additions } };
+    writePrivateState(this.path, next);
+    this.doc = next;
   }
 
   /** A rowless AUTH names the deterministic account device id, not a public key supplied by its caller. */
@@ -101,16 +132,19 @@ export class AccountOrder {
   prepare(read: OrderedRead, bindId: string): () => void {
     if (this.problem !== null) throw new Error(this.problem);
     const base = this.doc.account === read.account ? this.doc : { ...EMPTY, account: read.account };
-    const known = Object.keys(base.keys).length > 0;
     const keys: Record<string, OrderEntry> = { ...base.keys };
-    let max = base.max_no;
-    const listed = [...read.devices, ...read.removed].sort((a, b) => a.no - b.no);
-    for (const { key, no } of listed) {
-      const pinned = keys[key];
-      if (pinned === undefined) keys[key] = { no, late: known && no <= base.max_no };
-      else if (pinned.no !== no) throw new OrderConflict(key);
+    // Admission numbers belong to this directory. Account numbers never cross a binding to another account.
+    if (base !== this.doc) for (const [key, { joined }] of Object.entries(this.doc.keys)) {
+      if (joined !== null) keys[key] = { no: null, late: false, removed: null, joined };
     }
-    for (const { no } of listed) max = Math.max(max, no);
+    let max = base.max_no;
+    for (const [list, removed] of [[read.devices, false], [read.removed, true]] as const) for (const { key, no } of list) {
+      const pinned = keys[key];
+      if (pinned?.no != null && pinned.no !== no) throw new OrderConflict(key);
+      keys[key] = { no, late: pinned?.no == null ? no <= base.max_no : pinned.late,
+        removed: removed || pinned?.removed === true, joined: pinned?.joined ?? null };
+      max = Math.max(max, no);
+    }
     const next: OrderDoc = { ...base, bind_id: bindId, server_id: read.server_id, last_version: read.version, max_no: max, keys };
     return () => {
       writePrivateState(this.path, next);

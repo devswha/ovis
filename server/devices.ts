@@ -19,6 +19,7 @@ import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safet
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device-journal.ts";
 import type { AccountOrder } from "./account/account-order.ts";
+import { HandedLifts } from "./account/handed-lift.ts";
 import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceSafetyRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import type { BlockReceipt } from "../shared/account-devices-api.ts";
@@ -529,6 +530,7 @@ export class DeviceStore {
    */
   private readonly safety: SafetyLog | null;
   private accountOrder: AccountOrder | null = null;
+  readonly handedLifts: HandedLifts;
   private readonly pc: PcAccountState | null;
   private readonly evidence: RemovalEvidence | null;
   private readonly accountHeld: ((key: string) => boolean) | undefined;
@@ -543,6 +545,7 @@ export class DeviceStore {
   private readonly stateDirPath: string;
   constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; held?: (key: string) => boolean } = {}) {
     this.safety = account.safety ?? null;
+    this.handedLifts = new HandedLifts(stateDir);
     this.pc = account.pc ?? null;
     this.stateDirPath = stateDir;
     this.evidence = account.removals ?? null;
@@ -1143,7 +1146,10 @@ export class DeviceStore {
   }
 
   /** Step 2 (S2-24): the account's order as this PC's whole reads saw it; set only with OVIS_ACCOUNT_OPENS_ALL=1. */
-  attachAccountOrder(order: AccountOrder | null): void { this.accountOrder = order; }
+  attachAccountOrder(order: AccountOrder | null): void {
+    order?.recordJoins(this.devices);
+    this.accountOrder = order;
+  }
 
   /** Whether the account-opens-all release flag is on for this store. */
   opensAll(): boolean { return this.safety !== null; }
@@ -1866,6 +1872,7 @@ export class DeviceStore {
       return false;
     }
     if (this.safety !== null && this.failsClosed) return false;
+    this.accountOrder?.recordJoins([device]);
     if (codeSpent) this.voidPending();
     if (device.account !== undefined) this.endNoAccountCode();
     // A relay enrollment closes the gate immediately, invalidating every first-cookie candidate.
@@ -2724,6 +2731,7 @@ export class DeviceStore {
       this.applyWaitingBlocks();
       if (this.safety !== null && (this.failsClosed || !this.has(deviceId))) return null;
     }
+    this.accountOrder?.recordJoins([updated]);
     this.endNoAccountCode();
     for (const listener of [...this.relinks.get(deviceId) ?? []]) listener(sessionId);
     return this.list(null).find((d) => d.id === deviceId) ?? null;

@@ -123,7 +123,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       const wasMember = blocks.length > 0 && peer.kind === "relay" && devices.isAccountApproverSession(peer.device.id, peer.key);
       const receipts = [];
       for (const block of blocks) receipts.push(await devices.applyBlock(block, "handed"));
-      const gates = { ...mailbox.gates(), deferAdd: devices.opensAll() ? (record: unknown) => mailbox.wait(record) : undefined,
+      const gates = { ...mailbox.gates(), safetyLog: context.services.safetyLog, deferAdd: devices.opensAll() ? (record: unknown) => mailbox.wait(record) : undefined,
         requestRead: devices.opensAll() ? () => { void mailbox.readSnapshot(); } : undefined };
       const remaining = records.filter((record) => !blocks.includes(record));
       // Only a current member's session may leave a removal waiting. A session blocked in this batch may do neither that nor apply any other record.
