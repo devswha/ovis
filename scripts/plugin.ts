@@ -31,7 +31,7 @@ import { COMPILED, entryCommand, ROOT as SERVER_ROOT } from "../server/entries.t
 import { version as builtVersion } from "../package.json";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, platform, uptime } from "node:os";
+import { homedir, platform, uptime, userInfo } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 
 // No application package (node_modules) is loaded with this file: `stop` and `status` must work in a checkout whose
@@ -1258,6 +1258,24 @@ async function status(): Promise<number> {
   return 0;
 }
 
+/** `ovis recover` (scripts/plugin-recover.ts), over the server's recovery socket in this PC's state folder. */
+async function recover(): Promise<number> {
+  const { runRecover } = await import("./plugin-recover.ts");
+  const { askRecovery } = await import("../server/account/recovery.ts");
+  const { createInterface } = await import("node:readline/promises");
+  const lines = process.stdin.isTTY === true ? createInterface({ input: process.stdin, output: process.stdout }) : null;
+  try {
+    return await runRecover(process.argv.slice(3), {
+      out: (text) => process.stdout.write(text),
+      terminal: lines !== null,
+      platform: process.platform,
+      user: userInfo().username,
+      ask: (question) => lines === null ? Promise.resolve("") : lines.question(question),
+      send: (request) => askRecovery(runningStateDir(APP_STATE_DIR), request),
+    });
+  } finally { lines?.close(); }
+}
+
 export async function runPlugin(): Promise<void> {
   const named = process.argv[2] ?? "status";
   const command = Object.hasOwn(COMMAND_ALIASES, named) ? COMMAND_ALIASES[named] : named;
@@ -1266,6 +1284,7 @@ export async function runPlugin(): Promise<void> {
   else if (command === "status") process.exit(await status());
   else if (command === "pair") process.exit(await pair());
   else if (command === "link") process.exit(await linkCommand());
+  else if (command === "recover") process.exit(await recover());
   else if (command === "phone") process.exit(await phone());
   else if (command === "phone-setup") process.exit(await phoneSetup());
   else if (command === "tui") process.exit(await runTui(process.argv.slice(3), { platform: platform(), where: { root: ROOT, home: homedir() }, caller: process.env, settings: env, err: (text) => process.stderr.write(text), on: (signal, handler) => { process.on(signal, handler); return () => process.off(signal, handler); } }));
@@ -1273,10 +1292,11 @@ export async function runPlugin(): Promise<void> {
     const active = activePluginScript(ROOT, port, APP_STATE_DIR);
     if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) process.exit(await handOn(active, process.argv.slice(2)));
     process.stderr.write([
-      "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup|tui>",
+      "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|recover|phone|phone-setup|tui>",
       "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
       "link --code: show a code and a QR code to pair one device instead.",
       "tui: herdr-core's terminals in this terminal, as herdr shows them.",
+      "recover: list the devices that wait for this PC's account to be read; --release <id>... lets them in until then, --undo ends that.",
       "",
     ].join("\n"));
     process.exit(2);
