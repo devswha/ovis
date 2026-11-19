@@ -949,6 +949,19 @@ describe("the hosted shell's front page", () => {
       expect(last().state.kind).toBe("empty");
     });
 
+    it("opens nothing after a refused or cancelled sign-in, whose reason the sign-in screen says", async () => {
+      browser.setVisibility("hidden");
+      const went: string[] = [];
+      const accountStore = memoryAccountStore();
+      await accountStore.set("pending", { "state-1": { service: SERVICE, provider: "github", state: "state-1", verifier: "verifier-123", redirect_uri: "https://app.ovis.sh/", started_at: Date.now() } });
+      await mountRelayShell(mountFor({
+        entryUrl: "https://app.ovis.sh/#error=access_denied&state=state-1", store: deviceStore(await pcs("a".repeat(32))), navigate: (path) => { went.push(path); },
+        accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => Response.json({ pcs: [] }),
+      }));
+      expect(went).toEqual([]);
+      expect(last().state).toMatchObject({ kind: "list", account: { kind: "signed-out" } });
+    });
+
     it("stays on a front page that came with a fragment, or after a PC's own page in this tab", async () => {
       const went: string[] = [];
       const store = deviceStore(await pcs("a".repeat(32)));

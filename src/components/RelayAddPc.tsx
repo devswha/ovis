@@ -5,7 +5,7 @@ import { ChevronLeft, ChevronRight, Globe, QrCode, SquareTerminal, type LucideIc
 
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
-import { serverScopePath } from "../lib/shellMode.ts";
+import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 import { SheepMascot } from "./SheepMascot.tsx";
 
 /** The phone app's QR scanner (@capacitor/barcode-scanner, app/package.json) and its SSH screen (Android's OvisSsh). */
@@ -62,11 +62,12 @@ export function RelayAddPc({ onBack, devices, qr }: {
     setError(null);
     // the plugin's own JS fills these defaults; the page calls the bridge without it (app/web/connect.js)
     void callNative<{ ScanResult?: string }>(SCANNER, "scanBarcode", { hint: 0, scanInstructions: t("Point at the QR code on the PC's screen"), scanButton: false, scanText: " ", cameraDirection: 1, scanOrientation: 3 }).then((result) => {
-      const url = result.ScanResult ? addressOf(result.ScanResult) : null;
-      if (url === null) return;
-      // a pairing link of this app opens here, at its PC's page; another address is a PC's own
-      if (url.origin === window.location.origin) window.location.assign(url.href);
-      else return openAddress(url);
+      if (!result.ScanResult) return;
+      const url = addressOf(result.ScanResult);
+      // a pairing link of this app opens here, at its PC's page; another address is a PC's own; anything else is said
+      if (url !== null && url.origin === window.location.origin && serverIdOfPath(url.pathname) !== null && url.hash.startsWith("#offer=")) window.location.assign(url.href);
+      else if (url !== null && url.origin !== window.location.origin) return openAddress(url);
+      else setError(t("That is not an http or https address."));
     }).catch(failed);
   };
   const submit = (event: FormEvent<HTMLFormElement>): void => {
