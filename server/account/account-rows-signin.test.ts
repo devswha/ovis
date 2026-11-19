@@ -12,6 +12,7 @@ import { AccountDeviceStore } from "./account-devices.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { writePrivateState } from "../private-state.ts";
 import { DeviceJournal } from "./device-journal.ts";
+import { listNotices } from "./list-notices.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
@@ -39,7 +40,7 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
   const clock = { now: Date.now() };
   const rows = new AccountDeviceStore(dir, SERVER, {
     evidence,
-    journal: (entry) => journal.recordAccountRow(entry, evidence),
+    ...listNotices(journal, evidence, (entry) => devices.publish(entry)),
     closeSessions: (id) => { devices.closeAccountSessions(id); },
     heldByDevicesJson: (candidate) => devices.hasKey(candidate),
     admits: (key, account) => devices.admitsFromList(key, account),

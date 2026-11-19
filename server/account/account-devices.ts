@@ -185,6 +185,11 @@ export class AccountDeviceStore implements AccountRowSource {
     return this.rows().some((row) => row.id === id && row.state === "live");
   }
 
+  /** The admission guard for this file's account; a file with no account admits nothing. */
+  private admits(key: string): boolean {
+    return this.file.account !== null && this.ports.admits(key, this.file.account);
+  }
+
   /** Whether row `id` may sign in now. A held row whose ten seconds are over passes the admission guard again first. */
   access(id: string): AccessAnswer {
     const row = this.rows().find((candidate) => candidate.id === id);
@@ -192,7 +197,7 @@ export class AccountDeviceStore implements AccountRowSource {
     if (row.state === "live") return { ok: true };
     const seconds = holdSecondsLeft(row.hold_until === null ? null : Date.parse(row.hold_until), this.ports.now());
     if (seconds === null || seconds > 0) return { refused: "join_hold", seconds };
-    if (this.file.account === null || !this.ports.admits(row.key, this.file.account)) return { refused: "admission" };
+    if (!this.admits(row.key)) return { refused: "admission" };
     this.goLive(id);
     return { ok: true };
   }
@@ -200,9 +205,9 @@ export class AccountDeviceStore implements AccountRowSource {
   /** "It's me" for the held row `id` (T53): ends its hold only for an established older row and a passing guard. */
   itsMe(id: string, sayer: Sayer): boolean {
     const row = this.rows().find((candidate) => candidate.id === id && candidate.state === "hold");
-    if (!row || !mayEndHold(sayer, { key: row.key, no: row.no, admitNo: row.origin.admit_no }, this.ports.now())) return false;
-    if (this.file.account === null || !this.ports.admits(row.key, this.file.account)) return false;
-    this.ports.journal({ kind: "its_me", key: row.key, row: row.id, account: this.file.account, by: sayer.key });
+    if (!row || row.hold_until === null || !mayEndHold(sayer, { key: row.key, no: row.no, admitNo: row.origin.admit_no }, this.ports.now())) return false;
+    if (!this.admits(row.key)) return false;
+    this.ports.journal({ kind: "its_me", key: row.key, row: row.id, account: this.file.account, no: row.origin.admit_no, by: sayer.key });
     this.goLive(id);
     return true;
   }

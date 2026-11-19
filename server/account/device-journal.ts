@@ -133,30 +133,32 @@ export class DeviceJournal {
   admitsFromList(): boolean { return this.problem === null && this.doc.open.length < OPEN_NOTICES_MAX; }
 
   /** Appends one entry, on disk when this returns; throws when it cannot be written, so what it records does not happen. */
-  append(input: JournalInput, drop?: RowDrop): JournalEntry {
-    return this.appendEntry(input, undefined, drop);
+  append(input: JournalInput, decides?: string, drop?: RowDrop): JournalEntry {
+    return this.appendEntry(input, undefined, decides, drop);
   }
 
   /** A registry write may be replayed. Row IDs are reused, so a new admission reopens the row's history. */
-  recordAccountRow(entry: AccountRowEntry, evidence: RemovalEvidence): void {
+  /** The entry written, or null when the row's drop is already journalled. */
+  recordAccountRow(entry: AccountRowEntry, evidence: RemovalEvidence): JournalEntry | null {
     if (this.strict !== null) throw new Error(this.strict);
     // If the process stopped between the two replacements, finish the earlier receipt before reusing its slot.
     const prior = this.doc.last_row_drop;
     if (prior) evidence.markJournalled(prior, prior.journalled);
     const drop = entry.drop && (evidence.dropFor(entry.row, entry.drop.admit_no) ?? entry.drop);
-    if (drop?.journalled !== undefined) return;
+    if (drop?.journalled !== undefined) return null;
     if (entry.kind === "drop") {
       // Older journals and interrupted upgrades have no receipt; migrate a still-retained drop once.
       const last = this.doc.entries.filter(event => event.row === entry.row && (event.kind === "admit" || event.kind === "drop")).at(-1);
       if (last?.kind === "drop") {
         if (drop) evidence.markJournalled(drop, last.seq);
-        return;
+        return null;
       }
     }
-    const written = this.append({ kind: entry.kind === "its_me" ? "confirm" : entry.kind, how: entry.kind === "its_me" ? "its_me" : drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
-      row: entry.row, label: entry.label ?? "", by: entry.by ?? null, account: entry.account,
-      ...(entry.kind === "admit" ? { awaitingListCheck: true, two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) }, drop);
+    const written = this.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
+      row: entry.row, label: entry.label ?? "", by: null, account: entry.account,
+      ...(entry.kind === "admit" ? { awaitingListCheck: true, two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) }, undefined, drop);
     if (drop) evidence.markJournalled(drop, written.seq);
+    return written;
   }
 
   /** Make only the surviving admissions visible to notice replay and the open set. */
@@ -186,7 +188,7 @@ export class DeviceJournal {
     }
   }
 
-  private appendEntry(input: JournalInput, liftNumber?: number, drop?: RowDrop): JournalEntry {
+  private appendEntry(input: JournalInput, liftNumber?: number, decides?: string, drop?: RowDrop): JournalEntry {
     if (this.problem !== null) throw new Error(this.strict!);
     const entry: JournalEntry = { ...input, seq: this.doc.next_seq, id: randomBytes(16).toString("hex"), at: new Date().toISOString() };
     let entries = [...this.doc.entries, entry];
@@ -196,7 +198,7 @@ export class DeviceJournal {
       trimmed = cut.at(-1)!.seq;
       entries = entries.slice(cut.length);
     }
-    const open = entry.kind === "admit" && !entry.awaitingListCheck ? [...this.doc.open, entry] : this.doc.open;
+    const open = entry.kind === "admit" && !entry.awaitingListCheck ? [...this.doc.open, entry] : decides === undefined ? this.doc.open : this.doc.open.filter((notice) => notice.id !== decides);
     if (!this.exists) this.companions();
     this.write({ ...this.doc, next_seq: entry.seq + 1, entries, open, trimmed, ...(drop && { last_row_drop: { ...drop, journalled: entry.seq } }),
       ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) });

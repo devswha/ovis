@@ -60,6 +60,7 @@ import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
 import { AccountOrder } from "./account/account-order.ts";
 import { accountRowsFor } from "./account/account-devices.ts";
+import { listNotices } from "./account/list-notices.ts";
 import { RemovalEvidence } from "./account/removal-evidence.ts";
 import { DeviceJournal } from "./account/device-journal.ts";
 import { mergeAccountState } from "./account/account-merge.ts";
@@ -319,17 +320,12 @@ export function createServer(
   // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
   const accountRows = safetyLog !== null && pcAccount !== null && journal !== null && removals !== null ? accountRowsFor(stateDir, serverIdNow, {
     evidence: removals,
-    journal: (entry) => journal.recordAccountRow(entry, removals),
+    ...listNotices(journal, removals, (entry) => devices.publish(entry)),
     closeSessions: (id) => { devices.closeAccountSessions(id); },
     heldByDevicesJson: (key) => devices.hasKey(key),
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
     now: () => Date.now(),
     admitOrigin: (at) => pcAccount.admit("remote", "list", null, at),
-    publish: (entry) => {
-      const notice = journal.openNotices().find((n) => n.row === entry.row && n.no === entry.no && n.key === entry.key);
-      if (!notice) throw new Error("The current admission has no durable notice");
-      devices.publish(notice);
-    },
     firstDevice: {
       othersEver: () => pcAccount.othersEver(),
       setOthersEver: () => { pcAccount.setOthersEver(); },

@@ -1844,15 +1844,15 @@ export class DeviceStore {
    * final admission check passes. A notice it ends is decided.
    */
   itsMe(sayerId: string, noticeId: string): boolean {
-    const held = this.journal?.entries().find((entry) => entry.id === noticeId && entry.kind === "admit")?.row ?? null;
+    const notice = this.journal?.openNotices().find((entry) => entry.id === noticeId);
+    const held = notice?.row ? this.joinedRows?.row(notice.row) : null;
+    if (!held || held.key !== notice?.key || held.origin.admit_no !== notice.no) return false;
     const sayer = this.anyRow(sayerId);
     if (held === null || this.joinedRows === null || sayer === undefined || sayer.relay_public_key === undefined || sayer.origin === undefined) return false;
     const joined = this.joinedRows.row(sayerId);
     const state = joined !== null ? (joined.state === "hold" ? "hold" : "ok" in this.joinedRows.access(sayerId) ? "live" : "waiting")
       : this.stale(sayer) ? "waiting" : "live";
-    const ended = this.joinedRows.itsMe(held, { key: sayer.relay_public_key, drives: sayer.role === "drive", state, no: null, late: false, admitNo: sayer.origin.admit_no, admittedAt: Date.parse(sayer.origin.at) });
-    if (ended) this.decideNotice(noticeId);
-    return ended;
+    return this.joinedRows.itsMe(held.id, { key: sayer.relay_public_key, drives: sayer.role === "drive", state, no: null, late: false, admitNo: sayer.origin.admit_no, admittedAt: Date.parse(sayer.origin.at) });
   }
 
   /** The account rows' store ends the sessions of a row it dropped (P8 step 3 for a list drop, T35). */
