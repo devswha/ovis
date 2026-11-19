@@ -226,13 +226,13 @@ it("leaving copy on the same buffer restores a nonzero entry offset", async () =
   expect(run.grid()[1]?.slice(0, 6)).toBe("row-18");
 });
 
-it("program exit cancels copy and restores the last picture to the entry offset", async () => {
+it("program exit cancels copy, and the pane leaves with its program as herdr's does", async () => {
   const run = await start();
   await run.keys("g,V");
   run.core.program("t1").exit(0);
   await run.advance(20);
   expect(run.loop.model().mode.name).toBe("terminal");
-  expect(run.grid()[11]?.slice(0, 17)).toBe("alpha beta gambit");
+  expect(run.loop.panes.view("t1")).toBeUndefined();
 });
 
 it("output clears an active selection before yank", async () => {

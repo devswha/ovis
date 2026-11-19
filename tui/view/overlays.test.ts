@@ -26,7 +26,8 @@ async function start(core?: FakeHcCore, cols = 120, rows = 40): Promise<Run> {
 /**
  * Each overlay kind, the action that opens it, the control a tap closes it with and the keys that close it: written out
  * here. A dialog drawn as herdr's (the text field, the confirm) closes by its cancel button; the help has no close
- * control until its own content changes with herdr's (docs/tui/visual-parity.md O5) and closes by its keys.
+ * control until its own content changes with herdr's (docs/tui/visual-parity.md O5) and closes by its keys; herdr's menu
+ * has none either.
  */
 const KINDS = [
   { kind: "help", action: "help", control: null, keys: ["esc", "q", "?"] },
@@ -34,13 +35,8 @@ const KINDS = [
   { kind: "text", action: "rename_tab", control: " esc cancel ", keys: ["esc"] },
   { kind: "confirm", action: "close_workspace", control: " esc cancel ", keys: ["esc", "n"] },
   { kind: "goto", action: "goto", control: "[close: esc]", keys: ["esc"] },
-  { kind: "menu", action: "menu", control: "[close: esc]", keys: ["esc"] },
+  { kind: "menu", action: "menu", control: null, keys: ["esc"] },
 ] as const;
-
-const menuLabel = (run: Run, action: string): string => {
-  const menu = run.loop.model().overlays.at(-1) as { entries: readonly { kind: string; action?: string; label: string | null }[] };
-  return menu.entries.find((entry) => entry.kind === "action" && entry.action === action)!.label!;
-};
 
 describe("the overlays' close keys and the about page", () => {
   it("every overlay registry entry shows its close control, and each of its close keys closes it", async () => {
@@ -133,60 +129,9 @@ describe("the overlays' close keys and the about page", () => {
     expect(tab()).toBe("tab0");
   }, TEST_MS);
 
-  it("under an input method the about page is reached through the menu: its letter chooses them", async () => {
-    const run = await start();
-    await run.keys("ctrl+b,ㅑ");
-    await run.advance(20);
-    expect(run.loop.model().notices.map(({ code }) => code)).toContain("ime_prefix");
-    await run.keys("ctrl+b,enter");
-    await run.advance(20);
-    await run.keys(menuLabel(run, "about"));
-    await run.advance(20);
-    expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["about"]);
-  }, TEST_MS);
-
-  it("the lock is an entry of the menu too: choosing it locks the screen", async () => {
-    const run = await start();
-    await run.keys("ctrl+b,enter");
-    await run.advance(20);
-    await run.keys(menuLabel(run, "lock"));
-    await run.advance(20);
-    expect({ locked: run.loop.model().locked, open: run.loop.model().overlays.length }).toEqual({ locked: true, open: 0 });
-  }, TEST_MS);
-
-  it("a menu opened in navigate mode lists the three moves no phone keyboard types, each chosen by its own label; outside navigate mode it lists none", async () => {
-    const run = await start();
-    const entriesOf = () => (run.loop.model().overlays.at(-1) as { entries: readonly { kind: string; action?: string; label: string | null }[] }).entries;
-    const MOVES = ["navigate_move_up", "navigate_move_down", "navigate_move_pane"];
-    run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
-    await run.advance(20);
-    expect(entriesOf().filter((entry) => MOVES.includes(entry.action ?? ""))).toEqual([]);
-    await run.keys("esc");
-    await run.advance(200);
-    await run.keys("ctrl+b,w");
-    await run.advance(20);
-    run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
-    await run.advance(20);
-    const labels = entriesOf().flatMap((entry) => (entry.label === null ? [] : [entry.label]));
-    expect({ unique: new Set(labels).size === labels.length, actionsLabelled: entriesOf().every((entry) => entry.kind !== "action" || /^\S$/.test(entry.label ?? "")) }).toEqual({ unique: true, actionsLabelled: true });
-    expect(entriesOf().filter((entry) => MOVES.includes(entry.action ?? "")).map((entry) => entry.action).sort()).toEqual([...MOVES].sort());
-    for (const move of MOVES) {
-      const before = run.loop.report().actions.length;
-      await run.keys(menuLabel(run, move));
-      await run.advance(50);
-      expect({ move, ran: run.loop.report().actions.slice(before).includes(`run:${move}`), mode: run.loop.model().mode.name }).toEqual({ move, ran: true, mode: move === "navigate_move_pane" ? "terminal" : "navigate" });
-      if (move !== "navigate_move_pane") {
-        run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
-        await run.advance(20);
-      }
-    }
-  }, TEST_MS);
-
   it("a locked screen unlocks by a tap on its LOCKED badge when the chord cannot be typed", async () => {
     const run = await start();
-    await run.keys("ctrl+b,enter");
-    await run.advance(20);
-    await run.keys(menuLabel(run, "lock"));
+    run.loop.dispatch({ type: "action", action: "lock", at: run.clock.current });
     await run.advance(20);
     expect(run.loop.model().locked).toBe(true);
     // the mode bar lies over the panes' last row, right of the sidebar

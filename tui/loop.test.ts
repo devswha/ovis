@@ -903,11 +903,11 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     expect(run.loop.model().notices.map((notice) => [notice.code, notice.calm])).toEqual([["layout_unchanged", true]]);
     return { run };
   }],
-  ["the narrow one-pane view, another pane of its tab chosen in the menu", async () => {
+  ["the narrow one-pane view, another pane of its tab chosen", async () => {
     const run = await start({ fixture: demo, cols: 45, rows: 30 });
     await run.live();
     await run.advance(1);
-    await run.keys("ctrl+b,enter,6");
+    run.loop.dispatch({ type: "select", target: { kind: "pane", id: "t2" }, at: run.clock.current });
     await run.live();
     expect(run.loop.panes.views().map((view) => view.terminal)).toEqual(["t2"]);
     return { run };

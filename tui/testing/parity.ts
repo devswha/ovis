@@ -347,8 +347,8 @@ const DIALOGS: Readonly<Record<string, readonly [number, number]>> = { help: [76
  */
 export const LEFT_OUT: readonly { readonly scene: string; readonly line: string; readonly why: string; readonly narrow?: true }[] = [
   { scene: "settings", line: "O10", why: "herdr's settings screen; the screen has none yet" },
-  { scene: "menu", line: "O6", why: "its overlay is O6's; every other cell is the main scene's" },
-  { scene: "agents-menu", line: "O6", why: "its overlay is O6's; every other cell is the agents scene's" },
+  { scene: "menu", line: "L8", why: "herdr's narrow switcher (a click on switch) covers the screen", narrow: true },
+  { scene: "agents-menu", line: "L8", why: "herdr's narrow switcher (a click on switch) covers the screen", narrow: true },
   { scene: "picker", line: "O7", why: "its overlay is O7's; every other cell is the main scene's" },
   { scene: "agents-picker", line: "O7", why: "its overlay is O7's; every other cell is the agents scene's" },
   { scene: "viewers", line: "P6", why: "forced; this harness draws no second viewer, so the screen's side is the main scene" },
@@ -459,6 +459,7 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
     if (herdrSpan) holes.push(herdrSpan);
     if (ovisSpan) ovisHoles.push(ovisSpan);
   }
+  if (scene === "menu" || scene === "agents-menu") words.push({ herdr: "keybinds", ovis: STRINGS.menuEntries.help.padEnd("keybinds".length) });
   if (scene === "toast-agent") {
     // N2: the agent scenes were captured with herdr's toasts switched on (`ui.toast.delivery = "herdr"`); the screen
     // follows herdr's default, off, and shows none, so herdr's card is left out and every other cell is compared

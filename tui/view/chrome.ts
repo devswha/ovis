@@ -18,7 +18,7 @@ import type { ColorDepth } from "../host/index.ts";
 import { focused } from "../model/focus.ts";
 import { type CopyLook, helpRows, type ModeBar, modeBar, shownRefusals } from "../model/hints.ts";
 import type { KeymapNote } from "../model/keymap.ts";
-import type { MenuEntry } from "../model/menu.ts";
+import { MENU_ENTRIES } from "../model/menu.ts";
 import { type Field, type Overlay, OVERLAYS, pickerList } from "../model/overlays.ts";
 import { chosenAt, type Place } from "../model/picker.ts";
 import type { ModelState } from "../model/reduce.ts";
@@ -30,7 +30,7 @@ import { NO_CELLS, type Rect, type Regions, type SplitCells } from "./geometry.t
 import { hostLayout, type LaidCell } from "./host-layout.ts";
 import type { ShownLink } from "./link-view.ts";
 import { nearest256, type Canvas, type Part, type Scene } from "./paint.ts";
-import type { PaneSpot } from "./screen.ts";
+import { type PaneSpot, RAIL_COLUMNS } from "./screen.ts";
 
 type Colors = Readonly<Record<TuiColorRole, WrittenColor>>;
 
@@ -561,11 +561,6 @@ function paneBanner(view: PaneView | undefined, link: ShownLink): { text: string
   }
 }
 
-/** The text a key-table action is typed with, as the help shows it; null when nothing is bound to it. */
-function keyText(state: ModelState, action: string): string | null {
-  return helpRows(state.keymap).find((row) => row.action === action)?.keys[0] ?? null;
-}
-
 /**
  * A scrollbar's thumb in a track of `track` rows: as long as the screen's share of all the rows (at least one row), and as
  * far down the track as the view is down the history; null when nothing scrolls.
@@ -984,7 +979,7 @@ function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; 
       return { overlays: [...overlays, picker.overlay], input: picker.input, dim: false };
     }
     case "menu":
-      return { overlays: [...overlays, menuPart(width, height, top, state, world, colors)], input: "overlay", dim: false };
+      return { overlays: [...overlays, menuPart(regions, top, colors)], input: "overlay", dim: false };
   }
 }
 
@@ -1041,56 +1036,31 @@ function pickerPart(width: number, height: number, picker: Extract<Overlay, { ki
   return { overlay, input: { col: rect.x + 2 + view.cursor, row: rect.y + 1 } };
 }
 
-function menuLine(entry: MenuEntry, state: ModelState, world: CoreView): { label: string; text: string; status: KnownStatus | null; keys: string } {
-  const label = entry.label ?? " ";
-  if (entry.kind === "action") return { label, text: actionLabel(entry.action), status: null, keys: keyText(state, entry.action) ?? "" };
-  const kind = STRINGS.menuPlaces[entry.kind];
-  if (entry.kind === "workspace") {
-    const row = world.workspaceGroups.flatMap((group) => [group, ...group.children]).find((one) => one.id === entry.id);
-    return { label, text: `${kind} ${row ? `${row.number}:${row.name}` : entry.id}`, status: row?.status ?? null, keys: "" };
-  }
-  if (entry.kind === "tab") {
-    const tabs = state.world.workspaces.flatMap((workspace) => workspace.tabs.map((tab, at) => ({ tab, number: at + 1 })));
-    const found = tabs.find(({ tab }) => tab.id === entry.id);
-    return { label, text: `${kind} ${found ? `${found.number}:${found.tab.name || found.number}` : entry.id}`, status: knownStatus(world.tabStatuses.get(entry.id)), keys: "" };
-  }
-  const pane = world.panes.get(entry.id);
-  const agent = entry.kind === "agent" ? world.agents.find((row) => row.paneId === entry.id) : undefined;
-  const name = agent?.name || pane?.label || pane?.title || entry.id;
-  const folder = pane?.folder && pane.folder !== name ? ` ${pane.folder}` : "";
-  return { label, text: `${kind} ${name}${folder}`, status: pane ? knownStatus(pane.status) : null, keys: "" };
-}
-
-/** The menu: a window of its entries around the cursor, each a click target that chooses it. */
-function menuPart(width: number, height: number, menu: Extract<Overlay, { kind: "menu" }>, state: ModelState, world: CoreView, colors: Colors): Part {
-  const rect = centred(width, height, 56, menu.entries.length + 2);
-  const lines = menu.entries.map((entry) => menuLine(entry, state, world));
+/**
+ * herdr's menu: a box just big enough for its four entries, its bottom row on the row above the sidebar's menu button
+ * and its right side on the sidebar's last column, the chosen entry on the accent; with no sidebar, above the screen's
+ * last row at its left. Each entry is a click target that chooses it.
+ */
+function menuPart(regions: Regions, menu: Extract<Overlay, { kind: "menu" }>, colors: Colors): Part {
+  const labels = MENU_ENTRIES.map((action) => STRINGS.menuEntries[action]);
+  const width = Math.max(...labels.map((label) => widthOf(label))) + 4;
+  const height = labels.length + 2;
+  const sidebar = regions.sidebar.width > RAIL_COLUMNS ? regions.sidebar : null;
+  const right = sidebar ? sidebar.x + sidebar.width - 1 : width;
+  const bottom = sidebar ? sidebar.y + sidebarHalves(sidebar.height).workspaces - 1 : regions.screen.height - 1;
+  const rect: Rect = { x: Math.max(0, right - width), y: Math.max(0, bottom - height), width: Math.min(width, regions.screen.width), height: Math.min(height, bottom) };
   return {
     key: "overlay:menu", rect, version: 0,
     draw(canvas) {
-      const inner = titledFrame(canvas, rect, STRINGS.menuTitle, OVERLAYS.menu.closeKeys, colors);
-      if (inner.width <= 0 || inner.height <= 0) return;
-      const start = windowStart(lines.length, inner.height, menu.cursor);
-      lines.slice(start, start + inner.height).forEach((line, at) => {
-        const index = start + at;
+      const inner = panel(canvas, rect, colors.accent, colors);
+      labels.forEach((label, at) => {
         const y = inner.y + at;
-        const chosen = index === menu.cursor;
-        const bg = chosen ? colors.bgHover : colors.bgElevated;
-        const text = canvas.style({ fg: chosen ? colors.textStrong : colors.text, bg, flags: chosen ? STYLE_BOLD : 0 });
-        fillSpan(canvas, inner.x, y, inner.width, text);
-        const end = inner.x + inner.width;
-        let col = printFit(canvas, inner.x, y, chosen ? ">" : " ", 1, canvas.style({ fg: colors.accent, bg, flags: STYLE_BOLD }));
-        col = printFit(canvas, col, y, `${line.label} `, end - col, canvas.style({ fg: colors.accent, bg, flags: STYLE_BOLD }));
-        if (line.status !== null) {
-          const look = STATE_LOOK[line.status];
-          col = printFit(canvas, col, y, `${look.glyph} `, end - col, canvas.style({ fg: colors[look.role], bg, flags: STYLE_BOLD }));
-        }
-        const keys = line.keys === "" ? "" : ` ${line.keys}`;
-        const keysWidth = widthOf(keys);
-        const room = end - col > keysWidth + 8 ? end - col - keysWidth : end - col;
-        col = printFit(canvas, col, y, line.text, room, text, true);
-        if (keys && end - col >= keysWidth) printFit(canvas, end - keysWidth, y, keys, keysWidth, canvas.style({ fg: colors.textDim, bg }));
-        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${index}`);
+        if (y >= inner.y + inner.height) return;
+        const chosen = at === menu.cursor;
+        const style = canvas.style(chosen ? { fg: colors.primaryText, bg: colors.accent, flags: STYLE_BOLD } : { fg: colors.text, bg: colors.bgPanel });
+        fillSpan(canvas, inner.x, y, inner.width, style);
+        printFit(canvas, inner.x + 1, y, label, Math.max(0, inner.width - 1), style);
+        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${at}`);
       });
     },
   };

@@ -139,6 +139,8 @@ export const STRINGS = {
   gotoPromptHint: "Type to filter · Enter to jump",
   pickerNoMatch: "No matches",
   menuTitle: "Menu",
+  /** herdr's menu entries; the keys' help keeps the screen's word for it (C2: herdr says `keybinds`) */
+  menuEntries: { settings: "settings", help: "help", reload_config: "reload config", detach: "detach" } as const,
   /** at the right of the narrow screen's header, which opens the menu */
   menuMark: "[menu]",
   /** what kind of place a menu entry goes to */

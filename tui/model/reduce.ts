@@ -16,7 +16,6 @@ import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KE
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
 import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, paneToward, shownZoom, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
-import { keptCursor, menuEntries } from "./menu.ts";
 import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
 import { pickerPlaces, placeKey } from "./picker.ts";
 import { NARROW_COLUMNS } from "./screen-size.ts";
@@ -501,23 +500,19 @@ function applyWorld(acc: Acc, world: World, at: number): void {
   for (const overlay of gone) notice(acc, "target_gone", { overlay: overlay.kind }, at);
   restore(acc, at);
   follow(acc);
-  refreshMenus(acc);
+  refreshPicker(acc);
 }
 
-/** An open menu or picker lists what exists now: the menu's cursor kept on its entry, the picker's choice while it exists. */
-function refreshMenus(acc: Acc): void {
-  const { world, focus, overlays } = acc.s;
-  if (!overlays.some((overlay) => overlay.kind === "menu" || overlay.kind === "goto")) return;
+/** An open picker lists what exists now, its choice kept while it exists. */
+function refreshPicker(acc: Acc): void {
+  const { world, overlays } = acc.s;
+  if (!overlays.some((overlay) => overlay.kind === "goto")) return;
   acc.s = {
     ...acc.s,
     overlays: overlays.map((overlay) => {
-      if (overlay.kind === "goto") {
-        const places = pickerPlaces(world);
-        return { ...overlay, places, chosen: places.some((place) => placeKey(place) === overlay.chosen) ? overlay.chosen : null };
-      }
-      if (overlay.kind !== "menu") return overlay;
-      const entries = menuEntries(world, focus, acc.s.mode.name);
-      return { ...overlay, entries, cursor: keptCursor(overlay.entries, overlay.cursor, entries) };
+      if (overlay.kind !== "goto") return overlay;
+      const places = pickerPlaces(world);
+      return { ...overlay, places, chosen: places.some((place) => placeKey(place) === overlay.chosen) ? overlay.chosen : null };
     }),
   };
 }
@@ -629,7 +624,7 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction | CopyAction>
       }
       return;
     case "menu":
-      acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", entries: menuEntries(s.world, s.focus, s.mode.name), cursor: 0 }] };
+      acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", cursor: 0 }] };
       return;
     case "about":
       acc.s = { ...s, overlays: [...s.overlays, { kind: "about" }] };

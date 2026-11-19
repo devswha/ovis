@@ -8,7 +8,7 @@ import { TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
 import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput } from "./effects.ts";
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
-import { chooseEntry, labelled, type MenuEntry, movedCursor } from "./menu.ts";
+import { MENU_ENTRIES, movedCursor } from "./menu.ts";
 import { chosenAt, type Place, placeKey, pickerMatches, placeTarget } from "./picker.ts";
 
 /** A one-line text field of graphemes, the cursor after the text it opened with; `original` that text. */
@@ -25,8 +25,8 @@ export type Overlay =
   | { readonly kind: "confirm"; readonly purpose: "close_workspace"; readonly target: Target; readonly seen: readonly Seen[] }
   /** the picker: the places it filters, and the chosen one's identity (`placeKey`; null: the best match) */
   | { readonly kind: "goto"; readonly field: Field; readonly places: readonly Place[]; readonly chosen: string | null }
-  /** `cursor`: the index of the entry Enter chooses */
-  | { readonly kind: "menu"; readonly entries: readonly MenuEntry[]; readonly cursor: number };
+  /** herdr's menu (menu.ts `MENU_ENTRIES`); `cursor`: the index of the entry Enter chooses */
+  | { readonly kind: "menu"; readonly cursor: number };
 
 export type OverlayInput = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "text"; readonly event: TextInput } | { readonly kind: "paste"; readonly event: PasteInput };
 
@@ -175,17 +175,10 @@ function pickerInput(overlay: Picker, input: OverlayInput): OverlayAnswer {
   return { overlay: changed ? { ...typed, chosen: null } : typed, effects: [] };
 }
 
-/** The menu's answer to choosing entry `at`: the cursor moved there and kept open, or closed with the choice. */
+/** The menu's answer to choosing entry `at`: closed, with that entry's action to run. */
 export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, at: number): OverlayAnswer {
-  const chosen = chooseEntry(overlay.entries, at);
-  if (chosen === null) return { overlay, effects: [] };
-  return "cursor" in chosen ? { overlay: { ...overlay, cursor: chosen.cursor }, effects: [] } : { overlay: null, effects: [], choice: chosen.choice };
-}
-
-/** One character typed as it is (not with alt or ctrl, not a paste): under an input method a letter arrives composed. */
-function typedChar(input: OverlayInput): string {
-  const typed = input.kind === "paste" || (input.kind === "key" && (input.event.mods.alt || input.event.mods.ctrl)) ? "" : input.event.text ?? "";
-  return [...typed][0] ?? "";
+  const action = MENU_ENTRIES[at];
+  return action === undefined ? { overlay, effects: [] } : { overlay: null, effects: [], choice: { kind: "action", action } };
 }
 
 export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<Overlay, { kind: K }>> } = {
@@ -228,12 +221,8 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     target: () => null,
     input: (overlay, input) => {
       if (isEnter(input)) return menuChoice(overlay, overlay.cursor);
-      if (input.kind === "key") {
-        const cursor = movedCursor(overlay.entries, overlay.cursor, input.event);
-        if (cursor !== null) return { overlay: { ...overlay, cursor }, effects: [] };
-      }
-      const at = labelled(overlay.entries, typedChar(input));
-      return at < 0 ? { overlay, effects: [] } : menuChoice(overlay, at);
+      const cursor = input.kind === "key" ? movedCursor(MENU_ENTRIES, overlay.cursor, input.event) : null;
+      return { overlay: cursor === null ? overlay : { ...overlay, cursor }, effects: [] };
     },
   },
 };
