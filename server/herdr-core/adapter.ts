@@ -203,7 +203,9 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
       sessionLabels.forget(address);
     }
   };
-  const answers = createAnswers(hc, firstTurn, forgetTurns, options, sessionOf);
+  // every events subscription open now, told when the layout changed without an hc event
+  const layoutWatchers = new Set<() => void>();
+  const answers = createAnswers(hc, firstTurn, forgetTurns, options, () => { for (const watcher of layoutWatchers) watcher(); }, sessionOf);
   const listener = Bun.listen<ConnectionState>({
     unix: socketPath,
     socket: {
@@ -220,7 +222,7 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
             first = false;
             const request = parseRequest(line);
             if (!request) { send(socket, `${JSON.stringify({ id: "", error: { code: "bad_frame", message: "not a herdr request" } })}\n`, true); return; }
-            if (request.method === "events.subscribe") { void subscribe(hc, socket, request, firstTurn, coreHost(options.otherMachine, options.platform), observeSeen, noteSession); return; }
+            if (request.method === "events.subscribe") { void subscribe(hc, socket, request, firstTurn, coreHost(options.otherMachine, options.platform), layoutWatchers, observeSeen, noteSession); return; }
             void answers(request).then((reply) => send(socket, `${JSON.stringify({ id: request.id, ...reply })}\n`, true));
           }, () => socket.end()),
         };
@@ -451,7 +453,7 @@ const CHECKOUT_FACTS_MS = 5_000;
 /** How long a snapshot waits on git for one folder's facts before drawing it without them. */
 const CHECKOUT_FACTS_WAIT_MS = 2_000;
 
-function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void, options: AdapterOptions, sessionOf?: SessionOf): (request: Request) => Promise<Reply> {
+function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void, options: AdapterOptions, layoutChanged: () => void, sessionOf?: SessionOf): (request: Request) => Promise<Reply> {
   const platform = options.platform ?? process.platform;
   const processTable = options.processTable ?? windowsProcessTable;
   /** A Windows pane's programs are read off this PC's process table, which says nothing of another machine's. */
@@ -470,34 +472,43 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   /**
    * git's answer per folder: the checkout's facts and its git folder's identity (as a label keeps it),
    * or null outside git. Kept a few seconds; past that the last answer still serves while git is asked
-   * again, so a snapshot waits on git only for a folder it never answered for, and at most a moment:
-   * a slow git (a network folder, a huge repository) leaves that row flat rather than hold the snapshot.
+   * again, so a snapshot waits on git only for a folder it never answered for, once and at most a
+   * moment: a slow git (a network folder, a huge repository) leaves that row flat rather than hold
+   * every snapshot, and its answer, when it comes, asks the clients for a fresh one.
    */
   type GitAnswer = { facts: WorkspaceWorktreeInfo; gitId: string | null } | null;
-  const checkoutFacts = new Map<string, { until: number; answer: GitAnswer; asking: Promise<GitAnswer> | null }>();
-  const askGit = (folder: string, entry: { until: number; answer: GitAnswer; asking: Promise<GitAnswer> | null }): Promise<GitAnswer> => {
+  type GitEntry = { until: number; answer: GitAnswer; asking: Promise<GitAnswer> | null; first: Promise<GitAnswer> | null; waitedOut: boolean };
+  const checkoutFacts = new Map<string, GitEntry>();
+  const askGit = (folder: string, entry: GitEntry): Promise<GitAnswer> => {
     entry.asking = repositoryOf(folder).then((repository) => ({ facts: factsOf(repository, repository.checkout), gitId: gitDirIdentity(repository.git_dir) }), () => null).then((answer) => {
       Object.assign(entry, { until: Date.now() + CHECKOUT_FACTS_MS, answer, asking: null });
+      if (entry.waitedOut) {
+        entry.waitedOut = false;
+        if (answer) layoutChanged();
+      }
       return answer;
     });
     return entry.asking;
   };
   const answerFor = (folder: string): Promise<GitAnswer> => {
     let entry = checkoutFacts.get(folder);
-    if (!entry) checkoutFacts.set(folder, entry = { until: 0, answer: null, asking: null });
-    // never answered: wait a moment for the first answer
-    if (entry.until === 0) return Promise.race([entry.asking ?? askGit(folder, entry), Bun.sleep(CHECKOUT_FACTS_WAIT_MS).then(() => null)]);
+    if (!entry) checkoutFacts.set(folder, entry = { until: 0, answer: null, asking: null, first: null, waitedOut: false });
+    // never answered: the first snapshot waits a moment for the first answer, and the ones after it share that wait
+    if (entry.until === 0) {
+      const waiting = entry;
+      return waiting.first ??= Promise.race([waiting.asking ?? askGit(folder, waiting), Bun.sleep(CHECKOUT_FACTS_WAIT_MS).then(() => {
+        if (waiting.until === 0) waiting.waitedOut = true;
+        return null;
+      })]);
+    }
     if (entry.until <= Date.now() && !entry.asking) void askGit(folder, entry);
     return Promise.resolve(entry.answer);
   };
   /**
-   * A workspace's checkout, once git named one, stays its own as herdr's stays with a workspace: a shell
-   * there going elsewhere does not move the row, the checkout removed is the one drawn, and its git
-   * folder identity is the one it had when first seen, so a checkout added again at that path is not it.
+   * herdr's snapshot of the core, whether Ovis keeps its layout (ownsLayout), from one read of the
+   * app's document, and the git folder identity behind each workspace's facts that git gave.
    */
-  const pinnedCheckouts = new Map<string, NonNullable<GitAnswer>>();
-  /** herdr's snapshot of the core, and whether Ovis keeps its layout (ownsLayout), from one read of the app's document */
-  const read = async (): Promise<{ shown: SessionSnapshot; own: boolean }> => {
+  const read = async (): Promise<{ shown: SessionSnapshot; own: boolean; gitIds: Map<string, string | null> }> => {
     const [list, doc, ovis, hello] = await Promise.all([
       hc.call("terminal.list", {}),
       hc.call("doc.get", { name: LAYOUT_DOC }),
@@ -506,37 +517,41 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     ]);
     forgetTurns(new Set(list.terminals.map((terminal) => terminal.address)));
     const shown = buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value, sessionOf, coreHost(options.otherMachine, platform));
+    const gitIds = new Map<string, string | null>();
     // herdr reports every workspace's checkout from git; hc has none, so a workspace no label claims (one
-    // the app arranges, or a checkout Ovis did not open) gets git's facts for its first pane's folder.
-    // Clients draw and act on these as on herdr's: removing a checkout asks git again first. No label is
-    // written. Another machine's folders are not on this disk.
+    // the app arranges, or a checkout Ovis did not open) gets git's facts for the folder its first
+    // terminal started in: as herdr's stays with a workspace, a shell there going elsewhere (a `cd`, an
+    // agent changing folder) does not move the row, before or after a restart of Ovis. Clients draw and
+    // act on these as on herdr's: removing a checkout asks git again first. No label is written.
+    // Another machine's folders are not on this disk.
     if (!options.otherMachine) {
-      const folders = new Set(shown.panes.map((pane) => pane.cwd));
+      const started = new Map(list.terminals.map((terminal) => [terminal.address, terminal.cwd]));
+      const asked = new Map<SessionSnapshot["workspaces"][number], string>();
+      for (const workspace of shown.workspaces) {
+        if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
+        const first = shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id);
+        const folder = first && started.get(first.pane_id);
+        if (folder) asked.set(workspace, folder);
+      }
+      const folders = new Set(asked.values());
       for (const [folder, entry] of checkoutFacts) if (!folders.has(folder) && !entry.asking) checkoutFacts.delete(folder);
-      const ids = new Set(shown.workspaces.map((workspace) => workspace.workspace_id));
-      for (const id of pinnedCheckouts.keys()) if (!ids.has(id)) pinnedCheckouts.delete(id);
-      await Promise.all(shown.workspaces.map(async (workspace) => {
-        if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) return;
-        let pinned = pinnedCheckouts.get(workspace.workspace_id);
-        if (!pinned) {
-          const folder = shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id)?.cwd;
-          const answer = folder ? await answerFor(folder) : null;
-          if (!answer) return;
-          pinned = pinnedCheckouts.get(workspace.workspace_id) ?? answer;
-          pinnedCheckouts.set(workspace.workspace_id, pinned);
-        }
-        workspace.worktree = { ...pinned.facts };
+      await Promise.all([...asked].map(async ([workspace, folder]) => {
+        const answer = await answerFor(folder);
+        if (!answer) return;
+        workspace.worktree = { ...answer.facts };
+        gitIds.set(workspace.workspace_id, answer.gitId);
       }));
     }
-    return { shown, own: ownsLayout(doc.value) };
+    return { shown, own: ownsLayout(doc.value), gitIds };
   };
   const snapshot = async (): Promise<SessionSnapshot> => (await read()).shown;
-  /** The snapshot, for a call that changes the layout Ovis keeps in labels: refused where the Herdr app arranges this core. */
-  const ownLayout = async (): Promise<SessionSnapshot> => {
-    const { shown, own } = await read();
-    if (!own) throw new AdapterError("unsupported", "the Herdr app arranges this core's workspaces, tabs and panes");
-    return shown;
+  /** The read, for a call that changes the layout Ovis keeps in labels: refused where the Herdr app arranges this core. */
+  const ownRead = async (): Promise<Awaited<ReturnType<typeof read>>> => {
+    const found = await read();
+    if (!found.own) throw new AdapterError("unsupported", "the Herdr app arranges this core's workspaces, tabs and panes");
+    return found;
   };
+  const ownLayout = async (): Promise<SessionSnapshot> => (await ownRead()).shown;
   const label = async (addresses: string[], labels: Record<string, string>): Promise<void> => {
     await Promise.all(addresses.map((address) => hc.call("terminal.label", { terminal: address, labels })));
   };
@@ -1291,11 +1306,14 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   });
   methods["worktree.remove"] = (params) => oneAtATime(async () => {
     const workspaceId = paneIdOf(params, "workspace_id");
-    const shown = await ownLayout();
+    const { shown, gitIds } = await ownRead();
     const workspace = shown.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
     if (!workspace) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
     const facts = workspace.worktree;
     if (!facts?.is_linked_worktree) throw new AdapterError("not_linked_worktree", `workspace ${workspaceId} is not a linked worktree`);
+    // only this workspace closes with the checkout: another one open on it would be left in a deleted folder
+    const sharing = shown.workspaces.filter((candidate) => candidate.workspace_id !== workspaceId && candidate.worktree?.checkout_path === facts.checkout_path);
+    if (sharing.length > 0) throw new AdapterError("worktree_in_use", `${facts.checkout_path} is also open in ${sharing.map((candidate) => JSON.stringify(candidate.label)).join(", ")}: close ${sharing.length === 1 ? "that workspace" : "those workspaces"} first`);
     // the folder the label names must still be a linked checkout of that repository, not one moved away or replaced by another
     const now = await repositoryOf(facts.checkout_path).catch(() => null);
     let gitId: string | null = null;
@@ -1303,7 +1321,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       gitId = labeledWorktree((await terminal(pane.pane_id)).labels)?.gitId ?? null;
       if (gitId) break;
     }
-    gitId ??= pinnedCheckouts.get(workspaceId)?.gitId ?? null;
+    gitId ??= gitIds.get(workspaceId) ?? null;
     if (!now || now.repo_key !== facts.repo_key || now.checkout !== facts.checkout_path || now.checkout === now.repo_root || (gitId !== null && gitDirIdentity(now.git_dir) !== gitId)) {
       throw new AdapterError("worktree_not_found", `${facts.checkout_path} is no longer a worktree of ${facts.repo_name}`);
     }
@@ -1376,7 +1394,7 @@ function labelsOf(labels: unknown): Record<string, string> {
 /** What an event says of a terminal's OpenCode session (startHerdrCoreAdapter `noteSession`), so a turn too short for any read is still remembered. */
 type SessionNote = (address: string, status: HcStatus | null | undefined, records: unknown, labels: Readonly<Record<string, string>> | undefined) => unknown;
 
-async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, request: Request, firstTurn: FirstTurn, host: CoreHost, observeSeen?: SeenObserver, noteSession?: SessionNote): Promise<void> {
+async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, request: Request, firstTurn: FirstTurn, host: CoreHost, layoutWatchers: Set<() => void>, observeSeen?: SeenObserver, noteSession?: SessionNote): Promise<void> {
   const subscriptions = Array.isArray(request.params["subscriptions"]) ? request.params["subscriptions"].filter(isRecord) : [];
   const statusPanes = new Set(subscriptions.flatMap((entry) => entry["type"] === STATUS_EVENT && typeof entry["pane_id"] === "string" ? [entry["pane_id"]] : []));
   const structure = subscriptions.some((entry) => typeof entry["type"] === "string" && !NOT_STRUCTURE.has(entry["type"]));
@@ -1576,7 +1594,13 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
       end();
       return;
     }
-    socket.data.unsubscribe = () => { void channel.close(); };
+    // a change hc has no event for (a late git answer): the rows refresh as for a label
+    const layoutChanged = () => lifecycle("layout.updated", "layout_updated");
+    if (structure) layoutWatchers.add(layoutChanged);
+    socket.data.unsubscribe = () => {
+      layoutWatchers.delete(layoutChanged);
+      void channel.close();
+    };
     ack();
     acknowledged = true;
     for (const frame of queued) send(socket, frame);
