@@ -354,9 +354,13 @@ export function mergeSafetyLogs(active: string, sibling: string): string | null 
     return { v: 1, next, base, entries: [...mine.entries.filter((entry) => !folded.has(entry.record.id)), ...taken], waiting };
   };
   const [forOwn, forOther] = [merged(a, b), merged(b, a)];
+  const written: string[] = [];
   for (const [dir, file, before] of [[active, forOwn, a], [sibling, forOther, b]] as const) {
     if (file.entries.length === before.entries.length && file.base.length === before.base.length && file.waiting.length === before.waiting.length) continue;
-    writePrivateState(join(dir, SAFETY_LOG_FILE), file);
+    try { writePrivateState(join(dir, SAFETY_LOG_FILE), file); written.push(dir); } catch (error) {
+      // a merge half written fails this PC closed rather than its start: what each dir holds stays a whole log
+      return `Cannot write the merged account safety log into ${dir}${written.length ? ` (already written into ${written.join(", ")})` : ""}: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
   return null;
 }

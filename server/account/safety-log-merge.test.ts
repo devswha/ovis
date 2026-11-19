@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { relayFixture } from "../relay/test-helpers.ts";
@@ -81,6 +81,12 @@ describe("merging and folding the PC safety log", () => {
     const before = readFileSync(join(own, SAFETY_LOG_FILE), "utf8");
     expect(mergeSafetyLogs(own, other)).toBeNull();
     expect(readFileSync(join(own, SAFETY_LOG_FILE), "utf8")).toBe(before);
+
+    // a merged log that cannot be written fails the PC closed and names the dir, instead of throwing out of the start
+    const blocked = stateDir();
+    rmSync(blocked, { recursive: true });
+    mkdirSync(blocked, { mode: 0o500 });
+    expect(mergeSafetyLogs(blocked, own)).toContain(blocked);
 
     // a dir with no log takes the other's records
     const empty = stateDir();
