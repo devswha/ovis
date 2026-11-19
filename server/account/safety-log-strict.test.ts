@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type SafetyRecord } from "../../shared/account-records.ts";
@@ -7,6 +7,8 @@ import { DeviceStore } from "../devices.ts";
 import { pcRecordId, SafetyLog } from "./safety-log.ts";
 
 const AT = "2026-11-20T09:00:00.000Z";
+/** A folder this process cannot write to: not one as root, nor on Windows, where the mode does not hold. */
+const NO_CHMOD = process.platform === "win32" || process.getuid?.() === 0;
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) { chmodSync(dir, 0o700); rmSync(dir, { recursive: true, force: true }); } });
 
@@ -39,7 +41,7 @@ describe("the safety log's endings and its failed writes (P24, S19)", () => {
     expect(log.state().locked).toBe(false);
   });
 
-  test("S19: an append that cannot be written fails the PC closed until a reload finds the log whole, and every way in is refused meanwhile", async () => {
+  test.skipIf(NO_CHMOD)("S19: an append that cannot be written fails the PC closed until a reload finds the log whole, and every way in is refused meanwhile", async () => {
     const at = dir();
     const log = SafetyLog.open(at);
     const devices = new DeviceStore(at, null, null, log);
@@ -59,5 +61,18 @@ describe("the safety log's endings and its failed writes (P24, S19)", () => {
     expect(log.append({ record: pc("lock", "acct_1", null), got: "pc" }).outcome).toBe("refused");
     expect(log.strict).not.toBeNull();
     expect(SafetyLog.open(at).strict).toBeNull();
+  });
+
+  test("S19: a strict log leaves the tombstone files' own start-up repair alone", () => {
+    const at = dir();
+    writeFileSync(join(at, "account-log.json"), "not json", { mode: 0o600 });
+    const tombstone = { key: "k".repeat(87), account: "acct_1", record_id: "local", removed_at: AT };
+    writeFileSync(join(at, "account-tombstones.pending.json"), JSON.stringify({ v: 1, tombstones: [tombstone] }), { mode: 0o600 });
+    const log = SafetyLog.open(at);
+    expect(log.strict).not.toBeNull();
+    new DeviceStore(at, null, null, log);
+    // the pending tombstone joins the main file and the pending file goes, as it does with the log whole
+    expect(existsSync(join(at, "account-tombstones.pending.json"))).toBe(false);
+    expect((JSON.parse(readFileSync(join(at, "account-tombstones.json"), "utf8")) as { tombstones: unknown[] }).tombstones).toHaveLength(1);
   });
 });
