@@ -24,18 +24,17 @@ async function key(): Promise<Key> {
   return { keys, spki: await exportAccountKey(keys.publicKey) };
 }
 
-function pc() {
-  const dir = mkdtempSync(join(tmpdir(), "s2-24-ports-"));
-  dirs.push(dir);
+function pc(dir = mkdtempSync(join(tmpdir(), "s2-24-ports-")), serverId = SERVER) {
+  if (!dirs.includes(dir)) dirs.push(dir);
   const safetyLog = SafetyLog.open(dir);
   const pcAccount = PcAccountState.open(dir);
-  const journal = DeviceJournal.open(dir);
+  const journal = DeviceJournal.open(dir, () => safetyLog.ensureFile());
   const devices = new DeviceStore(dir, null, null, { safety: safetyLog, pc: pcAccount, removals: RemovalEvidence.open(dir, safetyLog), journal });
   const reads: string[] = [];
   const order = AccountOrder.open(dir);
   devices.attachAccountOrder(order);
-  const ports = snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order, serverId: () => SERVER, requestRead: () => { reads.push("read"); } });
-  return { devices, safetyLog, journal, ports, reads };
+  const ports = snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order, serverId: () => serverId, requestRead: () => { reads.push("read"); } });
+  return { dir, devices, safetyLog, journal, ports, reads };
 }
 
 /** A drive member of the account here, admitted now: each one joins after the ones before it. */
@@ -92,6 +91,17 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(await read(ports, page({ lifts: [await lift(blocked.id, older)] }))).toMatchObject({ committed: true, liftsRefused: 0 });
     expect(devices.admits(stranger)).toBe(true);
     expect(safetyLog.state().freezes).toEqual([]);
+  });
+
+  test("G1, P6: restarting preserves the snapshot watermark for this relay identity only", async () => {
+    const first = pc();
+    await member(first.devices);
+    expect(await read(first.ports, page({ version: 9 }))).toMatchObject({ committed: true });
+    const reopened = pc(first.dir);
+    expect(reopened.devices.accountError).toBeNull();
+    expect(await read(reopened.ports, page({ version: 8 }))).toMatchObject({ committed: false, reason: "stale" });
+    const rotated = "a".repeat(32);
+    expect(await read(pc(first.dir, rotated).ports, page({ version: 1, server_id: rotated }))).toMatchObject({ committed: true });
   });
 
   test("T58: a committed methods version change is journalled once", async () => {
