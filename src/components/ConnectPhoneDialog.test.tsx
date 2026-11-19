@@ -44,6 +44,8 @@ describe("Connect a phone on a phone", () => {
   let addressRefusal: string | null;
   /** holds the next answer of POST /api/machines/address until it resolves */
   let addressGate: Promise<void> | null;
+  /** the next success body of POST /api/machines/address, when not the added PC */
+  let addressAnswer: unknown;
   let pending: string;
   let pairStarts: { code: string; gate: Promise<void> }[];
   /** what each POST /api/relay/offer said it is for (x-ovis-no-account-only), in the order the PC got them */
@@ -75,6 +77,7 @@ describe("Connect a phone on a phone", () => {
     addressAsked = [];
     addressRefusal = null;
     addressGate = null;
+    addressAnswer = undefined;
     for (const key of ["window", "document", "navigator", "getComputedStyle", "Capacitor", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -130,6 +133,7 @@ describe("Connect a phone on a phone", () => {
         addressAsked.push(JSON.parse(String(init?.body)));
         if (addressGate) await addressGate;
         if (addressRefusal !== null) return Response.json({ error: { code: addressRefusal, message: "the server's own words" } }, { status: 400 });
+        if (addressAnswer !== undefined) return Response.json(addressAnswer, { status: 201 });
         return Response.json({ machine: { id: "desk", name: "desk.tail.ts.net", kind: "address", address: "https://desk.tail.ts.net:7317", enabled: true, state: "connecting", error: null, snapshot: null } }, { status: 201 });
       }
       if (path === "/api/relay/code") { pending = "777111"; pendingOwn = false; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID }); }
@@ -617,6 +621,43 @@ describe("Connect a phone on a phone", () => {
     code.value = "012 345";
     await submit();
     expect(addressAsked).toEqual([{ address: "https://other.tail.ts.net", code: "012345" }]);
+  });
+
+  it("drops an answer for an address that was changed meanwhile, and words a malformed one", async () => {
+    const connected: string[] = [];
+    const code = { value: "" };
+    await act(async () => {
+      renderer = create(<SettingsProvider><Direct machines={[]} onAddPc={() => undefined} onConnectMachine={(machine) => { connected.push(machine.id); }} /></SettingsProvider>,
+        { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
+    });
+    await flushReads();
+    const type = async (value: string) => { await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value } }); }); };
+    const submit = async () => { await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); }); };
+    const alerts = () => renderer!.root.findAllByProps({ role: "alert" }).map((node) => node.children.join(""));
+    await type("https://alpha.tail.ts.net");
+    let open = () => undefined as void;
+    addressGate = new Promise((resolve) => { open = resolve; });
+    addressRefusal = "address_pc_wrong_code";
+    code.value = "123456";
+    await submit();
+    await type("https://beta.tail.ts.net");
+    await act(async () => { open(); });
+    await flushReads();
+    expect(alerts()).toEqual([]);
+    addressRefusal = null;
+    addressGate = new Promise((resolve) => { open = resolve; });
+    code.value = "123456";
+    await submit();
+    await type("https://gamma.tail.ts.net");
+    await act(async () => { open(); });
+    await flushReads();
+    expect(connected).toEqual([]);
+    addressGate = null;
+    addressAnswer = {};
+    code.value = "123456";
+    await submit();
+    expect(alerts()).toEqual(["That PC could not be added. Try again."]);
+    expect(connected).toEqual([]);
   });
 
   it("offers the ssh config hosts and the PCs saved in herdr one press each, and the guide for opening a PC from outside", async () => {

@@ -311,7 +311,7 @@ export function TailscaleTab({ found: { found, unread, failed, withheld, stateOf
 }
 
 function addressFailureText(t: ReturnType<typeof useT>, error: unknown): string {
-  const code = error instanceof ApiError && error.code?.startsWith("address_pc_") ? error.code.slice("address_pc_".length) : null;
+  const code = error instanceof ApiError && typeof error.code === "string" && error.code.startsWith("address_pc_") ? error.code.slice("address_pc_".length) : null;
   const failure: AddressPcFailure | undefined = ADDRESS_PC_FAILURES.find((known) => known === code);
   switch (failure) {
     case "address": return t("Enter only that PC's Ovis address, starting with https://");
@@ -343,6 +343,9 @@ export function DirectTab({ found: { found, failed, withheld, stateOf, retry }, 
   const codeRef = useRef<HTMLInputElement>(null);
   // a second press before the first one's render would spend the same code twice
   const pairing = useRef(false);
+  // what the pairing in flight was asked for: its answer is dropped once the address changes or the tab closes
+  const asked = useRef<string | null>(null);
+  useEffect(() => () => { asked.current = null; }, []);
   // the code admits whoever holds it: it is typed only where it cannot cross the network in clear (as an SSH password)
   const secretAllowed = window.isSecureContext;
   const address = typed.trim();
@@ -357,10 +360,15 @@ export function DirectTab({ found: { found, failed, withheld, stateOf, retry }, 
     const code = codeRef.current;
     if (code === null || pairing.current || !secretAllowed) return;
     pairing.current = true;
+    asked.current = address;
     setAdding(true);
     setFailure(null);
-    void addAddressPc(address, code.value.replace(/\s/g, "")).then(({ machine }) => { code.value = ""; onConnectMachine(machine); },
-      (error: unknown) => setFailure(addressFailureText(t, error)))
+    const current = () => asked.current === address;
+    void addAddressPc(address, code.value.replace(/\s/g, "")).then(({ machine }) => {
+      if (!current()) return;
+      code.value = "";
+      if (machine && typeof machine.id === "string") onConnectMachine(machine); else setFailure(t("That PC could not be added. Try again."));
+    }, (error: unknown) => { if (current()) setFailure(addressFailureText(t, error)); })
       .finally(() => { pairing.current = false; setAdding(false); });
   };
   return (
@@ -371,6 +379,8 @@ export function DirectTab({ found: { found, failed, withheld, stateOf, retry }, 
           <input id={`${id}-address`} className="input" type="text" value={typed} placeholder="user@host, desk.tailnet.ts.net, https://…" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-describedby={address === "" ? undefined : `${id}-kind`} onChange={(event) => {
             // a code typed for one PC is never sent to another
             if (codeRef.current) codeRef.current.value = "";
+            asked.current = null;
+            setFailure(null);
             setTyped(event.target.value);
           }} />
           <button type="submit" className="btn" disabled={address === "" || adding || (ovis && !secretAllowed)}>{t("Connect")}</button>
