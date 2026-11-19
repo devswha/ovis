@@ -1,4 +1,7 @@
+import { useCallback, useEffect, useState } from "react";
+
 import { currentLocale, useT } from "../lib/i18n.ts";
+import { fetchLockState, requestLock, requestUnlock } from "../lib/account/lock.ts";
 
 /** Track B's GET /api/account/lock (S2-18): `preview` is what turning it on ends (T46), only while unlocked and bound. */
 export interface LockState {
@@ -43,4 +46,17 @@ export function StrictModePanel({ state, local, onTurnOn, onTurnOff }: { state: 
         : <button type="button" className="btn" onClick={() => onTurnOff(state.locked!.id)}>{t("Turn off strict mode")}</button>)}
     </div>
   );
+}
+
+/** Settings → Devices: strict mode on a PC that offers it (account-opens-all/1), read again after each request. */
+export function StrictModeSection({ offered, local }: { offered: boolean; local: boolean }) {
+  const [state, setState] = useState<LockState | null>(null);
+  const read = useCallback(() => fetchLockState().then(setState, (error: unknown) => {
+    console.warn("Ovis: strict mode could not be read", error instanceof Error ? error.name : error);
+    setState(null);
+  }), []);
+  useEffect(() => { if (offered) void read(); }, [offered, read]);
+  if (!offered || state === null) return null;
+  const ask = (request: Promise<string>) => { void request.then(read, (error: unknown) => console.warn("Ovis: strict mode was not asked for", error instanceof Error ? error.name : error)); };
+  return <StrictModePanel state={state} local={local} onTurnOn={() => ask(requestLock())} onTurnOff={(lock) => ask(requestUnlock(lock))} />;
 }
