@@ -176,8 +176,8 @@ export function registerSigningBytes(account: string, key: string, challengeId: 
   return signingBytes([account, key, challengeId, challenge], DEVICE_REGISTER_PREFIX);
 }
 
-/** Device table P24 (rule R2): the kinds of the PC's safety log. `forget` is not in this release's contract. */
-export type SafetyRecordKind = "block" | "freeze" | "lift" | "lock" | "unlock";
+/** Device table P24 (rule R2): the kinds of the PC's safety log. */
+export type SafetyRecordKind = "block" | "freeze" | "lift" | "lock" | "unlock" | "forget";
 
 /** Device table P24: the fields every safety record has. `signed_at` is shown to people and orders nothing. */
 interface SafetyCommon {
@@ -202,9 +202,14 @@ export interface FreezeRecord extends SafetyCommon { readonly kind: "freeze"; re
 export interface LockRecord extends SafetyCommon { readonly kind: "lock"; readonly target: null; readonly signer: "pc"; readonly signature: "" }
 /** Device table P11, T47: ends the lock whose id is `target`. Random id. */
 export interface UnlockRecord extends SafetyCommon { readonly kind: "unlock"; readonly target: string; readonly signer: "pc"; readonly signature: "" }
+/**
+ * Device table T61, P13, P24: PC-local forgets the account's removals of the key `target` in `account`. It names a
+ * key, never a record id, so it never ends a local Revoke (P13). Only ever written by the PC. Random id.
+ */
+export interface ForgetRecord extends SafetyCommon { readonly kind: "forget"; readonly target: string; readonly signer: "pc"; readonly signature: "" }
 
 export type DeviceSafetyRecord = BlockRecord | DeviceLiftRecord;
-export type SafetyRecord = DeviceSafetyRecord | PcLiftRecord | FreezeRecord | LockRecord | UnlockRecord;
+export type SafetyRecord = DeviceSafetyRecord | PcLiftRecord | FreezeRecord | LockRecord | UnlockRecord | ForgetRecord;
 export type UnsignedSafetyRecord = Omit<BlockRecord, "id" | "signature"> | Omit<DeviceLiftRecord, "id" | "signature">;
 
 const SAFETY_SIGNED_FIELDS = {
@@ -219,6 +224,7 @@ const SAFETY_FIELDS: Record<string, readonly string[]> = {
   freeze: ["kind", "id", "account", "target", "after", "signer", "signed_at", "signature"],
   lock: ["kind", "id", "account", "target", "signer", "signed_at", "signature"],
   unlock: ["kind", "id", "account", "target", "signer", "signed_at", "signature"],
+  forget: ["kind", "id", "account", "target", "signer", "signed_at", "signature"],
 };
 
 const HASH_ID = /^[0-9a-f]{64}$/;
@@ -230,8 +236,8 @@ const safetyChecks: Record<string, (value: unknown, record: Record<string, unkno
   nonce: checks.id!,
   forget: (v) => typeof v === "boolean",
   signature: (v, r) => (r.signer === "pc" || r.signer === "service") ? v === "" : checks.signature!(v),
-  signer: (v, r) => r.kind === "freeze" ? v === "service" : v === "pc" ? r.kind !== "block" : r.kind !== "lock" && r.kind !== "unlock" && isAccountKeyEncoding(v),
-  target: (v, r) => r.kind === "block" || r.kind === "freeze" ? isAccountKeyEncoding(v) : r.kind === "lock" ? v === null
+  signer: (v, r) => r.kind === "freeze" ? v === "service" : v === "pc" ? r.kind !== "block" : r.kind !== "lock" && r.kind !== "unlock" && r.kind !== "forget" && isAccountKeyEncoding(v),
+  target: (v, r) => r.kind === "block" || r.kind === "freeze" || r.kind === "forget" ? isAccountKeyEncoding(v) : r.kind === "lock" ? v === null
     : r.kind === "unlock" ? checks.id!(v) : typeof v === "string" && HASH_ID.test(v),
   id: (v, r) => typeof v === "string" && (r.kind === "freeze" ? v.startsWith("f:") && HASH_ID.test(v.slice(2))
     : r.signer === "pc" ? checks.id!(v) : HASH_ID.test(v)),
@@ -257,7 +263,7 @@ export function parseSafetyRecord(value: unknown): SafetyRecord {
   if (typeof value !== "object" || value === null || Array.isArray(value)) fail("A record is a JSON object");
   const object = value as Record<string, unknown>;
   const kind = object.kind;
-  if (kind !== "block" && kind !== "freeze" && kind !== "lift" && kind !== "lock" && kind !== "unlock") fail("Unknown record kind");
+  if (kind !== "block" && kind !== "freeze" && kind !== "lift" && kind !== "lock" && kind !== "unlock" && kind !== "forget") fail("Unknown record kind");
   if (object.v !== 1) fail("Unknown record version");
   const shape = kind === "lift" ? (object.signer === "pc" ? "pc_lift" : "device_lift") : kind;
   const fields = SAFETY_FIELDS[shape]!;
