@@ -342,7 +342,7 @@ it("starts no sweep of its own while its page is hidden, and the first minute af
   } finally { Reflect.deleteProperty(globalThis, "document"); }
 });
 
-it("starts no new check while its view is out of sight, and goes on once it is shown again", async () => {
+it("starts no new check while its view is out of sight, and its next check goes on with what waited", async () => {
   const { store } = await savedPcs(4);
   const { pending, checked, arrived, probe } = heldProbe();
   let shown = true;
@@ -354,27 +354,45 @@ it("starts no new check while its view is out of sight, and goes on once it is s
   pending[1]!.resolve({ kind: "offline", reason: "pc" });
   for (let turn = 0; turn < 50; turn++) await Promise.resolve();
   expect(checked).toHaveLength(2);
+  // the drawer opens again: the view asks for a check, as ShellPcs does, and the paused sweep goes on
   shown = true;
-  const again = sweep.checkOne(checked[0]!);
-  await arrived(3);
-  expect(checked.length).toBeGreaterThanOrEqual(3);
+  void sweep.check();
+  await arrived(4);
   pending[2]!.resolve({ kind: "offline", reason: "pc" });
-  await again;
-  sweep.stop();
-  for (const held of pending.slice(3)) held.resolve({ kind: "offline", reason: "pc" });
+  pending[3]!.resolve({ kind: "offline", reason: "pc" });
   await swept;
+  expect(new Set(checked).size).toBe(4);
+  expect([...sweep.status.values()].every((status) => status.kind === "offline")).toBe(true);
 });
 
-it("schedules and starts nothing once stopped", async () => {
+it("is over once stopped: a list still being read, a later check and a later checkOne start and keep nothing", async () => {
   jest.useFakeTimers();
-  const { store } = await savedPcs(4);
-  const { pending, checked, arrived, probe } = heldProbe();
+  const { devices, store } = await savedPcs(4);
+  const listed = Promise.withResolvers<RelayDevice[]>();
+  const slow: RelayDeviceStore = { ...store, list: () => listed.promise };
+  const { checked, probe } = heldProbe();
+  const sweep = createPcSweep(slow, { active: () => true, redraw() {} }, { probe });
+  const swept = sweep.check();
+  sweep.stop();
+  listed.resolve(devices);
+  await swept;
+  await sweep.check();
+  await sweep.checkOne(devices[0]!.server_id);
+  expect(checked).toEqual([]);
+  expect(sweep.status.size).toBe(0);
+  expect(jest.getTimerCount()).toBe(0);
+  expect(localStorage.getItem("ovis-pc-check-cursor")).toBeNull();
+});
+
+it("lets the answers it was keeping go when stopped, with no timer left", async () => {
+  jest.useFakeTimers();
+  const { store } = await savedPcs(2);
+  const { pending, arrived, probe } = heldProbe();
   const sweep = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
   const swept = sweep.check();
   await arrived(2);
-  sweep.stop();
-  for (const held of pending) held.resolve({ kind: "offline", reason: "pc" });
+  for (const held of pending) held.resolve({ kind: "answered", route: "relay", rttMs: 10 });
   await swept;
-  expect(checked).toHaveLength(2);
+  sweep.stop();
   expect(jest.getTimerCount()).toBe(0);
 });
