@@ -383,10 +383,12 @@
 .fork-github-replies { padding: var(--space-2) var(--space-3); }
 .fork-github-replies .fork-github-text { padding: var(--space-1) 0 0; }
 
-/* The page's tabs: Ovis's own segmented control, on a line of its own under the always-shown head. */
+/* Reserve room for coarse-pointer hit boxes and focus rings inside the horizontal scroller. */
 .fork-github-tabs {
-  margin-top: var(--space-4);
+  margin: calc(var(--space-4) - var(--space-3)) calc(-1 * var(--space-1)) calc(-1 * var(--space-3));
+  padding: var(--space-3) var(--space-1);
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
 }
 
