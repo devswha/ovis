@@ -767,7 +767,8 @@ export function createPushService(options: PushServiceOptions): PushService {
     hooked.set(key, { machineId, paneId });
     options.webhook?.send({
       kind: message.kind ?? "input", title: message.title, body: message.body, pane_id: paneId,
-      current: () => (epochs.get(key) ?? 0) === at && !muted(machineId, paneId) && options.inUse?.() !== true,
+      // a terminal that ended stays ended: what changes the pane after it (closed, gone from a snapshot) does not call it off
+      current: () => (message.kind === "ended" || (epochs.get(key) ?? 0) === at) && !muted(machineId, paneId) && options.inUse?.() !== true,
       ...(machineId === "local" ? { pc: pcKeys(machineId)[0] } : { machine_id: machineId }),
       ...(workspace ? { workspace_id: workspace } : {}),
       ...(generation === undefined ? {} : { generation }),
@@ -785,8 +786,9 @@ export function createPushService(options: PushServiceOptions): PushService {
     waiting.delete(key);
   }
 
-  /** an alert under way for it is dropped too (`changes`), and with no status left a late one is not told */
+  /** an alert under way for it, its timer already fired, is silenced too; and with no status left a late one is not told */
   function forget(key: string): void {
+    for (const entry of unsent) if (entry.key === key) entry.silenced = true;
     callOff(key);
     changes.delete(key);
     turnStart.delete(key);
@@ -829,7 +831,7 @@ export function createPushService(options: PushServiceOptions): PushService {
         timer = setTimeout(() => {
           fired = true;
           remaining -= 1;
-          if (remaining === 0 && waiting.get(key) === entry) waiting.delete(key);
+          if (remaining === 0 && waiting.get(entry.key) === entry) waiting.delete(entry.key);
           send(to, () => entry.silenced, delay, entry).catch((error: unknown) => {
             console.error(`web push failed: ${error instanceof Error ? error.message : String(error)}`);
           }).finally(resolve);
