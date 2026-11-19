@@ -1,5 +1,6 @@
 import type { ClientMessage, ClientRole, PendingMessage, ServerFeature, ServerMessage } from "../../shared/protocol.ts";
 import { receiptResumeId } from "./receiptResume.ts";
+import { ACCOUNT_OPENS_ALL_CAPABILITY } from "../../shared/account-devices-api.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { promptSet } from "../../shared/secret-prompt.ts";
 import { ConnectionTrace } from "./connectionTrace.ts";
@@ -938,6 +939,11 @@ export class HerdrSocket {
 
   featuresListed(): boolean {
     return this.featuresKnown;
+  }
+
+  /** Device table G5: this PC opens to the account's sign-in (ACCOUNT_OPENS_ALL_CAPABILITY), as its trusted features say; never offline. */
+  accountOpensAll(): boolean {
+    return this.connected && this.features.has(ACCOUNT_OPENS_ALL_CAPABILITY);
   }
 
   hasTerminalHistory(): boolean {
