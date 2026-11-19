@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SafetyRecord } from "../../shared/account-records.ts";
@@ -57,14 +57,37 @@ describe("the safety log holds what it acknowledged (P24, T28, T41, S19)", () =>
     expect(SafetyLog.open(at).strict).not.toBeNull();
   });
 
-  test("P24: two handles of one folder never give one number twice nor lose an acknowledged record", () => {
+  test("P24: one folder has one log handle in a process, and a second open is the same handle read again", () => {
     const at = dir();
-    const [a, b] = [SafetyLog.open(at), SafetyLog.open(at)];
-    const [first, second] = [lock(), lock()];
+    const a = SafetyLog.open(at);
+    const first = lock();
     expect(a.append({ record: first, got: "pc" })).toEqual({ outcome: "applied", id: first.id, n: 1 });
+    const b = SafetyLog.open(at);
+    expect(b).toBe(a);
+    const second = lock();
     expect(b.append({ record: second, got: "pc" })).toEqual({ outcome: "applied", id: second.id, n: 2 });
-    const reopened = SafetyLog.open(at);
-    expect(reopened.receipt(first.id)).toEqual({ outcome: "applied", id: first.id, n: 1 });
-    expect(reopened.receipt(second.id)).toEqual({ outcome: "applied", id: second.id, n: 2 });
+    expect(SafetyLog.open(at).receipt(first.id)).toEqual({ outcome: "applied", id: first.id, n: 1 });
+  });
+
+  test("T41: what is in force follows every read of the file, an acknowledged record included", () => {
+    const at = dir();
+    const log = SafetyLog.open(at);
+    const held = lock();
+    // the file is ahead of the handle (written before it read it again): the lock is there, the handle has not seen it
+    writeFileSync(join(at, SAFETY_LOG_FILE), JSON.stringify({ v: 1, next: 2, base: [], waiting: [], entries: [{ n: 1, got: "pc", record: held }] }), { mode: 0o600 });
+    expect(log.append({ record: held, got: "pc" })).toEqual({ outcome: "applied", id: held.id, n: 1 });
+    expect(log.inForce.locked).toBe(log.state().locked);
+    expect(log.inForce.locked).toBe(true);
+  });
+
+  test("T28: an open handle whose log was deleted beside the device journal goes strict and writes no fresh log", () => {
+    const at = dir();
+    const log = SafetyLog.open(at);
+    log.append({ record: lock(), got: "pc" });
+    writeFileSync(join(at, DEVICE_JOURNAL_FILE), JSON.stringify({ v: 1, next_seq: 1, entries: [], seen: {}, open: [], trimmed: 0 }), { mode: 0o600 });
+    rmSync(join(at, SAFETY_LOG_FILE));
+    expect(log.append({ record: lock(), got: "pc" })).toMatchObject({ outcome: "refused", code: "log_unavailable" });
+    expect(log.strict).not.toBeNull();
+    expect(existsSync(join(at, SAFETY_LOG_FILE))).toBe(false);
   });
 });
