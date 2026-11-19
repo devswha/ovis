@@ -1198,9 +1198,12 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
       pc.settings(`OVIS_STATE_DIR=${other}\n`);
       const status = await run("status", pc.env);
       const add = await run("add", pc.env);
-      const wayOut = `${join(configDir, ".env")} sets OVIS_STATE_DIR to ${other}, which wins over ${pc.state}. Run it with that profile's HERDR_PLUGIN_CONFIG_DIR, or set the same OVIS_STATE_DIR in the file.`;
-      expect([status.out.split("\n").slice(0, 2), add.err, add.exitCode]).toEqual([[`down http://127.0.0.1:${pc.port}`, wayOut], `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n${wayOut}\n`, 1]);
-      printed(pc, status, add);
+      const approve = await run("pair", pc.env, { args: ["--approve"] });
+      const wayOut = `${join(configDir, ".env")} sets OVIS_STATE_DIR to ${other}, which wins over ${pc.state}. Run it with that profile's HERDR_PLUGIN_CONFIG_DIR, or set the same OVIS_STATE_DIR in the file.\n`;
+      const stopped = `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n${wayOut}`;
+      // status's stdout keeps its one line, which install.sh reads
+      expect([status.out.split("\n")[0], status.err, add.err, add.exitCode, approve.err, approve.exitCode]).toEqual([`down http://127.0.0.1:${pc.port}`, wayOut, stopped, 1, stopped, 1]);
+      printed(pc, status, add, approve);
       pc.settings(`OVIS_STATE_DIR=${pc.state}\n`);
       const same = await run("status", pc.env);
       expect(same.out.split("\n")[0], same.err).toBe(`running http://127.0.0.1:${pc.port}`);
