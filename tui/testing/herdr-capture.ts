@@ -13,7 +13,7 @@ import { isAbsolute, join } from "node:path";
 import { isolatedHcEnv } from "../../scripts/test-hc.ts";
 import { entryPty } from "./entry-pty.ts";
 import { type Cells, encodeGrid, hostResponder, type PaletteName, Screen, type StoredGrid } from "./herdr-grid.ts";
-import { CAPTURE_FOLDER, type PaneSpec, PARITY_SIZES, SCENES, type SceneKeys, WORLDS, type WorldName } from "./parity-scenes.ts";
+import { CAPTURE_FOLDER, type Checkout, type PaneSpec, PARITY_SIZES, SCENES, type SceneKeys, WORLDS, type WorldName } from "./parity-scenes.ts";
 import { stopAllPtyRuns, type SupervisedRun } from "./pty.ts";
 
 const SESSION = "r72";
@@ -204,13 +204,26 @@ async function herdrServer(herdr: string, config: string) {
 type Server = Awaited<ReturnType<typeof herdrServer>>;
 
 /** The scene of a world built on herdr's server; answers how to report agents and how to put the first pane in front. */
-async function build(server: Server, panes: readonly PaneSpec[]) {
+async function build(server: Server, panes: readonly PaneSpec[], checkouts: readonly Checkout[] = []) {
   const ids = new Map<string, string>();
   const workspaces = new Map<string, string>();
   const tabs = new Map<string, string>();
   const agents = new Map<string, string>();
   let first: { workspace: string; tab: string; pane: string; neighbour: string | null } | null = null;
   let seq = 1;
+  // each checkout: a repository on its branch with one commit, made by git itself (the tooling may start processes)
+  for (const checkout of checkouts) {
+    const folder = join(server.home, checkout.folder);
+    mkdirSync(folder, { recursive: true });
+    const git = async (...args: string[]) => {
+      const env = { ...TOOL_ENV, HOME: server.home, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "r75", GIT_AUTHOR_EMAIL: "r75@example.invalid", GIT_COMMITTER_NAME: "r75", GIT_COMMITTER_EMAIL: "r75@example.invalid" };
+      const ran = Bun.spawn(["git", ...args], { cwd: folder, env, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+      if (await ran.exited !== 0) throw new Error(`git ${args.join(" ")}: ${await new Response(ran.stderr).text()}`);
+    };
+    await git("init", "-q", "-b", checkout.branch);
+    await git("commit", "-q", "--allow-empty", "-m", "first");
+  }
+  const cwdOf = (pane: PaneSpec) => pane.folder ? join(server.home, pane.folder) : server.home;
   const paneEnv = async (pane: PaneSpec) => ["--env", `R72_PANE=${pane.name}`, "--env", `R72_CTL=${await server.pipe(pane.name)}`];
   const report = async (name: string, state: string) => {
     await server.call("pane", "report-agent", ids.get(name)!, "--source", "r72", "--agent", agents.get(name) ?? "claude", "--state", state, "--seq", String(seq++));
@@ -220,7 +233,7 @@ async function build(server: Server, panes: readonly PaneSpec[]) {
     let id: string;
     if (!workspaces.has(pane.workspace)) {
       const made: { result: { root_pane: { pane_id: string }; workspace: { workspace_id: string } } } = JSON.parse(await server.call(
-        "workspace", "create", "--cwd", server.home, "--label", pane.workspace, ...await paneEnv(pane), ...(first ? ["--no-focus"] : ["--focus"]),
+        "workspace", "create", "--cwd", cwdOf(pane), "--label", pane.workspace, ...await paneEnv(pane), ...(first ? ["--no-focus"] : ["--focus"]),
       ));
       id = made.result.root_pane.pane_id;
       const workspace = made.result.workspace.workspace_id;
@@ -232,14 +245,14 @@ async function build(server: Server, panes: readonly PaneSpec[]) {
       first ??= { workspace, tab, pane: id, neighbour: null };
     } else if (!tabs.has(tabKey)) {
       const made: { result: { root_pane: { pane_id: string }; tab: { tab_id: string } } } = JSON.parse(await server.call(
-        "tab", "create", "--workspace", workspaces.get(pane.workspace)!, "--cwd", server.home, "--label", pane.tab, ...await paneEnv(pane), "--no-focus",
+        "tab", "create", "--workspace", workspaces.get(pane.workspace)!, "--cwd", cwdOf(pane), "--label", pane.tab, ...await paneEnv(pane), "--no-focus",
       ));
       id = made.result.root_pane.pane_id;
       tabs.set(tabKey, made.result.tab.tab_id);
     } else {
       const beside = [...ids.entries()].filter(([name]) => panes.find((one) => one.name === name && one.workspace === pane.workspace && one.tab === pane.tab)).at(-1)![1];
       const made: { result: { pane: { pane_id: string } } } = JSON.parse(await server.call(
-        "pane", "split", beside, "--direction", "right", "--cwd", server.home, ...await paneEnv(pane), "--no-focus",
+        "pane", "split", beside, "--direction", "right", "--cwd", cwdOf(pane), ...await paneEnv(pane), "--no-focus",
       ));
       id = made.result.pane.pane_id;
       if (first && beside === first.pane) first.neighbour = id;
@@ -379,7 +392,7 @@ try {
     const server = await herdrServer(herdr, WORLDS[world].herdrConfig ?? "");
     const out: Pictures = { version: (await server.call("--version")).replace(/^herdr\s+/, ""), grids: new Map() };
     try {
-      const scene = await build(server, WORLDS[world].panes);
+      const scene = await build(server, WORLDS[world].panes, WORLDS[world].checkouts);
       if (world === "ended") {
         await server.tell("RIGHT", "quit");
         // fixed wait: herdr closes an ended program's pane by itself and tells the command line nothing the script can wait on

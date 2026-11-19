@@ -9,17 +9,30 @@ export const CAPTURE_FOLDER = join(import.meta.dir, "herdr-captures");
 export const PARITY_SIZES = [[120, 40], [80, 24], [64, 20], [45, 30]] as const;
 
 /** One pane of a world: where it stands, and the agent state its program reports, if any. */
-export interface PaneSpec { readonly workspace: string; readonly tab: string; readonly name: string; readonly agent?: string; readonly state?: "working" | "blocked" | "done" | "idle" }
+export interface PaneSpec {
+  readonly workspace: string;
+  readonly tab: string;
+  readonly name: string;
+  readonly agent?: string;
+  readonly state?: "working" | "blocked" | "done" | "idle";
+  /** the folder under the world's home it starts in (the home itself when absent) */
+  readonly folder?: string;
+}
+
+/** A git checkout of a world: a folder under its home, on a branch with one commit and no upstream. */
+export interface Checkout { readonly folder: string; readonly branch: string }
 
 export interface World {
   readonly panes: readonly PaneSpec[];
   /** extra lines for herdr's config (its defaults otherwise) */
   readonly herdrConfig?: string;
+  /** git checkouts the world's panes may start in */
+  readonly checkouts?: readonly Checkout[];
   /** the first picture is complete */
   readonly ready: (text: string) => boolean;
 }
 
-export type WorldName = "main" | "agents" | "ended" | "empty";
+export type WorldName = "main" | "agents" | "ended" | "empty" | "git";
 
 export const WORLDS: Readonly<Record<WorldName, World>> = {
   /** two workspaces; the first has a tab split in two and a second tab */
@@ -54,6 +67,15 @@ export const WORLDS: Readonly<Record<WorldName, World>> = {
   },
   /** nothing at all */
   empty: { panes: [], ready: () => true },
+  /** a plain shell in front, and a second workspace in a git checkout (the sidebar's branch row, S4) */
+  git: {
+    panes: [
+      { workspace: "home", tab: "sh", name: "SHELL" },
+      { workspace: "code", tab: "main", name: "CODE", folder: "code" },
+    ],
+    checkouts: [{ folder: "code", branch: "feature/sidebar" }],
+    ready: (text) => text.includes("SHELL-READY"),
+  },
 };
 
 /** What opens a scene: keys typed, a click on the first label found, a drag over a text, an agent's report, a second viewer. */
@@ -119,4 +141,5 @@ export const SCENES: Readonly<Record<WorldName, readonly Scene[]>> = {
   ],
   ended: [{ id: "ended" }],
   empty: [{ id: "empty" }, { id: "empty-prefix", ...both(type(PREFIX)), last: true }],
+  git: [{ id: "git" }, { id: "git-focus", ...both(type(`${PREFIX}w\x1b[B\r`)), last: true }],
 };
