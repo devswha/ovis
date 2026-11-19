@@ -43,14 +43,15 @@ describe("S2-28 expiry by use this PC saw (T54, T55)", () => {
     const pc = machine();
     pc.live(["k-used", "k-idle"]);
     const [used, idle] = pc.store.rows();
-    expect(pc.day(used!.id)?.last_signin_day).toBe("2026-01-01");
+    // an admission is no use: the day stays empty until this PC sees the row sign in, and expiry counts from admission
+    expect(pc.day(used!.id)?.last_signin_day).toBeNull();
 
     // a list naming the key, a refused sign-in and a later read are no use: only a proved sign-in or request is
     pc.clock.now += 30 * DAY;
     pc.store.commitList(pc.list(["k-used", "k-idle"]));
     pc.store.seen(used!.id);
     expect(pc.day(used!.id)?.last_signin_day).toBe("2026-01-31");
-    expect(pc.day(idle!.id)?.last_signin_day).toBe("2026-01-01");
+    expect(pc.day(idle!.id)?.last_signin_day).toBeNull();
 
     // day 59 of idleness: still live; day 60: closed, journalled, kept as expired
     pc.clock.now = Date.UTC(2026, 0, 1, 12) + (EXPIRY_DAYS - 1) * DAY;
@@ -90,7 +91,7 @@ describe("S2-28 expiry by use this PC saw (T54, T55)", () => {
     expect(pc.store.readmit(keyOf("k-1"), pc.list(["k-1"]))).toBe(true);
     expect(pc.events).toEqual(["journal admit k-1", "publish k-1"]);
     expect(pc.store.access(row!.id)).toEqual({ refused: "join_hold", seconds: 10 });
-    expect(pc.day(row!.id)?.last_signin_day).toBe(new Date(pc.clock.now).toISOString().slice(0, 10));
+    expect(pc.day(row!.id)?.last_signin_day).toBeNull();
   });
 
   test("P9: only a use this PC saw is reported, as a UTC day per key; an admission alone reports nothing", () => {

@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountDeviceId } from "../../shared/account-records.ts";
-import { AccountSnapshotError, parseAccountDevicesFile, type AccountJoinedRow, type AccountSnapshot, type AdmissionOrigin, type SnapshotDevice } from "../../shared/account-snapshot.ts";
+import { AccountSnapshotError, parseAccountDevicesFile, type AccountJoinedRow, type AccountSnapshot, type UsedReport, type AdmissionOrigin, type SnapshotDevice } from "../../shared/account-snapshot.ts";
 import { writePrivateState } from "../private-state.ts";
 import type { RemovalEvidence } from "./removal-evidence.ts";
 import { rowDrop, type RowDrop } from "./row-drop-evidence.ts";
@@ -236,12 +236,18 @@ export class AccountDeviceStore implements AccountRowSource {
     this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate.id === id ? { ...candidate, last_signin_day: today } : candidate) });
   }
 
+  /** P9: the days this PC saw each row used, for page 0 of the next read; an admission alone is no use. */
+  usedReport(): UsedReport {
+    return this.rows().flatMap((row) => row.state !== "expired" && row.last_signin_day !== null ? [{ key: row.key, day: row.last_signin_day }] : []);
+  }
+
   /** T54: rows this PC saw no use of for EXPIRY_DAYS close and stay in the file as `expired`, so a list alone cannot bring them back. */
   expire(): string[] {
     this.usable();
     const today = Date.parse(dayOf(this.ports.now()));
     const idle = this.file.devices.filter((row) => row.state !== "expired"
-      && (row.last_signin_day === null || today - Date.parse(row.last_signin_day) >= EXPIRY_DAYS * DAY_MS));
+      // until this PC sees it used, a row's last day is the day it was admitted here
+      && today - Date.parse(row.last_signin_day ?? row.origin.at.slice(0, 10)) >= EXPIRY_DAYS * DAY_MS);
     for (const row of idle) {
       this.ports.closeSessions(row.id, "expired");
       this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason: "expired" });
@@ -321,7 +327,7 @@ export class AccountDeviceStore implements AccountRowSource {
     const row: AccountRow = {
       id: accountDeviceId(this.serverId, entry.key), key: entry.key, no: entry.no, label: entry.label,
       origin: this.ports.admitOrigin(now),
-      confirmed_at: iso(now), last_signin_day: dayOf(now), state: bypass ? "live" : "hold", hold_until: null,
+      confirmed_at: iso(now), last_signin_day: null, state: bypass ? "live" : "hold", hold_until: null,
     };
     const standing = this.ports.admitListedRows(() => {
       this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.origin.admit_no, label: row.label,

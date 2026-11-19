@@ -14,6 +14,7 @@ import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { AccountHolds } from "./holds.ts";
+import type { UsedReport } from "../../shared/account-snapshot.ts";
 import { readSnapshot, type PageAnswer, type ReadOutcome, type SnapshotPorts } from "./snapshot-read.ts";
 import { applyAccountRecords, stageMailboxAdds, type AddGates, type RecordOutcome } from "./records.ts";
 
@@ -129,7 +130,7 @@ export interface AccountMailboxOptions {
    * The account's whole snapshot read (Step 2, S2-24), run after each pull: the account it reads and the ports that
    * apply it, or null for none now. The server gives it only while OVIS_ACCOUNT_OPENS_ALL is on.
    */
-  readonly snapshot?: { account(): string | null; ports(): SnapshotPorts | null };
+  readonly snapshot?: { account(): string | null; ports(): SnapshotPorts | null; used?(): UsedReport };
 }
 
 export class AccountMailbox {
@@ -237,11 +238,12 @@ export class AccountMailbox {
     const ports = snapshot.ports();
     if (account === null || ports === null) return empty;
     let adds = 0;
+    const used = snapshot.used?.();
     try {
       let staged: Awaited<ReturnType<typeof stageMailboxAdds>> = [];
       const outcome = await readSnapshot(async (cursor) => {
         if (cursor.page === 0) staged = await stageMailboxAdds(this.pending);
-        return this.snapshotPage(account, cursor);
+        return this.snapshotPage(account, cursor, used);
       }, { ...ports, commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
         ports.commit(stage);
@@ -635,10 +637,10 @@ export class AccountMailbox {
    * One page of the account's snapshot (Step 2, G1; only with OVIS_ACCOUNT_OPENS_ALL): page 0 asks for a new snapshot,
    * every later page names the first page's id. The page is checked by readSnapshot, never here.
    */
-  async snapshotPage(account: string, cursor: { snapshot: string | null; page: number }): Promise<PageAnswer> {
+  async snapshotPage(account: string, cursor: { snapshot: string | null; page: number }, used?: UsedReport): Promise<PageAnswer> {
     const identity = this.options.identity();
     if (!identity) throw new Error("This PC has no relay identity");
-    const page = await this.proved(identity, "/v1/pc/snapshot", { account, page: cursor.page, ...(cursor.snapshot === null ? {} : { snapshot: cursor.snapshot }) }, true);
+    const page = await this.proved(identity, "/v1/pc/snapshot", { account, page: cursor.page, ...(cursor.snapshot === null ? {} : { snapshot: cursor.snapshot }), ...(cursor.page === 0 && used !== undefined ? { used } : {}) }, true);
     return page === null ? { snapshot_gone: true } : { page };
   }
 
