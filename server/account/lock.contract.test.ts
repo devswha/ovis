@@ -6,6 +6,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { PcAccountState } from "./pc-binding.ts";
 import { pairingPc, memberRow, signIn, ask, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
@@ -90,4 +91,12 @@ test("S19: a log that cannot be read is stricter than locked: no window without 
   expect((await made.local("/api/devices")).body.error?.code).toBe("strict");
   expect((await made.local("/api/account/lock")).body.strict).toBe(true);
   expect((await made.local("/api/session", { headers: { authorization: `Bearer ${BRIDGE_TOKEN}` } })).status).not.toBe(403);
+});
+
+test("P11: a lock taken under the PC's account holds after that binding is cleared and the PC bound to another account", async () => {
+  const made = await lockedPc();
+  const binding = PcAccountState.open(made.stateDir);
+  binding.clear("left_on_pc", "pc");
+  binding.bind("acct_2", made.member.key.spki);
+  expect((await made.local("/api/devices")).body.error?.code).toBe("locked");
 });
