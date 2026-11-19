@@ -9,6 +9,8 @@ import { signAccountRecord } from "../../shared/account-records.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { readFileSync } from "node:fs";
 import { AccountDeviceStore } from "./account-devices.ts";
+import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
+import { writePrivateState } from "../private-state.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
@@ -26,9 +28,8 @@ async function key(): Promise<Key> {
 }
 
 /** A PC in ACCOUNT with its real log, binding and journal, and the account rows attached to its device store. */
-function pc() {
-  const dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"));
-  dirs.push(dir);
+function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
+  if (!dirs.includes(dir)) dirs.push(dir);
   const safety = SafetyLog.open(dir);
   const binding = PcAccountState.open(dir);
   const journal = DeviceJournal.open(dir);
@@ -109,8 +110,8 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     expect(devices.sessionRow(newerRow!.id)).toBeNull();
   });
 
-  test("P21: an account-joined row signs as a member, and every row of the target, in both stores, must have joined after it", async () => {
-    const { devices, rows } = pc();
+  test("S25, P17, P21: a held signer cannot block; a live older signer can", async () => {
+    const { devices, rows, dir } = pc();
     await member(devices);
     const [signer, target] = [await key(), await key()];
     rows.commitList(listed(signer, target));
@@ -118,8 +119,14 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     const block = (by: Key, of: string) => signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: of, target_no: 9, signer: by.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, by.keys.privateKey) as Promise<BlockRecord>;
     // the devices.json row that joined after both account rows cannot block the older account row
     expect(await devices.applyBlock(await block(late, signer.spki), "handed")).toMatchObject({ outcome: "refused", reason: "signer_not_older" });
-    // the older account row can block the newer one
-    expect(await devices.applyBlock(await block(signer, target.spki), "handed")).toMatchObject({ outcome: "applied" });
+    const signed = await block(signer, target.spki);
+    expect((await devices.applyBlock(signed, "handed")).outcome).toBe("refused");
+    expect(rows.rowsByKey(target.spki)).toHaveLength(1);
+    // The release operation is S2-29. Open the same persisted row in its live state as the positive control.
+    const path = join(dir, ACCOUNT_DEVICES_FILE);
+    const file = parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8")));
+    writePrivateState(path, { ...file, devices: file.devices.map((row) => row.key === signer.spki ? { ...row, state: "live" } : row) });
+    expect((await pc(dir).devices.applyBlock(signed, "handed")).outcome).toBe("applied");
   });
 
   test("T36, P5: an account-joined key signs no remove of another key, newer or not; a devices.json member still may", async () => {
