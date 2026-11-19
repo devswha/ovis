@@ -1,6 +1,16 @@
 export const APP_ORIGIN = "https://app.ovis.sh";
 
-export const ACCOUNT_SIGN_IN = false;
+export const ACCOUNT_SIGN_IN = true;
+
+/** The account service, which names the sign-ins it offers (`GET /v1/providers`), and those the app can draw, in its order. */
+export const ACCOUNT_SERVICE = "https://account.ovis.sh";
+export const ACCOUNT_PROVIDERS = ["github", "google", "apple"];
+
+/** The sign-ins a `/v1/providers` answer names, in the app's order, or null for an answer that names nothing readable. */
+export function listedProviders(body) {
+  if (typeof body !== "object" || body === null || !Array.isArray(body.providers)) return null;
+  return ACCOUNT_PROVIDERS.filter((provider) => body.providers.includes(provider));
+}
 
 export const korean = /^ko\b/i.test(navigator.language ?? "");
 

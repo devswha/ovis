@@ -1,15 +1,10 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SIGN_IN, APP_ORIGIN, korean, localize, openFailure, parseAddress, publicHttp, relayLink, shell, t } from "./shell.js";
+import { ACCOUNT_PROVIDERS, ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, t } from "./shell.js";
 
 localize();
 
-// only iOS opens a plain http PC slower (docs/native-app.md, The app); Android shows no such delay
-if (window.Capacitor?.getPlatform?.() !== "ios") document.querySelector(".hint")?.remove();
-
-const home = document.getElementById("home");
-const directScreen = document.getElementById("direct-screen");
 const feedback = document.getElementById("feedback");
 const form = document.getElementById("connect");
 const input = document.getElementById("address");
@@ -61,10 +56,10 @@ const relayErrors = {
 async function open(text) {
   stopPending();
   const url = parseAddress(text);
-  if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); if (!directScreen.hidden) input.focus(); return; }
+  if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); if (!addressScreen.hidden) input.focus(); return; }
   // a PC paired over the Ovis relay opens at its scope on the app's origin, saved under that scope
   const relay = relayLink(url);
-  if (relay?.error) { error.textContent = relayErrors[relay.error](); if (!directScreen.hidden) input.focus(); return; }
+  if (relay?.error) { error.textContent = relayErrors[relay.error](); if (!addressScreen.hidden) input.focus(); return; }
   if (relay) {
     error.textContent = "";
     try { await shell("open", { url: relay.url, scope: relay.scope, ...(relay.name ? { name: relay.name } : {}) }); }
@@ -89,43 +84,65 @@ async function open(text) {
   finally { if (mine === attempt) showStatus(""); }
 }
 
-/**
- * The first screen offers the account; a PC on the same Wi-Fi or tailnet opens from the direct screen, by its QR code or
- * address. What an open says goes with the screen that is up.
- */
-function showScreen(direct) {
+const screens = { "sign-in": document.getElementById("sign-in"), add: document.getElementById("add"), address: document.getElementById("address-screen") };
+const addressScreen = screens.address;
+/** Back on each screen: Add a PC goes back to the sign-in, an address to Add a PC; a build with no account starts on Add a PC. */
+const backTo = { add: "sign-in", address: "add" };
+
+/** One screen at a time; what an open says goes with the screen that is up. `focus`: what gets the focus on it, none for false. */
+function show(name, focus) {
   stopPending();
   error.textContent = "";
-  home.hidden = direct;
-  directScreen.hidden = !direct;
-  (direct ? document.getElementById("open") : home.querySelector(".foot")).before(feedback);
-  (direct ? document.getElementById("direct-back") : document.getElementById("direct")).focus();
+  for (const [key, screen] of Object.entries(screens)) screen.hidden = key !== name;
+  screens[name].append(feedback);
+  if (focus !== false) (focus ?? screens[name].querySelector("button:not([hidden])"))?.focus();
 }
 
-document.getElementById("direct").addEventListener("click", () => showScreen(true));
-document.getElementById("direct-back").addEventListener("click", () => showScreen(false));
+for (const [name, to] of Object.entries(backTo)) screens[name].querySelector("[data-back]").addEventListener("click", () => show(to));
+document.getElementById("no-account").addEventListener("click", () => show("add"));
+document.getElementById("address-way").addEventListener("click", () => show("address", input));
+
+// a machine reached over SSH from this phone: Android's OvisSsh plugin asks the rest on a screen of its own. An app
+// without it (iOS, or an Android build before it) has no SSH to offer, so the way is left out rather than drawn dead
+const sshWay = document.getElementById("ssh-way");
+// the plugins the app announces to the page before its first script runs (src/lib/nativeApp.ts, hasNativePlugin)
+if ((window.Capacitor?.PluginHeaders ?? []).some((header) => header.name === "OvisSsh")) sshWay.addEventListener("click", async () => {
+  error.textContent = "";
+  try { await window.Capacitor.nativePromise("OvisSsh", "add", {}); }
+  catch (err) { error.textContent = String(err?.message ?? err); }
+});
+else sshWay.hidden = true;
 
 cancel.addEventListener("click", () => {
   stopPending();
-  if (!directScreen.hidden) input.focus();
+  if (!addressScreen.hidden) input.focus();
 });
 
 form.addEventListener("submit", (event) => { event.preventDefault(); void open(input.value); });
 
 const account = document.getElementById("account");
-if (korean) document.getElementById("privacy").href = "https://ovis.sh/ko/privacy/";
-// a build without the account (OVIS_APP_ACCOUNT unset, build-web.ts) opens the direct screen first
+/** Draws a button for each sign-in named, in the build's order. */
+function showProviders(providers) {
+  for (const button of account.querySelectorAll("[data-provider]")) button.hidden = !providers.includes(button.dataset.provider);
+}
+
 if (!ACCOUNT_SIGN_IN) {
-  home.hidden = true;
-  directScreen.hidden = false;
-  document.getElementById("direct-back").hidden = true;
-  document.getElementById("open").before(feedback);
+  // a build without the account (OVIS_APP_ACCOUNT=0, build-web.ts) starts on Add a PC, with nothing to go back to
+  screens.add.querySelector("[data-back]").hidden = true;
+  show("add", false);
 }
 else {
-  // the sign-in itself runs on the hosted app, which this opens; it asks for the provider again
+  show("sign-in", false);
+  // the service names its sign-ins (GET /v1/providers), as the hosted app reads them: GitHub and Google until it answers
+  showProviders(ACCOUNT_PROVIDERS.slice(0, 2));
+  fetch(new URL("/v1/providers", ACCOUNT_SERVICE)).then((response) => response.ok ? response.json() : null).then((body) => {
+    const listed = listedProviders(body);
+    if (listed !== null) showProviders(listed);
+  }, () => undefined);
+  // the sign-in itself runs on the hosted app, which this opens on that provider's sign-in (#sign-in=, boot.ts)
   for (const button of account.querySelectorAll("[data-provider]")) button.addEventListener("click", async () => {
     error.textContent = "";
-    try { await shell("open", { url: `${APP_ORIGIN}/`, name: t("Your PCs", "내 PC") }); }
+    try { await shell("open", { url: `${APP_ORIGIN}/#sign-in=${button.dataset.provider}`, name: "Ovis" }); }
     catch (err) { error.textContent = String(err?.message ?? err); }
   });
 }
@@ -178,7 +195,7 @@ async function openAppLink() {
   if (window.Capacitor?.getPlatform?.() !== "android") return;
   const { url } = await shell("takeLink");
   if (!url) return;
-  showScreen(true);
+  show("address");
   input.value = url;
   await open(url);
 }
