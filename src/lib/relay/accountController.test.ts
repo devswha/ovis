@@ -9,6 +9,7 @@ import { RelayShell, type RelayShellProps } from "../../components/RelayShell.ts
 import { memoryAccountStore } from "../account/store.ts";
 import type { RelayDevice, ShellDeviceStore } from "./device.ts";
 import { mountRelayShell, type RelayShellMount } from "./shell.tsx";
+import { dashboardState } from "./dashboard.ts";
 
 const AP = "wss://relay-ap.ovis.sh";
 const SERVICE = "https://account.ovis.sh";
@@ -223,7 +224,10 @@ describe("the hosted shell's front page", () => {
       jest.advanceTimersByTime(60_000);
       await until(() => reads === read && last().state !== drawnBefore, `failed read ${read} drawn`);
     }
-    expect(account().pcs!.map((pc) => [pc.name, pc.state])).toEqual([["Desk PC", "offline"], ["Mac mini", "offline"], ["nuc", "offline"]]);
+    // ten minutes of failed reads: nothing new is known of the PCs, so no row ages past what the account last confirmed
+    expect(account().pcs!.map((pc) => [pc.name, pc.state])).toEqual([["Desk PC", "paired"], ["Mac mini", "needs-approval"], ["nuc", "needs-approval"]]);
+    // so this device's own check that reached no relay still reads Could not reach this machine, not Machine offline
+    expect(dashboardState(account().pcs![0]!, { kind: "offline", reason: "relay" })).toBe("unreachable");
     answer = ok;
 
     visible("hidden");

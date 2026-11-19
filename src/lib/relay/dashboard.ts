@@ -20,6 +20,7 @@ export function dashboardState(pc: Pick<MyPc, "state" | "listed">, check: PcStat
   const checked = checkedState(check);
   switch (pc.state) {
     case "needs-approval": case "needs-update": return pc.state;
+    // the account confirmed it has not heard from it (accountController ages no row past its last answer): only an answer beats that
     case "offline": return checked === "paired" ? "paired" : "offline";
     case "paired": return checked ?? (pc.listed ? "paired" : "unchecked");
   }

@@ -7,3 +7,5 @@
 - The list of PCs checks its PCs again every minute while it is open. A check the relay turned away
   no longer reads "No answer": the row keeps what it said, and that PC is checked first next time.
 - In the PCs table, a long state wraps to a second line instead of being cut off.
+- When the account service cannot be reached, the PCs it listed no longer turn "Machine offline" fifteen
+  minutes later by this device's clock: they keep what the account last said.
