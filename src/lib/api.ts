@@ -299,7 +299,9 @@ export interface RelayOffer {
 export async function requestRelay(action: "start" | "stop" | "reset-identity"): Promise<RelayStatus> {
   const url = `/api/relay/${action}`;
   const bounded = new AbortController();
-  const timer = action === "start" ? setTimeout(() => bounded.abort(new DOMException(t("No answer"), "TimeoutError")), 20_000) : undefined;
+  // kept here too: Safari before 15.4 has no signal.reason
+  let gaveUp: DOMException | null = null;
+  const timer = action === "start" ? setTimeout(() => { gaveUp = new DOMException(t("No answer"), "TimeoutError"); bounded.abort(gaveUp); }, 20_000) : undefined;
   try {
     const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" }, signal: bounded.signal });
     if (!response.ok) {
@@ -310,7 +312,7 @@ export async function requestRelay(action: "start" | "stop" | "reset-identity"):
     return (await response.json()) as RelayStatus;
   } catch (error) {
     // a browser may answer the abort with its own words (Safari 14): the deadline's are ours
-    throw bounded.signal.aborted ? bounded.signal.reason : error;
+    throw gaveUp ?? error;
   } finally { clearTimeout(timer); }
 }
 

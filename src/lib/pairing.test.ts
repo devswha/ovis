@@ -1,5 +1,5 @@
-import { describe, expect, it, spyOn } from "bun:test";
-import { pairThisBrowser, singleFlight } from "./pairing.ts";
+import { describe, expect, it, jest, spyOn } from "bun:test";
+import { PAIRING_MS, pairThisBrowser, singleFlight } from "./pairing.ts";
 
 // This browser pairing itself (the guide's Connect your phone, Settings → Phone's Pair this device
 // now): two at once could leave the later, already void, cookie in place of the good one.
@@ -37,6 +37,35 @@ describe("pairThisBrowser", () => {
       expect(list.map((device) => device.id)).toEqual(["d1"]);
       expect(asked).toEqual(["GET /api/devices"]);
     } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  it("gives up a pairing that never answers, so the next try asks afresh, and a late answer takes no next step", async () => {
+    const asked: string[] = [];
+    const held: ((response: Response) => void)[] = [];
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign((url: RequestInfo | URL, init?: RequestInit) => {
+      asked.push(`${init?.method ?? "GET"} ${String(url)}`);
+      return new Promise<Response>((answer) => { held.push(answer); });
+    }, { preconnect: globalThis.fetch.preconnect }));
+    jest.useFakeTimers();
+    try {
+      const first = pairThisBrowser().catch((error: unknown) => error);
+      jest.advanceTimersByTime(PAIRING_MS - 1);
+      expect(asked).toEqual(["GET /api/devices"]);
+      jest.advanceTimersByTime(1);
+      expect(await first).toMatchObject({ name: "TimeoutError" });
+
+      const again = pairThisBrowser().catch((error: unknown) => error);
+      expect(asked).toEqual(["GET /api/devices", "GET /api/devices"]);
+      // the first try's list answers now: it asks for no code
+      held[0]!(Response.json({ devices: [] }));
+      for (let turn = 0; turn < 5; turn++) await Promise.resolve();
+      expect(asked).toEqual(["GET /api/devices", "GET /api/devices"]);
+      jest.advanceTimersByTime(PAIRING_MS);
+      expect(await again).toMatchObject({ name: "TimeoutError" });
+    } finally {
+      jest.useRealTimers();
       fetch.mockRestore();
     }
   });
