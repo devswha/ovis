@@ -11,10 +11,15 @@ export interface LockScope { readonly locked: boolean; readonly strict: boolean 
 
 export function lockBoundary(access: Access, scope: LockScope, request: {
   localProof: boolean;
+  /**
+   * The request came from this PC's own programs, as the server itself knows (the bridge credential, the machine
+   * profile's owner socket), never from what the request says. They keep working, and gain no screen act by it.
+   */
+  ownProgram?: boolean;
   originOf(rowId: string): { from: string; how: string } | null;
 }): Access {
   if (access.level !== "full" || (!scope.locked && !scope.strict)) return access;
-  const pcLocal = access.via === "local" && request.localProof;
+  const pcLocal = access.via === "local" && (request.localProof || request.ownProgram === true);
   if (pcLocal) return access;
   const reason = scope.strict ? "strict" : "locked";
   if (scope.strict) return { level: "none", reason };
