@@ -809,6 +809,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await row(a, "Desk PC").and(a.locator('[data-pc-state="paired"]')).waitFor();
       const later = accountRequest("GET /v1/pcs", "the dashboard read the directory past the offline mark");
       await a.clock.fastForward(OFFLINE_AFTER_MS + 60_000);
+      const offlineFrom = await a.evaluate(() => Date.now());
       await a.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
       await later;
       await row(a, "Desk PC").and(a.locator('[data-pc-state="offline"]')).waitFor();
@@ -822,7 +823,17 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const caption = a.locator(".relay-overview-attention-caption");
       const attentionText = await caption.count() > 0 ? await caption.innerText() : await attention.locator(".relay-overview-attention-why").innerText();
       const offlineTitle = await row(a, "Desk PC").locator(".relay-pc-state-word").getAttribute("title") ?? "";
-      assert.equal(/\d+/.exec(attentionText)?.[0], /\d+/.exec(offlineTitle)?.[0], `the row ("${offlineTitle}") and the needs-attention list ("${attentionText}") give the same minutes`);
+      const offlineTo = await a.evaluate(() => Date.now());
+      // the minutes since the account's own last_seen_at by the browser's clock, between the read that aged the row and now
+      const seenAt = Date.parse(pc1.lastSeen() ?? "");
+      const fewest = Math.round((offlineFrom - seenAt) / 60_000);
+      const most = Math.round((offlineTo - seenAt) / 60_000);
+      for (const [where, text] of [["the row", offlineTitle], ["the needs-attention list", attentionText]] as const) {
+        const said = /Last seen (\d+) min ago\./.exec(text);
+        assert.ok(said !== null, `${where} says how many minutes ago the PC was last seen: "${text}"`);
+        const minutes = Number(said[1]);
+        assert.ok(minutes >= fewest && minutes <= most, `${where} gives the minutes since last_seen_at ${pc1.lastSeen()} (${fewest}-${most}): "${text}"`);
+      }
       await capture(a, "offline-1440-dark");
       await view(a, "relay");
       await wire(a, pc1.id).and(a.locator('[data-wire="off"]')).waitFor({ state: "attached" });

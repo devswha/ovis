@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { startBunRelay } from "../relay/bun.ts";
+import { MAX_PENDING } from "../relay/core.ts";
 import { liveSessionsRefused } from "../server/herdr/client.ts";
 import { createServer } from "../server/index.ts";
 import { RelayService } from "../server/relay/service.ts";
@@ -44,6 +45,9 @@ import { closeMarked, whileOpen } from "./relay-qa-teardown.ts";
 const APP = "https://app.ovis.sh";
 const RELAY = "wss://relay.test";
 const LOAD_MS = 45_000;
+/** every page's clock stands still here (timers still run), and the account last heard from both PCs five minutes before */
+const PAGE_NOW = Date.now();
+const SEEN_AT = new Date(PAGE_NOW - 5 * 60_000).toISOString();
 /** the shell gives a PC the relay has nobody for 15 s (PC_ANSWER_MS) before it calls it offline */
 const OPEN_OFFLINE_MS = 40_000;
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
@@ -87,9 +91,9 @@ const entryOf = (name: string, offer: RelayOffer): Entry => ({ name, server_id: 
 const a = entryOf("pc-a", pcA.offer);
 const box = entryOf("m1-box", m1.offer);
 const entries = [a, box];
-// heard from a minute ago: the account alone calls both Ready, as it did for fifteen minutes in nc0's S2
+// heard from five minutes ago by the page's fixed clock: the account alone calls both Ready, as it did for fifteen minutes in nc0's S2
 const directory = () => entries.map((entry) => ({ server_id: entry.server_id, label: entry.name, public_key: entry.public_key, relay: RELAY,
-  added_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString() }));
+  added_at: new Date(PAGE_NOW - 3_600_000).toISOString(), last_seen_at: SEEN_AT }));
 
 /** Pairings each PC confirmed a member of the signed-in account, as lib/relay/accountController.ts writes them. */
 async function seed(page: Page): Promise<void> {
@@ -143,6 +147,20 @@ let arrived = 0;
 const allArrived = Promise.withResolvers<void>();
 const arrive = (): void => { arrived += 1; if (arrived === runs.length) allArrived.resolve(); };
 const stopped = allArrived.promise.then(() => pcA.stop());
+/**
+ * A connection to stopped pc-a waits at the relay for it, and the relay turns the oldest away past MAX_PENDING waiting
+ * (relay/core.ts), which this device rightly reads as a refusal, not as the PC: the walks side by side wait in turn.
+ */
+let waitingForA = 0;
+const turns: (() => void)[] = [];
+async function waitOnA<T>(act: () => Promise<T>): Promise<T> {
+  if (waitingForA >= MAX_PENDING) await new Promise<void>((resolve) => { turns.push(resolve); });
+  else waitingForA += 1;
+  try { return await act(); } finally {
+    const next = turns.shift();
+    if (next) next(); else waitingForA -= 1;
+  }
+}
 
 async function walk(browser: Browser, site: string, run: Run): Promise<string> {
   let hasArrived = false;
@@ -181,17 +199,20 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
   });
   // the relay out of this device's reach: each new socket to it closes before the relay assigns it
   let relayReachable = true;
-  const turnedAway: (() => void)[] = [];
-  const nextTurnedAway = (): Promise<void> => new Promise((resolve) => { turnedAway.push(resolve); });
+  /** a socket to the relay for this PC opened from now on: a check of it that began after this call */
+  const sockets: { readonly id: string; readonly opened: () => void }[] = [];
+  const nextSocket = (id: string): Promise<void> => new Promise((opened) => { sockets.push({ id, opened }); });
   await context.routeWebSocket(/^wss:\/\/relay\.test\//, (ws) => {
+    const id = new URL(ws.url()).searchParams.get("server_id");
+    for (const [index, waiting] of [...sockets.entries()].reverse()) if (waiting.id === id) { sockets.splice(index, 1); waiting.opened(); }
     if (relayReachable) { relayBrowserSocket(ws, () => relayUrl(ws.url())); return; }
     ws.close({ code: 1011, reason: "out of reach" });
-    for (const resolve of turnedAway.splice(0)) resolve();
   });
   await context.addInitScript(({ language, theme }) => {
     if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language, theme }));
   }, { language: run.language, theme: run.theme });
   const page = await context.newPage();
+  await page.clock.setFixedTime(PAGE_NOW);
   page.setDefaultTimeout(20_000);
   /** what the walk is doing, named in its failure with a picture of the page */
   let doing = "loading";
@@ -232,25 +253,27 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
     await page.keyboard.press("Escape");
     await details(entry).waitFor({ state: "detached" });
   };
+  /** Checks this PC from its details and waits for a check of it that began after the press to finish. */
+  const checkOnce = async (entry: Entry): Promise<void> => {
+    const opened = nextSocket(entry.server_id);
+    await details(entry).locator('[data-action="check-pc"]').click();
+    await opened;
+    await page.waitForFunction((id) => document.querySelector(`[data-pc-details="${id}"] .relay-pc-details-location .status-dot[data-state="checking"]`) === null, entry.server_id);
+  };
   /**
    * This PC's own check, from its details (no sweep's timing), until their glyph says `state` (relayPcState.tsx pcDotState;
-   * below 1100 px the details stand in place of the list): what their State row then says.
+   * below 1100 px the details stand in place of the list): what their State row then says. Only a check made here counts,
+   * so a glyph already showing `state` before it proves nothing.
    */
   const checkFromDetails = async (entry: Entry, state: "paired" | "offline" | "unreachable") => {
     await openDetails(entry);
-    const button = details(entry).locator('[data-action="check-pc"]');
     const glyph = { paired: "ready", offline: "offline", unreachable: "failed" }[state];
     const dot = details(entry).locator(`.relay-pc-details-location .status-dot[data-state="${glyph}"]`);
-    if (state === "unreachable") {
-      // a relay turning this device away is believed on the second refusal in a row (pcSweep.ts): check until it is
-      for (let tries = 0; tries < 2 && await dot.count() === 0; tries++) {
-        const refused = nextTurnedAway();
-        await button.click();
-        await refused;
-        await page.waitForFunction((id) => document.querySelector(`[data-pc-details="${id}"] .relay-pc-details-location .status-dot[data-state="checking"]`) === null, entry.server_id);
-      }
-    } else await button.click();
-    await dot.waitFor();
+    await checkOnce(entry);
+    // a relay this device cannot reach is believed on the second such check in a row (pcSweep.ts)
+    if (state === "unreachable" && await dot.count() === 0) await checkOnce(entry);
+    const found = await details(entry).locator(".relay-pc-details-location .status-dot").getAttribute("data-state");
+    assert.equal(found, glyph, `${entry.name}'s check found it ${state}`);
     const value = details(entry).locator(".relay-pc-details-row").first();
     return { state: await value.locator(".relay-pc-details-value").innerText(), why: await value.locator(".relay-pc-details-sub").allInnerTexts() };
   };
@@ -290,8 +313,8 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
   // ---- pc-a stopped while the page is open ----
   await stopped;
   const cause = t("It is off, has no network, or Ovis is not running on it.");
-  const offlineWhy = `${t("Last seen {when}.", { when: t("just now") })} ${cause}`;
-  const offlineDetails = await step("stopped pc-a: its check", () => checkFromDetails(a, "offline"));
+  const offlineWhy = `${t("Last seen {when}.", { when: t("{n} min ago", { n: "5" }) })} ${cause}`;
+  const offlineDetails = await step("stopped pc-a: its check", () => waitOnA(() => checkFromDetails(a, "offline")));
   await shot("offline-details");
   await closeDetails(a);
   const offlineRow = await rowIn(a, "offline");
@@ -299,7 +322,7 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
   const offlineScroll = await scroll();
   const offlineCard = await step("stopped pc-a: Needs you", () => attentionOf(a));
   await shot("offline-overview");
-  const offlineOpen = await step("stopped pc-a: Open", () => openFromDetails(a, "pc-offline", OPEN_OFFLINE_MS));
+  const offlineOpen = await step("stopped pc-a: Open", () => waitOnA(() => openFromDetails(a, "pc-offline", OPEN_OFFLINE_MS)));
   await shot("offline-open", true);
 
   // ---- the relay out of this device's reach ----
@@ -326,7 +349,9 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
   await rowIn(box, "unreachable");
   relayReachable = true;
   doing = "relay back: Check again";
+  const checkedAgain = nextSocket(box.server_id);
   await page.locator(`[data-pc-id="${box.server_id}"]:visible [data-pc-action="check"]`).first().click();
+  await checkedAgain;
   const back = await rowIn(box, "paired");
   doing = "asserting";
   await shot("back-row");
