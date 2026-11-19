@@ -52,3 +52,26 @@ export function accountRowMay(caller: AccountCaller, request: RowAction): RowVer
     case "webhook": return refuse("member_required");
   }
 }
+
+const ROW = /^\/api\/devices\/([0-9a-f]{16})$/;
+const ROUTES: Readonly<Record<string, RowAction>> = {
+  "POST /api/devices/revoke-all": { action: "revoke_all" },
+  "POST /api/devices/pair/start": { action: "pair_start" },
+  "POST /api/devices/pair/cancel": { action: "pair_cancel" },
+  "POST /api/account/link": { action: "link" },
+  "POST /api/account/enroll": { action: "enroll" },
+  "POST /api/account/relay-account": { action: "relay_account" },
+  "POST /api/alerts/webhook": { action: "webhook" },
+  "POST /api/alerts/webhook/test": { action: "webhook" },
+  "POST /api/push/subscribe": { action: "push_subscribe" },
+};
+
+/** The action an account-joined caller's request is, for accountRowMay; null for a route that needs no extra check. */
+export function accountRouteAction(method: string, pathname: string): RowAction | null {
+  const row = ROW.exec(pathname);
+  if (row !== null && method === "PATCH") return { action: "label", rowId: row[1]! };
+  if (row !== null && method === "DELETE") return { action: "revoke", rowId: row[1]! };
+  const machine = /^\/api\/machines\/([^/]+)\//.exec(pathname);
+  if (machine !== null) return { action: "route", machine: machine[1]! };
+  return ROUTES[`${method} ${pathname}`] ?? null;
+}

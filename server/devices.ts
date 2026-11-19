@@ -1946,6 +1946,9 @@ export class DeviceStore {
     return device !== undefined && (this.catchUp?.waits({ id, origin: device.origin }) ?? false);
   }
 
+  /** Whether `id` is an account-joined row (S2-26): its every route goes through accountRowMay. */
+  isAccountRow(id: string): boolean { return !this.devices.some((d) => d.id === id) && (this.joinedRows?.row(id) ?? null) !== null; }
+
   /** The account rows' store ends the sessions of a row it dropped (P8 step 3 for a list drop, T35). */
   closeAccountSessions(id: string): void {
     const listeners = this.revocations.get(id);

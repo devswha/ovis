@@ -59,6 +59,7 @@ import type { AccountHolds } from "./account/holds.ts";
 import type { SafetyLog } from "./account/safety-log.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import type { accountRowsFor } from "./account/account-devices.ts";
+import { accountRouteAction, accountRowMay } from "./account/account-row-rights.ts";
 import type { AccountIntroductions } from "./account/introductions.ts";
 import type { RelayService } from "./relay/service.ts";
 import { handleTelemetryRequest, visitSurface } from "./telemetry.ts";
@@ -192,6 +193,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const url = new URL(request.url);
   let { pathname } = url;
   const relayPeer = ctx.peer.kind === "relay" ? ctx.peer.device : undefined;
+  // Step 2 (S2-26): an account-joined caller's every route goes through the one rights check (P5, R1 to R10)
+  if (ctx.peer.kind === "relay" && ctx.services.devices.isAccountRow(ctx.peer.device.id)) {
+    const action = accountRouteAction(request.method, pathname);
+    const verdict = action === null ? null : accountRowMay({ rowId: ctx.peer.device.id, key: ctx.peer.key, state: "live" }, action);
+    if (verdict !== null && "refused" in verdict) return jsonResponse({ error: { code: verdict.refused, message: "An account-joined device cannot do this from afar" } }, 403);
+  }
   // the machine profile on TCP: its liveness for every caller; no credential or header of the request is read
   if (options.profile === "machine" && relayPeer === undefined && ctx.ownerSocket !== true) return machineTcpAnswer(request, pathname);
   // an act waiting for this PC's screen is answered there alone (server/account/local-confirm.ts): every caller of a
