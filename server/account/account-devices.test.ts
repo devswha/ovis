@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeviceStore } from "../devices.ts";
+import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT_DEVICES_FILE, ACCOUNT_DEVICES_MAX, AccountDeviceStore, type AccountRowPorts, accountRowsFor } from "./account-devices.ts";
 import { keyOf, listOrigins, snapshotList as list, nameOf, SERVER } from "./account-devices.test-helpers.ts";
 const dirs: string[] = [];
@@ -31,8 +32,10 @@ function ports(dir: string, over: Partial<AccountRowPorts> = {}) {
     closeSessions: (rowId, reason) => { events.push(`close ${rowId} ${reason}`); },
     heldByDevicesJson: () => false,
     admits: () => true,
+    publish: () => {},
     now: () => clock.now,
     admitOrigin: listOrigins(),
+    firstDevice: { othersEver: () => true, setOthersEver: () => {}, listKey: () => null, otherRows: () => false },
   };
   return { events, ports: { ...base, ...over } };
 }
@@ -50,8 +53,10 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     const [row] = store.rows();
     expect(row).toMatchObject({ key: keyOf("k-1"), no: 1, label: "k-1", origin: { from: "remote", how: "list", by: null }, state: "hold" });
     expect(store.live(row!.id)).toBe(false);
-    expect(store.access(row!.id)).toEqual({ refused: "join_hold", seconds: null });
-    expect(new AccountDeviceStore(dir, SERVER, p).access(row!.id)).toEqual({ refused: "join_hold", seconds: null });
+    clock.now += JOIN_HOLD_MS;
+    expect(store.access(row!.id)).toEqual({ ok: true });
+    expect(store.live(row!.id)).toBe(true);
+    expect(new AccountDeviceStore(dir, SERVER, p).live(row!.id)).toBe(true);
 
     // a failed journal write admits nobody: no row in memory, none on disk
     const failing = stateDir();
@@ -73,6 +78,8 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     const { events, ports: p } = ports(dir);
     const store = new AccountDeviceStore(dir, SERVER, p);
     store.commitList(list(["k-1", "k-2", "k-3"]));
+    clock.now += JOIN_HOLD_MS;
+    for (const row of store.rows()) store.access(row.id);
     events.length = 0;
 
     const [one, two, three] = store.rows();
@@ -84,7 +91,7 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
       "journal drop k-2 file=[k-1,k-2,k-3]", "journal drop k-3 file=[k-1,k-2,k-3]",
     ]);
     expect(fileKeys(dir)).toEqual(["k-1"]);
-    expect(store.rows().map((row) => row.id)).toEqual([one!.id]);
+    expect(store.live(one!.id)).toBe(true);
     for (const file of ["account-tombstones.json", "account-removed.json", "devices.json"]) expect({ file, exists: existsSync(join(dir, file)) }).toEqual({ file, exists: false });
 
     // named again by a later list: a new row with a new admission and a new hold, whatever its order says
