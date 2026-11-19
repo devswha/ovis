@@ -13,7 +13,7 @@ import type { Translate } from "./i18n.ts";
 import { storedSelection, storeSelection } from "./useSplitView.ts";
 
 type SelectionHint = { machine: string; pane: string; workspace: string } | null;
-/** `keepNote`: a link or tap still waiting to land keeps the note an earlier landing left, until its own lookup answers */
+/** `keepNote`: a link or a tapped notification selects, not the user: it leaves the header's note to the landings (the service worker names a tapped pane twice, before and after focus, and the second must not take the first's note away) */
 type SelectTarget = (machineId: string, paneId: string | null, view?: PaneView, keepNote?: boolean) => void;
 
 export function linkSelects(initialLink: AppLink | null): boolean {
@@ -144,8 +144,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     setOutputStopped(false);
     setNotificationViewTarget(view && paneId !== null ? { machine_id: machineId, pane_id: paneId, view } : null);
     setTerminalPeek(null);
-    // an earlier landing's note speaks of a pane this choice leaves behind; the service worker names a tapped
-    // notification's pane twice (before and after focus), and the second must not take the first's note away
+    // the user's own pick leaves behind the pane an earlier landing's note speaks of
     if (!keepNote && !samePane) setHeaderNote(noteAfterSelection);
     // this browser's choice only: herdr's focus, its TUI and every other device stay where they are
     storeSelection(machineId, paneId);
@@ -168,12 +167,10 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     }
     const linked = pendingLink.current;
     if (linked && linked.machine === selectedMachineId) {
-      // `answered`: this PC's answer, not a failed read; a link that lands on its pane takes away a note it waited beside
-      const land = (landed: ReturnType<typeof resolveLink>, answered = true): boolean => {
+      const land = (landed: ReturnType<typeof resolveLink>): boolean => {
         pendingLink.current = null;
         setLinkLanded(true);
         if (landed.note) { setHeaderNote(landed.note); onLinkMissRef.current?.(); }
-        else if (answered && landed.pane) setHeaderNote(noteAfterSelection);
         if (landed.pane) {
           if (landed.pane !== selectedPaneId) {
             setSelectedPaneId(landed.pane);
@@ -197,8 +194,8 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
           // A failed read is not evidence that anything closed: a pane still selected stays, and the
           // link settles without a word.
           if (read === null) {
-            if (selectedPaneId !== null) { land({ pane: null, workspace: null, note: null }, false); return; }
-            if (!land({ ...landed, note: null }, false)) setSelectedPaneId(fallback(snapshot));
+            if (selectedPaneId !== null) { land({ pane: null, workspace: null, note: null }); return; }
+            if (!land({ ...landed, note: null })) setSelectedPaneId(fallback(snapshot));
             return;
           }
           const { current, confirmed } = read;
@@ -292,7 +289,7 @@ export function useNotificationTargets({ machinesRef, selectTargetRef, selection
     if (target.link) {
       const link = target.link;
       const landing = linkLanding(machinesRef.current, link);
-      if (landing.kind === "select") { selectTargetRef.current(link.machine, landing.pane, link.view ?? undefined); return; }
+      if (landing.kind === "select") { selectTargetRef.current(link.machine, landing.pane, link.view ?? undefined, true); return; }
       if (sameLink(pendingLink.current, link)) return;
       selectTargetRef.current(link.machine, null, undefined, true);
       onLinkWaitRef.current?.();
@@ -301,7 +298,7 @@ export function useNotificationTargets({ machinesRef, selectTargetRef, selection
     }
     const landing = notificationLanding(machinesRef.current, target);
     if (landing.kind === "select") {
-      selectTargetRef.current(target.machine_id, target.pane_id, target.view);
+      selectTargetRef.current(target.machine_id, target.pane_id, target.view, true);
       if (target.workspace_id) selectionHint.current = { machine: target.machine_id, pane: target.pane_id, workspace: target.workspace_id };
       return;
     }
@@ -369,8 +366,7 @@ export function useMachineGone({ machines, pendingLink, pendingFile, pendingCrea
     if (!machineGone(machines, rosterSeq.current, since, machineId)) return;
     pendingLink.current = null; pendingFile.current = null; pendingCreate.current = null;
     setLinkLanded(true);
-    // after the selection, which takes an earlier note away
-    selectTargetRef.current("local", null);
+    selectTargetRef.current("local", null, undefined, true);
     setHeaderNote("machine-missing");
   }, [machines, rosterTick, linkTick]);
 }

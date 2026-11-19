@@ -128,12 +128,11 @@ describe("a desktop link to a pane the cached roster lacks", () => {
   };
   const machines = [{ id: "local", name: "This PC", kind: "local", enabled: true, state: "connected", error: null, snapshot }] as unknown as Machine[];
 
-  // "made": this PC also lists t6, a pane made in "beta" that the cached roster does not hold yet
-  function answer(read: "roster" | "made" | "fails"): void {
+  function answer(read: "roster" | "fails"): void {
     setTransport({ ...transport, async fetch() {
       reads += 1;
       if (read === "fails") throw new TypeError("network error");
-      return Response.json({ snapshot: read === "made" ? { ...snapshot, panes: [...snapshot.panes, { pane_id: "t6", workspace_id: "4", focused: false }] } : snapshot });
+      return Response.json({ snapshot });
     } });
   }
 
@@ -283,22 +282,5 @@ describe("a desktop link to a pane the cached roster lacks", () => {
     expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
   });
 
-  it("takes an earlier landing's note away when the next link waits for a pane the cached roster lacks and lands on it", async () => {
-    answer("roster");
-    await mount();
-    await open(`?ws=${gamma}-gamma&pane=t99`);
-    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
-    answer("made");
-    await act(async () => { take(linkTarget("?ws=4-beta&pane=t6")!); });
-    expect(shown).toEqual({ pane: "t6", note: null });
-  });
 
-  it("takes an earlier landing's note away when the next link selects a live pane", async () => {
-    answer("roster");
-    await mount();
-    await open(`?ws=${gamma}-gamma&pane=t99`);
-    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
-    await act(async () => { take(linkTarget("?ws=3-alpha&pane=t2")!); });
-    expect(shown).toEqual({ pane: "t2", note: null });
-  });
 });
