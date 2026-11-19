@@ -81,7 +81,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
   const [failure, setFailure] = useState<{ server_id: string; message: string } | null>(null);
   const own = machines.find((machine) => machine.kind === "local")?.server_id;
   const added = (serverId: string): Machine | undefined => machines.find((machine) => machine.kind !== "local" && (machine.relay?.server_id ?? machine.server_id) === serverId);
-  const listed = useRef({ asked: new Set<string>() });
+  const listed = useRef<{ asked: Set<string>; scope: string | null }>({ asked: new Set(), scope: null });
   // closing the list cancels a comparison under way: that PC's server ends it, and nothing is kept
   const running = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -89,6 +89,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       running.current?.abort();
       setPairing(null);
       setPcs(null);
+      listed.current = { asked: new Set(), scope: null };
       return;
     }
     if (own === undefined) return;
@@ -96,9 +97,13 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     account.current!.list().then((read) => {
       if (!live || read === null) return;
       if (expect !== undefined && read.account !== expect) { setPcs(null); return; }
-      listed.current = { asked: new Set() };
-      // a new listing asks each PC again: an answer from the one before is not shown as this one's
-      setStates(new Map());
+      // a refresh of the same account keeps what each PC said and asks only the ones newly listed; another account,
+      // or the list coming back after it was off, starts over
+      const scope = `${own}\n${read.account}`;
+      if (listed.current.scope !== scope) {
+        listed.current = { asked: new Set(), scope };
+        setStates(new Map());
+      }
       setPcs(read.pcs.filter((pc) => pc.server_id !== own));
     }).catch((error: unknown) => {
       console.warn("Ovis: the account's PCs could not be read", error instanceof Error ? error.name : error);
@@ -113,7 +118,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     asks.current.set(serverId, ask);
     return ask;
   };
-  const check = (pc: AccountPcEntry, round: { asked: Set<string> }): void => {
+  const check = (pc: AccountPcEntry, round: { asked: Set<string>; scope: string | null }): void => {
     round.asked.add(pc.server_id);
     const ask = nextAsk(pc.server_id);
     checkAccountPcs([pc]).then(({ pcs: [checked] }) => {
@@ -123,6 +128,8 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) leaves only its own row; anything
       // else (a window this PC will not answer, owner_only) leaves no list rather than rows that say Checking… for good
       if (error instanceof ApiError && error.code === "account_pc_invalid") setPcs((current) => current?.filter((entry) => entry.server_id !== pc.server_id) ?? null);
+      // a pairing under way keeps its row, its digits and its Cancel: the list stays as it is
+      else if (running.current !== null && !running.current.signal.aborted) console.warn("Ovis: the account's PCs could not be checked", error instanceof Error ? error.name : error);
       else {
         console.warn("Ovis: the account's PCs could not be checked", error instanceof Error ? error.name : error);
         setPcs(null);
@@ -134,7 +141,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     const round = listed.current;
     for (const pc of pcs) if (added(pc.server_id) === undefined && !round.asked.has(pc.server_id)) check(pc, round);
   }, [pcs, machines]);
-  useEffect(() => () => { listed.current = { asked: new Set() }; }, []);
+  useEffect(() => () => { listed.current = { asked: new Set(), scope: null }; }, []);
   useEffect(() => () => running.current?.abort(), []);
   /** this page is still signed in to the account the list was read for */
   const stillOurs = async (): Promise<boolean> => expect === undefined || await account.current!.account() === expect;
@@ -155,9 +162,11 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       abort.signal.throwIfAborted();
       await account.current!.admit(pc.server_id, label, key);
       const machine = await pairAccountPc(ticket, (digits) => setPairing((current) => current?.abort === abort ? { ...current, digits } : current), abort.signal);
+      if (running.current === abort) running.current = null;
       setPairing(null);
       onAdded(machine);
     } catch (error) {
+      if (running.current === abort) running.current = null;
       if (abort.signal.aborted) return;
       setPairing(null);
       if (error instanceof ApiError && error.code === "account_pc_outdated") setStates((current) => new Map(current).set(pc.server_id, "outdated"));

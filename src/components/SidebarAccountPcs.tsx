@@ -28,10 +28,20 @@ export function SidebarAccountPcs({ machines, onAdded, source, hidden = false }:
   // another tab)
   const [reads, setReads] = useState(0);
   useEffect(() => {
-    const again = () => { if (!document.hidden) setReads((count) => count + 1); };
+    // a tab switch fires focus and visibilitychange together: one return is one read
+    let away = false;
+    const left = () => { away = true; };
+    const again = () => {
+      if (document.hidden) { away = true; return; }
+      if (!away) return;
+      away = false;
+      setReads((count) => count + 1);
+    };
+    window.addEventListener("blur", left);
     window.addEventListener("focus", again);
     document.addEventListener("visibilitychange", again);
     return () => {
+      window.removeEventListener("blur", left);
       window.removeEventListener("focus", again);
       document.removeEventListener("visibilitychange", again);
     };
@@ -56,7 +66,8 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, source, hidden }:
     let live = true;
     Promise.all([fetchRelay(), pcAccountStatus(apiFetch)]).then(([relay, pc]) => {
       if (live) setJoined(relay.phase === "online" && relay.blocked === null && pc.account === account);
-    }, () => { if (live) setJoined(false); });
+    // a read that failed says nothing of the relay or the account: what was known stays, and a pairing under way with it
+    }, () => undefined);
     return () => { live = false; };
   }, [account, reads]);
   const accountPcs = useAccountPcs({ machines, source, enabled: joined, expect: account, refresh: reads, onAdded });

@@ -33,9 +33,11 @@ describe("the account's PCs in the sidebar", () => {
   let admitted: string[];
   let failAwayCheck: boolean;
   let awayHold: Promise<void> | null;
+  let statusFails: boolean;
   // Check again's hold is per PC for the page's life (MachineOffLine.tsx): each test starts a minute after the last
   let clock = 0;
   let events: EventTarget;
+  let documentEvents: EventTarget;
 
   beforeEach(() => {
     requests = [];
@@ -49,6 +51,7 @@ describe("the account's PCs in the sidebar", () => {
     admitted = [];
     failAwayCheck = false;
     awayHold = null;
+    statusFails = false;
     clock += 60_000;
     const realNow = performance.now.bind(performance);
     spyOn(performance, "now").mockImplementation(() => realNow() + clock);
@@ -62,7 +65,7 @@ describe("the account's PCs in the sidebar", () => {
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64)", maxTouchPoints: 0 } });
     events = new EventTarget();
-    const documentEvents = new EventTarget();
+    documentEvents = new EventTarget();
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
       location: { href: "http://127.0.0.1:7318/", origin: "http://127.0.0.1:7318" },
       addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
@@ -79,6 +82,7 @@ describe("the account's PCs in the sidebar", () => {
       const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
       requests.push({ path, body });
       if (path === "/api/relay") return Response.json({ phase: relayPhase, blocked: null, error: null });
+      if (path === "/api/account/status" && statusFails) return Response.json({ error: { code: "unavailable", message: "no" } }, { status: 503 });
       if (path === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [] });
       if (path === "/api/machines/relay/account/check") {
         const asked = (body as { pcs: AccountPcEntry[] }).pcs;
@@ -117,6 +121,15 @@ describe("the account's PCs in the sidebar", () => {
     group.findAll((node) => node.type === "button").map((button) => text(button)).join(","),
   ]);
   const button = (label: string) => renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === label);
+  /** the window is left and comes back, as a tab switch does: blur, then focus and visibilitychange together */
+  const comeBack = async () => {
+    await act(async () => {
+      events.dispatchEvent(new Event("blur"));
+      events.dispatchEvent(new Event("focus"));
+      documentEvents.dispatchEvent(new Event("visibilitychange"));
+    });
+    await settle();
+  };
   const settle = async () => { for (let round = 0; round < 6; round += 1) await act(async () => {}); };
   const tree = (onAdded: (machine: Machine) => void, machines: readonly Machine[], hidden = false) => <SettingsProvider><SidebarAccountPcs machines={machines} onAdded={onAdded} source={source} hidden={hidden} /></SettingsProvider>;
   const mount = async (onAdded: (machine: Machine) => void = () => {}, machines: readonly Machine[] = [local, lab]) => {
@@ -184,8 +197,7 @@ describe("the account's PCs in the sidebar", () => {
     await mount();
     expect(groups()).toEqual([]);
     mine = "acct";
-    await act(async () => { events.dispatchEvent(new Event("focus")); });
-    await settle();
+    await comeBack();
     expect(groups().map(([name]) => name)).toEqual(["PC Desk", "PC Old box", "PC Away"]);
   });
 
@@ -243,6 +255,9 @@ describe("the account's PCs in the sidebar", () => {
     expect(reads()).toBe(2);
     await settle();
     expect(reads()).toBe(2);
+    await comeBack();
+    expect(reads()).toBe(4);
+    // focus alone, with the window never left, reads nothing
     await act(async () => { events.dispatchEvent(new Event("focus")); });
     await settle();
     expect(reads()).toBe(4);
@@ -250,10 +265,12 @@ describe("the account's PCs in the sidebar", () => {
   it("reads the account's PCs again when the window comes back, and asks a newly listed PC", async () => {
     await mount();
     expect(lists).toBe(1);
-    await act(async () => { events.dispatchEvent(new Event("focus")); });
-    await settle();
+    await comeBack();
     expect(lists).toBe(2);
     expect(groups().map(([name]) => name)).toEqual(["PC Desk", "PC Old box", "PC Away"]);
+    // what each PC said stays, and none of them is asked again
+    expect(groups().map(([, state]) => state)).toEqual(["ready", "outdated", "offline"]);
+    expect(requests.filter((request) => request.path.endsWith("/check"))).toHaveLength(3);
   });
 
   it("keeps a newer answer when an older Check again of the same PC comes back after it", async () => {
@@ -282,4 +299,26 @@ describe("the account's PCs in the sidebar", () => {
 
 
 
+  it("keeps a pairing under way, its digits and its Cancel, when the window comes back", async () => {
+    await mount();
+    await act(async () => { button("Add Desk").props.onClick(); });
+    await settle();
+    await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
+    const checks = requests.filter((request) => request.path.endsWith("/check")).length;
+    await comeBack();
+    expect(requests.filter((request) => request.path.endsWith("/check"))).toHaveLength(checks);
+    expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
+    expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Cancel")).toHaveLength(1);
+  });
+
+  it("keeps a pairing under way when a read on the window's return fails", async () => {
+    await mount();
+    await act(async () => { button("Add Desk").props.onClick(); });
+    await settle();
+    await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
+    statusFails = true;
+    await comeBack();
+    expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
+    expect(requests.some((request) => request.path.endsWith("/pair/cancel"))).toBe(false);
+  });
 });
