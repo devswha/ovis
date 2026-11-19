@@ -20,12 +20,12 @@ describe("regions", () => {
     for (const [i, a] of parts.entries()) for (const b of parts.slice(i + 1)) expect(intersect(a, b)).toEqual(NO_CELLS);
   });
 
-  test("a narrow screen has no sidebar: a header row over the whole width, the panes under it", () => {
+  test("a narrow screen has no sidebar: herdr's two header rows over the whole width, the panes under them", () => {
     const shape = regions(64, 20, { sidebar: 26 });
     expect(shape.narrow).toBe(true);
     expect(shape.sidebar).toEqual(NO_CELLS);
-    expect(shape.tabBar).toEqual({ x: 0, y: 0, width: 64, height: 1 });
-    expect(shape.panes).toEqual({ x: 0, y: 1, width: 64, height: 19 });
+    expect(shape.tabBar).toEqual({ x: 0, y: 0, width: 64, height: 2 });
+    expect(shape.panes).toEqual({ x: 0, y: 2, width: 64, height: 18 });
     expect(shape.modeBar).toEqual({ x: 0, y: 19, width: 64, height: 1 });
   });
 

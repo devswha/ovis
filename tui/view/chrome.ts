@@ -392,38 +392,68 @@ function railPart(input: ChromeInput, colors: Colors, look: string): Part {
   });
 }
 
+/** A single underline in a style's flags (the engine keeps the underline's kind in bits 8 to 10, single being 1). */
+const UNDERLINE = 1 << 8;
+/** The narrow header's switch button: the last columns of both its rows. */
+const SWITCH_COLUMNS = 10;
+
+/** How many of the agents stand in each state, in herdr's order, for the narrow header's second row. */
+function agentSummary(world: CoreView): { status: KnownStatus; count: number }[] {
+  const counts = new Map<KnownStatus, number>();
+  for (const agent of world.agents) counts.set(knownStatus(agent.status), (counts.get(knownStatus(agent.status)) ?? 0) + 1);
+  return (["blocked", "done", "working", "idle"] as const).flatMap((status) => (counts.get(status) ?? 0) > 0 ? [{ status, count: counts.get(status)! }] : []);
+}
+
 /**
- * The narrow screen's header, in the tab bar's row: the shown workspace with its state mark, the shown tab of how many,
- * the hc session, how many agents elsewhere need the user, and the menu's mark. A click anywhere on it opens the menu.
+ * herdr's narrow header, two rows over the whole width: the shown workspace with its state mark and, at the right, its
+ * tab (and which of how many); under it how many agents stand in each state; at the right of both rows the switch
+ * button, with a dot while an agent is blocked. A tap on the button opens the switcher.
  */
 function headerPart(input: ChromeInput, colors: Colors, look: string): Part {
-  const { regions, state, world, session } = input;
+  const { regions, state, world } = input;
   const rect = regions.tabBar;
   const shown = focused(state.world, state.focus);
   const row = world.workspaceGroups.flatMap((group) => [group, ...group.children]).find((one) => one.id === shown.workspace?.id);
   const tabs = shown.workspace?.tabs ?? [];
   const tabAt = tabs.findIndex((tab) => tab.id === shown.tab?.id);
-  const tab = tabAt < 0 ? "" : ` ${tabAt + 1}/${tabs.length}:${tabs[tabAt]!.name || tabAt + 1}`;
-  const waiting = world.agents.filter((agent) => knownStatus(agent.status) === "blocked" && agent.paneId !== shown.pane?.id).length;
+  const summary = agentSummary(world);
   const data = {
     status: row?.status ?? "unknown",
-    place: row ? `${row.number}:${row.name}${tab} ${STRINGS.sessionHeader(session)}` : `${STRINGS.noSpaces} ${STRINGS.sessionHeader(session)}`,
-    waiting: waiting > 0 ? ` ${STRINGS.glyphBlocked}${waiting}` : "",
+    name: row?.name ?? STRINGS.noSpaces,
+    tab: tabAt < 0 ? "" : STRINGS.narrowTab(tabs[tabAt]!.name || String(tabAt + 1), tabs.length > 1 ? `${tabAt + 1}/${tabs.length}` : null),
+    summary,
+    blocked: summary.some((one) => one.status === "blocked"),
   };
-  return part("header", rect, look, data, (canvas, { status, place, waiting: others }) => {
+  return part("header", rect, look, data, (canvas, { status, name, tab, summary: counts, blocked }) => {
     if (rect.width <= 0 || rect.height <= 0) return;
-    const head = canvas.style({ fg: colors.textStrong, bg: colors.bgElevated, flags: STYLE_BOLD });
-    canvas.fill(head);
-    const right = rect.x + rect.width;
-    const mark = ` ${STRINGS.menuMark}`;
-    const markAt = Math.max(rect.x, right - widthOf(mark));
-    const othersAt = Math.max(rect.x, markAt - widthOf(others));
-    const state = STATE_LOOK[status];
-    const col = printFit(canvas, rect.x, rect.y, state.glyph, Math.min(1, othersAt - rect.x), canvas.style({ fg: colors[state.role], bg: colors.bgElevated, flags: STYLE_BOLD }));
-    printFit(canvas, col, rect.y, place, othersAt - col, head, true);
-    printFit(canvas, othersAt, rect.y, others, markAt - othersAt, canvas.style({ fg: colors.statusBlocked, bg: colors.bgElevated, flags: STYLE_BOLD }));
-    printFit(canvas, markAt, rect.y, mark, right - markAt, canvas.style({ fg: colors.accent, bg: colors.bgElevated, flags: STYLE_BOLD }));
-    canvas.hit(rect, "menu");
+    const panelStyle = (fg: WrittenColor, flags = 0) => canvas.style({ fg, bg: colors.bgPanel, flags });
+    canvas.fill(panelStyle(colors.text));
+    const box = Math.max(rect.x, rect.x + rect.width - SWITCH_COLUMNS);
+    const mark = STATE_LOOK[status];
+    let col = printFit(canvas, rect.x, rect.y, ` ${mark.glyph} `, box - rect.x, panelStyle(colors[mark.role]));
+    const tabAtCol = Math.max(col, box - 1 - widthOf(tab));
+    printFit(canvas, col, rect.y, name, Math.max(0, tabAtCol - col - 1), panelStyle(colors.text, STYLE_BOLD), true);
+    printFit(canvas, tabAtCol, rect.y, tab, box - 1 - tabAtCol, panelStyle(colors.textDim));
+    if (rect.height > 1) {
+      col = rect.x;
+      const end = box - 1;
+      if (counts.length === 0) printFit(canvas, col, rect.y + 1, ` ${STRINGS.noAgents}`, end - col, panelStyle(colors.textDim));
+      counts.forEach(({ status: one, count }, at) => {
+        const look = STATE_LOOK[one];
+        if (at > 0) col = printFit(canvas, col, rect.y + 1, " · ", end - col, panelStyle(colors.textDim));
+        else col = printFit(canvas, col, rect.y + 1, " ", end - col, panelStyle(colors.text));
+        const text = one === "blocked" || one === "done" ? `${look.glyph} ${count} ${look.word}` : `${count} ${look.word}`;
+        col = printFit(canvas, col, rect.y + 1, text, end - col, one === "blocked" ? panelStyle(colors.statusBlocked, STYLE_BOLD) : panelStyle(colors.textDim), true);
+      });
+    }
+    const button = canvas.style({ fg: colors.text, bg: colors.bgHover });
+    for (let y = rect.y; y < rect.y + rect.height; y++) {
+      fillSpan(canvas, box, y, rect.x + rect.width - box, button);
+      canvas.put(box, y, "│", 1, canvas.style({ fg: colors.border, bg: colors.bgHover }));
+    }
+    if (blocked && rect.x + rect.width - 1 > box) canvas.put(rect.x + rect.width - 1, rect.y, STRINGS.toastMark, 1, canvas.style({ fg: colors.statusBlocked, bg: colors.bgHover }));
+    if (rect.height > 1) printFit(canvas, box + 1, rect.y + 1, ` ${STRINGS.switchButton}`, rect.x + rect.width - box - 1, canvas.style({ fg: colors.text, bg: colors.bgHover, flags: STYLE_BOLD }));
+    canvas.hit({ x: box, y: rect.y, width: rect.x + rect.width - box, height: rect.height }, "menu");
   });
 }
 
@@ -908,6 +938,8 @@ function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; 
     }
     case "menu":
       return { overlays: [...overlays, menuPart(regions, top, colors)], input: "overlay", dim: false };
+    case "switcher":
+      return { overlays: [...overlays, switcherPart(regions, top, state, world, colors)], input: "overlay", dim: false };
   }
 }
 
@@ -1002,6 +1034,104 @@ function pickerPart(width: number, height: number, picker: Extract<Overlay, { ki
   return { overlay, input: picker.searching && field !== null ? { col: rect.x + 4 + field.cursor, row: rect.y + 1 } : "overlay" };
 }
 
+/** One row of the switcher: its pieces of text, its background, and the entry a tap on it chooses. */
+interface SwitcherLine { readonly pieces: readonly (readonly [text: string, fg: WrittenColor, flags: number])[]; readonly bg: WrittenColor; readonly entry: number | null }
+
+/**
+ * herdr's switcher (switcher.ts), over the whole narrow screen: its title, the close button at the right of its first two
+ * rows, a rule, then its sections, each under an underlined heading: the agents (each on two rows: its state mark, the PC
+ * and its workspace, then its tab, its state and its name, in the screen's order: S7), the workspaces (its state mark,
+ * the PC and its name, then what runs in its shown pane and its shown tab), the shown workspace's tabs (the shown one on
+ * the raised background), and the menu. The cursor's entry is on the hover background and kept in view; a scrollbar in
+ * the first column shows while the rows do not fit. Every entry is a click target.
+ */
+function switcherPart(regions: Regions, switcher: Extract<Overlay, { kind: "switcher" }>, state: ModelState, world: CoreView, colors: Colors): Part {
+  const rect = regions.screen;
+  const shown = focused(state.world, state.focus);
+  const order = switcher.entries;
+  const at = (kind: string, key: string) => order.findIndex((entry) => entry.kind === kind && ("id" in entry ? entry.id === key : entry.action === key));
+  const bgOf = (index: number, otherwise: WrittenColor = colors.bgPanel) => index === switcher.cursor ? colors.bgHover : otherwise;
+  const lines: SwitcherLine[] = [];
+  const heading = (text: string) => lines.push({ pieces: [[` ${text} `, colors.textDim, STYLE_BOLD | UNDERLINE]], bg: colors.bgPanel, entry: null });
+  const tabText = (workspace: string) => {
+    const node = state.world.workspaces.find((one) => one.id === workspace);
+    const tabId = state.focus.tabs[workspace] ?? node?.tabs[0]?.id;
+    const tabAt = node?.tabs.findIndex((tab) => tab.id === tabId) ?? -1;
+    return tabAt < 0 ? null : { tab: node!.tabs[tabAt]!, label: STRINGS.narrowTab(node!.tabs[tabAt]!.name || String(tabAt + 1), node!.tabs.length > 1 ? `${tabAt + 1}/${node!.tabs.length}` : null) };
+  };
+  if (order.some((entry) => entry.kind === "agent")) {
+    heading(STRINGS.agentsSection);
+    for (const agent of world.agents) {
+      const index = at("agent", agent.paneId);
+      if (index < 0) continue;
+      const look = STATE_LOOK[knownStatus(agent.status)];
+      const tab = state.world.workspaces.flatMap((one) => one.tabs).find((one) => one.panes.some((pane) => pane.id === agent.paneId));
+      lines.push({ pieces: [["  ", colors.text, 0], [look.glyph, colors[look.role], 0], [" ", colors.text, 0], [`${STRINGS.switcherHost} · ${agent.workspace}`, colors.text, STYLE_BOLD]], bg: bgOf(index), entry: index });
+      lines.push({ pieces: [[`  ${tab?.name ?? ""} · ${look.word} · ${agent.agent}`, colors.textDim, 0]], bg: bgOf(index), entry: index });
+    }
+  }
+  heading(STRINGS.switcherSpaces);
+  const newWorkspace = at("action", "new_workspace");
+  lines.push({ pieces: [[`  + ${STRINGS.switcherNewWorkspace}`, colors.accent, STYLE_BOLD]], bg: bgOf(newWorkspace), entry: newWorkspace });
+  for (const group of world.workspaceGroups.flatMap((one) => [one, ...one.children])) {
+    const index = at("workspace", group.id);
+    if (index < 0) continue;
+    const look = STATE_LOOK[group.status];
+    const tab = tabText(group.id);
+    const paneId = tab ? state.focus.panes[tab.tab.id] ?? tab.tab.panes[0]?.id : undefined;
+    const running = (paneId ? world.panes.get(paneId)?.agent : null) || STRINGS.pickerShell;
+    lines.push({ pieces: [["  ", colors.text, 0], [look.glyph, colors[look.role], 0], [" ", colors.text, 0], [`${STRINGS.switcherHost} · ${group.name}`, colors.text, STYLE_BOLD]], bg: bgOf(index), entry: index });
+    lines.push({ pieces: [[`  ${running}${tab ? ` · ${tab.label}` : ""}`, colors.textDim, 0]], bg: bgOf(index), entry: index });
+  }
+  heading(STRINGS.switcherTabs);
+  const newTab = at("action", "new_tab");
+  lines.push({ pieces: [[`  + ${STRINGS.switcherNewTab}`, colors.accent, STYLE_BOLD]], bg: bgOf(newTab), entry: newTab });
+  (shown.workspace?.tabs ?? []).forEach((tab, n) => {
+    const index = at("tab", tab.id);
+    lines.push({ pieces: [[`  ${n + 1} · ${tab.name || n + 1}`, colors.text, STYLE_BOLD]], bg: bgOf(index, tab.id === shown.tab?.id ? colors.bgElevated : colors.bgPanel), entry: index });
+  });
+  heading(STRINGS.switcherMenu);
+  for (const action of MENU_ENTRIES) {
+    const index = at("action", action);
+    lines.push({ pieces: [[`  ${STRINGS.menuEntries[action]}`, colors.textDim, 0]], bg: bgOf(index), entry: index });
+  }
+  const view = Math.max(0, rect.height - 3);
+  const cursorLine = Math.max(0, lines.findIndex((line) => line.entry === switcher.cursor));
+  // from the top, scrolled only as far as the cursor's entry (both its rows) needs to be seen
+  const cursorEnd = cursorLine + (lines[cursorLine + 1]?.entry === switcher.cursor ? 2 : 1);
+  const top = Math.max(0, Math.min(cursorEnd - view, lines.length - view));
+  return {
+    key: "overlay:switcher", rect, version: 0,
+    draw(canvas) {
+      const style = (fg: WrittenColor, bg: WrittenColor = colors.bgPanel, flags = 0) => canvas.style({ fg, bg, flags });
+      canvas.fill(style(colors.text));
+      const box = Math.max(0, rect.width - SWITCH_COLUMNS);
+      printFit(canvas, 0, 0, ` ${STRINGS.switchButton}`, box, style(colors.text, colors.bgPanel, STYLE_BOLD));
+      for (let y = 0; y < Math.min(2, rect.height); y++) {
+        fillSpan(canvas, box, y, rect.width - box, style(colors.text, colors.bgHover));
+        canvas.put(box, y, "│", 1, style(colors.border, colors.bgHover));
+      }
+      printFit(canvas, box + 3, 0, STRINGS.switcherClose, Math.max(0, rect.width - box - 3), style(colors.textDim, colors.bgHover, STYLE_BOLD));
+      if (rect.height > 1) printFit(canvas, box + 5, 1, STRINGS.switcherCloseMark, 1, style(colors.text, colors.bgHover, STYLE_BOLD));
+      canvas.hit({ x: box, y: 0, width: rect.width - box, height: Math.min(2, rect.height) }, "close");
+      if (rect.height > 2) for (let x = 0; x < rect.width; x++) canvas.put(x, 2, "─", 1, style(colors.border));
+      lines.slice(top, top + view).forEach((line, n) => {
+        const y = 3 + n;
+        if (line.bg !== colors.bgPanel) fillSpan(canvas, 1, y, rect.width - 1, style(colors.text, line.bg));
+        let col = 1;
+        for (const [text, fg, flags] of line.pieces) col = printFit(canvas, col, y, text, Math.max(0, rect.width - col), style(fg, line.bg, flags), true);
+        if (line.entry !== null) canvas.hit({ x: 1, y, width: rect.width - 1, height: 1 }, `menu:${line.entry}`);
+      });
+      // the scrollbar in the first column while the rows do not fit: the thumb in the accent, the track a line
+      if (lines.length > view && view > 0) {
+        const length = Math.max(1, Math.round((view * view) / lines.length));
+        const thumb = Math.round(((view - length) * top) / (lines.length - view));
+        for (let n = 0; n < view; n++) canvas.put(0, 3 + n, n >= thumb && n < thumb + length ? "▌" : "│", 1, style(n >= thumb && n < thumb + length ? colors.accent : colors.border));
+      }
+    },
+  };
+}
+
 /**
  * herdr's menu: a box just big enough for its four entries, its bottom row on the row above the sidebar's menu button
  * and its right side on the sidebar's last column, the chosen entry on the accent; with no sidebar, above the screen's
@@ -1045,7 +1175,7 @@ function bannerParts(input: ChromeInput, colors: Colors, look: string): Part[] {
     const banner = bordered ? null : paneBanner(input.panes.get(spot.pane), input.link);
     if (!banner || outer.y === 0) return [];
     const text = ` ${banner.text} `;
-    const right = outer.x + outer.width - (input.regions.narrow ? widthOf(` ${STRINGS.menuMark}`) : 0);
+    const right = outer.x + outer.width - (input.regions.narrow ? SWITCH_COLUMNS : 0);
     const width = Math.min(widthOf(text), right - outer.x);
     if (width <= 0) return [];
     const rect: Rect = { x: right - width, y: outer.y - 1, width, height: 1 };

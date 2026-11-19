@@ -166,17 +166,11 @@ export interface Word { readonly herdr: string; readonly ovis: string; readonly 
  */
 export interface Hole { readonly line: string; readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly glyph?: true; readonly bold?: true }
 
-/**
- * How herdr's picture is carried over before its cells are compared: C2's words; holes in herdr's picture and in the
- * screen's; and `place`, where a cell of herdr's picture stands on the screen (none: at the same place; null: nowhere,
- * so it is not compared), for a part the screen draws at another place (the narrow screen's panes under its one-row
- * header).
- */
+/** How herdr's picture is carried over before its cells are compared: C2's words, and holes in herdr's picture and in the screen's. */
 export interface Decisions {
   readonly words: readonly Word[];
   readonly holes: readonly Hole[];
   readonly ovisHoles?: readonly Hole[];
-  readonly place?: (x: number, y: number) => readonly [number, number] | null;
 }
 
 export interface Difference { readonly x: number; readonly y: number; readonly what: string; readonly herdr: string; readonly ovis: string }
@@ -282,9 +276,7 @@ export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisio
   const placeOf = (x: number, y: number): readonly [number, number] | null => {
     const hold = herdrHeld.get(y * herdr.cols + x);
     if (hold === "all") return null;
-    const at = decisions.place ? decisions.place(x, y) : [x, y] as const;
-    if (!at || at[0] < 0 || at[1] < 0 || at[0] >= ovis.cols || at[1] >= ovis.rows || ovisHeld.get(at[1] * ovis.cols + at[0]) === "all") return null;
-    return at;
+    return x >= ovis.cols || y >= ovis.rows || ovisHeld.get(y * ovis.cols + x) === "all" ? null : [x, y] as const;
   };
   const out: Difference[] = [];
   let compared = 0;
@@ -325,8 +317,6 @@ export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisio
 
 const SIDEBAR = 26;
 const NARROW = 64;
-/** herdr's narrow header: two rows; the screen's: one (L6) */
-const HERDR_HEADER_ROWS = 2;
 
 /** Rows of the sidebar's upper half, the workspaces': the upper half of the screen and its odd row. */
 const workspaceRows = (rows: number): number => Math.ceil(rows / 2);
@@ -337,10 +327,8 @@ function dialog(cols: number, rows: number, width: number, height: number): Omit
   return { x: Math.floor((cols - fitted.width) / 2), y: Math.floor((rows - fitted.height) / 2), ...fitted };
 }
 
-const inside = (rect: Omit<Hole, "line">, x: number, y: number): boolean => x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
-
 const BAR_SCENES = new Set(["prefix", "navigate", "copy", "resize", "empty-prefix"]);
-/** herdr's dialog size per scene; the screen draws the same, except its help (as large as fits until O5) */
+/** herdr's dialog size per scene (the picker: the screen less its margins); the screen draws the same */
 const DIALOGS: Readonly<Record<string, readonly [number, number]>> = { help: [76, 22], rename: [56, 7], newtab: [56, 7], confirm: [64, 6], picker: [999, 999], "agents-picker": [999, 999] };
 
 /**
@@ -349,10 +337,7 @@ const DIALOGS: Readonly<Record<string, readonly [number, number]>> = { help: [76
  */
 export const LEFT_OUT: readonly { readonly scene: string; readonly line: string; readonly why: string; readonly narrow?: true }[] = [
   { scene: "settings", line: "O10", why: "herdr's settings screen; the screen has none yet" },
-  { scene: "menu", line: "L8", why: "herdr's narrow switcher (a click on switch) covers the screen", narrow: true },
-  { scene: "agents-menu", line: "L8", why: "herdr's narrow switcher (a click on switch) covers the screen", narrow: true },
   { scene: "viewers", line: "P6", why: "forced; this harness draws no second viewer, so the screen's side is the main scene" },
-  { scene: "navigate", line: "L8", why: "herdr's narrow switcher covers the screen", narrow: true },
   { scene: "collapsed", line: "L6", why: "no sidebar at 64 columns or fewer on either side: the main scene again", narrow: true },
   { scene: "agents-collapsed", line: "L6", why: "no sidebar at 64 columns or fewer on either side: the agents scene again", narrow: true },
 ];
@@ -363,44 +348,15 @@ export function comparedScene(scene: string, cols: number): boolean {
 }
 
 /**
- * At 64 columns or fewer herdr's header has two rows and the screen's one (L6, part 2), and herdr shows every pane of
- * the tab where the screen shows the focused one alone (L7, part 2). The focused pane is compared all the same, one row
- * higher on the screen: its top border, its rows and its bottom border, as far as herdr's box of it reaches (its right
- * border and the panes beside it are L7's). The mode bar and a dialog stand at the same place on both.
- */
-function narrowPlace(herdr: Cells, cols: number, rows: number, bar: boolean, direct: Omit<Hole, "line"> | null): { place: Decisions["place"]; holes: Hole[]; ovisHoles: Hole[] } {
-  const text = gridText(herdr);
-  const top = text[HERDR_HEADER_ROWS] ?? "";
-  const bordered = top.startsWith("┌");
-  // the box's right edge (L7's, as the screen's pane is wider): its corner on its top border or, when the mode bar
-  // does not cover it, its bottom one (a dialog may hide the first and show a corner of the pane beside it)
-  const corners = [top.indexOf("┐"), bar ? -1 : (text[rows - 1] ?? "").indexOf("┘")].filter((at) => at >= 0);
-  const reach = bordered && corners.length > 0 ? Math.min(...corners) : cols;
-  const holes: Hole[] = [{ line: "L6", x: 0, y: 0, width: cols, height: HERDR_HEADER_ROWS }];
-  if (reach < cols) holes.push({ line: "L7", x: reach, y: HERDR_HEADER_ROWS, width: cols - reach, height: rows - HERDR_HEADER_ROWS });
-  const place = (x: number, y: number): readonly [number, number] | null => {
-    if ((bar && y === rows - 1) || (direct && inside(direct, x, y))) return [x, y];
-    if (y < HERDR_HEADER_ROWS || x >= reach) return null;
-    if (bordered && y === rows - 1) return [x, y];
-    // a row of the pane that the screen's dialog covers once the pane moves up is not seen there
-    return direct && inside(direct, x, y - 1) ? null : [x, y - 1];
-  };
-  return { place, holes, ovisHoles: [{ line: "L6", x: 0, y: 0, width: cols, height: 1 }] };
-}
-
-/**
  * What a scene's comparison leaves out or carries over, each by its line in docs/tui/visual-parity.md: C2's words (the
  * screen keeps its own: `Workspaces`, `Agents`, `Menu`, `Rename tab`, `New tab name`, `Copied`, and on the mode bar
- * `navigate` and `help`), S8's state glyphs, S7's agent rows, P4's pane id, the help's content and size (O5, part 2),
- * and at 64 columns or fewer L6 and L7 (`narrowPlace`). C1's colours are carried by `compare` itself, which also takes
+ * `navigate` and `help`), S8's state glyphs, S7's agent rows, the picker's (`pickerHoles`) and herdr's opt-in toast card
+ * (N2). C1's colours are carried by `compare` itself, which also takes
  * the theme's background where herdr writes none (C1 wins over S9 and P2 there). `base`: the world's first picture
  * on each side.
  */
 export function decisionsFor(world: WorldName, scene: string, cols: number, rows: number, herdr: Cells, ovis: Cells, base: { herdr: Cells; ovis: Cells } | null): Decisions {
-  const words: Word[] = [
-    { herdr: " spaces", ovis: ` ${STRINGS.workspacesSection}`, row: 0, col: 0 },
-    { herdr: "copied to clipboard", ovis: STRINGS.noticeText("copied", {}) },
-  ];
+  const words: Word[] = [{ herdr: "copied to clipboard", ovis: STRINGS.noticeText("copied", {}) }];
   const holes: Hole[] = [];
   const ovisHoles: Hole[] = [];
   const narrow = cols <= NARROW;
@@ -409,19 +365,35 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
   // the help's scrolled and filtered scenes are the help's dialog too
   const box = DIALOGS[scene.startsWith("help") ? "help" : scene];
   const rect = box ? dialog(cols, rows, box[0], box[1]) : null;
-  let place: Decisions["place"];
   if (narrow) {
-    const narrowed = narrowPlace(herdr, cols, rows, BAR_SCENES.has(scene), rect);
-    place = narrowed.place;
-    holes.push(...narrowed.holes);
-    ovisHoles.push(...narrowed.ovisHoles);
+    // herdr's narrow header (L6): the shown workspace's state mark is the screen's (S8), so are its words for no agents
+    // and for each state with its mark in the agents' summary (C2, S8)
+    holes.push({ line: "S8", x: 1, y: 0, width: 1, height: 1, glyph: true });
+    words.push({ herdr: " no agents", ovis: ` ${STRINGS.noAgents}`, row: 1, col: 0 });
+    if (agents) holes.push({ line: "C2", x: 0, y: 1, width: cols - 10, height: 1 });
+    // herdr's switcher (L8): each workspace's state mark is the screen's, and the help's name in its menu (C2)
+    if (scene === "navigate" || scene === "menu" || scene === "agents-menu") {
+      holes.push({ line: "S8", x: 3, y: 3, width: 1, height: rows - 3, glyph: true });
+      words.push({ herdr: "keybinds", ovis: STRINGS.menuEntries.help.padEnd("keybinds".length) }, { herdr: " agents ", ovis: ` ${STRINGS.agentsSection} `, row: 3, col: 1 });
+      const text = gridText(herdr);
+      // S7: the agents' entries keep the screen's order and words; each is two rows under the agents' heading
+      const agentRows = text.slice(4).findIndex((line) => !/^.  (\S \S|\S.* · )/.test(line) || line.slice(1).startsWith(" spaces"));
+      if (text[3]?.slice(1).startsWith(" agents") && agentRows > 0) holes.push({ line: "S7", x: 1, y: 4, width: cols - 1, height: agentRows });
+      // what runs in a workspace's shown pane: herdr names its program (a shell, for the agents' stand-in programs), the
+      // screen the agent the pane reports; with no agent both say shell, and those rows are compared
+      text.forEach((line, y) => {
+        const found = /^.  (\S+) · tab /.exec(line);
+        // the rest of the row moves with the name's length, so the row is left out from it on
+        if (y > 2 && found && agents) holes.push({ line: "C2", x: 3, y, width: cols - 3, height: 1 });
+      });
+    }
   } else if (collapsed) {
     const top = rows >= 7 ? Math.ceil(rows / 2) : rows;
     holes.push({ line: "S8", x: 2, y: 0, width: 1, height: top, glyph: true });
     if (agents) holes.push({ line: "S7", x: 0, y: top + 1, width: 3, height: Math.max(0, rows - top - 2) });
   } else {
     const half = workspaceRows(rows);
-    words.push({ herdr: " agents", ovis: ` ${STRINGS.agentsSection}`, row: half + 1, col: 0 }, { herdr: "menu", ovis: STRINGS.menuTitle, align: "right", row: half - 1, col: SIDEBAR - 2 });
+    words.push({ herdr: " spaces", ovis: ` ${STRINGS.workspacesSection}`, row: 0, col: 0 }, { herdr: " agents", ovis: ` ${STRINGS.agentsSection}`, row: half + 1, col: 0 }, { herdr: "menu", ovis: STRINGS.menuTitle, align: "right", row: half - 1, col: SIDEBAR - 2 });
     holes.push({ line: "S8", x: 1, y: 2, width: 1, height: Math.max(0, half - 3), glyph: true });
     if (agents) holes.push({ line: "S7", x: 0, y: half + 3, width: SIDEBAR - 1, height: Math.max(0, rows - half - 4) });
   }
@@ -479,7 +451,7 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
       holes.push(boxed ? { line: "N2", x: left, y: row - 1, width: line.indexOf("│", left + 1) - left + 1, height: 4 } : { line: "N2", x: 0, y: row, width: cols, height: 1 });
     }
   }
-  return { words, holes, ovisHoles, ...(place ? { place } : {}) };
+  return { words, holes, ovisHoles };
 }
 
 /**

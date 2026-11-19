@@ -9,6 +9,7 @@ import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput } 
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
 import { MENU_ENTRIES, movedCursor } from "./menu.ts";
+import { type SwitcherEntry, switcherChoice } from "./switcher.ts";
 import { chosenAt, type Place, pickerMatches, placeTarget, workspaceStep } from "./picker.ts";
 
 /** A one-line text field of graphemes, the cursor after the text it opened with; `original` that text. */
@@ -28,7 +29,9 @@ export type Overlay =
   /** the picker: the terminals it lists, its search, whether keys go to the search now, and the chosen one's pane (null: the first) */
   | { readonly kind: "goto"; readonly field: Field; readonly searching: boolean; readonly places: readonly Place[]; readonly chosen: string | null }
   /** herdr's menu (menu.ts `MENU_ENTRIES`); `cursor`: the index of the entry Enter chooses */
-  | { readonly kind: "menu"; readonly cursor: number };
+  | { readonly kind: "menu"; readonly cursor: number }
+  /** herdr's switcher on a narrow screen (switcher.ts): the cursor over its entries, the world's places when it was last given them */
+  | { readonly kind: "switcher"; readonly cursor: number; readonly entries: readonly SwitcherEntry[] };
 
 export type OverlayInput = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "text"; readonly event: TextInput } | { readonly kind: "paste"; readonly event: PasteInput };
 
@@ -185,6 +188,12 @@ function pickerInput(overlay: Picker, input: OverlayInput): OverlayAnswer {
   return { overlay: { ...overlay, chosen: matches[next]!.id }, effects: [] };
 }
 
+/** The switcher's answer to choosing entry `at`: closed, going there or running it. */
+export function switcherPick(overlay: Extract<Overlay, { kind: "switcher" }>, at: number): OverlayAnswer {
+  const entry = overlay.entries[at];
+  return entry === undefined ? { overlay, effects: [] } : { overlay: null, effects: [], choice: switcherChoice(entry) };
+}
+
 type Help = Extract<Overlay, { kind: "help" }>;
 
 /** The help as it opens: its first line, no filter. */
@@ -255,6 +264,15 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     input: (overlay, input) => {
       if (isEnter(input)) return menuChoice(overlay, overlay.cursor);
       const cursor = input.kind === "key" ? movedCursor(MENU_ENTRIES, overlay.cursor, input.event) : null;
+      return { overlay: cursor === null ? overlay : { ...overlay, cursor }, effects: [] };
+    },
+  },
+  switcher: {
+    closeKeys: ["esc"],
+    target: () => null,
+    input: (overlay, input) => {
+      if (isEnter(input)) return switcherPick(overlay, overlay.cursor);
+      const cursor = input.kind === "key" ? movedCursor(overlay.entries, overlay.cursor, input.event) : null;
       return { overlay: cursor === null ? overlay : { ...overlay, cursor }, effects: [] };
     },
   },

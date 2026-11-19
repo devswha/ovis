@@ -19,20 +19,14 @@ export interface ScreenShape { regions: Regions; spots: PaneSpot[]; splits: Spli
  * region by the tab's tree. A zoomed tab gives its zoomed pane the whole region and keeps the others at their cells,
  * covered. Panes have borders only while the tab is split (a zoomed pane of a split tab keeps its border), and each keeps
  * a gutter column for its scrollbar unless `gutter` says no (a program on the alternate screen has none). No tab: no
- * panes. A narrow screen shows the tab's pane `pane` alone in the whole region (its first when that one is not in it) and
- * none of the others: they are not attached. That one-pane view is the screen's own and changes nothing in the tab's
- * layout.
+ * panes. A narrow screen lays the panes out the same way, under its header (herdr's narrow layout changes the chrome only).
  */
-export function layOut(width: number, height: number, tab: TabShape | null, options: { sidebarCollapsed: boolean; pane: string | null; gutter?: (pane: string) => boolean }): ScreenShape {
+export function layOut(width: number, height: number, tab: TabShape | null, options: { sidebarCollapsed: boolean; gutter?: (pane: string) => boolean }): ScreenShape {
   const shape = regions(width, height, { sidebar: options.sidebarCollapsed ? RAIL_COLUMNS : SIDEBAR_COLUMNS });
   if (!tab) return { regions: shape, spots: [], splits: [] };
   const gutter = options.gutter ?? (() => true);
   const leaves = cellsOf(tab.root, shape.panes, { borders: false }).panes.map((cells) => cells.pane);
   const look = { borders: leaves.length > 1, gutter };
-  if (shape.narrow) {
-    const shown = options.pane !== null && leaves.includes(options.pane) ? options.pane : leaves[0];
-    return { regions: shape, spots: shown === undefined ? [] : [{ pane: shown, cells: cellsOf({ leaf: shown }, shape.panes, look).panes[0]!, covered: false }], splits: [] };
-  }
   const cut = cellsOf(tab.root, shape.panes, look);
   const all = cut.panes;
   const zoomed = tab.zoomed !== null && all.some(({ pane }) => pane === tab.zoomed) ? tab.zoomed : null;

@@ -653,7 +653,7 @@ export function startLoop(options: LoopOptions): Loop {
     const view = world.view();
     const tab = focused(state.world, state.focus).tab;
     shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, {
-      sidebarCollapsed: state.sidebarCollapsed, pane: focused(state.world, state.focus).pane?.id ?? null, gutter: (pane) => !altScreen(pane),
+      sidebarCollapsed: state.sidebarCollapsed, gutter: (pane) => !altScreen(pane),
     });
     altShown = altScreens();
     const shown = shape.spots.map(({ pane, cells, covered }) => ({ terminal: pane, cols: cells.cols, rows: cells.rows, covered }));

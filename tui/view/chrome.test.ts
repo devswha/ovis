@@ -5,7 +5,6 @@ import { LAYOUT_DOC, PANE_NAME_LABEL, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WO
 import type { PaneState, PaneView } from "../core/pane.ts";
 import { CoreWorld } from "../core/world.ts";
 import { STYLE_BOLD } from "../emulator/index.ts";
-import { focused } from "../model/focus.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "../model/reduce.ts";
 import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
@@ -79,7 +78,7 @@ function setup(options: Setup): { state: ModelState; shape: ScreenShape; input: 
   let state = reduce(initialState(options.keys), { type: "world", world: view.world, at: 0 }).state;
   for (const event of options.events ?? []) state = reduce(state, event).state;
   const tab = state.world.workspaces.flatMap((workspace) => workspace.tabs).find((one) => one.id === (state.focus.tabs[state.focus.workspace ?? ""] ?? state.world.workspaces[0]?.tabs[0]?.id));
-  const shape = layOut(options.cols, options.rows, tab ? view.tabs.get(tab.id) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed, pane: focused(state.world, state.focus).pane?.id ?? null });
+  const shape = layOut(options.cols, options.rows, tab ? view.tabs.get(tab.id) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed });
   const panes = new Map(Object.entries(options.panes ?? Object.fromEntries(shape.spots.map((spot) => [spot.pane, pane(spot.pane)]))));
   return {
     state, shape,

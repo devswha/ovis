@@ -162,7 +162,18 @@ export const STRINGS = {
   /** herdr's menu entries; the keys' help keeps the screen's word for it (C2: herdr says `keybinds`) */
   menuEntries: { settings: "settings", help: "help", reload_config: "reload config", detach: "detach" } as const,
   /** at the right of the narrow screen's header, which opens the menu */
-  menuMark: "[menu]",
+  /** herdr's narrow header and switcher */
+  narrowTab: (name: string, of: string | null): string => `tab ${name}${of === null ? "" : ` · ${of}`}`,
+  switchButton: "switch",
+  switcherClose: "close",
+  switcherCloseMark: "×",
+  switcherSpaces: "spaces",
+  switcherTabs: "tabs",
+  switcherMenu: "menu",
+  switcherNewWorkspace: "new workspace",
+  switcherNewTab: "new tab",
+  /** herdr's name for the PC a workspace runs on; the screen reaches this PC's herdr-core alone */
+  switcherHost: "Local",
   /** what kind of place a menu entry goes to */
 
   // Keymap notes in help & mode bar

@@ -20,8 +20,8 @@ export const holds = (rect: Rect, col: number, row: number): boolean =>
 /** What the chrome asks for: the sidebar's width in columns, separator included (a collapsed sidebar's rail is narrower). */
 export interface ChromeShape { sidebar: number }
 
-/** The narrow screen's header: one row over the whole width, in place of the sidebar and the tab bar. */
-export const NARROW_HEADER_ROWS = 1;
+/** The narrow screen's header: two rows over the whole width, in place of the sidebar and the tab bar, as herdr's. */
+export const NARROW_HEADER_ROWS = 2;
 
 /**
  * Where each part of the screen goes. The panes always keep at least one cell while the screen has one: a part of the chrome

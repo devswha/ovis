@@ -17,9 +17,10 @@ import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput
 import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, paneToward, shownZoom, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
 import { HELP_PAGE_ROWS, helpLines, helpNotes, helpSize, helpWindow } from "./help.ts";
-import { field, HELP_OPEN, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
-import { pickerPlaces } from "./picker.ts";
+import { switcherEntries, switcherStart } from "./switcher.ts";
 import { NARROW_COLUMNS } from "./screen-size.ts";
+import { field, HELP_OPEN, menuChoice, switcherPick, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
+import { pickerPlaces } from "./picker.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
 export type ModeState =
@@ -128,9 +129,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       // a size that is not a whole number of cells above zero (infinite, NaN, negative) is no size: it is ignored
       if (Number.isFinite(cols) && Number.isFinite(rows) && cols > 0 && rows > 0) {
         const resized = state.host.cols !== cols || state.host.rows !== rows;
-        const { zoomMove } = acc.s;
-        acc.s = { ...acc.s, host: { ...acc.s.host, cols, rows },
-          zoomMove: cols <= NARROW_COLUMNS && zoomMove ? { ...zoomMove, pending: null } : zoomMove };
+        acc.s = { ...acc.s, host: { ...acc.s.host, cols, rows } };
         if (resized && state.mode.name === "copy") setMode(acc, { name: "terminal" });
       }
       break;
@@ -188,6 +187,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       const top = acc.s.overlays.at(-1);
       if (top?.kind === "menu") answerOverlay(acc, menuChoice(top, event.entry), event.at);
       else if (top?.kind === "goto") answerOverlay(acc, pickerChoice(top, event.entry), event.at);
+      else if (top?.kind === "switcher") answerOverlay(acc, switcherPick(top, event.entry), event.at);
       break;
     }
     case "restore":
@@ -495,7 +495,7 @@ function reload(acc: Acc, keys: unknown, at: number): void {
 function applyWorld(acc: Acc, world: World, at: number): void {
   const s = acc.s;
   // The document may show the earlier write while the user is already moving from a newer pane.
-  const moving = s.host.cols > NARROW_COLUMNS ? s.zoomMove?.pending ?? s.zoomMove?.sent : undefined;
+  const moving = s.zoomMove?.pending ?? s.zoomMove?.sent;
   const focus = nextFocus(s.world, world, s.focus, moving?.tab);
   const gone = s.overlays.filter((overlay) => {
     const target = overlayTarget(overlay);
@@ -516,13 +516,27 @@ function applyWorld(acc: Acc, world: World, at: number): void {
   refreshPicker(acc);
 }
 
-/** An open picker lists what exists now, its choice kept while it exists. */
+/** Whether the host is a narrow screen (a size not yet told is not). */
+const narrowHost = (s: ModelState): boolean => s.host.cols > 0 && s.host.cols <= NARROW_COLUMNS;
+
+/** The switcher as it opens, its cursor on the shown workspace. */
+function openSwitcher(s: ModelState): Overlay {
+  return { kind: "switcher", cursor: switcherStart(s.world, s.focus), entries: switcherEntries(s.world, s.focus) };
+}
+
+/** An open picker or switcher lists what exists now: the picker's choice kept while it exists, the switcher's cursor on its entry. */
 function refreshPicker(acc: Acc): void {
-  const { world, overlays } = acc.s;
-  if (!overlays.some((overlay) => overlay.kind === "goto")) return;
+  const { world, focus, overlays } = acc.s;
+  if (!overlays.some((overlay) => overlay.kind === "goto" || overlay.kind === "switcher")) return;
   acc.s = {
     ...acc.s,
     overlays: overlays.map((overlay) => {
+      if (overlay.kind === "switcher") {
+        const entries = switcherEntries(world, focus);
+        const was = JSON.stringify(overlay.entries[overlay.cursor]);
+        const same = entries.findIndex((entry) => JSON.stringify(entry) === was);
+        return { ...overlay, entries, cursor: same >= 0 ? same : Math.max(0, Math.min(overlay.cursor, entries.length - 1)) };
+      }
       if (overlay.kind !== "goto") return overlay;
       const places = pickerPlaces(world);
       return { ...overlay, places, chosen: places.some((place) => place.id === overlay.chosen) ? overlay.chosen : null };
@@ -553,15 +567,14 @@ function select(acc: Acc, target: Target, at: number): void {
 
 /**
  * Focus moved by the user. In a tab whose shared zoom covers the pane now shown, the zoom follows it with one layout write
- * (herdr: a zoomed tab shows its focused pane), so the keys that move focus keep working while a pane is zoomed. Not on a
- * narrow screen: it shows the focused pane alone itself and writes no layout.
+ * (herdr: a zoomed tab shows its focused pane), so the keys that move focus keep working while a pane is zoomed.
  */
 function focusTo(acc: Acc, focus: Focus): void {
   const s = acc.s;
   const { tab, pane } = focused(s.world, focus);
   const zoom = shownZoom(tab);
   const sent = s.zoomMove?.sent;
-  const wanted = tab && pane && zoom !== undefined && s.host.cols > NARROW_COLUMNS && (zoom !== pane.id || sent?.tab === tab.id)
+  const wanted = tab && pane && zoom !== undefined && (zoom !== pane.id || sent?.tab === tab.id)
     ? { tab: tab.id, pane: pane.id } : null;
   acc.s = { ...s, focus, following: null };
   if (s.zoomMove) {
@@ -576,10 +589,9 @@ function writeZoom(acc: Acc, sent: ZoomTarget): void {
 }
 
 function settleZoom(acc: Acc, current: boolean): void {
-  const { zoomMove, focus, world, host } = acc.s;
+  const { zoomMove, focus, world } = acc.s;
   if (!zoomMove) return;
   acc.s = { ...acc.s, zoomMove: null };
-  if (host.cols <= NARROW_COLUMNS) return;
 
   const { sent, pending } = zoomMove;
   const { tab, pane } = focused(world, focus);
@@ -637,7 +649,8 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction | CopyAction>
       }
       return;
     case "menu":
-      acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", cursor: 0 }] };
+      // a narrow screen has herdr's switcher, which holds the menu, where a wide one has its menu button
+      acc.s = { ...s, overlays: [...s.overlays, narrowHost(s) ? openSwitcher(s) : { kind: "menu", cursor: 0 }] };
       return;
     case "navigate_workspace_up":
     case "navigate_workspace_down": {
@@ -735,7 +748,9 @@ function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: numbe
       pushOverlay({ kind: "goto", field: field(""), searching: false, places: pickerPlaces(s.world), chosen: focused(s.world, s.focus).pane?.id ?? null });
       return;
     case "workspace_picker":
-      setMode(acc, { name: "navigate", preview: shown.workspace?.id ?? null });
+      // herdr's prefix+w opens its switcher on a narrow screen, navigate mode on a wide one
+      if (narrowHost(s)) acc.s = { ...s, overlays: [...s.overlays, openSwitcher(s)] };
+      else setMode(acc, { name: "navigate", preview: shown.workspace?.id ?? null });
       return;
     case "copy_mode":
       if (shown.pane === null) notice(acc, "nothing_focused", { action }, at);
