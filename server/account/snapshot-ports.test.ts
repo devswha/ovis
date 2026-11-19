@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord, type DeviceLiftRecord } from "../../shared/account-records.ts";
 import type { AccountSnapshotPage } from "../../shared/account-snapshot.ts";
 import { DeviceStore } from "../devices.ts";
+import { AccountOrder } from "./account-order.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
@@ -31,7 +32,9 @@ function pc() {
   const journal = DeviceJournal.open(dir);
   const devices = new DeviceStore(dir, null, null, { safety: safetyLog, pc: pcAccount, removals: RemovalEvidence.open(dir, safetyLog), journal });
   const reads: string[] = [];
-  const ports = snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, serverId: () => SERVER, requestRead: () => { reads.push("read"); } });
+  const order = AccountOrder.open(dir);
+  devices.attachAccountOrder(order);
+  const ports = snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order, serverId: () => SERVER, requestRead: () => { reads.push("read"); } });
   return { devices, safetyLog, journal, ports, reads };
 }
 
@@ -111,5 +114,16 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     newer.page = { ...newer.page, version: 5 };
     expect(await read(ports, newer)).toMatchObject({ committed: true });
     expect(await read(ports, older)).toEqual({ committed: false, reason: "stale", denials: 0 });
+  });
+
+  test("T52, P21: a lift signed by a key the account's order marks late is refused, though it is older here", async () => {
+    const { devices, ports } = pc();
+    const [older, target] = [await member(devices), await member(devices)];
+    const blocked = await block(target.spki, older);
+    expect(await devices.applyBlock(blocked, "handed")).toMatchObject({ outcome: "applied" });
+    // the first read lists the target at 5; the next lists the older key first at 3: late in the account's order
+    await read(ports, page({ devices: [{ key: target.spki, no: 5, eligible: true, label: "T" }] }));
+    await read(ports, page({ devices: [{ key: older.spki, no: 3, eligible: true, label: "O" }, { key: target.spki, no: 5, eligible: true, label: "T" }] }));
+    expect(await devices.liftAuthority(await lift(blocked.id, older))).toBe(false);
   });
 });
