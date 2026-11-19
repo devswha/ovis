@@ -537,20 +537,6 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     const wire = (page: Page, serverId: string) => page.locator(`path.relay-map-edge[data-pc="${serverId}"]`);
     const hop = (page: Page, serverId: string) => page.locator(".relay-map-hop", { has: page.locator(`[data-pc-id="${serverId}"]`) });
     const stateWord = (page: Page, name: string) => row(page, name).locator(".relay-pc-state-word");
-    const ownCheckOnly = async (page: Page, serverId: string): Promise<string> => {
-      await page.waitForFunction((id) => {
-        const note = document.querySelector(`.relay-map-hop:has([data-pc-id="${id}"]) .relay-map-hop-note`)?.textContent ?? "";
-        return note !== "" && note !== "Checking…";
-      }, serverId);
-      const note = await hop(page, serverId).locator(".relay-map-hop-note").textContent() ?? "";
-      const wired = await wire(page, serverId).getAttribute("data-wire");
-      const answered = /^(Same network|Tailscale|relay\.test) · \d+ ms$/.test(note);
-      assert.ok(answered || /^(Paired · not checked|Machine offline|Could not reach this machine|No answer|Not checked)$/.test(note), `the map reports this device's own check only ("${note}")`);
-      assert.equal(wired, answered ? "live" : ["Machine offline", "Could not reach this machine", "No answer"].includes(note) ? "off" : "still", `the wire follows that check ("${note}" -> ${wired})`);
-      assert.equal(await page.locator(".relay-map-flow, .relay-map-dot").count(), 0, "nothing flows once the check settled");
-      return `${note}, wire ${wired}`;
-    };
-
     const signInScreen = async (page: Page): Promise<void> => {
       await page.getByRole("heading", { name: /Sign in to your Ovis account/ }).waitFor();
       assert.equal(await page.getByRole("button", { name: "Continue with GitHub" }).count(), 1);
@@ -596,21 +582,15 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
 
       await a.getByRole("button", { name: "Back" }).click();
       await signInScreen(a);
-      await signIn(a);
-      await row(a, "Desk PC").waitFor();
-      const unlistedWord = await stateWord(a, "Desk PC").innerText();
-      assert.match(unlistedWord, /^(Paired · not checked|Checking…|Answers|No answer)$/, `the unlisted row reports only this device's own check ("${unlistedWord}")`);
+      // the sign-in's return opens the PC this device paired, as a launch does: no list of PCs first. Opening it lists it in
+      // the account, as Open on its row did
       assert.deepEqual(fake.pcs(ACCT), [], "the directory is empty before the PC is opened");
-      await capture(a, "account-unlisted-1440-dark");
-      log9(`account, before Open: directory [] -> row state "${unlistedWord}" (this device's check, not the account's Ready)`);
-      await view(a, "relay");
-      assert.equal(await hop(a, pc1.id).getAttribute("data-seen"), "unknown", "the account has not seen it");
-      log9(`account, before Open: #relay ${await ownCheckOnly(a, pc1.id)}`);
-      await view(a, "overview");
       const listed = accountRequest(`PUT /v1/pcs/${pc1.id}`, "the shell listed Desk PC in the account");
-      await row(a, "Desk PC").getByRole("link", { name: "Open" }).click();
+      await a.getByRole("button", { name: "Continue with GitHub" }).click();
       await inApp(a);
+      assert.equal(new URL(a.url()).pathname, `/s/${pc1.id}/`, "the sign-in's return opened Desk PC");
       await listed;
+      log9(`account: GitHub sign-in at the fake service -> back on / -> straight into Desk PC (/s/${pc1.id}/), no list first -> PUT /v1/pcs/${pc1.id}`);
       await until(async () => pc1.joined() && (await saved(a, pc1.id))?.enrollment === "complete", "Desk PC joined the account and this device recorded completion", 75_000);
       await pc1.mailbox.pull();
       const seenDesk = fake.pcs(ACCT).find((entry) => entry.server_id === pc1.id);
@@ -629,7 +609,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       assert.equal(await hop(a, pc1.id).locator(".relay-map-hop-note").textContent(), "Seen lately");
       await capture(a, "seen-lately-map-1440-dark");
       await view(a, "overview");
-      log9(`account: GitHub sign-in at the fake service, Open -> PUT /v1/pcs/${pc1.id}, PC joined ${ACCT}, mailbox pull -> last_seen_at ${seenFirst} -> row Ready; #relay: wire live, 0 flows, "Seen lately"`);
+      log9(`account: PC joined ${ACCT}, mailbox pull -> last_seen_at ${seenFirst} -> row Ready; #relay: wire live, 0 flows, "Seen lately"`);
 
       await relay!.stop();
       relay = null;
