@@ -39,6 +39,9 @@ describe("Connect a phone on a phone", () => {
   let tailnetOutdated: boolean;
   let extraCandidates: object[];
   let candidatesRefused: string | null;
+  /** the bodies of POST /api/machines/address, and whether the next one is refused as a wrong code */
+  let addressAsked: unknown[];
+  let addressWrong: boolean;
   let pending: string;
   let pairStarts: { code: string; gate: Promise<void> }[];
   /** what each POST /api/relay/offer said it is for (x-ovis-no-account-only), in the order the PC got them */
@@ -67,6 +70,8 @@ describe("Connect a phone on a phone", () => {
     tailnetOutdated = true;
     extraCandidates = [];
     candidatesRefused = null;
+    addressAsked = [];
+    addressWrong = false;
     for (const key of ["window", "document", "navigator", "getComputedStyle", "Capacitor", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -117,6 +122,11 @@ describe("Connect a phone on a phone", () => {
         { name: "winvm", destination: "winvm.tail.ts.net", detail: "winvm.tail.ts.net", source: "tailscale", tailnet: "winvm.tail.ts.net" },
         ...extraCandidates,
       ] });
+      if (path === "/api/machines/address") {
+        addressAsked.push(JSON.parse(String(init?.body)));
+        if (addressWrong) return Response.json({ error: { code: "address_pc_wrong_code", message: "the server's own words" } }, { status: 400 });
+        return Response.json({ machine: { id: "desk", name: "desk.tail.ts.net", kind: "address", address: "https://desk.tail.ts.net:7317", enabled: true, state: "connecting", error: null, snapshot: null } }, { status: 201 });
+      }
       if (path === "/api/relay/code") { pending = "777111"; pendingOwn = false; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID }); }
       return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
     };
@@ -491,18 +501,35 @@ describe("Connect a phone on a phone", () => {
     expect(renderer!.root.findAll((node) => node.type === "span" && text(node) === "Update Ovis on that PC to 0.5 first.")).toHaveLength(2);
   });
 
-  it("takes one typed address: an SSH one opens Add PC, an https:// one is not taken yet and says so", async () => {
+  it("takes one typed address: an SSH one opens Add PC, an https:// one pairs by the code that PC shows and opens it here", async () => {
     const added: (AddPcPreset | undefined)[] = [];
-    await mount(<Direct machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={() => undefined} />);
+    const connected: Machine[] = [];
+    const code = { value: "" };
+    await act(async () => {
+      renderer = create(<SettingsProvider><Direct machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={(machine) => { connected.push(machine); }} /></SettingsProvider>,
+        { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
+    });
     await flushReads();
-    const type = async (value: string) => { await act(async () => { renderer!.root.findByType("input").props.onChange({ target: { value } }); }); };
+    const type = async (value: string) => { await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value } }); }); };
     const submit = async () => { await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); }); };
     const kind = () => renderer!.root.findAll((node) => node.props["data-address-kind"] !== undefined).map((node) => node.props["data-address-kind"]);
     expect(kind()).toEqual([]);
     await type("https://desk.tail.ts.net:7317");
     expect(kind()).toEqual(["ovis"]);
-    expect(renderer!.root.findByProps({ type: "submit" }).props.disabled).toBe(true);
+    expect(renderer!.root.findAllByType("input")[1]!.props.autoComplete).toBe("one-time-code");
+    addressWrong = true;
+    code.value = "123450 ";
     await submit();
+    expect(addressAsked).toEqual([{ address: "https://desk.tail.ts.net:7317", code: "123450" }]);
+    expect(renderer!.root.findByProps({ role: "alert" }).children.join("")).toBe("That code is wrong, spent or expired. Show a new code on that PC and type it.");
+    expect(code.value).toBe("123450 ");
+    expect(connected).toEqual([]);
+    addressWrong = false;
+    code.value = "123456";
+    await submit();
+    expect(addressAsked.at(-1)).toEqual({ address: "https://desk.tail.ts.net:7317", code: "123456" });
+    expect(connected.map((machine) => [machine.id, machine.kind])).toEqual([["desk", "address"]]);
+    expect(code.value).toBe("");
     expect(added).toEqual([]);
     for (const written of ["https:desk.tail.ts.net", "HTTP:/desk"]) {
       await type(written);
