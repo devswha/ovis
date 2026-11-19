@@ -10,7 +10,7 @@ export const DASHBOARD_KO: Record<string, string> = {
   "Join · approve on a connected device of your account, or type the number the PC shows": "참여 · 연결된 내 계정의 기기에서 승인하거나 PC의 숫자 입력",
   "Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.": "{name}에 연결된 내 계정의 기기에서 승인하거나, 이 요청이 {name}에 나오면 거기서 승인하세요.",
   "Get approved on a device you already use": "쓰던 기기에서 승인받기",
-  "A notice goes to the device you already use. Check the number there and approve.": "쓰던 기기에 알림이 가요. 거기서 숫자를 확인하고 승인하세요.",
+  "Open {name} in Ovis on a device you already use. When the notice shows there, check the number and approve.": "쓰던 기기에서 Ovis로 {name} 화면을 열어 두세요. 알림이 뜨면 숫자를 확인하고 승인하세요.",
   "Type the number": "숫자 입력",
   "{name} shows no number? Ask to join instead.": "{name} 화면에 숫자가 없나요? 대신 참여를 요청하세요.",
   "A new number is shown on {name} because the previous number changed.": "이전 숫자가 바뀌어 {name} 화면에 새 숫자가 표시됩니다.",

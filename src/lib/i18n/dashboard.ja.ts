@@ -10,7 +10,7 @@ export const DASHBOARD_JA: Record<string, string> = {
   "Join · approve on a connected device of your account, or type the number the PC shows": "参加 · 接続しているアカウントのデバイスで承認するか、PC に表示された番号を入力",
   "Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.": "{name} に接続しているアカウントのデバイスか、このリクエストが表示されていれば {name} 自体で、このデバイスを承認してください。",
   "Get approved on a device you already use": "使っているデバイスで承認を受ける",
-  "A notice goes to the device you already use. Check the number there and approve.": "使っているデバイスに通知が届きます。そこで番号を確かめて承認してください。",
+  "Open {name} in Ovis on a device you already use. When the notice shows there, check the number and approve.": "使っているデバイスの Ovis で {name} を開いておきます。そこに通知が出たら、番号を確かめて承認してください。",
   "Type the number": "番号を入力",
   "{name} shows no number? Ask to join instead.": "{name} に番号が表示されていませんか？ 代わりに参加を申請してください。",
   "A new number is shown on {name} because the previous number changed.": "前の番号が変わったため、{name} に新しい番号が表示されています。",

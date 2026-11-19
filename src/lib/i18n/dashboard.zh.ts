@@ -10,7 +10,7 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "Join · approve on a connected device of your account, or type the number the PC shows": "加入 · 在已连接的账户设备上批准，或输入电脑显示的数字",
   "Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.": "请在你账户中已连接到 {name} 的设备上批准此设备；如果 {name} 显示了此请求，也可以在那里批准。",
   "Get approved on a device you already use": "在已在使用的设备上获得批准",
-  "A notice goes to the device you already use. Check the number there and approve.": "你正在使用的设备会收到通知。请在那里核对数字并批准。",
+  "Open {name} in Ovis on a device you already use. When the notice shows there, check the number and approve.": "请在你正在使用的设备上用 Ovis 打开 {name} 并保持打开。那里出现通知后，核对数字并批准。",
   "Type the number": "输入数字",
   "{name} shows no number? Ask to join instead.": "{name} 没有显示数字？请改为请求加入。",
   "A new number is shown on {name} because the previous number changed.": "之前的数字已更改，{name} 上显示了新数字。",

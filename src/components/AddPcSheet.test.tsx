@@ -206,7 +206,7 @@ describe("the Add-a-PC sheet", () => {
     const sub = () => text(renderer!.root.findByProps({ className: "add-pc-sub" }));
     // the start says what must be open before the press: only a device with the PC open hears the request
     expect(text(renderer!.root.findByProps({ className: "modal-title" }))).toBe(translate("en", "Get approved on a device you already use"));
-    expect(sub()).toBe(translate("en", "A notice goes to the device you already use. Check the number there and approve."));
+    expect(sub()).toBe(translate("en", "Open {name} in Ovis on a device you already use. When the notice shows there, check the number and approve.", { name: "desk2" }));
     expect(all()).not.toContain("Add window closed");
     expect(all()).toContain("Check the number on a device connected to desk2");
     expect(all()).not.toContain("Work MacBook");

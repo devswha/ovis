@@ -132,7 +132,8 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
     // a new device's way in: approval on a device it already uses
     const joinStart = mode !== "new" && phase === "start";
     title = mode === "new" ? t("Add {name} to your account", { name }) : joinStart ? t("Get approved on a device you already use") : t("Add this device to {name}", { name });
-    sub = joinStart ? t("A notice goes to the device you already use. Check the number there and approve.") : mode === "new"
+    // the request reaches only a device with this PC open in Ovis (server/dispatch.ts remote-pairings): the line says so
+    sub = joinStart ? t("Open {name} in Ovis on a device you already use. When the notice shows there, check the number and approve.", { name }) : mode === "new"
       ? phase === "start" && onAskToJoin
         ? t("Type the number {name} shows on its own screen after you start Add, then approve there. If {name} is already in your account, ask to join instead.", { name })
         : t("Type the number {name} shows on its own screen, then approve there.", { name })

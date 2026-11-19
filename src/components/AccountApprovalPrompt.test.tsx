@@ -59,16 +59,16 @@ describe("approving a device that asks to join the account", () => {
       documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null, querySelectorAll: () => [], activeElement: null,
       addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
     } });
+    let renderer: ReturnType<typeof create> | undefined;
     try {
-      let renderer: ReturnType<typeof create> | undefined;
       await act(async () => {
         renderer = create(createElement(SettingsProvider, null, createElement(AccountApprovalCard, { request, pcName: "p620", pcCount: 2, asker, onDecide: async (...decision: Decision) => { decided.push(decision); } })),
           { createNodeMock: () => ({ focus() {}, contains: () => true, querySelectorAll: () => [] }) });
       });
-      const result = await walk(renderer!.root);
-      await act(async () => { renderer!.unmount(); });
-      return result;
+      return await walk(renderer!.root);
     } finally {
+      // a walk that throws still unmounts the card, so its focus trap leaves before the globals go back
+      if (renderer) await act(async () => { renderer!.unmount(); });
       for (const [key, descriptor] of saved) {
         if (descriptor) Object.defineProperty(globalThis, key, descriptor);
         else Reflect.deleteProperty(globalThis, key);
