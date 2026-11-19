@@ -96,7 +96,7 @@ describe("recovery actions (device table R11)", () => {
       { act: "release", rows: Array.from({ length: 65 }, (_, i) => `row${i}`) }, { act: "lift", blocks: ["a".repeat(32)] },
       { act: "admit", pending: "x" }, { act: "revoke_all", targets: ["a"] }, { act: "remove", targets: ["../x"] },
       // R11, T70: a target is a row id or an account key, nothing in between
-      { act: "remove", targets: ["a".repeat(121)] }, { act: "remove", targets: ["a".repeat(65)] },
+      { act: "remove", targets: ["a".repeat(121)] }, { act: "remove", targets: ["a".repeat(65)] }, { act: "remove", targets: ["not_a_row"] }, { act: "remove", targets: ["a".repeat(64)] }, { act: "release", rows: ["not_a_row"] }, { act: "undo", rows: ["ABCDEF0123456789"] },
     ];
     for (const value of bad) expect(() => parseRecoveryAction(value)).toThrow(AccountDevicesApiError);
   });

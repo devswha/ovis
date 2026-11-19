@@ -105,6 +105,14 @@ describe("account-devices.json (device table S21, S25, P22)", () => {
     for (const how of ["list", "add", "member", "promoted", "legacy"]) expect(() => parseAdmissionOrigin({ from: "pc", how, by: null, admit_no: 1, at })).toThrow(AccountSnapshotError);
   });
 
+  test("ovis recover --admit lets in a pending redemption: from recover only with a code, digits or a QR (P22, T70)", () => {
+    for (const how of ["code", "digits", "qr"]) {
+      const origin = { from: "recover", how, by: null, admit_no: 1, at };
+      expect(parseAdmissionOrigin(origin)).toEqual(origin as never);
+    }
+    for (const how of ["list", "add", "member", "promoted", "confirmed", "link"]) expect(() => parseAdmissionOrigin({ from: "recover", how, by: null, admit_no: 1, at })).toThrow(AccountSnapshotError);
+  });
+
   test("a row from before the upgrade is stamped admit_no 0, older than every admission; nothing else is (T50)", () => {
     const legacy = { from: "legacy", how: "legacy", by: null, admit_no: 0, at };
     expect(parseAdmissionOrigin(legacy)).toEqual(legacy as never);

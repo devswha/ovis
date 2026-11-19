@@ -479,6 +479,13 @@ describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
     const after = parseSnapshotPage((await read(service, pc(), {})).body);
     expect({ devices: after.devices.map((d) => d.no), removed: after.removed.map((r) => r.no), blocks: after.blocks.map((b) => b.id), freezes: after.freezes })
       .toEqual({ devices: [olderNo], removed: [newerNo], blocks: [block.id], freezes: [{ block: block.id, target: newer.spki, after: newerNo }] });
+    // P16, G12: while the freeze stands, a key above its line is not list-eligible and signs nothing
+    const later = await client();
+    const laterNo = service.registerDevice("acct_1", later.spki, "Tablet");
+    const frozen = parseSnapshotPage((await read(service, pc(), {})).body);
+    expect(frozen.devices.map((d) => [d.no, d.eligible])).toEqual([[olderNo, true], [laterNo, false]]);
+    const fromFrozen = await signSafetyRecord({ ...signed, kind: "block", target: older.spki, target_no: olderNo, signer: later.spki, signer_no: laterNo, nonce: newRecordId() }, later.pair.privateKey);
+    expect(await refusal(fromFrozen)).toEqual({ status: 403, code: "frozen" });
     const lift = await signSafetyRecord({ ...signed, kind: "lift", target: block.id, signer: older.spki, signer_no: olderNo }, older.pair.privateKey);
     expect((await service.fetch(post("/v1/safety-records", { record: lift }, token))).status).toBe(200);
     const lifted = parseSnapshotPage((await read(service, pc(), {})).body);
