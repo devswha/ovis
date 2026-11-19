@@ -12,6 +12,7 @@ import { AccountDeviceStore } from "./account-devices.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { writePrivateState } from "../private-state.ts";
 import { DeviceJournal } from "./device-journal.ts";
+import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
 import { SafetyLog } from "./safety-log.ts";
@@ -91,7 +92,7 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     const phone = await key();
     rows.commitList(listed(phone));
     const [row] = rows.rows();
-    expect(await signIn(devices, row!.id, phone)).toEqual({ refused: { refused: "join_hold", seconds: null }, holdUntil: null });
+    expect(await signIn(devices, row!.id, phone)).toMatchObject({ refused: { refused: "join_hold", seconds: 10 } });
     expect(await signIn(devices, row!.id, await key())).toBeNull();
     expect(devices.sessionRow(row!.id)).toBeNull();
     expect(devices.has(row!.id)).toBe(true);
@@ -210,5 +211,30 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     expect(later).not.toBeNull();
     expect(devices.remoteRevoke(caller.id, target.id)).toBe("older");
     expect(devices.removeAuthority(caller.spki, target.spki, ACCOUNT)).toBe(false);
+  });
+
+  test("T53: once its hold is over, the row signs in as a drive principal", async () => {
+    const { devices, rows, clock } = pc();
+    await member(devices);
+    const phone = await key();
+    rows.commitList(listed(phone));
+    const [row] = rows.rows();
+    clock.now += JOIN_HOLD_MS;
+    expect(await signIn(devices, row!.id, phone)).toEqual({ match: { id: row!.id, label: "Device 0", role: "drive" } });
+    expect(devices.sessionRow(row!.id)).toEqual({ role: "drive", key: phone.spki, provisional: false });
+  });
+
+  test("T66: a block that freezes the row ends its sign-in, before any stream", async () => {
+    const { devices, rows, clock } = pc();
+    const [older, target] = [await member(devices), await member(devices)];
+    const phone = await key();
+    rows.commitList(listed(phone));
+    clock.now += JOIN_HOLD_MS;
+    const [row] = rows.rows();
+    expect(await signIn(devices, row!.id, phone)).toMatchObject({ match: { id: row!.id } });
+    const record = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.spki, target_no: 2, signer: older.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, older.keys.privateKey) as BlockRecord;
+    expect(await devices.applyBlock(record, "handed")).toMatchObject({ outcome: "applied" });
+    expect(await signIn(devices, row!.id, phone)).toBeNull();
+    expect(devices.sessionRow(row!.id)).toBeNull();
   });
 });
