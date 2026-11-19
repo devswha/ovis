@@ -117,4 +117,14 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     // the older account row can block the newer one
     expect(await devices.applyBlock(await block(signer, target.spki), "handed")).toMatchObject({ outcome: "applied" });
   });
+
+  test("T36, P5: an account-joined key signs no remove of another key, newer or not; a devices.json member still may", async () => {
+    const { devices, rows } = pc();
+    const older = await member(devices);
+    const [joined, newer] = [await key(), await key()];
+    rows.commitList(listed(joined, newer));
+    expect(devices.removeAuthority(joined.spki, newer.spki, ACCOUNT)).toBe(false);
+    expect(devices.removeAuthority(joined.spki, joined.spki, ACCOUNT)).toBe(true);
+    expect(devices.removeAuthority(older.spki, newer.spki, ACCOUNT)).toBe(true);
+  });
 });

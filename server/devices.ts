@@ -1138,7 +1138,8 @@ export class DeviceStore {
    */
   removeAuthority(signer: string, key: string, account: string): boolean {
     if (signer === key) return true;
-    const signers = this.memberRows(signer, account);
+    // an account-joined key signs only its own remove (P5, ruling 1): only devices.json member rows count here
+    const signers = this.memberRows(signer, account).filter((row) => this.devices.includes(row));
     const targets = this.rowsOfKey(key);
     return signers.length > 0 && targets.length > 0 && targets.every((target) => signers.every((row) => compareAdmission(row, target) === "older"));
   }
