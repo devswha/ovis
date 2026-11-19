@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AccountDeviceStore, type AccountRowPorts } from "./account-devices.ts";
+import { DeviceJournal } from "./device-journal.ts";
+import { listNotices } from "./list-notices.ts";
 import { keyOf, listOrigins, snapshotList as list, nameOf, SERVER } from "./account-devices.test-helpers.ts";
 import { ITS_ME_MIN_AGE_MS, JOIN_HOLD_MS, type Sayer } from "./join-hold.ts";
 
@@ -38,6 +40,29 @@ function machine(over: Partial<AccountRowPorts> = {}, first: { othersEver?: bool
 const established = (over: Partial<Sayer> = {}): Sayer => ({ key: keyOf("k-old"), drives: true, state: "live", no: 1, late: false, admitNo: null, admittedAt: 0, ...over });
 
 describe("S2-29 the join hold and the first device (T34, T53, T67)", () => {
+  test("P17/T42: a fresh read replaces a pre-fix snapshot-numbered notice before restarting the hold", () => {
+    const { dir, clock, ports } = machine();
+    const journal = DeviceJournal.open(dir);
+    const read = list(["k-held"]);
+    // Prior S2-29 persisted the snapshot number (1), not this admission's PC-local number (42).
+    const prior = new AccountDeviceStore(dir, SERVER, { ...ports,
+      admitOrigin: (at) => ({ from: "remote", how: "list", by: null, admit_no: 42, at: new Date(at).toISOString() }),
+      journal: (entry) => { journal.append({ kind: "admit", how: "list", key: entry.key, no: 1, row: entry.row, label: "held", by: null, account: read.account }); },
+    });
+    prior.commitList(read);
+    const [row] = prior.rows();
+    const [obsolete] = journal.openNotices();
+    if (!row || !obsolete) throw new Error("Missing pre-fix admission");
+    clock.now += JOIN_HOLD_MS * 2;
+    const disk = DeviceJournal.open(dir);
+    const reopened = new AccountDeviceStore(dir, SERVER, { ...ports, ...listNotices(disk, () => read.account, () => {}) });
+    reopened.commitList(read);
+    expect(reopened.access(row.id)).toEqual({ refused: "join_hold", seconds: 10 });
+    const replay = disk.replay("older-member", (entry) => entry.no !== null && 5 < entry.no);
+    expect(replay.notices).toMatchObject([{ row: row.id, open: true, no: 42 }]);
+    expect(disk.openNotices().map((entry) => entry.id)).toEqual([replay.notices[0]?.id]);
+    expect(replay.notices[0]?.id).not.toBe(obsolete.id);
+  });
   test("H1/T42: reopening a held row requires a whole read and a new uninterrupted ten seconds", () => {
     const { store, clock, dir, ports } = machine();
     const read = list(["k-new"]);
