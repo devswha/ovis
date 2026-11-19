@@ -116,6 +116,12 @@
   font-weight: var(--fw-regular);
 }
 
+/* a section's drafts, folded under its ready pull requests: a quieter head of the same kind */
+.fork-github-drafts-head {
+  margin-top: var(--space-1);
+  font-weight: var(--fw-regular);
+}
+
 .fork-github-list {
   display: flex;
   flex-direction: column;

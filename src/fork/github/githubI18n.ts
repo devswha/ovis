@@ -70,6 +70,7 @@ const STRINGS: Record<string, [ko: string, ja: string, zh: string]> = {
   "{repo} is already here; it opens as it is.": ["{repo}이(가) 이미 여기 있습니다. 그대로 엽니다.", "{repo} はすでにここにあります。そのまま開きます。", "{repo} 已在此处，将按原样打开。"],
   "Team": ["팀", "チーム", "团队"],
   "New commits": ["새 커밋", "新しいコミット", "新提交"],
+  "Drafts": ["초안", "下書き", "草稿"],
   "New commits since your review": ["리뷰 후 새 커밋이 있습니다", "レビュー後に新しいコミットがあります", "你审查后有新提交"],
   "Confirm: close": ["확인: 닫기", "確認: クローズ", "确认：关闭"],
   "Closing…": ["닫는 중…", "クローズしています…", "正在关闭…"],

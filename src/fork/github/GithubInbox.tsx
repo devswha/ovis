@@ -117,13 +117,17 @@ const useListingVersion = () => useSyncExternalStore(subscribe, () => listingVer
 
 /** The search, kept while the app is open, as the agent inbox keeps its own. */
 let searched = "";
-/** The sections folded on this device. */
-const FOLDED_KEY = "ovis:fork-github-folded";
-const loadFolded = (): ReadonlySet<string> => { try { return new Set(JSON.parse(window.localStorage.getItem(FOLDED_KEY) ?? "[]") as string[]); } catch { return new Set(); } };
-
-/** The stacks shown whole on this device; a stack is folded under its top pull request otherwise. */
-const STACKS_KEY = "ovis:fork-github-stacks-open";
-const loadOpenStacks = (): ReadonlySet<string> => { try { return new Set(JSON.parse(window.localStorage.getItem(STACKS_KEY) ?? "[]") as string[]); } catch { return new Set(); } };
+/** A set of ids kept on this device, and its toggle: the sections folded, the stacks and drafts shown whole. */
+function useKeptSet(key: string): [ReadonlySet<string>, (id: string) => void] {
+  const [kept, setKept] = useState<ReadonlySet<string>>(() => { try { return new Set(JSON.parse(window.localStorage.getItem(key) ?? "[]") as string[]); } catch { return new Set(); } });
+  const toggle = (id: string): void => setKept((before) => {
+    const next = new Set(before);
+    if (!next.delete(id)) next.add(id);
+    try { window.localStorage.setItem(key, JSON.stringify([...next])); } catch { /* storage may be disabled */ }
+    return next;
+  });
+  return [kept, toggle];
+}
 
 /** A row says only what needs you: its CI's mark at its end while it fails or runs (passing is the rule, so it has
     none), changes asked for under its title, and a draft's title dimmed. */
@@ -144,20 +148,10 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const [searchAsked, setSearchAsked] = useState(false);
   const search = useRef<HTMLInputElement>(null);
   const searchToggle = useRef<HTMLButtonElement>(null);
-  const [folded, setFolded] = useState(loadFolded);
-  const [openStacks, setOpenStacks] = useState(loadOpenStacks);
-  const toggleStack = (id: string): void => setOpenStacks((before) => {
-    const next = new Set(before);
-    if (!next.delete(id)) next.add(id);
-    try { window.localStorage.setItem(STACKS_KEY, JSON.stringify([...next])); } catch { /* storage may be disabled */ }
-    return next;
-  });
-  const fold = (id: string): void => setFolded((before) => {
-    const next = new Set(before);
-    if (!next.delete(id)) next.add(id);
-    try { window.localStorage.setItem(FOLDED_KEY, JSON.stringify([...next])); } catch { /* storage may be disabled */ }
-    return next;
-  });
+  // sections are open, stacks folded under their top and drafts under their section's ready ones, until tapped
+  const [folded, fold] = useKeptSet("ovis:fork-github-folded");
+  const [openStacks, toggleStack] = useKeptSet("ovis:fork-github-stacks-open");
+  const [openDrafts, toggleDrafts] = useKeptSet("ovis:fork-github-drafts-open");
   const scroll = useKeptScroll<HTMLDivElement>("pull-requests", listing !== null && (wide || open === null));
   const errors: Record<string, string> = {
     gh_missing: t("Install gh on this PC"), gh_signed_out: t("Sign in on this PC with gh auth login"),
@@ -197,20 +191,35 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
       {fold}
     </div>;
   };
+  // a row with the rest of its stack, folded under it until tapped
+  const entry = ({ pr, below }: { pr: GithubPull; below: GithubPull[] }) => {
+    const whole = below.length > 0 && openStacks.has(pr.stack!.id);
+    const stackLabel = `${t("Stack")} +${below.length}`;
+    return <li key={pr.url}>
+      {row(pr, below.length > 0 && <button type="button" className="fork-github-stack-fold" aria-expanded={whole} aria-label={stackLabel} title={stackLabel} onClick={() => toggleStack(pr.stack!.id)}>
+        {whole ? <ChevronUp aria-hidden="true" /> : `+${below.length}`}
+      </button>)}
+      {whole && <ul className="fork-github-list fork-github-stack-below">{below.map((layer) => <li key={layer.url}>{row(layer, null)}</li>)}</ul>}
+    </li>;
+  };
   const group = (id: string, label: string, rows: GithubPull[]) => rows.length > 0 && <section className="fork-github-group" aria-label={label}>
     <h3><button type="button" className="fork-github-group-head" aria-expanded={!folded.has(id)} onClick={() => fold(id)}>
       <ChevronRight aria-hidden="true" /><span>{label}</span><span className="fork-github-group-count">{rows.length}</span>
     </button></h3>
-    {!folded.has(id) && <ul className="fork-github-list">{githubStacks(rows).map(({ pr, below }) => {
-      const whole = below.length > 0 && openStacks.has(pr.stack!.id);
-      const stackLabel = `${t("Stack")} +${below.length}`;
-      return <li key={pr.url}>
-        {row(pr, below.length > 0 && <button type="button" className="fork-github-stack-fold" aria-expanded={whole} aria-label={stackLabel} title={stackLabel} onClick={() => toggleStack(pr.stack!.id)}>
-          {whole ? <ChevronUp aria-hidden="true" /> : `+${below.length}`}
-        </button>)}
-        {whole && <ul className="fork-github-list fork-github-stack-below">{below.map((layer) => <li key={layer.url}>{row(layer, null)}</li>)}</ul>}
-      </li>;
-    })}</ul>}
+    {!folded.has(id) && (() => {
+      const entries = githubStacks(rows);
+      const ready = entries.filter(({ pr }) => !pr.draft);
+      const drafts = entries.filter(({ pr }) => pr.draft);
+      // a search looks through the drafts too
+      const draftsShown = openDrafts.has(id) || query.trim() !== "";
+      return <>
+        <ul className="fork-github-list">{ready.map(entry)}</ul>
+        {drafts.length > 0 && <button type="button" className="fork-github-group-head fork-github-drafts-head" aria-expanded={draftsShown} onClick={() => toggleDrafts(id)}>
+          <ChevronRight aria-hidden="true" /><span>{t("Drafts")}</span><span className="fork-github-group-count">{drafts.length}</span>
+        </button>}
+        {drafts.length > 0 && draftsShown && <ul className="fork-github-list">{drafts.map(entry)}</ul>}
+      </>;
+    })()}
   </section>;
   if (!wide && open !== null) return <GithubPullPage key={open.url} pull={open} wide={false} watching={watching} onOpened={(opened) => { setPlace("inbox"); onOpened(opened); }} />;
 
