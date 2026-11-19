@@ -18,5 +18,6 @@ export function accountSignInRefusal(answer: Exclude<AccessAnswer, { ok: true }>
   switch (answer.refused) {
     case "join_hold": return { code: "held", message: "This device waits for its join hold on this PC", hold: { reason: "join_hold", until: holdUntil } };
     case "not_listed": return { code: "not_listed", message: "This device is not on this PC's account list" };
+    case "admission": return { code: "admission", message: "This PC no longer admits this device" };
   }
 }

@@ -325,6 +325,16 @@ export function createServer(
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
     now: () => Date.now(),
     admitOrigin: (at) => pcAccount.admit("remote", "list", null, at),
+    publish: entry => journal.openListedRows([entry.row]),
+    firstDevice: {
+      othersEver: () => pcAccount.othersEver(),
+      setOthersEver: () => { pcAccount.setOthersEver(); },
+      listKey: () => pcAccount.first()?.list_key ?? null,
+      otherRows: () => {
+        const bound = pcAccount.first()?.key;
+        return devices.list(null).length > (bound !== undefined && devices.hasKey(bound) ? 1 : 0);
+      },
+    },
     admitListedRows: write => {
       const ids = devices.admitListedRows(write);
       journal.openListedRows(ids);

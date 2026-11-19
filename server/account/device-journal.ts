@@ -153,8 +153,8 @@ export class DeviceJournal {
         return;
       }
     }
-    const written = this.append({ kind: entry.kind, how: drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
-      row: entry.row, label: entry.label ?? "", by: null, account: entry.account,
+    const written = this.append({ kind: entry.kind === "its_me" ? "confirm" : entry.kind, how: entry.kind === "its_me" ? "its_me" : drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
+      row: entry.row, label: entry.label ?? "", by: entry.by ?? null, account: entry.account,
       ...(entry.kind === "admit" ? { awaitingListCheck: true, two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) }, drop);
     if (drop) evidence.markJournalled(drop, written.seq);
   }

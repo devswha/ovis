@@ -12,6 +12,7 @@ import { AccountSnapshotError, parseAccountDevicesFile, type AccountJoinedRow, t
 import { writePrivateState } from "../private-state.ts";
 import type { RemovalEvidence } from "./removal-evidence.ts";
 import { rowDrop, type RowDrop } from "./row-drop-evidence.ts";
+import { firstDevice, holdSecondsLeft, JOIN_HOLD_MS, mayEndHold, type Sayer } from "./join-hold.ts";
 
 export const ACCOUNT_DEVICES_FILE = "account-devices.json";
 export const ACCOUNT_DEVICES_MAX = 100;
@@ -44,7 +45,7 @@ export type AccountRow = AccountJoinedRow;
 export type ListCommit = Pick<AccountSnapshot, "account" | "snapshot" | "version" | "devices" | "removed">;
 
 export interface JournalEntry extends Pick<SnapshotDevice, "provider" | "two_step"> {
-  readonly kind: "admit" | "drop";
+  readonly kind: "admit" | "drop" | "its_me";
   readonly key: string;
   readonly row: string;
   readonly account: string | null;
@@ -52,9 +53,10 @@ export interface JournalEntry extends Pick<SnapshotDevice, "provider" | "two_ste
   readonly no?: number;
   readonly label?: string;
   readonly reason?: DropReason;
+  readonly by?: string;
 }
 
-export type AccessAnswer = { readonly ok: true } | { readonly refused: "join_hold"; readonly seconds: number | null } | { readonly refused: "not_listed" };
+export type AccessAnswer = { readonly ok: true } | { readonly refused: "join_hold"; readonly seconds: number | null } | { readonly refused: "admission" | "not_listed" };
 
 export interface AccountRowPorts {
   readonly evidence?: RemovalEvidence;
@@ -66,12 +68,23 @@ export interface AccountRowPorts {
   /** Every admission guard of the commit turn (G2 to G15) for this key, now. */
   admits(key: string, account: string): boolean;
   admitListedRows(write: () => readonly string[]): string[];
+  /** Puts the admission's notice in the unseen set of every older row, on disk; throws when it could not. */
+  publish(entry: JournalEntry): void;
   now(): number;
   /**
    * Numbers one admission on this PC and returns its origin (PcAccountState.admit in pc-binding.ts, P12, P22): its
    * `admit_no` is the age every PC decision compares.
    */
   admitOrigin(at: number): AdmissionOrigin;
+  /** The first-device facts this PC keeps with its binding (account-pc.json, T67). */
+  firstDevice: {
+    othersEver(): boolean;
+    /** Set before the first row of the account that is not the binding row is written; nothing unsets it. */
+    setOthersEver(): void;
+    listKey(): string | null;
+    /** A row in devices.json other than the one that bound the PC. */
+    otherRows(): boolean;
+  };
 }
 
 /** The file in memory: `account` and `snapshot` are null only in the cleared state, which holds no rows. */
@@ -170,11 +183,31 @@ export class AccountDeviceStore implements AccountRowSource {
     return this.rows().some((row) => row.id === id && row.state === "live");
   }
 
-  /** Whether row `id` may sign in now: a held row waits for its join hold, which S2-29 ends. */
+  /** Whether row `id` may sign in now. A held row whose ten seconds are over passes the admission guard again first. */
   access(id: string): AccessAnswer {
     const row = this.rows().find((candidate) => candidate.id === id);
     if (!row) return { refused: "not_listed" };
-    return row.state === "live" ? { ok: true } : { refused: "join_hold", seconds: null };
+    if (row.state === "live") return { ok: true };
+    const seconds = holdSecondsLeft(row.hold_until === null ? null : Date.parse(row.hold_until), this.ports.now());
+    if (seconds === null || seconds > 0) return { refused: "join_hold", seconds };
+    if (this.file.account === null || !this.ports.admits(row.key, this.file.account)) return { refused: "admission" };
+    this.goLive(id);
+    return { ok: true };
+  }
+
+  /** "It's me" for the held row `id` (T53): ends its hold only for an established older row and a passing guard. */
+  itsMe(id: string, sayer: Sayer): boolean {
+    const row = this.rows().find((candidate) => candidate.id === id && candidate.state === "hold");
+    if (!row || !mayEndHold(sayer, { key: row.key, no: row.no, admitNo: row.origin.admit_no }, this.ports.now())) return false;
+    if (this.file.account === null || !this.ports.admits(row.key, this.file.account)) return false;
+    this.ports.journal({ kind: "its_me", key: row.key, row: row.id, account: this.file.account, by: sayer.key });
+    this.goLive(id);
+    return true;
+  }
+
+  /** Publishes again every notice that could not be published: until it is, its row stays held. */
+  republish(): void {
+    for (const row of this.rows()) if (row.state === "hold" && row.hold_until === null) this.publish(row);
   }
 
   /** Applies a whole read's list: drops what it no longer names, then admits what it newly names and the guards let in. */
@@ -190,11 +223,17 @@ export class AccountDeviceStore implements AccountRowSource {
     this.write({ ...this.file, account: list.account, snapshot: list.snapshot, version: list.version });
 
     const admitted: string[] = [];
+    const listKeys = list.devices.map((entry) => entry.key);
     for (const entry of eligible.values()) {
       if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) break;
       if (this.file.devices.some((row) => row.key === entry.key)) continue;
       if (this.ports.heldByDevicesJson(entry.key) || !this.ports.admits(entry.key, list.account)) continue;
-      if (this.admit(entry)) admitted.push(entry.key);
+      const first = this.ports.firstDevice;
+      const bypass = firstDevice({
+        key: entry.key, listKeys, removedKeys: [...removed], othersEver: first.othersEver(), firstListKey: first.listKey(),
+        otherRows: first.otherRows() || this.file.devices.some((row) => row.key !== entry.key),
+      });
+      if (this.admit(entry, bypass)) admitted.push(entry.key);
     }
     return { admitted, dropped };
   }
@@ -206,12 +245,15 @@ export class AccountDeviceStore implements AccountRowSource {
     this.write({ ...this.file, account: null, snapshot: null });
   }
 
-  private admit(entry: SnapshotDevice): boolean {
+  private admit(entry: SnapshotDevice, bypass: boolean): boolean {
+    const first = this.ports.firstDevice;
+    // taking the no-hold path is itself what sets the flag, so the path is used up by its first use
+    if (!first.othersEver()) first.setOthersEver();
     const now = this.ports.now();
     const row: AccountRow = {
       id: accountDeviceId(this.serverId, entry.key), key: entry.key, no: entry.no, label: entry.label,
       origin: this.ports.admitOrigin(now),
-      confirmed_at: iso(now), last_signin_day: null, state: "hold", hold_until: null,
+      confirmed_at: iso(now), last_signin_day: null, state: bypass ? "live" : "hold", hold_until: null,
     };
     const standing = this.ports.admitListedRows(() => {
       this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.no, label: row.label,
@@ -219,7 +261,9 @@ export class AccountDeviceStore implements AccountRowSource {
       this.write({ ...this.file, devices: [...this.file.devices, row] });
       return [row.id];
     });
-    return standing.includes(row.id);
+    if (!standing.includes(row.id)) return false;
+    this.publish(row);
+    return true;
   }
 
   private drop(rows: readonly AccountRow[], reason: DropReason, close?: AccountRowPorts["closeSessions"]): string[] {
@@ -240,6 +284,21 @@ export class AccountDeviceStore implements AccountRowSource {
     this.write(this.file);
     if (failure) throw failure;
     return rows.map((row) => row.key);
+  }
+
+  private publish(row: AccountRow): void {
+    try { this.ports.publish({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.no, label: row.label }); } catch (error) {
+      // the row stays held with no deadline: republish() starts its ten seconds once the notice is out
+      console.error(`[account] the notice of ${row.id} was not published: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    if (row.state !== "hold") return;
+    const until = iso(this.ports.now() + JOIN_HOLD_MS);
+    this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate.id === row.id ? { ...candidate, hold_until: until } : candidate) });
+  }
+
+  private goLive(id: string): void {
+    this.write({ ...this.file, devices: this.file.devices.map((row) => row.id === id && row.state === "hold" ? { ...row, state: "live", hold_until: null } : row) });
   }
 
   private usable(): void {

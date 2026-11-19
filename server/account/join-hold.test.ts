@@ -16,6 +16,7 @@ function machine(over: Partial<AccountRowPorts> = {}, first: { othersEver?: bool
   const events: string[] = [];
   const binding = { othersEver: first.othersEver ?? true, listKey: first.listKey === undefined || first.listKey === null ? null : keyOf(first.listKey), otherRows: first.otherRows ?? false };
   const ports: AccountRowPorts = {
+    admitListedRows: write => [...write()],
     journal: (entry) => { events.push(`journal ${entry.kind} ${nameOf(entry.key)}`); },
     closeSessions: () => {},
     heldByDevicesJson: () => false,

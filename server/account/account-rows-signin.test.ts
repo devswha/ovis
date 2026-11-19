@@ -44,6 +44,8 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
     admits: (key, account) => devices.admitsFromList(key, account),
     now: () => clock.now,
     admitOrigin: (at) => binding.admit("remote", "list", null, at),
+    publish: entry => journal.openListedRows([entry.row]),
+    firstDevice: { othersEver: () => binding.othersEver(), setOthersEver: () => binding.setOthersEver(), listKey: () => binding.first()?.list_key ?? null, otherRows: () => devices.list(null).length > 1 },
     admitListedRows: write => {
       const ids = devices.admitListedRows(write);
       journal.openListedRows(ids);
