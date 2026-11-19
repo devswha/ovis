@@ -149,7 +149,7 @@ const arrive = (): void => { arrived += 1; if (arrived === runs.length) allArriv
 const stopped = allArrived.promise.then(() => pcA.stop());
 /**
  * A connection to stopped pc-a waits at the relay for it, and the relay turns the oldest away past MAX_PENDING waiting
- * (relay/core.ts), which this device rightly reads as a refusal, not as the PC: the walks side by side wait in turn.
+ * (relay/core.ts): the walks side by side wait in turn, so each check and Open meets the PC's absence, not that crowd.
  */
 let waitingForA = 0;
 const turns: (() => void)[] = [];

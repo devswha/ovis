@@ -35,10 +35,10 @@ export class RelayUnreachableError extends Error {
 }
 
 /**
- * The relay's closes that turn a client away: TRY_AGAIN (busy: too many clients for the PC or waiting for it) and POLICY
- * (relay/core.ts CLOSE). Before the relay assigns a socket, and within a probe's RELAY_PROBE_MS after it, they say nothing
- * of the PC: the relay's own deadlines for a PC that never came (HANDSHAKE_MS, OFFLINE_WAIT_MS) close with TRY_AGAIN too,
- * but only later.
+ * The relay's closes that turn a client away (relay/core.ts CLOSE): TRY_AGAIN (busy: too many clients for the PC) and
+ * POLICY. Before the relay assigns a socket they say nothing of the PC. After it the relay closes with them for the PC's
+ * sake (too many waiting on a PC that has not answered, its deadlines for one that never came), so a probe reads them
+ * then as the PC not answering, as Open does.
  */
 const RELAY_REFUSALS: ReadonlySet<number> = new Set([1008, 1013]);
 
@@ -441,7 +441,7 @@ export async function probeDirect(offer: RelayOffer, direct: string, socketFor: 
  * What a probe of the PC found: it `answered` (the Noise handshake to its pinned key completed, `ms`
  * from the carrier's `assigned` frame, so one round trip to the PC and back), the carrier assigned the
  * connection and no PC answered in time (`silent`: offline, for a relay), the relay turned this device away
- * (`refused`: a close of RELAY_REFUSALS), or the carrier failed with nothing said (`unreachable`: no assignment,
+ * (`refused`: a close of RELAY_REFUSALS before it assigned the connection), or the carrier failed with nothing said (`unreachable`: no assignment,
  * an error or a dropped socket; a relay's HTTP 429 before the upgrade looks the same to a browser).
  */
 export type PcProbe = { readonly kind: "answered"; readonly ms: number } | { readonly kind: "silent" } | { readonly kind: "refused" } | { readonly kind: "unreachable" };
@@ -490,7 +490,7 @@ export function probePc(offer: RelayOffer, via: { readonly direct: string } | { 
     let assigned = false;
     socket.onerror = () => settle(unreachable);
     socket.onclose = (event) => {
-      if ("relay" in via && RELAY_REFUSALS.has(event.code)) settle({ kind: "refused" });
+      if ("relay" in via && !assigned && RELAY_REFUSALS.has(event.code)) settle({ kind: "refused" });
       else if (event.code === 1006) settle(unreachable);
       else failed();
     };

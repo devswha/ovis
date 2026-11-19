@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, jest } from "bun:test";
-import { createPcSweep, type SweepLocks } from "./pcSweep.ts";
+import { createPcSweep, PROBE_LOCK_WAIT_MS, SWEEP_LOCK_WAIT_MS, type SweepLocks } from "./pcSweep.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
 import type { PcFinding as Found } from "./pcStatus.ts";
 import { dashboardModel } from "./dashboard.ts";
@@ -166,7 +166,7 @@ it("checks the list again every minute by itself, the PCs a relay refused first,
     for (const end of ends) if (idle && checked.length === end.count) end.done.resolve();
   } }, { probe });
   const answer = { kind: "answered", route: "relay", rttMs: 20 } as const;
-  const refusal = { kind: "offline", reason: "relay" } as const;
+  const refusal = { kind: "offline", reason: "refused" } as const;
   const run = async (from: number, result: (turn: number) => Found): Promise<void> => {
     const done = swept(from + 8);
     for (let turn = from; turn < from + 8; turn++) {
@@ -247,20 +247,75 @@ it("lets an answer lapse during a re-check the relay then refuses: the row neith
   expect(sweep.status.has(id)).toBe(false);
 });
 
-/** Web Locks as the tabs of one origin share them: exclusive by name, granted in order, `ifAvailable` refused while held or asked for. */
-function sharedLocks(): SweepLocks {
-  const tails = new Map<string, Promise<unknown>>();
-  const asked = new Map<string, number>();
+/**
+ * Web Locks as the tabs of one origin share them: exclusive by name, granted in order; a request whose signal aborts before
+ * it is granted rejects. `hold` keeps a lock as a suspended tab would, never letting go.
+ */
+function sharedLocks(): SweepLocks & { hold(name: string): void } {
+  const waiting = new Map<string, { readonly grant: () => void; cancelled: boolean }[]>();
+  const holding = new Set<string>();
+  const release = (name: string): void => {
+    for (let next = waiting.get(name)?.shift(); next; next = waiting.get(name)?.shift()) if (!next.cancelled) { next.grant(); return; }
+    holding.delete(name);
+  };
   return {
-    async request<T>(name: string, options: { readonly ifAvailable?: boolean }, callback: (lock: unknown) => T | Promise<T>): Promise<T> {
-      if (options.ifAvailable && (asked.get(name) ?? 0) > 0) return callback(null);
-      asked.set(name, (asked.get(name) ?? 0) + 1);
-      const run = (tails.get(name) ?? Promise.resolve()).then(() => callback({ name })).finally(() => { asked.set(name, (asked.get(name) ?? 1) - 1); });
-      tails.set(name, run.catch(() => {}));
-      return run;
+    hold(name) { holding.add(name); },
+    async request<T>(name: string, options: { readonly signal?: AbortSignal }, callback: (lock: unknown) => T | Promise<T>): Promise<T> {
+      if (holding.has(name)) {
+        await new Promise<void>((grant, reject) => {
+          const waiter = { grant, cancelled: false };
+          options.signal?.addEventListener("abort", () => { waiter.cancelled = true; reject(options.signal?.reason); }, { once: true });
+          waiting.set(name, [...waiting.get(name) ?? [], waiter]);
+        });
+      } else holding.add(name);
+      try { return await callback({ name }); } finally { release(name); }
     },
   };
 }
+
+async function turns(): Promise<void> {
+  // enough turns for a check wrongly started to reach the probe (it takes a few)
+  for (let turn = 0; turn < 500; turn++) await Promise.resolve();
+}
+
+it("checks anyway when a lock another tab keeps has made it wait past the lock's longest use, and when the lock manager refuses", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(1);
+  const id = devices[0]?.server_id ?? "";
+  // a tab suspended mid-sweep keeps the sweep lock and both probe slots
+  const locks = sharedLocks();
+  for (const name of ["ovis-pc-sweep", "ovis-pc-probe-0", "ovis-pc-probe-1"]) locks.hold(name);
+  const { pending, checked, probe } = heldProbe();
+  const sweep = createPcSweep(store, { active: () => true, redraw() {} }, { probe, locks });
+  const pressed = sweep.checkOne(id);
+  await turns();
+  jest.advanceTimersByTime(PROBE_LOCK_WAIT_MS - 1);
+  await turns();
+  expect(checked).toHaveLength(0);
+  jest.advanceTimersByTime(1);
+  await turns();
+  expect(checked).toEqual([id]);
+  pending[0]?.resolve({ kind: "offline", reason: "pc" });
+  await pressed;
+  expect(sweep.status.get(id)).toEqual({ kind: "offline", reason: "pc" });
+  // the minute's sweep waits for the kept sweep lock as long, then for a probe slot, then checks anyway
+  void sweep.check();
+  jest.advanceTimersByTime(SWEEP_LOCK_WAIT_MS);
+  await turns();
+  jest.advanceTimersByTime(PROBE_LOCK_WAIT_MS);
+  await turns();
+  expect(checked).toHaveLength(2);
+  // a lock manager that refuses every request (an opaque origin): the checks go on without it
+  const refusing: SweepLocks = { request: () => Promise.reject(new DOMException("no locks here", "SecurityError")) };
+  const other = heldProbe();
+  const alone = createPcSweep(store, { active: () => true, redraw() {} }, { probe: other.probe, locks: refusing });
+  const again = alone.checkOne(id);
+  await turns();
+  expect(other.checked).toEqual([id]);
+  other.pending[0]?.resolve({ kind: "answered", route: "relay", rttMs: 20 });
+  await again;
+  expect(alone.status.get(id)).toEqual({ kind: "answered", route: "relay", rttMs: 20 });
+});
 
 it("sweeps again exactly a minute after the last sweep began, and a sweep that comes due while the page is hidden waits until it is shown", async () => {
   jest.useFakeTimers();
@@ -291,9 +346,10 @@ it("sweeps again exactly a minute after the last sweep began, and a sweep that c
   } finally { Reflect.deleteProperty(globalThis, "document"); }
 });
 
-it("keeps one sweep and two checks at once across two tabs sharing storage, also when a tab's minute comes due during another's long sweep", async () => {
+it("keeps two checks at once across two tabs sharing storage: a tab that finds another's sweep this minute waits for the next, then sweeps beside it", async () => {
   jest.useFakeTimers();
   const { devices, store } = await savedPcs(8);
+  const ids = devices.map((device) => device.server_id);
   const locks = sharedLocks();
   let running = 0;
   let most = 0;
@@ -307,24 +363,22 @@ it("keeps one sweep and two checks at once across two tabs sharing storage, also
   const tabB = createPcSweep(store, { active: () => true, redraw() {} }, { probe: counted, locks });
   void tabA.check();
   await arrived(2);
-  // B is shown too: A's sweep began this minute, so B waits for the next one
+  // B is shown too: A's sweep began this minute, so B queues nothing and waits for the next one
   await tabB.check();
+  expect(ids.filter((id) => tabB.status.has(id))).toEqual([]);
   // A's sweep is slow (its checks wait on a relay): B's minute comes due while A's first two checks are still out
   jest.advanceTimersByTime(60_000);
-  const asked = tabB.checkOne(devices[7]?.server_id ?? "");
-  for (let turn = 0; turn < 500; turn++) await Promise.resolve();
+  await turns();
+  expect(ids.filter((id) => tabB.status.get(id)?.kind === "checking")).toEqual(ids);
   expect([checked.length, most]).toEqual([2, 2]);
-  pending[0]?.resolve({ kind: "offline", reason: "pc" });
-  await arrived(3);
-  expect(most).toBe(2);
-  for (let turn = 1; turn < 9; turn++) {
+  // sixteen checks in all, A's eight and B's eight, two at a time
+  for (let turn = 0; turn < 16; turn++) {
     pending[turn]?.resolve({ kind: "offline", reason: "pc" });
-    // nine checks in all: A's eight and B's one
-    if (turn < 7) await arrived(turn + 3);
+    if (turn + 3 <= 16) await arrived(turn + 3);
   }
-  await asked;
-  expect(most).toBe(2);
-  expect(checked.filter((id) => id === devices[7]?.server_id)).toHaveLength(2);
+  await turns();
+  expect([checked.length, most]).toEqual([16, 2]);
+  expect(ids.filter((id) => tabB.status.get(id)?.kind === "offline")).toEqual(ids);
 });
 
 it("keeps a PC's earlier answer when the relay refuses its next check", async () => {

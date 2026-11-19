@@ -281,7 +281,7 @@ it("calls a relay that turned this device away before assigning it (TRY_AGAIN, P
   expect([await failure(1013), await failure(1008), await failure(1006), await failure(1011)]).toEqual(["relay-refused", "relay-refused", "relay-unreachable", "relay-unreachable"]);
 });
 
-it("tells a probe's PC that never came from a relay that turned this device away and from a carrier that failed saying nothing", async () => {
+it("tells a probe's PC that never came (a relay's close after assigning it included) from a relay that turned this device away before assigning it and from a carrier that failed saying nothing", async () => {
   jest.useFakeTimers();
   const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
   const probed = async (act: (socket: SilentSocket) => void) => {
@@ -299,11 +299,12 @@ it("tells a probe's PC that never came from a relay that turned this device away
     pcGone: await probed((socket) => { assigned(socket); closed(socket, 1012); }),
     busyBefore: await probed((socket) => closed(socket, 1013)),
     busyAfter: await probed((socket) => { assigned(socket); closed(socket, 1013); }),
+    policyAfter: await probed((socket) => { assigned(socket); closed(socket, 1008); }),
     policy: await probed((socket) => closed(socket, 1008)),
     dropped: await probed((socket) => { assigned(socket); closed(socket, 1006); }),
     failed: await probed((socket) => { assigned(socket); socket.onerror?.(new Event("error")); }),
     unassigned: await probed((socket) => closed(socket, 1011)),
-  }).toEqual({ nobody: "silent", pcGone: "silent", busyBefore: "refused", busyAfter: "refused", policy: "refused", dropped: "unreachable", failed: "unreachable", unassigned: "unreachable" });
+  }).toEqual({ nobody: "silent", pcGone: "silent", busyBefore: "refused", busyAfter: "silent", policyAfter: "silent", policy: "refused", dropped: "unreachable", failed: "unreachable", unassigned: "unreachable" });
 });
 
 it("calls the PC offline when the relay assigned the connection but nothing answered within PC_ANSWER_MS", async () => {
