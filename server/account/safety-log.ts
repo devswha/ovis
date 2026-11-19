@@ -257,26 +257,28 @@ export class SafetyLog {
 
   /** What is in force, worked out from the log alone. Each ending ends only the record it names, and only of its kind. */
   state(): SafetyState {
+    // an ending names the record it ends under that record's own account, and ends nothing of another
+    const at = (account: string, id: string) => `${account}\u0000${id}`;
     const lifted = new Set<string>();
     const forgotten = new Set<string>();
     const unlocked = new Set<string>();
     for (const { record } of this.file.entries) {
       if (record.kind === "lift") {
-        lifted.add(record.target);
-        if (record.signer === "pc" && (record as PcLiftRecord).forget) forgotten.add(record.target);
-      } else if (record.kind === "unlock") unlocked.add(record.target);
+        lifted.add(at(record.account, record.target));
+        if (record.signer === "pc" && (record as PcLiftRecord).forget) forgotten.add(at(record.account, record.target));
+      } else if (record.kind === "unlock") unlocked.add(at(record.account, record.target));
     }
     const byN = [...this.file.entries].sort((a, b) => a.n - b.n);
     const of = (kind: SafetyRecordKind) => byN.filter((entry) => entry.record.kind === kind);
-    const locks = of("lock").filter((entry) => !unlocked.has(entry.record.id));
-    const blocks = of("block").filter((entry) => !lifted.has(entry.record.id));
-    const serviceFreezes = of("freeze").filter((entry) => !lifted.has(entry.record.id.slice(2)));
+    const locks = of("lock").filter((entry) => !unlocked.has(at(entry.record.account, entry.record.id)));
+    const blocks = of("block").filter((entry) => !lifted.has(at(entry.record.account, entry.record.id)));
+    const serviceFreezes = of("freeze").filter((entry) => !lifted.has(at(entry.record.account, entry.record.id.slice(2))));
     return {
       locked: locks.length > 0,
       locks,
       blocks,
       freezes: [...blocks, ...serviceFreezes].sort((a, b) => a.n - b.n),
-      markers: of("block").filter((entry) => !forgotten.has(entry.record.id)),
+      markers: of("block").filter((entry) => !forgotten.has(at(entry.record.account, entry.record.id))),
     };
   }
 

@@ -523,10 +523,6 @@ export class DeviceStore {
       && this.tombstones.some((t) => t.key === device.relay_public_key && (!pairedHere(device) || t.removed_at >= device.created_at));
   }
 
-  /**
-   * Whether the gate is closed to strangers: it is from the first pairing on, and stays so when
-   * every device is revoked (revoking must never reopen the LAN); this PC itself always gets in.
-   */
   get accountError(): string | null {
     return this.safety?.strict ?? this.accountProblem;
   }
@@ -536,6 +532,10 @@ export class DeviceStore {
     return (this.safety?.strict ?? null) !== null;
   }
 
+  /**
+   * Whether the gate is closed to strangers: it is from the first pairing on, and stays so when
+   * every device is revoked (revoking must never reopen the LAN); this PC itself always gets in.
+   */
   get gated(): boolean {
     // what access reads: a PC that fails closed is closed to strangers, paired or not (S19)
     return this.failsClosed || this.rawGated;
