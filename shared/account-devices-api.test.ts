@@ -45,8 +45,9 @@ describe("notice answers (device table T51, T57)", () => {
       { type: "notice-answer", id, answer: "its_me", blocks: [block] }, { type: "notice-answer", id, answer: "not_me" },
       { type: "notice-answer", id, answer: "not_me", blocks: [] }, { type: "notice-answer", id, answer: "not_me", blocks: [lift] },
       { type: "notice-answer", id, answer: "maybe" }, { type: "notice-answer", id, answer: "its_me", extra: 1 },
+      { type: "notice-answer", id, answer: "not_me", blocks: [{ ...block, id: "c".repeat(64) }] }, { type: "notice-answer", id, answer: "not_me", blocks: [null] },
     ];
-    for (const value of bad) expect(() => parseNoticeAnswer(value)).toThrow();
+    for (const value of bad) expect(() => parseNoticeAnswer(value)).toThrow(AccountDevicesApiError);
   });
 });
 

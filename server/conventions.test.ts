@@ -47,8 +47,8 @@ describe("web push", () => {
 
 describe("account service fake", () => {
   it("is imported by tests and their helpers only", () => {
-    const shipped = files("{server,src,shared}/**/*.{ts,tsx,mjs,js}").filter((file) => !/\.test\.tsx?$|\.test-helpers\.ts$/.test(file) && file !== "shared/account-service-fake.ts");
-    fail(matches(shipped, /from\s*["'][^"']*account-service-fake(?:\.ts)?["']/).map((match) => match.at),
+    const shipped = files("{server,src,shared,app}/**/*.{ts,tsx,mjs,js}").filter((file) => !/\.test\.tsx?$|\.test-helpers\.ts$/.test(file) && file !== "shared/account-service-fake.ts" && !file.includes("/node_modules/"));
+    fail(matches(shipped, /(?:from|import)\s*\(?\s*["'][^"']*account-service-fake(?:\.ts)?["']/).map((match) => match.at),
       "shared/account-service-fake.ts is test support: import it from a test or a *.test-helpers.ts file only.");
   });
 });

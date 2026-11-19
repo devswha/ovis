@@ -433,9 +433,27 @@ describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
     const second = await read(service, machine, { snapshot: first.body.snapshot, page: 1 });
     const whole = assembleSnapshot([parseSnapshotPage(first.body), parseSnapshotPage(second.body)], { account: "acct_1", server_id: machine.serverId, lastApplied: null });
     expect(whole.devices.map((device) => device.no)).toEqual(keys.map((_, index) => index + 1));
+    const elsewhere = await read(service, pc(), { snapshot: first.body.snapshot, page: 1 });
+    expect({ status: elsewhere.status, code: elsewhere.body.error?.code }).toEqual({ status: 410, code: "snapshot_gone" });
     service.dropSnapshots();
     const gone = await read(service, machine, { snapshot: first.body.snapshot, page: 1 });
     expect({ status: gone.status, code: gone.body.error?.code }).toEqual({ status: 410, code: "snapshot_gone" });
+  });
+
+  test("removed keys are paged like devices, so no page passes the page size", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const machine = pc();
+    const keys = await Promise.all(Array.from({ length: SNAPSHOT_PAGE + 1 }, client));
+    for (const [index, device] of keys.entries()) {
+      service.registerDevice("acct_1", device.spki, `Device ${index}`);
+      service.removeDevice("acct_1", device.spki);
+    }
+    const first = await read(service, machine, {});
+    expect({ last: first.body.last, removed: first.body.removed.length }).toEqual({ last: false, removed: SNAPSHOT_PAGE });
+    const second = await read(service, machine, { snapshot: first.body.snapshot, page: 1 });
+    const whole = assembleSnapshot([parseSnapshotPage(first.body), parseSnapshotPage(second.body)], { account: "acct_1", server_id: machine.serverId, lastApplied: null });
+    expect(whole.removed.length).toBe(SNAPSHOT_PAGE + 1);
   });
 
   test("a block from an older device commits whole and a lift ends its freeze line", async () => {
@@ -446,10 +464,18 @@ describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
     const olderNo = service.registerDevice("acct_1", older.spki, "Phone");
     const newerNo = service.registerDevice("acct_1", newer.spki, "Laptop");
     const signed = { v: 1 as const, account: "acct_1", signed_at: new Date().toISOString() };
-    const wrongWay = await signSafetyRecord({ ...signed, kind: "block", target: older.spki, target_no: newerNo + 1, signer: newer.spki, signer_no: newerNo, nonce: newRecordId() }, newer.pair.privateKey);
-    expect((await service.fetch(post("/v1/safety-records", { record: wrongWay }, token))).status).toBe(403);
+    const refusal = async (record: unknown) => {
+      const response = await service.fetch(post("/v1/safety-records", { record }, token));
+      return { status: response.status, code: ((await response.json()) as { error?: { code: string } }).error?.code };
+    };
+    const wrongWay = await signSafetyRecord({ ...signed, kind: "block", target: older.spki, target_no: olderNo, signer: newer.spki, signer_no: newerNo, nonce: newRecordId() }, newer.pair.privateKey);
+    expect(await refusal(wrongWay)).toEqual({ status: 403, code: "signer_not_older" });
+    expect(await refusal({ ...wrongWay, kind: "rename" })).toEqual({ status: 400, code: "record_invalid" });
     const block = await signSafetyRecord({ ...signed, kind: "block", target: newer.spki, target_no: newerNo, signer: older.spki, signer_no: olderNo, nonce: newRecordId() }, older.pair.privateKey);
     expect((await service.fetch(post("/v1/safety-records", { record: block }, token))).status).toBe(200);
+    expect((await service.fetch(post("/v1/safety-records", { record: block }, token))).status).toBe(200);
+    const again = await signSafetyRecord({ ...signed, kind: "block", target: newer.spki, target_no: newerNo, signer: older.spki, signer_no: olderNo, nonce: newRecordId() }, older.pair.privateKey);
+    expect(await refusal(again)).toEqual({ status: 409, code: "target_removed" });
     const after = parseSnapshotPage((await read(service, pc(), {})).body);
     expect({ devices: after.devices.map((d) => d.no), removed: after.removed.map((r) => r.no), blocks: after.blocks.map((b) => b.id), freezes: after.freezes })
       .toEqual({ devices: [olderNo], removed: [newerNo], blocks: [block.id], freezes: [{ block: block.id, target: newer.spki, after: newerNo }] });
