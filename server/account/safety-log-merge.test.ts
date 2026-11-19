@@ -212,5 +212,17 @@ describe("merging and folding the PC safety log", () => {
     expect(mergeSafetyLogs(own, other)).toBeNull();
     for (const dir of [own, other]) expect(SafetyLog.open(dir).entries().find((e) => e.record.id === x.id)?.asof?.after).toBe(4);
   });
+
+  test("P24: a lift folded with a service freeze still ends the block a sibling holds whole", async () => {
+    const [own, other] = [stateDir(), stateDir()];
+    const x = await block(await key(), await signer());
+    const mine = SafetyLog.open(own);
+    mine.append({ record: { v: 1, id: `f:${x.id}`, kind: "freeze", account: ACCOUNT, target: (x as { target: string }).target, after: 3, signer: "service", signed_at: AT, signature: "" } as SafetyRecord, got: "snapshot" });
+    mine.append({ record: pc("lift", x.id), got: "pc" });
+    mine.fold();
+    SafetyLog.open(other).append({ record: x, got: "handed", asof: asof(3) });
+    expect(mergeSafetyLogs(own, other)).toBeNull();
+    for (const dir of [own, other]) expect(SafetyLog.open(dir).state().blocks.map((e) => e.record.id)).toEqual([]);
+  });
 });
 
