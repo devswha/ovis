@@ -117,6 +117,18 @@ export type HoldState =
   | { readonly reason: "catching_up" }
   | { readonly reason: "frozen"; readonly block: string };
 
+const ISO_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** Device table S22, S25, T53, T56: a hold state as an app reads it from a `held` refusal; throws AccountDevicesApiError. */
+export function parseHoldState(value: unknown): HoldState {
+  const hold = shape(value, ["reason", "until", "block"]);
+  if (hold.reason === "join_hold" && "until" in hold && !("block" in hold)
+    && (hold.until === null || (typeof hold.until === "string" && ISO_MS.test(hold.until) && new Date(hold.until).toISOString() === hold.until))) return hold as unknown as HoldState;
+  if (hold.reason === "catching_up" && Object.keys(hold).length === 1) return hold as unknown as HoldState;
+  if (hold.reason === "frozen" && !("until" in hold) && typeof hold.block === "string" && HEX64.test(hold.block)) return hold as unknown as HoldState;
+  fail("Invalid hold state");
+}
+
 /**
  * Device table R11: the acts of `ovis recover`, over the recovery socket only (and, one confirm each, on
  * the desktop app's own screen). `undo` with no rows ends every release; `admit` names one pending redemption and the

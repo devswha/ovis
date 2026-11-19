@@ -1,5 +1,5 @@
 import { createScanner, ScanError, SyntaxKind } from "jsonc-parser";
-import { AccountDevicesApiError, parseBlockReceipt, type BlockReceipt } from "./account-devices-api.ts";
+import { AccountDevicesApiError, parseBlockReceipt, parseHoldState, type BlockReceipt, type HoldState } from "./account-devices-api.ts";
 
 /** The relay wire generation: the envelope's first byte and WELCOME's `relay_protocol`. A PC on another one is refused outright. */
 export const RELAY_PROTOCOL = 1;
@@ -69,6 +69,8 @@ export const SESSION_ERRORS = [
   "unsupported_version", "unsupported_extension", "unsupported_transport",
   "protocol_error", "auth_failed", "auth_revoked", "auth_changed",
   "flow_control_error", "resource_exhausted", "timeout", "internal_error",
+  // Step 2, sent only by a PC with OVIS_ACCOUNT_OPENS_ALL=1 to an account-joined sign-in; `held` carries its HoldState
+  "held", "not_listed", "admission",
 ] as const;
 export type SessionError = typeof SESSION_ERRORS[number];
 export const STREAM_ERRORS = [
@@ -133,7 +135,7 @@ type Payloads = {
   readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true };
   readonly 0x03: { readonly scheme: "device-key"; readonly device_id: string; readonly signature: string };
   readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[]; readonly direct?: readonly string[] };
-  readonly 0x05: { readonly code: SessionError; readonly message: string; readonly receipts?: readonly BlockReceipt[] };
+  readonly 0x05: { readonly code: SessionError; readonly message: string; readonly hold?: HoldState; readonly receipts?: readonly BlockReceipt[] };
   readonly 0x06: { readonly code: "shutdown" | "id_exhausted"; readonly last_open_id: number; readonly drain_ms: number };
   readonly 0x07: bigint;
   readonly 0x08: bigint;
@@ -197,6 +199,24 @@ function integer(value: unknown, min: number, max: number): number {
   requireProtocol(typeof value === "number" && Number.isInteger(value) && value >= min && value <= max, "Invalid integer");
   return value;
 }
+/** A SESSION_ERROR's payload: a `held` refusal names its hold state, and no other code carries one. */
+function sessionError(v: Record<string, unknown>): Payloads[0x05] {
+  const code = choice(v.code, SESSION_ERRORS);
+  const message = text(v.message, 256);
+  requireProtocol((code === "held") === ("hold" in v), "Only a held refusal carries a hold state");
+  requireProtocol(v.receipts === undefined || code === "auth_failed", "Only refused sign-ins carry receipts");
+  try {
+    return {
+      code, message,
+      ...(code === "held" ? { hold: parseHoldState(v.hold) } : {}),
+      ...(v.receipts === undefined ? {} : { receipts: list(v.receipts, AUTH_RECEIPTS_MAX, parseBlockReceipt) }),
+    };
+  } catch (error) {
+    if (error instanceof AccountDevicesApiError) throw new MuxProtocolError("protocol_error", "Invalid hold state or block receipt");
+    throw error;
+  }
+}
+
 function choice<const T extends readonly (string | number)[]>(value: unknown, choices: T): T[number] {
   for (const candidate of choices) if (value === candidate) return candidate;
   throw new MuxProtocolError("protocol_error", "Invalid value");
@@ -414,17 +434,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       return { ...common, type, payload: { session_id: hex(v.session_id, 32), device_id: hex(v.device_id, 16), role: choice(v.role, ["drive", "watch"]),
         ...(v.relays === undefined ? {} : { relays: list(v.relays, 2, relayOrigin) }),
         ...(v.direct === undefined ? {} : { direct: list(v.direct, MAX_DIRECT_CARRIERS, directOrigin) }) } };
-    case FrameType.SESSION_ERROR: {
-      const code = choice(v.code, SESSION_ERRORS);
-      const message = text(v.message, 256);
-      if (v.receipts === undefined) return { ...common, type, payload: { code, message } };
-      requireProtocol(code === "auth_failed", "Only refused sign-ins carry receipts");
-      try { return { ...common, type, payload: { code, message, receipts: list(v.receipts, AUTH_RECEIPTS_MAX, parseBlockReceipt) } }; }
-      catch (error) {
-        if (error instanceof AccountDevicesApiError) throw new MuxProtocolError("protocol_error", "Invalid block receipt");
-        throw error;
-      }
-    }
+    case FrameType.SESSION_ERROR:
+      return { ...common, type, payload: sessionError(v) };
     case FrameType.GOAWAY:
       return { ...common, type, payload: { code: choice(v.code, ["shutdown", "id_exhausted"]), last_open_id: streamId(v.last_open_id, true), drain_ms: integer(v.drain_ms, 0, 5000) } };
     case FrameType.HTTP_OPEN: {

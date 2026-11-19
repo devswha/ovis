@@ -105,12 +105,13 @@ describe("recovery actions (device table R11)", () => {
 
 describe("hold states (device table S22, S25, T53, T56)", () => {
   test("S25: the three hold states parse back as sent, a join hold with or without its deadline", () => {
-    for (const hold of [
+    const holds: HoldState[] = [
       { reason: "join_hold", until: null },
       { reason: "join_hold", until: "2026-11-20T05:00:10.000Z" },
       { reason: "catching_up" },
       { reason: "frozen", block: "a".repeat(64) },
-    ]) expect(parseHoldState(JSON.parse(JSON.stringify(hold)))).toEqual(hold);
+    ];
+    for (const hold of holds) expect(parseHoldState(JSON.parse(JSON.stringify(hold)))).toEqual(hold);
   });
 
   test("S25: anything else is refused", () => {
