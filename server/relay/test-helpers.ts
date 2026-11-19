@@ -133,6 +133,11 @@ export function relayFixture(serveOnly = false, options: NonNullable<Parameters<
   };
 }
 
+/** The PC's first whole read was applied (S2-27, T42): rows not paired at this PC stop waiting for it. */
+export function caughtUp(fixture: ReturnType<typeof relayFixture>): void {
+  fixture.app.context.services.catchUp?.wholeRead();
+}
+
 export async function relayAccountFixture(role: "drive" | "watch" = "drive", account = "acct_1", options: NonNullable<Parameters<typeof createServer>[0]> = {}) {
   const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
   const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");

@@ -62,6 +62,7 @@ import type { Readmission } from "./account/readmission.ts";
 import { AccountOrder } from "./account/account-order.ts";
 import { accountRowsFor } from "./account/account-devices.ts";
 import { listNotices } from "./account/list-notices.ts";
+import { CatchUpGate } from "./account/catch-up-gate.ts";
 import { RemovalEvidence } from "./account/removal-evidence.ts";
 import { DeviceJournal } from "./account/device-journal.ts";
 import { mergeAccountState } from "./account/account-merge.ts";
@@ -608,14 +609,18 @@ export function createServer(
     },
     removalsPending: () => devices.pendingLockRemovals().length > 0,
   } }) : undefined;
+  const catchUp = accountRows === null ? null : new CatchUpGate(() => pcAccount?.binding()?.bind_id ?? null);
+  devices.attachCatchUp(catchUp);
   const accountOrder = safetyLog !== null ? AccountOrder.open(stateDir) : null;
   devices.attachAccountOrder(accountOrder);
   const readPorts = safetyLog !== null && pcAccount !== null && journal !== null && accountOrder !== null
+      // the read's commit turn: the account rows take its list, idle rows expire (T54), and the wait after a start ends
+      // for the rows the guard passes (T42)
     ? (readmission?: Readmission) => snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: serverIdNow, requestRead: () => { void accountMailbox.pull(); },
       commitList: (snapshot) => {
         accountRows?.store()?.commitList(snapshot, readmission);
-        // 60 days with no use this PC saw end a row here, by this PC's clock (T54)
         accountRows?.store()?.expire();
+        catchUp?.wholeRead((row) => devices.admits(devices.relayKeyOf(row.id)));
       } })
     : null;
   const services: RequestServices = {
@@ -632,7 +637,7 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, localConfirms, recoveryReleases, pendingRedemptions, keyProofPairings, askScreenForKey: askScreen, lockRoutes: lockHandler, lockSignal,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, localConfirms, recoveryReleases, pendingRedemptions, keyProofPairings, askScreenForKey: askScreen, lockRoutes: lockHandler, lockSignal,
     get portalStartupResult() { return portalStartupResult; },
   };
   ovisRelay.resume(services, server.port ?? DEFAULT_PORT);

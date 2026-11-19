@@ -9,7 +9,7 @@ import { PcAccountState } from "../account/pc-binding.ts";
 import { RemovalEvidence } from "../account/removal-evidence.ts";
 import { SafetyLog } from "../account/safety-log.ts";
 import { DeviceStore } from "../devices.ts";
-import { relayConnection, relayFixture } from "../relay/test-helpers.ts";
+import { caughtUp, relayConnection, relayFixture } from "../relay/test-helpers.ts";
 import { connectionData, type Client } from "./connections.ts";
 import { createSocket } from "./socket.ts";
 
@@ -145,6 +145,7 @@ describe("blocks and freezes on the PC (P16, P21, T51)", () => {
     const devices = f.app.context.services.devices;
     const [older, target, another] = [await member(devices), await member(devices), await member(devices)];
     const link = await relayConnection(f);
+    caughtUp(f);
     await link.auth({ keys: older.keys, publicKey: older.spki, id: older.id });
     const post = async (body: unknown) => {
       const request = link.open("/api/account/records", { method: "POST", headers: [["content-type", "application/json"], ["x-herdr-machine", "1"]], body: "stream" });

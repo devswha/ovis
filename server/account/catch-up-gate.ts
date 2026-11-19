@@ -17,31 +17,27 @@ const SCREEN_PAIRED: readonly string[] = ["code", "digits", "qr"];
 const pairedAtPc = (origin: AdmissionOrigin | undefined): boolean => origin?.from === "pc" && SCREEN_PAIRED.includes(origin.how);
 
 export class CatchUpGate {
-  private caughtUp = false;
+  /** The binding the last whole read was for: a new binding waits for a read of its own (T59). */
+  private caughtUpFor: string | null = null;
   /** After a whole read, the admission guard (G3) that read asked: a row it refuses keeps waiting. */
   private guard: ((row: GatedRow) => boolean) | null = null;
   private readonly released = new Set<string>();
 
-  /** `inAccount`: whether this PC is in an account now; a PC in no account has nobody waiting (no block can name it). */
-  constructor(private readonly inAccount: () => boolean) {}
+  /** `binding`: this PC's binding id now, null in no account, where nobody waits (no block can name it). */
+  constructor(private readonly binding: () => string | null) {}
 
   waits(row: GatedRow): boolean {
-    if (!this.inAccount() || pairedAtPc(row.origin) || this.released.has(row.id)) return false;
-    if (!this.caughtUp) return true;
+    const binding = this.binding();
+    if (binding === null || pairedAtPc(row.origin) || this.released.has(row.id)) return false;
+    if (this.caughtUpFor !== binding) return true;
     return this.guard !== null && !this.guard(row);
   }
 
   /** T42: a whole read was applied; it ends the wait of every row `guard` admits, and every release ends with it. */
   wholeRead(guard?: (row: GatedRow) => boolean): void {
-    this.caughtUp = true;
+    this.caughtUpFor = this.binding();
     this.guard = guard ?? null;
     this.released.clear();
-  }
-
-  /** T59: the PC was bound to an account: the wait starts again until that account's first whole read. */
-  bound(): void {
-    this.caughtUp = false;
-    this.guard = null;
   }
 
   /** T70: `ovis recover` releases these rows from the wait until the next whole read; only rows that wait now. */

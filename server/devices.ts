@@ -23,6 +23,7 @@ import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device
 import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
 import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
+import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceSafetyRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import { PromotedHolds } from "./account/promoted-holds.ts";
@@ -544,6 +545,7 @@ export class DeviceStore {
   readonly handedLifts: HandedLifts;
   private joinedRows: AccountRowSource | null = null;
   private readonly promotedHolds = new PromotedHolds((key) => this.admits(key), (row) => this.releasePromoted(row));
+  private catchUp: CatchUpGate | null = null;
   private readonly pc: PcAccountState | null;
   private readonly evidence: RemovalEvidence | null;
   private readonly accountHeld: ((key: string) => boolean) | undefined;
@@ -1765,6 +1767,7 @@ export class DeviceStore {
     const device = this.devices.find((d) => d.id === id);
     // a row its evidence covers serves no request, whatever session it holds (S14); while the PC fails closed no
     // session opens another stream either: only this PC itself gets in (S19, P8)
+    if (device && this.catchingUp(id)) return null;
     if (this.evidence !== null && (this.failsClosed || (device !== undefined && this.stale(device)))) return null;
     if (device) return this.promotedHolds.refusal(device, Date.now()) ? null : { role: device.role, key: device.relay_public_key, provisional: false };
     const waiting = this.pending?.waiting?.rows.get(id);
@@ -1896,6 +1899,15 @@ export class DeviceStore {
     if (row.held && !updated.held) this.promotedHolds.forget(row.held);
   }
 
+
+  /** Step 2 (S2-27): the wait after a start for devices.json rows not paired at this PC; set only with OVIS_ACCOUNT_OPENS_ALL=1. */
+  attachCatchUp(gate: CatchUpGate | null): void { this.catchUp = gate; }
+
+  /** Whether the devices.json row `id` waits for the first whole read (T41). */
+  catchingUp(id: string): boolean {
+    const device = this.devices.find((d) => d.id === id);
+    return device !== undefined && (this.catchUp?.waits({ id, origin: device.origin }) ?? false);
+  }
 
   /** The account rows' store ends the sessions of a row it dropped (P8 step 3 for a list drop, T35). */
   closeAccountSessions(id: string): void {

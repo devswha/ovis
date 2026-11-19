@@ -57,6 +57,7 @@ import { handleAccountRequest } from "./account/routes.ts";
 import type { AccountMailbox } from "./account/mailbox.ts";
 import type { AccountHolds } from "./account/holds.ts";
 import type { SafetyLog } from "./account/safety-log.ts";
+import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import type { AccountIntroductions } from "./account/introductions.ts";
 import type { RelayService } from "./relay/service.ts";
 import { handleTelemetryRequest, visitSurface } from "./telemetry.ts";
@@ -103,6 +104,8 @@ export interface RequestServices {
   readonly accountHolds: AccountHolds;
   /** the account safety log; null while OVIS_ACCOUNT_OPENS_ALL is off */
   readonly safetyLog: SafetyLog | null;
+  /** Step 2 (S2-27): the wait after a start for rows not paired at this PC; null with the release flag off. */
+  readonly catchUp: CatchUpGate | null;
   readonly preferences: PreferenceStore;
   readonly herdrSidebar: HerdrSidebarConfig;
   /** `loginPath`: the request states a Tailscale login, so the PC's own login must be known, not merely cached as unknown */

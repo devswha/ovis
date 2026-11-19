@@ -367,6 +367,13 @@ export class RelaySession {
           : devices.pairRelay(frame.payload.code, frame.payload.label, frame.payload.public_key, undefined, this.admitNewDevice)?.device;
         // no auth_failed: the code held and was not spent, and the relay closes this client for the pass
         if (this.refused) return;
+        if (frame.type === FrameType.AUTH && device && devices.catchingUp(device.id)) {
+          // Step 2 (S2-27): a row not paired at this PC waits for the first whole read after a start (T41)
+          if (!this.mux.active) return;
+          const refusal = accountSignInRefusal({ refused: "catching_up" }, null, this.accountCodes);
+          this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
+          return;
+        }
         if (frame.type === FrameType.AUTH && device === null) {
           // Step 2 (S2-25): an account-joined row signs in with its registered key; its refusal is told only after the proof
           const joined = await devices.matchAccountRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId);

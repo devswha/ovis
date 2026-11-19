@@ -20,35 +20,37 @@ const waiting = (gate: CatchUpGate) => Object.entries(rows).filter(([, row]) => 
 
 describe("S2-27 devices.json rows wait for the first whole read (T41, T42, T65, T70)", () => {
   test("T41: every non-screen-paired row waits after restart or first binding, including legacy with no metadata", () => {
-    let bound = true;
-    const gate = new CatchUpGate(() => bound);
+    let binding: string | null = "bind-1";
+    const gate = new CatchUpGate(() => binding);
     expect(waiting(gate)).toEqual(["confirmed", "linked", "member", "recover", "legacy", "bare"]);
     gate.wholeRead();
     expect(waiting(gate)).toEqual([]);
-    gate.bound();
+    // a new binding (T59) waits for a whole read of its own
+    binding = "bind-2";
     expect(waiting(gate)).toEqual(["confirmed", "linked", "member", "recover", "legacy", "bare"]);
-    bound = false;
-    expect(waiting(new CatchUpGate(() => bound))).toEqual([]);
+    binding = null;
+    expect(waiting(gate)).toEqual([]);
   });
 
   test("T65: with the service off no read comes, so the wait stays; only screen-paired rows and named releases get in", () => {
-    const gate = new CatchUpGate(() => true);
+    const gate = new CatchUpGate(() => "bind-1");
     expect(gate.release([rows.legacy!.id], rowOf)).toEqual([rows.legacy!.id]);
     expect(waiting(gate)).toEqual(["confirmed", "linked", "member", "recover", "bare"]);
   });
 
   test("T70: release names only rows that wait, lasts until the next whole read, and a restart forgets it", () => {
-    const gate = new CatchUpGate(() => true);
+    const gate = new CatchUpGate(() => "bind-1");
     expect(gate.release([rows.member!.id, rows.code!.id, "9".repeat(16)], rowOf)).toEqual([rows.member!.id]);
     expect(gate.waits(rows.member!)).toBe(false);
     gate.wholeRead();
-    gate.bound();
-    expect(gate.waits(rows.member!)).toBe(true);
-    expect(new CatchUpGate(() => true).waits(rows.member!)).toBe(true);
+    expect(gate.waits(rows.member!)).toBe(false);
+    gate.release([], rowOf);
+    expect(new CatchUpGate(() => "bind-1").waits(rows.member!)).toBe(true);
+    expect(new CatchUpGate(() => "bind-1").waits(rows.member!)).toBe(true);
   });
 
   test("T42: a whole read ends the wait only for the rows its guard passes", () => {
-    const gate = new CatchUpGate(() => true);
+    const gate = new CatchUpGate(() => "bind-1");
     gate.wholeRead((row) => row.id !== rows.linked!.id);
     expect(waiting(gate)).toEqual(["linked"]);
   });
