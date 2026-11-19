@@ -895,7 +895,9 @@ is what authenticates the PC.
 - A `remove` writes its tombstone before it revokes the device; the device's relay connections
   close at once (`auth_revoked`). A `remove` signed before this PC itself paired the key again leaves
   that pairing be, so a late or replayed one cannot undo it; it still takes the key's other rows, such
-  as a member row an `add` made (`applied`), and is `unchanged` when there are none. A row an `add` or a remote
+  as a member row an `add` made (`applied`), and is `unchanged` when there are none. That `remove`
+  writes no tombstone, as the key stays this PC's pairing: the rows it takes leave `devices.json`
+  only. A row an `add` or a remote
   approval made goes, however late the `remove` arrives, and so does a row a `link` moved onto the
   key from another one (`link_moved_key`): this PC paired its former key, never this one. A `link`
   whose `old_key` is its `key` leaves the row a pairing of that key.
