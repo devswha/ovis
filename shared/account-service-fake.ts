@@ -669,6 +669,8 @@ export class FakeAccountService {
     const block = registry.blocks.find((held) => held.id === record.target);
     if (!block) return problem(404, "not_found", "No such block");
     if (record.signer_no >= block.target_no) return problem(403, "signer_not_older", "Only a device older than the blocked one lifts it");
+    // T52: as the service, only a list-eligible device lifts
+    if (!signer.eligible) return problem(403, "not_eligible", "This device cannot lift a block yet");
     if (!registry.lifts.some((held) => held.id === record.id)) {
       registry.lifts.push(record);
       registry.freezes = registry.freezes.filter((line) => line.block !== block.id);
