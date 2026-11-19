@@ -17,7 +17,7 @@ import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
-import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn } from "./shellState.ts";
+import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
@@ -108,7 +108,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (read && (account.state?.kind !== "signed-in" || account.state.pcs !== null)) unanswered = false;
     if (signInFor !== null && shown?.kind === "failed" && shown.failure === "sign-in-first") {
       const kept = signInFor;
-      if (account.state?.kind === "signed-in" || Date.now() - kept.at > SIGN_IN_MS) resumePairing(kept);
+      if (account.state?.kind === "signed-in" || codeLapsed(kept.offer)) resumePairing(kept);
       else show({ ...shown, account: withRefusal(account.state) });
       return;
     }
@@ -121,7 +121,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    */
   const withRefusal = (view: AccountView | null): AccountView | null => refusal !== null && signInFor === null && view?.kind !== "signing-in"
     ? { kind: "signed-out", error: refusal, ...(refusalProvider === null ? {} : { provider: refusalProvider }) } : view;
-  /** A marked code scanned longer ago than it is good for: no sign-in or pairing is started for it, a new scan is asked. */
+  /**
+   * A marked code scanned longer ago than it is good for: the one check every start of its sign-in or pairing goes
+   * through (a press, Try again, a sign-in's return, the app's sheet), which then asks for a new scan.
+   */
   const codeLapsed = (offer: RelayOffer): boolean => offer.code !== undefined && offer.admission === 1 && scanned?.offer === offer && Date.now() - scanned.at > SIGN_IN_MS;
   const askNewScan = (offer: RelayOffer): void => { show({ kind: "failed", failure: "scan-expired", name: offer.name ?? null, detail: null, server_id: offer.server_id }); };
   const account = createAccountController(mount, { active: frontUp, changed: accountChanged, outdated: () => new Set([...observedVersions()].filter(([, value]) => value.outdated).map(([id]) => id)) });
@@ -277,10 +280,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     refusedLinks.delete(attempt.offer.server_id);
     const mismatch = error instanceof ServerIdentityChangedError && error.saved !== undefined && error.offered !== undefined
       ? keyMismatch(attempt.offer.server_id, [{ key: error.saved, from: "saved" }, { key: error.offered, from: "link" }]) : null;
-    show({ kind: "failed", failure: (refused === undefined ? null : refusalOf(refused)) ?? failure, name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id, ...(mismatch ? { mismatch } : {}) , ...(attempt.paired ? {} : { pairing: true as const }) });
+    show({ kind: "failed", ...(attempt.paired && attempt.fresh !== true ? {} : { pairing: true as const }), failure: (refused === undefined ? null : refusalOf(refused)) ?? failure, name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id, ...(mismatch ? { mismatch } : {})  });
   };
 
   const connect = async (attempt: Attempt): Promise<void> => {
+    if (!attempt.paired && codeLapsed(attempt.offer)) { askNewScan(attempt.offer); return; }
     attempt.compared = false;
     // nor does a link refused before a new pairing
     if (!attempt.paired) refusedLinks.delete(attempt.offer.server_id);
@@ -288,7 +292,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     opening?.abort();
     const controller = new AbortController();
     opening = controller;
-    show({ kind: "connecting", name: attempt.offer.name ?? null, ...(attempt.paired ? {} : { pairing: true as const }) });
+    show({ kind: "connecting", name: attempt.offer.name ?? null, ...(attempt.paired && attempt.fresh !== true ? {} : { pairing: true as const }) });
     let opened: RelayTransport;
     try {
       // a saved pairing signs in with the row its record names: that row is the one this attempt may forget
@@ -493,8 +497,6 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const confirmed = (): void => {
     const asked = shown, offer = entry.offer;
     if (offer === null || asked?.kind !== "confirm") return;
-    // the code's time is checked at the press too: a confirm left open past it asks for a new scan, and sends nothing
-    if (codeLapsed(offer)) { askNewScan(offer); return; }
     // a sheet's join acts as whoever is signed in when it pairs, so it waits for no read
     if (sheetJoin !== null) { pair(); return; }
     if (asked.account === "checking") return;
@@ -528,7 +530,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    */
   const resumePairing = (kept: PendingPairing): void => {
     signInFor = null;
-    if (Date.now() - kept.at > SIGN_IN_MS) { show({ kind: "failed", failure: "scan-expired", name: kept.offer.name ?? null, detail: null, server_id: kept.offer.server_id }); return; }
+    if (codeLapsed(kept.offer)) { askNewScan(kept.offer); return; }
     entry = { ...entry, offer: kept.offer, damaged: false };
     arrived();
   };
@@ -595,7 +597,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const confirmedPc = takeConfirmedPc();
     // the PC's page a web sign-in's return went on to: taken first, so a page that cannot use it (a damaged or forged
     // link) still clears it, and no later scan of that PC reads it
-    const back = takePairingReturn(entry.offer?.server_id ?? null);
+    const back = takePairingReturn(entry.offer);
     if (entry.damaged) { show({ kind: "failed", failure: "bad-offer", name: null, detail: null }); return true; }
     // a link that puts another key under this PC's id is never paired with, before or after a
     // Forget: it is no attempt (nothing retries it) and it touches no saved key
@@ -605,9 +607,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       return true;
     }
     if (entry.offer !== null) {
-      // the pairing goes on as the sign-in left it
-      scanned = back !== null ? { offer: entry.offer, at: back.at } : scanned?.offer === entry.offer ? scanned : { offer: entry.offer, at: Date.now() };
-      if (back !== null && Date.now() - back.at > SIGN_IN_MS) { show({ kind: "failed", failure: "scan-expired", name: entry.offer.name ?? null, detail: null, server_id: entry.offer.server_id }); return true; }
+      // the pairing goes on as the sign-in left it, timed from its scan; a note that came too late leaves that code expired
+      scanned = back !== null ? { offer: entry.offer, at: back.late ? 0 : back.at } : scanned?.offer === entry.offer ? scanned : { offer: entry.offer, at: Date.now() };
+      if (back !== null && codeLapsed(entry.offer)) { askNewScan(entry.offer); return true; }
       if (back?.refused != null) {
         refusal = back.refused;
         refusalProvider = back.provider;
@@ -684,7 +686,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   if (returning.pairing !== undefined) {
     const { offer, at } = returning.pairing;
     // judged by this sign-in's own end, never by a session another tab stored meanwhile
-    keepPairingReturn({ server_id: offer.server_id, at, refused: outcome?.refused ?? null, provider: outcome?.provider ?? null, sent: Date.now() });
+    keepPairingReturn({ server_id: offer.server_id, offer: offerDigest(offer), at, refused: outcome?.refused ?? null, provider: outcome?.provider ?? null, sent: Date.now() });
     const link = new URL(encodeOffer(offer, window.location.origin));
     navigate(link.pathname + link.hash);
   }

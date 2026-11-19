@@ -401,6 +401,13 @@ describe("the admission before a first link", () => {
   });
 
   // a marked pairing's first link the PC turned away: the refusal is said, and the record of the row it ended goes
+  it("keeps a new pairing's mark on the failure screen of its refused first link", async () => {
+    const run = await pairing({ mark: true, listed: true, links: [() => Response.json({ error: { code: "link_required" } }, { status: 403 })] });
+    run.admissionGate.resolve();
+    await until(() => run.current().state.kind === "failed");
+    expect(run.current().state).toMatchObject({ kind: "failed", failure: "link-required", pairing: true });
+  });
+
   for (const [code, status, failure] of [["link_required", 403, "link-required"], ["account_mismatch", 409, "account-mismatch"], ["unverified_device", 403, "unverified-device"]] as const) {
     it(`says a new marked pairing's refused link (${code}) in its own words, opens no app, and forgets the row the PC ended`, async () => {
       const run = await pairing({ mark: true, listed: true, links: [() => Response.json({ error: { code, message: "private refusal" } }, { status })] });

@@ -242,16 +242,17 @@ describe("signing in from a marked pairing's failure screen", () => {
     expect(later.failure()).toBeNull();
   });
 
-  it("lets a note whose navigation never finished lapse, so a later scan of that PC shows the confirm", async () => {
+  it("treats the same link after a stopped navigation as expired, and a new QR code of that PC as a new scan", async () => {
     const start = Date.now();
     setSystemTime(new Date(start));
     const { offer, state, handOnly, scanAgain } = await stoppedForSignIn();
     await handOnly(`${ORIGIN}/#error=access_denied&state=${state}`);
-    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(true);
     setSystemTime(new Date(start + 2 * 60_000));
-    const later = await scanAgain(offer);
-    await until(() => later.current().state.kind === "confirm");
-    expect(later.current().state).toMatchObject({ kind: "confirm", offer });
+    const sameLink = await scanAgain(offer);
+    await until(() => sameLink.failure() === "scan-expired");
+    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(false);
+    const newCode = await scanAgain({ ...offer, code: "999999" });
+    await until(() => newCode.current().state.kind === "confirm");
   });
 
   it("lets a note go when its PC's page loads without the offer, so a fresh scan of that PC shows the confirm", async () => {
@@ -343,6 +344,40 @@ describe("signing in from a marked pairing's failure screen", () => {
     const shown = reopen.drawn.filter((state) => state.kind === "connecting" || state.kind === "failed");
     expect(shown.length).toBeGreaterThan(0);
     expect(shown.some((state) => "pairing" in state)).toBe(false);
+  });
+
+  it("asks for a new scan, and opens nothing more, when Try again comes after the code's time", async () => {
+    const start = Date.now();
+    setSystemTime(new Date(start));
+    const { opened, first, native } = await stoppedForSignIn({ native: true });
+    native!.release();
+    await until(() => { const { state } = first.current(); return state.kind === "confirm" && state.account === "unlisted"; });
+    first.current().onPair();
+    await until(() => first.current().state.kind === "failed" && first.failure() !== "scan-expired");
+    expect(opened).toHaveLength(1);
+    setSystemTime(new Date(start + SIGN_IN_MS + 1));
+    first.current().onRetry();
+    await until(() => first.failure() === "scan-expired");
+    expect(opened).toHaveLength(1);
+  });
+
+  it("counts an offer whose return came after the note's time as expired, never as a new scan", async () => {
+    const start = Date.now();
+    setSystemTime(new Date(start));
+    const { opened, returnUrl, comeBack } = await stoppedForSignIn();
+    const { pcPage } = await comeBack(await returnUrl(), () => { setSystemTime(new Date(start + 2 * 60_000)); });
+    await until(() => pcPage.failure() === "scan-expired");
+    expect(pcPage.drawn.some((drawn) => drawn.kind === "confirm")).toBe(false);
+    expect(opened).toEqual([]);
+  });
+
+  it("keeps a note to the one link it was written for: another QR code of that PC is a new scan", async () => {
+    const { offer, state, handOnly, scanAgain } = await stoppedForSignIn();
+    await handOnly(`${ORIGIN}/#error=access_denied&state=${state}`);
+    const newCode = await scanAgain({ ...offer, code: "999999" });
+    await until(() => newCode.current().state.kind === "confirm");
+    expect(newCode.failure()).toBeNull();
+    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(false);
   });
 
   it("asks about the same pairing in place once the app's sign-in sheet answers", async () => {

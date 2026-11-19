@@ -8,7 +8,9 @@ import type { offerFromCode } from "./pairCode.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
-import { decodeOffer } from "../../../shared/relay-offer.ts";
+import { decodeOffer, encodeOffer } from "../../../shared/relay-offer.ts";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { UpdateStep } from "../../../shared/update.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { MyPc } from "../account/myPcs.ts";
@@ -282,26 +284,34 @@ export function keepTypedJoin(serverId: string | null): void {
  * A marked pairing's web sign-in comes back on the front page, the one address the account service sends a browser back
  * to; that PC's own page goes on with the pairing, as after a scan. This crosses that one load, in this tab: the PC's ID,
  * when the code was scanned (`at`), how the sign-in ended (`refused`: the reason it gave; null once signed in), and when
- * the front page handed it on (`sent`), with the provider it was for. No offer, key or token: the offer goes in the page's fragment, as a scanned link
+ * the front page handed it on (`sent`), with the provider it was for and the digest of the one offer link it goes with
+ * (`offer`, offerDigest), so another QR code of that PC never takes it. No offer, key or token: the offer goes in the page's fragment, as a scanned link
  * does.
  */
-export interface PairingReturn { readonly server_id: string; readonly at: number; readonly refused: string | null; readonly provider: AccountProvider | null; readonly sent: number }
+export interface PairingReturn { readonly server_id: string; readonly offer: string; readonly at: number; readonly refused: string | null; readonly provider: AccountProvider | null; readonly sent: number }
 /** How long a note waits for its PC's page: a navigation stopped on the way leaves one no later scan should read. */
 export const PAIRING_RETURN_MS = 60_000;
 export function keepPairingReturn(note: PairingReturn): void {
   try { sessionStorage.setItem("ovis-pairing-return", JSON.stringify(note)); }
   catch { /* the note cannot cross the load: the PC's page asks about the pairing as after a scan */ }
 }
-/** The note for `serverId`'s page, taken once; any other page's note, or one past its time, is dropped. */
-export function takePairingReturn(serverId: string | null, now = Date.now()): PairingReturn | null {
+/** Names one offer link exactly: the note goes with this link, never with another QR code of the same PC. */
+export function offerDigest(offer: RelayOffer): string {
+  return bytesToHex(sha256(utf8ToBytes(encodeOffer(offer, "https://ovis.invalid"))));
+}
+
+/**
+ * The note for this offer's page, taken once whatever it holds. Null when it names another link; `late` when it waited
+ * past its time, so that offer counts as expired rather than as a new scan.
+ */
+export function takePairingReturn(offer: RelayOffer | null, now = Date.now()): (PairingReturn & { readonly late: boolean }) | null {
   try {
     const kept: unknown = JSON.parse(sessionStorage.getItem("ovis-pairing-return") ?? "null");
     sessionStorage.removeItem("ovis-pairing-return");
-    if (kept === null || typeof kept !== "object") return null;
-    const { server_id, at, refused, provider, sent } = kept as Record<string, unknown>;
-    if (serverId === null || server_id !== serverId || typeof at !== "number" || !(refused === null || typeof refused === "string")) return null;
-    if (typeof sent !== "number" || now < sent || now - sent > PAIRING_RETURN_MS) return null;
-    return { server_id, at, refused, provider: ACCOUNT_PROVIDERS.includes(provider as AccountProvider) ? provider as AccountProvider : null, sent };
+    if (offer === null || kept === null || typeof kept !== "object") return null;
+    const { server_id, offer: digest, at, refused, provider, sent } = kept as Record<string, unknown>;
+    if (server_id !== offer.server_id || digest !== offerDigest(offer) || typeof at !== "number" || typeof sent !== "number" || !(refused === null || typeof refused === "string")) return null;
+    return { server_id, offer: digest, at, refused, provider: ACCOUNT_PROVIDERS.includes(provider as AccountProvider) ? provider as AccountProvider : null, sent, late: now < sent || now - sent > PAIRING_RETURN_MS };
   } catch { return null; }
 }
 
