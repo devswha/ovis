@@ -47,7 +47,7 @@ describe("Not me on the account's other PCs", () => {
 });
 
 describe("where Not me goes", () => {
-  it("T60: the notice's own PC gets the answer on its socket, every other PC its records route, each under its own id", async () => {
+  it("T60: only the notice's own PC's socket answer counts; every other PC's records route only delivers", async () => {
     const desk = new FakeSocket();
     const posted: string[] = [];
     const sends = notMeTransports({ id: "n1" } as never, "desk", ["desk", "home"], {
@@ -55,12 +55,13 @@ describe("where Not me goes", () => {
       post: (pc) => async (path) => { posted.push(`${pc} ${path}`); return Response.json({ results: [], receipts: [{ outcome: "applied", id: "b", n: 1 }] }); },
       timeoutMs: 1000,
     });
-    expect([...sends.keys()]).toEqual(["desk", "home"]);
-    const own = sends.get("desk")!([{ id: "b" } as never]);
+    expect([...sends.pcs.keys()]).toEqual(["desk"]);
+    expect([...sends.relayed.keys()]).toEqual(["home"]);
+    const own = sends.pcs.get("desk")!([{ id: "b" } as never]);
     desk.receive({ type: "notice-answer-result", id: "n1", receipts: [{ outcome: "applied", id: "b", n: 2 }] });
     expect(await own).toEqual([{ outcome: "applied", id: "b", n: 2 }]);
     expect(desk.sent[0]).toMatchObject({ type: "notice-answer", id: "n1", answer: "not_me", blocks: [{ id: "b" }] });
-    expect(await sends.get("home")!([{ id: "b" } as never])).toEqual([{ outcome: "applied", id: "b", n: 1 }]);
+    expect(await sends.relayed.get("home")!([{ id: "b" } as never])).toEqual([{ outcome: "applied", id: "b", n: 1 }]);
     expect(posted).toEqual(["home /api/account/records"]);
   });
 });
