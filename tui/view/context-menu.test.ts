@@ -27,7 +27,7 @@ async function start(options: { git?: boolean; mouse?: boolean; nested?: boolean
   const core = new FakeHcCore();
   const where = (space: string, tab: string, pane: string, cwd?: string) => ({ space: `w-${space}`, spaceName: space, tab: `t-${space}-${tab}`, tabName: tab, pane, ...(cwd ? { cwd } : {}) });
   place(core, where("work", "one", "LEFT"), "LEFT-READY\r\n");
-  place(core, where("work", "one", "RIGHT"), options.mouse ? "RIGHT-READY\r\n\x1b[?1000h\x1b[?1006h" : "RIGHT-READY\r\n");
+  place(core, where("work", "one", "RIGHT"), options.mouse ? "RIGHT-READY\r\n\x1b[?1002h\x1b[?1006h" : "RIGHT-READY\r\n");
   place(core, where("work", "two", "SOLO"), "SOLO-READY\r\n");
   place(core, where("docs", "notes", "NOTES"), "NOTES-READY\r\n");
   if (options.git) {
@@ -154,6 +154,55 @@ describe("the menu's keys and pointer (R3)", () => {
     await run.keys(`click@${left.x + 2}:${left.y + 3}`);
     await run.advance(20);
     expect([run.loop.model().overlays.length, focusOf(run)]).toEqual([0, before]);
+  }, TEST_MS);
+});
+
+describe("the pointer chooses in every menu, from the host's own motion reports (row 78)", () => {
+  it("a button-less motion report (ESC[<35;x;yM, what a host in mode 1003 sends) moves the choice in the right-click menu, the menu, the picker and the switcher; a program that asked for 1002 gets none of it", async () => {
+    const run = await start({ mouse: true });
+    // the screen asks the host for any-motion reports, as herdr does
+    expect(run.host.output()).toContain("\x1b[?1003h");
+    const motion = (x: number, y: number) => `\x1b[<35;${x + 1};${y + 1}M`;
+    const right = paneId(run, "RIGHT");
+    const sent = () => Buffer.from(run.core.program(right).receivedHex(), "hex").toString();
+    const text = cellOf(run, "RIGHT-READY");
+    await rclick(run, { x: text.x + 3, y: text.y });
+    const zoom = cellOf(run, "│Zoom");
+    run.type(motion(zoom.x + 3, zoom.y));
+    await run.advance(20);
+    expect(menu(run)?.cursor).toBe(5);
+    await escape(run);
+    await run.keys("ctrl+b,enter");
+    await run.advance(20);
+    const help = cellOf(run, "help");
+    run.type(motion(help.x + 1, help.y));
+    await run.advance(20);
+    expect(top(run)).toEqual(expect.objectContaining({ kind: "menu", cursor: 1 }));
+    await escape(run);
+    await run.keys("ctrl+b,g");
+    await run.advance(20);
+    const solo = cellOf(run, "SOLO");
+    run.type(motion(solo.x, solo.y));
+    await run.advance(20);
+    expect(top(run)).toEqual(expect.objectContaining({ kind: "goto", chosen: paneId(run, "SOLO") }));
+    await escape(run);
+    // the pane program asked for 1002 (button events): a motion with no button over it, the menus closed, reaches it not
+    run.type(motion(text.x + 2, text.y + 1));
+    await run.advance(20);
+    expect(sent()).toBe("");
+  }, TEST_MS);
+
+  it("on a narrow screen the switcher's choice follows the pointer", async () => {
+    const run = await start();
+    run.host.resize(45, 30);
+    await run.advance(400);
+    await run.keys("ctrl+b,w");
+    await run.advance(20);
+    const docs = cellOf(run, "docs");
+    run.type(`\x1b[<35;${docs.x + 2};${docs.y + 1}M`);
+    await run.advance(20);
+    const overlay = top(run);
+    expect(overlay?.kind === "switcher" && overlay.entries[overlay.cursor]).toEqual({ kind: "workspace", id: spaceId(run, "docs") });
   }, TEST_MS);
 });
 

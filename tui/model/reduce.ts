@@ -20,7 +20,8 @@ import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap
 import { HELP_PAGE_ROWS, helpLines, helpNotes, helpSize, helpWindow } from "./help.ts";
 import { switcherEntries, switcherStart } from "./switcher.ts";
 import { NARROW_COLUMNS } from "./screen-size.ts";
-import { type CheckoutRow, contextChoice, field, HELP_OPEN, menuChoice, switcherPick, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice, worktreeChoice } from "./overlays.ts";
+import { MENU_ENTRIES } from "./menu.ts";
+import { type CheckoutRow, contextChoice, field, HELP_OPEN, menuChoice, switcherPick, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice, pickerList, worktreeChoice, worktreeList } from "./overlays.ts";
 import { pickerPlaces } from "./picker.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
@@ -201,7 +202,13 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
     }
     case "hover": {
       const top = acc.s.overlays.at(-1);
-      if (top?.kind === "context" && event.entry < top.entries.length && event.entry !== top.cursor) acc.s = { ...acc.s, overlays: [...acc.s.overlays.slice(0, -1), { ...top, cursor: event.entry }] };
+      const replace = (overlay: Overlay) => { acc.s = { ...acc.s, overlays: [...acc.s.overlays.slice(0, -1), overlay] }; };
+      if ((top?.kind === "context" && event.entry < top.entries.length) || (top?.kind === "switcher" && event.entry < top.entries.length) || (top?.kind === "menu" && event.entry < MENU_ENTRIES.length)) {
+        if (event.entry !== top.cursor) replace({ ...top, cursor: event.entry });
+      } else if (top?.kind === "goto") {
+        const place = pickerList(top)[event.entry];
+        if (place !== undefined && place.id !== top.chosen) replace({ ...top, chosen: place.id });
+      } else if (top?.kind === "worktrees" && event.entry < worktreeList(top).length && event.entry !== top.cursor) replace({ ...top, cursor: event.entry });
       break;
     }
     case "context": {

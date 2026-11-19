@@ -26,7 +26,7 @@ const WAIT_MS = 30_000;
 const TEST_MS = 300_000;
 const DETACH = "\x02q";
 /** what the host writes when it gives the terminal back (tui/host/guard.ts LEAVE): exactly once per run */
-const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
+const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
 const ANSWERS: [query: string, answer: string][] = [["\x1b[c", "\x1b[?62;22c"], ["\x1b[?2026$p", "\x1b[?2026;2$y"]];
 const hex = (text: string): string => Buffer.from(text, "latin1").toString("hex");
 const osc52Of = (text: string): string => `\x1b]52;c;${Buffer.from(text, "utf8").toString("base64")}\x1b\\`;

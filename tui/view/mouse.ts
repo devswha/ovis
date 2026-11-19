@@ -114,10 +114,10 @@ export class Pointer {
         const look = grab.kind === "forward" && grab.pane === scene.focus ? scene.look(grab.pane) : null;
         return grab.kind === "forward" && look ? [{ kind: "forward", pane: grab.pane, event: inGrid(event, look) }] : [];
       }
-      if (event.action === "motion" && scene.overlay === "context") {
-        // herdr's right-click menu chooses the entry under the pointer
+      if (event.action === "motion" && event.button === undefined) {
+        // herdr's menus, switcher and picker choose the entry under the pointer
         const hit = scene.hits?.at(event.col, event.row);
-        const [kind, entry] = hit && "part" in hit && hit.part === "overlay:context" ? splitId(hit.id) : ["", ""];
+        const [kind, entry] = hit && "part" in hit && hit.part === `overlay:${scene.overlay}` ? splitId(hit.id) : ["", ""];
         return kind === "menu" && /^\d+$/.test(entry) ? [{ kind: "hover", entry: Number(entry) }] : [];
       }
       if (event.action !== "press") return [];

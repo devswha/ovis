@@ -4,8 +4,8 @@ import { createUnixHost } from "./unix.ts";
 // The real host's wiring over stand-ins for stdin, stdout and the process: never this test's own
 // terminal. tui/host/restore.contract.test.ts runs the same host on a real pseudo-terminal.
 const ESC = "\x1b";
-const ENTER = `${ESC}[?1049h${ESC}[?25l${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1006h${ESC}[>1u`;
-const LEAVE = `${ESC}[<u${ESC}[?1006l${ESC}[?1002l${ESC}[?2004l${ESC}[?1004l${ESC}[?25h${ESC}[?1049l`;
+const ENTER = `${ESC}[?1049h${ESC}[?25l${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1003h${ESC}[?1006h${ESC}[>1u`;
+const LEAVE = `${ESC}[<u${ESC}[?1006l${ESC}[?1003l${ESC}[?1002l${ESC}[?2004l${ESC}[?1004l${ESC}[?25h${ESC}[?1049l`;
 
 type Listener = (...args: unknown[]) => void;
 
@@ -136,7 +136,7 @@ describe("the unix host", () => {
     Object.assign(stdout, { columns: 100, rows: 30 });
     stdout.emit("resize");
     expect(sizes).toEqual([{ cols: 100, rows: 30 }]);
-    expect(written()).toBe(`${ENTER}${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1006h${ESC}[=1;1u`);
+    expect(written()).toBe(`${ENTER}${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1003h${ESC}[?1006h${ESC}[=1;1u`);
   });
 
   it("takes the colour depth from COLORTERM", () => {

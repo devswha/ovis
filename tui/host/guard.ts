@@ -4,16 +4,17 @@ import { DISPLAY_QUERY, emptyProbe, PROBE_QUERY, ReplyFilter, withReply } from "
 
 /**
  * What `enter` turns on, in order, after raw mode: the alternate screen, the cursor hidden, focus
- * reports, bracketed paste, mouse 1002 with SGR 1006, and one kitty keyboard entry with flag 1.
+ * reports, bracketed paste, mouse 1002 and 1003 (any motion, as herdr asks: a pointer over a menu chooses its entry) with
+ * SGR 1006, and one kitty keyboard entry with flag 1.
  * LEAVE undoes exactly these in reverse; raw mode goes last.
  */
-const ENTER = "\x1b[?1049h\x1b[?25l\x1b[?1004h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[>1u";
-export const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
+const ENTER = "\x1b[?1049h\x1b[?25l\x1b[?1004h\x1b[?2004h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[>1u";
+export const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
 /**
  * Sent again after a resize and a focus-in, as some hosts drop them. The kitty flags are set on the
  * entry already pushed (`=1;1`), so the stack still holds one entry of ours.
  */
-const MODES_AGAIN = "\x1b[?1004h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[=1;1u";
+const MODES_AGAIN = "\x1b[?1004h\x1b[?2004h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[=1;1u";
 const FOCUS_IN = Buffer.from("\x1b[I");
 const SIGNAL_NUMBERS = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 } as const;
 
