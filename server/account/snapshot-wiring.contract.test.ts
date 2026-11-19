@@ -1,7 +1,8 @@
 import { AccountMailbox } from "./mailbox.ts";
 import { HandedLifts } from "./handed-lift.ts";
 import { SafetyLog } from "./safety-log.ts";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { applyAccountRecords } from "./records.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
@@ -9,7 +10,7 @@ import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { ACCOUNT_OPENS_ALL_FEATURE, FrameType } from "../../shared/relay-mux.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
-import { bounded, deferred, relayAccountFixture, relayConnection, relayDevice } from "../relay/test-helpers.ts";
+import { bounded, deferred, relayAccountFixture, relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { ask, phone } from "./pairing.test-helpers.ts";
 
 const ACCOUNT = "acct_1";
@@ -34,6 +35,31 @@ async function server(accountOpensAll: boolean) {
 }
 
 describe("S2-24 the server wires the whole read only under the release flag (G1, P24)", () => {
+  test("H1/T38/T42: a recent member's signed add promotes without shedding the hold on restart", async () => {
+    const { services, service, member, identity, fixture } = await server(true);
+    let now = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    closes.push(() => clock.mockRestore());
+    expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    const notice = services.devices.openNotices().find((entry) => entry.label === "Laptop");
+    if (!notice?.key || !notice.row) throw new Error("Missing laptop admission");
+    const record = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key: notice.key, signer: member.publicKey, label: "Laptop", role: "watch", issued_at: new Date(now).toISOString(), id: newRecordId() }, member.keys.privateKey);
+    const [result] = await applyAccountRecords(services.devices, [record], identity.server_id, now);
+    expect(result).toMatchObject({ outcome: "applied" });
+    expect(services.devices.hasKey(notice.key)).toBe(true);
+    expect(services.devices.sessionRow(notice.row)).toBeNull();
+    fixture.app.stop();
+    now += 20_000;
+    const restarted = relayFixture(false, { stateDir: fixture.stateDir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
+    closes.unshift(() => restarted.app.stop());
+    const after = restarted.app.context.services;
+    expect(after.devices.sessionRow(notice.row)).toBeNull();
+    expect(await after.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    now += 9_999;
+    expect(after.devices.sessionRow(notice.row)).toBeNull();
+    now += 1;
+    expect(after.devices.sessionRow(notice.row)).toMatchObject({ role: "watch", key: notice.key });
+  });
   test("P17/T34: older paired and list rows can replay the published admission", async () => {
     const { services, service, member } = await server(true);
     const devices = services.devices;

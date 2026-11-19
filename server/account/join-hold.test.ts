@@ -38,6 +38,23 @@ function machine(over: Partial<AccountRowPorts> = {}, first: { othersEver?: bool
 const established = (over: Partial<Sayer> = {}): Sayer => ({ key: keyOf("k-old"), drives: true, state: "live", no: 1, late: false, admitNo: null, admittedAt: 0, ...over });
 
 describe("S2-29 the join hold and the first device (T34, T53, T67)", () => {
+  test("H1/T42: reopening a held row requires a whole read and a new uninterrupted ten seconds", () => {
+    const { store, clock, dir, ports } = machine();
+    const read = list(["k-new"]);
+    store.commitList(read);
+    const [row] = store.rows();
+    if (!row) throw new Error("Missing held row");
+    clock.now += JOIN_HOLD_MS * 2;
+    const reopened = new AccountDeviceStore(dir, SERVER, ports);
+    expect(reopened.access(row.id)).toEqual({ refused: "join_hold", seconds: null });
+    reopened.commitList(read);
+    expect(reopened.access(row.id)).toEqual({ refused: "join_hold", seconds: 10 });
+    clock.now += JOIN_HOLD_MS - 1;
+    reopened.commitList(read);
+    expect(reopened.access(row.id)).toEqual({ refused: "join_hold", seconds: 1 });
+    ++clock.now;
+    expect(reopened.access(row.id)).toEqual({ ok: true });
+  });
   test("T34: durable notice publication precedes any held row access and starts the ten seconds", () => {
     const { store, events, clock } = machine();
     store.commitList(list(["k-new"]));

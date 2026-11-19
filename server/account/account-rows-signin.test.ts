@@ -77,17 +77,39 @@ async function signIn(devices: DeviceStore, id: string, signer: Key, serverId = 
   return devices.matchAccountRelay(id, nonce, signature, serverId);
 }
 
-describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", () => {
-  test("T34: a list admission durably records its registering sign-in claims", async () => {
-    const { devices, rows, dir } = pc();
-    await member(devices);
-    const phone = await key();
-    const list = listed(phone);
-    rows.commitList({ ...list, devices: list.devices.map((device) => ({ ...device, provider: "google", two_step: "set" } as const)) });
-    const entry = DeviceJournal.open(dir).entries().find((record) => record.kind === "admit" && record.key === phone.spki);
-    expect(entry).toMatchObject({ how: "list", provider: "google", two_step: "set" });
-  });
+test("T34: a list admission durably records its registering sign-in claims", async () => {
+  const { devices, rows, dir } = pc();
+  await member(devices);
+  const phone = await key();
+  const list = listed(phone);
+  rows.commitList({ ...list, devices: list.devices.map((device) => ({ ...device, provider: "google", two_step: "set" } as const)) });
+  const entry = DeviceJournal.open(dir).entries().find((record) => record.kind === "admit" && record.key === phone.spki);
+  expect(entry).toMatchObject({ how: "list", provider: "google", two_step: "set" });
+});
 
+describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", () => {
+  test("T38/T53: an established signer ends the hold during promotion, a recent signer cannot", async () => {
+    for (const recent of [false, true]) {
+      const { devices, rows, clock, journal } = pc();
+      const elder = await member(devices);
+      clock.now += 2 * 60 * 60_000;
+      const junior = await key();
+      const paired = devices.pairRelay(devices.startPairing(clock.now).code, "Junior", junior.spki, clock.now);
+      if (!paired) throw new Error("Junior was not paired");
+      devices.linkAccountKey(paired.device.id, junior.spki, junior.spki, ACCOUNT);
+      const phone = await key();
+      rows.commitList(listed(phone));
+      const [row] = rows.rows();
+      if (!row) throw new Error("Phone was not listed");
+      const signer = recent ? junior : elder;
+      const add = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key: phone.spki, label: "Phone", role: "watch", issued_at: new Date(clock.now).toISOString(), id: newRecordId(), signer: signer.spki }, signer.keys.privateKey);
+      const [result] = await applyAccountRecords(devices, [add], SERVER, clock.now);
+      expect(result).toMatchObject({ outcome: "applied" });
+      expect(rows.row(row.id)).toBeNull();
+      expect(journal.entries().at(-1)).toMatchObject({ kind: "promote", row: row.id, by: signer.spki });
+      expect(devices.sessionRow(row.id)?.role ?? null).toBe(recent ? null : "watch");
+    }
+  });
   test("T53/H1: a proved local elder with a late or higher account number cannot decide", async () => {
     for (const mode of ["late", "higher", "lower"] as const) {
       const { devices, rows, clock, journal, dir } = pc();
