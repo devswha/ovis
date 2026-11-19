@@ -1879,7 +1879,8 @@ export class DeviceStore {
     const row = this.anyRow(id);
     if (!key || row?.relay_public_key !== key || !row.origin || this.failsClosed) return null;
     const joined = this.joinedRows?.row(id);
-    const live = joined ? joined.state === "live" && !this.accountRowStale(joined) : !this.stale(row) && !this.promotedHolds.refusal(row, Date.now());
+    // a sayer whose own devices.json row still waits for the first whole read (S2-27) cannot vouch for another row
+    const live = joined ? joined.state === "live" && !this.accountRowStale(joined) : !this.stale(row) && !this.promotedHolds.refusal(row, Date.now()) && !this.catchingUp(id);
     return { key, drives: row.role === "drive", state: live ? "live" : "waiting", no: this.accountOrder?.no(key) ?? null,
       late: this.accountOrder?.late(key) ?? false, admitNo: row.origin.admit_no, admittedAt: Date.parse(row.origin.at) };
   }
