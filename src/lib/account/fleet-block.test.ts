@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { exportAccountKey, newRecordId, verifySafetyRecord } from "../../../shared/account-records.ts";
 import type { DeviceNotice } from "../../../shared/account-devices-api.ts";
-import { notMeBlocks, withBlockReceipt, type FleetBlock } from "./fleet-block.ts";
+import { notMeBlocks, sendBlocks, withBlockReceipt, type BlockSend, type FleetBlock } from "./fleet-block.ts";
 
 const P256 = { name: "ECDSA", namedCurve: "P-256" } as const;
 async function heldKey(no: number) {
@@ -61,5 +61,43 @@ describe("each PC's answer to a block", () => {
     const fleet = withBlockReceipt(sent([id], [A, B]), B, { outcome: "applied", id, n: 1 });
     expect([...fleet.outcomes.values()].filter((outcome) => outcome.state === "applied").map((outcome) => outcome.server_id)).toEqual([B]);
     expect(withBlockReceipt(fleet, "e".repeat(32), { outcome: "applied", id, n: 1 }).outcomes.has("e".repeat(32))).toBe(false);
+  });
+});
+
+describe("sending a Not me to every PC", () => {
+  const A = "a".repeat(32);
+  const B = "b".repeat(32);
+  const C = "d".repeat(32);
+  const block = { id: "c".repeat(64) } as unknown as import("../../../shared/account-records.ts").BlockRecord;
+
+  it("T60: goes to every PC and the account service at once, and only each PC's own receipt counts", async () => {
+    const order: string[] = [];
+    let release = () => {};
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    const sending = sendBlocks([block], {
+      pcs: new Map<string, BlockSend>([
+        [A, async () => { order.push("A"); await slow; return [{ outcome: "applied", id: block.id, n: 1 }]; }],
+        [B, async () => { order.push("B"); return [{ outcome: "refused", id: block.id, reason: "signer_not_older" }]; }],
+      ]),
+      service: async () => { order.push("service"); },
+    });
+    expect(order.sort()).toEqual(["A", "B", "service"]);
+    release();
+    const fleet = await sending;
+    expect(fleet.outcomes.get(A)?.state).toBe("applied");
+    expect(fleet.outcomes.get(B)?.state).toBe("refused");
+  });
+
+  it("T60, T65: a PC that cannot be reached is retried with the same block and stays not done", async () => {
+    const sent: string[] = [];
+    const fleet = await sendBlocks([block], { pcs: new Map<string, BlockSend>([[C, async (records) => { sent.push(records[0]!.id); throw new Error("offline"); }]]), service: async () => {}, tries: 2 });
+    expect(sent).toEqual([block.id, block.id]);
+    expect(fleet.outcomes.get(C)?.state).toBe("unreachable");
+  });
+
+  it("T60: a receipt for another block, or none, leaves a PC waiting", async () => {
+    const fleet = await sendBlocks([block], { pcs: new Map<string, BlockSend>([[A, async () => [{ outcome: "applied", id: "e".repeat(64), n: 1 }]], [B, async () => []]]), service: async () => {} });
+    expect(fleet.outcomes.get(A)?.state).toBe("waiting");
+    expect(fleet.outcomes.get(B)?.state).toBe("waiting");
   });
 });
