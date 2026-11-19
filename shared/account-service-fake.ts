@@ -569,7 +569,11 @@ export class FakeAccountService {
         return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
       }
       if (typeof body.account !== "string") return problem(400, "invalid_account", "Name the account this PC belongs to");
-      if (path === "/v1/pc/snapshot") return this.snapshotPage(challenge.server_id, body.account, body.snapshot, body.page);
+      if (path === "/v1/pc/snapshot") {
+        // P6: only a PC the account lists reads the account's devices and records
+        if (this.directories.get(body.account)?.has(challenge.server_id) !== true) return problem(403, "not_listed", "This PC is not one of the account's");
+        return this.snapshotPage(challenge.server_id, body.account, body.snapshot, body.page);
+      }
       this.expire();
       const key = box(challenge.server_id, body.account);
       const queue = this.mailboxes.get(key) ?? [];
