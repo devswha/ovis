@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DeviceJournal } from "./device-journal.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
@@ -50,18 +50,25 @@ describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
   test("P8, T41: startup finishes an interrupted account revoke from its durable deny", async () => {
     const { fixture, device, member } = await listedPc();
     const { devices } = fixture.app.context.services;
+    const path = join(fixture.stateDir, ACCOUNT_DEVICES_FILE);
+    const checkpoint = `${path}.at-interrupt`;
     const append = DeviceJournal.prototype.append;
     const failure = spyOn(DeviceJournal.prototype, "append").mockImplementation(function (this: DeviceJournal, entry) {
-      if (entry.kind === "drop" && entry.how === "revoke") throw new Error("journal unavailable");
+      if (entry.kind === "drop" && entry.how === "revoke") {
+        copyFileSync(path, checkpoint);
+        throw new Error("journal unavailable");
+      }
       return append.call(this, entry);
     });
     try { expect(() => devices.revoke(device.id)).toThrow("journal unavailable"); } finally { failure.mockRestore(); }
     const knownAfterFailure = devices.has(device.id);
     expect(devices.isTombstoned(device.publicKey)).toBe(true);
     fixture.app.stop();
+    // A process stop at the checkpoint runs no final registry write.
+    copyFileSync(checkpoint, path);
     const recovered = relayFixture(false, { stateDir: fixture.stateDir, accountOpensAll: true, accountService: { url: "off" } });
     try {
-      const rows = parseAccountDevicesFile(JSON.parse(readFileSync(join(fixture.stateDir, ACCOUNT_DEVICES_FILE), "utf8"))).devices;
+      const rows = parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8"))).devices;
       const restarted = recovered.app.context.services.devices;
       expect({ knownAfterFailure, persisted: rows.map(row => row.id), knownAfterRestart: restarted.has(device.id) })
         .toEqual({ knownAfterFailure: false, persisted: [], knownAfterRestart: false });
