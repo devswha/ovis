@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SafetyRecord } from "../../shared/account-records.ts";
+import { DeviceStore } from "../devices.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
 import { DEVICE_JOURNAL_FILE, pcRecordId, SAFETY_LOG_FILE, SafetyLog } from "./safety-log.ts";
 
@@ -102,4 +103,25 @@ describe("the safety log holds what it acknowledged (P24, T28, T41, S19)", () =>
     // nothing it holds is taken as in force, and a strict log reads as locked
     expect(log.inForce.locked).toBe(true);
   });
+
+  test.skipIf(NO_CHMOD)("S19: a log strict after a failed write reads as locked", () => {
+    const at = dir();
+    const log = SafetyLog.open(at);
+    log.append({ record: lock(), got: "pc" });
+    log.append({ record: { v: 1, id: pcRecordId(), kind: "unlock", account: "acct_1", target: log.entries()[0]!.record.id, signer: "pc", signed_at: new Date().toISOString(), signature: "" }, got: "pc" });
+    expect(log.inForce.locked).toBe(false);
+    chmodSync(at, 0o500);
+    expect(log.append({ record: lock(), got: "pc" }).outcome).toBe("refused");
+    chmodSync(at, 0o700);
+    expect(log.inForce.locked).toBe(true);
+  });
+
+  test("S19: a strict PC that was never paired is no open LAN: its gate stays closed to strangers", () => {
+    const at = dir();
+    writeFileSync(join(at, SAFETY_LOG_FILE), "not json", { mode: 0o600 });
+    const devices = new DeviceStore(at, null, null, SafetyLog.open(at));
+    expect(devices.list(null)).toEqual([]);
+    expect(devices.gated).toBe(true);
+  });
 });
+
