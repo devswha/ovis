@@ -95,7 +95,7 @@ it("asks the server to try an off PC now on Check again, once per hold however o
 });
 
 it("tells a failed ask on the off row, and drops it when the PC answers", async () => {
-  const fetched = spyOn(globalThis, "fetch").mockImplementation((async () =>
+  const fetched = spyOn(globalThis, "fetch").mockImplementation((async (_input: RequestInfo | URL, _init?: RequestInit) =>
     new Response(JSON.stringify({ error: { code: "remote_unavailable", message: "Temporary gateway error" } }), { status: 502, headers: { "content-type": "application/json" } })) as typeof fetch);
   const failures = () => renderer!.root.findAll((element) => element.type === "p" && element.props.role === "alert").map(textOf);
   try {
@@ -116,7 +116,7 @@ it("says nothing of an earlier ask that fails after a later one", async () => {
   jest.useFakeTimers();
   const first = Promise.withResolvers<Response>();
   let calls = 0;
-  const fetched = spyOn(globalThis, "fetch").mockImplementation((async () => {
+  const fetched = spyOn(globalThis, "fetch").mockImplementation((async (_input: RequestInfo | URL, _init?: RequestInit) => {
     calls++;
     return calls === 1 ? first.promise : new Response(JSON.stringify({ error: { code: "machine_offline", message: "This PC is disconnected" } }), { status: 503, headers: { "content-type": "application/json" } });
   }) as typeof fetch);
