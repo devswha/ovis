@@ -3354,3 +3354,22 @@ it("backoffDelay keeps main's steps up to 2s whatever the draw, and jitters from
     random.mockRestore();
   }
 });
+
+it("G5: offers the account to open every PC only on a PC that lists account-opens-all/1, from its snapshot or a trusted frame", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    socket.receive({ type: "features", features: ["submit", "account-opens-all/1"], connection: "c1" });
+    expect(client.accountOpensAll()).toBe(false);
+    socket.receive(snapshot(["submit"]));
+    expect(client.accountOpensAll()).toBe(false);
+    socket.receive(snapshot(["submit", "account-opens-all/1"]));
+    expect(client.accountOpensAll()).toBe(true);
+    socket.disconnect();
+    expect(client.accountOpensAll()).toBe(false);
+  } finally {
+    client.close();
+  }
+});
