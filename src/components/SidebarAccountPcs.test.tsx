@@ -23,6 +23,7 @@ describe("the account's PCs in the sidebar", () => {
   let renderer: ReactTestRenderer | undefined;
   let requests: { path: string; body: unknown }[];
   let pairLines: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let pairSignal: AbortSignal | null;
   let source: AccountPcsSource;
   let mine: string | null;
   let pcAccount: string | null;
@@ -43,6 +44,7 @@ describe("the account's PCs in the sidebar", () => {
   beforeEach(() => {
     requests = [];
     pairLines = undefined;
+    pairSignal = null;
     mine = "acct";
     pcAccount = "acct";
     relayPhase = "online";
@@ -101,6 +103,7 @@ describe("the account's PCs in the sidebar", () => {
         return Response.json({ pcs: asked.map((entry) => ({ server_id: entry.server_id, state: states[entry.server_id] })) });
       }
       if (path === "/api/machines/relay/account/start") return Response.json({ ticket: "ticket-1", key: "a-key", label: "Ovis on here" });
+      if (path === "/api/machines/relay/account/pair") pairSignal = init?.signal ?? null;
       if (path === "/api/machines/relay/account/pair") return new Response(new ReadableStream<Uint8Array>({ start: (controller) => { pairLines = controller; } }));
       return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
     };
@@ -313,6 +316,7 @@ describe("the account's PCs in the sidebar", () => {
     expect(requests.filter((request) => request.path.endsWith("/check"))).toHaveLength(checks);
     expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
     expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Cancel")).toHaveLength(1);
+    expect(pairSignal?.aborted).toBe(false);
   });
 
   it("keeps a pairing under way when a read on the window's return fails", async () => {
@@ -323,7 +327,7 @@ describe("the account's PCs in the sidebar", () => {
     statusFails = true;
     await comeBack();
     expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
-    expect(requests.some((request) => request.path.endsWith("/pair/cancel"))).toBe(false);
+    expect(pairSignal?.aborted).toBe(false);
   });
   it("shows a PC whose first check failed as not answering, keeps the others, and asks it again when the window comes back", async () => {
     failAwayCheck = true;
@@ -367,9 +371,11 @@ describe("the account's PCs in the sidebar", () => {
     relayPhase = "connecting";
     await comeBack();
     expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
+    expect(pairSignal?.aborted).toBe(false);
     relayPhase = "off";
     await comeBack();
     expect(groups()).toEqual([]);
+    expect(pairSignal?.aborted).toBe(true);
   });
   it("asks a PC that did not answer nothing more when the roster changes: only a refresh or Check again asks it", async () => {
     failAwayCheck = true;
@@ -407,5 +413,25 @@ describe("the account's PCs in the sidebar", () => {
     const before = awayChecks();
     await comeBack();
     expect(awayChecks()).toBe(before);
+  });
+  it("keeps a newer Check again's answer when an older automatic ask of the same PC fails after it", async () => {
+    failAwayCheck = true;
+    await mount();
+    // the window comes back: Away is asked again, and that ask is held, then fails
+    let releaseOld = () => {};
+    awayHold = new Promise<void>((resolve) => { releaseOld = resolve; });
+    await comeBack();
+    // a newer Check again answers ready while the older ask is still out
+    awayHold = null;
+    failAwayCheck = false;
+    awayAnswers = ["ready"];
+    const away = () => renderer!.root.find((node) => node.type === "section" && node.props["aria-label"] === "PC Away");
+    await act(async () => { away().find((node) => node.type === "button" && text(node) === "Check again").props.onClick(); });
+    await settle();
+    expect(away().props["data-pc-state"]).toBe("ready");
+    failAwayCheck = true;
+    await act(async () => { releaseOld(); });
+    await settle();
+    expect(away().props["data-pc-state"]).toBe("ready");
   });
 });

@@ -133,7 +133,8 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     checkAccountPcs([pc]).then(({ pcs: [checked] }) => {
       if (listed.current === round && asks.current.get(pc.server_id) === ask && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
     }, (error: unknown) => {
-      if (listed.current !== round) return;
+      // a newer ask of this PC (its Check again, or a later look) has the say: an older one failing changes nothing
+      if (listed.current !== round || asks.current.get(pc.server_id) !== ask) return;
       // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) stays out of this round's list, also after a refresh reads it again
       if (error instanceof ApiError && error.code === "account_pc_invalid") {
         round.invalid.add(pc.server_id);
