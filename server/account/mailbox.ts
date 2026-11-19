@@ -15,7 +15,7 @@ import type { DeviceStore } from "../devices.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { AccountHolds } from "./holds.ts";
 import { readSnapshot, type PageAnswer, type ReadOutcome, type SnapshotPorts } from "./snapshot-read.ts";
-import { applyAccountRecords, type AddGates, type RecordOutcome } from "./records.ts";
+import { applyAccountRecords, stageMailboxAdds, type AddGates, type RecordOutcome } from "./records.ts";
 
 export const MAILBOX_PULL_MS = 5 * 60_000;
 /** How old an admission may be for the PC to take an account join outside the pairing window. */
@@ -219,26 +219,49 @@ export class AccountMailbox {
   pull(): Promise<number> {
     this.pulling ??= this.exclusively(async () => {
       const applied = await this.drain();
-      await this.readSnapshotNow();
-      return applied;
+      return applied + (await this.readSnapshotNow()).adds;
     }).finally(() => { this.pulling = undefined; });
     return this.pulling;
   }
 
   /** One whole snapshot read now, in turn with pulls; null when the server gave no snapshot ports or there is nothing to read for. */
   readSnapshot(): Promise<ReadOutcome | null> {
-    return this.exclusively(() => this.readSnapshotNow());
+    return this.exclusively(async () => (await this.readSnapshotNow()).outcome);
   }
 
-  private async readSnapshotNow(): Promise<ReadOutcome | null> {
+  private async readSnapshotNow(): Promise<{ outcome: ReadOutcome | null; adds: number }> {
+    const empty = { outcome: null, adds: 0 };
     const snapshot = this.options.snapshot;
-    if (!snapshot) return null;
+    if (!snapshot) return empty;
     const account = snapshot.account();
     const ports = snapshot.ports();
-    if (account === null || ports === null) return null;
-    try { return await readSnapshot((cursor) => this.snapshotPage(account, cursor), ports); } catch (error) {
+    if (account === null || ports === null) return empty;
+    let adds = 0;
+    try {
+      let staged: Awaited<ReturnType<typeof stageMailboxAdds>> = [];
+      const outcome = await readSnapshot(async (cursor) => {
+        if (cursor.page === 0) staged = await stageMailboxAdds(this.pending);
+        return this.snapshotPage(account, cursor);
+      }, { ...ports, commit: (stage) => {
+        ports.commit(stage);
+        const removed = new Set(stage.snapshot.removed.map((row) => row.key));
+        const settled = new Set<unknown>();
+        for (const add of staged) {
+          if (removed.has(add.key) || !this.pending.includes(add.value)) continue;
+          const result = add.commit(this.options.devices, stage.snapshot.server_id, this.gates());
+          if (!waits(result)) settled.add(add.value);
+          if (result.outcome === "applied") adds++;
+        }
+        if (settled.size > 0) {
+          const pending = this.pending.filter((value) => !settled.has(value));
+          if (this.options.pendingPath) writePrivateState(this.options.pendingPath, pending);
+          this.pending = pending;
+        }
+      } });
+      return { outcome, adds };
+    } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
-      return null;
+      return empty;
     }
   }
 
@@ -453,7 +476,7 @@ export class AccountMailbox {
       const pass = [...early];
       for (let start = 0; start < pass.length; start += ACCOUNT_RECORDS_MAX) {
         const batch = pass.slice(start, start + ACCOUNT_RECORDS_MAX).filter((record) => early.includes(record));
-        const outcomes = await applyAccountRecords(this.options.devices, batch, serverId, Date.now(), this.gates());
+        const outcomes = await applyAccountRecords(this.options.devices, batch, serverId, Date.now(), { ...this.gates(), deferAdds: this.options.devices.opensAll() });
         applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
         const done = new Set(batch.filter((_record, index) => !waits(outcomes[index])));
         for (let index = early.length - 1; index >= 0; index--) {
@@ -544,7 +567,7 @@ export class AccountMailbox {
             if (!early.some((kept) => JSON.stringify(kept) === text)) early.push(record);
             return true;
           };
-          const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id, Date.now(), this.gates(), keep);
+          const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id, Date.now(), { ...this.gates(), deferAdds: this.options.devices.opensAll() }, keep);
           applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
           outcomes.forEach((outcome, index) => { if (waits(outcome)) keep(batch[index]); });
         }

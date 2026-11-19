@@ -12,6 +12,8 @@ export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mi
 
 /** What holds an `add` back on this PC (mailbox.ts `gates`, docs/account.md "Enrolling a PC"). */
 export interface AddGates {
+  /** A flag-on mailbox keeps signed adds pending until its whole snapshot commits. */
+  readonly deferAdds?: boolean;
   /** the PC waits for the member that linked it first to hand it the account's devices */
   enrolling(): boolean;
   /** T36: a self-leave is not held by a queued remove for its own key. */
@@ -97,7 +99,7 @@ export async function applyAccountRecords(store: DeviceStore, values: readonly u
     // a denial while this record is verified means its add no longer stands on what was checked (P14)
     const noted = store.gen();
     const record = await read(value);
-    if (!("refused" in record) && record.kind === "add" && store.gen() !== noted) { outcomes.push({ id: record.id, outcome: "refused", code: "removal_pending" }); continue; }
+    if (!("refused" in record) && record.kind === "add" && (gates?.deferAdds || store.gen() !== noted)) { outcomes.push({ id: record.id, outcome: "refused", code: "removal_pending" }); continue; }
     outcomes.push("refused" in record ? { id: record.id, outcome: "refused", code: record.refused } : waited(apply(store, record, serverId, now, batchGates), record, value, wait, undecided));
   }
   return outcomes;
@@ -154,6 +156,19 @@ export async function applyEnrollment(store: DeviceStore, values: readonly unkno
     if (outcome === undefined) throw new Error("Every record of an enrollment has an outcome");
     return outcome;
   });
+}
+
+/** Verify mailbox signatures before the whole read; local authority is checked only by the returned commit. */
+export async function stageMailboxAdds(values: readonly unknown[]) {
+  const staged = [];
+  for (const value of values) {
+    if (typeof value !== "object" || value === null || !("kind" in value) || value.kind !== "add") continue;
+    const record = await read(value);
+    if (!("refused" in record) && record.kind === "add") staged.push({ value, key: record.key,
+      commit: (store: DeviceStore, serverId: string, gates: AddGates) => apply(store, record, serverId, Date.now(), gates),
+    });
+  }
+  return staged;
 }
 
 export type LinkRefusal = RecordRefusal | "key_in_use" | "link_required" | "unverified_device" | "pairing_ended" | "replacement_needs_app";
