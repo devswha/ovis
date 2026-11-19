@@ -12,12 +12,18 @@ const held = (key: string): number => Math.max(0, (heldUntil.get(key) ?? 0) - pe
 
 /**
  * Check again for one PC, held RECHECK_HOLD_MS from its press by the monotonic clock. `run` only asks: what it
- * finds arrives as the PC's next state. A failed ask is told on the off row, and goes with it or the next press.
+ * finds arrives as the PC's next state. A failed ask is told on the off row; it goes with the next press, and when
+ * the PC stops being away (`away` false), as does any ask still unanswered then. The hold stays either way.
  */
-export function useRecheck(key: string, run: () => Promise<void>): { checking: boolean; failure: string | null; check(): void } {
+export function useRecheck(key: string, run: () => Promise<void>, away: boolean): { checking: boolean; failure: string | null; check(): void } {
   const [checking, setChecking] = useState(() => held(key) > 0);
   const [failure, setFailure] = useState<string | null>(null);
   const asked = useRef(0);
+  useEffect(() => {
+    if (away) return;
+    asked.current++;
+    setFailure(null);
+  }, [away]);
   useEffect(() => {
     if (!checking) return;
     const timer = setTimeout(() => setChecking(false), held(key));

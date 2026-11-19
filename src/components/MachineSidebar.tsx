@@ -333,7 +333,9 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   const awayReason = away === null ? null
     : machine.kind === "ssh" ? sshWords
     : away === "unresponsive" ? t("{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.", { name: machine.name })
-    : outOfReachReason({ displayState: away === "off" ? "offline" : "unreachable", last_seen_at: null, check: away === "refused" ? { kind: "offline", reason: "refused" } : null }, t);
+    : away === "off" ? outOfReachReason({ displayState: "offline", last_seen_at: null }, t)
+    // the relay's own words: #4230's reasons for it name the viewing device's network, and this is this server's
+    : machineErrorText(machine.error!, t);
   const nextStep = !noticed && machine.kind === "local" && machine.error !== null && saysHerdrAway(machine.error) ? t("Start herdr on this PC, or check HERDR_SOCKET.")
     : ssh !== null ? t("Reconnect or change its address from Manage PC, the sliders beside its name.") : null;
   // one request at a time: a double-clicked Disconnect/Connect can otherwise race and leave this
@@ -358,7 +360,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     }
     finally { inFlight.current = false; setBusy(false); }
   };
-  const recheck = useRecheck(machine.id, () => askMachineRetry(machine.id));
+  const recheck = useRecheck(machine.id, () => askMachineRetry(machine.id), away !== null);
   const closeMenu = useCallback(() => setMenu(null), []);
   const endRename = (save: boolean) => {
     setRenaming(false);

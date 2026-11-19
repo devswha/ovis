@@ -94,7 +94,7 @@ it("asks the server to try an off PC now on Check again, once per hold however o
   }
 });
 
-it("tells a failed ask on the off row, and drops it when the PC answers", async () => {
+it("tells a failed ask on the off row, and drops it for good when the PC answers", async () => {
   const fetched = spyOn(globalThis, "fetch").mockImplementation((async (_input: RequestInfo | URL, _init?: RequestInit) =>
     new Response(JSON.stringify({ error: { code: "remote_unavailable", message: "Temporary gateway error" } }), { status: 502, headers: { "content-type": "application/json" } })) as typeof fetch);
   const failures = () => renderer!.root.findAll((element) => element.type === "p" && element.props.role === "alert").map(textOf);
@@ -104,6 +104,11 @@ it("tells a failed ask on the off row, and drops it when the PC answers", async 
     expect(failures()).toEqual([expect.stringContaining("Temporary gateway error")]);
     await act(async () => renderer!.update(createElement(SettingsProvider, null, createElement(MachineSidebar, {
       machines: [local, relayPc({ id: "gw", state: "connected", error: null })], selectedMachineId: "local", selectedPaneId: null, activity, actions,
+      onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
+    }))));
+    expect(failures()).toEqual([]);
+    await act(async () => renderer!.update(createElement(SettingsProvider, null, createElement(MachineSidebar, {
+      machines: [local, relayPc({ id: "gw" })], selectedMachineId: "local", selectedPaneId: null, activity, actions,
       onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
     }))));
     expect(failures()).toEqual([]);
