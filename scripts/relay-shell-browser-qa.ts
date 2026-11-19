@@ -552,9 +552,10 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     };
 
     const signInScreen = async (page: Page): Promise<void> => {
-      await page.getByRole("heading", { name: "Sign in to Ovis" }).waitFor();
+      await page.getByRole("heading", { name: /Sign in to your Ovis account/ }).waitFor();
       assert.equal(await page.getByRole("button", { name: "Continue with GitHub" }).count(), 1);
-      assert.equal(await page.getByRole("button", { name: "Pair with a QR or code" }).count(), 1);
+      assert.equal(await page.getByRole("button", { name: "Start without signing in" }).count(), 1);
+      assert.equal(await page.getByRole("button", { name: "Pair with a QR or code" }).count(), 0);
       assert.equal(await page.locator(".relay-shell-pcs, .relay-dash, input").count(), 0, "no PC list, dashboard or code field on the sign-in screen");
     };
 
@@ -569,16 +570,16 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
           await closeMarked(context);
         }
       }
-      log9("sign-in: Sign in to Ovis, Continue with GitHub, Pair with a QR or code; no PC list, code field or Continue without an account before a pairing");
+      log9("sign-in: Your PCs, anywhere. Sign in to your Ovis account, Continue with GitHub, Start without signing in; no PC list, code field or Continue without an account before a pairing");
 
       const pc1 = await accountPc("Desk PC");
       const A = await hosted({ width: 1440, height: 900, theme: "dark", clock: true });
       const a = A.page;
       await a.goto(`${APP}/`);
       await signInScreen(a);
-      await a.getByRole("button", { name: "Pair with a QR or code" }).click();
-      await a.getByRole("heading", { name: "Scan the QR code on your PC" }).waitFor();
-      assert.equal(await a.getByRole("button", { name: /Continue without an account/ }).count(), 0, "the pairing screen offers no saved PCs either");
+      await a.getByRole("button", { name: "Start without signing in" }).click();
+      await a.getByRole("heading", { name: "Add a PC" }).waitFor();
+      assert.equal(await a.locator(".relay-add-saved").count(), 0, "Add a PC lists no PCs before a pairing");
 
       await a.goto(encodeOffer(pc1.offer, APP));
       await state(a, "confirm").waitFor();
@@ -587,17 +588,14 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await inApp(a);
       await a.goto(`${APP}/`);
       await signInScreen(a);
-      await a.getByRole("button", { name: "Continue without an account (1 PC)" }).click();
-      await a.locator('.relay-dash[data-dashboard-mode="local"]').waitFor();
-      assert.equal(await row(a, "Desk PC").getAttribute("data-pc-state"), "paired");
+      await a.getByRole("button", { name: "Start without signing in" }).click();
+      await a.getByRole("heading", { name: "Add a PC" }).waitFor();
+      assert.equal(await a.locator(".relay-add-saved-pc").getAttribute("href"), `/s/${pc1.id}/`, "Add a PC lists the PC this device paired, by its page");
       await capture(a, "local-1440-dark");
-      await view(a, "relay");
-      assert.equal(await hop(a, pc1.id).getAttribute("data-seen"), "unknown", "no account has seen it");
-      const localMap = await ownCheckOnly(a, pc1.id);
-      await view(a, "overview");
-      log9(`local: paired Desk PC ${pc1.id} by QR through the Bun relay, opened it, back on / -> Continue without an account (1 PC) -> local dashboard: row paired; #relay: ${localMap}, seen unknown, 0 flows`);
+      log9(`local: paired Desk PC ${pc1.id} by QR through the Bun relay, opened it, back on / (the tab's launch is past, so it stays) -> Start without signing in -> Add a PC lists Desk PC at /s/${pc1.id}/`);
 
-      await a.locator(".relay-dash-foot").getByRole("button", { name: "Sign in" }).click();
+      await a.getByRole("button", { name: "Back" }).click();
+      await signInScreen(a);
       await signIn(a);
       await row(a, "Desk PC").waitFor();
       const unlistedWord = await stateWord(a, "Desk PC").innerText();
@@ -844,10 +842,9 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
 
       await a.locator(".relay-dash-foot").getByRole("button", { name: "Sign out" }).click();
       await signInScreen(a);
-      await a.getByRole("button", { name: "Continue without an account (2 PCs)" }).waitFor();
       await capture(a, "signed-out-1440-dark");
       assert.deepEqual([...A.errors, ...B.errors], [], "no page error on either device");
-      log9("sign-out: the sign-in screen with Continue without an account (2 PCs); page errors on both devices: none");
+      log9("sign-out: the sign-in screen again; page errors on both devices: none");
       keep("task-9-dashboard.txt", `# relay-shell-browser-qa (n): the sign-in screen and dashboard on ${APP} (routed to ${origin}), account service ${ACCOUNT_SERVICE} (shared/account-service-fake.ts), PCs on the Bun relay as ${RELAY}\n${lines.join("\n")}\n`);
     } finally {
       keep("task-9-console.txt", `${consoleLines.join("\n")}\n`);
@@ -989,14 +986,14 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         assert.equal(response?.headers()["content-security-policy"], shellContentSecurityPolicy(Object.values(REGIONAL_APPS)), "the front page carries the shell policy");
         assert.equal(await page.evaluate(() => document.documentElement.dataset["theme"]), theme);
         await state(page, "empty").waitFor();
-        await page.getByRole("heading", { name: "Scan the QR code on your PC" }).waitFor();
+        await page.getByRole("heading", { name: "Add a PC" }).waitFor();
         assert.equal(await page.getByRole("button", { name: "Back" }).count(), 0, "the front page offers no Back");
-        assert.deepEqual(await page.locator("main button").allInnerTexts(), ["Pair with a code"], "the front page offers Pair with a code");
+        assert.deepEqual(await page.locator("main button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("data-action"))), ["add-qr", "add-address"], "the front page offers Add a PC's ways, SSH only in the phone app");
         await shot(page, `empty-${device}-${theme}`);
         await closeMarked(context);
       }
     }
-    note("empty: front page without a saved PC at 390 and 1440, light and dark");
+    note("empty: front page without a saved PC (Add a PC) at 390 and 1440, light and dark");
 
     // (b) a damaged offer: the damaged screen, and not one request beyond this origin, not one socket
     {
