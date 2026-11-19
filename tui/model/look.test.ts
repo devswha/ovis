@@ -6,7 +6,6 @@ import { OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
 import { PANE_NAME_LABEL, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
 import { gridText, Screen } from "../testing/herdr-grid.ts";
 import { Run } from "../testing/run.ts";
-import { TUI_THEMES } from "../theme.generated.ts";
 import { focused } from "./focus.ts";
 import { look, type LookState } from "./look.ts";
 
@@ -256,10 +255,11 @@ describe("read state through herdr.seen (UB Q7)", () => {
     const run = await started(twoAgents("0", "blocked"));
     await hostFocus(run, FOCUS_IN);
     await endTurn(run, "t2");
-    expect(await secondAgentDot(run)).toEqual({ ch: "●", fg: [...TUI_THEMES.dark.statusDone] });
+    // herdr's own colours in the sidebar: done teal, blocked red
+    expect(await secondAgentDot(run)).toEqual({ ch: "●", fg: [148, 226, 213] });
     run.core.reportStatus("t2", { state: "blocked", app: "claude" });
     await run.advance(20);
-    expect(await secondAgentDot(run)).toEqual({ ch: "●", fg: [...TUI_THEMES.dark.statusBlocked] });
+    expect(await secondAgentDot(run)).toEqual({ ch: "●", fg: [243, 139, 168] });
     expect(run.loop.model().notices).toEqual([]);
     expect(run.loop.report().mode.overlays).toEqual([]);
   }, TEST_MS);

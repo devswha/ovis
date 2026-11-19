@@ -266,13 +266,49 @@ function workspaceLines(state: ModelState, world: CoreView): WorkspaceLine[] {
  * for none. herdr's done is teal and its idle green; the theme has one green, so done and idle share it and differ by
  * their shape, as idle does from the rest in herdr.
  */
-const DOT_LOOK: Readonly<Record<KnownStatus, { glyph: string; role: TuiColorRole }>> = {
-  blocked: { glyph: STRINGS.dotFull, role: "statusBlocked" },
-  done: { glyph: STRINGS.dotFull, role: "statusDone" },
-  working: { glyph: STRINGS.dotFull, role: "statusWorking" },
-  waiting: { glyph: STRINGS.dotFull, role: "statusWorking" },
-  idle: { glyph: STRINGS.dotEmpty, role: "statusDone" },
-  unknown: { glyph: STRINGS.glyphUnknown, role: "textDim" },
+/**
+ * herdr's own colours in its sidebar and rail: the values its default theme writes there on any host, dark or light, as
+ * its captures show (tui/testing/herdr-captures/). The owner chose herdr's colours for the sidebar over the theme's
+ * (docs/tui/visual-parity.md, row 76); everywhere else the screen keeps the theme's.
+ */
+const HERDR_SIDEBAR = {
+  /** the name in the row in front */
+  name: [205, 214, 244],
+  /** the other names */
+  nameDim: [166, 173, 200],
+  /** headings, buttons, separators, an agent's second row, a branch not in front, the no-state dot */
+  label: [108, 112, 134],
+  /** the row in front, and the rules and divider */
+  raised: [30, 30, 46],
+  /** the row a navigate points at */
+  chosen: [49, 50, 68],
+  working: [249, 226, 175],
+  blocked: [243, 139, 168],
+  done: [148, 226, 213],
+  idle: [166, 227, 161],
+  /** the branch of the workspace in front */
+  branch: [203, 166, 247],
+} as const satisfies Readonly<Record<string, readonly [number, number, number]>>;
+type SidebarColors = Readonly<Record<keyof typeof HERDR_SIDEBAR, WrittenColor>>;
+
+const sidebarPalettes = new Map<ColorDepth, SidebarColors>();
+
+/** herdr's sidebar colours for the host: RGB on a truecolor host, the nearest xterm-256 index on a 256-colour one. */
+function sidebarColors(depth: ColorDepth): SidebarColors {
+  const known = sidebarPalettes.get(depth);
+  if (known) return known;
+  const colors = Object.fromEntries(Object.entries(HERDR_SIDEBAR).map(([role, rgb]) => [role, depth === "256" ? nearest256(rgb) : rgb])) as SidebarColors;
+  sidebarPalettes.set(depth, colors);
+  return colors;
+}
+
+const DOT_LOOK: Readonly<Record<KnownStatus, { glyph: string; role: keyof SidebarColors }>> = {
+  blocked: { glyph: STRINGS.dotFull, role: "blocked" },
+  done: { glyph: STRINGS.dotFull, role: "done" },
+  working: { glyph: STRINGS.dotFull, role: "working" },
+  waiting: { glyph: STRINGS.dotFull, role: "working" },
+  idle: { glyph: STRINGS.dotEmpty, role: "idle" },
+  unknown: { glyph: STRINGS.glyphUnknown, role: "label" },
 };
 
 /** An agent of the sidebar (S7): its pane, its state, the workspace and tab it stands in, and what agent it is. */
@@ -305,7 +341,7 @@ const AGENT_ROWS = 2;
  * only the shown workspace's and agent's rows are lit; herdr's lower-case words (C2), its dots (S8), its two-row agents
  * (S7) and the branch row of a checkout (S4).
  */
-function sidebarPart(input: ChromeInput, colors: Colors, look: string): Part {
+function sidebarPart(input: ChromeInput, colors: SidebarColors, look: string): Part {
   const { regions, state, world } = input;
   const rect = regions.sidebar;
   const width = Math.max(0, rect.width - 1);
@@ -327,30 +363,30 @@ function sidebarPart(input: ChromeInput, colors: Colors, look: string): Part {
   return part("sidebar", rect, look, data, (canvas, { workspaces, agents: agentList, divided }) => {
     if (rect.width <= 0 || rect.height <= 0) return;
     const plain = (fg: WrittenColor, flags = 0) => canvas.style({ fg, bg: null, flags });
-    const lit = (front: boolean, chosen = false) => chosen ? colors.bgHover : front ? colors.bgElevated : null;
-    const separator = plain(colors.border);
-    const heading = plain(colors.textDim, STYLE_BOLD);
-    const dim = plain(colors.textDim);
-    canvas.fill(plain(colors.text));
+    const lit = (front: boolean, chosen = false) => chosen ? colors.chosen : front ? colors.raised : null;
+    const separator = plain(colors.raised);
+    const heading = plain(colors.label, STYLE_BOLD);
+    const dim = plain(colors.label);
+    canvas.fill(plain(colors.name));
     const content: Rect = { x: rect.x, y: rect.y, width, height: rect.height };
     for (let r = rect.y; r < rect.y + rect.height; r++) canvas.put(rect.x + width, r, "│", 1, separator);
     printFit(canvas, rect.x, rect.y, ` ${STRINGS.workspacesSection}`, width, heading);
     let row = rect.y + WORKSPACE_HEADER_ROWS;
     for (const { kind, line } of workspaces) {
       const bg = lit(line.front, line.chosen);
-      fillSpan(canvas, rect.x, row, width, canvas.style({ fg: colors.text, bg }));
+      fillSpan(canvas, rect.x, row, width, canvas.style({ fg: colors.name, bg }));
       const end = rect.x + width - 2;
       // a linked worktree's tree mark, then the dot: the name, and a branch under it, start after them
       const lead = line.child === "" ? 1 : 7;
       if (kind === "branch") {
-        printFit(canvas, rect.x + lead + 2, row, line.branch ?? "", end - rect.x - lead - 2, canvas.style({ fg: line.front ? colors.statusWorking : colors.textDim, bg }));
+        printFit(canvas, rect.x + lead + 2, row, line.branch ?? "", end - rect.x - lead - 2, canvas.style({ fg: line.front ? colors.branch : colors.label, bg }));
       } else {
         let col = rect.x + 1;
-        if (line.child !== "") col = printFit(canvas, rect.x, row, line.child === "last" ? "   └─ " : "   ├─ ", end - rect.x, canvas.style({ fg: colors.textDim, bg }));
+        if (line.child !== "") col = printFit(canvas, rect.x, row, line.child === "last" ? "   └─ " : "   ├─ ", end - rect.x, canvas.style({ fg: colors.label, bg }));
         const dot = DOT_LOOK[line.status];
         col = printFit(canvas, col, row, dot.glyph, end - col, canvas.style({ fg: colors[dot.role], bg }));
-        col = printFit(canvas, col, row, " ", end - col, canvas.style({ fg: colors.text, bg }));
-        printFit(canvas, col, row, truncateEnd(line.name, end - col), end - col, canvas.style({ fg: line.front ? colors.text : colors.textDim, bg, flags: line.front ? STYLE_BOLD : 0 }));
+        col = printFit(canvas, col, row, " ", end - col, canvas.style({ fg: colors.label, bg }));
+        printFit(canvas, col, row, truncateEnd(line.name, end - col), end - col, canvas.style({ fg: line.front || line.chosen ? colors.name : colors.nameDim, bg, flags: line.front ? STYLE_BOLD : 0 }));
       }
       canvas.hit({ x: rect.x, y: row, width, height: 1 }, `workspace:${line.id}`);
       row++;
@@ -372,13 +408,13 @@ function sidebarPart(input: ChromeInput, colors: Colors, look: string): Part {
     for (const agent of agentList) {
       const bg = lit(agent.front);
       const end = rect.x + width;
-      for (let at = 0; at < AGENT_ROWS; at++) fillSpan(canvas, rect.x, row + at, width, canvas.style({ fg: colors.text, bg }));
+      for (let at = 0; at < AGENT_ROWS; at++) fillSpan(canvas, rect.x, row + at, width, canvas.style({ fg: colors.name, bg }));
       const dot = DOT_LOOK[agent.status];
       let col = printFit(canvas, rect.x + 1, row, dot.glyph, end - rect.x - 1, canvas.style({ fg: colors[dot.role], bg }));
-      col = printFit(canvas, col, row, " ", end - col, canvas.style({ fg: colors.text, bg }));
-      col = printFit(canvas, col, row, agent.workspace, end - col, canvas.style({ fg: agent.front ? colors.text : colors.textDim, bg, flags: STYLE_BOLD }), true);
-      if (agent.tab !== null) printFit(canvas, col, row, ` · ${agent.tab}`, end - col, canvas.style({ fg: colors.textDim, bg }), true);
-      printFit(canvas, rect.x + 3, row + 1, agent.agent, Math.max(0, end - rect.x - 3), canvas.style({ fg: colors.textDim, bg }), true);
+      col = printFit(canvas, col, row, " ", end - col, canvas.style({ fg: colors.label, bg }));
+      col = printFit(canvas, col, row, agent.workspace, end - col, canvas.style({ fg: agent.front ? colors.name : colors.nameDim, bg, flags: STYLE_BOLD }), true);
+      if (agent.tab !== null) printFit(canvas, col, row, ` · ${agent.tab}`, end - col, canvas.style({ fg: colors.label, bg }), true);
+      printFit(canvas, rect.x + 3, row + 1, agent.agent, Math.max(0, end - rect.x - 3), canvas.style({ fg: colors.label, bg }), true);
       canvas.hit({ x: rect.x, y: row, width, height: AGENT_ROWS }, `agent:${agent.id}`);
       row += AGENT_ROWS;
     }
@@ -391,7 +427,7 @@ function sidebarPart(input: ChromeInput, colors: Colors, look: string): Part {
 }
 
 /** The collapsed sidebar: a rail of numbered workspaces and agents with their dots, and the mark that expands it. */
-function railPart(input: ChromeInput, colors: Colors, look: string): Part {
+function railPart(input: ChromeInput, colors: SidebarColors, look: string): Part {
   const { regions, state, world } = input;
   const rect = regions.sidebar;
   const width = Math.max(0, rect.width - 1);
@@ -405,8 +441,8 @@ function railPart(input: ChromeInput, colors: Colors, look: string): Part {
   };
   return part("sidebar", rect, look, data, (canvas, { workspaces, agents: agentList }) => {
     if (rect.width <= 0 || rect.height <= 0) return;
-    canvas.fill(canvas.style({ fg: colors.text, bg: null }));
-    const separator = canvas.style({ fg: colors.border, bg: null });
+    canvas.fill(canvas.style({ fg: colors.name, bg: null }));
+    const separator = canvas.style({ fg: colors.raised, bg: null });
     for (let r = rect.y; r < rect.y + rect.height; r++) canvas.put(rect.x + width, r, "│", 1, separator);
     const numbered = (row: number, number: number, status: KnownStatus, bg: WrittenColor | null, fg: WrittenColor) => {
       fillSpan(canvas, rect.x, row, width, canvas.style({ fg, bg }));
@@ -416,22 +452,22 @@ function railPart(input: ChromeInput, colors: Colors, look: string): Part {
     };
     workspaces.forEach((line, at) => {
       const row = rect.y + at;
-      if (line.chosen) numbered(row, at + 1, line.status, colors.bgHover, colors.textDim);
-      else if (line.front) numbered(row, at + 1, line.status, colors.bgElevated, colors.text);
-      else numbered(row, at + 1, line.status, null, colors.textDim);
+      if (line.chosen) numbered(row, at + 1, line.status, colors.chosen, colors.name);
+      else if (line.front) numbered(row, at + 1, line.status, colors.raised, colors.name);
+      else numbered(row, at + 1, line.status, null, colors.label);
       canvas.hit({ x: rect.x, y: row, width, height: 1 }, `workspace:${line.id}`);
     });
     if (halves) {
       for (let col = rect.x; col < rect.x + width; col++) canvas.put(col, rect.y + top, "─", 1, separator);
       agentList.forEach((line, at) => {
         const row = rect.y + top + 1 + at;
-        numbered(row, at + 1, line.status, line.front ? colors.bgElevated : null, line.front ? colors.text : colors.textDim);
+        numbered(row, at + 1, line.status, line.front ? colors.raised : null, line.front ? colors.name : colors.label);
         canvas.hit({ x: rect.x, y: row, width, height: 1 }, `agent:${line.id}`);
       });
     }
     if (width > 0) {
       const toggle = { x: rect.x + Math.floor(width / 2), y: rect.y + rect.height - 1, width: 1, height: 1 };
-      canvas.put(toggle.x, toggle.y, STRINGS.sidebarToggleExpand, 1, canvas.style({ fg: colors.textDim, bg: null }));
+      canvas.put(toggle.x, toggle.y, STRINGS.sidebarToggleExpand, 1, canvas.style({ fg: colors.label, bg: null }));
       canvas.hit(toggle, "toggle_sidebar");
     }
   });
@@ -1238,7 +1274,7 @@ export function buildChrome(input: ChromeInput): BuiltChrome {
   const colors = themeColors(theme, depth);
   const look = `${theme}/${depth}`;
   const parts = [bordersPart(input, colors, look)];
-  if (input.regions.sidebar.width > 0) parts.unshift(input.state.sidebarCollapsed ? railPart(input, colors, look) : sidebarPart(input, colors, look));
+  if (input.regions.sidebar.width > 0) parts.unshift(input.state.sidebarCollapsed ? railPart(input, sidebarColors(depth), look) : sidebarPart(input, sidebarColors(depth), look));
   if (input.regions.tabBar.width > 0) parts.push(tabBarPart(input, colors, look));
   const built = buildOverlays(input, colors);
   const { dim } = built;

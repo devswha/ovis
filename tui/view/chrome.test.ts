@@ -20,15 +20,18 @@ import { layOut, paneScene, type ScreenShape } from "./screen.ts";
 // The dark theme's colours as tui/theme.generated.ts holds them (src/styles.css), written out here.
 const rgb = (r: number, g: number, b: number): [number, number, number] => [r, g, b];
 const ACCENT = rgb(58, 131, 247);
-const TEXT = rgb(236, 236, 236);
 const TEXT_DIM = rgb(163, 163, 163);
 const PRIMARY_TEXT = rgb(24, 24, 24);
 const NOTICE = rgb(217, 178, 106);
-const BLOCKED = rgb(252, 141, 139);
-const DONE = rgb(64, 201, 119);
-const WORKING = rgb(129, 176, 250);
-const BG_ELEVATED = rgb(38, 38, 38);
 const BG_HOVER = rgb(47, 47, 47);
+// herdr's own colours, which its sidebar writes on any host (chrome.ts HERDR_SIDEBAR)
+const H_NAME = rgb(205, 214, 244);
+const H_NAME_DIM = rgb(166, 173, 200);
+const H_LABEL = rgb(108, 112, 134);
+const H_RAISED = rgb(30, 30, 46);
+const H_WORKING = rgb(249, 226, 175);
+const H_BLOCKED = rgb(243, 139, 168);
+const H_DONE = rgb(148, 226, 213);
 
 const ONLINE: ShownLink = { online: true, code: null };
 
@@ -143,20 +146,20 @@ describe("chrome frames as rows of cells", () => {
       "                         │",
     ]);
     expect(shot.rows[39]).toBe(`                        «│└${"─".repeat(45)}┘└${"─".repeat(45)}┘`);
-    // the sidebar writes no background (the host's shows): only the rows in front are raised
-    expect(cell(shot, 1, 0)).toEqual({ text: "s", fg: TEXT_DIM, bg: null, bold: true });
-    expect(cell(shot, 25, 1)).toMatchObject({ text: "│", bg: null });
+    // the sidebar writes no background (the host's shows) and herdr's own colours: only the rows in front are raised
+    expect(cell(shot, 1, 0)).toEqual({ text: "s", fg: H_LABEL, bg: null, bold: true });
+    expect(cell(shot, 25, 1)).toMatchObject({ text: "│", fg: H_RAISED, bg: null });
     // the workspace in front on the raised row in bold, the other dim; each dot in its state's colour
-    expect(cell(shot, 3, 2)).toEqual({ text: "o", fg: TEXT, bg: BG_ELEVATED, bold: true });
-    expect(cell(shot, 3, 3)).toEqual({ text: "문", fg: TEXT_DIM, bg: null, bold: false });
-    expect(cell(shot, 1, 2)).toMatchObject({ text: "●", fg: BLOCKED, bold: false });
-    expect(cell(shot, 1, 3)).toMatchObject({ text: "●", fg: DONE, bold: false });
+    expect(cell(shot, 3, 2)).toEqual({ text: "o", fg: H_NAME, bg: H_RAISED, bold: true });
+    expect(cell(shot, 3, 3)).toEqual({ text: "문", fg: H_NAME_DIM, bg: null, bold: false });
+    expect(cell(shot, 1, 2)).toMatchObject({ text: "●", fg: H_BLOCKED, bold: false });
+    expect(cell(shot, 1, 3)).toMatchObject({ text: "●", fg: H_DONE, bold: false });
     // an agent in two rows: its dot and workspace (bold), then the agent, dim; the focused pane's agent raised on both
-    expect(cell(shot, 1, 23)).toMatchObject({ text: "●", fg: BLOCKED, bg: BG_ELEVATED });
-    expect(cell(shot, 3, 23)).toEqual({ text: "o", fg: TEXT, bg: BG_ELEVATED, bold: true });
-    expect(cell(shot, 3, 24)).toEqual({ text: "c", fg: TEXT_DIM, bg: BG_ELEVATED, bold: false });
-    expect(cell(shot, 1, 25)).toMatchObject({ text: "●", fg: WORKING, bg: null });
-    expect(cell(shot, 1, 27)).toMatchObject({ text: "●", fg: DONE, bg: null });
+    expect(cell(shot, 1, 23)).toMatchObject({ text: "●", fg: H_BLOCKED, bg: H_RAISED });
+    expect(cell(shot, 3, 23)).toEqual({ text: "o", fg: H_NAME, bg: H_RAISED, bold: true });
+    expect(cell(shot, 3, 24)).toEqual({ text: "c", fg: H_LABEL, bg: H_RAISED, bold: false });
+    expect(cell(shot, 1, 25)).toMatchObject({ text: "●", fg: H_WORKING, bg: null });
+    expect(cell(shot, 1, 27)).toMatchObject({ text: "●", fg: H_DONE, bg: null });
     // the tab in front: dark text on the accent, bold for a name given by hand; the other on the raised row colour
     expect(cell(shot, 28, 0)).toMatchObject({ text: "m", fg: PRIMARY_TEXT, bg: ACCENT, bold: true });
     expect(cell(shot, 37, 0)).toMatchObject({ text: "l", fg: TEXT_DIM, bg: BG_HOVER, bold: false });
@@ -164,7 +167,7 @@ describe("chrome frames as rows of cells", () => {
     expect(cell(shot, 26, 1)).toMatchObject({ text: "┌", fg: ACCENT, bold: false });
     expect(cell(shot, 28, 1)).toMatchObject({ text: "s", fg: ACCENT, bold: true });
     expect(cell(shot, 73, 1)).toMatchObject({ text: "┌", fg: TEXT_DIM, bold: false });
-    expect(cell(shot, 24, 39)).toMatchObject({ text: "«", fg: TEXT_DIM, bold: false });
+    expect(cell(shot, 24, 39)).toMatchObject({ text: "«", fg: H_LABEL, bold: false });
   });
 
   it("at 80x24: the same chrome narrower", () => {

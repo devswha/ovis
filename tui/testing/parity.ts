@@ -180,8 +180,11 @@ export interface Decisions {
   readonly words: readonly Word[];
   readonly holes: readonly Hole[];
   readonly ovisHoles?: readonly Hole[];
-  /** where herdr's "no background" must be none on the screen too, not the theme's (the sidebar: C1 does not reach it) */
-  readonly bare?: readonly Omit<Hole, "line">[];
+  /**
+   * Where herdr's colours are compared as values, not by role (the sidebar: the screen draws herdr's own colours there):
+   * no background where herdr writes none, and each colour herdr writes, exactly.
+   */
+  readonly exact?: readonly Omit<Hole, "line">[];
 }
 
 export interface Difference { readonly x: number; readonly y: number; readonly what: string; readonly herdr: string; readonly ovis: string }
@@ -283,7 +286,7 @@ export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisio
   const theme = TUI_THEMES[palette];
   const { cells: expected, holes: shifted } = withWords(herdr, decisions.words);
   const herdrHeld = held([...decisions.holes, ...shifted], herdr.cols, herdr.rows);
-  const bare = held((decisions.bare ?? []).map((rect) => ({ ...rect, line: "C1" })), herdr.cols, herdr.rows);
+  const exact = held((decisions.exact ?? []).map((rect) => ({ ...rect, line: "C1" })), herdr.cols, herdr.rows);
   const ovisHeld = held(decisions.ovisHoles ?? [], ovis.cols, ovis.rows);
   const placeOf = (x: number, y: number): readonly [number, number] | null => {
     const hold = herdrHeld.get(y * herdr.cols + x);
@@ -308,11 +311,16 @@ export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisio
     // on a blank cell only underline, reverse and strikethrough show: bold, dim and italic change nothing there
     const seen = (flags: number) => (blank ? flags & (LOOK_UNDERLINE | LOOK_REVERSE | LOOK_STRIKE) : flags) & (hold === "bold" ? ~LOOK_BOLD : ~0);
     if (seen(want.look.flags) !== seen(got.look.flags)) { differ("attributes"); continue; }
+    const shown = (want.ch !== " " && want.ch !== "") || (want.look.flags & (LOOK_UNDERLINE | LOOK_REVERSE)) !== 0;
+    if (exact.has(i)) {
+      if (!sameColor(got.look.bg, want.look.bg)) { differ("background"); continue; }
+      if (shown && hold !== "glyph" && !sameColor(got.look.fg, want.look.fg)) differ("foreground");
+      continue;
+    }
     const wantBg = hexOf(want.look.bg);
     if (want.look.bg === null) {
-      if (got.look.bg !== null && (bare.has(i) || !sameColor(got.look.bg, theme.bg))) { differ("background"); continue; }
+      if (got.look.bg !== null && !sameColor(got.look.bg, theme.bg)) { differ("background"); continue; }
     } else if (!(wantBg && HERDR_BG[wantBg] && sameColor(got.look.bg, theme[HERDR_BG[wantBg]!]))) { differ("background"); continue; }
-    const shown = (want.ch !== " " && want.ch !== "") || (want.look.flags & (LOOK_UNDERLINE | LOOK_REVERSE)) !== 0;
     if (!shown || hold === "glyph") continue;
     const wantFg = hexOf(want.look.fg);
     if (want.look.fg === null) {
@@ -328,6 +336,20 @@ export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisio
 }
 
 const SIDEBAR = 26;
+/** The backgrounds herdr's sidebar writes: none, the row in front and the row a navigate points at. */
+const SIDEBAR_BACKGROUNDS = new Set([null, "#1e1e2e", "#313244"]);
+
+/** The sidebar's cells of herdr's picture that no overlay covers: one rectangle a cell, `width` columns from the left. */
+function sidebarCells(herdr: Cells, width: number, dialogRect: Omit<Hole, "line"> | null): Omit<Hole, "line">[] {
+  const out: Omit<Hole, "line">[] = [];
+  const inDialog = (x: number, y: number) => dialogRect !== null && x >= dialogRect.x && x < dialogRect.x + dialogRect.width && y >= dialogRect.y && y < dialogRect.y + dialogRect.height;
+  for (let y = 0; y < herdr.rows; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!inDialog(x, y) && SIDEBAR_BACKGROUNDS.has(hexOf(herdr.cells[y * herdr.cols + x]!.look.bg))) out.push({ x, y, width: 1, height: 1 });
+    }
+  }
+  return out;
+}
 /** the collapsed sidebar's rail, with its divider */
 const RAIL = 4;
 const NARROW = 64;
@@ -400,9 +422,10 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
       });
     }
   }
-  // the sidebar (the rail when collapsed) is compared whole, with its divider: herdr's words, dots, agents, branch row and
-  // colour roles, and no background where herdr writes none
-  const bare = narrow ? [] : [{ x: 0, y: 0, width: collapsed ? RAIL : SIDEBAR, height: rows }];
+  // the sidebar (the rail when collapsed) is compared whole, with its divider: herdr's words, dots, agents, branch row,
+  // and herdr's own colour values; an overlay lying over it (a dialog, the menu, the picker) keeps the screen's look and
+  // is compared by role: its cells are those with a background herdr's sidebar never writes, and a dialog's rectangle
+  const exact = narrow ? [] : sidebarCells(herdr, collapsed ? RAIL : SIDEBAR, rect);
   if (BAR_SCENES.has(scene)) {
     words.push({ herdr: "workspace nav", ovis: STRINGS.modeHints.workspaceNav, shift: true, row: rows - 1 }, { herdr: "keybinds", ovis: STRINGS.modeHints.keybinds, shift: true, row: rows - 1 });
   }
@@ -457,7 +480,7 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
       holes.push(boxed ? { line: "N2", x: left, y: row - 1, width: line.indexOf("│", left + 1) - left + 1, height: 4 } : { line: "N2", x: 0, y: row, width: cols, height: 1 });
     }
   }
-  return { words, holes, ovisHoles, bare };
+  return { words, holes, ovisHoles, exact };
 }
 
 /**
