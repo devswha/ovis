@@ -203,7 +203,10 @@ describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
 
   test("S25: an app that offered the account feature is refused held, with its hold state", async () => {
     const pc = await listedPc();
-    expect(await refusal(pc, [ACCOUNT_OPENS_ALL_FEATURE])).toEqual({ code: "held", message: "This device waits for its join hold on this PC", hold: { reason: "join_hold", until: null } });
+    // its notice is out, so the hold names when its ten seconds end
+    const held = await refusal(pc, [ACCOUNT_OPENS_ALL_FEATURE]);
+    expect(held).toMatchObject({ code: "held", message: "This device waits for its join hold on this PC", hold: { reason: "join_hold" } });
+    expect(Date.parse((held?.hold as { until: string }).until)).toBeGreaterThan(Date.now());
   });
 
   test("S25: an old-app hello gets today's code for the same refusal", async () => {
