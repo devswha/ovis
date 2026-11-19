@@ -261,16 +261,17 @@ function SidebarCount({ className, n, words, tooltip = true }: { className: stri
 
 // the server's words for a relay PC's failed connection (shared/relay-channel.ts, server/relay-pc.ts)
 const RELAY_UNREACHABLE = /^(The relay (could not be reached|connection failed|closed the connection|did not answer)|Relay carrier lost during admission)/;
-const RELAY_PC_SILENT = /^(The PC did not answer through the relay|Relay connection to this PC was lost)/;
+const RELAY_PC_SILENT = /^The PC did not answer through the relay/;
 
 export type MachineAway = "off" | "unreachable" | "refused" | "unresponsive";
 
 /**
  * Whether a PC this server added keeps failing to connect for a reason a later try may clear (it retries on its
- * own: `reconnecting` with the last failure), and which: nothing answered for it (`off`: through the relay, or
- * ssh could not reach it at all), the relay between did not answer (`unreachable`) or turned this server away
- * (`refused`), or the PC answered and did not finish connecting (`unresponsive`). Null for anything a later try
- * cannot clear (a refusal for good, a sign-in, a setup, an update) and for a PC herdr or herdr-core manages.
+ * own: `reconnecting` with the last failure), and which: the relay had nobody for it (`off`, as #4230's PCs list
+ * says it), the relay or ssh could not reach it (`unreachable`: ssh's refusal or silence does not prove it off),
+ * the relay turned this server away (`refused`), or it answered and did not finish connecting (`unresponsive`).
+ * Null for a failure that does not say which (a lost connection, until the next try's), anything a later try cannot
+ * clear (a refusal for good, a sign-in, a setup, an update), and a PC herdr or herdr-core manages.
  */
 export function machineAway(machine: Pick<Machine, "kind" | "enabled" | "state" | "error" | "action_required" | "updating" | "herdr_profile_id">): MachineAway | null {
   if (!machine.enabled || machine.state !== "reconnecting" || machine.error === null || machine.action_required || machine.updating || machine.herdr_profile_id) return null;
@@ -282,7 +283,7 @@ export function machineAway(machine: Pick<Machine, "kind" | "enabled" | "state" 
   }
   if (machine.kind !== "ssh" || !/connect to host/i.test(machine.error)) return null;
   const reason = sshFailure(machine.error)?.reason;
-  return reason === "refused" || reason === "timeout" || reason === "unreachable" ? "off" : null;
+  return reason === "refused" || reason === "timeout" || reason === "unreachable" ? "unreachable" : null;
 }
 
 export type ManageAction = "rename" | "toggle" | "setup" | "update" | "hide" | "remove";
@@ -328,7 +329,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
       case "auth": return t("{where} did not accept this web server's SSH key or password.", { where });
     }
   })();
-  const away = props.watching ? null : machineAway(machine);
+  const away = machineAway(machine);
   const awayReason = away === null ? null
     : machine.kind === "ssh" ? sshWords
     : away === "unresponsive" ? t("{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.", { name: machine.name })
@@ -357,7 +358,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     }
     finally { inFlight.current = false; setBusy(false); }
   };
-  const recheck = useRecheck(machine.id, () => { askMachineRetry(machine.id).catch((e) => setError(e instanceof Error ? e.message : String(e))); });
+  const recheck = useRecheck(machine.id, () => askMachineRetry(machine.id));
   const closeMenu = useCallback(() => setMenu(null), []);
   const endRename = (save: boolean) => {
     setRenaming(false);
@@ -433,7 +434,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
       <button className="sidebar-row-action machine-new" disabled={!canCreate} aria-label={t("New workspace on {name}", { name: machine.name })} title={createTitle} onClick={() => props.onNew(machine.id)}><Plus aria-hidden="true" /></button>
     </header>}
     {noticed && <MachineActionNotice machine={machine} onSetup={props.onSetup} />}
-    {away !== null ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} onCheck={recheck.check} returnFocus={() => titleButton.current} />
+    {away !== null ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} failure={recheck.failure} onCheck={props.watching ? undefined : recheck.check} returnFocus={() => titleButton.current} />
     : <p className={`machine-state is-${machine.state}${online || stateWord === null ? " visually-hidden" : ""}`} role={machine.state === "error" ? "alert" : "status"} title={noticed || machine.error === null ? undefined : machineErrorText(machine.error, t)}>
       <span className="machine-state-word">{stateWord}</span>
       {!noticed && machine.error && <span className="machine-state-detail">{sshWords ?? machineErrorText(machine.error, t)}</span>}

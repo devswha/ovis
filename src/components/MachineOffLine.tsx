@@ -12,10 +12,12 @@ const held = (key: string): number => Math.max(0, (heldUntil.get(key) ?? 0) - pe
 
 /**
  * Check again for one PC, held RECHECK_HOLD_MS from its press by the monotonic clock. `run` only asks: what it
- * finds arrives as the PC's next state, so its own answer is not waited for.
+ * finds arrives as the PC's next state. A failed ask is told on the off row, and goes with it or the next press.
  */
-export function useRecheck(key: string, run: () => void): { checking: boolean; check(): void } {
+export function useRecheck(key: string, run: () => Promise<void>): { checking: boolean; failure: string | null; check(): void } {
   const [checking, setChecking] = useState(() => held(key) > 0);
+  const [failure, setFailure] = useState<string | null>(null);
+  const asked = useRef(0);
   useEffect(() => {
     if (!checking) return;
     const timer = setTimeout(() => setChecking(false), held(key));
@@ -25,17 +27,21 @@ export function useRecheck(key: string, run: () => void): { checking: boolean; c
     if (held(key) > 0) return;
     heldUntil.set(key, performance.now() + RECHECK_HOLD_MS);
     setChecking(true);
-    run();
+    setFailure(null);
+    const ask = ++asked.current;
+    // only the latest ask may say it failed: an earlier one answering late is old news
+    run().catch((e: unknown) => { if (ask === asked.current) setFailure(e instanceof Error ? e.message : String(e)); });
   };
-  return { checking, check };
+  return { checking, failure, check };
 }
 
 /**
  * A PC that does not answer, on its sidebar row: one word for its state, why under it, and Check again (the
  * account's PCs list and Needs you say the same, relayPcState.tsx). `off`: nothing answered for the PC;
- * `unreachable`: what stands between this server and the PC (the relay) did not answer, so the PC may be on.
+ * `unreachable`: it could not be reached, so it may be on. Without `onCheck` (a device that only watches) the
+ * row explains and offers nothing.
  */
-export function MachineOffLine({ state, reason, title, checking, onCheck, returnFocus }: { state: "off" | "unreachable"; reason: string | null; title?: string; checking: boolean; onCheck(): void; returnFocus?: () => HTMLElement | null }) {
+export function MachineOffLine({ state, reason, title, checking, failure = null, onCheck, returnFocus }: { state: "off" | "unreachable"; reason: string | null; title?: string; checking: boolean; failure?: string | null; onCheck?: () => void; returnFocus?: () => HTMLElement | null }) {
   const t = useT();
   const button = useRef<HTMLButtonElement>(null);
   const focusBack = useRef(returnFocus);
@@ -47,6 +53,7 @@ export function MachineOffLine({ state, reason, title, checking, onCheck, return
       <span className="machine-state-word">{state === "off" ? t("Switched off") : outOfReachWord("unreachable", t)}</span>
       {reason !== null && <span className="machine-state-detail">{reason}</span>}
     </p>
-    <button ref={button} type="button" className="btn machine-recheck" aria-disabled={checking || undefined} aria-busy={checking || undefined} onClick={() => { if (!checking) onCheck(); }}>{t(checking ? "Checking…" : "Check again")}</button>
+    {onCheck !== undefined && <button ref={button} type="button" className="btn machine-recheck" aria-disabled={checking || undefined} aria-busy={checking || undefined} onClick={() => { if (!checking) onCheck(); }}>{t(checking ? "Checking…" : "Check again")}</button>}
+    {failure !== null && <p className="machine-error machine-recheck-failure" role="alert">{failure}</p>}
   </div>;
 }

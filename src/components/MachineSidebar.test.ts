@@ -43,9 +43,9 @@ describe("a PC that does not answer", () => {
   type Away = Parameters<typeof machineAway>[0];
   const failing = (kind: Away["kind"], error: string, patch: Partial<Away> = {}): Away => ({ kind, enabled: true, state: "reconnecting", error, action_required: null, updating: undefined, herdr_profile_id: undefined, ...patch });
 
-  it("is off when nothing answered for it, through the relay or over SSH", () => {
-    for (const error of ["The PC did not answer through the relay", "Relay connection to this PC was lost"]) expect(machineAway(failing("relay", error))).toBe("off");
-    for (const error of ["ssh: connect to host pc port 22: Connection refused", "ssh: connect to host pc port 22: Operation timed out", "ssh: connect to host pc port 22: No route to host"]) expect(machineAway(failing("ssh", error))).toBe("off");
+  it("is off when the relay had nobody for it, and out of reach when ssh could not reach it", () => {
+    expect(machineAway(failing("relay", "The PC did not answer through the relay"))).toBe("off");
+    for (const error of ["ssh: connect to host pc port 22: Connection refused", "ssh: connect to host pc port 22: Operation timed out", "ssh: connect to host pc port 22: No route to host"]) expect(machineAway(failing("ssh", error))).toBe("unreachable");
   });
 
   it("is out of reach when the relay itself did not answer, or turned this server away", () => {
@@ -58,6 +58,10 @@ describe("a PC that does not answer", () => {
   it("is not off when it answered: a relay PC that did not finish connecting, an SSH timeout after ssh connected", () => {
     expect(machineAway(failing("relay", "The PC did not finish the connection (auth)"))).toBe("unresponsive");
     expect(machineAway(failing("ssh", "SSH port forward timed out"))).toBeNull();
+  });
+
+  it("waits for the next try's words when a connection was only lost, which does not say which side went", () => {
+    expect(machineAway(failing("relay", "Relay connection to this PC was lost"))).toBeNull();
   });
 
   it("is not offered a re-check while connected, turned off here, refused for good, or waiting on a person", () => {

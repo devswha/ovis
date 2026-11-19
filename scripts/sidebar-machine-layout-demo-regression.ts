@@ -146,13 +146,15 @@ async function offRow(page: Page, group: Locator, scenario: Scenario): Promise<v
     const box = (node: Element | null) => { const rect = node!.getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }; };
     const detail = element.querySelector<HTMLElement>(".machine-state-detail")!;
     const list = document.querySelector<HTMLElement>(".machine-list")!;
-    return { row: box(element), words: box(element.querySelector(".machine-state")), button: box(element.querySelector(".machine-recheck")), sidebar: box(document.querySelector(".sidebar")), whole: detail.scrollHeight <= detail.clientHeight + 1, list: { clientWidth: list.clientWidth, scrollWidth: list.scrollWidth } };
+    return { row: box(element), words: box(element.querySelector(".machine-state")), button: box(element.querySelector(".machine-recheck")), sidebar: box(document.querySelector(".sidebar")), whole: detail.clientHeight > 0 && detail.scrollHeight <= detail.clientHeight + 1 && detail.getBoundingClientRect().right <= element.getBoundingClientRect().right + 1, list: { clientWidth: list.clientWidth, scrollWidth: list.scrollWidth } };
   });
   const apart = fit.button.left >= fit.words.right - 1 || fit.button.top >= fit.words.bottom - 1;
   assert.ok(apart, `${scenario.name} Check again lies beside or under the words, not over them: ${JSON.stringify(fit)}`);
   assert.ok(fit.button.left >= fit.sidebar.left - 1 && fit.button.right <= fit.sidebar.right + 1 && fit.words.right <= fit.sidebar.right + 1, `${scenario.name} the off row fits the sidebar: ${JSON.stringify(fit)}`);
   assert.ok(fit.list.scrollWidth <= fit.list.clientWidth + 1, `${scenario.name} the off row does not widen the PC list: ${JSON.stringify(fit)}`);
   assert.ok(fit.whole, `${scenario.name} why the PC is off is shown whole: ${JSON.stringify(fit)}`);
+  // a 240 px sidebar has no room beside the words: Check again goes under them
+  if (scenario.desktopSidebar && (scenario.sidebarWidth ?? 240) === 240) assert.ok(fit.button.top >= fit.words.bottom - 1, `${scenario.name} Check again wraps under the words in a narrow sidebar: ${JSON.stringify(fit)}`);
   if (scenario.screenshots && evidenceDir) await page.screenshot({ path: join(evidenceDir, `sidebar-machine-layout-${scenario.name}-off.png`) });
   const reads = await getHook(page, "calls.sessionReads") as number;
   await press(button, scenario);

@@ -94,10 +94,50 @@ it("asks the server to try an off PC now on Check again, once per hold however o
   }
 });
 
-it("offers no Check again for a connected PC, nor to a device that only watches", async () => {
+it("tells a failed ask on the off row, and drops it when the PC answers", async () => {
+  const fetched = spyOn(globalThis, "fetch").mockImplementation((async () =>
+    new Response(JSON.stringify({ error: { code: "remote_unavailable", message: "Temporary gateway error" } }), { status: 502, headers: { "content-type": "application/json" } })) as typeof fetch);
+  const failures = () => renderer!.root.findAll((element) => element.type === "p" && element.props.role === "alert").map(textOf);
+  try {
+    await mount([local, relayPc({ id: "gw" })]);
+    await act(async () => { recheckButtons()[0]!.props.onClick(); });
+    expect(failures()).toEqual([expect.stringContaining("Temporary gateway error")]);
+    await act(async () => renderer!.update(createElement(SettingsProvider, null, createElement(MachineSidebar, {
+      machines: [local, relayPc({ id: "gw", state: "connected", error: null })], selectedMachineId: "local", selectedPaneId: null, activity, actions,
+      onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
+    }))));
+    expect(failures()).toEqual([]);
+  } finally {
+    fetched.mockRestore();
+  }
+});
+
+it("says nothing of an earlier ask that fails after a later one", async () => {
+  jest.useFakeTimers();
+  const first = Promise.withResolvers<Response>();
+  let calls = 0;
+  const fetched = spyOn(globalThis, "fetch").mockImplementation((async () => {
+    calls++;
+    return calls === 1 ? first.promise : new Response(JSON.stringify({ error: { code: "machine_offline", message: "This PC is disconnected" } }), { status: 503, headers: { "content-type": "application/json" } });
+  }) as typeof fetch);
+  try {
+    await mount([local, relayPc({ id: "late" })]);
+    await act(async () => { recheckButtons()[0]!.props.onClick(); });
+    await act(async () => { jest.advanceTimersByTime(RECHECK_HOLD_MS); });
+    await act(async () => { recheckButtons()[0]!.props.onClick(); });
+    await act(async () => { first.resolve(new Response(JSON.stringify({ error: { code: "remote_unavailable", message: "Temporary gateway error" } }), { status: 502, headers: { "content-type": "application/json" } })); });
+    expect(calls).toBe(2);
+    expect(renderer!.root.findAll((element) => element.type === "p" && element.props.role === "alert")).toHaveLength(0);
+  } finally {
+    fetched.mockRestore();
+  }
+});
+
+it("offers no Check again for a connected PC, and to a device that only watches says why without it", async () => {
   await mount([local, relayPc({ state: "connected", error: null })]);
   expect(recheckButtons()).toHaveLength(0);
   await act(async () => renderer?.unmount());
   await mount([local, relayPc({})], true);
   expect(recheckButtons()).toHaveLength(0);
+  expect(textOf(renderer!.root.find((element) => element.props.className === "machine-off"))).toContain("It is off, has no network, or Ovis is not running on it.");
 });
