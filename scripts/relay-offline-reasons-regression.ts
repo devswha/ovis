@@ -171,7 +171,7 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
       return;
     }
     const body = request.postDataBuffer();
-    const answer = await fake.fetch(new Request(request.url(), { method: request.method(), headers: request.headers(), ...(body === null ? {} : { body }) }));
+    const answer = await fake.fetch(new Request(request.url(), { method: request.method(), headers: request.headers(), ...(body === null ? {} : { body: new Uint8Array(body) }) }));
     const location = answer.headers.get("location");
     if (answer.status === 302 && location !== null && location.startsWith(`${APP}/`)) {
       await route.fulfill({ status: 200, contentType: "text/html", body: `<!doctype html><meta http-equiv="refresh" content="0;url=${location.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}">` });
@@ -222,7 +222,7 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
     return { state, word: word?.textContent ?? null, title: word?.title ?? null, line: row.querySelector(".relay-pc-probe-line")?.textContent ?? null,
       action: row.querySelector("[data-pc-action]")?.getAttribute("data-pc-action") ?? null,
       whole: word === null || (word.scrollWidth <= word.clientWidth + 1 && word.scrollHeight <= word.clientHeight + 1) };
-  }, { id: entry.server_id, state }).then((handle) => handle.jsonValue());
+  }, { id: entry.server_id, state }).then((handle) => handle.jsonValue()).then((row) => { if (row === null) throw new Error(`no row of ${entry.name} in ${state}`); return row; });
   const details = (entry: Entry) => page.locator(`[data-pc-details="${entry.server_id}"]`);
   const openDetails = async (entry: Entry): Promise<void> => {
     await page.locator(`[data-pc-id="${entry.server_id}"]:visible .relay-pc-name-btn`).first().click();
