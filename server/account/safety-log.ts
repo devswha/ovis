@@ -60,11 +60,20 @@ export interface SafetyState {
   readonly markers: readonly SafetyEntry[];
 }
 
+/** A folded record: known and ended, its signed bytes dropped, its id never forgotten (P24). */
+export interface FoldedRecord {
+  readonly id: string;
+  readonly kind: SafetyRecordKind;
+  readonly account: string | null;
+  readonly target: string | null;
+  readonly ended_by: readonly string[];
+}
+
 interface LogFile {
   v: 1;
   next: number;
   /** folded records, one line each with no number: an id in it is known and ended (P24) */
-  base: { id: string }[];
+  base: FoldedRecord[];
   entries: SafetyEntry[];
   /** P19's waiting blocks (S2-10) */
   waiting: unknown[];
@@ -162,15 +171,15 @@ export class SafetyLog {
   /**
    * The one handle of `stateDir`'s log in this process, read and replayed again from disk: a second open is the same
    * handle, so no two handles of one folder ever give numbers. Never throws: a log that cannot be trusted makes
-   * `strict` say why.
+   * `strict` say why, and so does `mergeProblem`, a merge with a sibling folder that could not be made (mergeSafetyLogs).
    */
-  static open(stateDir: string): SafetyLog {
+  static open(stateDir: string, mergeProblem: string | null = null): SafetyLog {
     const path = resolve(stateDir, SAFETY_LOG_FILE);
     const log = HANDLES.get(path) ?? new SafetyLog(path, stateDir);
     HANDLES.set(path, log);
-    log.readError = null;
+    log.readError = mergeProblem;
     log.writeError = null;
-    log.load();
+    if (mergeProblem === null) log.load();
     return log;
   }
 
@@ -270,4 +279,84 @@ export class SafetyLog {
       markers: of("block").filter((entry) => !forgotten.has(entry.record.id)),
     };
   }
+
+  /**
+   * Folds what nothing rests on into `base` (P24): only while no block, freeze or lock is in force. A block folds only
+   * once a lift and a forgetting lift name it, so its marker can always be worked out from the log; a lock once an
+   * unlock names it; a freeze once a lift names its block; a lift or an unlock with the record it names, and a lift
+   * of a forgotten key at any time. Returns how many entries folded.
+   */
+  fold(): number {
+    if (this.readError !== null) return 0;
+    const state = this.state();
+    if (state.locked || state.blocks.length > 0 || state.freezes.length > 0) return 0;
+    const enders = new Map<string, string[]>();
+    let forgetting = new Set<string>();
+    for (const { record } of this.file.entries) {
+      if ((record.kind === "lift" || record.kind === "unlock") && record.target !== null) enders.set(record.target, [...enders.get(record.target) ?? [], record.id]);
+      if (record.kind === "lift" && record.signer === "pc" && (record as PcLiftRecord).forget) forgetting = new Set([...forgetting, record.target]);
+    }
+    const folds = new Set<string>();
+    for (const { record } of this.file.entries) {
+      const ended = enders.has(record.id);
+      if (record.kind === "block" && ended && forgetting.has(record.id)) folds.add(record.id);
+      else if (record.kind === "lock" && ended) folds.add(record.id);
+      else if (record.kind === "freeze" && enders.has(record.id.slice(2))) folds.add(record.id);
+      else if (record.kind === "forget") folds.add(record.id);
+    }
+    for (const { record } of this.file.entries) {
+      if ((record.kind === "lift" || record.kind === "unlock") && record.target !== null && (folds.has(record.target) || folds.has(`f:${record.target}`) || this.file.base.some((line) => line.id === record.target))) folds.add(record.id);
+    }
+    if (folds.size === 0) return 0;
+    const base = [...this.file.base, ...this.file.entries.filter((entry) => folds.has(entry.record.id)).map(({ record }) => ({ id: record.id, kind: record.kind, account: record.account, target: record.target, ended_by: enders.get(record.id) ?? enders.get(record.id.slice(2)) ?? [] }))];
+    const next: LogFile = { ...this.file, base, entries: this.file.entries.filter((entry) => !folds.has(entry.record.id)) };
+    writePrivateState(this.path, next);
+    this.file = next;
+    return folds.size;
+  }
+
+  /** The file as it stands, for a merge. */
+  snapshot(): { readonly next: number; readonly base: readonly FoldedRecord[]; readonly entries: readonly SafetyEntry[]; readonly waiting: readonly unknown[] } { return this.file; }
+
+  /** Whether the log could be read: a merge never writes over one it could not. */
+  get readable(): boolean { return this.readError === null; }
+
+}
+
+/**
+ * Merges the safety logs of two state folders at start, before anything is served (T48, P24): the union by id. Each
+ * folder keeps the numbers of the records it holds and takes the other's after its last one, in the other's order,
+ * with `got: merge` and the `asof` the other noted. What the PC added (`n`, `got`, `asof`) is never compared. A record
+ * either folder folded is known and ended in both. One id with two different records is a damaged log: nothing is
+ * written to either folder, and the returned reason makes the PC fail closed. Null when merged.
+ */
+export function mergeSafetyLogs(active: string, sibling: string): string | null {
+  const [own, other] = [SafetyLog.open(active), SafetyLog.open(sibling)];
+  for (const [log, dir] of [[own, active], [other, sibling]] as const) {
+    if (!log.readable) return `Cannot merge the account safety log of ${dir}: ${log.strict}`;
+  }
+  const [a, b] = [own.snapshot(), other.snapshot()];
+  const records = new Map<string, SafetyRecord>();
+  for (const entry of [...a.entries, ...b.entries]) {
+    const known = records.get(entry.record.id);
+    if (known !== undefined && !sameRecord(known, entry.record)) return `The account safety logs of ${active} and ${sibling} hold two different records under the id ${entry.record.id}`;
+    records.set(entry.record.id, entry.record);
+  }
+  const base = [...a.base, ...b.base.filter((line) => !a.base.some((own) => own.id === line.id))];
+  const folded = new Set(base.map((line) => line.id));
+  const merged = (mine: typeof a, theirs: typeof a): LogFile => {
+    const held = new Set(mine.entries.map((entry) => entry.record.id));
+    let next = mine.next;
+    const taken = [...theirs.entries].sort((x, y) => x.n - y.n)
+      .filter((entry) => !held.has(entry.record.id) && !folded.has(entry.record.id))
+      .map((entry) => ({ ...entry, n: next++, got: "merge" as const }));
+    const waiting = [...mine.waiting, ...theirs.waiting.filter((item) => !mine.waiting.some((own) => JSON.stringify(own) === JSON.stringify(item)))];
+    return { v: 1, next, base, entries: [...mine.entries.filter((entry) => !folded.has(entry.record.id)), ...taken], waiting };
+  };
+  const [forOwn, forOther] = [merged(a, b), merged(b, a)];
+  for (const [dir, file, before] of [[active, forOwn, a], [sibling, forOther, b]] as const) {
+    if (file.entries.length === before.entries.length && file.base.length === before.base.length && file.waiting.length === before.waiting.length) continue;
+    writePrivateState(join(dir, SAFETY_LOG_FILE), file);
+  }
+  return null;
 }

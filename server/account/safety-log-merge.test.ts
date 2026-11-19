@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { relayFixture } from "../relay/test-helpers.ts";
-import { mergeSafetyLogs, pcRecordId, SAFETY_LOG_FILE, SafetyLog, signedRecordId, type BlockAsOf, type SafetyRecord } from "./safety-log.ts";
+import { exportAccountKey, newRecordId, signSafetyRecord, type SafetyRecord } from "../../shared/account-records.ts";
+import { mergeSafetyLogs, pcRecordId, SAFETY_LOG_FILE, SafetyLog, type BlockAsOf } from "./safety-log.ts";
 
 const dirs: string[] = [];
 const fixtures: ReturnType<typeof relayFixture>[] = [];
@@ -28,14 +28,17 @@ async function key(): Promise<string> {
   return Buffer.from(await crypto.subtle.exportKey("spki", pair.publicKey)).toString("base64url");
 }
 
-function block(target: string, signer: string) {
-  const bytes = new Uint8Array(randomBytes(120));
-  const record: SafetyRecord = { id: signedRecordId(bytes), kind: "block", account: ACCOUNT, target, signer, signed_at: AT, sig: randomBytes(64).toString("base64url") };
-  return { record, bytes };
+interface Signer { keys: CryptoKeyPair; spki: string }
+async function signer(): Promise<Signer> {
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  return { keys, spki: await exportAccountKey(keys.publicKey) };
 }
 
-const pc = (kind: "lock" | "unlock" | "lift", target: string | null, extra: Partial<SafetyRecord> = {}): SafetyRecord =>
-  ({ id: pcRecordId(), kind, account: ACCOUNT, target, signer: "pc", signed_at: AT, sig: "", ...extra });
+const block = (target: string, by: Signer): Promise<SafetyRecord> =>
+  signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target, target_no: 3, signer: by.spki, signer_no: 1, signed_at: AT, nonce: newRecordId() }, by.keys.privateKey);
+
+const pc = (kind: "lock" | "unlock" | "lift", target: string | null, forget = false): SafetyRecord =>
+  ({ v: 1, id: pcRecordId(), kind, account: ACCOUNT, target, signer: "pc", signed_at: AT, signature: "", ...(kind === "lift" ? { forget } : {}) }) as SafetyRecord;
 
 const inForce = (log: SafetyLog) => {
   const state = log.state();
@@ -46,32 +49,32 @@ const numbers = (log: SafetyLog) => Object.fromEntries(log.entries().map((entry)
 describe("merging and folding the PC safety log", () => {
   test("T48: both directories retain endings and local numbering despite different receipt metadata", async () => {
     const [own, other] = [stateDir(), stateDir()];
-    const signer = await key();
-    const x = block(await key(), signer);
-    const y = block(await key(), signer);
+    const by = await signer();
+    const x = await block(await key(), by);
+    const y = await block(await key(), by);
     const lock = pc("lock", null);
     const mine = SafetyLog.open(own);
-    mine.append({ record: x.record, bytes: x.bytes, got: "handed", asof: asof(3) });
+    mine.append({ record: x, got: "handed", asof: asof(3) });
     mine.append({ record: lock, got: "pc" });
     const theirs = SafetyLog.open(other);
     // the same lock, taken another way; an ending the owner made in the other dir only; a block only it holds
     theirs.append({ record: lock, got: "merge" });
-    const liftX = pc("lift", x.record.id);
+    const liftX = pc("lift", x.id);
     theirs.append({ record: liftX, got: "pc" });
-    theirs.append({ record: y.record, bytes: y.bytes, got: "mailbox", asof: asof(5) });
+    theirs.append({ record: y, got: "mailbox", asof: asof(5) });
 
     expect(mergeSafetyLogs(own, other)).toBeNull();
     const [a, b] = [SafetyLog.open(own), SafetyLog.open(other)];
     expect(a.strict).toBeNull();
     expect(b.strict).toBeNull();
     // each dir keeps its numbers, and takes the other's records after its last one, in that dir's order
-    expect(numbers(a)).toEqual({ [x.record.id]: { n: 1, got: "handed" }, [lock.id]: { n: 2, got: "pc" }, [liftX.id]: { n: 3, got: "merge" }, [y.record.id]: { n: 4, got: "merge" } });
-    expect(numbers(b)).toEqual({ [lock.id]: { n: 1, got: "merge" }, [liftX.id]: { n: 2, got: "pc" }, [y.record.id]: { n: 3, got: "mailbox" }, [x.record.id]: { n: 4, got: "merge" } });
-    // the asof the other dir noted comes with its record; signed bytes come whole
-    expect(a.entries().find((e) => e.record.id === y.record.id)?.asof).toEqual(asof(5));
-    expect(Buffer.from(b.entries().find((e) => e.record.id === x.record.id)!.bytes!, "base64url").equals(Buffer.from(x.bytes))).toBe(true);
+    expect(numbers(a)).toEqual({ [x.id]: { n: 1, got: "handed" }, [lock.id]: { n: 2, got: "pc" }, [liftX.id]: { n: 3, got: "merge" }, [y.id]: { n: 4, got: "merge" } });
+    expect(numbers(b)).toEqual({ [lock.id]: { n: 1, got: "merge" }, [liftX.id]: { n: 2, got: "pc" }, [y.id]: { n: 3, got: "mailbox" }, [x.id]: { n: 4, got: "merge" } });
+    // the asof the other dir noted comes with its record; a signed record comes whole
+    expect(a.entries().find((e) => e.record.id === y.id)?.asof).toEqual(asof(5));
+    expect(b.entries().find((e) => e.record.id === x.id)!.record).toEqual(x);
     // nothing ended comes back, nothing in force is lost: the same state in both
-    const expected = { locked: true, blocks: [y.record.id], markers: [x.record.id, y.record.id].sort() };
+    const expected = { locked: true, blocks: [y.id], markers: [x.id, y.id].sort() };
     expect(inForce(a)).toEqual(expected);
     expect(inForce(b)).toEqual(expected);
     // a second merge changes nothing
@@ -87,13 +90,11 @@ describe("merging and folding the PC safety log", () => {
 
   test("T48: conflicting signed records of the same ID fail closed", async () => {
     const [own, other] = [stateDir(), stateDir()];
-    const signer = await key();
-    const x = block(await key(), signer);
-    SafetyLog.open(own).append({ record: x.record, bytes: x.bytes, got: "handed", asof: asof(3) });
-    // the same id with another target: one id, two records
-    const forged = { ...x.record, target: await key() };
+    // one id with two records: the PC wrote a lock under an id the other dir holds with other content
+    const lock = pc("lock", null);
+    SafetyLog.open(own).append({ record: lock, got: "pc" });
     const theirs = SafetyLog.open(other);
-    expect(theirs.append({ record: forged, bytes: x.bytes, got: "handed", asof: asof(3) }).outcome).toBe("applied");
+    expect(theirs.append({ record: { ...lock, signed_at: "2026-11-21T10:00:00.000Z" }, got: "pc" }).outcome).toBe("applied");
     const [ownBefore, otherBefore] = [readFileSync(join(own, SAFETY_LOG_FILE), "utf8"), readFileSync(join(other, SAFETY_LOG_FILE), "utf8")];
     const problem = mergeSafetyLogs(own, other);
     expect(problem).not.toBeNull();
@@ -102,12 +103,14 @@ describe("merging and folding the PC safety log", () => {
     expect(readFileSync(join(other, SAFETY_LOG_FILE), "utf8")).toBe(otherBefore);
     expect(SafetyLog.open(own, problem).strict).not.toBeNull();
 
-    // the server's own start: a sibling dir with a conflicting log fails the PC closed
+    // a signed record under its id with other content no longer hashes to it: that dir's log cannot be trusted, and the
+    // server's own start fails the PC closed rather than merge it
+    const x = await block(await key(), await signer());
     const sibling = stateDir();
-    const conflicting = SafetyLog.open(sibling);
-    conflicting.append({ record: forged, bytes: x.bytes, got: "handed", asof: asof(3) });
+    writeFileSync(join(sibling, SAFETY_LOG_FILE), JSON.stringify({ v: 1, next: 2, base: [], waiting: [], entries: [{ n: 1, got: "handed", record: { ...x, target: await key() }, asof: asof(3) }] }), { mode: 0o600 });
     const active = stateDir();
-    SafetyLog.open(active).append({ record: x.record, bytes: x.bytes, got: "handed", asof: asof(3) });
+    SafetyLog.open(active).append({ record: x, got: "handed", asof: asof(3) });
+    expect(mergeSafetyLogs(active, sibling)).not.toBeNull();
     const fixture = relayFixture(false, { stateDir: active, siblingStateDir: sibling, accountOpensAll: true });
     fixtures.push(fixture);
     dirs.splice(dirs.indexOf(active), 1);
@@ -117,38 +120,38 @@ describe("merging and folding the PC safety log", () => {
 
   test("P24: folding keeps evidence needed by a live marker and never forgets an ID", async () => {
     const dir = stateDir();
-    const signer = await key();
+    const by = await signer();
     const log = SafetyLog.open(dir);
-    const x = block(await key(), signer);
-    const y = block(await key(), signer);
+    const x = await block(await key(), by);
+    const y = await block(await key(), by);
     const lock = pc("lock", null);
-    for (const b of [x, y]) log.append({ record: b.record, bytes: b.bytes, got: "handed", asof: asof(3) });
+    for (const b of [x, y]) log.append({ record: b, got: "handed", asof: asof(3) });
     log.append({ record: lock, got: "pc" });
     // nothing folds while any record is in force
     expect(log.fold()).toBe(0);
     log.append({ record: pc("unlock", lock.id), got: "pc" });
-    log.append({ record: pc("lift", x.record.id), got: "pc" });
-    log.append({ record: pc("lift", x.record.id, { forget: true }), got: "pc" });
-    log.append({ record: pc("lift", y.record.id), got: "pc" });
+    log.append({ record: pc("lift", x.id), got: "pc" });
+    log.append({ record: pc("lift", x.id, true), got: "pc" });
+    log.append({ record: pc("lift", y.id), got: "pc" });
     expect(log.fold()).toBeGreaterThan(0);
     const reopened = SafetyLog.open(dir);
     const kept = reopened.entries().map((e) => e.record.id);
-    // y was lifted but not forgotten: its marker stands, so its entry stays whole with its bytes, and so does its lift
-    expect(kept).toContain(y.record.id);
-    expect(reopened.entries().find((e) => e.record.id === y.record.id)?.bytes).toBeDefined();
-    expect(inForce(reopened).markers).toEqual([y.record.id]);
+    // y was lifted but not forgotten: its marker stands, so its signed entry stays whole, and so does its lift
+    expect(kept).toContain(y.id);
+    expect(reopened.entries().find((e) => e.record.id === y.id)?.record).toEqual(y);
+    expect(inForce(reopened).markers).toEqual([y.id]);
     // x, the lock and their endings folded: known and ended, never forgotten
-    expect(kept).not.toContain(x.record.id);
+    expect(kept).not.toContain(x.id);
     expect(kept).not.toContain(lock.id);
     const base = (JSON.parse(readFileSync(join(dir, SAFETY_LOG_FILE), "utf8")) as { base: { id: string; kind: string; ended_by: string[] }[] }).base;
-    expect(base.find((line) => line.id === x.record.id)).toMatchObject({ kind: "block", account: ACCOUNT });
+    expect(base.find((line) => line.id === x.id)).toMatchObject({ kind: "block", account: ACCOUNT });
     expect(base.find((line) => line.id === lock.id)).toBeDefined();
     // a folded id handed again starts nothing, and a merge never brings it back
-    expect(reopened.append({ record: x.record, bytes: x.bytes, got: "handed", asof: asof(3) })).toEqual({ outcome: "already_applied", id: x.record.id });
+    expect(reopened.append({ record: x, got: "handed", asof: asof(3) })).toEqual({ outcome: "already_applied", id: x.id });
     const sibling = stateDir();
-    SafetyLog.open(sibling).append({ record: x.record, bytes: x.bytes, got: "mailbox", asof: asof(3) });
+    SafetyLog.open(sibling).append({ record: x, got: "mailbox", asof: asof(3) });
     expect(mergeSafetyLogs(dir, sibling)).toBeNull();
-    expect(inForce(SafetyLog.open(dir))).toEqual({ locked: false, blocks: [], markers: [y.record.id] });
+    expect(inForce(SafetyLog.open(dir))).toEqual({ locked: false, blocks: [], markers: [y.id] });
     expect(inForce(SafetyLog.open(sibling)).blocks).toEqual([]);
     expect(existsSync(join(sibling, SAFETY_LOG_FILE))).toBe(true);
   });
@@ -156,16 +159,15 @@ describe("merging and folding the PC safety log", () => {
   test("T51: repeat yields applied with its local number until fold, then already_applied", async () => {
     const dir = stateDir();
     const log = SafetyLog.open(dir);
-    const x = block(await key(), await key());
-    expect(log.append({ record: x.record, bytes: x.bytes, got: "handed", asof: asof(3) })).toEqual({ outcome: "applied", id: x.record.id, n: 1 });
-    log.append({ record: pc("lift", x.record.id), got: "pc" });
+    const x = await block(await key(), await signer());
+    expect(log.append({ record: x, got: "handed", asof: asof(3) })).toEqual({ outcome: "applied", id: x.id, n: 1 });
+    log.append({ record: pc("lift", x.id), got: "pc" });
     // lifted, not forgotten: still whole, still the same receipt
     expect(log.fold()).toBe(0);
-    expect(log.append({ record: x.record, bytes: x.bytes, got: "mailbox", asof: asof(3) })).toEqual({ outcome: "applied", id: x.record.id, n: 1 });
-    log.append({ record: pc("lift", x.record.id, { forget: true }), got: "pc" });
+    expect(log.append({ record: x, got: "mailbox", asof: asof(3) })).toEqual({ outcome: "applied", id: x.id, n: 1 });
+    log.append({ record: pc("lift", x.id, true), got: "pc" });
     expect(log.fold()).toBeGreaterThan(0);
-    expect(log.receipt(x.record.id)).toEqual({ outcome: "already_applied", id: x.record.id });
-    expect(log.append({ record: x.record, bytes: x.bytes, got: "mailbox", asof: asof(3) })).toEqual({ outcome: "already_applied", id: x.record.id });
-    expect(createHash("sha256").update(x.bytes).digest("hex")).toBe(x.record.id);
+    expect(log.receipt(x.id)).toEqual({ outcome: "already_applied", id: x.id });
+    expect(log.append({ record: x, got: "mailbox", asof: asof(3) })).toEqual({ outcome: "already_applied", id: x.id });
   });
 });
