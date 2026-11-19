@@ -4,7 +4,7 @@ import { paneStorageId, type HerdrIdentity, type Machine } from "../../shared/ma
 import { fetchSession, type HealthInfo } from "./api.ts";
 import { activateSlot as activatedSlot, besideSide, MAX_SPLIT_SLOTS, closeSlots, dockPane, draggedPane, dropZone, pickInSlot, PANE_DRAG_TYPE, replaceSlotPane, resizeSplit, sameTarget, sideZone, slotRects, slotsOf, splitDividers, storedSplit, storeSplit, withoutSlots, zoneRect, type DropZone, type SplitChange, type SplitRect, type SplitSide, type SplitSlot, type SplitState, type SplitTarget } from "./split.ts";
 import { paneDrag, type PaneDrag } from "./paneDrag.ts";
-import type { LinkNote } from "./deepLink.ts";
+import { noteAfterSelection, type LinkNote } from "./deepLink.ts";
 
 const SELECTION_KEY = "ovis:selection";
 type StoredSelection = { machine_id?: string; pane_id?: string | null };
@@ -241,7 +241,7 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
     const before = was ? (was.active === after ? current : was.panes[after] ?? null) : after === soloSlot ? current : null;
     if (before === null || before.machineId !== change.select.machineId) { setConnected(false); setConnectedBefore(false); }
     applyLayout(change);
-    setSelectedMachineId(change.select.machineId); setSelectedPaneId(change.select.paneId); setAutoSelected(keepFocus); setOutputStopped(false); setHeaderNote(null);
+    setSelectedMachineId(change.select.machineId); setSelectedPaneId(change.select.paneId); setAutoSelected(keepFocus); setOutputStopped(false); setHeaderNote(noteAfterSelection);
     storeSelection(change.select.machineId, change.select.paneId);
   };
   const activateSlot = (slot: SplitSlot, keepFocus = false): void => {

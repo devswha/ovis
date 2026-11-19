@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { paneStorageId, type Machine } from "../../shared/machines.ts";
 import { fetchSession } from "./api.ts";
-import { fileFromLink, resolveLink, type AppLink, type LinkNote } from "./deepLink.ts";
+import { fileFromLink, noteAfterSelection, resolveLink, type AppLink, type LinkNote } from "./deepLink.ts";
 import { linkLanding, machineGone, notificationLanding, notificationTargetFromSearch, sameLink, onNotificationTarget, type NotificationTarget } from "./notificationTarget.ts";
 import { pageSearch } from "./pageQuery.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
@@ -72,8 +72,11 @@ export function useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, 
   const pendingFile = useRef<string | null>(initialLink ? fileFromLink(initialLink) : null);
   const selectionHint = useRef<{ machine: string; pane: string; workspace: string } | null>(null);
   const [headerNote, setHeaderNote] = useState<LinkNote | "copied" | null>(null);
+  // the link whose landing left the note showing: the service worker names a tapped notification's pane twice (before
+  // and after focus), and the second must not take the first's note away
+  const notedLink = useRef<AppLink | null>(null);
   useEffect(() => {
-    if (headerNote === null) return;
+    if (headerNote === null) { notedLink.current = null; return; }
     const timer = window.setTimeout(() => setHeaderNote(null), headerNote === "copied" ? 1600 : 8000);
     return () => window.clearTimeout(timer);
   }, [headerNote]);
@@ -81,7 +84,7 @@ export function useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, 
     ? t(headerNote === "copied" ? "Link copied" : headerNote === "pane-closed" ? "That agent has closed: its workspace is open" : headerNote === "machine-missing" ? "That link's PC is not set up here" : "That link's workspace is closed")
     : !linkLanded ? t("Opening link…") : null;
   const [autoSelected, setAutoSelected] = useState(false);
-  return { rosterIn, pendingFile, selectionHint, headerNote, setHeaderNote, note, autoSelected, setAutoSelected };
+  return { rosterIn, pendingFile, selectionHint, headerNote, setHeaderNote, notedLink, note, autoSelected, setAutoSelected };
 }
 
 export function useSelectionMark({ selectedMachineId, selectedPaneId }: { selectedMachineId: string; selectedPaneId: string | null }) {
@@ -98,7 +101,7 @@ export function useSelectionMark({ selectedMachineId, selectedPaneId }: { select
   return { selectionRef, movingPanes };
 }
 
-export function useSelectTarget({ selectedMachineId, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setDrawerOpen, setOutputStopped, setNotificationViewTarget, setTerminalPeek, pendingLink, pendingFile, setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot, selectedMachine, selectedPaneId, setHeaderNote, linkTick, movingPanes, onPick, onLinkMiss }: {
+export function useSelectTarget({ selectedMachineId, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setDrawerOpen, setOutputStopped, setNotificationViewTarget, setTerminalPeek, pendingLink, pendingFile, setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot, selectedMachine, selectedPaneId, setHeaderNote, notedLink, linkTick, movingPanes, onPick, onLinkMiss }: {
   selectedMachineId: string;
   setConnected: Dispatch<SetStateAction<boolean>>;
   setConnectedBefore: Dispatch<SetStateAction<boolean>>;
@@ -119,6 +122,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   selectedMachine: Machine | undefined;
   selectedPaneId: string | null;
   setHeaderNote: Dispatch<SetStateAction<LinkNote | "copied" | null>>;
+  notedLink: RefObject<AppLink | null>;
   linkTick: number;
   movingPanes: RefObject<Set<string>>;
   onPick?: (paneId: string | null) => void;
@@ -141,7 +145,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     setNotificationViewTarget(view && paneId !== null ? { machine_id: machineId, pane_id: paneId, view } : null);
     setTerminalPeek(null);
     // an earlier landing's note speaks of a pane this choice leaves behind
-    setHeaderNote(null);
+    setHeaderNote(noteAfterSelection);
     // this browser's choice only: herdr's focus, its TUI and every other device stay where they are
     storeSelection(machineId, paneId);
     pendingLink.current = null; pendingFile.current = null; setLinkLanded(true);
@@ -166,7 +170,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
       const land = (landed: ReturnType<typeof resolveLink>): boolean => {
         pendingLink.current = null;
         setLinkLanded(true);
-        if (landed.note) { setHeaderNote(landed.note); onLinkMissRef.current?.(); }
+        if (landed.note) { setHeaderNote(landed.note); notedLink.current = linked; onLinkMissRef.current?.(); }
         if (landed.pane) {
           if (landed.pane !== selectedPaneId) {
             setSelectedPaneId(landed.pane);
@@ -252,18 +256,19 @@ export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selecti
     pendingLink.current = null; pendingFile.current = null; setLinkLanded(true);
     selectionHint.current = null;
     setSelectedPaneId(paneId);
-    setNotificationViewTarget(null); setTerminalPeek(null); setHeaderNote(null);
+    setNotificationViewTarget(null); setTerminalPeek(null); setHeaderNote(noteAfterSelection);
     setAutoSelected(!focusInput);
     setDrawerOpen(false);
   }, []);
   return { selectPane };
 }
 
-export function useNotificationTargets({ machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load, onLinkWait }: {
+export function useNotificationTargets({ machinesRef, selectTargetRef, selectionHint, pendingLink, notedLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load, onLinkWait }: {
   machinesRef: RefObject<Machine[]>;
   selectTargetRef: RefObject<SelectTarget>;
   selectionHint: RefObject<SelectionHint>;
   pendingLink: RefObject<AppLink | null>;
+  notedLink: RefObject<AppLink | null>;
   pendingFile: RefObject<string | null>;
   setLinkLanded: Dispatch<SetStateAction<boolean>>;
   linkSince: RefObject<number>;
@@ -286,7 +291,7 @@ export function useNotificationTargets({ machinesRef, selectTargetRef, selection
       const link = target.link;
       const landing = linkLanding(machinesRef.current, link);
       if (landing.kind === "select") { selectTargetRef.current(link.machine, landing.pane, link.view ?? undefined); return; }
-      if (sameLink(pendingLink.current, link)) return;
+      if (sameLink(pendingLink.current, link) || sameLink(notedLink.current, link)) return;
       selectTargetRef.current(link.machine, null);
       onLinkWaitRef.current?.();
       wait(link, landing.stale);
@@ -298,7 +303,7 @@ export function useNotificationTargets({ machinesRef, selectTargetRef, selection
       if (target.workspace_id) selectionHint.current = { machine: target.machine_id, pane: target.pane_id, workspace: target.workspace_id };
       return;
     }
-    if (sameLink(pendingLink.current, landing.link)) return;
+    if (sameLink(pendingLink.current, landing.link) || sameLink(notedLink.current, landing.link)) return;
     selectTargetRef.current(target.machine_id, target.pane_id, target.view);
     wait(landing.link, landing.stale);
   }, [load]);

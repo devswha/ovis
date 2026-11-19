@@ -23,7 +23,7 @@ describe("selectPane", () => {
     else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
   });
 
-  async function mount(): Promise<void> {
+  async function mount(first: "pane-closed" | "copied" = "pane-closed"): Promise<void> {
     function Probe() {
       const pendingLink = useRef(null);
       const pendingFile = useRef(null);
@@ -34,7 +34,7 @@ describe("selectPane", () => {
       const [, setTerminalPeek] = useState(null);
       const [, setAutoSelected] = useState(false);
       const [, setDrawerOpen] = useState(false);
-      const [headerNote, setHeaderNote] = useState<"pane-closed" | null>("pane-closed");
+      const [headerNote, setHeaderNote] = useState<"pane-closed" | "copied" | null>(first);
       note = headerNote;
       select = useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, setHeaderNote, onPick: () => { picks += 1; } } as Parameters<typeof useSelectPane>[0]).selectPane;
       return null;
@@ -59,5 +59,11 @@ describe("selectPane", () => {
     expect(note).toBe("pane-closed");
     await act(async () => { select("w1:p2"); });
     expect(note).toBeNull();
+  });
+
+  it("lets Link copied run its own short time", async () => {
+    await mount("copied");
+    await act(async () => { select("w1:p2"); });
+    expect(note).toBe("copied");
   });
 });

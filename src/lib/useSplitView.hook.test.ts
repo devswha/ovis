@@ -42,7 +42,7 @@ describe("useSplitLayout", () => {
       machines: [], split, wideScreen, selectedPaneId: "w1:p1", selectedPane: null, selectedMachineId: "local", splitShownRef,
       health: null, machineRosterLoaded: false, endSplit: nothing, otherRecheck: { current: false }, otherRosterTick: 0,
       setSplit: (next) => { written.push(next); }, soloSlot: "a", setConnected: nothing, setConnectedBefore: nothing,
-      setSelectedMachineId: nothing, setSelectedPaneId: nothing, setAutoSelected: nothing, setOutputStopped: nothing, setHeaderNote: (note) => { notes.push(note); },
+      setSelectedMachineId: nothing, setSelectedPaneId: nothing, setAutoSelected: nothing, setOutputStopped: nothing, setHeaderNote: (note) => { notes.push(typeof note === "function" ? note("pane-closed") : note); },
       splitRef: { current: split }, selectPane: nothing, paneAreaRef: { current: null }, gridDrop: null, gridDropRef: { current: null },
       clearDropPreview: nothing, tabDrag: null, showGridDrop: nothing, hideDropTarget: nothing, setPaneDragging: nothing,
       movingPanes: { current: new Set() }, draggedPaneRef: { current: null }, markSwap: nothing, markMove: nothing,
