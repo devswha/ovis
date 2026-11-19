@@ -319,6 +319,7 @@ it("names a visit's way in from what the server knows, its relay session or Port
     // a Portal with no sign-in sends no proof: /api/health takes its shape (from this PC, over HTTPS, to an address
     // Portal serves) as Portal's, but that shape is headers, so a visit counts it as any proxy
     const serves = spyOn(portal, "serves").mockReturnValue(true);
+    const ping = spyOn(herdr, "ping").mockResolvedValue({ version: "fixture", protocol: 22, terminal_attach: false, terminal_mirror: true });
     try {
       expect(await visit(local, here, forwarded)).toBe("proxy");
       const health = await handleRequest(new Request(`${here}/api/health`, { headers: { host: new URL(here).host, ...forwarded } }), local);
@@ -327,7 +328,7 @@ it("names a visit's way in from what the server knows, its relay session or Port
       serves.mockClear();
       expect(await visit(local, here, { ...forwarded, authorization: "Bearer bridge-token" })).toBeUndefined();
       expect(serves).not.toHaveBeenCalled();
-    } finally { serves.mockRestore(); }
+    } finally { serves.mockRestore(); ping.mockRestore(); }
     expect(await visit(local, here)).toBe("local");
   } finally {
     proof.mockRestore(); role.mockRestore();
