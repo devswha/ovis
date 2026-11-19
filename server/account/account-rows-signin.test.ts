@@ -164,4 +164,15 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     expect(rows.rows()).toEqual([]);
     expect((JSON.parse(readFileSync(join(dir, ACCOUNT_DEVICES_FILE), "utf8")) as { devices: unknown[] }).devices).toEqual([]);
   });
+
+  test("Rule B, T19, T36: every target row must have joined after every row of the caller's or signer's key", async () => {
+    const { devices } = pc();
+    const caller = await member(devices);
+    const target = await member(devices);
+    // a second row of the caller's key that joined after the target
+    const later = devices.pairRelayApproved("Later", caller.spki, { path: "account", addedBy: caller.id });
+    expect(later).not.toBeNull();
+    expect(devices.remoteRevoke(caller.id, target.id)).toBe("older");
+    expect(devices.removeAuthority(caller.spki, target.spki, ACCOUNT)).toBe(false);
+  });
 });
