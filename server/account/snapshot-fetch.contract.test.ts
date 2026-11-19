@@ -32,6 +32,8 @@ async function setup(opensAll: boolean, devices: number, wired = true) {
     body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
   for (let index = 0; index < devices; index++) service.registerDevice(ACCOUNT, await spki(), `Device ${index + 1}`);
   const committed: StagedRead[] = [];
+  const used = [{ key: await spki(), day: "2026-11-20" }];
+  const bodies: Record<string, unknown>[] = [];
   const ports: SnapshotPorts = {
     scope: () => ({ account: ACCOUNT, serverId: identity.server_id, gen: 0, lock: null }),
     lastVersion: () => null,
@@ -43,8 +45,11 @@ async function setup(opensAll: boolean, devices: number, wired = true) {
     journalMethod: () => {},
     requestRead: () => {},
   };
-  const mailbox = new AccountMailbox({ devices: new DeviceStore(stateDir), identity: () => identity, service: "https://account.test", fetch: service.fetch, ...(wired ? { snapshot: { account: () => ACCOUNT, ports: () => ports } } : {}) });
-  return { service, mailbox, ports, committed, identity };
+  const mailbox = new AccountMailbox({ devices: new DeviceStore(stateDir), identity: () => identity, service: "https://account.test", fetch: async (request: Request) => {
+    if (new URL(request.url).pathname === "/v1/pc/snapshot") bodies.push(await request.clone().json() as Record<string, unknown>);
+    return await service.fetch(request);
+  }, ...(wired ? { snapshot: { account: () => ACCOUNT, ports: () => ports, used: () => used } } : {}) });
+  return { service, mailbox, ports, committed, identity, used, bodies };
 }
 
 describe("S2-24 the PC reads the account's snapshot with a proof of its relay key (G1)", () => {
@@ -80,5 +85,11 @@ describe("S2-24 the PC reads the account's snapshot with a proof of its relay ke
     const on = await setup(true, 3);
     expect(await on.mailbox.readSnapshot()).toMatchObject({ committed: true });
     expect(on.committed.map((stage) => stage.snapshot.devices.length)).toEqual([3]);
+  });
+
+  test("P9: page 0 of a read carries the days this PC saw keys used, and no later page does", async () => {
+    const pc = await setup(true, 150);
+    expect(await pc.mailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(pc.bodies.map((body) => body.used ?? null)).toEqual([pc.used, null]);
   });
 });

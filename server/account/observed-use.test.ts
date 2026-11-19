@@ -92,4 +92,14 @@ describe("S2-28 expiry by use this PC saw (T54, T55)", () => {
     expect(pc.store.access(row!.id)).toEqual({ refused: "join_hold", seconds: 10 });
     expect(pc.day(row!.id)?.last_signin_day).toBe(new Date(pc.clock.now).toISOString().slice(0, 10));
   });
+
+  test("P9: only a use this PC saw is reported, as a UTC day per key; an admission alone reports nothing", () => {
+    const pc = machine();
+    pc.live(["k-used", "k-quiet"]);
+    const [used] = pc.store.rows();
+    expect(pc.store.usedReport()).toEqual([]);
+    pc.clock.now += 3 * DAY;
+    pc.store.seen(used!.id);
+    expect(pc.store.usedReport()).toEqual([{ key: keyOf("k-used"), day: "2026-01-04" }]);
+  });
 });
