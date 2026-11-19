@@ -293,16 +293,21 @@ export interface RelayOffer {
  * The relay actions answer with the state they left the relay in, a refusal too: a start that
  * serve-only blocks is a 409 whose body is still the RelayStatus, so it is the answer, not an error.
  * Only a body without a phase (the origin gate, a watching device, an older server) is one.
+ * Each gives up after 20 s, so a press that never answers does not hold its button, or the setup guide's other ways.
  */
 export async function requestRelay(action: "start" | "stop" | "reset-identity"): Promise<RelayStatus> {
   const url = `/api/relay/${action}`;
-  const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
-  if (!response.ok) {
-    const body: unknown = await response.clone().json().catch(() => null);
-    if (body !== null && typeof body === "object" && "phase" in body) return body as RelayStatus;
-    throw await errorFrom(url, response);
-  }
-  return (await response.json()) as RelayStatus;
+  const bounded = new AbortController();
+  const timer = setTimeout(() => bounded.abort(new DOMException(t("No answer"), "TimeoutError")), 20_000);
+  try {
+    const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" }, signal: bounded.signal });
+    if (!response.ok) {
+      const body: unknown = await response.clone().json().catch(() => null);
+      if (body !== null && typeof body === "object" && "phase" in body) return body as RelayStatus;
+      throw await errorFrom(url, response);
+    }
+    return (await response.json()) as RelayStatus;
+  } finally { clearTimeout(timer); }
 }
 
 /** POST /api/relay/direct: whether paired phones may connect straight to this PC on its networks while the relay is on. */

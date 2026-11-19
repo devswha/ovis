@@ -566,8 +566,21 @@ try {
     assert.equal((await page.evaluate(() => (window as unknown as { sent: string[] }).sent)).includes("GET /api/usage"), false, "no usage read while the agent step only shows");
     await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
     await page.waitForFunction(() => (window as unknown as { sent: string[] }).sent.includes("GET /api/usage"));
+    // the guide turned plan usage on; then it is turned off on another device while this browser is closed, so this
+    // browser's next start already reads it off: the remembered Continue no longer reads the usage
+    await page.waitForFunction(() => localStorage.getItem("ovis:setup-usage-armed") === "on");
+    await page.evaluate((guide) => {
+      localStorage.setItem("ovis:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("ovis:settings") ?? "{}"), showUsage: false }));
+      localStorage.setItem("ovis:setup-guide", guide);
+    }, WELCOME);
+    await page.reload();
+    await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
+    await dialog.locator(".setup-found .setup-tile").first().waitFor();
+    await settled(page);
+    const offElsewhere = await page.evaluate(() => (window as unknown as { sent: string[] }).sent);
+    assert.equal(offElsewhere.includes("GET /api/usage"), false, `usage turned off while this browser was closed is not read again: ${offElsewhere.join(", ")}`);
     await context.close();
-    console.log("PASS opening the guide and Set up later read no usage, write no shared setting and leave the settings as they were; Continue reads the usage");
+    console.log("PASS opening the guide and Set up later read no usage, write no shared setting and leave the settings as they were; Continue reads the usage, until usage is turned off");
   }
 
   // Anywhere's QR code, then Tailscale (a new pairing code: the PC keeps one), then Anywhere again: the relay asks for a
@@ -608,7 +621,8 @@ try {
     await side.getByRole("tab", { name: /^Anywhere/ }).click();
     await page.waitForFunction((count) => (window as unknown as { sent: string[] }).sent.filter((request) => request === "POST /api/relay/offer").length > count, first);
     await side.locator(".setup-relay-tight .qr").waitFor();
-    assert.equal(await page.evaluate(() => localStorage.getItem("ovis:setup-usage-armed")), "1", "Continue on the agent step is remembered");
+    // "on" once the usage read turned plan usage on for the signed-in demo account
+    assert.ok(["1", "on"].includes(await page.evaluate(() => localStorage.getItem("ovis:setup-usage-armed") ?? "")), "Continue on the agent step is remembered");
     await page.evaluate(() => localStorage.setItem("ovis:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("ovis:settings") ?? "{}"), showUsage: true })));
     await page.reload();
     await dialog.waitFor();
@@ -647,6 +661,12 @@ try {
     await tailscale.click({ force: true });
     await page.keyboard.press("ArrowRight");
     assert.equal(await side.getByRole("tab", { name: /^Anywhere/ }).getAttribute("aria-selected"), "true", "no other way is picked while the relay starts");
+    // Back and Continue again mount the step afresh while the start is still out: the ways still wait for it
+    await dialog.locator(".setup-foot").getByRole("button", { name: "Back", exact: true }).click();
+    await dialog.getByRole("heading", { name: "Pick a look", exact: true }).waitFor();
+    await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+    await tailscale.waitFor();
+    assert.equal(await tailscale.getAttribute("aria-disabled"), "true", "the ways still wait for the start after the step is left and come back to");
     await page.waitForFunction(() => typeof (globalThis as { releaseDemoRelayStart?: () => void }).releaseDemoRelayStart === "function");
     await page.evaluate(() => (globalThis as { releaseDemoRelayStart?: () => void }).releaseDemoRelayStart?.());
     await side.locator(".setup-relay-tight .qr").waitFor();

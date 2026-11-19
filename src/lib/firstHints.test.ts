@@ -1,11 +1,20 @@
 import { describe, expect, it } from "bun:test";
 
-import { armHints, browserStorage, finishHints, FIRST_HINTS_KEY, hideSetupRow, hintsPending, setupRowOn, setupRowState } from "./firstHints.ts";
+import { armHints, browserStorage, finishHints, FIRST_HINTS_KEY, hideSetupRow, hintsPending, setupRowOn, setupRowState, usageReadAllowed } from "./firstHints.ts";
 
 const memory = () => {
   const values = new Map<string, string>();
   return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => void values.set(key, value) };
 };
+
+describe("the guide's usage read", () => {
+  it("waits for Continue, and once usage was on reads only while it stays on", () => {
+    expect(usageReadAllowed(null, true)).toBe(false);
+    expect(usageReadAllowed("1", false)).toBe(true);
+    expect(usageReadAllowed("on", true)).toBe(true);
+    expect(usageReadAllowed("on", false)).toBe(false);
+  });
+});
 
 describe("first-start hints", () => {
   it("are armed once, by the first run, and stay done once finished", () => {
