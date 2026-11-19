@@ -537,7 +537,7 @@ export class DeviceStore {
   }
 
   get gated(): boolean {
-    return this.failsClosed() || this.error !== null || this.gateClosedAt !== null || this.devices.length > 0;
+    return this.error !== null || this.gateClosedAt !== null || this.devices.length > 0;
   }
 
   /**

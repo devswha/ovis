@@ -13,10 +13,10 @@
  * change the log through the server's recovery socket (S2-15), never by writing this file.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, type Stats, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AccountRecordError, parseSafetyRecord, type PcLiftRecord, type SafetyRecord, type SafetyRecordKind } from "../../shared/account-records.ts";
-import { writePrivateState } from "../private-state.ts";
+import { privateStateRefusal, writePrivateState } from "../private-state.ts";
 
 export const SAFETY_LOG_FILE = "account-log.json";
 /** The device journal (P15, S2-07). A state folder that has one has had a log since, so a missing log there is damage. */
@@ -128,6 +128,21 @@ function parseLog(value: unknown): LogFile | string {
   return file as LogFile;
 }
 
+/**
+ * Why another account may have written the log, or null: owned by another uid, or group- or other-writable. Such a
+ * file is refused as it is, never repaired, since what it holds may already be someone else's (S19).
+ */
+function writableByOthers(path: string): string | null {
+  if (process.platform === "win32") return null;
+  let stats: Stats;
+  try { stats = statSync(path); } catch { return null; }
+  if (stats.uid !== process.getuid?.()) return `it is owned by uid ${stats.uid}`;
+  return (stats.mode & 0o022) !== 0 ? "another account can write it" : null;
+}
+
+/** What a strict log reads as: locked, so nothing that reads it before checking `strict` takes it as open. */
+const STRICT_STATE: SafetyState = { locked: true, locks: [], blocks: [], freezes: [], markers: [] };
+
 /** The one handle of each folder's log in this process (P24: one writer, one numbering). */
 const HANDLES = new Map<string, SafetyLog>();
 
@@ -158,6 +173,10 @@ export class SafetyLog {
 
   /** Reads the file as open() does; false, with the log strict, when it is missing where it must exist or untrusted. */
   private load(): boolean {
+    this.inForce = STRICT_STATE;
+    // PC-written endings carry no signature: a log another account could write ends blocks and locks with one line
+    const refused = writableByOthers(this.path) ?? privateStateRefusal(this.path);
+    if (refused !== null) { this.readError = `${this.path} cannot be trusted: ${refused}`; return false; }
     let text: string;
     try { text = readFileSync(this.path, "utf8"); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.readError = `Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
