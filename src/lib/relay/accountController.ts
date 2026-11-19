@@ -538,7 +538,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // the directory of the sign-in this enrollment began with: one stored meanwhile (another tab) is another account's.
       // A send the connection dropped under goes again once it is back, while this enrollment still owns the pairing
       const listing = { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay };
-      await sendAgainWhenBack(() => account.forSignIn(session).putPc(serverId, listing), { before: owned, signal });
+      const again = sendAgainWhenBack({ before: owned, signal });
+      await account.forSignIn(session).putPc(serverId, listing, signal, again);
       // listed first, so a removal this client signs from now on reaches it by mailbox too
       if ((await accountStore.get("enrolls"))?.[serverId] !== undefined) {
         // the PC takes an enrollment only from a session that signed in with the account key, which the ones above did not
@@ -564,7 +565,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           const pc = { server_id: serverId, server_public_key: device.server_public_key, relay: device.relay, name: (device.name ?? serverId.slice(0, 8)).slice(0, 48) };
           // PCs the directory lists that this device cannot read: their removals are unknown here
           // the directory unread counts as one more PC this device cannot read
-          const listed = await sendAgainWhenBack(() => account.forSignIn(session).listPcs(), { before: owned, signal }).then((pcs) => pcs.filter((entry) => entry.server_id !== serverId).length, () => 1);
+          // a read this enrollment stopped (a Forget, a cancel) ends it, rather than count as a PC not read
+          const listed = await account.forSignIn(session).listPcs(signal, again).then((pcs) => pcs.filter((entry) => entry.server_id !== serverId).length, (error: unknown) => {
+            if (signal?.aborted === true || (error instanceof DOMException && error.name === "AbortError")) throw error;
+            return 1;
+          });
           const enrollment = await enrollOnPc({
             fetch: async (path, init) => {
               assertPairing(await store.get(serverId));

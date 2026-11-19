@@ -42,7 +42,7 @@ describe("account enrollment ownership", () => {
   });
 
   async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch; readonly heldAccount?: string;
-    readonly accountAnswer?: (route: string, sent: number) => Response | TypeError | undefined } = {}) {
+    readonly accountAnswer?: (route: string, sent: number) => Response | Promise<Response> | TypeError | undefined } = {}) {
     const identity = generateKeyPair();
     const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.invalid", name: "Desk" };
     const accountStore = memoryAccountStore();
@@ -543,6 +543,79 @@ describe("account enrollment ownership", () => {
       window.dispatchEvent(new Event("online"));
       await settle(() => true);
       expect([run.sent(putRoute(run)).length, await savedState(run)]).toEqual([ACCOUNT_SENDS, "failed"]);
+    });
+
+    /** a token refresh as the service answers it: a refresh token is good once, and seen again ends the sign-in */
+    const grant = (run: Run): Response => Response.json({ access_token: run.service.issueToken("account"), refresh_token: crypto.randomUUID(), expires_in: 3600, account: "account", provider: "github" });
+    const expiring = async (run: Run, inMs: number): Promise<void> => {
+      await run.accountStore.update("session", (session) => session === undefined ? undefined : { ...session, expires_at: Date.now() + inMs });
+    };
+
+    it("does not send a token refresh again whose answer was lost, so the sign-in it rotated is not ended", async () => {
+      const run = await fixture("unused", { accountAnswer: (route, sent) => {
+        if (route !== "POST /v1/token") return undefined;
+        // the service rotated the token, and the answer was lost on the way
+        if (sent === 1) { grant(run); return dropped(); }
+        return Response.json({ error: { code: "invalid_grant" } }, { status: 400 });
+      } });
+      await expiring(run, 0);
+      await expect(onFakeClock(run.controller.enroll(await run.open(), run.original.server_id, false))).rejects.toBeInstanceOf(AccountServiceUnreachableError);
+      expect([run.sent("POST /v1/token"), run.sent(putRoute(run)), await run.accountStore.get("session") === undefined]).toEqual([[0], [], false]);
+    });
+
+    it("counts every HTTP send of the listing against its bound, the one after a refused token too", async () => {
+      const run = await fixture("unused", { accountAnswer: (route, sent) => {
+        if (route === "POST /v1/token") return grant(run);
+        if (!route.startsWith("PUT ")) return undefined;
+        return sent % 2 === 1 ? dropped() : Response.json({ error: { code: "unauthorized" } }, { status: 401 });
+      } });
+      await expect(onFakeClock(run.controller.enroll(await run.open(), run.original.server_id, false))).rejects.toBeInstanceOf(AccountServiceUnreachableError);
+      expect(run.sent(putRoute(run))).toHaveLength(ACCOUNT_SENDS);
+      expect(run.sent("POST /v1/token")).toHaveLength(1);
+    });
+
+    it("sends nothing for a pairing forgotten while the token refresh before a send again was out", async () => {
+      const refresh = Promise.withResolvers<Response>();
+      const run = await fixture("unused", { accountAnswer: (route, sent) => {
+        if (route === "POST /v1/token") return refresh.promise;
+        return route.startsWith("PUT ") && sent === 1 ? dropped() : undefined;
+      } });
+      // fresh for the first send, due for a refresh by the second
+      await expiring(run, 60_000 + NETWORK_RETRY_MS[0] / 2);
+      const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+      await settle(() => run.sent(putRoute(run)).length === 1 && jest.getTimerCount() > 0);
+      jest.advanceTimersByTime(NETWORK_RETRY_MS[0]);
+      await settle(() => run.sent("POST /v1/token").length === 1);
+      run.controller.cancelEnrollment(run.original.server_id);
+      await forgetSavedPc(run.original.server_id, run.store);
+      refresh.resolve(grant(run));
+      expect(await onFakeClock(pending)).toBeInstanceOf(DOMException);
+      expect(run.sent(putRoute(run))).toEqual([0]);
+    });
+
+    it("waits for a busy service's retry-after given as a date", async () => {
+      const run = await fixture("unused", { accountAnswer: (route, sent) => route.startsWith("PUT ") && sent === 1
+        ? Response.json({ error: { code: "rate_limited" } }, { status: 429, headers: { "retry-after": new Date(Date.now() + 30_000).toUTCString() } }) : undefined });
+      expect(await onFakeClock(run.controller.enroll(await run.open(), run.original.server_id, false))).toEqual({ state: "complete", admitted: 2 });
+      const [, again] = run.sent(putRoute(run));
+      // an HTTP date is to the second
+      expect(again).toBeGreaterThan(29_000);
+      expect(again).toBeLessThanOrEqual(30_000);
+    });
+
+    it("sends nothing when the browser is online again while the page is hidden, and sends once it is shown", async () => {
+      browser.setVisibility("hidden");
+      const run = await fixture("unused", { accountAnswer: (route, sent) => route.startsWith("PUT ") && sent === 1 ? dropped() : undefined });
+      let over = false;
+      const pending = run.controller.enroll(await run.open(), run.original.server_id, false).finally(() => { over = true; });
+      await settle(() => run.sent(putRoute(run)).length === 1 && jest.getTimerCount() > 0);
+      window.dispatchEvent(new Event("online"));
+      for (let turn = 0; turn < 200; turn++) await crypto.subtle.digest("SHA-256", new Uint8Array(1));
+      expect([run.sent(putRoute(run)), over]).toEqual([[0], false]);
+      browser.setVisibility("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(await pending).toEqual({ state: "complete", admitted: 2 });
+      expect(run.sent(putRoute(run))).toEqual([0, 0]);
     });
 
     it("sends nothing again for a pairing forgotten while it waited", async () => {

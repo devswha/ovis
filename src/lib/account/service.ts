@@ -126,6 +126,17 @@ export class AccountServiceUnreachableError extends TypeError {
   }
 }
 
+/**
+ * How a request is sent again (relay/networkRetry.ts): `sends` HTTP sends in all, the first included; `before` runs
+ * immediately before each, after any token refresh, and ends the request by throwing; `wait` runs after a send that got
+ * no answer or a 429, and says whether the next goes.
+ */
+export interface SendAgain {
+  readonly sends: number;
+  readonly before: () => Promise<void>;
+  readonly wait: (error: AccountServiceError | AccountServiceUnreachableError, sent: number) => Promise<boolean>;
+}
+
 /** The sign-in is gone (revoked, expired past refresh, or never made): the client is signed out. */
 export class SignedOutError extends Error {
   readonly code = "signed_out";
@@ -167,8 +178,16 @@ export async function failure(response: Response): Promise<AccountServiceError> 
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
   }
-  const seconds = Number(response.headers.get("retry-after") ?? Number.NaN);
-  return new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null);
+  return new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, retryAfterMs(response.headers.get("retry-after")));
+}
+
+/** A `retry-after` in delay-seconds or as an HTTP date, in ms from now; null without one either reads. */
+function retryAfterMs(header: string | null): number | null {
+  if (header === null || header.trim() === "") return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1000 : null;
+  const at = Date.parse(header);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
 }
 
 export function parseAccountLimits(value: unknown): AccountLimits | null {
@@ -295,16 +314,16 @@ export class AccountService {
     return new AccountService({ ...this.options, signIn: session });
   }
 
-  async listPcs(signal?: AbortSignal): Promise<DirectoryPc[]> {
-    const body = await this.call("GET", "/v1/pcs", undefined, signal);
+  async listPcs(signal?: AbortSignal, again?: SendAgain): Promise<DirectoryPc[]> {
+    const body = await this.call("GET", "/v1/pcs", undefined, signal, again);
     const pcs = isRecord(body) && Array.isArray(body.pcs) ? body.pcs : null;
     if (pcs === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no PC list");
     return pcs.map(parsePc).filter((pc): pc is DirectoryPc => pc !== null);
   }
 
   /** Lists a PC in the account's directory, with its relay key and relay so a new device can compare digits with it. */
-  async putPc(serverId: string, entry: { label: string; public_key: string; relay: string }, signal?: AbortSignal): Promise<void> {
-    await this.call("PUT", `/v1/pcs/${serverId}`, entry, signal);
+  async putPc(serverId: string, entry: { label: string; public_key: string; relay: string }, signal?: AbortSignal, again?: SendAgain): Promise<void> {
+    await this.call("PUT", `/v1/pcs/${serverId}`, entry, signal, again);
   }
 
   async deletePc(serverId: string): Promise<void> {
@@ -515,22 +534,44 @@ export class AccountService {
     });
   }
 
-  /** `signal`: ends the request itself, not only the wait for it (a post given up must not land later). */
-  private async call(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
+  /**
+   * `signal`: ends the request itself, not only the wait for it (a post given up must not land later). `again`: this
+   * request, and only it, is sent again after no answer or a 429 (a token refresh under it never is), within
+   * `again.sends` HTTP sends in all, a send after a 401 included. Without it a 401 is sent again once, as always.
+   */
+  private async call(method: string, path: string, body?: unknown, signal?: AbortSignal, again?: SendAgain): Promise<unknown> {
     let stale: string | undefined;
-    for (const retry of [false, true]) {
+    let refreshed = false;
+    const sends = again?.sends ?? 2;
+    for (let sent = 1; ; sent++) {
       const session = await this.fresh(stale, signal);
-      const response = await this.fetch(new URL(path, session.service), {
-        method,
-        headers: { authorization: `Bearer ${session.access_token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        ...(signal === undefined ? {} : { signal }),
-      });
-      if (response.status === 401 && !retry) { stale = session.access_token; continue; }
+      signal?.throwIfAborted();
+      await again?.before();
+      let response: Response;
+      try {
+        response = await this.fetch(new URL(path, session.service), {
+          method,
+          headers: { authorization: `Bearer ${session.access_token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          ...(signal === undefined ? {} : { signal }),
+        });
+      } catch (error) {
+        if (again !== undefined && error instanceof AccountServiceUnreachableError && sent < sends && await again.wait(error, sent)) continue;
+        throw error;
+      }
+      if (response.status === 401 && !refreshed) {
+        if (sent >= sends) throw await failure(response);
+        refreshed = true;
+        stale = session.access_token;
+        continue;
+      }
       if (response.status === 401) return this.signedOut(session);
-      if (!response.ok) throw await failure(response);
+      if (!response.ok) {
+        const refusal = await failure(response);
+        if (again !== undefined && refusal.status === 429 && sent < sends && await again.wait(refusal, sent)) continue;
+        throw refusal;
+      }
       return response.status === 204 ? null : response.json();
     }
-    return this.signedOut();
   }
 }
