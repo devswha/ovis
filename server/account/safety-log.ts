@@ -109,7 +109,10 @@ function parseLog(value: unknown): LogFile | string {
   if (!Array.isArray(file.entries) || !Array.isArray(file.waiting)) return "invalid entries";
   const seen = new Map<string, SafetyRecord>();
   const numbers = new Set<number>();
-  for (const id of file.base.map((line) => line.id)) seen.set(id, { id } as SafetyRecord);
+  for (const id of file.base.map((line) => line.id)) {
+    if (seen.has(id)) return `the folded id ${id} is held twice`;
+    seen.set(id, { id } as SafetyRecord);
+  }
   // every number this log gave is a whole entry or a folded line: a history with numbers that account for nothing
   // is none this writer made (P24)
   if (file.next! - 1 > file.entries.length + file.base.length) return `next ${String(file.next)} accounts for more records than the log holds`;
@@ -169,6 +172,11 @@ export class SafetyLog {
     log.writeError = null;
     log.load();
     return log;
+  }
+
+  /** The server that held this folder's handle stopped: the next open starts a fresh one. */
+  close(): void {
+    if (HANDLES.get(this.path) === this) HANDLES.delete(this.path);
   }
 
   /** Reads the file as open() does; false, with the log strict, when it is missing where it must exist or untrusted. */

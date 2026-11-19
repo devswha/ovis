@@ -577,6 +577,7 @@ export function createServer(
       });
       piReader.close();
       stopPinBridge?.stop();
+      safetyLog?.close();
       void usageLogin.stopAll();
       void shellAgents.stop();
       agentDetector.close();

@@ -531,14 +531,14 @@ export class DeviceStore {
     return this.safety?.strict ?? this.accountProblem;
   }
 
-  /** The safety log fails closed: no device gets in by a row or a code. */
-  private failsClosed(): boolean {
+  /** The safety log fails closed: no device gets in by a row or a code (S19). */
+  get failsClosed(): boolean {
     return (this.safety?.strict ?? null) !== null;
   }
 
   get gated(): boolean {
     // what access reads: a PC that fails closed is closed to strangers, paired or not (S19)
-    return this.failsClosed() || this.rawGated;
+    return this.failsClosed || this.rawGated;
   }
 
   /** The gate as the registry holds it, for what is persisted and announced (closeGate, save); access reads gated. */
@@ -566,8 +566,9 @@ export class DeviceStore {
   /** Relay opt-in closes open LAN access before any outbound connection is made. */
   /** Closes the registry's own gate, whatever the safety log says; closing a closed gate does nothing. */
   closeGate(): void {
-    this.assertWritable();
+    // a registry that could not be read is closed already (rawGated): nothing to write, and nothing to throw
     if (this.rawGated) return;
+    this.assertWritable();
     const gate = new Date().toISOString();
     this.save(this.devices, gate);
     this.gateClosedAt = gate;
@@ -1069,7 +1070,7 @@ export class DeviceStore {
   }
 
   pair(code: string, label: string, role: DeviceRole, now = Date.now(), origin: readonly string[] = [], localCodeOnly = false): { token: string; device: DeviceMatch } | null {
-    if (this.failsClosed()) return null;
+    if (this.failsClosed) return null;
     this.assertWritable();
     this.pruneUnconfirmedFirstPairs(now);
     // a code started through the relay is never redeemed on the LAN listener, nor are its guesses spent there:
@@ -1141,7 +1142,7 @@ export class DeviceStore {
    * key new to this PC (isNewKey).
    */
   pairRelay(code: string, label: string, publicKey: string, now = Date.now(), admit?: () => boolean): { device: DeviceMatch } | null {
-    if (this.failsClosed()) return null;
+    if (this.failsClosed) return null;
     this.assertRelayPairing("code", now);
     // a code made for a PC in no account makes no device: the one that pairs with it waits to link
     const waiting = this.pending?.waiting;
@@ -1219,7 +1220,7 @@ export class DeviceStore {
    * a key new to this PC, false makes no device and counts no failure.
    */
   pairRelayApproved(label: string, publicKey: string, approval: { path: PairingPath; addedBy?: string; id?: string }, now = Date.now(), admit?: () => boolean): { device: DeviceMatch } | null {
-    if (this.failsClosed()) return null;
+    if (this.failsClosed) return null;
     this.assertRelayPairing(approval.path, now);
     if (!isRelayPublicKey(publicKey)) { this.noteRelayFailure(approval.path, now); return null; }
     // an approver revoked or demoted while the device waited approves nothing
@@ -1291,7 +1292,7 @@ export class DeviceStore {
 
   /** The transport owns a fresh 32-byte nonce per session and consumes AUTH only once. */
   async matchRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string, now = Date.now()): Promise<DeviceMatch | null> {
-    if (this.failsClosed() || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
+    if (this.failsClosed || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
     const signed = Buffer.from(signature, "base64url");
     if (signed.length !== 64 || signed.toString("base64url") !== signature) return null;
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key !== undefined);
@@ -1319,7 +1320,7 @@ export class DeviceStore {
 
   match(token: string | undefined, now = Date.now()): DeviceMatch | null {
     this.pruneUnconfirmedFirstPairs(now);
-    if (!token || this.failsClosed()) return null;
+    if (!token || this.failsClosed) return null;
     const digest = hash(token);
     const candidateIndex = this.unconfirmedFirstPairs.findIndex(({ device }) => same(digest, device.token_hash));
     if (candidateIndex !== -1) {
