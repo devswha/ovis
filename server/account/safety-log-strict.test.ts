@@ -75,4 +75,21 @@ describe("the safety log's endings and its failed writes (P24, S19)", () => {
     expect(existsSync(join(at, "account-tombstones.pending.json"))).toBe(false);
     expect((JSON.parse(readFileSync(join(at, "account-tombstones.json"), "utf8")) as { tombstones: unknown[] }).tombstones).toHaveLength(1);
   });
+
+  test.skipIf(NO_CHMOD)("S19: a sign-in whose proof was checked while the log turned strict is refused", async () => {
+    const at = dir();
+    const log = SafetyLog.open(at);
+    const devices = new DeviceStore(at, null, null, log);
+    const phone = await signer();
+    const id = devices.pairRelay(devices.startPairing().code, "Phone", phone.spki)!.device.id;
+    const nonce = crypto.getRandomValues(new Uint8Array(32));
+    const serverId = "0123456789abcdef0123456789abcdef";
+    const signature = Buffer.from(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, phone.keys.privateKey, Buffer.concat([Buffer.from("ovis-relay-auth/1"), nonce, Buffer.from(serverId)]))).toString("base64url");
+    const pending = devices.matchRelay(id, nonce, signature, serverId);
+    chmodSync(at, 0o500);
+    log.append({ record: pc("lock", "acct_1", null), got: "pc" });
+    chmodSync(at, 0o700);
+    expect(await pending).toBeNull();
+  });
 });
+
