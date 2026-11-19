@@ -139,7 +139,9 @@ export interface AddressPcForward {
   close(): void;
 }
 
-type Forwarded = { target: string; upstream?: WebSocket; waiting: (string | Uint8Array<ArrayBuffer>)[]; waitingBytes: number };
+type Forwarded = { target: string; upstream?: WebSocket; opened: boolean; waiting: (string | Uint8Array<ArrayBuffer>)[]; waitingBytes: number };
+/** frames a socket may send before that PC's end is open, whatever their size */
+const WAITING_FRAMES = 1024;
 
 /**
  * The loopback endpoint for the PC at `origin`: 127.0.0.1 on a free port, behind a bearer made fresh for this forward,
@@ -163,11 +165,19 @@ export function openAddressPcForward(origin: string, deviceToken: string, onLost
     return headers;
   };
   let closed = false;
-  // the refusal's own answer is still on its way out: the forward stops taking requests and lets that one finish
+  let forced = false;
+  // the refusal's own answer is still on its way out: the forward stops taking requests and lets that one finish,
+  // until the PC is disconnected or removed (close), which ends whatever is left
   const refused = (): void => {
     if (closed) return;
     close(false);
     onLost(new AddressPcRefused());
+  };
+  // a socket's handshake answers no status: one that never opened asks that PC once whether it still takes this one
+  const checkRefused = (): void => {
+    if (closed) return;
+    void fetch(`${origin}/api/session`, { headers: { authorization: `Device ${deviceToken}` }, redirect: "error", signal: AbortSignal.timeout(PAIR_MS) })
+      .then((response) => { void response.body?.cancel(); if (response.status === 401) refused(); }, () => {});
   };
   const sockets = new Set<Bun.ServerWebSocket<Forwarded>>();
   const server = Bun.serve<Forwarded>({
@@ -179,7 +189,7 @@ export function openAddressPcForward(origin: string, deviceToken: string, onLost
       const url = new URL(request.url);
       const target = url.pathname + url.search;
       if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
-        return bun.upgrade(request, { data: { target, waiting: [], waitingBytes: 0 } }) ? undefined : new Response(null, { status: 400 });
+        return bun.upgrade(request, { data: { target, opened: false, waiting: [], waitingBytes: 0 } }) ? undefined : new Response(null, { status: 400 });
       }
       let response: Response;
       try {
@@ -205,6 +215,7 @@ export function openAddressPcForward(origin: string, deviceToken: string, onLost
         upstream.binaryType = "arraybuffer";
         local.data.upstream = upstream;
         upstream.onopen = () => {
+          local.data.opened = true;
           for (const message of local.data.waiting) upstream.send(message);
           local.data.waiting = []; local.data.waitingBytes = 0;
         };
@@ -213,14 +224,22 @@ export function openAddressPcForward(origin: string, deviceToken: string, onLost
           const sent = local.send(typeof event.data === "string" ? event.data : new Uint8Array(event.data as ArrayBuffer));
           if (sent === 0 || local.getBufferedAmount() > OUTPUT_HARD_BYTES + MAX_LARGE_WS_MESSAGE_BYTES) local.close(OUTPUT_STALLED_CLOSE_CODE, "output delivery failed");
         };
-        upstream.onclose = (event) => { local.close(event.code >= 3000 && event.code <= 4999 || event.code === 1000 ? event.code : 1011, event.reason.slice(0, 100)); };
+        upstream.onclose = (event) => {
+          if (!local.data.opened) checkRefused();
+          local.close(event.code >= 3000 && event.code <= 4999 || event.code === 1000 ? event.code : 1011, event.reason.slice(0, 100));
+        };
       },
       message(local, message) {
         const data = typeof message === "string" ? message : new Uint8Array(message);
         const upstream = local.data.upstream;
-        if (upstream?.readyState === WebSocket.OPEN) { upstream.send(data); return; }
+        if (upstream?.readyState === WebSocket.OPEN) {
+          // input that piles up toward that PC is not dropped quietly either: the socket ends and the app reconnects
+          if (upstream.bufferedAmount > OUTPUT_HARD_BYTES) { local.close(1009, "input to the PC backed up"); return; }
+          upstream.send(data);
+          return;
+        }
         local.data.waitingBytes += typeof data === "string" ? Buffer.byteLength(data) : data.byteLength;
-        if (local.data.waitingBytes > WAITING_BYTES) { local.close(1009, "too much sent before the PC answered"); return; }
+        if (local.data.waitingBytes > WAITING_BYTES || local.data.waiting.length >= WAITING_FRAMES) { local.close(1009, "too much sent before the PC answered"); return; }
         local.data.waiting.push(data);
       },
       close(local, code, reason) {
@@ -231,9 +250,10 @@ export function openAddressPcForward(origin: string, deviceToken: string, onLost
     },
   });
   function close(force = true): void {
-    if (closed) return;
+    if (closed && (forced || !force)) return;
+    if (!closed) for (const socket of sockets) socket.close(1012, "PC connection lost");
     closed = true;
-    for (const socket of sockets) socket.close(1012, "PC connection lost");
+    forced = force;
     void server.stop(force);
   }
   return { endpoint: { url: `http://127.0.0.1:${server.port}`, token }, close: () => close() };

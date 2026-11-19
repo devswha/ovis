@@ -758,12 +758,12 @@ export class MachineManager {
    * The registrations cannot be recomputed, so they are written durably (writePrivateState): a
    * crash after a plain rename can leave the file its old length in NULs. Every refresh of a remote
    * PC saves soon, mostly with the same snapshot, so only a document that differs from the one on
-   * disk pays for the write and its fsync. `relayLast` is for the save that adds a relay PC
-   * (addRelay): relay-pcs.json, its registration, goes last instead, so a save that fails before it
-   * leaves the PC off disk, as it leaves no key (#2833).
+   * disk pays for the write and its fsync. `last` is for the save that adds a relay or address PC
+   * (addRelay, addAddress): that kind's own file, its registration, goes last instead, so a save that
+   * fails before it leaves the PC off disk, as it leaves no key or token (#2833).
    */
-  private persist(apartLast = false): void {
-    if (!apartLast) { this.persistApart("relay"); this.persistApart("address"); }
+  private persist(last?: "relay" | "address"): void {
+    for (const kind of ["relay", "address"] as const) if (kind !== last) this.persistApart(kind);
     const owned = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id && machine.kind !== "hc").map(({ machine }) => machine);
     const data: StoredMachine[] = owned.filter((m) => m.kind !== "relay" && m.kind !== "address").map((m) => ({ id: m.id, name: m.name, target: m.target!, ...(m.server_id ? { server_id: m.server_id } : {}), enabled: m.enabled, snapshot: m.snapshot }));
     const text = JSON.stringify(data);
@@ -772,7 +772,7 @@ export class MachineManager {
     for (const { machine } of this.machines.values()) if (machine.herdr_profile_id) this.profileState.saveSnapshot(machine.herdr_profile_id, machine.snapshot);
     this.profileState.flush();
     if (text !== this.written || !holdsDocument(this.statePath, text)) { writePrivateState(this.statePath, data); this.written = text; }
-    if (apartLast) { this.persistApart("relay"); this.persistApart("address"); }
+    if (last) this.persistApart(last);
   }
   /** relay-pcs.json and address-pcs.json: PCs a release from before them would refuse in machines.json */
   private persistApart(kind: "relay" | "address"): void {
@@ -2075,6 +2075,8 @@ export class MachineManager {
     if (runtime.machine.kind === "address") {
       try {
         delete runtime.machine.herdr;
+        await checkAddressTarget(runtime.machine.address!);
+        if (generation !== runtime.generation || this.stopped) return;
         runtime.forward = openAddressPcForward(runtime.machine.address!, loadAddressPcToken(this.addressTokenPath(runtime.machine.id)), (error) => this.lost(runtime, generation, error));
         runtime.endpoint = runtime.forward.endpoint;
         await this.observe(runtime); this.emit();
@@ -2266,7 +2268,7 @@ export class MachineManager {
     runtime.endpoint = runtime.forward.endpoint;
     this.machines.set(id, runtime);
     // the PC is added only once its registration is on disk: a save that fails leaves no PC, connection or token behind
-    try { saveAddressPcToken(tokenPath, deviceToken); this.persist(true); } catch (error) {
+    try { saveAddressPcToken(tokenPath, deviceToken); this.persist("address"); } catch (error) {
       this.machines.delete(id);
       runtime.machine.enabled = false; this.disconnect(runtime);
       removeAddressPcToken(tokenPath);
@@ -2488,7 +2490,7 @@ export class MachineManager {
     runtime.tunnel = tunnel; runtime.endpoint = tunnel.endpoint;
     this.machines.set(id, runtime);
     // the PC is added only once its registration is on disk: a save that fails leaves no PC, connection or key behind
-    try { this.persist(true); } catch (error) {
+    try { this.persist("relay"); } catch (error) {
       this.machines.delete(id);
       runtime.machine.enabled = false; this.disconnect(runtime);
       removeRelayPcKey(keyPath);

@@ -149,15 +149,19 @@ PC itself is saved in `<stateDir>/address-pcs.json`, apart from `machines.json`.
 The address is an origin only: `https://`, or plain `http://` to this PC itself (`localhost`,
 `127.0.0.1`, `[::1]`), with no path, query, fragment or user name, and no redirect is followed. A
 name that leads to a link-local, unspecified, multicast or broadcast address is refused; a public,
-LAN or Tailscale address is the point and is taken.
+LAN or Tailscale address is the point and is taken. The name is looked up again before every
+connection, under the same rule.
 
 A loopback forward on this PC (127.0.0.1, a bearer made fresh for each connection) carries that PC's
 status, API routes and terminals with `Authorization: Device <token>`, so it joins the sidebar as a
 relay PC does: it runs its own Ovis, which updates itself, and has no bridge controls. Only the
 relay's header allowlists cross the forward, so no cookie, `Authorization` or forwarding header of
 either side reaches the other. A dropped connection comes back with an SSH PC's backoff. A 401 from
-that PC (it revoked this one) ends the forward: the PC turns to an error that says so and is not
-tried again. **Remove PC** here deletes the token; revoke it on the other PC as well.
+that PC (it revoked this one), on a request or a socket that never opened, ends the forward: the PC
+turns to an error that says so and is not tried again. Revoking ends only what the token gave: a PC
+that lets this one in by its own rule anyway (no token on it and the request from its own loopback, or
+the owner's Tailscale login through `tailscale serve`) keeps answering it, as it would any window
+there. **Remove PC** here deletes the token; revoke it on the other PC as well.
 
 `POST /api/machines/address` with `{ "address": "https://…", "code": "<six digits>", "name"?: "<PC
 name>" }` adds one (201 `{ machine }`, with `kind: "address"` and `address`), under the same guards

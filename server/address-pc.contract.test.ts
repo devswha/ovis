@@ -166,6 +166,33 @@ it("ends the forward when that PC answers 401, and tells it as a refusal", async
   expect(await fetch(`${forward.endpoint.url}/api/session`, { headers: { authorization: `Bearer ${forward.endpoint.token}` } }).then(() => "answered", () => "closed")).toBe("closed");
 });
 
+it("hears a refusal on a socket too: one that never opened asks that PC, and a 401 there ends the forward", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 401 }) });
+  cleanup.push(() => upstream.stop(true));
+  const lost = deferred<Error>();
+  const forward = openAddressPcForward(`http://127.0.0.1:${upstream.port}`, "fictional-device-token-0123456789", (error) => lost.resolve(error));
+  cleanup.push(() => forward.close());
+  const RuntimeSocket = WebSocket as unknown as new (url: string, options: { headers: Record<string, string> }) => WebSocket;
+  const socket = new RuntimeSocket(`${forward.endpoint.url.replace("http:", "ws:")}/ws`, { headers: { authorization: `Bearer ${forward.endpoint.token}` } });
+  const closed = deferred<number>();
+  socket.onclose = (event) => closed.resolve(event.code);
+  expect(await bounded(closed.promise)).toBe(1011);
+  expect((await bounded(lost.promise)).name).toBe("AddressPcRefused");
+});
+
+it("ends a socket whose sends pile up before that PC opened it, by count as well as by size", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Promise<Response>(() => {}) });
+  cleanup.push(() => upstream.stop(true));
+  const forward = openAddressPcForward(`http://127.0.0.1:${upstream.port}`, "fictional-device-token-0123456789", () => {});
+  cleanup.push(() => forward.close());
+  const RuntimeSocket = WebSocket as unknown as new (url: string, options: { headers: Record<string, string> }) => WebSocket;
+  const socket = new RuntimeSocket(`${forward.endpoint.url.replace("http:", "ws:")}/ws`, { headers: { authorization: `Bearer ${forward.endpoint.token}` } });
+  const closed = deferred<number>();
+  socket.onclose = (event) => closed.resolve(event.code);
+  socket.onopen = () => { for (let i = 0; i < 1100; i++) socket.send(""); };
+  expect(await bounded(closed.promise)).toBe(1009);
+});
+
 it("takes an https origin, or plain http to this PC only, and nothing after it", () => {
   expect(addressOrigin(" https://desk.example.ts.net/ ")).toBe("https://desk.example.ts.net");
   expect(addressOrigin("https://desk.example.ts.net:8443")).toBe("https://desk.example.ts.net:8443");
