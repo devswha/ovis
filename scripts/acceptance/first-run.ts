@@ -354,6 +354,7 @@ const steps: Step<World>[] = [
     const { page } = w.phone!;
     const marker = `held-${randomBytes(3).toString("hex")}`;
     await withoutRelay([w.desk, w.laptop], async (back) => {
+      await paneBanner(page, w.desk.pane, "warning").filter({ hasText: "Reconnecting to Ovis" }).waitFor({ timeout: 30_000 });
       await page.locator(`.terminal-stack[data-pane-owner="${w.desk.pane}"] .xterm-helper-textarea`).focus();
       await page.keyboard.type(marker);
       await paneBanner(page, w.desk.pane, "warning").locator(".draft-held", { hasText: marker }).waitFor({ timeout: 30_000 });
