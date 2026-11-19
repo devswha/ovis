@@ -136,6 +136,34 @@ code, `POST /api/machines/relay/code` with `{ "code": "<code>" }` runs one excha
 `unreachable`, `forged`); then `POST /api/machines/relay` with `{ "found": "<ticket>" }` adds
 that PC, once.
 
+## By its address
+
+Another PC whose Ovis answers at an https address (`tailscale serve`, a reverse proxy) can be added
+by that address, with no SSH and no relay. On that PC, start a pairing (**Settings → Devices and
+PCs**) and type the six-digit code it shows here with its address. This PC's server sends that PC
+only the code and the label `Ovis on <this PC's name>` (`POST /api/devices/pair`), and keeps the
+device token it answers in `<stateDir>/address-pcs/<pc id>.json` (mode `0600`), never in a PC list, a
+log or an answer. That PC lists it under Devices as one more paired device that **drives** it. The
+PC itself is saved in `<stateDir>/address-pcs.json`, apart from `machines.json`.
+
+The address is an origin only: `https://`, or plain `http://` to this PC itself (`localhost`,
+`127.0.0.1`, `[::1]`), with no path, query, fragment or user name, and no redirect is followed. A
+name that leads to a link-local, unspecified, multicast or broadcast address is refused; a public,
+LAN or Tailscale address is the point and is taken.
+
+A loopback forward on this PC (127.0.0.1, a bearer made fresh for each connection) carries that PC's
+status, API routes and terminals with `Authorization: Device <token>`, so it joins the sidebar as a
+relay PC does: it runs its own Ovis, which updates itself, and has no bridge controls. Only the
+relay's header allowlists cross the forward, so no cookie, `Authorization` or forwarding header of
+either side reaches the other. A dropped connection comes back with an SSH PC's backoff. A 401 from
+that PC (it revoked this one) ends the forward: the PC turns to an error that says so and is not
+tried again. **Remove PC** here deletes the token; revoke it on the other PC as well.
+
+`POST /api/machines/address` with `{ "address": "https://…", "code": "<six digits>", "name"?: "<PC
+name>" }` adds one (201 `{ machine }`, with `kind: "address"` and `address`), under the same guards
+as every PC change, over HTTPS or from localhost only. A device on the relay, a Portal visitor and an
+open LAN window are refused (`owner_only`).
+
 ## Updating PCs from here
 
 Every PC added here, through the relay (direct or relayed) or over SSH, is updated from the PC in
