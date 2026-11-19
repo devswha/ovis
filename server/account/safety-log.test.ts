@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeviceStore } from "../devices.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
-import { ACCOUNT_JOURNAL_FILE, pcRecordId, SAFETY_LOG_FILE, SafetyLog, signedRecordId, type BlockAsOf, type SafetyRecord } from "./safety-log.ts";
+import { exportAccountKey, newRecordId, signSafetyRecord, type SafetyRecord } from "../../shared/account-records.ts";
+import { ACCOUNT_JOURNAL_FILE, pcRecordId, SAFETY_LOG_FILE, SafetyLog, type BlockAsOf } from "./safety-log.ts";
 
 const dirs: string[] = [];
 const fixtures: ReturnType<typeof relayFixture>[] = [];
@@ -30,19 +31,24 @@ async function key(): Promise<string> {
   return Buffer.from(await crypto.subtle.exportKey("spki", pair.publicKey)).toString("base64url");
 }
 
-/** A device-signed record as the log keeps it: its signed bytes whole, and an id that is their SHA-256. */
-function signed(kind: "block" | "lift", target: string, signer: string): { record: SafetyRecord; bytes: Uint8Array } {
-  const bytes = new Uint8Array(randomBytes(120));
-  const record: SafetyRecord = { id: signedRecordId(bytes), kind, account: ACCOUNT, target, signer, signed_at: AT, sig: randomBytes(64).toString("base64url") };
-  return { record, bytes };
+interface Signer { keys: CryptoKeyPair; spki: string }
+async function signer(): Promise<Signer> {
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  return { keys, spki: await exportAccountKey(keys.publicKey) };
 }
 
-function pcRecord(kind: "lock" | "unlock" | "lift" | "forget", target: string | null, extra: Partial<SafetyRecord> = {}): SafetyRecord {
-  return { id: pcRecordId(), kind, account: ACCOUNT, target, signer: "pc", signed_at: AT, sig: "", ...extra };
+/** A block a device signed: its id is the SHA-256 of its signed bytes, which the record whole gives again. */
+const signedBlock = (target: string, by: Signer): Promise<SafetyRecord> =>
+  signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target, target_no: 3, signer: by.spki, signer_no: 1, signed_at: AT, nonce: newRecordId() }, by.keys.privateKey);
+const signedLift = (block: string, by: Signer): Promise<SafetyRecord> =>
+  signSafetyRecord({ v: 1, kind: "lift", account: ACCOUNT, target: block, signer: by.spki, signer_no: 1, signed_at: AT }, by.keys.privateKey);
+
+function pcRecord(kind: "lock" | "unlock" | "lift", target: string | null, forget = false): SafetyRecord {
+  return { v: 1, id: pcRecordId(), kind, account: ACCOUNT, target, signer: "pc", signed_at: AT, signature: "", ...(kind === "lift" ? { forget } : {}) } as SafetyRecord;
 }
 
 function serviceFreeze(blockId: string, target: string): SafetyRecord {
-  return { id: `f:${blockId}`, kind: "freeze", account: ACCOUNT, target, signer: "service", signed_at: AT, sig: "" };
+  return { v: 1, id: `f:${blockId}`, kind: "freeze", account: ACCOUNT, target, after: 3, signer: "service", signed_at: AT, signature: "" };
 }
 
 const ids = (entries: readonly { record: { id: string } }[]) => entries.map((entry) => entry.record.id).sort();
@@ -50,27 +56,26 @@ const ids = (entries: readonly { record: { id: string } }[]) => entries.map((ent
 describe("the PC safety log (account-log.json)", () => {
   test("P24: append preserves signed bytes, IDs and increasing local numbers", async () => {
     const dir = stateDir();
-    const signer = await key();
+    const by = await signer();
     const target = await key();
     const log = SafetyLog.open(dir);
     expect(log.strict).toBeNull();
-    const block = signed("block", target, signer);
-    expect(log.append({ record: block.record, bytes: block.bytes, got: "handed", asof: ASOF })).toEqual({ outcome: "applied", id: block.record.id, n: 1 });
+    const block = await signedBlock(target, by);
+    expect(log.append({ record: block, got: "handed", asof: ASOF })).toEqual({ outcome: "applied", id: block.id, n: 1 });
     const lock = pcRecord("lock", null);
     expect(log.append({ record: lock, got: "pc" })).toEqual({ outcome: "applied", id: lock.id, n: 2 });
     // the same record again is the same receipt, read from the log, and appends nothing
-    expect(log.append({ record: block.record, bytes: block.bytes, got: "mailbox", asof: ASOF })).toEqual({ outcome: "applied", id: block.record.id, n: 1 });
-    expect(log.receipt(block.record.id)).toEqual({ outcome: "applied", id: block.record.id, n: 1 });
+    expect(log.append({ record: block, got: "mailbox", asof: ASOF })).toEqual({ outcome: "applied", id: block.id, n: 1 });
+    expect(log.receipt(block.id)).toEqual({ outcome: "applied", id: block.id, n: 1 });
 
-    // what a restart reads is what was appended: bytes whole, ids and numbers kept, the next number never used
+    // what a restart reads is what was appended: the signed record whole, ids and numbers kept, the next number never used
     const again = SafetyLog.open(dir);
     expect(again.strict).toBeNull();
     const entries = again.entries();
     expect(entries.map((entry) => entry.n)).toEqual([1, 2]);
-    expect(entries[0]!.record).toEqual(block.record);
+    expect(entries[0]!.record).toEqual(block);
     expect(entries[0]!.got).toBe("handed");
     expect(entries[0]!.asof).toEqual(ASOF);
-    expect(Buffer.from(entries[0]!.bytes!, "base64url").equals(Buffer.from(block.bytes))).toBe(true);
     expect(entries[1]!.record).toEqual(lock);
     const unlock = pcRecord("unlock", lock.id);
     expect(again.append({ record: unlock, got: "pc" })).toEqual({ outcome: "applied", id: unlock.id, n: 3 });
@@ -78,9 +83,9 @@ describe("the PC safety log (account-log.json)", () => {
     expect(file).toMatchObject({ v: 1, next: 4, base: [], waiting: [] });
     expect(file.entries).toHaveLength(3);
 
-    // a signed record whose id is not the hash of its bytes, and a second record under a known id, are refused and change nothing
-    const forged = signed("block", target, signer);
-    expect(again.append({ record: { ...forged.record, id: createHash("sha256").update("other").digest("hex") }, bytes: forged.bytes, got: "handed", asof: ASOF }).outcome).toBe("refused");
+    // a signed record whose id is not the hash of its signed bytes, and a second record under a known id, are refused and change nothing
+    const forged = await signedBlock(target, by);
+    expect(again.append({ record: { ...forged, id: createHash("sha256").update("other").digest("hex") }, got: "handed", asof: ASOF }).outcome).toBe("refused");
     expect(again.append({ record: { ...lock, signed_at: "2026-11-21T10:00:00.000Z" }, got: "pc" })).toEqual({ outcome: "refused", id: lock.id, code: "conflict" });
     expect(again.entries()).toHaveLength(3);
     expect(again.strict).toBeNull();
@@ -88,13 +93,13 @@ describe("the PC safety log (account-log.json)", () => {
 
   test("T41: replay derives block, freeze, lock and record-specific endings before serving", async () => {
     const dir = stateDir();
-    const signer = await key();
+    const by = await signer();
     const [a, b, c, frozen] = [await key(), await key(), await key(), await key()];
     const log = SafetyLog.open(dir);
-    const blockA = signed("block", a, signer);
-    const blockB = signed("block", b, signer);
-    const blockC = signed("block", c, signer);
-    for (const block of [blockA, blockB, blockC]) log.append({ record: block.record, bytes: block.bytes, got: "mailbox", asof: ASOF });
+    const blockA = await signedBlock(a, by);
+    const blockB = await signedBlock(b, by);
+    const blockC = await signedBlock(c, by);
+    for (const block of [blockA, blockB, blockC]) log.append({ record: block, got: "mailbox", asof: ASOF });
     const freeze = serviceFreeze(createHash("sha256").update("a block this log does not hold").digest("hex"), frozen);
     log.append({ record: freeze, got: "snapshot" });
     const lock1 = pcRecord("lock", null);
@@ -102,14 +107,14 @@ describe("the PC safety log (account-log.json)", () => {
     log.append({ record: lock1, got: "pc" });
     log.append({ record: lock2, got: "pc" });
     // a lift ends the block it names and that block's freeze; its marker stands
-    const liftA = signed("lift", blockA.record.id, signer);
-    log.append({ record: liftA.record, bytes: liftA.bytes, got: "snapshot" });
+    const liftA = await signedLift(blockA.id, by);
+    log.append({ record: liftA, got: "snapshot" });
     // a forgetting lift ends block B and its marker
-    log.append({ record: pcRecord("lift", blockB.record.id, { forget: true }), got: "pc" });
+    log.append({ record: pcRecord("lift", blockB.id, true), got: "pc" });
     // an unlock ends the one lock it names
     log.append({ record: pcRecord("unlock", lock1.id), got: "pc" });
     // endings that name a record of another kind end nothing
-    log.append({ record: pcRecord("unlock", blockC.record.id), got: "pc" });
+    log.append({ record: pcRecord("unlock", blockC.id), got: "pc" });
     log.append({ record: pcRecord("lift", lock2.id), got: "pc" });
     const replayed = (state: ReturnType<SafetyLog["state"]>) => ({
       locked: state.locked,
@@ -121,9 +126,9 @@ describe("the PC safety log (account-log.json)", () => {
     const expected = {
       locked: true,
       locks: [lock2.id],
-      blocks: [blockC.record.id],
-      freezes: [blockC.record.id, freeze.id].sort(),
-      markers: [blockA.record.id, blockC.record.id].sort(),
+      blocks: [blockC.id],
+      freezes: [blockC.id, freeze.id].sort(),
+      markers: [blockA.id, blockC.id].sort(),
     };
     expect(replayed(log.state())).toEqual(expected);
     // a start replays the file alone and derives the same: nothing ended comes back
@@ -133,7 +138,7 @@ describe("the PC safety log (account-log.json)", () => {
     const liftFreeze = pcRecord("lift", freeze.id.slice(2));
     log.append({ record: liftFreeze, got: "pc" });
     log.append({ record: pcRecord("unlock", lock2.id), got: "pc" });
-    expect(replayed(SafetyLog.open(dir).state())).toEqual({ ...expected, locked: false, locks: [], freezes: [blockC.record.id] });
+    expect(replayed(SafetyLog.open(dir).state())).toEqual({ ...expected, locked: false, locks: [], freezes: [blockC.id] });
 
     // the server replays it in createServer, before any listener answers
     const fixture = relayFixture(false, { stateDir: dir, accountOpensAll: true });
@@ -141,7 +146,7 @@ describe("the PC safety log (account-log.json)", () => {
     dirs.splice(dirs.indexOf(dir), 1);
     const served = fixture.app.context.services.safetyLog;
     expect(served).not.toBeNull();
-    expect(replayed(served!.state())).toEqual({ ...expected, locked: false, locks: [], freezes: [blockC.record.id] });
+    expect(replayed(served!.state())).toEqual({ ...expected, locked: false, locks: [], freezes: [blockC.id] });
   });
 
   test("T28: missing or invalid log fails closed once journal exists", async () => {
@@ -163,16 +168,15 @@ describe("the PC safety log (account-log.json)", () => {
     writeFileSync(join(garbled, SAFETY_LOG_FILE), "{not json", { mode: 0o600 });
     expect(SafetyLog.open(garbled).strict).not.toBeNull();
     // one id with two different records
-    const signer = await key();
-    const target = await key();
-    const block = signed("block", target, signer);
-    const entry = { n: 1, got: "handed", record: block.record, bytes: Buffer.from(block.bytes).toString("base64url"), asof: ASOF };
+    const block = await signedBlock(await key(), await signer());
+    const entry = { n: 1, got: "handed", record: block, asof: ASOF };
+    const lock = pcRecord("lock", null);
     const twice = journalled();
-    writeFileSync(join(twice, SAFETY_LOG_FILE), JSON.stringify({ v: 1, next: 3, base: [], waiting: [], entries: [entry, { ...entry, n: 2, record: { ...block.record, target: signer } }] }), { mode: 0o600 });
+    writeFileSync(join(twice, SAFETY_LOG_FILE), JSON.stringify({ v: 1, next: 3, base: [], waiting: [], entries: [{ n: 1, got: "pc", record: lock }, { n: 2, got: "pc", record: { ...lock, signed_at: "2026-11-21T10:00:00.000Z" } }] }), { mode: 0o600 });
     expect(SafetyLog.open(twice).strict).not.toBeNull();
-    // a signed record whose id is not the hash of the bytes it keeps
+    // a signed record whose id is not the hash of its signed bytes
     const forged = journalled();
-    writeFileSync(join(forged, SAFETY_LOG_FILE), JSON.stringify({ v: 1, next: 2, base: [], waiting: [], entries: [{ ...entry, bytes: randomBytes(120).toString("base64url") }] }), { mode: 0o600 });
+    writeFileSync(join(forged, SAFETY_LOG_FILE), JSON.stringify({ v: 1, next: 2, base: [], waiting: [], entries: [{ ...entry, record: { ...block, target: await key() } }] }), { mode: 0o600 });
     expect(SafetyLog.open(forged).strict).not.toBeNull();
     // a number taken twice, or one at or past `next`
     const numbered = journalled();
@@ -209,15 +213,14 @@ describe("the PC safety log (account-log.json)", () => {
     // S2-01 gives no network or mailbox path an append: a block reaches the log only after S2-09 verified it
     const fixture = relayFixture(false, { accountOpensAll: true });
     fixtures.push(fixture);
-    const signer = await key();
-    const block = signed("block", await key(), signer);
+    const block = await signedBlock(await key(), await signer());
     const lock = pcRecord("lock", null);
     const headers = { "content-type": "application/json", "x-herdr-machine": "1" };
     for (const [path, body] of [
-      ["/api/account/records", { records: [block.record, lock] }],
-      ["/api/account/enroll", { account: ACCOUNT, records: [block.record, lock] }],
-      ["/api/account/link", { record: block.record }],
-      ["/api/account/introduce", { record: block.record }],
+      ["/api/account/records", { records: [block, lock] }],
+      ["/api/account/enroll", { account: ACCOUNT, records: [block, lock] }],
+      ["/api/account/link", { record: block }],
+      ["/api/account/introduce", { record: block }],
     ] as const) {
       const response = await fetch(`http://127.0.0.1:${fixture.app.port}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
       await response.text();
