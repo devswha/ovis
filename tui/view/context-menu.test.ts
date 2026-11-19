@@ -23,7 +23,7 @@ afterEach(async () => {
  * herdr's right-click world (docs/tui/visual-parity.md R1-R8): a tab split in LEFT and RIGHT and a second tab, a second
  * workspace; with `git`, a repository and a linked worktree of it on disk, each shown by a workspace of its own.
  */
-async function start(options: { git?: boolean; mouse?: boolean } = {}): Promise<Run> {
+async function start(options: { git?: boolean; mouse?: boolean; nested?: boolean } = {}): Promise<Run> {
   const core = new FakeHcCore();
   const where = (space: string, tab: string, pane: string, cwd?: string) => ({ space: `w-${space}`, spaceName: space, tab: `t-${space}-${tab}`, tabName: tab, pane, ...(cwd ? { cwd } : {}) });
   place(core, where("work", "one", "LEFT"), "LEFT-READY\r\n");
@@ -41,6 +41,12 @@ async function start(options: { git?: boolean; mouse?: boolean } = {}): Promise<
     writeFileSync(join(own, "HEAD"), "ref: refs/heads/feature\n");
     writeFileSync(join(own, "gitdir"), `${join(home, "repo-wt", ".git")}\n`);
     writeFileSync(join(own, "commondir"), "../..\n");
+    if (options.nested) {
+      // a repository of its own inside the checkout (a clone, a submodule), its workspace listed before the repository's
+      mkdirSync(join(home, "repo", "inner", ".git"), { recursive: true });
+      writeFileSync(join(home, "repo", "inner", ".git", "HEAD"), "ref: refs/heads/other\n");
+      place(core, where("clone", "sh", "INNER", join(home, "repo", "inner")), "INNER-READY\r\n");
+    }
     place(core, where("repo", "main", "CODE", join(home, "repo")), "CODE-READY\r\n");
     place(core, where("feat", "wt", "WT", join(home, "repo-wt")), "WT-READY\r\n");
   }
@@ -192,7 +198,7 @@ describe("a pane's entries (R4)", () => {
     // shift keeps it for the screen: the menu, whose entry now turns it back
     await rclick(run, { x: text.x + 3, y: text.y }, true);
     expect(menu(run)?.entries).toContain("passthrough_off");
-    const back = cellOf(run, "Use Herdr right-click menu");
+    const back = cellOf(run, "Use the right-click menu");
     await run.keys(`click@${back.x + 1}:${back.y}`);
     await run.advance(50);
     expect(passthrough()).toEqual([]);
@@ -224,6 +230,17 @@ describe("a tab's and a workspace's entries (R5, R6)", () => {
 });
 
 describe("a git workspace's entries (R7)", () => {
+  it("a repository of its own inside the checkout, listed first, is not taken for the checkout's workspace (the server's rule)", async () => {
+    const run = await start({ git: true, nested: true });
+    await choose(run, cellOf(run, " repo"), "Open worktree...");
+    const dialog = top(run);
+    expect(dialog?.kind === "worktrees" && dialog.checkouts.map(({ label, open }) => [label, open])).toEqual([["main", spaceId(run, "repo")], ["feature", spaceId(run, "feat")]]);
+    await run.keys("down,enter");
+    await run.advance(300);
+    const labelled = run.core.calls().filter((call) => call.method === "terminal.label" && WORKTREE_LABEL in (call.params["labels"] as object)).map((call) => call.params["terminal"]);
+    expect(labelled.sort()).toEqual([paneId(run, "CODE"), paneId(run, "WT")].sort());
+  }, TEST_MS);
+
   it("Open worktree... lists the checkouts from git's files; Enter on one a workspace shows goes there and groups it, which folds and closes as one", async () => {
     const run = await start({ git: true });
     const repo = spaceId(run, "repo");

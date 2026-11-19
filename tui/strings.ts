@@ -171,7 +171,7 @@ export const STRINGS = {
     split_horizontal: "Split down",
     zoom: "Zoom",
     passthrough_on: "Send right-clicks to pane",
-    passthrough_off: "Use Herdr right-click menu",
+    passthrough_off: "Use the right-click menu",
     close_pane: "Close pane",
     new_tab: "New tab",
     rename_tab: "Rename",

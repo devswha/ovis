@@ -54,6 +54,12 @@ function checkoutOf(folder: string): { top: string; git: string | null } | null 
   }
 }
 
+/** The top folder of the checkout `folder` is in (its nearest `.git` up), as a real path; null outside one. */
+export function checkoutTop(folder: string): string | null {
+  const found = checkoutOf(folder);
+  return found === null ? null : realPath(found.top);
+}
+
 /** A git folder's HEAD: the branch's name, or a detached commit's first seven characters; null when it makes no sense. */
 function headOf(git: string): { name: string; detached: boolean } | null {
   const head = smallFile(join(git, "HEAD"))?.trim() ?? null;

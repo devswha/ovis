@@ -18,7 +18,7 @@ import { type CloseTarget, collapseEdit, layoutCalls, LayoutStore, type LayoutVi
 import { type CoreHost, type FirstTurn, LAYOUT_DOC, OTHER_WORKSPACE_ID } from "../../server/herdr-core/snapshot.ts";
 import { checkoutHolding, factsOf, type Repository, WORKTREE_LABEL, worktreeFolder, worktreeLabel } from "../../server/herdr-core/worktrees.ts";
 import type { CheckoutRow } from "../model/overlays.ts";
-import { repositoryFiles } from "./git-head.ts";
+import { checkoutTop, repositoryFiles } from "./git-head.ts";
 import { errorCode } from "../crash.ts";
 import type { RunEffect, Seen } from "../model/effects.ts";
 import type { Target } from "../model/focus.ts";
@@ -354,7 +354,10 @@ export class LayoutWrites {
       const folder = facts ? (facts.repo_key === repository.repo_key ? facts.checkout_path : null) : pane ? pane.foreground_cwd ?? pane.cwd : null;
       if (!folder) continue;
       const checkout = checkoutHolding(repository.checkouts, folder);
-      if (checkout !== null && !open.has(checkout)) open.set(checkout, workspace.workspace_id);
+      // as the server's adapter: a folder below a checkout is that checkout's only when its own nearest `.git` is the
+      // checkout's (a clone or a submodule inside it is a repository of its own); facts naming the checkout count as they are
+      if (checkout === null || open.has(checkout) || (!facts && checkoutTop(folder) !== checkout)) continue;
+      open.set(checkout, workspace.workspace_id);
     }
     return open;
   }
