@@ -34,6 +34,27 @@ async function server(accountOpensAll: boolean) {
 }
 
 describe("S2-24 the server wires the whole read only under the release flag (G1, P24)", () => {
+  test("P17/T34: older paired and list rows can replay the published admission", async () => {
+    const { services, service, member } = await server(true);
+    const devices = services.devices;
+    expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    const laptop = devices.openNotices().find((entry) => entry.label === "Laptop");
+    if (!laptop?.row) throw new Error("Laptop was not admitted");
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const key = await exportAccountKey(keys.publicKey);
+    const published: string[] = [];
+    devices.onNotice((entry) => { if (entry.key === key) published.push(entry.id); });
+    service.registerDevice(ACCOUNT, key, "Tablet");
+    expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    const tablet = devices.openNotices().find((entry) => entry.key === key);
+    if (!tablet) throw new Error("Tablet was not admitted");
+    expect({
+      published,
+      paired: devices.noticeReplay(member.id)?.notices.some((n) => n.id === tablet.id),
+      listed: devices.noticeReplay(laptop.row)?.notices.some((n) => n.id === tablet.id),
+    }).toEqual({ published: [tablet.id], paired: true, listed: true });
+  });
+
   test("G1: with OVIS_ACCOUNT_OPENS_ALL on, the PC's mailbox reads and commits the account's snapshot", async () => {
     const { service, services } = await server(true);
     expect(services.devices.account()).toBe(ACCOUNT);
