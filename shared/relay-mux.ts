@@ -80,7 +80,8 @@ export const STREAM_ERRORS = [
 export type StreamError = typeof STREAM_ERRORS[number];
 
 export class MuxProtocolError extends Error {
-  constructor(readonly code: SessionError, message: string, readonly receipts?: readonly BlockReceipt[]) {
+  /** `hold`: the hold state a `held` refusal carries (Step 2, S25); no other code has one. */
+  constructor(readonly code: SessionError, message: string, readonly receipts?: readonly BlockReceipt[], readonly hold?: HoldState) {
     super(message);
     this.name = "MuxProtocolError";
   }
