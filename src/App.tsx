@@ -805,6 +805,8 @@ export function App() {
     ...paneMoreItems.filter((item) => item.id === "mirror-width" || item.id === "recover-unsent"),
   ].map((item) => ({ ...item, divider: false }));
   const modeLeadItems: RowMenuItem[] = [
+    // a phone's way to another PC stays first in the inbox mode too
+    ...fromMore("add-pc"),
     { id: "exit-inbox", label: t("Back to Ovis"), icon: PanelsTopLeft, glyph: <OvisMark />, run: leaveMode },
     ...fromMore("palette"),
   ];
