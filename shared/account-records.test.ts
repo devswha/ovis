@@ -163,6 +163,7 @@ describe("safety records (device table P24, P16)", () => {
       { v: 1, kind: "freeze", id: `f:${blockId}`, account: "acct_1", target: other.spki, after: 5, signer: "service", signed_at: issued, signature: "" },
       { v: 1, kind: "lock", id: newRecordId(), account: "acct_1", target: null, signer: "pc", signed_at: issued, signature: "" },
       { v: 1, kind: "unlock", id: newRecordId(), account: "acct_1", target: newRecordId(), signer: "pc", signed_at: issued, signature: "" },
+      { v: 1, kind: "forget", id: newRecordId(), account: "acct_1", target: other.spki, signer: "pc", signed_at: issued, signature: "" },
     ];
     for (const record of written) expect(parseSafetyRecord(JSON.parse(JSON.stringify(record)))).toEqual(record as never);
   });
@@ -179,6 +180,13 @@ describe("safety records (device table P24, P16)", () => {
       { ...lock, kind: "freeze", target: other.spki, after: 1, id: `f:${"a".repeat(64)}` },
       { ...lock, kind: "lift", target: "a".repeat(64) },
     ];
+    // Device table P13, T61: a forget names an account key, never a record id (no forget names a Revoke or a block)
+    const forget = { v: 1, kind: "forget", id: newRecordId(), account: "acct_1", target: other.spki, signer: "pc", signed_at: issued, signature: "" };
+    bad.push(
+      { ...forget, target: "a".repeat(64) }, { ...forget, target: newRecordId() }, { ...forget, target: null },
+      { ...forget, account: null }, { ...forget, signer: signer.spki }, { ...forget, signature: "A".repeat(86) },
+      { ...forget, id: "a".repeat(64) }, { ...forget, forget: true }, { ...forget, v: 2 },
+    );
     for (const value of bad) expect(() => parseSafetyRecord(value)).toThrow(AccountRecordError);
   });
 
