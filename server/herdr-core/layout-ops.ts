@@ -146,6 +146,24 @@ export const zoomEdit = (paneId: string, mode: "toggle" | "on" | "off") => (layo
   return { layout: withTab(layout, tab.id, { zoomed: on ? paneId : null }), reason: null };
 };
 
+/** The pane's right press goes to its program (the terminal screen's passthrough), or opens the screen's menu again. */
+export const passthroughEdit = (paneId: string, on: boolean) => (layout: OvisLayout): Edited => {
+  const tab = tabHolding(layout, paneId);
+  const now = tab.passthrough ?? [];
+  if (now.includes(paneId) === on) return { layout: null, reason: on ? "already_on" : "already_off" };
+  const next = on ? [...now, paneId] : now.filter((pane) => pane !== paneId);
+  return { layout: withTab(layout, tab.id, { passthrough: next.length > 0 ? next : undefined }), reason: null };
+};
+
+/** A repository's workspace folds its worktree workspaces in the terminal screen's sidebar, or unfolds them. */
+export const collapseEdit = (workspaceId: string, on: boolean) => (layout: OvisLayout): Edited => {
+  const workspace = layout.workspaces.find((candidate) => candidate.id === workspaceId);
+  if (!workspace) return { layout: null, reason: "workspace_not_found" };
+  if (Boolean(workspace.collapsed) === on) return { layout: null, reason: on ? "already_collapsed" : "already_expanded" };
+  const { collapsed: _was, ...rest } = workspace;
+  return { layout: { ...layout, workspaces: layout.workspaces.map((candidate) => (candidate === workspace ? (on ? { ...rest, collapsed: true as const } : rest) : candidate)) }, reason: null };
+};
+
 /** A tab moved to herdr's `insertIndex` in `siblings`, its workspace's tabs as shown; a helper's tab follows its parent's and has no place of its own. */
 export const tabOrderEdit = (workspaceId: string, tabId: string, siblings: readonly string[], insertIndex: unknown) => (layout: OvisLayout): Edited => {
   const workspace = layout.workspaces.find((candidate) => candidate.id === workspaceId);

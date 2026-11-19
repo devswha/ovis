@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type LayoutNode, place, reconcile, resizeLeaf } from "./layout-doc.ts";
+import { type LayoutNode, parseOvisLayout, place, reconcile, resizeLeaf } from "./layout-doc.ts";
 
 const leaf = (address: string): LayoutNode => ({ leaf: address });
 const split = (direction: "right" | "down", ratio: number, first: LayoutNode, second: LayoutNode): LayoutNode => ({ split: direction, ratio, first, second });
@@ -18,6 +18,17 @@ describe("reconcile", () => {
     const doc = { schema: 1 as const, workspaces: [{ id: "S", tabs: [{ id: "T", zoomed: "gone", root: split("down", 0.5, split("right", 0.5, leaf("a"), leaf("a")), leaf("gone")) }] }] };
     const [tab] = reconcile(doc, [{ id: "S", tabs: [{ id: "T", panes: ["a", "b"] }] }]).workspaces[0]!.tabs;
     expect(tab).toEqual({ id: "T", zoomed: null, root: split("right", 0.5, leaf("a"), leaf("b")) });
+  });
+});
+
+describe("the terminal screen's own keys", () => {
+  it("keeps a tab's passthrough panes and a folded group through a read and a reconcile, and drops a pane gone from the tab", () => {
+    const doc = parseOvisLayout({ schema: 1, workspaces: [{ id: "S", collapsed: true, tabs: [{ id: "T", zoomed: null, root: split("right", 0.5, leaf("a"), leaf("b")), passthrough: ["a", "gone", 7] }] }, { id: "U", tabs: [{ id: "V", zoomed: null, root: leaf("c") }] }] });
+    expect(doc?.workspaces.map((workspace) => [workspace.collapsed, workspace.tabs[0]!.passthrough])).toEqual([[true, ["a", "gone"]], [undefined, undefined]]);
+    const kept = reconcile(doc, [{ id: "S", tabs: [{ id: "T", panes: ["a", "b"] }] }, { id: "U", tabs: [{ id: "V", panes: ["c"] }] }]);
+    expect(kept.workspaces[0]).toEqual({ id: "S", collapsed: true, tabs: [{ id: "T", zoomed: null, root: split("right", 0.5, leaf("a"), leaf("b")), passthrough: ["a"] }] });
+    // a document without them stays as it was written: no key is added
+    expect(kept.workspaces[1]).toEqual({ id: "U", tabs: [{ id: "V", zoomed: null, root: leaf("c") }] });
   });
 });
 
