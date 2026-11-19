@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord, type DeviceLiftRecord } from "../../shared/account-records.ts";
 import type { AccountSnapshotPage } from "../../shared/account-snapshot.ts";
 import { DeviceStore } from "../devices.ts";
+import { privateStateFs } from "../private-state.ts";
 import { ACCOUNT_ORDER_FILE, AccountOrder } from "./account-order.ts";
 import { DeviceJournal, JOURNAL_MAX } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
@@ -181,12 +182,28 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(await read(ports, page({ version: 1, devices: [{ key: older.spki, no: 1, eligible: false, label: "Phone" }],
       removed: [{ key: target.spki, no: 2 }] }))).toMatchObject({ committed: true });
     const record = await lift(blocked.id, older);
-    const refused = spyOn(safetyLog, "append").mockReturnValue({ outcome: "refused", id: record.id, code: "log_unavailable" });
+    const refused = spyOn(privateStateFs, "renameSync").mockImplementation(() => { throw new Error("log unavailable"); });
     try {
       expect(await read(ports, page({ version: 2, lifts: [record] }))).toMatchObject({ committed: false });
       expect(ports.lastVersion()).toBe(1);
       expect(safetyLog.state().blocks.map(({ record }) => record.id)).toEqual([blocked.id]);
     } finally { refused.mockRestore(); }
+  });
+
+  test("P6, P14, T52: a conflict on the second lift leaves neither append and the old watermark on disk", async () => {
+    const first = pc();
+    const signer = await member(first.devices);
+    expect(await read(first.ports, page({ version: 1 }))).toMatchObject({ committed: true });
+    const a = await lift("a".repeat(64), signer);
+    const b = await lift("b".repeat(64), signer);
+    // The log already has different bytes for b's id. This is a refusal at append, not a page parse failure.
+    expect(first.safetyLog.append({ got: "snapshot", record: { ...b, signature: a.signature } }).outcome).toBe("applied");
+    const snapshot = page({ version: 2, lifts: [a, b] }).page;
+    expect(() => first.ports.commit({ snapshot, lifts: snapshot.lifts })).toThrow("conflict");
+    const reopened = pc(first.dir);
+    expect(reopened.ports.lastVersion()).toBe(1);
+    expect(reopened.safetyLog.receipt(a.id)).toBeNull();
+    expect(reopened.safetyLog.entries().map(({ record }) => record.signature)).toEqual([a.signature]);
   });
 
   for (const missing of ["signer", "target", "both", "older target"] as const) {
