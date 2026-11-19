@@ -3,14 +3,14 @@
  * talks to the server over its recovery socket only (server/account/recovery.ts). Every release is asked at a
  * terminal, one row at a time; input that is not a terminal answers nothing.
  */
+import type { RecoveryAction } from "../shared/account-devices-api.ts";
+
 export interface RecoverIo {
   out(text: string): void;
   terminal: boolean;
   platform: NodeJS.Platform;
-  /** this PC's user, written in the journal beside each act */
-  user: string;
   ask(question: string): Promise<string>;
-  send(request: unknown): Promise<unknown>;
+  send(request: RecoveryAction): Promise<unknown>;
 }
 
 interface WaitingRow {
@@ -38,7 +38,7 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
   }
   try {
     if (flag === "--undo") {
-      const answer = await io.send({ act: "undo", ...(ids.length > 0 ? { rows: ids } : {}), by: io.user }) as { releases?: string[]; error?: string };
+      const answer = await io.send({ act: "undo", rows: ids.length > 0 ? ids : null }) as { releases?: string[]; error?: string };
       if (answer.error !== undefined) { io.out(`${answer.error}\n`); return 1; }
       io.out(`Ended ${answer.releases?.length ?? 0} release(s); their sessions were closed and the rows wait again.\n`);
       return 0;
@@ -59,7 +59,7 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
       if (row.refusal !== null) { io.out(`${id}: cannot be released (${row.refusal}).\n`); failed = true; continue; }
       const answer = (await io.ask(`${describe(row)}\nRelease ${row.label} until this PC's account is read? [y/N] `)).trim().toLowerCase();
       if (answer !== "y" && answer !== "yes") { io.out("Not released.\n"); continue; }
-      const released = await io.send({ act: "release", rows: [id], by: io.user }) as { released?: string[]; error?: string };
+      const released = await io.send({ act: "release", rows: [id] }) as { released?: string[]; error?: string };
       if (released.error !== undefined) { io.out(`${id}: ${released.error}\n`); failed = true; continue; }
       io.out(`Released ${row.label}. It signs in until this PC's account is read, or until ovis recover --undo.\n`);
     }

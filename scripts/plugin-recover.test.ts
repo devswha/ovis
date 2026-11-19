@@ -18,7 +18,6 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
     out: (text) => { out.push(text); },
     terminal: options.terminal ?? true,
     platform: options.platform ?? "linux",
-    user: "owner",
     ask: async (question) => { out.push(question); return answers.shift() ?? ""; },
     send: async (request) => {
       if (options.unreachable) throw new Error("ENOENT");
@@ -46,7 +45,7 @@ test("T70: recover lists the rows that wait, how each came in, and whether it ca
 test("T70: release asks for each named row at a terminal and releases only the ones confirmed", async () => {
   const run = io({ answers: ["y"] });
   expect(await runRecover(["--release", "a1", "b2", "zz"], run.value)).toBe(1);
-  expect(run.sent).toEqual([{ act: "list" }, { act: "release", rows: ["a1"], by: "owner" }]);
+  expect(run.sent).toEqual([{ act: "list" }, { act: "release", rows: ["a1"] }]);
   expect(run.text()).toContain("b2");
   expect(run.text()).toContain("zz");
 });
@@ -67,10 +66,10 @@ test("T70: input that is not a terminal answers nothing", async () => {
 test("T70: undo ends the named releases, or every release", async () => {
   const named = io();
   expect(await runRecover(["--undo", "a1"], named.value)).toBe(0);
-  expect(named.sent).toEqual([{ act: "undo", rows: ["a1"], by: "owner" }]);
+  expect(named.sent).toEqual([{ act: "undo", rows: ["a1"] }]);
   const every = io();
   expect(await runRecover(["--undo"], every.value)).toBe(0);
-  expect(every.sent).toEqual([{ act: "undo", by: "owner" }]);
+  expect(every.sent).toEqual([{ act: "undo", rows: null }]);
 });
 
 test("R11: on Windows recover opens nothing and names the desktop app's screen", async () => {

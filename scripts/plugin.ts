@@ -31,7 +31,7 @@ import { COMPILED, entryCommand, ROOT as SERVER_ROOT } from "../server/entries.t
 import { version as builtVersion } from "../package.json";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, platform, uptime, userInfo } from "node:os";
+import { homedir, platform, uptime } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 
 // No application package (node_modules) is loaded with this file: `stop` and `status` must work in a checkout whose
@@ -1269,7 +1269,6 @@ async function recover(): Promise<number> {
       out: (text) => process.stdout.write(text),
       terminal: lines !== null,
       platform: process.platform,
-      user: userInfo().username,
       ask: (question) => lines === null ? Promise.resolve("") : lines.question(question),
       send: (request) => askRecovery(runningStateDir(APP_STATE_DIR), request),
     });
