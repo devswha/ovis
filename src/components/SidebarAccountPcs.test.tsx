@@ -325,14 +325,14 @@ describe("the account's PCs in the sidebar", () => {
     expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
     expect(requests.some((request) => request.path.endsWith("/pair/cancel"))).toBe(false);
   });
-  it("asks a PC again when the window comes back after its first check failed, instead of leaving it on Checking…", async () => {
+  it("shows a PC whose first check failed as not answering, keeps the others, and asks it again when the window comes back", async () => {
     failAwayCheck = true;
     await mount();
-    // the failure clears the list (nothing is shown that says Checking… for good)
-    expect(groups()).toEqual([]);
+    expect(groups()).toEqual([["PC Desk", "ready", "Add"], ["PC Old box", "outdated", ""], ["PC Away", "offline", "Check again"]]);
     failAwayCheck = false;
+    awayAnswers = ["ready"];
     await comeBack();
-    expect(groups().map(([name, state]) => [name, state])).toEqual([["PC Desk", "ready"], ["PC Old box", "outdated"], ["PC Away", "offline"]]);
+    expect(groups()[2]).toEqual(["PC Away", "ready", "Add"]);
   });
 
   it("during a pairing, a PC whose first check fails reads as not answering, with Check again, and the pairing stays", async () => {

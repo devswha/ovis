@@ -232,7 +232,7 @@ export function MachineSidebar(props: Props) {
         <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
         {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
         {/* a PC's own window, driven by its owner: the account's PCs not added yet (the phone app and the hosted shell list their own) */}
-        {exitToPcs === null && !props.watching && <SidebarAccountPcs machines={roster} hidden={filter.active} onAdded={(machine) => props.onSelect(machine.id, null)} />}
+        {exitToPcs === null && !props.watching && <SidebarAccountPcs machines={roster} hidden={filter.active} onAdded={props.actions.connectPc} />}
         <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>
       </div>
     </section>

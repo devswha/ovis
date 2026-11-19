@@ -138,15 +138,17 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
         setPcs((current) => current?.filter((entry) => entry.server_id !== pc.server_id) ?? null);
         return;
       }
-      // not answered: asked again by the next look (a refresh, or Check again)
-      round.asked.delete(pc.server_id);
       console.warn("Ovis: the account's PCs could not be checked", error instanceof Error ? error.name : error);
-      // a pairing under way keeps its row, its digits and its Cancel: that PC reads as not answering, with Check again
-      if (running.current !== null && !running.current.signal.aborted) setStates((current) => new Map(current).set(pc.server_id, "offline"));
-      else {
+      // a window this PC will not answer (owner_only, read_only) gets no list rather than rows that say Checking… for good
+      if (error instanceof ApiError && (error.code === "owner_only" || error.code === "read_only")) {
         listed.current = { asked: new Set(), invalid: new Set(), scope: null };
         setPcs(null);
+        return;
       }
+      // anything else is that PC not answering: its row says so, with Check again, and the others stay; the next look
+      // (a refresh, or Check again) asks it again
+      round.asked.delete(pc.server_id);
+      setStates((current) => new Map(current).set(pc.server_id, "offline"));
     });
   };
   useEffect(() => {
