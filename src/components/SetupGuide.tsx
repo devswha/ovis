@@ -739,7 +739,7 @@ const watchRelayStart = (watch: () => void): (() => void) => { relayStartWatcher
 const relayStarting = (): boolean => relayStartOut;
 const setRelayStartOut = (out: boolean): void => { relayStartOut = out; for (const watch of relayStartWatchers) watch(); };
 const useRelayStarting = (): boolean => useSyncExternalStore(watchRelayStart, relayStarting);
-// the whole start, this browser's own pairing included, as long as the relay's own request may take (api.ts requestRelay)
+// this browser's own pairing before a start, as long as the relay's own start may take (api.ts requestRelay)
 const RELAY_START_MS = 20_000;
 
 interface PhoneBoxProps {
@@ -799,23 +799,20 @@ function RelayBox({ relay, auth, closesGate, onPaired, onPhonePaired, onOther, t
     if (busy) return;
     setRelayStartOut(true);
     setError(null);
-    // a pairing that never answers ends the start too: the ways are free again, and no relay start follows it
-    let gaveUp = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => { gaveUp = true; reject(new DOMException(t("No answer"), "TimeoutError")); }, RELAY_START_MS);
-    });
-    const run = async (): Promise<void> => {
+    try {
       if (auth?.via === "open" && !pairedHere) {
-        await pairThisBrowser();
+        // a pairing that never answers ends the start: the ways are free again, and no relay start follows it
+        await Promise.race([pairThisBrowser(), new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new DOMException(t("No answer"), "TimeoutError")), RELAY_START_MS);
+        })]);
+        clearTimeout(timer);
         pairedHere = true;
         setPairedSelf(true);
         onPaired();
       }
-      if (!gaveUp) await request("start");
-    };
-    try {
-      await Promise.race([run(), deadline]);
+      // bounded by requestRelay itself: the ways wait as long as the start is out
+      await request("start");
     } catch (reason: unknown) {
       setError(reason instanceof UnconfirmedPairing ? t("Couldn't connect this browser. Turn on cookies.") : failureText(reason));
     } finally { clearTimeout(timer); setRelayStartOut(false); }
