@@ -1,0 +1,97 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AccountDeviceStore, STALE_READ_MS, type AccountRowPorts } from "./account-devices.ts";
+import { keyOf, listOrigins, nameOf, SERVER, snapshotList } from "./account-devices.test-helpers.ts";
+import { JOIN_HOLD_MS } from "./join-hold.ts";
+
+const dirs: string[] = [];
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+function machine() {
+  const dir = mkdtempSync(join(tmpdir(), "s2-27-"));
+  dirs.push(dir);
+  const clock = { now: Date.UTC(2026, 0, 1, 12) };
+  const events: string[] = [];
+  const frozen = new Set<string>();
+  const ports: AccountRowPorts = {
+    journal: (entry) => { events.push(`journal ${entry.kind} ${nameOf(entry.key)}`); },
+    closeSessions: (rowId, reason) => { events.push(`close ${rowId} ${reason}`); },
+    heldByDevicesJson: () => false,
+    admits: (key) => !frozen.has(nameOf(key)),
+    publish: () => {},
+    now: () => clock.now,
+    admitOrigin: listOrigins(),
+    firstDevice: { othersEver: () => true, setOthersEver: () => {}, listKey: () => null, otherRows: () => false },
+  };
+  const list = (names: readonly string[]) => snapshotList(names);
+  const start = () => new AccountDeviceStore(dir, SERVER, ports);
+  const store = start();
+  store.commitList(list(["k-live", "k-held"]));
+  clock.now += JOIN_HOLD_MS;
+  const [live, held] = store.rows();
+  store.access(live!.id);
+  events.length = 0;
+  return { clock, events, frozen, list, start, store, live: live!, held: held! };
+}
+
+describe("S2-27 account-joined rows wait for the catch-up (T41, T42, T56, T65, T70)", () => {
+  test("T41: every non-screen-paired row waits after restart or first binding, including legacy with no metadata", () => {
+    const pc = machine();
+    const restarted = pc.start();
+    expect(restarted.access(pc.live.id)).toEqual({ refused: "catching_up" });
+    expect(restarted.access(pc.held.id)).toEqual({ refused: "catching_up" });
+    // the wait has no time limit: only a whole read ends it
+    pc.clock.now += 365 * 24 * 60 * 60_000;
+    expect(restarted.access(pc.live.id)).toEqual({ refused: "catching_up" });
+  });
+
+  test("T42: whole-read release rechecks the gate and restarts carried holds in either file", () => {
+    const pc = machine();
+    const restarted = pc.start();
+    pc.frozen.add("k-live");
+    restarted.commitList(pc.list(["k-live", "k-held"]));
+    expect(restarted.access(pc.live.id)).toEqual({ refused: "catching_up" });
+    // a carried hold starts its ten seconds again from the release
+    expect(restarted.access(pc.held.id)).toEqual({ refused: "join_hold", seconds: 10 });
+    pc.frozen.delete("k-live");
+    restarted.commitList(pc.list(["k-live", "k-held"]));
+    expect(restarted.access(pc.live.id)).toEqual({ ok: true });
+  });
+
+  test("T56: a stale whole read puts account-only rows on hold and ends their sessions", () => {
+    const pc = machine();
+    pc.store.commitList(pc.list(["k-live", "k-held"]));
+    pc.events.length = 0;
+    const readAt = pc.clock.now;
+    pc.clock.now = readAt + STALE_READ_MS - 1;
+    pc.store.staleness(readAt);
+    expect(pc.store.access(pc.live.id)).toEqual({ ok: true });
+    pc.clock.now = readAt + STALE_READ_MS;
+    pc.store.staleness(readAt);
+    expect(pc.events).toEqual([`close ${pc.live.id} catching_up`, `close ${pc.held.id} catching_up`]);
+    expect(pc.store.access(pc.live.id)).toEqual({ refused: "catching_up" });
+    pc.store.staleness(readAt);
+    expect(pc.events).toHaveLength(2);
+  });
+
+  test("T65: service-off keeps the wait; only named released rows have the accepted gap until denial arrives", () => {
+    const pc = machine();
+    const restarted = pc.start();
+    expect(restarted.release([keyOf("k-live")])).toEqual([keyOf("k-live")]);
+    expect(restarted.access(pc.live.id)).toEqual({ ok: true });
+    expect(restarted.access(pc.held.id)).toEqual({ refused: "catching_up" });
+  });
+
+  test("T70: headless account-only rows can be released by name and first whole read rejudges them", () => {
+    const pc = machine();
+    const restarted = pc.start();
+    expect(restarted.release([keyOf("k-live"), keyOf("k-unknown")])).toEqual([keyOf("k-live")]);
+    pc.frozen.add("k-live");
+    restarted.commitList(pc.list(["k-live", "k-held"]));
+    expect(restarted.access(pc.live.id)).toEqual({ refused: "catching_up" });
+    // a release lives in memory only: the next start waits again
+    expect(pc.start().access(pc.live.id)).toEqual({ refused: "catching_up" });
+  });
+});
