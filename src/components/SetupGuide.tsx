@@ -799,7 +799,8 @@ function RelayBox({ relay, auth, closesGate, onPaired, onPhonePaired, onOther, t
     setError(null);
     try {
       if (auth?.via === "open" && !pairedHere) {
-        // bounded in pairing.ts: one that never answers ends the start, and no relay start follows it
+        // not bounded here: a second pairing beside one still out could leave its void cookie in place of the good one
+        // (pairing.ts), so the ways wait for it as they wait for the start; Set up later, Back and Escape still work
         await pairThisBrowser();
         pairedHere = true;
         setPairedSelf(true);
