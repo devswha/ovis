@@ -2,7 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { exportAccountKey } from "../../shared/account-records.ts";
+import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { DeviceStore } from "../devices.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
@@ -25,6 +27,10 @@ async function setup(opensAll: boolean, devices: number) {
   const identity = rotateRelayIdentity(stateDir);
   const service = new FakeAccountService();
   service.opensAll = opensAll;
+  // the service serves a snapshot only to a PC the account lists
+  const token = service.issueToken(ACCOUNT);
+  await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
   for (let index = 0; index < devices; index++) service.registerDevice(ACCOUNT, await spki(), `Device ${index + 1}`);
   const committed: StagedRead[] = [];
   const ports: SnapshotPorts = {
