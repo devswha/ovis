@@ -20,6 +20,7 @@ import { ServerIdentityChangedError } from "./device.ts";
 import type { TypedCodeFailure } from "./pairCode.ts";
 import type { RelayDevice } from "./device.ts";
 import { formatDashboardHash, isDashboardHash, parseDashboardHash } from "./dashboardRoute.ts";
+import { formatMyMachinesHash, parseMyMachinesHash } from "../account/myMachinesRoute.ts";
 
 export type KeySource = "link" | "saved";
 
@@ -240,18 +241,23 @@ export interface SheetJoin {
 export function dashboardHash(hash: string): string {
   return isDashboardHash(hash) ? formatDashboardHash(parseDashboardHash(hash)) : "";
 }
+/** Where a sheet opened from the front page goes back to: the dashboard route or My machines it was opened on, else the front page. */
+export function returnHash(hash: string): string {
+  const machines = parseMyMachinesHash(hash);
+  return machines !== null ? formatMyMachinesHash(machines) : dashboardHash(hash);
+}
 export function sheetContext(serverId?: string): SheetJoin | null {
   try {
     const kept: unknown = JSON.parse(sessionStorage.getItem("ovis-add-pc-sheet") ?? "null");
     sessionStorage.removeItem("ovis-add-pc-sheet");
     if (typeof kept !== "object" || kept === null || !("mode" in kept) || !("server_id" in kept)) return null;
     if ((kept.mode !== "new" && kept.mode !== "join") || kept.server_id !== serverId || typeof kept.server_id !== "string") return null;
-    const returnHash = "returnHash" in kept && typeof kept.returnHash === "string" ? dashboardHash(kept.returnHash) : "";
-    return { mode: kept.mode, server_id: kept.server_id, ...(returnHash ? { returnHash } : {}), ...("alone" in kept && kept.alone === true ? { alone: true as const } : {}) };
+    const back = "returnHash" in kept && typeof kept.returnHash === "string" ? returnHash(kept.returnHash) : "";
+    return { mode: kept.mode, server_id: kept.server_id, ...(back ? { returnHash: back } : {}), ...("alone" in kept && kept.alone === true ? { alone: true as const } : {}) };
   } catch { return null; }
 }
 export function keepSheetContext(join: SheetJoin): void {
-  try { sessionStorage.setItem("ovis-add-pc-sheet", JSON.stringify({ mode: join.mode, server_id: join.server_id, returnHash: dashboardHash(join.returnHash ?? ""), ...(join.alone ? { alone: true } : {}) })); }
+  try { sessionStorage.setItem("ovis-add-pc-sheet", JSON.stringify({ mode: join.mode, server_id: join.server_id, returnHash: returnHash(join.returnHash ?? ""), ...(join.alone ? { alone: true } : {}) })); }
   catch {}
 }
 export function typedJoin(serverId: string): boolean {

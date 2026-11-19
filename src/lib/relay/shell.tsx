@@ -17,7 +17,7 @@ import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
-import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, dashboardHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn } from "./shellState.ts";
+import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn } from "./shellState.ts";
 import type { Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
@@ -185,7 +185,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, ...pc.join, name: pc.name }, window.location.origin));
     keepTypedJoin(options.typed ? pc.server_id : null);
     if (options.sheet) {
-      keepSheetContext({ mode: options.sheet, server_id: pc.server_id, returnHash: dashboardHash(window.location.hash), ...(options.alone ? { alone: true } : {}) });
+      keepSheetContext({ mode: options.sheet, server_id: pc.server_id, returnHash: returnHash(window.location.hash), ...(options.alone ? { alone: true } : {}) });
       // a join a PC's own page offers waits for its press: a load of that page (a reload, a restore, a relaunch) asks nothing
       if (!options.alone) keepConfirmedPc(pc.server_id);
     }
