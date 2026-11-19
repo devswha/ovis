@@ -1171,10 +1171,22 @@ export class DeviceStore {
 
   /** The PC leaves its account, for one of the three named reasons (P12); nothing else clears the binding. */
   clearAccountBinding(reason: ClearReason, by: string): boolean {
-    if (this.pc !== null) return this.pc.clear(reason, by);
+    if (this.pc !== null) {
+      const cleared = this.pc.clear(reason, by);
+      if (cleared) this.endAccountRows(reason);
+      return cleared;
+    }
     // with the flag off nothing of the account is read, but a binding a flag-on run left is still cleared, so the next
     // flag-on start is in no account (P12); a folder that never had one is not touched
     return existsSync(join(this.stateDirPath, "account-pc.json")) ? PcAccountState.open(this.stateDirPath).clear(reason, by) : false;
+  }
+
+  /** Every account-joined row ends: its sessions close first, then it leaves account-devices.json (T44, P8 order). */
+  private endAccountRows(reason: "revoke_all" | "identity_reset" | "left_on_pc"): void {
+    const ids = (this.joinedRows?.rows() ?? []).map((row) => row.id);
+    if (ids.length === 0) return;
+    for (const id of ids) this.closeAccountSessions(id);
+    this.joinedRows!.removeRows(ids, reason);
   }
 
   /**
@@ -2403,6 +2415,7 @@ export class DeviceStore {
   revokeAll(user?: string): string[] {
     this.assertWritable();
     if (this.evidence !== null) return this.revokeAllInOrder(user);
+    this.endAccountRows("revoke_all");
     this.tombstone(this.devices, Date.now());
     const gate = this.gateClosedAt ?? this.devices[0]?.created_at ?? new Date().toISOString();
     this.save([], gate);
@@ -2571,6 +2584,7 @@ export class DeviceStore {
 
   /** The writes of a Revoke all whose file is on disk: its Revokes, the empty registry, the PC's account; then the file goes. */
   private finishRevokeAll(rows: readonly StoredDevice[], gate: string): void {
+    this.endAccountRows("revoke_all");
     this.tombstone(rows, Date.now());
     this.save([], gate);
     this.devices = [];

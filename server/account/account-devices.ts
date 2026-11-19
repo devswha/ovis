@@ -28,7 +28,7 @@ export interface AccountRowSource {
   row(id: string): AccountRow | null;
   rowsByKey(key: string): readonly AccountRow[];
   access(id: string): AccessAnswer;
-  removeRows(ids: readonly string[], reason: "remove" | "block" | "revoke" | "revoke_all"): void;
+  removeRows(ids: readonly string[], reason: "remove" | "block" | "revoke" | "revoke_all" | "identity_reset" | "left_on_pc"): void;
 }
 
 export type AccountRow = AccountJoinedRow;
@@ -73,7 +73,7 @@ interface DevicesFile {
 
 const CLEARED: DevicesFile = { account: null, snapshot: null, version: 1, devices: [] };
 
-function load(path: string, serverId: string): { file: DevicesFile; error: string | null } {
+function load(path: string, serverId: string): { file: DevicesFile; error: string | null; foreign?: true } {
   let value: unknown;
   try { value = JSON.parse(readFileSync(path, "utf8")); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { file: CLEARED, error: null };
@@ -82,7 +82,7 @@ function load(path: string, serverId: string): { file: DevicesFile; error: strin
   try {
     const file = parseAccountDevicesFile(value);
     // rows admitted under another relay identity name another PC: none of them is a row here
-    if (file.server_id !== serverId) return { file: CLEARED, error: null };
+    if (file.server_id !== serverId) return { file: CLEARED, error: null, foreign: true };
     return { file: { account: file.account, snapshot: file.snapshot, version: file.version, devices: [...file.devices] }, error: null };
   } catch (error) {
     if (!(error instanceof AccountSnapshotError)) throw error;
@@ -97,9 +97,11 @@ export class AccountDeviceStore implements AccountRowSource {
 
   constructor(stateDir: string, private readonly serverId: string, private readonly ports: AccountRowPorts) {
     this.path = join(stateDir, ACCOUNT_DEVICES_FILE);
-    const { file, error } = load(this.path, serverId);
+    const { file, error, foreign } = load(this.path, serverId);
     this.file = file;
     this.error = error;
+    // the rows of another identity leave the file now, not at the next write (T44)
+    if (foreign) writePrivateState(this.path, { v: 1, server_id: serverId, ...CLEARED });
   }
 
   rows(): readonly AccountRow[] { return this.error === null ? this.file.devices : []; }
@@ -112,7 +114,7 @@ export class AccountDeviceStore implements AccountRowSource {
     return this.rows().filter((row) => row.key === key);
   }
 
-  removeRows(ids: readonly string[], reason: "remove" | "block" | "revoke" | "revoke_all"): void {
+  removeRows(ids: readonly string[], reason: "remove" | "block" | "revoke" | "revoke_all" | "identity_reset" | "left_on_pc"): void {
     this.usable();
     const gone = this.file.devices.filter((row) => ids.includes(row.id));
     for (const row of gone) this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason });
@@ -201,7 +203,15 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
   const store = (): AccountDeviceStore | null => {
     const id = serverId();
     if (id === null) return null;
-    if (open?.serverId !== id) open = { serverId: id, store: new AccountDeviceStore(stateDir, id, ports) };
+    if (open?.serverId !== id) {
+      // the rows of the identity this PC had end here: their sessions close, and the file is the new identity's (T44)
+      if (open !== null) {
+        const gone = open.store.rows().map((row) => row.id);
+        for (const row of gone) ports.closeSessions(row, "identity_reset");
+        open.store.removeRows(gone, "identity_reset");
+      }
+      open = { serverId: id, store: new AccountDeviceStore(stateDir, id, ports) };
+    }
     return open.store;
   };
   return {

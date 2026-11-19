@@ -162,7 +162,7 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     const { ports: p } = ports(dir);
     const closed: string[] = [];
     let serverId: string | null = SERVER;
-    const source = accountRowsFor(dir, () => serverId, { ...p, closeSessions: (id) => { closed.push(id); } });
+    const source = accountRowsFor(dir, () => serverId, { ...p, closeSessions: (id: string) => { closed.push(id); } });
     source.store()!.commitList(list(["k-1"]));
     const [row] = source.rows();
     serverId = "f".repeat(32);
