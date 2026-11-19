@@ -4,7 +4,9 @@ import { HcConnection } from "../../server/herdr-core/connection.ts";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
 import { PANE_NAME_LABEL, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
+import { gridText, Screen } from "../testing/herdr-grid.ts";
 import { Run } from "../testing/run.ts";
+import { TUI_THEMES } from "../theme.generated.ts";
 import { focused } from "./focus.ts";
 import { look, type LookState } from "./look.ts";
 
@@ -34,6 +36,21 @@ function twoAgents(seen: string | null = "0", first = "idle"): FakeHcCore {
     core.reportStatus(address, { state, app: "claude" });
   }
   return core;
+}
+
+/** The dot of the sidebar's second agent (pane `two`: each agent takes two rows, `● work · tab` then its agent), and its colour. */
+async function secondAgentDot(run: Run): Promise<{ ch: string; fg: unknown }> {
+  await Screen.load();
+  const screen = new Screen(120, 40);
+  try {
+    screen.write(run.host.output());
+    const cells = screen.cells();
+    const rows = gridText(cells).flatMap((text, y) => /^ [●○·] work · tab/.test(text) ? [y] : []);
+    const cell = cells.cells[rows[1]! * cells.cols + 1]!;
+    return { ch: cell.ch, fg: cell.look.fg };
+  } finally {
+    screen.dispose();
+  }
 }
 
 async function started(core: FakeHcCore, live = true): Promise<Run> {
@@ -239,10 +256,10 @@ describe("read state through herdr.seen (UB Q7)", () => {
     const run = await started(twoAgents("0", "blocked"));
     await hostFocus(run, FOCUS_IN);
     await endTurn(run, "t2");
-    expect(run.grid().some((row) => row.includes("* two /"))).toBe(true);
+    expect(await secondAgentDot(run)).toEqual({ ch: "●", fg: [...TUI_THEMES.dark.statusDone] });
     run.core.reportStatus("t2", { state: "blocked", app: "claude" });
     await run.advance(20);
-    expect(run.grid().some((row) => row.includes("! two /"))).toBe(true);
+    expect(await secondAgentDot(run)).toEqual({ ch: "●", fg: [...TUI_THEMES.dark.statusBlocked] });
     expect(run.loop.model().notices).toEqual([]);
     expect(run.loop.report().mode.overlays).toEqual([]);
   }, TEST_MS);

@@ -42,7 +42,7 @@ describe("the screen at widths 45, 64 and 65: herdr's narrow layout at 64 column
   it("at 65 columns: the sidebar and the tab's two panes side by side, both attached", async () => {
     const run = await shown(65);
     const grid = run.grid();
-    expect(grid[0]).toBe(" Workspaces              │  main     logs    +");
+    expect(grid[0]).toBe(" spaces                  │  main     logs    +");
     expect(grid[1]).toBe("                         │┌ shell ───────────┐┌ files ──────────┐");
     expect(attached(run)).toEqual(["t1", "t2"]);
   }, TEST_MS);

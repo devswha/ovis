@@ -27,7 +27,6 @@ const NOTICE = rgb(217, 178, 106);
 const BLOCKED = rgb(252, 141, 139);
 const DONE = rgb(64, 201, 119);
 const WORKING = rgb(129, 176, 250);
-const BG = rgb(24, 24, 24);
 const BG_ELEVATED = rgb(38, 38, 38);
 const BG_HOVER = rgb(47, 47, 47);
 
@@ -122,39 +121,42 @@ const noColour = ({ painter }: Picture): string => {
 };
 
 describe("chrome frames as rows of cells", () => {
-  it("at 120x40: the sidebar's halves, workspaces with roll-up marks, agents, tabs, bordered panes with their names, no mode line", () => {
+  it("at 120x40: herdr's sidebar (its words, dots and two-row agents by workspace, no background), tabs, bordered panes with their names, no mode line", () => {
     const shot = draw({ cols: 120, rows: 40 });
     expect(shot.rows.slice(0, 4)).toEqual([
-      ` Workspaces              │  main     logs    +${" ".repeat(74)}`,
+      ` spaces                  │  main     logs    +${" ".repeat(74)}`,
       `                         │┌ shell ${"─".repeat(38)}┐┌ files ${"─".repeat(38)}┐`,
-      ` ! ovis                  ││${" ".repeat(45)}││${" ".repeat(45)}│`,
-      ` * 문서                  ││${" ".repeat(45)}││${" ".repeat(45)}│`,
+      ` ● ovis                  ││${" ".repeat(45)}││${" ".repeat(45)}│`,
+      ` ● 문서                  ││${" ".repeat(45)}││${" ".repeat(45)}│`,
     ]);
-    expect(shot.rows.slice(19, 29).map((row) => row.slice(0, 26))).toEqual([
-      " new                 Menu│",
+    expect(shot.rows.slice(19, 30).map((row) => row.slice(0, row.indexOf("│") + 1))).toEqual([
+      " new                 menu│",
       "─────────────────────────│",
-      " Agents           grouped│",
+      " agents           grouped│",
       "                         │",
-      " Needs you (1)           │",
-      " ! shell /ovis claude    │",
-      " Working (1)             │",
-      " ~ files /tui codex      │",
-      " Done (1)                │",
-      " * claude /proj          │",
+      " ● ovis · main           │",
+      "   claude                │",
+      " ● ovis · main           │",
+      "   codex                 │",
+      " ● 문서 · 노트           │",
+      "   claude                │",
+      "                         │",
     ]);
     expect(shot.rows[39]).toBe(`                        «│└${"─".repeat(45)}┘└${"─".repeat(45)}┘`);
-    expect(cell(shot, 1, 0)).toEqual({ text: "W", fg: TEXT_DIM, bg: BG, bold: true });
-    // the workspace in front on the raised row in bold, the other dim; each state mark in its state's colour
+    // the sidebar writes no background (the host's shows): only the rows in front are raised
+    expect(cell(shot, 1, 0)).toEqual({ text: "s", fg: TEXT_DIM, bg: null, bold: true });
+    expect(cell(shot, 25, 1)).toMatchObject({ text: "│", bg: null });
+    // the workspace in front on the raised row in bold, the other dim; each dot in its state's colour
     expect(cell(shot, 3, 2)).toEqual({ text: "o", fg: TEXT, bg: BG_ELEVATED, bold: true });
-    expect(cell(shot, 3, 3)).toEqual({ text: "문", fg: TEXT_DIM, bg: BG, bold: false });
-    expect(cell(shot, 1, 2)).toMatchObject({ text: "!", fg: BLOCKED, bold: false });
-    expect(cell(shot, 1, 3)).toMatchObject({ text: "*", fg: DONE, bold: false });
-    // each section's heading in its state's colour, and each agent's glyph in it
-    expect(cell(shot, 1, 23)).toMatchObject({ text: "N", fg: BLOCKED, bold: true });
-    expect(cell(shot, 1, 24)).toMatchObject({ text: "!", fg: BLOCKED });
-    expect(cell(shot, 1, 25)).toMatchObject({ text: "W", fg: WORKING, bold: true });
-    expect(cell(shot, 1, 26)).toMatchObject({ text: "~", fg: WORKING });
-    expect(cell(shot, 1, 27)).toMatchObject({ text: "D", fg: DONE, bold: true });
+    expect(cell(shot, 3, 3)).toEqual({ text: "문", fg: TEXT_DIM, bg: null, bold: false });
+    expect(cell(shot, 1, 2)).toMatchObject({ text: "●", fg: BLOCKED, bold: false });
+    expect(cell(shot, 1, 3)).toMatchObject({ text: "●", fg: DONE, bold: false });
+    // an agent in two rows: its dot and workspace (bold), then the agent, dim; the focused pane's agent raised on both
+    expect(cell(shot, 1, 23)).toMatchObject({ text: "●", fg: BLOCKED, bg: BG_ELEVATED });
+    expect(cell(shot, 3, 23)).toEqual({ text: "o", fg: TEXT, bg: BG_ELEVATED, bold: true });
+    expect(cell(shot, 3, 24)).toEqual({ text: "c", fg: TEXT_DIM, bg: BG_ELEVATED, bold: false });
+    expect(cell(shot, 1, 25)).toMatchObject({ text: "●", fg: WORKING, bg: null });
+    expect(cell(shot, 1, 27)).toMatchObject({ text: "●", fg: DONE, bg: null });
     // the tab in front: dark text on the accent, bold for a name given by hand; the other on the raised row colour
     expect(cell(shot, 28, 0)).toMatchObject({ text: "m", fg: PRIMARY_TEXT, bg: ACCENT, bold: true });
     expect(cell(shot, 37, 0)).toMatchObject({ text: "l", fg: TEXT_DIM, bg: BG_HOVER, bold: false });
@@ -168,10 +170,10 @@ describe("chrome frames as rows of cells", () => {
   it("at 80x24: the same chrome narrower", () => {
     const shot = draw({ cols: 80, rows: 24 });
     expect(shot.rows.slice(0, 4)).toEqual([
-      ` Workspaces              │  main     logs    +${" ".repeat(34)}`,
+      ` spaces                  │  main     logs    +${" ".repeat(34)}`,
       `                         │┌ shell ${"─".repeat(18)}┐┌ files ${"─".repeat(18)}┐`,
-      ` ! ovis                  ││${" ".repeat(25)}││${" ".repeat(25)}│`,
-      ` * 문서                  ││${" ".repeat(25)}││${" ".repeat(25)}│`,
+      ` ● ovis                  ││${" ".repeat(25)}││${" ".repeat(25)}│`,
+      ` ● 문서                  ││${" ".repeat(25)}││${" ".repeat(25)}│`,
     ]);
     expect(shot.rows[23]).toBe(`                        «│└${"─".repeat(25)}┘└${"─".repeat(25)}┘`);
   });
@@ -267,7 +269,7 @@ describe("every control's cells resolve to it in the hit map, and the cells besi
     ["the new-workspace button", { cols: 120, rows: 40 }, "sidebar/new_workspace", { x: 0, y: 19, width: 5, height: 1 }],
     ["the menu button", { cols: 120, rows: 40 }, "sidebar/menu", { x: 21, y: 19, width: 4, height: 1 }],
     ["a workspace row", { cols: 120, rows: 40 }, "sidebar/workspace:w-docs", { x: 0, y: 3, width: 25, height: 1 }],
-    ["an agent row", { cols: 120, rows: 40 }, "sidebar/agent:t2", { x: 0, y: 26, width: 25, height: 1 }],
+    ["an agent's two rows", { cols: 120, rows: 40 }, "sidebar/agent:t2", { x: 0, y: 25, width: 25, height: 2 }],
     ["a tab", { cols: 120, rows: 40 }, "tabs/tab:t-logs", { x: 35, y: 0, width: 8, height: 1 }],
     ["the new-tab button", { cols: 120, rows: 40 }, "tabs/new_tab", { x: 44, y: 0, width: 3, height: 1 }],
     ["the rail's mark that brings the sidebar back", { cols: 120, rows: 40, events: [{ type: "action", action: "toggle_sidebar", at: 1 }] }, "sidebar/toggle_sidebar", { x: 1, y: 39, width: 1, height: 1 }],
@@ -471,9 +473,9 @@ describe("names cut at a wide character keep every cell whole", () => {
     expect(shot.rows.slice(2, 5).map((line) => line.slice(0, line.indexOf("│") + 1))).toEqual([
       " · x한글이름이아주긴작…  │",
       " · e\u0301a\u0308o\u0302-한가-กำx          │",
-      " * ctl\ufffdname-abcdef       │",
+      " ● ctl\ufffdname-abcdef       │",
     ]);
-    expect(shot.rows[0]!.startsWith(" Workspaces              │  🚀로켓😀👨‍👩‍👧‍👦🇰🇷끝까지가는탭이름    + ")).toBe(true);
+    expect(shot.rows[0]!.startsWith(" spaces                  │  🚀로켓😀👨‍👩‍👧‍👦🇰🇷끝까지가는탭이름    + ")).toBe(true);
     // a split tab's pane title, cut with … in its border
     const split = [wideNames[0]!, term("t9", "w1", "x한글이름이아주긴작업공간입니다", "tab1", "tab", {}, "other")];
     const titled = draw({ cols: 80, rows: 24, terminals: split }).rows[1]!;
@@ -484,9 +486,9 @@ describe("names cut at a wide character keep every cell whole", () => {
 describe("whole-screen proofs on the runner", () => {
   it("demo, agents and machines fixtures at 120x40, 80x24 and 200x60", async () => {
     const expected: Record<string, [row: number, text: string][]> = {
-      "120x40": [[0, " Workspaces              │  main     logs    +"], [2, " · ovis                  ││$ echo 안녕"], [3, " · 문서                  ││안녕하세요, 헤르더 세계"]],
-      "80x24": [[0, " Workspaces              │  main     logs    +"], [3, " · 문서                  ││안녕하세요, 헤르더 세계"]],
-      "200x60": [[0, " Workspaces              │  main     logs    +"], [3, " · 문서                  ││안녕하세요, 헤르더 세계"]],
+      "120x40": [[0, " spaces                  │  main     logs    +"], [2, " · ovis                  ││$ echo 안녕"], [3, " · 문서                  ││안녕하세요, 헤르더 세계"]],
+      "80x24": [[0, " spaces                  │  main     logs    +"], [3, " · 문서                  ││안녕하세요, 헤르더 세계"]],
+      "200x60": [[0, " spaces                  │  main     logs    +"], [3, " · 문서                  ││안녕하세요, 헤르더 세계"]],
     };
     for (const [cols, rows] of [[120, 40], [80, 24], [200, 60]] as const) {
       const run = await Run.start({ fixture: demo, cols, rows });
@@ -506,16 +508,17 @@ describe("whole-screen proofs on the runner", () => {
       await agentRun.live();
       await agentRun.advance(20);
       expect(agentRun.grid().slice(21, 31).map((line) => line.slice(0, 26))).toEqual([
-        " Agents           grouped│",
+        " agents           grouped│",
         "                         │",
-        " Needs you (1)           │",
-        " ! blocked / claude      │",
-        " Working (1)             │",
-        " ~ working / claude      │",
-        " Done (1)                │",
-        " * done / claude         │",
-        " Ready (1)               │",
-        " - idle / claude         │",
+        // herdr's two rows an agent, in pane order; the states show by the dots' colours (the 120x40 case above)
+        " ● agents · agents       │",
+        "   claude                │",
+        " ● agents · agents       │",
+        "   claude                │",
+        " ● agents · agents       │",
+        "   claude                │",
+        " ○ agents · agents       │",
+        "   claude                │",
       ]);
     } finally {
       await agentRun.close();

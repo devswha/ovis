@@ -24,7 +24,6 @@ import { chosenAt } from "../model/picker.ts";
 import type { ModelState } from "../model/reduce.ts";
 import { STRINGS } from "../strings.ts";
 import { TUI_THEMES, type TuiColorRole, type TuiThemeMode } from "../theme.generated.ts";
-import { agentLines } from "./agents.ts";
 import type { CopyView } from "./copy.ts";
 import { NO_CELLS, type Rect, type Regions, type SplitCells } from "./geometry.ts";
 import { hostLayout, type LaidCell } from "./host-layout.ts";
@@ -247,10 +246,9 @@ const WORKSPACE_HEADER_ROWS = 2;
 /** The agents' half: the rule, its header and the blank row under it. */
 const AGENT_HEADER_ROWS = 3;
 
-interface WorkspaceLine { readonly id: string; readonly status: KnownStatus; readonly name: string; readonly child: "" | "middle" | "last"; readonly front: boolean; readonly chosen: boolean }
-type SidebarAgentLine =
-  | { readonly kind: "section"; readonly status: KnownStatus; readonly text: string }
-  | { readonly kind: "agent"; readonly id: string; readonly helper: boolean; readonly status: KnownStatus; readonly text: string; readonly front: boolean };
+interface WorkspaceLine { readonly id: string; readonly status: KnownStatus; readonly name: string; readonly branch: string | null; readonly child: "" | "middle" | "last"; readonly front: boolean; readonly chosen: boolean }
+/** A row of the sidebar's workspaces: a workspace, or the branch row under one that is a git checkout (S4). */
+type WorkspaceRow = { readonly kind: "workspace" | "branch"; readonly line: WorkspaceLine };
 
 /** The workspaces in the sidebar's order (linked worktrees under their repository's), each with what marks it. */
 function workspaceLines(state: ModelState, world: CoreView): WorkspaceLine[] {
@@ -258,51 +256,102 @@ function workspaceLines(state: ModelState, world: CoreView): WorkspaceLine[] {
   const front = shown.workspace?.id ?? null;
   const chosen = state.mode.name === "navigate" ? state.mode.preview ?? front : null;
   return world.workspaceGroups.flatMap((group) => [
-    { id: group.id, status: group.status, name: group.name, child: "" as const },
-    ...group.children.map((child, at) => ({ id: child.id, status: child.status, name: child.name, child: at === group.children.length - 1 ? "last" as const : "middle" as const })),
+    { id: group.id, status: group.status, name: group.name, branch: group.branch, child: "" as const },
+    ...group.children.map((child, at) => ({ id: child.id, status: child.status, name: child.name, branch: child.branch, child: at === group.children.length - 1 ? "last" as const : "middle" as const })),
   ]).map((row) => ({ ...row, front: row.id === front, chosen: row.id === chosen }));
 }
 
+/**
+ * herdr's state dots in the sidebar (S8): `●` for working, blocked and done, told apart by colour, `○` for idle, `·`
+ * for none. herdr's done is teal and its idle green; the theme has one green, so done and idle share it and differ by
+ * their shape, as idle does from the rest in herdr.
+ */
+const DOT_LOOK: Readonly<Record<KnownStatus, { glyph: string; role: TuiColorRole }>> = {
+  blocked: { glyph: STRINGS.dotFull, role: "statusBlocked" },
+  done: { glyph: STRINGS.dotFull, role: "statusDone" },
+  working: { glyph: STRINGS.dotFull, role: "statusWorking" },
+  waiting: { glyph: STRINGS.dotFull, role: "statusWorking" },
+  idle: { glyph: STRINGS.dotEmpty, role: "statusDone" },
+  unknown: { glyph: STRINGS.glyphUnknown, role: "textDim" },
+};
+
+/** An agent of the sidebar (S7): its pane, its state, the workspace and tab it stands in, and what agent it is. */
+interface SidebarAgent { readonly id: string; readonly status: KnownStatus; readonly workspace: string; readonly tab: string | null; readonly agent: string; readonly front: boolean }
+
+/**
+ * The sidebar's agents as herdr lists them: grouped by workspace in the sidebar's order, then by tab and pane, with no
+ * state headings. A tab is named only where its workspace has several or the tab has a name of its own.
+ */
+function sidebarAgents(world: CoreView, frontPane: string | null): SidebarAgent[] {
+  const rows = new Map(world.agents.map((agent) => [agent.paneId, agent]));
+  const spaces = new Map(world.world.workspaces.map((workspace) => [workspace.id, workspace]));
+  return world.workspaceGroups.flatMap((group) => [group.id, ...group.children.map((child) => child.id)]).flatMap((id) => {
+    const workspace = spaces.get(id);
+    if (!workspace) return [];
+    return workspace.tabs.flatMap((tab, at) => tab.panes.flatMap((pane): SidebarAgent[] => {
+      const row = rows.get(pane.id);
+      if (!row) return [];
+      const named = workspace.tabs.length > 1 || tab.name !== String(at + 1);
+      return [{ id: pane.id, status: knownStatus(row.status), workspace: workspace.name, tab: named ? tab.name : null, agent: row.agent || row.name, front: pane.id === frontPane }];
+    }));
+  });
+}
+
+/** The rows an agent takes in the sidebar: its workspace and tab, then the agent. */
+const AGENT_ROWS = 2;
+
+/**
+ * The sidebar as herdr draws it: its own cells write no background, so the host's shows (C1 inside the sidebar), and
+ * only the shown workspace's and agent's rows are lit; herdr's lower-case words (C2), its dots (S8), its two-row agents
+ * (S7) and the branch row of a checkout (S4).
+ */
 function sidebarPart(input: ChromeInput, colors: Colors, look: string): Part {
   const { regions, state, world } = input;
   const rect = regions.sidebar;
   const width = Math.max(0, rect.width - 1);
   const heights = sidebarHalves(rect.height);
   const body = Math.max(0, heights.workspaces - WORKSPACE_HEADER_ROWS - 1);
-  const lines = workspaceLines(state, world);
-  const wsStart = windowStart(lines.length, body, Math.max(0, lines.findIndex((line) => line.chosen || line.front)));
+  const rows = workspaceLines(state, world).flatMap((line): WorkspaceRow[] => line.branch === null ? [{ kind: "workspace", line }] : [{ kind: "workspace", line }, { kind: "branch", line }]);
+  let wsStart = windowStart(rows.length, body, Math.max(0, rows.findIndex((row) => row.kind === "workspace" && (row.line.chosen || row.line.front))));
+  // a window never opens on a branch row without its workspace
+  if (rows[wsStart]?.kind === "branch") wsStart += 1;
   const frontPane = focused(state.world, state.focus).pane?.id ?? null;
-  const agents = agentLines(world.agents).map((line): SidebarAgentLine => line.kind === "section"
-    ? { kind: "section", status: line.group, text: STRINGS.agentSection(STATE_LOOK[line.group].word, line.count) }
-    : { kind: "agent", id: line.id, helper: line.helper, status: line.status, text: line.text, front: line.id === frontPane });
-  const agentRows = Math.max(0, heights.agents - AGENT_HEADER_ROWS - 1);
-  const agentStart = windowStart(agents.length, agentRows, Math.max(0, agents.findIndex((line) => line.kind === "agent" && line.front)));
+  const agents = sidebarAgents(world, frontPane);
+  const agentSlots = Math.floor(Math.max(0, heights.agents - AGENT_HEADER_ROWS - 1) / AGENT_ROWS);
+  const agentStart = windowStart(agents.length, agentSlots, Math.max(0, agents.findIndex((agent) => agent.front)));
   const data = {
-    workspaces: lines.slice(wsStart, wsStart + body),
-    agents: agents.slice(agentStart, agentStart + agentRows),
+    workspaces: rows.slice(wsStart, wsStart + body),
+    agents: agents.slice(agentStart, agentStart + agentSlots),
     divided: rect.height >= 6,
   };
   return part("sidebar", rect, look, data, (canvas, { workspaces, agents: agentList, divided }) => {
     if (rect.width <= 0 || rect.height <= 0) return;
-    const base = canvas.style({ fg: colors.text, bg: colors.bg });
-    const separator = canvas.style({ fg: colors.border, bg: colors.bg });
-    const heading = canvas.style({ fg: colors.textDim, bg: colors.bg, flags: STYLE_BOLD });
-    const dim = canvas.style({ fg: colors.textDim, bg: colors.bg });
-    canvas.fill(base);
+    const plain = (fg: WrittenColor, flags = 0) => canvas.style({ fg, bg: null, flags });
+    const lit = (front: boolean, chosen = false) => chosen ? colors.bgHover : front ? colors.bgElevated : null;
+    const separator = plain(colors.border);
+    const heading = plain(colors.textDim, STYLE_BOLD);
+    const dim = plain(colors.textDim);
+    canvas.fill(plain(colors.text));
     const content: Rect = { x: rect.x, y: rect.y, width, height: rect.height };
     for (let r = rect.y; r < rect.y + rect.height; r++) canvas.put(rect.x + width, r, "│", 1, separator);
     printFit(canvas, rect.x, rect.y, ` ${STRINGS.workspacesSection}`, width, heading);
     let row = rect.y + WORKSPACE_HEADER_ROWS;
-    for (const line of workspaces) {
-      const bg = line.chosen ? colors.bgHover : line.front ? colors.bgElevated : colors.bg;
+    for (const { kind, line } of workspaces) {
+      const bg = lit(line.front, line.chosen);
       fillSpan(canvas, rect.x, row, width, canvas.style({ fg: colors.text, bg }));
       const end = rect.x + width - 2;
-      let col = rect.x + 1;
-      if (line.child !== "") col = printFit(canvas, rect.x, row, line.child === "last" ? "   └─ " : "   ├─ ", end - rect.x, canvas.style({ fg: colors.textDim, bg }));
-      const state = STATE_LOOK[line.status];
-      col = printFit(canvas, col, row, state.glyph, end - col, canvas.style({ fg: colors[state.role], bg }));
-      col = printFit(canvas, col, row, " ", end - col, canvas.style({ fg: colors.text, bg }));
-      printFit(canvas, col, row, truncateEnd(line.name, end - col), end - col, canvas.style({ fg: line.front ? colors.text : colors.textDim, bg, flags: line.front ? STYLE_BOLD : 0 }));
+      // a linked worktree's tree mark, then the dot: the name, and a branch under it, start after them
+      const lead = line.child === "" ? 1 : 7;
+      if (kind === "branch") {
+        printFit(canvas, rect.x + lead + 2, row, line.branch ?? "", end - rect.x - lead - 2, canvas.style({ fg: line.front ? colors.statusWorking : colors.textDim, bg }));
+      } else {
+        let col = rect.x + 1;
+        if (line.child !== "") col = printFit(canvas, rect.x, row, line.child === "last" ? "   └─ " : "   ├─ ", end - rect.x, canvas.style({ fg: colors.textDim, bg }));
+        const dot = DOT_LOOK[line.status];
+        col = printFit(canvas, col, row, dot.glyph, end - col, canvas.style({ fg: colors[dot.role], bg }));
+        col = printFit(canvas, col, row, " ", end - col, canvas.style({ fg: colors.text, bg }));
+        printFit(canvas, col, row, truncateEnd(line.name, end - col), end - col, canvas.style({ fg: line.front ? colors.text : colors.textDim, bg, flags: line.front ? STYLE_BOLD : 0 }));
+      }
       canvas.hit({ x: rect.x, y: row, width, height: 1 }, `workspace:${line.id}`);
       row++;
     }
@@ -316,26 +365,22 @@ function sidebarPart(input: ChromeInput, colors: Colors, look: string): Part {
     const detail = rect.y + heights.workspaces;
     if (divided) {
       for (let col = rect.x; col < rect.x + width; col++) canvas.put(col, detail, "─", 1, separator);
-      printFit(canvas, rect.x, detail + 1, ` ${STRINGS.agentsSection}`, width, heading);
+      printFit(canvas, rect.x, detail + 1, ` ${STRINGS.sidebarAgents}`, width, heading);
       printRight(canvas, content, detail + 1, STRINGS.agentsSort, heading);
     }
     row = detail + AGENT_HEADER_ROWS;
-    for (const line of agentList) {
-      const state = STATE_LOOK[line.status];
-      if (line.kind === "section") {
-        // the state's word heads its section, so a row shows its state by its glyph alone
-        printFit(canvas, rect.x + 1, row++, line.text, width - 1, canvas.style({ fg: colors[state.role], bg: colors.bg, flags: STYLE_BOLD }), true);
-        continue;
-      }
-      const bg = line.front ? colors.bgElevated : colors.bg;
-      const style = canvas.style({ fg: colors.text, bg, flags: line.front ? STYLE_BOLD : 0 });
-      fillSpan(canvas, rect.x, row, width, style);
+    for (const agent of agentList) {
+      const bg = lit(agent.front);
       const end = rect.x + width;
-      let col = printFit(canvas, rect.x, row, line.helper ? ` ${STRINGS.helperMark}` : " ", 2, canvas.style({ fg: colors.textDim, bg }));
-      col = printFit(canvas, col, row, `${state.glyph} `, 2, canvas.style({ fg: colors[state.role], bg }));
-      printFit(canvas, col, row, line.text, Math.max(0, end - col), style, true);
-      canvas.hit({ x: rect.x, y: row, width, height: 1 }, `agent:${line.id}`);
-      row++;
+      for (let at = 0; at < AGENT_ROWS; at++) fillSpan(canvas, rect.x, row + at, width, canvas.style({ fg: colors.text, bg }));
+      const dot = DOT_LOOK[agent.status];
+      let col = printFit(canvas, rect.x + 1, row, dot.glyph, end - rect.x - 1, canvas.style({ fg: colors[dot.role], bg }));
+      col = printFit(canvas, col, row, " ", end - col, canvas.style({ fg: colors.text, bg }));
+      col = printFit(canvas, col, row, agent.workspace, end - col, canvas.style({ fg: agent.front ? colors.text : colors.textDim, bg, flags: STYLE_BOLD }), true);
+      if (agent.tab !== null) printFit(canvas, col, row, ` · ${agent.tab}`, end - col, canvas.style({ fg: colors.textDim, bg }), true);
+      printFit(canvas, rect.x + 3, row + 1, agent.agent, Math.max(0, end - rect.x - 3), canvas.style({ fg: colors.textDim, bg }), true);
+      canvas.hit({ x: rect.x, y: row, width, height: AGENT_ROWS }, `agent:${agent.id}`);
+      row += AGENT_ROWS;
     }
     if (rect.width > 1) {
       const toggle = { x: rect.x + rect.width - 2, y: rect.y + rect.height - 1, width: 1, height: 1 };
@@ -345,7 +390,7 @@ function sidebarPart(input: ChromeInput, colors: Colors, look: string): Part {
   });
 }
 
-/** The collapsed sidebar: a rail of numbered workspaces and agents with their state marks, and the mark that expands it. */
+/** The collapsed sidebar: a rail of numbered workspaces and agents with their dots, and the mark that expands it. */
 function railPart(input: ChromeInput, colors: Colors, look: string): Part {
   const { regions, state, world } = input;
   const rect = regions.sidebar;
@@ -353,40 +398,40 @@ function railPart(input: ChromeInput, colors: Colors, look: string): Part {
   const halves = rect.height >= 7;
   const top = halves ? Math.ceil(rect.height / 2) : rect.height;
   const frontPane = focused(state.world, state.focus).pane?.id ?? null;
-  const agents = agentLines(world.agents).flatMap((line) => line.kind === "agent" ? [{ id: line.id, status: line.status, front: line.id === frontPane }] : []);
+  const agents = sidebarAgents(world, frontPane).map(({ id, status, front }) => ({ id, status, front }));
   const data = {
     workspaces: workspaceLines(state, world).filter((line) => line.child === "").slice(0, top),
     agents: halves ? agents.slice(0, Math.max(0, rect.height - top - 2)) : [],
   };
   return part("sidebar", rect, look, data, (canvas, { workspaces, agents: agentList }) => {
     if (rect.width <= 0 || rect.height <= 0) return;
-    canvas.fill(canvas.style({ fg: colors.text, bg: colors.bg }));
-    const separator = canvas.style({ fg: colors.border, bg: colors.bg });
+    canvas.fill(canvas.style({ fg: colors.text, bg: null }));
+    const separator = canvas.style({ fg: colors.border, bg: null });
     for (let r = rect.y; r < rect.y + rect.height; r++) canvas.put(rect.x + width, r, "│", 1, separator);
-    const numbered = (row: number, number: number, status: KnownStatus, bg: WrittenColor, fg: WrittenColor) => {
+    const numbered = (row: number, number: number, status: KnownStatus, bg: WrittenColor | null, fg: WrittenColor) => {
       fillSpan(canvas, rect.x, row, width, canvas.style({ fg, bg }));
       printFit(canvas, rect.x, row, `${number}`.padEnd(2), Math.min(2, width), canvas.style({ fg, bg }));
-      const mark = STATE_LOOK[status];
+      const mark = DOT_LOOK[status];
       printFit(canvas, rect.x + 2, row, mark.glyph, Math.max(0, width - 2), canvas.style({ fg: colors[mark.role], bg }));
     };
     workspaces.forEach((line, at) => {
       const row = rect.y + at;
       if (line.chosen) numbered(row, at + 1, line.status, colors.bgHover, colors.textDim);
       else if (line.front) numbered(row, at + 1, line.status, colors.bgElevated, colors.text);
-      else numbered(row, at + 1, line.status, colors.bg, colors.textDim);
+      else numbered(row, at + 1, line.status, null, colors.textDim);
       canvas.hit({ x: rect.x, y: row, width, height: 1 }, `workspace:${line.id}`);
     });
     if (halves) {
       for (let col = rect.x; col < rect.x + width; col++) canvas.put(col, rect.y + top, "─", 1, separator);
       agentList.forEach((line, at) => {
         const row = rect.y + top + 1 + at;
-        numbered(row, at + 1, line.status, line.front ? colors.bgElevated : colors.bg, line.front ? colors.text : colors.textDim);
+        numbered(row, at + 1, line.status, line.front ? colors.bgElevated : null, line.front ? colors.text : colors.textDim);
         canvas.hit({ x: rect.x, y: row, width, height: 1 }, `agent:${line.id}`);
       });
     }
     if (width > 0) {
       const toggle = { x: rect.x + Math.floor(width / 2), y: rect.y + rect.height - 1, width: 1, height: 1 };
-      canvas.put(toggle.x, toggle.y, STRINGS.sidebarToggleExpand, 1, canvas.style({ fg: colors.textDim, bg: colors.bg }));
+      canvas.put(toggle.x, toggle.y, STRINGS.sidebarToggleExpand, 1, canvas.style({ fg: colors.textDim, bg: null }));
       canvas.hit(toggle, "toggle_sidebar");
     }
   });

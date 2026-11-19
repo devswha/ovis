@@ -14,6 +14,7 @@ import { type AgentGroup, groupAgentRows, knownStatus, type KnownStatus, rollupS
 import type { AgentStatus, PaneLayoutSnapshot } from "../../shared/herdr-api.generated.ts";
 import { folderName } from "../../shared/pane-title.ts";
 import { worktreeGroups } from "../../shared/worktree-groups.ts";
+import { branchOf } from "./git-head.ts";
 import type { World } from "../model/focus.ts";
 import type { LinkNotice } from "./link.ts";
 
@@ -45,7 +46,14 @@ interface AgentRowView {
   readonly workspace: string;
 }
 
-interface WorkspaceRowView { readonly id: string; readonly name: string; readonly number: number; readonly status: KnownStatus }
+interface WorkspaceRowView {
+  readonly id: string;
+  readonly name: string;
+  readonly number: number;
+  readonly status: KnownStatus;
+  /** the branch of the git checkout its first pane works in (git-head.ts); null outside one */
+  readonly branch: string | null;
+}
 
 /** A top-level workspace in the sidebar and the linked worktree workspaces grouped under it (shared/worktree-groups.ts). */
 interface WorkspaceGroupView extends WorkspaceRowView { readonly children: readonly WorkspaceRowView[] }
@@ -276,6 +284,13 @@ export class CoreWorld {
       });
     }
     const order = new Map(snapshot.layouts.map((layout) => [layout.tab_id, layout.panes.map((pane) => pane.pane_id)]));
+    /** the branch of the checkout a workspace's first pane (its first tab's first) works in */
+    const branchOfWorkspace = (workspace: string): string | null => {
+      const tab = snapshot.tabs.find((candidate) => candidate.workspace_id === workspace);
+      const first = snapshot.panes.find((pane) => pane.pane_id === (order.get(tab?.tab_id ?? "") ?? [])[0]);
+      const folder = first ? first.foreground_cwd ?? first.cwd : null;
+      return folder ? branchOf(folder) : null;
+    };
     const tabStatuses = new Map<string, KnownStatus>();
     for (const tab of snapshot.tabs) tabStatuses.set(tab.tab_id, rollupStatus((order.get(tab.tab_id) ?? []).map((id) => panes.get(id)?.status)));
     const workspaceRow = (workspace: (typeof snapshot.workspaces)[number]): WorkspaceRowView => ({
@@ -283,6 +298,7 @@ export class CoreWorld {
       name: workspace.label,
       number: workspace.number,
       status: rollupStatus(snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id).map((pane) => panes.get(pane.pane_id)?.status)),
+      branch: branchOfWorkspace(workspace.workspace_id),
     });
     for (const address of this.since.keys()) if (!panes.has(address)) this.since.delete(address);
     // what is first seen in this view dates from it: every terminal of the first snapshot alike; one that turns up later

@@ -8,7 +8,6 @@ import { CoreWorld, jumpOrder } from "../core/world.ts";
 import { focused } from "../model/focus.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "../model/reduce.ts";
 import { Run } from "../testing/run.ts";
-import { agentLines } from "./agents.ts";
 
 const TEST_MS = 120_000;
 
@@ -74,7 +73,7 @@ describe("the agents' order", () => {
     expect([shownPane(quiet), quiet.notices.map((notice) => [notice.code, notice.calm])]).toEqual(["t1", [["nothing_waiting", true]]]);
   });
 
-  it("sections in the browser's order, an agent and its helpers together, rows numbered in that order", () => {
+  it("the browser's sections and order, an agent and its helpers together", () => {
     // t2 is a helper t1 started: blocked, it brings its agent up into Needs you; t4 is in another workspace
     const view = worldOf([
       term("t1", "lead", "idle"),
@@ -83,14 +82,11 @@ describe("the agents' order", () => {
       term("t4", "notes", "done", { turn: 2 }, "v"),
       term("t5", "shell", null),
     ]).view();
-    expect(agentLines(view.agents)).toEqual([
-      { kind: "section", group: "blocked", count: 2 },
-      { kind: "agent", id: "t1", number: 1, helper: false, status: "idle", text: "lead /proj claude", workspace: "work" },
-      { kind: "agent", id: "t2", number: 2, helper: true, status: "blocked", text: "helper /proj claude", workspace: "work" },
-      { kind: "section", group: "working", count: 1 },
-      { kind: "agent", id: "t3", number: 3, helper: false, status: "working", text: "build /proj claude", workspace: "work" },
-      { kind: "section", group: "done", count: 1 },
-      { kind: "agent", id: "t4", number: 4, helper: false, status: "done", text: "notes /proj claude", workspace: "docs" },
+    expect(view.agents.map(({ paneId, group, helper, workspace }) => [paneId, group, helper, workspace])).toEqual([
+      ["t1", "blocked", false, "work"],
+      ["t2", "blocked", true, "work"],
+      ["t3", "working", false, "work"],
+      ["t4", "done", false, "docs"],
     ]);
     expect(view.world.agents).toEqual(["t1", "t2", "t3", "t4"]);
   });

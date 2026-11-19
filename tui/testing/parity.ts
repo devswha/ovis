@@ -9,7 +9,8 @@
  * has its words, and the others leave out the cells their difference covers. Every other cell must then be the same:
  * its text, its attributes, its background, its foreground where a glyph shows it; and the host cursor (`compare`).
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
 import { STRINGS } from "../strings.ts";
@@ -46,8 +47,15 @@ export async function ovisPicture(world: WorldName, scene: Scene, cols: number, 
   await Screen.load();
   const core = new FakeHcCore();
   const addresses = new Map<string, string>();
+  // the world's checkouts as git leaves them on disk, as far as the screen reads them: a `.git` folder with its HEAD
+  const home = WORLDS[world].checkouts ? mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "parity-")) : null;
+  for (const checkout of WORLDS[world].checkouts ?? []) {
+    mkdirSync(join(home!, checkout.folder, ".git"), { recursive: true });
+    writeFileSync(join(home!, checkout.folder, ".git", "HEAD"), `ref: refs/heads/${checkout.branch}\n`);
+  }
   for (const pane of WORLDS[world].panes) {
-    const address = place(core, { space: pane.workspace, spaceName: pane.workspace, tab: `${pane.workspace}-${pane.tab}`, tabName: pane.tab, pane: pane.name }, paintOf(pane.name));
+    const cwd = home && pane.folder ? join(home, pane.folder) : undefined;
+    const address = place(core, { space: pane.workspace, spaceName: pane.workspace, tab: `${pane.workspace}-${pane.tab}`, tabName: pane.tab, pane: pane.name, ...(cwd ? { cwd } : {}) }, paintOf(pane.name));
     addresses.set(pane.name, address);
     if (pane.agent && pane.state) core.reportStatus(address, { state: pane.state, app: pane.agent });
   }
@@ -75,6 +83,7 @@ export async function ovisPicture(world: WorldName, scene: Scene, cols: number, 
     }
   } finally {
     await run.close();
+    if (home) rmSync(home, { recursive: true, force: true });
   }
 }
 
@@ -171,6 +180,8 @@ export interface Decisions {
   readonly words: readonly Word[];
   readonly holes: readonly Hole[];
   readonly ovisHoles?: readonly Hole[];
+  /** where herdr's "no background" must be none on the screen too, not the theme's (the sidebar: C1 does not reach it) */
+  readonly bare?: readonly Omit<Hole, "line">[];
 }
 
 export interface Difference { readonly x: number; readonly y: number; readonly what: string; readonly herdr: string; readonly ovis: string }
@@ -272,6 +283,7 @@ export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisio
   const theme = TUI_THEMES[palette];
   const { cells: expected, holes: shifted } = withWords(herdr, decisions.words);
   const herdrHeld = held([...decisions.holes, ...shifted], herdr.cols, herdr.rows);
+  const bare = held((decisions.bare ?? []).map((rect) => ({ ...rect, line: "C1" })), herdr.cols, herdr.rows);
   const ovisHeld = held(decisions.ovisHoles ?? [], ovis.cols, ovis.rows);
   const placeOf = (x: number, y: number): readonly [number, number] | null => {
     const hold = herdrHeld.get(y * herdr.cols + x);
@@ -298,7 +310,7 @@ export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisio
     if (seen(want.look.flags) !== seen(got.look.flags)) { differ("attributes"); continue; }
     const wantBg = hexOf(want.look.bg);
     if (want.look.bg === null) {
-      if (got.look.bg !== null && !sameColor(got.look.bg, theme.bg)) { differ("background"); continue; }
+      if (got.look.bg !== null && (bare.has(i) || !sameColor(got.look.bg, theme.bg))) { differ("background"); continue; }
     } else if (!(wantBg && HERDR_BG[wantBg] && sameColor(got.look.bg, theme[HERDR_BG[wantBg]!]))) { differ("background"); continue; }
     const shown = (want.ch !== " " && want.ch !== "") || (want.look.flags & (LOOK_UNDERLINE | LOOK_REVERSE)) !== 0;
     if (!shown || hold === "glyph") continue;
@@ -316,10 +328,10 @@ export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisio
 }
 
 const SIDEBAR = 26;
+/** the collapsed sidebar's rail, with its divider */
+const RAIL = 4;
 const NARROW = 64;
 
-/** Rows of the sidebar's upper half, the workspaces': the upper half of the screen and its odd row. */
-const workspaceRows = (rows: number): number => Math.ceil(rows / 2);
 
 /** A dialog's cells: the size it asks for, centred, with two columns at each side and one row above and below kept free. */
 function dialog(cols: number, rows: number, width: number, height: number): Omit<Hole, "line"> {
@@ -387,16 +399,10 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
         if (y > 2 && found && agents) holes.push({ line: "C2", x: 3, y, width: cols - 3, height: 1 });
       });
     }
-  } else if (collapsed) {
-    const top = rows >= 7 ? Math.ceil(rows / 2) : rows;
-    holes.push({ line: "S8", x: 2, y: 0, width: 1, height: top, glyph: true });
-    if (agents) holes.push({ line: "S7", x: 0, y: top + 1, width: 3, height: Math.max(0, rows - top - 2) });
-  } else {
-    const half = workspaceRows(rows);
-    words.push({ herdr: " spaces", ovis: ` ${STRINGS.workspacesSection}`, row: 0, col: 0 }, { herdr: " agents", ovis: ` ${STRINGS.agentsSection}`, row: half + 1, col: 0 }, { herdr: "menu", ovis: STRINGS.menuTitle, align: "right", row: half - 1, col: SIDEBAR - 2 });
-    holes.push({ line: "S8", x: 1, y: 2, width: 1, height: Math.max(0, half - 3), glyph: true });
-    if (agents) holes.push({ line: "S7", x: 0, y: half + 3, width: SIDEBAR - 1, height: Math.max(0, rows - half - 4) });
   }
+  // the sidebar (the rail when collapsed) is compared whole, with its divider: herdr's words, dots, agents, branch row and
+  // colour roles, and no background where herdr writes none
+  const bare = narrow ? [] : [{ x: 0, y: 0, width: collapsed ? RAIL : SIDEBAR, height: rows }];
   if (BAR_SCENES.has(scene)) {
     words.push({ herdr: "workspace nav", ovis: STRINGS.modeHints.workspaceNav, shift: true, row: rows - 1 }, { herdr: "keybinds", ovis: STRINGS.modeHints.keybinds, shift: true, row: rows - 1 });
   }
@@ -451,7 +457,7 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
       holes.push(boxed ? { line: "N2", x: left, y: row - 1, width: line.indexOf("│", left + 1) - left + 1, height: 4 } : { line: "N2", x: 0, y: row, width: cols, height: 1 });
     }
   }
-  return { words, holes, ovisHoles };
+  return { words, holes, ovisHoles, bare };
 }
 
 /**

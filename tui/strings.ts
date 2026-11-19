@@ -11,7 +11,9 @@ const heldKeys = (skipped: readonly HeldKey[]): string => skipped.map(({ key, ho
 export const STRINGS = {
   // Sidebar & header
   sessionHeader: (session: string): string => `hc:${session}`,
-  workspacesSection: "Workspaces",
+  /** herdr's lower-case words in the sidebar (C2); the switcher keeps the web's `Agents` */
+  workspacesSection: "spaces",
+  sidebarAgents: "agents",
   agentsSection: "Agents",
   noSpaces: "No workspaces",
   noAgents: "No agents",
@@ -21,10 +23,6 @@ export const STRINGS = {
   newWorkspaceButton: " new",
   sidebarToggleCollapse: "«",
   sidebarToggleExpand: "»",
-  /** before an agent row that another agent row started */
-  helperMark: "+",
-  /** a section of an agent list: its state word and how many agents stand in it */
-  agentSection: (word: string, count: number): string => `${word} (${count})`,
 
   // Tab bar
   tabZoomSuffix: " Z",
@@ -45,6 +43,9 @@ export const STRINGS = {
   glyphWorking: "~",
   glyphIdle: "-",
   glyphUnknown: "·",
+  /** herdr's state dots in the sidebar (S8) */
+  dotFull: "●",
+  dotEmpty: "○",
 
   // Mode bar labels
   modeTerminal: "TERMINAL",
@@ -158,7 +159,7 @@ export const STRINGS = {
   /** herdr's foot but its state filters (a/b/w/i/d), which the screen has not */
   pickerFooter: " ↑↓/j/k rows · ←→ workspace · / search · enter open · esc close",
   pickerSearchFooter: " edit ←→/home/end · kill ^u/^k · yank ^y · scroll ↑↓ · back esc",
-  menuTitle: "Menu",
+  menuTitle: "menu",
   /** herdr's menu entries; the keys' help keeps the screen's word for it (C2: herdr says `keybinds`) */
   menuEntries: { settings: "settings", help: "help", reload_config: "reload config", detach: "detach" } as const,
   /** at the right of the narrow screen's header, which opens the menu */
