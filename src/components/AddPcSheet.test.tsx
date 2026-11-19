@@ -128,7 +128,7 @@ describe("the Add-a-PC sheet", () => {
     expect(text(renderer!.root.findByProps({ className: "modal-title" }))).toBe(translate("en", "Approve it on {name}", { name: "desk2" }));
     expect(text(renderer!.root.findByProps({ className: "relay-shell-digits" }))).toBe("123 456");
     expect(steps()).toEqual([]);
-    expect(renderer!.root.findAll((instance) => instance.props.className === "add-pc-bars" || instance.props.className === "add-pc-step-count")).toEqual([]);
+    expect(renderer!.root.findAll((instance) => instance.props.className === "add-pc-bars")).toEqual([]);
     expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Cancel"]);
     expect(renderer!.root.findAll((instance) => instance.type === "details").map((instance) => instance.props.open)).toEqual([undefined]);
     await click("Cancel");
@@ -140,7 +140,9 @@ describe("the Add-a-PC sheet", () => {
     await mount(props("new", pc, LIST));
     expect(renderer!.root.findByProps({ role: "dialog" }).props["aria-modal"]).toBe("true");
     expect(all()).toContain("Add desk2 to your account");
-    expect(all()).toContain("Step 2 of 4");
+    // the step's number is the thin bars' own, for a screen reader, never a line on the sheet
+    expect((renderer!.root.findAll((n) => n.type === "div" && n.props.role === "progressbar").map((n) => [n.props["aria-valuenow"], n.props["aria-valuetext"]]))).toEqual([[2, "Step 2 of 4"]]);
+    expect(all()).not.toContain("Step 2 of 4");
     expect(steps()).toEqual(["done", "running", "todo", "todo"]);
     await click("Add this PC");
     expect(calls.joins).toEqual([[pc, { typed: true }]]);
@@ -173,7 +175,7 @@ describe("the Add-a-PC sheet", () => {
     await update(props("new", pc, { kind: "ready", name: "desk2", server_id: SERVER_ID }));
     expect(addPcPhase(pc, { kind: "ready", name: "desk2", server_id: SERVER_ID })).toBe("ready");
     expect(steps()).toEqual(["done", "done", "done", "done"]);
-    expect(all()).toContain("Step 4 of 4");
+    expect((renderer!.root.findAll((n) => n.type === "div" && n.props.role === "progressbar").map((n) => [n.props["aria-valuenow"], n.props["aria-valuetext"]]))).toEqual([[4, "Step 4 of 4"]]);
     await click("Open PC");
     expect(calls.opens).toBe(1);
   });
@@ -204,7 +206,7 @@ describe("the Add-a-PC sheet", () => {
     const sub = () => text(renderer!.root.findByProps({ className: "add-pc-sub" }));
     // the start says what must be open before the press: only a device with the PC open hears the request
     expect(text(renderer!.root.findByProps({ className: "modal-title" }))).toBe(translate("en", "Get approved on a device you already use"));
-    expect(sub()).toBe(translate("en", "Open {name} on a device you already use and keep it open. Then choose Ask to join and approve there.", { name: "desk2" }));
+    expect(sub()).toBe(translate("en", "A notice goes to the device you already use. Check the number there and approve."));
     expect(all()).not.toContain("Add window closed");
     expect(all()).toContain("Check the number on a device connected to desk2");
     expect(all()).not.toContain("Work MacBook");
@@ -406,7 +408,6 @@ describe("the Add-a-PC sheet", () => {
 
     let typed = 0;
     await update({ ...props("join", pcOf(), LIST), onTypeNumber: () => { typed += 1; } });
-    expect(all()).toContain("If desk2 is waiting on its own screen to be added, type its number here instead.");
     expect(renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text)).toEqual(["Cancel", "Type the number", "Ask to join"]);
     await click("Type the number");
     expect(typed).toBe(1);
