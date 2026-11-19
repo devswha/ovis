@@ -1,11 +1,14 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { DeviceJournal } from "./device-journal.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId, exportAccountKey } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { FrameType, type MuxFrame, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
-import { bounded, relayAccountFixture, relayConnection } from "../relay/test-helpers.ts";
+import { bounded, relayAccountFixture, relayConnection, relayFixture } from "../relay/test-helpers.ts";
 
 const ACCOUNT = "acct_1";
 const closes: (() => void)[] = [];
@@ -15,7 +18,7 @@ afterEach(() => { for (const close of closes.splice(0)) close(); });
 async function listedPc() {
   const service = new FakeAccountService();
   service.opensAll = true;
-  const { fixture } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
+  const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
   closes.push(() => fixture.close());
   rotateRelayIdentity(fixture.stateDir);
   const { services } = fixture.app.context;
@@ -27,7 +30,7 @@ async function listedPc() {
   service.registerDevice(ACCOUNT, spki, "Laptop");
   expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   const device = { keys, publicKey: spki, id: accountDeviceId(identity.server_id, spki) };
-  return { fixture, device, serverId: identity.server_id };
+  return { fixture, member, device, serverId: identity.server_id };
 }
 
 async function refusal(pc: Awaited<ReturnType<typeof listedPc>>, features: readonly string[]) {
@@ -40,6 +43,30 @@ async function refusal(pc: Awaited<ReturnType<typeof listedPc>>, features: reado
 }
 
 describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
+  test("T20, P8: revoke-all intent and all session closes survive a failed account drop journal", async () => {
+    const { fixture, device, member } = await listedPc();
+    const { devices } = fixture.app.context.services;
+    const intent = join(fixture.stateDir, "revoke-all.json");
+    const closedWithDeny: string[] = [];
+    for (const id of [member.id, device.id]) devices.onRevoke(id, () => { if (existsSync(intent)) closedWithDeny.push(id); });
+    const append = DeviceJournal.prototype.append;
+    const failure = spyOn(DeviceJournal.prototype, "append").mockImplementation(function (this: DeviceJournal, entry) {
+      if (entry.kind === "drop" && entry.how === "revoke_all") throw new Error("journal unavailable");
+      return append.call(this, entry);
+    });
+    try { expect(() => devices.revokeAll()).toThrow("journal unavailable"); } finally { failure.mockRestore(); }
+    expect(closedWithDeny.sort()).toEqual([member.id, device.id].sort());
+    expect(devices.has(member.id)).toBe(false);
+    expect(existsSync(intent)).toBe(true);
+    fixture.app.stop();
+    const recovered = relayFixture(false, { stateDir: fixture.stateDir, accountOpensAll: true, accountService: { url: "off" } });
+    try {
+      expect(recovered.app.context.services.devices.account()).toBeNull();
+      expect(recovered.app.context.services.devices.has(device.id)).toBe(false);
+      expect(existsSync(intent)).toBe(false);
+    } finally { recovered.app.stop(); }
+  });
+
   test("S25: the whole read admits the listed device as an account row, held until its notice is out", async () => {
     const pc = await listedPc();
     expect(pc.fixture.app.context.services.devices.has(pc.device.id)).toBe(true);
