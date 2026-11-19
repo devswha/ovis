@@ -269,8 +269,9 @@ export function App() {
   const { renameRequest, requestRename, clearRenameRequest } = useRenameRequest(selectedMachineId, selectedPaneId);
   const { renameRequest: closeTabRequest, requestRename: requestCloseTab, clearRenameRequest: clearCloseTabRequest } = useRenameRequest(selectedMachineId, selectedPaneId);
   const moreMenu = useMoreMenu();
-  // where Add a PC leads on a phone: the phone app's own screens, or the hosted app's; none on a PC's own page
-  const addPcExit = useMemo(() => pcListExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname }), []);
+  // where Add a PC leads on a phone: a PC reached through the hosted app (in a browser or in the phone app, which opens
+  // it there) goes to the hosted app's Add a PC, one the phone app opened by its address to the app's own screens
+  const addPcExit = useMemo(() => pcListExit({ nativeApp: false, relayShell: shellMode() === "relay", pathname: window.location.pathname }) ?? (inNativeApp() ? "app" : null), []);
   const { more, setMore, closeMore, group: moreGroup, openGroup: openMoreGroup, closeGroup: closeMoreGroup } = moreMenu;
   const paneActionsRef = useRef<((target: HerdrPane, options?: { counted?: boolean }) => RowMenuItem[]) | null>(null);
   const paneLocked = usePaneLocked(selectedMachineId);
