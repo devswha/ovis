@@ -1347,7 +1347,10 @@ try {
       await readerPage.goto(`${origin}/?read=${encodeURIComponent(join(root, "long.md"))}`);
       const readerBody = readerPage.locator(".file-reader-body");
       await readerBody.locator(".file-viewer-markdown p").first().waitFor();
-      await readerBody.locator(".file-viewer-markdown .markdown-h1").nth(longPreviewHeadings - 1).waitFor();
+      const readerPreview = readerBody.locator('.file-viewer-markdown[data-drawn="complete"]');
+      // A loaded runner can take longer to draw this large file; the signal ends the wait early (#4185).
+      await readerPreview.waitFor({ timeout: 30_000 });
+      assert.equal(await readerPreview.locator(".markdown-h1").count(), longPreviewHeadings);
       const geometry = await readerBody.evaluate((element) => ({ height: element.clientHeight, scrollHeight: element.scrollHeight, viewport: innerHeight }));
       assert.ok(geometry.height < geometry.viewport, `${width}px: standalone reader body is bounded by the viewport`);
       assert.ok(geometry.scrollHeight > geometry.height, `${width}px: long document has an internal scroll range`);
@@ -1489,7 +1492,10 @@ try {
   const long = page.getByRole("dialog", { name: "long.md", exact: true });
   await long.locator(".file-viewer-markdown .markdown-h1").first().waitFor();
   assert.match(await long.locator(".file-viewer-meta .file-viewer-notice").getAttribute("title") ?? "", /^Showing the first 256 KB of /);
-  await long.locator(".file-viewer-markdown .markdown-h1").nth(longPreviewHeadings - 1).waitFor();
+  const longPreview = long.locator('.file-viewer-markdown[data-drawn="complete"]');
+  // A loaded runner can take longer to draw this large file; the signal ends the wait early (#4185).
+  await longPreview.waitFor({ timeout: 30_000 });
+  assert.equal(await longPreview.locator(".markdown-h1").count(), longPreviewHeadings);
   // The preview can contain thousands of file-link buttons. Query its toolbar, not every
   // accessible name in the document: the check itself must not monopolize the page.
   const longHeader = long.locator(".file-viewer-header");

@@ -13,7 +13,6 @@ export const QUARANTINE_MAX_DAYS = 30;
 
 export const QUARANTINE: Readonly<Record<string, QuarantineEntry>> = {
   "scripts/chat-virtual-browser-qa.ts": { until: "2026-12-18", issue: 4026 },
-  "scripts/file-viewer-regression.ts": { until: "2026-12-18", issue: 4185 },
   "scripts/gjc-status-browser-regression.ts": { until: "2026-12-18", issue: 4184 },
   "scripts/pane-mute-demo-regression.ts": { until: "2026-12-18", issue: 4131 },
   "scripts/phone-worktree-sheet-regression.ts": { until: "2026-12-18", issue: 4026 },
