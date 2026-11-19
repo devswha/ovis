@@ -2634,7 +2634,10 @@ export class DeviceStore {
   /** The member of `account` holding `key`: a drive one, unless `anyRole` (a device signing its own leave). */
   accountSigner(key: string, account: string, anyRole = false): DeviceMatch | null {
     const device = this.devices.find((d) => d.relay_public_key === key && d.account === account && (anyRole || d.role === "drive") && !this.stale(d));
-    return device ? { id: device.id, label: device.label, role: device.role } : null;
+    if (device) return { id: device.id, label: device.label, role: device.role };
+    // an account-joined key signs its own leave, held or not (P5, S25); it signs nothing else here
+    const joined = anyRole && account === this.account() ? this.joinedRows?.rowsByKey(key)[0] : undefined;
+    return joined ? { id: joined.id, label: joined.label, role: "drive" } : null;
   }
 
   accountRows(): { members: number; unlinked: string[]; own_word: string[] } {
