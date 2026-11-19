@@ -604,7 +604,7 @@ describe("a card's wait across a resync of herdr's events, and across an exit", 
     await h.status.cardTick();
     expect(sent()).toBe(1);
     // the event stream closed and is opened again, resynced from a snapshot that names the same agent, whose reports go on naming it
-    handlers.onResync([pane("codex", "working")] as never, new Set());
+    handlers.onResync([pane("codex", "working")] as never, new Set(), Date.now());
     handlers.onStatus("t1", "working", "codex");
     for (let tick = 0; tick < 3; tick++) await h.status.cardTick();
     expect(h.status.cards.waiting("t1")).toBe(true);
