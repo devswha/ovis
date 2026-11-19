@@ -81,6 +81,7 @@
     "scripts/relay-e2e-regression.ts",
     "scripts/relay-join-browser-qa.ts",
     "scripts/relay-media-browser-qa.ts",
+    "scripts/relay-offline-reasons-regression.ts",
     "scripts/relay-shell-browser-qa.ts",
     "scripts/release-guards.test.ts",
     "scripts/render-crash-demo-regression.ts",
