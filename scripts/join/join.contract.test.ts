@@ -1328,6 +1328,18 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect((await m.sh("rm /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-closed && sh ~/.local/share/ovis-machine/join.sh --uninstall")).code).toBe(0);
   }, 300_000);
 
+  test("A: herdr's config folder a link (dotfiles): the join reads herdr's status where herdr keeps it, and joins", async () => {
+    const m = await runnerMachine();
+    expect((await m.sh("mkdir -p ~/dotfiles/herdr-config ~/.config && ln -s ~/dotfiles/herdr-config ~/.config/herdr")).code).toBe(0);
+    await serveHerdr(m);
+    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-closed")).code).toBe(0);
+    const joined = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseConfigLink", `[join] exit ${joined.code}\n${joined.stdout}${joined.stderr}`);
+    expect(joined.code).toBe(30);
+    expect((await m.processes()).includes(`${TRIAL}/bin/ovis-server serve`)).toBe(true);
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
   describe("6: refusals, each one plain line, nothing installed", () => {
     const refused = async (m: Machine, line: string, code: number, label: string, who?: Who) => {
       const home = await m.home();

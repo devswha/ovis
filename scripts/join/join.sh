@@ -31,7 +31,11 @@ umask 077
 # /var/home, or written with a doubled or trailing slash, would miss them all). herdr's sockets are the exception: they
 # keep the spelling herdr bound them by, so j_choose also looks under the HOME as given. The trial folder by its parent
 # only: the folder itself being a link is refused (j_no_links)
-j_canonical() { realpath -m -- "$1" 2>/dev/null || readlink -m -- "$1" 2>/dev/null || printf '%s' "$1"; }
+# only a resolver that succeeds is heard: one that prints and then fails (BusyBox's realpath on some paths) adds nothing
+j_canonical() {
+  j_c=$(realpath -m -- "$1" 2>/dev/null) || j_c=$(readlink -m -- "$1" 2>/dev/null) || j_c=$1
+  printf '%s' "$j_c"
+}
 j_stage=""
 j_self_dir=$(dirname "$0")
 case $j_self_dir in "${TMPDIR:-/tmp}"/tmp.* | /tmp/tmp.*) [ "$(ls -A "$j_self_dir" 2>/dev/null)" = join.sh ] || j_self_dir="" ;; *) j_self_dir="" ;; esac
@@ -220,8 +224,10 @@ j_remove() {
   fi
   j_made=$(sed -n '1!G;h;$p' "$J_HOME/receipt" | sed -n 's/^dir //p')
   if [ -f "$unit_path" ]; then rm -f -- "$unit_path"; systemctl --user daemon-reload >/dev/null 2>&1; fi
-  # the unit as j_start_systemd writes it first, left there when that write or the run ended before its rename
-  rm -f -- "$(dirname "$unit_path")/.$J_UNIT.new"
+  # the unit as j_start_systemd writes it first, left there when that write or the run ended before its rename: only a
+  # file that starts with the join's marker
+  j_new="$(dirname "$unit_path")/.$J_UNIT.new"
+  if [ -f "$j_new" ] && [ ! -L "$j_new" ] && [ "$(head -n 1 "$j_new" 2>/dev/null)" = "$J_MARK" ]; then rm -f -- "$j_new"; fi
   j_linger_left=""
   for j_who in $(sed -n 's/^linger //p' "$J_HOME/receipt"); do
     loginctl disable-linger "$j_who" >/dev/null 2>&1 || j_linger_left=$j_who
@@ -374,8 +380,10 @@ j_choose() {
     j_pick=$(printf '%s\n' "$j_pick" | sed -n "${j_answer}p")
   fi
   j_session=$(printf '%s\n' "$j_pick" | cut -f2)
-  # canonical, as every other path the trial server is given: the same socket, whichever spelling found it
-  j_socket=$(j_canonical "$(printf '%s\n' "$j_pick" | cut -f3)")
+  # the socket as found (herdr's own config folder, which its status reads, follows from it) and canonical, as every other
+  # path the trial server is given: the same socket, whichever spelling found it
+  j_found=$(printf '%s\n' "$j_pick" | cut -f3)
+  j_socket=$(j_canonical "$j_found")
   # the program of the session's own server; only where it cannot be read, the first one in the usual folders
   # the program of the process that listens on that socket (/proc/<pid>/exe), never a herdr found on PATH or in the
   # usual folders: a machine may hold several herdr programs, and only the session's own one attaches its terminals
@@ -387,7 +395,7 @@ j_choose() {
 j_herdr_version() {
   [ -n "$j_herdr" ] || refuse 32 "the program of the herdr server that listens on $j_socket cannot be read from its process; nothing was changed"
   if [ "$j_session" = default ]; then set -- status server; else set -- --session "$j_session" status server; fi
-  j_root=${j_socket%/herdr.sock}
+  j_root=${j_found%/herdr.sock}
   [ "$j_session" = default ] || j_root=${j_root%/sessions/*}
   j_root=${j_root%/herdr}
   j_status=$(XDG_CONFIG_HOME=$j_root "$j_herdr" "$@" 2>/dev/null </dev/null)
@@ -418,7 +426,7 @@ j_listening() {
 # disabled as well as stopped (a stop alone leaves it to start again at the next login or boot)
 j_stop_line() {
   if [ "$j_services" = systemd-user ]; then printf 'systemctl --user disable --now %s' "$J_UNIT"
-  else printf '%s/bin/ovis-machine stop' "$J_HOME"; fi
+  else printf '%s stop' "$(j_quote "$J_HOME/bin/ovis-machine")"; fi
 }
 j_choose_port() {
   j_old_port=$(sed -n 's/^port //p' "$J_HOME/trial" 2>/dev/null)
@@ -1128,18 +1136,23 @@ for j_default in "${XDG_CONFIG_HOME:-$HOME/.config}/ovis" "${XDG_CONFIG_HOME:-$H
 done
 
 if [ "$j_fresh" = 1 ]; then
-  # the folders and the receipt that lists them are made with Ctrl+C, TERM and HUP ignored: an end in between would leave
-  # a folder no receipt lists, which the roll back cannot see and a run again refuses
-  trap '' INT TERM HUP
   made=$(j_missing_dirs "$(dirname "$J_HOME")")
-  printf '%s\n' "$made" | while IFS= read -r p; do [ -n "$p" ] || continue; mkdir -m 700 "$p" || exit 1; done \
+  # the folders and the receipt that lists them are made with Ctrl+C, TERM and HUP held: an end in between would leave a
+  # folder no receipt lists, which the roll back cannot see and a run again refuses. The commands that make them ignore
+  # the signal; the first one is noted here and acted on once the receipt lists them
+  j_held=""
+  trap 'j_held=${j_held:-130}' INT
+  trap 'j_held=${j_held:-143}' TERM
+  trap 'j_held=${j_held:-129}' HUP
+  printf '%s\n' "$made" | { trap '' INT TERM HUP; while IFS= read -r p; do [ -n "$p" ] || continue; mkdir -m 700 "$p" || exit 1; done; } \
     || refuse 14 "a parent of $J_HOME cannot be made; nothing was changed"
-  mkdir -m 700 "$J_HOME" && : >"$J_HOME/receipt" || refuse 14 "$J_HOME cannot be made; nothing was changed"
+  ( trap '' INT TERM HUP; mkdir -m 700 "$J_HOME" && : >"$J_HOME/receipt" ) || refuse 14 "$J_HOME cannot be made; nothing was changed"
   j_note home "$J_HOME"
-  printf '%s\n' "$made" | while IFS= read -r p; do [ -n "$p" ] && j_note dir "$p"; done
+  printf '%s\n' "$made" | { trap '' INT TERM HUP; while IFS= read -r p; do [ -n "$p" ] && j_note dir "$p"; done; }
   trap 'j_interrupted 130' INT
   trap 'j_interrupted 143' TERM
   trap 'j_interrupted 129' HUP
+  [ -z "$j_held" ] || j_interrupted "$j_held"
 else
   j_touched=1
   j_halt || refuse 14 "the trial server of the previous run could not be seen stopped and its service disabled: stop it, then run the line again"
