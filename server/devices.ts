@@ -1772,6 +1772,8 @@ export class DeviceStore {
     const row = this.joinedRows?.row(id) ?? null;
     const access = row && this.listedAccess(row);
     if (!row || !access || !("ok" in access)) return null;
+    // every request of its session is use this PC sees (P9, T54); the store writes the day at most once
+    this.joinedRows!.seen(id);
     return { role: "drive", key: row.key, provisional: false };
   }
 
@@ -1839,7 +1841,11 @@ export class DeviceStore {
     if (currentMember || current === null || current.key !== key) return null;
     const answer = this.listedAccess(current);
     if (!answer) return null;
-    return "ok" in answer ? { match: { id: current.id, label: current.label, role: "drive" } } : { refused: answer, holdUntil: current.hold_until };
+    if ("ok" in answer) {
+      this.joinedRows.seen(deviceId);
+      return { match: { id: current.id, label: current.label, role: "drive" } };
+    }
+    return { refused: answer, holdUntil: this.joinedRows.row(deviceId)?.hold_until ?? null };
   }
 
 

@@ -44,6 +44,8 @@ export interface AccountRowSource {
   removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void;
   /** An eligible "It's me" answers the notice, ending the hold if one remains. */
   itsMe(id: string, sayer: Sayer): boolean;
+  /** Authenticated use of the row on this PC (P9): a proved sign-in, or a request of its session. */
+  seen(id: string): void;
 }
 
 export type AccountRow = AccountJoinedRow;
@@ -250,7 +252,7 @@ export class AccountDeviceStore implements AccountRowSource {
       && today - Date.parse(row.last_signin_day ?? row.origin.at.slice(0, 10)) >= EXPIRY_DAYS * DAY_MS);
     for (const row of idle) {
       this.ports.closeSessions(row.id, "expired");
-      this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason: "expired" });
+      this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason: "expired", account: this.file.account });
     }
     const ids = new Set(idle.map((row) => row.id));
     if (ids.size > 0) this.write({ ...this.file, devices: this.file.devices.map((row) => ids.has(row.id) ? { ...row, state: "expired", hold_until: null } : row) });
@@ -266,7 +268,7 @@ export class AccountDeviceStore implements AccountRowSource {
     const expired = this.file.devices.find((row) => row.key === key && row.state === "expired");
     const entry = list.devices.find((candidate) => candidate.key === key && candidate.eligible);
     if (!expired || !entry || list.removed.some((gone) => gone.key === key) || list.account !== this.file.account) return false;
-    if (this.ports.heldByDevicesJson(key) || !this.ports.admits(key)) return false;
+    if (this.ports.heldByDevicesJson(key) || !this.ports.admits(key, list.account)) return false;
     this.file = { ...this.file, devices: this.file.devices.filter((row) => row !== expired) };
     this.admit(entry, false);
     return true;
@@ -424,5 +426,6 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
     pruneDenied: (evidence, legacyRevoke) => { store()?.pruneDenied(evidence, legacyRevoke); },
     removeRows: (ids, reason, close) => { store()?.removeRows(ids, reason, close); },
     itsMe: (id, sayer) => store()?.itsMe(id, sayer) ?? false,
+    seen: (id) => { store()?.seen(id); },
   };
 }

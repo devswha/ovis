@@ -347,7 +347,7 @@ export function createServer(
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
   const accountMailbox = new AccountMailbox({
     pendingPath: join(stateDir, "account-pending.json"), holds: accountHolds,
-    ...(opensAll ? { snapshot: { account: () => devices.account(), ports: () => readPorts } } : {}),
+    ...(opensAll ? { snapshot: { account: () => devices.account(), ports: () => readPorts, used: () => accountRows?.store()?.usedReport() ?? [] } } : {}),
     devices, identity: () => ovisRelay.currentIdentity(),
     service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
   });
@@ -610,7 +610,11 @@ export function createServer(
   devices.attachAccountOrder(accountOrder);
   const readPorts = safetyLog !== null && pcAccount !== null && journal !== null && accountOrder !== null
     ? snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: serverIdNow, requestRead: () => { void accountMailbox.pull(); },
-      commitList: (snapshot) => { accountRows?.store()?.commitList(snapshot); } })
+      commitList: (snapshot) => {
+        accountRows?.store()?.commitList(snapshot);
+        // 60 days with no use this PC saw end a row here, by this PC's clock (T54)
+        accountRows?.store()?.expire();
+      } })
     : null;
   const services: RequestServices = {
     runtimeMove: options.runtimeService ? moveService({
