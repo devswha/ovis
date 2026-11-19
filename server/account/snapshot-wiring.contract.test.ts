@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
+import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { FrameType } from "../../shared/relay-mux.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
-import { relayAccountFixture } from "../relay/test-helpers.ts";
+import { bounded, deferred, relayAccountFixture, relayConnection, relayDevice } from "../relay/test-helpers.ts";
 
 const ACCOUNT = "acct_1";
 const closes: (() => void)[] = [];
@@ -50,6 +51,30 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
     service.opensAll = true;
     expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     expect(services.devices.hasKey(key)).toBe(true);
+  });
+
+  test("T60: only a negotiated refusal with the signer's valid proof carries its PC receipts", async () => {
+    const { services, service, member, identity, fixture } = await server(true);
+    service.registerDevice(ACCOUNT, member.publicKey, "Signer");
+    expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    const target = await relayDevice(fixture);
+    const block = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.publicKey, target_no: 2,
+      signer: member.publicKey, signer_no: 1, signed_at: "2026-11-01T00:00:00.000Z", nonce: newRecordId() }, member.keys.privateKey);
+    const receipt = await services.devices.applyBlock(block, "handed");
+    expect(receipt.outcome).toBe("applied");
+    expect(services.devices.revoke(member.id)).toBe(true);
+    const id = accountDeviceId(identity.server_id, member.publicKey);
+    const refusal = async (keys: CryptoKeyPair, features: readonly string[]) => {
+      const link = await relayConnection(fixture, { serverId: identity.server_id });
+      const reply = deferred<unknown>();
+      link.onFrame = (frame) => { if (frame.type === FrameType.SESSION_ERROR) reply.resolve(frame.payload); };
+      void link.auth({ ...member, keys, id }, features).catch(() => {});
+      return bounded(reply.promise);
+    };
+    const plain = { code: "auth_failed", message: "auth_failed" };
+    expect(await refusal(member.keys, [])).toEqual(plain);
+    expect(await refusal(target.keys, ["account-opens-all-1"])).toEqual(plain);
+    expect(await refusal(member.keys, ["account-opens-all-1"])).toEqual({ ...plain, receipts: [receipt] });
   });
 
   test("P24: with the flag off the PC never asks for a snapshot", async () => {
