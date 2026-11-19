@@ -105,6 +105,14 @@ describe("account-devices.json (device table S21, S25, P22)", () => {
     for (const how of ["list", "add", "member", "promoted", "legacy"]) expect(() => parseAdmissionOrigin({ from: "pc", how, by: null, admit_no: 1, at })).toThrow(AccountSnapshotError);
   });
 
+  test("a row from before the upgrade is stamped admit_no 0, older than every admission; nothing else is (T50)", () => {
+    const legacy = { from: "legacy", how: "legacy", by: null, admit_no: 0, at };
+    expect(parseAdmissionOrigin(legacy)).toEqual(legacy as never);
+    for (const origin of [{ ...legacy, admit_no: -1 }, { ...legacy, from: "remote", how: "list" }, { ...legacy, from: "pc", how: "code" }]) {
+      expect(() => parseAdmissionOrigin(origin)).toThrow(AccountSnapshotError);
+    }
+  });
+
   test("an account-joined row has the id its key gives on this PC and came in from the list (S21)", () => {
     const bad = [
       { ...row, id: "0123456789abcdef" }, { ...row, id: accountDeviceId("f".repeat(32), newer.spki) },
