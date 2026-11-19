@@ -4,6 +4,7 @@ import { constants } from "node:os";
 import { join } from "node:path";
 import { coreFolder, IsolatedCore, type StopReport, stoppedCleanly } from "../scripts/test-hc.ts";
 import { HcConnection } from "../server/herdr-core/connection.ts";
+import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { SPACE_LABEL, TAB_LABEL, WORKSPACE_NAME_LABEL } from "../server/herdr-core/snapshot.ts";
 import { connectCoreSocket } from "../server/herdr-core/socket-transport.ts";
 import { gridText, runSupervised, stopAllPtyRuns, type SupervisedRun } from "./testing/pty.ts";
@@ -119,6 +120,8 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     await Promise.all(both.map((run, at) => run.until(/\x1b\[\?1049h[\s\S]*\x1b\[\?25h/, `screen ${at + 1}'s live first pane`)));
     const { terminals } = await hc.call("terminal.list", {});
     expect(terminals.map((terminal) => terminal.labels?.[WORKSPACE_NAME_LABEL])).toEqual(["~"]);
+    // the claim that decided it is out of the layout document again
+    expect(Object.keys(((await hc.call("doc.get", { name: OVIS_LAYOUT_DOC })).value ?? {}) as object)).not.toContain("first_workspace");
     for (const run of both) {
       run.type(DETACH);
       expect((await run.ended).code).toBe(0);

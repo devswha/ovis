@@ -1007,6 +1007,9 @@ describe("the screen's own layout, as herdr's", () => {
     }
     expect(core.calls().filter((call) => call.method === "terminal.run").length).toBe(1);
     for (const run of [a, b]) expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["~"]);
+    // the claim that decided it is gone again: the document holds what every reader knows
+    const claims = core.calls().filter((call) => call.method === "doc.set").map((call) => Object.keys((call.params["value"] ?? {}) as object).includes("first_workspace"));
+    expect([claims.includes(true), claims.at(-1)]).toEqual([true, false]);
   }, TEST_MS);
 
   it("a core with workspaces gets none", async () => {

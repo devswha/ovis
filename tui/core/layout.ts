@@ -43,17 +43,10 @@ const HOME_NAME = "~";
 
 /** The layout document's key for the first workspace's claim (`LayoutWrites.claimFirst`). */
 const FIRST_CLAIM = "first_workspace";
-/** A claim: the terminal its screen opened, null while it is opening it. */
-interface FirstClaim { readonly terminal: string | null }
+/** The claim a screen writes while it opens the first workspace; the document holds it for no longer. */
+const OPENING = { opening: true } as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** The claim a layout document holds, if any. */
-function firstClaim(doc: unknown): FirstClaim | undefined {
-  const claim = isRecord(doc) ? doc[FIRST_CLAIM] : undefined;
-  if (!isRecord(claim)) return undefined;
-  return { terminal: typeof claim["terminal"] === "string" ? claim["terminal"] : null };
-}
 
 const SPLITS: Readonly<Record<string, SplitDirection>> = { split_vertical: "right", split_horizontal: "down" };
 const SWAPS: Readonly<Record<string, PaneDirection>> = { swap_pane_left: "left", swap_pane_down: "down", swap_pane_up: "up", swap_pane_right: "right" };
@@ -115,13 +108,13 @@ export class LayoutWrites {
    * only the schema and the workspaces (snapshot.ts `keptLayout`), so no reader sees it and the next layout edit drops
    * it. Steps:
    * 1. read the document, then the terminals: nothing to do unless the core has no terminal, Ovis arranges its layout and
-   *    no claim is in flight (a claim naming no terminal yet);
+   *    no claim is in the document;
    * 2. write the claim with the version read: a screen that loses the race gets a conflict and stops;
    * 3. read the terminals again: another client may have opened one meanwhile, then the claim is let go;
-   * 4. create the workspace, then write the terminal into the claim, so a claim whose terminal is gone (the user closed
-   *    it) can be taken again on a later connection.
-   * A screen that dies between 2 and 4 leaves a claim in flight until the next layout edit drops it: the core then stays
-   * empty, and the sidebar's new button still opens a workspace.
+   * 4. create the workspace, then take the claim out of the document: a screen that reads the document after that finds
+   *    the workspace's terminal, and the document is left as the browser and every reader know it.
+   * A screen that dies between 2 and 4 leaves the claim until the next layout edit drops it: the core then stays empty,
+   * and the sidebar's new button still opens a workspace.
    */
   private async claimFirst(): Promise<void> {
     const { hc } = this.options;
@@ -129,32 +122,31 @@ export class LayoutWrites {
     const doc = await hc.call("doc.get", { name: OVIS_LAYOUT_DOC });
     const [list, app] = await Promise.all([hc.call("terminal.list", {}), hc.call("doc.get", { name: LAYOUT_DOC })]);
     if (!ownsLayout(app.value) || foreignLayout(doc.value) || list.terminals.length > 0) return;
-    const held = firstClaim(doc.value);
-    if (held !== undefined && held.terminal === null) return;
+    if (isRecord(doc.value) && doc.value[FIRST_CLAIM] !== undefined) return;
     const layout = isRecord(doc.value) ? doc.value : { schema: OVIS_LAYOUT_SCHEMA, workspaces: [] };
-    const write = async (claim: FirstClaim | null, version: number): Promise<number | null> => {
+    const write = async (claim: boolean, version: number): Promise<number | null> => {
       const { [FIRST_CLAIM]: _old, ...rest } = layout;
       try {
-        return (await hc.call("doc.set", { name: OVIS_LAYOUT_DOC, value: claim === null ? rest : { ...rest, [FIRST_CLAIM]: claim }, version })).version;
+        return (await hc.call("doc.set", { name: OVIS_LAYOUT_DOC, value: claim ? { ...rest, [FIRST_CLAIM]: OPENING } : rest, version })).version;
       } catch (error) {
         if (error instanceof HcError && error.kind === "conflict") return null;
         throw error;
       }
     };
-    const claimed = await write({ terminal: null }, doc.version);
+    const claimed = await write(true, doc.version);
     if (claimed === null) return;
     if ((await hc.call("terminal.list", {})).terminals.length > 0) {
-      await write(null, claimed);
+      await write(false, claimed);
       return;
     }
     let address: string;
     try {
       address = (await this.store.createWorkspace({ name: HOME_NAME })).root_pane.pane_id;
     } catch (error) {
-      await write(null, claimed);
+      await write(false, claimed);
       throw error;
     }
-    await write({ terminal: address }, claimed);
+    await write(false, claimed);
     this.follow(address, null);
   }
 
