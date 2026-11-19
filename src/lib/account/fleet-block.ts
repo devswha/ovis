@@ -29,3 +29,29 @@ export function withBlockReceipt(fleet: FleetBlock, serverId: string, answer: un
   if (!fleet.ids.includes(receipt.id)) return fleet;
   return { ...fleet, outcomes: new Map(fleet.outcomes).set(serverId, blockOutcome(serverId, receipt)) };
 }
+
+/** One PC's transport for blocks (its notice-answer or POST /api/account/records): the receipts that PC itself sent back. */
+export type BlockSend = (records: readonly BlockRecord[]) => Promise<readonly unknown[]>;
+
+/**
+ * Sends the blocks to every PC of the account and to the account service at once (device table T60), each PC again
+ * with the same records while it cannot be reached (retry by id), and keeps only what each PC answered for itself.
+ */
+export async function sendBlocks(blocks: readonly BlockRecord[], options: { pcs: ReadonlyMap<string, BlockSend>; service: (blocks: readonly BlockRecord[]) => Promise<void>; tries?: number }): Promise<FleetBlock> {
+  const tries = options.tries ?? 3;
+  let fleet: FleetBlock = { ids: blocks.map((block) => block.id), outcomes: new Map([...options.pcs.keys()].map((serverId) => [serverId, { server_id: serverId, state: "waiting" as const }])) };
+  const toPc = async (serverId: string, send: BlockSend): Promise<void> => {
+    for (let attempt = 1; attempt <= tries; attempt++) {
+      let receipts: readonly unknown[];
+      try { receipts = await send(blocks); } catch {
+        if (attempt === tries) fleet = { ...fleet, outcomes: new Map(fleet.outcomes).set(serverId, { server_id: serverId, state: "unreachable" }) };
+        continue;
+      }
+      for (const receipt of receipts) fleet = withBlockReceipt(fleet, serverId, receipt);
+      return;
+    }
+  };
+  const service = options.service(blocks).catch((error: unknown) => { console.warn("Ovis: the account service did not take the block", error instanceof Error ? error.name : error); });
+  await Promise.all([...[...options.pcs].map(([serverId, send]) => toPc(serverId, send)), service]);
+  return fleet;
+}
