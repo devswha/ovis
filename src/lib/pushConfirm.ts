@@ -13,15 +13,13 @@ export function recordConfirmation(endpoint: string, sent: boolean, storage: Con
   try { storage?.setItem(PUSH_CONFIRM_KEY, JSON.stringify({ endpoint, sent })); } catch {}
 }
 
-const UNDELIVERABLE = new Set(["push_failed", "subscription_gone", "subscription_not_found"]);
-
 /**
- * A confirmation push that failed is kept only when the PC said this subscription gets no push: the push service
- * refused it or retired it, or the PC does not hold it. A request the PC never answered so (the network, a restart, a
- * watching device) says nothing of delivery.
+ * A Send test that failed is kept only when the PC answered that it could not push: a request that never got the PC's
+ * answer (the network), a PC restarting (503) or a watching device's refusal says nothing of delivery, and an earlier
+ * result stays.
  */
 export function recordTestFailure(endpoint: string, error: unknown, storage: ConfirmStorage | null = browserStorage()): void {
-  if (error instanceof ApiError && error.code !== null && UNDELIVERABLE.has(error.code)) recordConfirmation(endpoint, false, storage);
+  if (error instanceof ApiError && error.status !== 503 && error.code !== "read_only") recordConfirmation(endpoint, false, storage);
 }
 
 export function confirmation(endpoint: string | null, storage: ConfirmStorage | null = browserStorage()): boolean | null {
