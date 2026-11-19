@@ -2,12 +2,16 @@
  * The account snapshot a PC reads from the account service, and the account-joined rows a PC keeps
  * from it. Shapes and validators only: what a PC does with a snapshot is decided elsewhere.
  */
-import { isAccountKeyEncoding, isDeviceSafetyRecord, parseSafetyRecord, type BlockRecord, type DeviceLiftRecord } from "./account-records.ts";
+import { AccountRecordError, isAccountKeyEncoding, isDeviceSafetyRecord, parseSafetyRecord, type BlockRecord, type DeviceLiftRecord, type SafetyRecord } from "./account-records.ts";
 
 /** Wire format of a snapshot page and of `account-devices.json`. */
 export const ACCOUNT_SNAPSHOT_V = 1;
 /** Device table P6: the service no longer holds the snapshot a page asked for; the whole read is thrown away. */
 export const SNAPSHOT_GONE = "snapshot_gone";
+/** Device table P6: the most entries one list of one page holds; the service pages longer lists. */
+export const SNAPSHOT_PAGE_MAX = 500;
+/** Device table S21: the most account-joined rows `account-devices.json` holds. */
+export const ACCOUNT_ROWS_MAX = 1000;
 
 export class AccountSnapshotError extends Error {
   readonly code = "snapshot_invalid";
@@ -67,6 +71,7 @@ const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const isOrder = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 1;
 const isIso = (v: unknown): v is string => typeof v === "string" && ISO_MS.test(v) && !Number.isNaN(Date.parse(v)) && new Date(v).toISOString() === v;
 const isLabel = (v: unknown): v is string => typeof v === "string" && v.length >= 1 && v.length <= 48 && !/[\p{Cc}\p{Cs}]/u.test(v);
+const isDay = (v: unknown): v is string => typeof v === "string" && DAY.test(v) && isIso(`${v}T00:00:00.000Z`);
 
 function object(value: unknown, fields: readonly string[], what: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) fail(`${what} is a JSON object`);
@@ -76,9 +81,23 @@ function object(value: unknown, fields: readonly string[], what: string): Record
   return record;
 }
 
-function list<T>(value: unknown, what: string, item: (entry: unknown) => T): T[] {
+function list(value: unknown, what: string, max: number, item: (entry: unknown) => void): void {
   if (!Array.isArray(value)) fail(`${what} is a list`);
-  return value.map(item);
+  if (value.length > max) fail(`${what} has more than ${max} entries`);
+  for (const entry of value) item(entry);
+}
+
+/** A nested safety record of this page's account; its own parse error is this page's. */
+function pageRecord(entry: unknown, account: unknown): SafetyRecord {
+  let record: SafetyRecord;
+  try {
+    record = parseSafetyRecord(entry);
+  } catch (error) {
+    if (error instanceof AccountRecordError) fail(`Invalid record: ${error.message}`);
+    throw error;
+  }
+  check(record.account === account, "A record of another account");
+  return record;
 }
 
 function check(ok: boolean, message: string): void {
@@ -98,20 +117,20 @@ export function parseSnapshotPage(value: unknown): AccountSnapshotPage {
   check(Number.isSafeInteger(page.methods_version) && (page.methods_version as number) >= 0, "Invalid methods_version");
   check(Number.isSafeInteger(page.page) && (page.page as number) >= 0, "Invalid page");
   check(typeof page.last === "boolean", "Invalid last");
-  list(page.devices, "devices", (entry) => {
+  list(page.devices, "devices", SNAPSHOT_PAGE_MAX, (entry) => {
     const device = object(entry, ["key", "no", "eligible", "label"], "A device");
     check(isAccountKeyEncoding(device.key) && isOrder(device.no) && typeof device.eligible === "boolean" && isLabel(device.label), "Invalid device");
   });
-  list(page.removed, "removed", (entry) => {
+  list(page.removed, "removed", SNAPSHOT_PAGE_MAX, (entry) => {
     const removed = object(entry, ["key", "no"], "A removed key");
     check(isAccountKeyEncoding(removed.key) && isOrder(removed.no), "Invalid removed key");
   });
-  list(page.blocks, "blocks", (entry) => check(parseSafetyRecord(entry).kind === "block", "Not a block"));
-  list(page.lifts, "lifts", (entry) => {
-    const lift = parseSafetyRecord(entry);
+  list(page.blocks, "blocks", SNAPSHOT_PAGE_MAX, (entry) => check(pageRecord(entry, page.account).kind === "block", "Not a block"));
+  list(page.lifts, "lifts", SNAPSHOT_PAGE_MAX, (entry) => {
+    const lift = pageRecord(entry, page.account);
     check(lift.kind === "lift" && isDeviceSafetyRecord(lift), "Not a device lift");
   });
-  list(page.freezes, "freezes", (entry) => {
+  list(page.freezes, "freezes", SNAPSHOT_PAGE_MAX, (entry) => {
     const line = object(entry, ["block", "target", "after"], "A freeze line");
     check(typeof line.block === "string" && /^[0-9a-f]{64}$/.test(line.block) && isAccountKeyEncoding(line.target) && isOrder(line.after), "Invalid freeze line");
   });
@@ -194,6 +213,9 @@ export type AccountDevicesFile =
 export function parseAdmissionOrigin(value: unknown): AdmissionOrigin {
   const origin = object(value, ["from", "how", "by", "admit_no", "at"], "An origin");
   check(FROM.includes(origin.from as string) && HOW.includes(origin.how as string), "Invalid origin path");
+  // `pc` is a key confirmed on this PC's screen when it redeemed a code, digits or a QR
+  check(origin.from !== "pc" || ["code", "digits", "qr"].includes(origin.how as string), "Only a pairing at this PC is from pc");
+  check((origin.from === "legacy") === (origin.how === "legacy"), "A legacy row is legacy both ways");
   check(origin.by === null || isAccountKeyEncoding(origin.by), "Invalid origin by");
   check(isOrder(origin.admit_no) && isIso(origin.at), "Invalid origin order");
   return origin as unknown as AdmissionOrigin;
@@ -209,13 +231,13 @@ export function parseAccountDevicesFile(value: unknown): AccountDevicesFile {
   const cleared = file.account === null && file.snapshot === null && Array.isArray(file.devices) && file.devices.length === 0;
   check(cleared || (typeof file.account === "string" && ACCOUNT.test(file.account) && typeof file.snapshot === "string" && SNAPSHOT_ID.test(file.snapshot)), "Invalid account or snapshot");
   const ids = new Set<unknown>();
-  list(file.devices, "devices", (entry) => {
+  list(file.devices, "devices", ACCOUNT_ROWS_MAX, (entry) => {
     const row = object(entry, ROW_FIELDS, "A row");
     check(typeof row.id === "string" && /^[0-9a-f]{16}$/.test(row.id) && !ids.has(row.id), "Invalid row id");
     ids.add(row.id);
     check(isAccountKeyEncoding(row.key) && isOrder(row.no) && isLabel(row.label) && isIso(row.confirmed_at), "Invalid row");
     parseAdmissionOrigin(row.origin);
-    check(row.last_signin_day === null || (typeof row.last_signin_day === "string" && DAY.test(row.last_signin_day)), "Invalid last_signin_day");
+    check(row.last_signin_day === null || isDay(row.last_signin_day), "Invalid last_signin_day");
     check(row.state === "hold" ? row.hold_until === null || isIso(row.hold_until) : (row.state === "live" || row.state === "expired") && row.hold_until === null, "Invalid state");
   });
   return file as unknown as AccountDevicesFile;

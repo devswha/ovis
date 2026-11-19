@@ -98,16 +98,21 @@ export type BlockReceipt =
  * `refused` come from the PC's receipt; only the first two are done, and the rest are never shown as done.
  */
 export type PcBlockOutcome =
-  | { readonly server_id: string; readonly state: "applied" | "already_applied"; readonly receipt: BlockReceipt }
-  | { readonly server_id: string; readonly state: "refused"; readonly receipt: Extract<BlockReceipt, { outcome: "refused" }> }
+  | { readonly [S in BlockReceipt["outcome"]]: { readonly server_id: string; readonly state: S; readonly receipt: Extract<BlockReceipt, { outcome: S }> } }[BlockReceipt["outcome"]]
   | { readonly server_id: string; readonly state: "waiting" | "unreachable" | "unsupported" };
 
+/** Device table T60: the outcome for one PC that answered, taken from its receipt and from nothing else. */
+export function blockOutcome(serverId: string, receipt: BlockReceipt): PcBlockOutcome {
+  return { server_id: serverId, state: receipt.outcome, receipt } as PcBlockOutcome;
+}
+
 /**
- * Device table S22, S25, T53, T56: why a row may not sign in yet. `join_hold` ends at `until` (P17);
+ * Device table S22, S25, T53, T56: why a row may not sign in yet. `join_hold` ends at `until`, which is null
+ * while its notice is not yet durably published and the 10 seconds have not started (P17);
  * `catching_up` waits for a whole read (P7); `frozen` names the block whose freeze holds it (P16).
  */
 export type HoldState =
-  | { readonly reason: "join_hold"; readonly until: string }
+  | { readonly reason: "join_hold"; readonly until: string | null }
   | { readonly reason: "catching_up" }
   | { readonly reason: "frozen"; readonly block: string };
 

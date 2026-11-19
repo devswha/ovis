@@ -273,9 +273,8 @@ export function parseSafetyRecord(value: unknown): SafetyRecord {
     if (name === "kind") continue;
     if (!(name in object) || !safetyChecks[name]?.(object[name], object)) fail(`Invalid ${name}`);
   }
-  if (kind === "block" && (object.target === object.signer || (object.target_no as number) <= (object.signer_no as number))) {
-    fail("A block is signed by a key older than its target");
-  }
+  // Device table P21: target_no and signer_no are claims; each PC judges the signer's age from its own table
+  if (kind === "block" && object.target === object.signer) fail("A block names another key than its signer");
   if (shape === "block" || shape === "device_lift") {
     const { id, signature: _signature, ...unsigned } = object;
     if (id !== safetyRecordId(unsigned as unknown as UnsignedSafetyRecord)) fail("The id is not the hash of the signed bytes");
