@@ -252,8 +252,8 @@ export function RelayShell(props: RelayShellProps) {
   const content = <RelayShellCardContent props={props} view={view} signInFirst={signInFirst} saved={saved} addingPc={addingPc} setSignedOutView={setSignedOutView} setAddingPc={setAddingPc} />;
   const step = plain ? undefined : pairingStep(state);
   if (step !== undefined) {
-    // the comparison keeps its own small Cancel, so its round button is named Back, not a second Cancel
-    const back: RelayStepBack | null = state.kind === "confirm" || state.kind === "compare" ? { label: t("Back"), onClick: onCancel }
+    // before this phone's press the comparison can still go back; after it, the pairing waits on the PC and only its own small Cancel ends it
+    const back: RelayStepBack | null = state.kind === "confirm" || (state.kind === "compare" && !state.confirmed) ? { label: t("Back"), onClick: onCancel }
       : state.kind === "connecting" ? { label: t("Cancel"), onClick: onCancel } : null;
     const note = state.kind === "connecting" ? t("Connecting…") : state.kind === "compare" && state.confirmed ? t("Waiting for approval…") : null;
     return (

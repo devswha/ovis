@@ -37,16 +37,16 @@ function signInFragment(hash: string): boolean {
  * The start screen while the shell loads and reads this device's pairings: once the mascot is drawn, the page's
  * loading ring gives way to it in its badge, nothing else; the shell's first screen replaces it.
  */
-function showStart(container: HTMLElement): void {
+export function showStart(container: ParentNode, load: () => Promise<Pick<typeof import("./mascot.ts"), "playMascot" | "SMALL_BELOW_PX">> = () => import("./mascot.ts")): Promise<void> {
   const boot = container.querySelector(".boot"), ring = boot?.querySelector(".boot-spinner");
-  if (!boot || !ring) return;
+  if (!boot || !ring) return Promise.resolve();
   const badge = document.createElement("span"), sheep = document.createElement("span");
   badge.className = "sheep-badge sheep-badge-112";
   sheep.className = "sheep-mascot sheep-mascot-112";
   badge.append(sheep);
   const quiet = window.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null;
   // the ring and its words stay until the sheep is there to take their place
-  import("./mascot.ts")
+  return load()
     .then(({ playMascot, SMALL_BELOW_PX }) => {
       if (!ring.isConnected) return;
       ring.replaceWith(badge);
@@ -58,7 +58,7 @@ function showStart(container: HTMLElement): void {
 
 export function bootRelayShell(container: HTMLElement, renderApp: () => Root, load: typeof loadRelayShell = loadRelayShell): void {
   const entryUrl = takeEntryUrl(window);
-  showStart(container);
+  void showStart(container);
   // an older entry of this tab's history may still hold its query: it moves as the load's did, before the app reads it
   window.addEventListener("popstate", () => { moveQueryToFragment(window); });
   void load().then(({ mountRelayShell }) => mountRelayShell({ container, entryUrl, renderApp })).catch((error: unknown) => {

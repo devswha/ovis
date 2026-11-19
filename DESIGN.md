@@ -5871,8 +5871,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Pairing steps (components/RelayStepFrame.tsx, `.relay-step*`): the confirm, the comparison, the
   connection, the ready PC and a failed pairing leave the card for one plain page on `--bg`, a
   column `--relay-step-w` (440 px) wide, the whole width of a phone and `--relay-step-h` (720 px)
-  tall from 600 px. Top to bottom: a round **Back** (`--space-8`, `--bg-elevated`, hairline; on a
-  comparison or a connection it cancels and says so to a screen reader), a `--relay-step-bar` (3 px)
+  tall from 600 px. Top to bottom: a round **Back** (`--space-8`, `--bg-elevated`, hairline, a
+  `--touch-target` hit area; named Cancel on a connection, which it ends; gone once this phone has
+  confirmed the digits, where the comparison's own small Cancel stays), a `--relay-step-bar` (3 px)
   progress bar (`--text-strong` on `--border`: a third at the confirm, two thirds while it compares
   or connects, full once the PC approved and at the ready PC; none on a failure), the mascot in an
   80 px badge, a `--fs-display` bold title, one `--text-dim` sentence, then cards on `--bg-panel`

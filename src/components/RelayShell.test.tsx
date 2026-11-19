@@ -365,7 +365,6 @@ describe("the dashboard", () => {
         const steps: [RelayShellProps["state"], string, number][] = [
           [{ kind: "confirm", offer, account: "unlisted" }, "Back", 1],
           [{ kind: "compare", name: "Desk", digits: "123456", confirmed: false }, "Back", 2],
-          [{ kind: "compare", name: "Desk", digits: "123456", confirmed: true }, "Back", 2],
           [{ kind: "connecting", name: "Desk", pairing: true }, "Cancel", 2],
           [{ kind: "connecting", name: "Desk", approved: true, pairing: true }, "Cancel", 3],
         ];
@@ -379,6 +378,24 @@ describe("the dashboard", () => {
           expect(stepOf()).toBe(step);
           await act(async () => { renderer!.unmount(); });
         }
+      });
+
+      it("drops the round Back once this phone confirmed the digits, leaving the comparison's own Cancel", async () => {
+        let cancelled = 0;
+        await mount({ ...props({ kind: "compare", name: "Desk", digits: "123456", confirmed: true }), onCancel: () => { cancelled++; } });
+        expect(backOf()).toEqual([]);
+        expect(stepOf()).toBe(2);
+        await act(async () => { button("Cancel").props.onClick(); });
+        expect(cancelled).toBe(1);
+      });
+
+      it("says the PC approved, on screen and to a screen reader, once the account steps go on", async () => {
+        // the live region takes its words from the frame after it mounts (useAnnouncedText)
+        (window as unknown as { requestAnimationFrame: (run: () => void) => number }).requestAnimationFrame = (run) => { run(); return 1; };
+        await mount(props({ kind: "connecting", name: "Desk", approved: true, pairing: true }));
+        const said = "Approved. Desk opens in a moment.";
+        expect(renderer!.root.findAll((node) => node.type === "p" && node.props.className === "relay-shell-copy").map(textOf)).toEqual([said]);
+        expect(textOf(renderer!.root.find((node) => node.props.role === "status" && node.props.className === "visually-hidden"))).toBe(said);
       });
 
       it("offers no Back once the PC is ready or the pairing failed, and draws the failure without a step", async () => {

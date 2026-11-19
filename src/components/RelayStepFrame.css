@@ -160,10 +160,6 @@
   height: var(--icon-size);
 }
 
-.relay-step-card-icon.is-warning {
-  color: var(--danger-text);
-}
-
 .relay-step-card-text {
   display: flex;
   flex-direction: column;
