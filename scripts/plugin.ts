@@ -156,8 +156,12 @@ const CONFIG_FILES = ENV_FILES.map((name) => join(CONFIG_DIR, name)).filter((fil
 const fileVars = CONFIG_FILES.map(readEnvFile);
 const shadowed = fileVars.length === 2 ? Object.keys(fileVars[0]!).filter((key) => key in fileVars[1]! && fileVars[0]![key] !== fileVars[1]![key]) : [];
 const env = mergeEnvLayers([process.env, ...fileVars]);
-/** the OVIS_STATE_DIR this command was run with, which a settings file may set over (stateDirWayOut) */
-const GIVEN_STATE_DIR = mergeEnvLayers([process.env])["OVIS_STATE_DIR"] ?? "";
+/**
+ * The OVIS_STATE_DIR this command was run with, which a settings file may set over (stateDirWayOut). A command handed on
+ * to the release Settings installed (handOn) is told it apart: its own environment is the merged one.
+ */
+const GIVEN_STATE_DIR_VARIABLE = "OVIS_PLUGIN_GIVEN_STATE_DIR";
+const GIVEN_STATE_DIR = process.env[GIVEN_STATE_DIR_VARIABLE] ?? mergeEnvLayers([process.env])["OVIS_STATE_DIR"] ?? "";
 const configuredSocket = fileVars.some((vars) => (vars["HERDR_SOCKET"] ?? "") !== "");
 const PATH_KEY = platform() === "win32" ? Object.keys(env).sort().find(key => key.toLowerCase() === "path") ?? "PATH" : "PATH";
 const APP_STATE_DIR = defaultStateDir(env);
@@ -1031,10 +1035,9 @@ async function handOn(active: string, args: readonly string[]): Promise<number> 
   const handlers = { SIGINT: process.platform === "win32" ? () => undefined : pass("SIGINT"), SIGTERM: pass("SIGTERM"), SIGHUP: pass("SIGHUP") } as const;
   for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
   try {
-    // the release reads the same settings files, so the folder they set still wins there; it is given the one this
-    // command was run with, to name both where it finds no machine profile (stateDirWayOut)
-    const released = GIVEN_STATE_DIR === "" ? env : { ...env, OVIS_STATE_DIR: GIVEN_STATE_DIR };
-    child = Bun.spawn([process.execPath, active, ...args], { cwd: ROOT, windowsHide: true, env: released, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    // the merged environment as it is (the release may not find a settings file named by a relative path), and the folder
+    // this command was run with apart, to name both where it finds no machine profile (stateDirWayOut)
+    child = Bun.spawn([process.execPath, active, ...args], { cwd: ROOT, windowsHide: true, env: { ...env, [GIVEN_STATE_DIR_VARIABLE]: GIVEN_STATE_DIR }, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     return await child.exited;
   } finally {
     for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
