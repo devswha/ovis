@@ -1,6 +1,7 @@
 import { ACCOUNT_ENROLL_MAX, ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
 import type { Access } from "../access.ts";
 import type { ServerContext } from "../dispatch.ts";
+import { verifyRelayProof } from "../relay/auth-proof.ts";
 import { jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import { sameOrigin } from "../machine-security.ts";
 import { parseIntroducedPcs } from "./introductions.ts";
@@ -91,12 +92,14 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // (with no account here no add applies anyway, and the next first member takes the barrier over)
       if (context.services.accountHolds.error !== null) return fail("account_unavailable", context.services.accountHolds.error, 503);
       const first = devices.account() === null;
+      const listKey = first && peer.key !== "" && peer.nonce && isAccountKeyEncoding(body.list_key) && typeof body.list_signature === "string"
+        && await verifyRelayProof(body.list_key, { nonce: peer.nonce, serverId: peer.serverId, signature: body.list_signature }) ? body.list_key : null;
       // a barrier confirmed by a member who has since left (the PC has no account again) is this link's to take over.
       // Nothing of a device that waits to link is written before its link has passed every check: its barrier goes to
       // disk in the turn that writes its row, before it (applyLink). So one whose link is refused, or outlives its
       // time, leaves none
       if (first && !arrival.provisional) context.services.accountHolds.startEnrolling(peer.device.id, { stale: true });
-      const linked = await applyLink(devices, body.record, { deviceId: peer.device.id, serverId: peer.serverId, sessionKey: peer.key, sessionId: peer.sessionId }, arrival, {
+      const linked = await applyLink(devices, body.record, { deviceId: peer.device.id, serverId: peer.serverId, sessionKey: peer.key, sessionId: peer.sessionId, listKey }, arrival, {
         gates: context.services.accountMailbox.gates(),
         barrier: () => context.services.accountHolds.startEnrollingBeforeRow(peer.device.id),
         setUpFor: () => context.services.relay.savedRelayAccount(),

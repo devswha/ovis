@@ -1905,7 +1905,7 @@ export class DeviceStore {
    * one made since would have taken the row (dropWaiting). That write's failure is logged and changes nothing of the
    * above; the next start clears it.
    */
-  private promote(id: string, link: { oldKey: string; key: string; account: string }, sessionId: string, vouched: boolean, replacement = false, screen?: ConfirmProof): PairedDevice | null {
+  private promote(id: string, link: { oldKey: string; key: string; account: string; listKey?: string | null }, sessionId: string, vouched: boolean, replacement = false, screen?: ConfirmProof): PairedDevice | null {
     const row = this.provisional(id);
     const waiting = this.pending?.waiting;
     if (!row || !waiting || row.key !== link.oldKey || this.account() !== null || this.removedByAccount(link.key)) return null;
@@ -2020,6 +2020,8 @@ export class DeviceStore {
     const admitted = this.knowingRemovals(this.admitted(admitting, now, path));
     // with the flag on a row is stamped after everything this store ordered before it (T26, P13)
     const device = this.evidence === null ? admitted : { ...admitted, created_at: this.nextStamp(Date.parse(admitted.created_at)) };
+    // A waiting first link enrolls its own binding row. Every other member enrollment consumes T67.
+    if (device.account !== undefined && device.linked_at === undefined) this.pc?.setOthersEver();
     this.journalAdmission(device, path.by);
     const next = [...this.devices, device];
     const gate = this.gateClosedAt ?? device.created_at;
@@ -2919,10 +2921,10 @@ export class DeviceStore {
    * (`auth_changed`); the linking one goes on until it signs in again with the new key. A row that waits to link
    * is no device yet: its link makes it one (promote).
    */
-  linkAccountKey(deviceId: string, oldKey: string, key: string, account: string, sessionId = "", vouched = false, replacement = false): PairedDevice | null {
+  linkAccountKey(deviceId: string, oldKey: string, key: string, account: string, sessionId = "", vouched = false, replacement = false, listKey: string | null = null): PairedDevice | null {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
-    if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId, vouched, replacement);
+    if (!device) return this.promote(deviceId, { oldKey, key, account, listKey }, sessionId, vouched, replacement);
     const moved = key !== oldKey || device.link_moved_key === true;
     // the link that takes a row from no account into one is on the device's own word unless a member of that same
     // account approved its pairing: a code started by a device outside the account names its starter in `added_by` and
@@ -2944,6 +2946,7 @@ export class DeviceStore {
     const { origin: _oldKeys, ...movedKey } = linked;
     const updated = key !== oldKey ? this.admitted(movedKey, Date.now()) : linked;
     const next = this.devices.map((d) => d === device ? updated : d);
+    if (this.pc?.account() === account && (device.account !== account || oldKey !== key)) this.pc.setOthersEver();
     this.bindingWith(account, key, () => this.save(next));
     this.devices = next;
     if (key !== oldKey) {

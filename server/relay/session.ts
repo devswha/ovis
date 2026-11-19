@@ -653,7 +653,7 @@ export class RelaySession {
     relayBodyBudget?: EventStreamBudget): ServerContext {
     return {
       services: this.options.services, port: this.options.port, requestIP: () => null, timeout, upgrade,
-      peer: { kind: "relay", device, sessionId: this.sessionId, serverId: this.options.serverId, key: this.key }, relayBodyBudget,
+      peer: { kind: "relay", device, sessionId: this.sessionId, serverId: this.options.serverId, key: this.key, nonce: this.nonce }, relayBodyBudget,
     };
   }
 

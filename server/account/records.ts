@@ -303,7 +303,7 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
  * and the write run in one turn, so two links that both passed their waits never both write. `arrival`: what stood
  * when the link arrived, before those waits (DeviceStore.linkArrived).
  */
-export async function applyLink(store: DeviceStore, value: unknown, session: { deviceId: string; serverId: string; sessionKey: string; sessionId?: string }, arrival: LinkArrival, rules: LinkRules = {}): Promise<{ device: PairedDevice } | LinkRefused> {
+export async function applyLink(store: DeviceStore, value: unknown, session: { deviceId: string; serverId: string; sessionKey: string; sessionId?: string; listKey?: string | null }, arrival: LinkArrival, rules: LinkRules = {}): Promise<{ device: PairedDevice } | LinkRefused> {
   const { deviceId, serverId, sessionKey, sessionId } = session;
   const record = await read(value);
   if ("refused" in record) return { refused: record.refused };
@@ -345,7 +345,7 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   if (store.keyHeldByOther(link.key, deviceId)) return { refused: "key_in_use" };
   const takeBack = waits ? rules.barrier?.() : undefined;
   let device: PairedDevice | null = null;
-  try { device = store.linkAccountKey(deviceId, link.old_key, link.key, link.account, sessionId, vouched); }
+  try { device = store.linkAccountKey(deviceId, link.old_key, link.key, link.account, sessionId, vouched, false, session.listKey); }
   catch (error) {
     if (error instanceof ReplacementNeedsAppError) return { refused: "replacement_needs_app" };
     throw error;
