@@ -1421,6 +1421,50 @@ describe("pair --approve", () => {
   });
 });
 
+/** A server that answers health, then holds `stalled` unanswered until the test ends. */
+function stallingPc(stalled: string, answer: (path: string) => Response | undefined = () => undefined) {
+  let release = (): void => undefined;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
+    const path = new URL(request.url).pathname;
+    if (path === "/api/health") return Response.json(APP_HEALTH);
+    if (path === stalled) { await held; return new Response(null, { status: 503 }); }
+    return answer(path) ?? new Response(null, { status: 404 });
+  } });
+  return { server, stop: async () => { release(); await server.stop(true); } };
+}
+
+describe("pair's first requests to a server that answered health", () => {
+  // time is the behaviour here: each waits out the limit pair already gives its later requests
+  it("pair --approve gives up on the waiting pairings after 15 s, and says so", async () => {
+    const pc = stallingPc("/api/relay/pairings");
+    try {
+      const result = await run("pair", { PORT: String(pc.server.port) }, { args: ["--approve"], stdin: "", timeout: 30_000 });
+      expect([result.exitCode, result.out], result.err).toEqual([1, ""]);
+      expect(result.err).toBe(`Ovis at http://127.0.0.1:${pc.server.port} did not answer in time; try again\n`);
+    } finally { await pc.stop(); }
+  }, 40_000);
+
+  it("pair gives up on starting a pairing after 5 s, and says so", async () => {
+    const pc = stallingPc("/api/devices/pair/start");
+    try {
+      const result = await run("pair", { PORT: String(pc.server.port) }, { timeout: 20_000 });
+      expect([result.exitCode, result.out], result.err).toEqual([1, ""]);
+      expect(result.err).toBe(`Ovis at http://127.0.0.1:${pc.server.port} did not answer in time; try again\n`);
+    } finally { await pc.stop(); }
+  }, 30_000);
+
+  it("pair shows its code without an address when the address does not come within 5 s", async () => {
+    const pc = stallingPc("/api/access", (path) => path === "/api/devices/pair/start" ? Response.json({ code: "123456", expires_at: "2030-01-01T00:00:00.000Z" }) : undefined);
+    try {
+      const result = await run("pair", { PORT: String(pc.server.port) }, { timeout: 20_000 });
+      expect(result.exitCode, result.err).toBe(0);
+      expect(result.out).toContain("Pairing code: 123 456");
+      expect(result.out).toContain("open the app's address");
+    } finally { await pc.stop(); }
+  }, 30_000);
+});
+
 describe("pair relay offer", () => {
   async function pairWithRelay(phase: "online" | "off" | "missing" | "malformed" | "bad-offer") {
     const key = generateKeyPair();
