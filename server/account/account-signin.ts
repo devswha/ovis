@@ -18,6 +18,7 @@ export function accountSignInRefusal(answer: Exclude<AccessAnswer, { ok: true }>
   switch (answer.refused) {
     case "catching_up": return { code: "held", message: "This PC waits for the account's list before letting this device in", hold: { reason: "catching_up" } };
     case "join_hold": return { code: "held", message: "This device waits for its join hold on this PC", hold: { reason: "join_hold", until: holdUntil } };
+    case "catching_up": return { code: "held", message: "This PC waits for the account's list before letting this device in", hold: { reason: "catching_up" } };
     case "expired":
     case "not_listed": return { code: "not_listed", message: "This device is not on this PC's account list" };
     case "admission": return { code: "admission", message: "This PC no longer admits this device" };
