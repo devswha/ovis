@@ -57,7 +57,7 @@ describe("S2-24 whole account reads (G1, T15, T52, T58, T60)", () => {
       { name: "mixed snapshot ids", answers: [page({ last: false, records: [block] }), page({ snapshot: "snap-b", records: [add, lift] })], reason: "mixed_snapshot" },
       { name: "snapshot_gone", answers: [page({ last: false, records: [block] }), { snapshot_gone: true }], reason: "snapshot_gone" },
       { name: "a page fails", answers: [page({ last: false, records: [block] }), new Error("503")], reason: "page_failed" },
-      { name: "no last page", answers: Array.from({ length: 3 }, () => page({ last: false, records: [block] })), reason: "incomplete" },
+      { name: "no last page", answers: [page({ last: false, records: [block] }), page({ last: false, records: [add] }), page({ last: false })], reason: "incomplete" },
       { name: "another account", answers: [page({ last: false, records: [block] }), page({ account: "acct-2", records: [add] })], reason: "scope_mismatch" },
       { name: "another relay identity", answers: [page({ last: false, records: [block] }), page({ server_id: "srv-2", records: [add] })], reason: "scope_mismatch" },
       { name: "older than the last snapshot applied", answers: [page({ version: 5, records: [block, add] })], reason: "stale", lastVersion: 6 },
@@ -67,7 +67,8 @@ describe("S2-24 whole account reads (G1, T15, T52, T58, T60)", () => {
       const machine = pc(lastVersion === undefined ? {} : { lastVersion });
       const { fetchPage } = serve(answers);
       const outcome = await readSnapshot(fetchPage, machine.ports, 3);
-      expect({ name, committed: outcome.committed, reason: outcome.committed ? null : outcome.reason }).toEqual({ name, committed: false, reason });
+      const got: string = outcome.committed ? "committed" : outcome.reason;
+      expect({ name, got }).toEqual({ name, got: reason });
       // nothing widened and the list was not replaced (no drop), yet the denial read before the failure stands
       expect({ name, committed: machine.committed }).toEqual({ name, committed: [] });
       if (reason !== "stale") expect({ name, events: machine.events }).toEqual({ name, events: ["deny b1"] });
