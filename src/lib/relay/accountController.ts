@@ -334,11 +334,12 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     });
   };
   /**
-   * `carried`: told of the pairing the returned sign-in was started for, once it is taken, before the code is traded. The
-   * result says how that sign-in itself ended (`refused`: the reason shown; null once its code was traded), whatever
-   * session another tab may have stored meanwhile; undefined when the return carried no pairing.
+   * `carried`: told of the pairing the returned sign-in was started for, once it is taken, before the code is traded.
+   * `ended`: told how that sign-in itself ended (`refused`: the reason shown; null once its code was traded), whatever
+   * session another tab may have stored meanwhile, as soon as the code is traded and before the directory is read;
+   * undefined when the return carried no pairing.
    */
-  const load = async (returned: SignInReturn | null, carried?: (pairing: PendingPairing) => void): Promise<{ readonly refused: string | null; readonly provider: AccountProvider } | undefined> => {
+  const load = async (returned: SignInReturn | null, carried?: (pairing: PendingPairing) => void, ended?: (outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined) => void): Promise<void> => {
     let outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined;
     if (returned !== null && accountService !== null) {
       const pending = await takePendingSignIn(accountStore, returned.state);
@@ -353,9 +354,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         if (pending?.pairing) outcome = { refused: signInFailure(error), provider: pending.provider };
         await changed();
       }
+      ended?.(outcome);
     }
     await refresh(true);
-    return outcome;
   };
   /**
    * `consent` null: the person confirmed a pairing with a key of this device's own, so no sign-in is read for it.

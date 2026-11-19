@@ -54,7 +54,7 @@ describe("signing in from a marked pairing's failure screen", () => {
     return auth;
   }
 
-  function page(entryUrl: string, accountStore: AccountStore, fake: FakeAccountService, opened: RelayOffer[], signIns: string[], navigated: string[] = [], saved: RelayDevice[] = []) {
+  function page(entryUrl: string, accountStore: AccountStore, fake: FakeAccountService, opened: RelayOffer[], signIns: string[], navigated: string[] = [], saved: RelayDevice[] = [], accountFetch: typeof fetch = fake.fetch as typeof fetch) {
     let props: RelayShellProps | undefined;
     const drawn: RelayShellProps["state"][] = [];
     const devices: RelayDevice[] = [...saved];
@@ -64,7 +64,7 @@ describe("signing in from a marked pairing's failure screen", () => {
     };
     const find = (node: ReactElement): RelayShellProps => node.type === RelayShell ? node.props as RelayShellProps : find((node.props as { children: ReactElement }).children);
     const mounted = mountRelayShell({
-      container: {} as HTMLElement, entryUrl, shellVersion: "0.0.0-test", label: "Test phone", store, accountStore, accountService: SERVICE, accountFetch: fake.fetch,
+      container: {} as HTMLElement, entryUrl, shellVersion: "0.0.0-test", label: "Test phone", store, accountStore, accountService: SERVICE, accountFetch,
       renderApp: () => { throw new Error("the app is not expected here"); },
       createRoot: () => ({ render(element: ReactElement) { props = find(element); drawn.push(props.state); changed(); }, unmount() {} }),
       open: async (offer) => { opened.push(offer); changed(); throw new Error("stopped after the pairing began"); },
@@ -378,6 +378,42 @@ describe("signing in from a marked pairing's failure screen", () => {
     await until(() => newCode.current().state.kind === "confirm");
     expect(newCode.failure()).toBeNull();
     expect(browser.sessionStore.has("ovis-pairing-return")).toBe(false);
+  });
+
+  it("hands the pairing on as soon as the sign-in is traded, while the account's directory read still waits", async () => {
+    const { offer, fake, accountStore, opened, returnUrl } = await stoppedForSignIn();
+    const unanswered = new Promise<Response>(() => {});
+    const holdsDirectory = (async (input: RequestInfo | URL, init?: RequestInit) => new URL(String(input instanceof Request ? input.url : input)).pathname === "/v1/pcs" ? unanswered : fake.fetch(input as string, init)) as typeof fetch;
+    const front = page(await returnUrl(), accountStore, fake, opened, [], [], [], holdsDirectory);
+    await until(() => front.navigated.length === 1);
+    expect(new URL(front.navigated[0]!, ORIGIN).pathname).toBe(`/s/${offer.server_id}/`);
+    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(true);
+  });
+
+  it("keeps the sign-in but drops its pairing's handoff when another PC's link opens while the code is traded", async () => {
+    const { offer, fake, accountStore, opened, returnUrl } = await stoppedForSignIn();
+    let release = (): void => {};
+    let trading = false;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const holdsToken = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(String(input instanceof Request ? input.url : input)).pathname === "/v1/token") { trading = true; changed(); await held; }
+      return fake.fetch(input as string, init);
+    }) as typeof fetch;
+    const front = page(await returnUrl(), accountStore, fake, opened, [], [], [], holdsToken);
+    await until(() => trading);
+    const otherKey = generateKeyPair().publicKey;
+    const other: RelayOffer = { v: 1, server_id: deriveServerId(otherKey), server_public_key: exportPublicKey(otherKey), relay: "wss://relay.ovis.sh", name: "Lab", code: "654321" };
+    const link = new URL(encodeOffer(other, ORIGIN));
+    Object.assign(window.location, { href: link.href, hash: link.hash });
+    window.dispatchEvent(new Event("hashchange"));
+    await until(() => { const { state } = front.current(); return state.kind === "confirm" && state.offer.server_id === other.server_id; });
+    release();
+    await front.mounted;
+    expect(front.navigated).toEqual([]);
+    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(false);
+    expect(front.current().state).toMatchObject({ kind: "confirm", offer: other });
+    expect(await accountStore.get("session")).toBeDefined();
+    expect(offer.server_id).not.toBe(other.server_id);
   });
 
   it("asks about the same pairing in place once the app's sign-in sheet answers", async () => {

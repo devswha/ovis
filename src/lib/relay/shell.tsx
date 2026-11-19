@@ -675,19 +675,23 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   }
 
   await showFront();
-  // the return of a sign-in that a marked pairing's failure screen started: that screen stays while the sign-in is read
-  const returning: { pairing?: PendingPairing } = {};
-  const outcome = await account.load(account.enabled ? signInReturn(new URL(mount.entryUrl).hash) : null, (kept) => {
-    returning.pairing = kept;
+  // the return of a sign-in that a marked pairing's failure screen started: that screen stays while the sign-in is read.
+  // A newer navigation meanwhile (another PC's link, Back) keeps the sign-in but drops this pairing's screen and handoff
+  const loaded = entries;
+  let returning: PendingPairing | undefined;
+  await account.load(account.enabled ? signInReturn(new URL(mount.entryUrl).hash) : null, (kept) => {
+    if (entries !== loaded) return;
+    returning = kept;
     show({ kind: "failed", failure: "sign-in-first", name: kept.offer.name ?? null, detail: null, server_id: kept.offer.server_id, account: account.state });
-  });
-  // then the PC's own page goes on with it, as after a scan, never this front page: a PC opens on its page (its worker, its
-  // reloads, its Back), and the account service sends a browser back here alone
-  if (returning.pairing !== undefined) {
-    const { offer, at } = returning.pairing;
+  }, (outcome) => {
+    // then the PC's own page goes on with it, as after a scan, never this front page: a PC opens on its page (its worker,
+    // its reloads, its Back), and the account service sends a browser back here alone. It goes as soon as the sign-in is
+    // traded: the directory read after it waits on the account service, and the PC's confirm reads the account itself
+    if (returning === undefined || entries !== loaded) return;
+    const { offer, at } = returning;
     // judged by this sign-in's own end, never by a session another tab stored meanwhile
     keepPairingReturn({ server_id: offer.server_id, offer: offerDigest(offer), at, refused: outcome?.refused ?? null, provider: outcome?.provider ?? null, sent: Date.now() });
     const link = new URL(encodeOffer(offer, window.location.origin));
     navigate(link.pathname + link.hash);
-  }
+  });
 }
