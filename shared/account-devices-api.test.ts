@@ -1,0 +1,86 @@
+import { describe, expect, test } from "bun:test";
+import { exportAccountKey, newRecordId, signSafetyRecord } from "./account-records.ts";
+import {
+  AccountDevicesApiError, accountOpensAll, parseBlockReceipt, parseNoticeAnswer, parseRecoveryAction,
+} from "./account-devices-api.ts";
+
+async function key() {
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  return { pair, spki: await exportAccountKey(pair.publicKey) };
+}
+
+const [older, newer] = [await key(), await key()];
+const at = "2026-11-05T01:02:03.456Z";
+const paired = await key();
+const block = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: newer.spki, target_no: 2, signer: older.spki, signer_no: 1, signed_at: at, nonce: newRecordId() }, older.pair.privateKey);
+
+test("the release flag is on only for 1", () => {
+  expect(["", "0", "true", "on", " 1", "1"].map((value) => accountOpensAll(value))).toEqual([false, false, false, false, false, true]);
+});
+
+describe("notice answers (device table T51, T57)", () => {
+  test("It's me and Not me survive JSON", () => {
+    const answers = [
+      { type: "notice-answer", id: newRecordId(), answer: "its_me" },
+      { type: "notice-answer", id: newRecordId(), answer: "not_me", blocks: [block] },
+    ];
+    for (const answer of answers) expect(parseNoticeAnswer(JSON.parse(JSON.stringify(answer)))).toEqual(answer as never);
+  });
+
+  test("Not me takes the app's own block, and a second only from the app's other key for the same target (P16)", async () => {
+    const second = await signSafetyRecord({ ...block, signer: paired.spki, nonce: newRecordId() } as never, paired.pair.privateKey);
+    const otherTarget = await signSafetyRecord({ ...block, target: paired.spki, target_no: 3, nonce: newRecordId() } as never, older.pair.privateKey);
+    const sameSigner = await signSafetyRecord({ ...block, nonce: newRecordId() } as never, older.pair.privateKey);
+    const answer = (blocks: unknown[]) => ({ type: "notice-answer", id: newRecordId(), answer: "not_me", blocks });
+    const two = answer([block, second]);
+    expect(parseNoticeAnswer(JSON.parse(JSON.stringify(two)))).toEqual(two as never);
+    for (const blocks of [[block, sameSigner], [block, otherTarget], [block, second, sameSigner]]) expect(() => parseNoticeAnswer(answer(blocks))).toThrow(AccountDevicesApiError);
+  });
+
+  test("malformed answers are refused", () => {
+    const id = newRecordId();
+    const lift = { v: 1, kind: "lift", id: newRecordId(), account: "acct_1", target: block.id, signer: "pc", signed_at: at, forget: false, signature: "" };
+    const bad: unknown[] = [
+      null, { type: "notice-seen", id, answer: "its_me" }, { type: "notice-answer", id: "x", answer: "its_me" },
+      { type: "notice-answer", id, answer: "its_me", blocks: [block] }, { type: "notice-answer", id, answer: "not_me" },
+      { type: "notice-answer", id, answer: "not_me", blocks: [] }, { type: "notice-answer", id, answer: "not_me", blocks: [lift] },
+      { type: "notice-answer", id, answer: "maybe" }, { type: "notice-answer", id, answer: "its_me", extra: 1 },
+    ];
+    for (const value of bad) expect(() => parseNoticeAnswer(value)).toThrow();
+  });
+});
+
+describe("block receipts (device table T51, T60)", () => {
+  test("applied carries the log number and already_applied none", () => {
+    const refusals = ["signer_not_older", "signer_not_member", "frozen", "unknown_target"].map((reason) => ({ outcome: "refused", id: block.id, reason }));
+    for (const receipt of [{ outcome: "applied", id: block.id, n: 3 }, { outcome: "already_applied", id: block.id }, ...refusals]) {
+      expect(parseBlockReceipt(JSON.parse(JSON.stringify(receipt)))).toEqual(receipt as never);
+    }
+    const bad: unknown[] = [
+      { outcome: "applied", id: block.id }, { outcome: "applied", id: block.id, n: 0 }, { outcome: "already_applied", id: block.id, n: 3 },
+      { outcome: "unchanged", id: block.id }, { outcome: "applied", id: "a".repeat(32), n: 1 }, { outcome: "applied", id: block.id, n: 1, more: true },
+      { outcome: "refused", id: block.id }, { outcome: "refused", id: block.id, reason: "older_device" }, { outcome: "refused", id: block.id, reason: "frozen", n: 1 },
+      { outcome: "applied", id: block.id, n: 1, reason: "frozen" },
+    ];
+    for (const value of bad) expect(() => parseBlockReceipt(value)).toThrow(AccountDevicesApiError);
+  });
+});
+
+describe("recovery actions (device table R11)", () => {
+  test("every act survives JSON", () => {
+    const acts = [
+      { act: "list" }, { act: "release", rows: ["0123456789abcdef"] }, { act: "undo", rows: null }, { act: "undo", rows: ["0123456789abcdef"] },
+      { act: "remove", targets: [older.spki, "0123456789abcdef"] }, { act: "revoke_all" }, { act: "lift", blocks: [block.id] }, { act: "admit", pending: newRecordId() },
+    ];
+    for (const act of acts) expect(parseRecoveryAction(JSON.parse(JSON.stringify(act)))).toEqual(act as never);
+  });
+
+  test("malformed acts are refused", () => {
+    const bad: unknown[] = [
+      null, { act: "lock" }, { act: "unlock" }, { act: "list", rows: ["a"] }, { act: "release", rows: [] }, { act: "release" },
+      { act: "release", rows: Array.from({ length: 65 }, (_, i) => `row${i}`) }, { act: "lift", blocks: ["a".repeat(32)] },
+      { act: "admit", pending: "x" }, { act: "revoke_all", targets: ["a"] }, { act: "remove", targets: ["../x"] },
+    ];
+    for (const value of bad) expect(() => parseRecoveryAction(value)).toThrow(AccountDevicesApiError);
+  });
+});

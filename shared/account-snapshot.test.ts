@@ -1,0 +1,112 @@
+import { describe, expect, test } from "bun:test";
+import { exportAccountKey, newRecordId, signSafetyRecord } from "./account-records.ts";
+import { AccountSnapshotError, assembleSnapshot, parseAccountDevicesFile, parseSnapshotPage, type AccountSnapshotPage } from "./account-snapshot.ts";
+
+async function key() {
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  return { pair, spki: await exportAccountKey(pair.publicKey) };
+}
+
+const [older, newer, gone] = [await key(), await key(), await key()];
+const serverId = "0123456789abcdef0123456789abcdef";
+const at = "2026-11-05T01:02:03.456Z";
+const block = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: newer.spki, target_no: 2, signer: older.spki, signer_no: 1, signed_at: at, nonce: newRecordId() }, older.pair.privateKey);
+const lift = await signSafetyRecord({ v: 1, kind: "lift", account: "acct_1", target: block.id, signer: older.spki, signer_no: 1, signed_at: at }, older.pair.privateKey);
+
+function page(overrides: Partial<AccountSnapshotPage> = {}): AccountSnapshotPage {
+  return {
+    v: 1, snapshot: "a".repeat(32), account: "acct_1", server_id: serverId, version: 7, methods_version: 2, page: 0, last: true,
+    devices: [{ key: older.spki, no: 1, eligible: true, label: "Phone" }, { key: newer.spki, no: 2, eligible: false, label: "Laptop" }],
+    removed: [{ key: gone.spki, no: 3 }], blocks: [block], lifts: [lift], freezes: [{ block: block.id, target: newer.spki, after: 2 }],
+    ...overrides,
+  };
+}
+
+const expected = { account: "acct_1", server_id: serverId, lastApplied: 7 };
+
+describe("account snapshot pages (device table P6, G1)", () => {
+  test("a page survives JSON and one page is a whole read", () => {
+    const read = parseSnapshotPage(JSON.parse(JSON.stringify(page())));
+    expect(read).toEqual(page());
+    const whole = assembleSnapshot([read], expected);
+    expect({ snapshot: whole.snapshot, version: whole.version, methods_version: whole.methods_version, devices: whole.devices.map((d) => d.no), removed: whole.removed.map((r) => r.no), blocks: whole.blocks.map((b) => b.id) })
+      .toEqual({ snapshot: "a".repeat(32), version: 7, methods_version: 2, devices: [1, 2], removed: [3], blocks: [block.id] });
+  });
+
+  test("pages of one snapshot join in order", () => {
+    const first = page({ last: false, devices: page().devices.slice(0, 1) });
+    const second = page({ page: 1, devices: page().devices.slice(1), removed: [], blocks: [], lifts: [], freezes: [] });
+    expect(assembleSnapshot([first, second], expected).devices.map((d) => d.no)).toEqual([1, 2]);
+  });
+
+  test("a read that is not one snapshot, not ended, or older is refused", () => {
+    const first = page({ last: false, devices: page().devices.slice(0, 1) });
+    const second = page({ page: 1, devices: page().devices.slice(1), removed: [], blocks: [], lifts: [], freezes: [] });
+    const refused: [AccountSnapshotPage[], typeof expected][] = [
+      [[], expected],
+      [[first, { ...second, snapshot: "b".repeat(32) }], expected],
+      [[first, { ...second, version: 8 }], expected],
+      [[first, { ...second, methods_version: 3 }], expected],
+      [[first], expected],
+      [[second, first], expected],
+      [[{ ...first, last: true }, second], expected],
+      [[page()], { ...expected, lastApplied: 8 }],
+      [[page()], { ...expected, account: "acct_2" }],
+      [[page()], { ...expected, server_id: "f".repeat(32) }],
+      [[page({ removed: [{ key: older.spki, no: 3 }] })], expected],
+      [[page({ removed: [{ key: gone.spki, no: 2 }] })], expected],
+    ];
+    for (const [pages, against] of refused) expect(() => assembleSnapshot(pages, against)).toThrow(AccountSnapshotError);
+  });
+
+  test("malformed pages are refused, and a missing part is not an empty one", () => {
+    const { removed: _removed, ...noRemoved } = page();
+    const bad: unknown[] = [
+      null, noRemoved, { ...page(), v: 2 }, { ...page(), extra: 1 }, { ...page(), snapshot: "A".repeat(32) }, { ...page(), version: 0 }, { ...page(), methods_version: -1 }, { ...page(), methods_version: 1.5 },
+      { ...page(), page: -1 }, { ...page(), devices: [{ key: older.spki, no: 0, eligible: true, label: "Phone" }] },
+      { ...page(), devices: [{ key: "nope", no: 1, eligible: true, label: "Phone" }] }, { ...page(), blocks: [lift] }, { ...page(), lifts: [block] },
+      { ...page(), freezes: [{ block: block.id, target: newer.spki, after: 0 }] }, { ...page(), blocks: [{ ...block, id: "c".repeat(64) }] },
+    ];
+    for (const value of bad) expect(() => parseSnapshotPage(value)).toThrow();
+  });
+});
+
+describe("account-devices.json (device table S21, S25, P22)", () => {
+  const row = {
+    id: "0123456789abcdef", key: newer.spki, no: 2, label: "Laptop",
+    origin: { from: "remote", how: "list", by: null, admit_no: 4, at }, confirmed_at: at, last_signin_day: "2026-11-05", state: "hold", hold_until: at,
+  };
+  const file = { v: 1, account: "acct_1", server_id: serverId, snapshot: "a".repeat(32), version: 7, devices: [row] };
+
+  test("a file survives JSON", () => {
+    expect(parseAccountDevicesFile(JSON.parse(JSON.stringify(file)))).toEqual(file as never);
+  });
+
+  test("a held row has its deadline, or none while its notice is not yet durably published (T34, P17)", () => {
+    for (const hold_until of [at, null]) {
+      const held = { ...file, devices: [{ ...row, hold_until }] };
+      expect(parseAccountDevicesFile(JSON.parse(JSON.stringify(held)))).toEqual(held as never);
+    }
+    for (const state of ["live", "expired"]) expect(() => parseAccountDevicesFile({ ...file, devices: [{ ...row, state, hold_until: at }] })).toThrow(AccountSnapshotError);
+  });
+
+  test("the cleared file has no account, no snapshot and no rows, and only together (T44)", () => {
+    const cleared = { ...file, account: null, snapshot: null, devices: [] };
+    expect(parseAccountDevicesFile(JSON.parse(JSON.stringify(cleared)))).toEqual(cleared as never);
+    const bad = [
+      { ...cleared, devices: [row] }, { ...cleared, account: "acct_1" }, { ...cleared, snapshot: "a".repeat(32) },
+      { ...file, account: null }, { ...file, snapshot: null }, { ...file, account: null, devices: [] },
+    ];
+    for (const value of bad) expect(() => parseAccountDevicesFile(value)).toThrow(AccountSnapshotError);
+  });
+
+  test("a malformed file or row is refused", () => {
+    const bad: unknown[] = [
+      { ...file, v: 2 }, { ...file, devices: [row, row] }, { ...file, devices: [{ ...row, extra: 1 }] },
+      { ...file, devices: [{ ...row, state: "live" }] }, { ...file, devices: [{ ...row, hold_until: "soon" }] },
+      { ...file, devices: [{ ...row, origin: { ...row.origin, from: "list" } }] }, { ...file, devices: [{ ...row, origin: { ...row.origin, admit_no: 0 } }] },
+      { ...file, devices: [{ ...row, origin: { ...row.origin, by: "someone" } }] }, { ...file, devices: [{ ...row, last_signin_day: "5 Nov" }] },
+    ];
+    for (const value of bad) expect(() => parseAccountDevicesFile(value)).toThrow(AccountSnapshotError);
+  });
+});
