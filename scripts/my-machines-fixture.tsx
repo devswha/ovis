@@ -22,9 +22,11 @@ function Fixture() {
   const [route, setRoute] = useState<MyMachinesRoute>({ machineId: null });
   const [invite, setInvite] = useState<NewInvite | null>(null);
 
+  // a join that already came in is not added again
   window.qa = { join: () => {
-    setInvite((current) => current === null ? null : { ...current, joined: [...current.joined, { id: FIXTURE_JOINER.id, name: FIXTURE_JOINER.name }] });
-    setView((current) => ({ ...current, machines: [...current.machines, FIXTURE_JOINER] }));
+    setInvite((current) => current === null || current.joined.some((joined) => joined.id === FIXTURE_JOINER.id) ? current
+      : { ...current, joined: [...current.joined, { id: FIXTURE_JOINER.id, name: FIXTURE_JOINER.name }] });
+    setView((current) => current.machines.some((machine) => machine.id === FIXTURE_JOINER.id) ? current : { ...current, machines: [...current.machines, FIXTURE_JOINER] });
   } };
 
   const actions: MachinesActions = {

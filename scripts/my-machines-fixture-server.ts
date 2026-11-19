@@ -33,13 +33,28 @@ export interface FixtureServer {
 
 export async function startFixtureServer(port = 0, hostname = "127.0.0.1"): Promise<FixtureServer> {
   const root = mkdtempSync(join(tmpdir(), "ovis-my-machines-"));
-  const build = await Bun.build({ entrypoints: [join(repo, "scripts/my-machines-fixture.tsx")], outdir: root, target: "browser", define: { "process.env.NODE_ENV": '"production"' } });
-  if (!build.success) {
+  // a build or a bind that fails leaves no bundle behind; once serving, stop() removes it
+  let server: ReturnType<typeof Bun.serve>;
+  try {
+    const build = await Bun.build({ entrypoints: [join(repo, "scripts/my-machines-fixture.tsx")], outdir: root, target: "browser", define: { "process.env.NODE_ENV": '"production"' } });
+    if (!build.success) throw new Error(`the fixture page did not build:\n${build.logs.map(String).join("\n")}`);
+    const assets = new Map(build.outputs.map((output) => [output.path.slice(root.length), output]));
+    server = serve(assets, port, hostname);
+  } catch (error) {
     rmSync(root, { recursive: true, force: true });
-    throw new Error(`the fixture page did not build:\n${build.logs.map(String).join("\n")}`);
+    throw error;
   }
-  const assets = new Map(build.outputs.map((output) => [output.path.slice(root.length), output]));
-  const server = Bun.serve({ hostname, port, fetch(request) {
+  return {
+    origin: `http://${hostname}:${server.port}`,
+    stop: async () => {
+      await server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+function serve(assets: ReadonlyMap<string, Blob>, port: number, hostname: string): ReturnType<typeof Bun.serve> {
+  return Bun.serve({ hostname, port, fetch(request) {
     const path = new URL(request.url).pathname;
     if (path === "/") return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
     if (path === "/icons/icon-192.png") return new Response(Bun.file(join(repo, "public/icons/icon-192.png")));
@@ -48,13 +63,6 @@ export async function startFixtureServer(port = 0, hostname = "127.0.0.1"): Prom
     if (asset !== undefined) return new Response(asset);
     return new Response("not found", { status: 404 });
   } });
-  return {
-    origin: `http://${hostname}:${server.port}`,
-    stop: async () => {
-      await server.stop(true);
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
 }
 
 if (import.meta.main) {

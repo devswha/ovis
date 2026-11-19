@@ -189,6 +189,7 @@ async function capture(browser: Browser, origin: string, shot: Shot): Promise<st
 export async function runCaptures(states: readonly MyMachinesState[]): Promise<never> {
   const started = Date.now();
   const shots = shotsOf(states);
+  if (shots.length === 0) throw new Error("no capture selected: check ONLY and WIDTHS");
   mkdirSync(evidence, { recursive: true });
   const failures: string[] = [];
   let browser: Browser | undefined;
