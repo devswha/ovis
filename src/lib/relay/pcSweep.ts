@@ -1,4 +1,9 @@
-/** Probe results never imply account or version state. A sweep a minute while the list is shown, at most CHECK_PCS PCs each. */
+/**
+ * Probe results never imply account or version state. A sweep a minute while the list is shown, at most CHECK_PCS PCs
+ * each, CHECK_AT_ONCE probes at once. With Web Locks (navigator.locks) both bounds hold across this origin's tabs: one
+ * sweep at a time, its start CHECK_GAP_MS after the last one any tab made, and CHECK_AT_ONCE probe slots for all of them.
+ * Without them each tab keeps its own bounds, and the shared timestamp only spaces the starts of tabs' sweeps.
+ */
 import { checkPc, sweepOf } from "./pcStatus.ts";
 import type { PcFinding, PcStatus } from "./pcStatus.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
@@ -11,6 +16,13 @@ const CHECK_AT_ONCE = 2;
 const CHECK_GAP_MS = 60_000;
 const CHECK_KEY = "ovis-pc-check-at";
 const CHECK_CURSOR_KEY = "ovis-pc-check-cursor";
+const SWEEP_LOCK = "ovis-pc-sweep";
+const PROBE_LOCK = "ovis-pc-probe-";
+
+/** What a sweep takes of Web Locks: an exclusive lock by name, held while `callback` runs; `ifAvailable` gives null at once when it is held. */
+export interface SweepLocks {
+  request<T>(name: string, options: { readonly ifAvailable?: boolean }, callback: (lock: unknown) => T | Promise<T>): Promise<T>;
+}
 
 function localStorageGet(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -21,16 +33,18 @@ function localStorageSet(key: string, value: string): void {
 
 interface QueuedCheck { readonly device: RelayDevice; readonly before: PcFinding | undefined; readonly settled: ReturnType<typeof Promise.withResolvers<void>> }
 
-export function createPcSweep(store: RelayDeviceStore, view: { readonly active: () => boolean; readonly redraw: () => void }, options: { readonly probe?: typeof checkPc; readonly directSocket?: (url: string) => RelaySocket } = {}) {
+export function createPcSweep(store: RelayDeviceStore, view: { readonly active: () => boolean; readonly redraw: () => void }, options: { readonly probe?: typeof checkPc; readonly directSocket?: (url: string) => RelaySocket; readonly locks?: SweepLocks } = {}) {
   const pcStatus = new Map<string, PcStatus>();
   const probe = options.probe ?? checkPc;
   const directSocket = options.directSocket;
   const sockets = { relay: (url: string) => new WebSocket(url), ...(directSocket ? { direct: directSocket } : {}) };
+  const locks: SweepLocks | undefined = options.locks ?? globalThis.navigator?.locks;
   let lastCheck = -Infinity;
   let deferred: ReturnType<typeof setTimeout> | undefined;
   let sweeping: Promise<void> | undefined;
   const queue: QueuedCheck[] = [];
-  let workers = 0;
+  /** the probe slots this tab's workers hold, each also a lock that every tab's worker for that slot takes */
+  const slots: boolean[] = Array.from({ length: CHECK_AT_ONCE }, () => false);
   /** PCs whose last check the relay turned away (a 429, a dropped socket): the next sweep checks them first */
   const refused = new Set<string>();
   /** answers past OFFLINE_AFTER_MS, which a refused check must not put back */
@@ -47,12 +61,15 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     if (where === "front") queue.unshift(entry); else queue.push(entry);
     return entry.settled.promise;
   };
-  const probeNext = async (): Promise<void> => {
+  const probeNext = async (slot: number): Promise<void> => {
     for (let next = queue.shift(); next; next = queue.shift()) {
-      const found = await probe(next.device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
+      const device = next.device;
+      const run = (): Promise<PcStatus> => probe(device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
+      const found = await (locks ? locks.request(PROBE_LOCK + slot, {}, run) : run());
       const serverId = next.device.server_id;
-      // a relay that turned this device away said nothing of the PC: the row keeps what it said until a second refusal in a row
-      if (found.kind === "offline" && found.reason === "relay" && !refused.has(serverId)) {
+      // a relay that turned this device away, or that it could not reach, said nothing of the PC: the row keeps what it said
+      // until a second such check in a row
+      if (found.kind === "offline" && found.reason !== "pc" && !refused.has(serverId)) {
         refused.add(serverId);
         if (next.before === undefined || lapsed.has(next.before)) pcStatus.delete(serverId); else pcStatus.set(serverId, next.before);
       } else {
@@ -72,9 +89,10 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     }
   };
   const drain = (): void => {
-    for (let spare = Math.min(CHECK_AT_ONCE - workers, queue.length); spare > 0; spare -= 1) {
-      workers += 1;
-      void probeNext().finally(() => { workers -= 1; });
+    for (let slot = slots.indexOf(false); slot >= 0 && queue.length > 0; slot = slots.indexOf(false)) {
+      slots[slot] = true;
+      const taken = slot;
+      void probeNext(taken).finally(() => { slots[taken] = false; });
     }
   };
 
@@ -86,6 +104,14 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
   };
   const checkPcs = async (): Promise<void> => {
     if (sweeping) { void sweeping.then(checkPcs); return; }
+    // another tab sweeping now holds the lock: this one tries again a gap later
+    const busy = (): void => { later(CHECK_GAP_MS); redraw(); };
+    sweeping = (locks ? locks.request(SWEEP_LOCK, { ifAvailable: true }, (lock) => lock === null ? busy() : startSweep()) : startSweep())
+      .finally(() => { sweeping = undefined; });
+    await sweeping;
+  };
+  /** Under the sweep lock, when there is one: the gap read and written here is every tab's. */
+  const startSweep = async (): Promise<void> => {
     const stored = Number(localStorageGet(CHECK_KEY) ?? "");
     const wait = CHECK_GAP_MS - (Date.now() - Math.max(lastCheck, Number.isFinite(stored) ? stored : -Infinity));
     if (wait > 0) {
@@ -93,11 +119,12 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
       redraw();
       return;
     }
+    // the work starts here, so the page is asked here: a timer or a sweep waited on may come due after it was hidden
+    if (globalThis.document?.visibilityState === "hidden") { later(CHECK_GAP_MS); return; }
     lastCheck = Date.now();
     localStorageSet(CHECK_KEY, String(lastCheck));
     later(CHECK_GAP_MS);
-    sweeping = sweepPcs().finally(() => { sweeping = undefined; });
-    await sweeping;
+    await sweepPcs();
   };
   const sweepPcs = async (): Promise<void> => {
     const cursor = cursorNow();
