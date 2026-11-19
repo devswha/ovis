@@ -316,6 +316,14 @@ it("names a visit's way in from what the server knows, its relay session or Port
     expect(await visit(local, here, { ...forwarded, ...portalHeaders, "x-portal-proof": "valid-portal-proof" })).toBe("portal");
     // Portal's headers without its proof are any proxy's
     expect(await visit(local, here, { ...forwarded, ...portalHeaders, "x-portal-proof": "forged" })).toBe("proxy");
+    // a Portal with no sign-in sends no proof: from this PC, over HTTPS, to an address Portal serves is all there is
+    const serves = spyOn(portal, "serves").mockReturnValue(true);
+    try {
+      expect(await visit(local, here, forwarded)).toBe("portal");
+      expect(await visit({ ...local, requestIP: () => ({ address: "192.168.0.20" }) }, here, forwarded)).toBe("proxy");
+      serves.mockReturnValue(false);
+      expect(await visit(local, here, forwarded)).toBe("proxy");
+    } finally { serves.mockRestore(); }
     expect(await visit(local, here)).toBe("local");
   } finally {
     proof.mockRestore(); role.mockRestore();
