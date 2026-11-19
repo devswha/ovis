@@ -17,7 +17,7 @@ import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
-import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
+import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
@@ -694,4 +694,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const link = new URL(encodeOffer(offer, window.location.origin));
     navigate(link.pathname + link.hash);
   });
+  // `#sign-in=<provider>` (boot took it off the address, so a reload or Back starts nothing): that provider's sign-in
+  // starts once, exactly as a press of its button on this page would. A provider the account service does not offer, a
+  // page already signed in, or a newer navigation meanwhile does nothing
+  const asked = account.enabled && returning === undefined ? signInEntry(new URL(mount.entryUrl).hash) : null;
+  const signedIn = (): boolean => account.state?.kind === "signed-in";
+  if (asked !== null && !signedIn()) {
+    const provider = (await account.offered()).find((id) => id === asked);
+    // read again after the wait: the list may have come after another navigation or a sign-in
+    if (provider !== undefined && entries === loaded && !signedIn()) account.signIn(provider);
+  }
 }

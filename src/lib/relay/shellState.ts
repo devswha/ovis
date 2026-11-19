@@ -119,6 +119,16 @@ export interface ShellEntry {
   damaged: boolean;
 }
 
+/**
+ * `#sign-in=<provider>`: a link that opens the hosted shell straight on that provider's sign-in, as one press of its
+ * button would. The provider as written, or null; whether the account service offers it is checked where it is used.
+ */
+export function signInEntry(hash: string): string | null {
+  if (!hash.startsWith("#sign-in=")) return null;
+  const provider = new URLSearchParams(hash.slice(1)).get("sign-in");
+  return provider === null || provider === "" ? null : provider;
+}
+
 export function shellEntry(url: string): ShellEntry {
   const serverId = serverIdOfPath(new URL(url).pathname);
   try {

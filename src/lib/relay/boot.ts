@@ -22,8 +22,9 @@ interface Page {
  */
 export function takeEntryUrl(page: Page): string {
   const { href, pathname, search, hash } = page.location;
-  // a sign-in's return (`#code=…&state=…`, account/signin.ts) leaves with the offer: its code is a credential too
-  const kept = search.length > 1 ? `#${search.slice(1)}` : hash.startsWith("#offer=") || signInFragment(hash) ? "" : hash;
+  // a sign-in's return (`#code=…&state=…`, account/signin.ts) leaves with the offer: its code is a credential too. So
+  // does a link that starts a sign-in (`#sign-in=<provider>`), so a reload or Back does not start it again
+  const kept = search.length > 1 ? `#${search.slice(1)}` : hash.startsWith("#offer=") || hash.startsWith("#sign-in=") || signInFragment(hash) ? "" : hash;
   if (`${search}${hash}` !== kept) page.history.replaceState(null, "", pathname + kept);
   return href;
 }
