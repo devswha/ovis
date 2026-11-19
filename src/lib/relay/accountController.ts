@@ -3,7 +3,7 @@ import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { myPcs } from "../account/myPcs.ts";
-import { AccountService, AccountServiceError, accountProvidersOf, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
+import { AccountService, AccountServiceError, AccountServiceUnreachableError, accountProvidersOf, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
 import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, finishSignIn, SignInError } from "../account/signin.ts";
@@ -78,7 +78,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const open = mount.open ?? openRelayTransport;
   const forgotten = new Map<string, number>();
   const running = new Map<Promise<unknown>, string>();
-  const cancelEnrollment = (id: string): void => { forgotten.set(id, (forgotten.get(id) ?? 0) + 1); };
+  // the cancels of the enrollments running now, by PC: a Forget or a leave also ends what each has out (a request to
+  // the account service, a token refresh it waits on, a wait before sending again)
+  const stops = new Map<string, Set<AbortController>>();
+  const cancelEnrollment = (id: string): void => {
+    forgotten.set(id, (forgotten.get(id) ?? 0) + 1);
+    for (const stop of stops.get(id) ?? []) stop.abort(new DOMException("The pairing was forgotten or replaced", "AbortError"));
+  };
   // the account key a pairing's admission named, by PC: a link that would name another (a leave in another tab replaced
   // the stored key meanwhile) posts that key first, once
   const vouched = new Map<string, string>();
@@ -165,6 +171,14 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     // read whatever screen is up: a confirm drawn meanwhile waits for this sign-in's directory, and a Pair press that
     // found another sign-in reads that one's before anything is paired
     if (replaced) await refresh(initial, true);
+  };
+  /** The rows drawn again from the directory last read and the PCs stored now, with nothing sent to the account service. */
+  const redraw = async (): Promise<void> => {
+    const devices = await store.list();
+    if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) {
+      accountView = { ...accountView, pcs: myPcs(directory, devices, { now: Date.now(), outdated: view.outdated(), accountKey: listedFor.accountKey, account: listedFor.account }) };
+    }
+    await changed();
   };
   /**
    * The sign-in and its directory, read again now whatever screen is up: for a consent about to be acted on, which
@@ -399,7 +413,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const enroll = (opened: RelayTransport, serverId: string, fresh: boolean, introducible = false, options: EnrollOptions = {}): Promise<"local" | EnrollmentCompletion> => {
     let told = false;
     const settled = (): void => { if (told) return; told = true; options.settled?.(); };
-    const done = enrollOwned(opened, serverId, fresh, introducible, { ...options, settled });
+    const stop = new AbortController();
+    const mine = stops.get(serverId) ?? new Set<AbortController>();
+    mine.add(stop);
+    stops.set(serverId, mine);
+    const signal = options.signal === undefined ? stop.signal : AbortSignal.any([options.signal, stop.signal]);
+    const done = enrollOwned(opened, serverId, fresh, introducible, { ...options, settled, signal });
+    void done.finally(() => { mine.delete(stop); if (mine.size === 0 && stops.get(serverId) === mine) stops.delete(serverId); }).catch(() => {});
     // a link the PC refused leaves the session to whoever says why (shell.tsx), rather than opening the app over it
     void done.then(settled, (error: unknown) => { if (refusalOf(error) === null) settled(); });
     running.set(done, serverId);
@@ -423,6 +443,12 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       return current;
     };
     const owned = async (): Promise<void> => { assertPairing(await store.get(serverId)); };
+    // the last check before a request to the account service goes: the sign-in the enrollment began with, then its pairing
+    const sending = async (): Promise<void> => {
+      const now = await account.session();
+      if (now === undefined || !sameSignIn(now, session)) throw new SignedOutError();
+      await owned();
+    };
     // Every enrollment writer, including linking and introductions, loses ownership on Forget.
     const enrollmentStore: RelayDeviceStore = {
       ...store,
@@ -436,9 +462,14 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         }, id === serverId ? undefined : { serverId, assert: assertPairing });
       },
     };
-    const record = async (state: EnrollmentState): Promise<void> => {
+    /**
+     * `read`: false when the account service just gave no answer. The rows are drawn again from what was read before, and
+     * nothing goes to it: a token refresh whose answer was lost has spent the stored refresh token, and a read now would
+     * send it again, which ends the sign-in.
+     */
+    const record = async (state: EnrollmentState, read = true): Promise<void> => {
       await enrollmentStore.update(serverId, (current) => ({ ...assertPairing(current), account_enrollment: { account: session.account, state } } satisfies SavedDevice));
-      await refresh();
+      await (read ? refresh() : redraw());
     };
     signal?.throwIfAborted();
     if (fresh) await record("pending");
@@ -538,7 +569,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // the directory of the sign-in this enrollment began with: one stored meanwhile (another tab) is another account's.
       // A send the connection dropped under goes again once it is back, while this enrollment still owns the pairing
       const listing = { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay };
-      const again = sendAgainWhenBack({ before: owned, signal });
+      const again = sendAgainWhenBack({ before: sending, signal });
       await account.forSignIn(session).putPc(serverId, listing, signal, again);
       // listed first, so a removal this client signs from now on reaches it by mailbox too
       if ((await accountStore.get("enrolls"))?.[serverId] !== undefined) {
@@ -595,7 +626,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       return { state: "complete", ...(admitted === undefined ? {} : { admitted }) };
     } catch (error) {
       assertPairing(await store.get(serverId));
-      await record("failed");
+      await record("failed", !(error instanceof AccountServiceUnreachableError));
       throw error;
     } finally {
       own?.close();

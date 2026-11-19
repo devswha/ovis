@@ -545,8 +545,9 @@ export class AccountService {
     const sends = again?.sends ?? 2;
     for (let sent = 1; ; sent++) {
       const session = await this.fresh(stale, signal);
-      signal?.throwIfAborted();
       await again?.before();
+      // nothing is awaited between this and the send
+      signal?.throwIfAborted();
       let response: Response;
       try {
         response = await this.fetch(new URL(path, session.service), {
