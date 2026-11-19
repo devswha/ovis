@@ -258,7 +258,7 @@ export class AccountDeviceStore implements AccountRowSource {
       confirmed_at: iso(now), last_signin_day: null, state: bypass ? "live" : "hold", hold_until: null,
     };
     const standing = this.ports.admitListedRows(() => {
-      this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.no, label: row.label,
+      this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.origin.admit_no, label: row.label,
         two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) });
       this.write({ ...this.file, devices: [...this.file.devices, row] });
       return [row.id];
@@ -289,7 +289,7 @@ export class AccountDeviceStore implements AccountRowSource {
   }
 
   private publish(row: AccountRow): void {
-    try { this.ports.publish({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.no, label: row.label }); } catch (error) {
+    try { this.ports.publish({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.origin.admit_no, label: row.label }); } catch (error) {
       // the row stays held with no deadline: republish() starts its ten seconds once the notice is out
       console.error(`[account] the notice of ${row.id} was not published: ${error instanceof Error ? error.message : String(error)}`);
       return;

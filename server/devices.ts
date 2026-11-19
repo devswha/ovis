@@ -2339,7 +2339,7 @@ export class DeviceStore {
     this.publish(this.journal.append({ kind: "remove", how: why ?? (typeof by === "object" ? "member" : "pc"), key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: user ?? (typeof by === "object" ? by.device_id : null), account: device.account ?? null }));
   }
 
-  private publish(entry: JournalEntry): void {
+  publish(entry: JournalEntry): void {
     for (const listener of [...this.noticeListeners]) {
       try { listener(entry); } catch (error) { console.warn(`[devices] a notice listener failed: ${describe(error)}`); }
     }
@@ -2353,7 +2353,7 @@ export class DeviceStore {
 
   /** Whether the row `id` is told of `entry`: entries about rows that joined this PC after it (T57); a row with no age hears none. */
   private tells(id: string, entry: JournalEntry): boolean {
-    const row = this.devices.find((d) => d.id === id);
+    const row = this.anyRow(id);
     if (row?.origin === undefined || entry.row === id) return false;
     if (row.origin.from === "legacy") return true;
     return entry.no !== null && row.origin.admit_no < entry.no;

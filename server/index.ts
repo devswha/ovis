@@ -325,7 +325,11 @@ export function createServer(
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
     now: () => Date.now(),
     admitOrigin: (at) => pcAccount.admit("remote", "list", null, at),
-    publish: entry => journal.openListedRows([entry.row]),
+    publish: (entry) => {
+      const notice = journal.openNotices().find((n) => n.row === entry.row && n.no === entry.no && n.key === entry.key);
+      if (!notice) throw new Error("The current admission has no durable notice");
+      devices.publish(notice);
+    },
     firstDevice: {
       othersEver: () => pcAccount.othersEver(),
       setOthersEver: () => { pcAccount.setOthersEver(); },
