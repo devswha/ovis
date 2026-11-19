@@ -1,0 +1,69 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { exportAccountKey } from "../../shared/account-records.ts";
+import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { DeviceStore } from "../devices.ts";
+import { rotateRelayIdentity } from "../relay/identity.ts";
+import { AccountMailbox } from "./mailbox.ts";
+import { readSnapshot, type SnapshotPorts, type StagedRead } from "./snapshot-read.ts";
+
+const ACCOUNT = "acct_1";
+const dirs: string[] = [];
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+async function spki(): Promise<string> {
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  return await exportAccountKey(pair.publicKey);
+}
+
+async function setup(opensAll: boolean, devices: number) {
+  const stateDir = mkdtempSync(join(tmpdir(), "s2-24-fetch-"));
+  dirs.push(stateDir);
+  const identity = rotateRelayIdentity(stateDir);
+  const service = new FakeAccountService();
+  service.opensAll = opensAll;
+  for (let index = 0; index < devices; index++) service.registerDevice(ACCOUNT, await spki(), `Device ${index + 1}`);
+  const mailbox = new AccountMailbox({ devices: new DeviceStore(stateDir), identity: () => identity, service: "https://account.test", fetch: service.fetch });
+  const committed: StagedRead[] = [];
+  const ports: SnapshotPorts = {
+    scope: () => ({ account: ACCOUNT, serverId: identity.server_id, gen: 0, lock: null }),
+    lastVersion: () => null,
+    classify: () => "invalid",
+    deny: async () => false,
+    liftAuthority: () => false,
+    commit: (stage) => { committed.push(stage); },
+    methodsVersion: () => null,
+    journalMethod: () => {},
+    requestRead: () => {},
+  };
+  return { service, mailbox, ports, committed, identity };
+}
+
+describe("S2-24 the PC reads the account's snapshot with a proof of its relay key (G1)", () => {
+  test("G1: a whole read of several pages comes back through the PC's own proof and commits once", async () => {
+    const pc = await setup(true, 250);
+    const outcome = await readSnapshot((cursor) => pc.mailbox.snapshotPage(ACCOUNT, cursor), pc.ports);
+    expect(outcome.committed).toBe(true);
+    expect(pc.committed).toHaveLength(1);
+    expect(pc.committed[0]!.snapshot.devices.map((device) => device.no)).toEqual(Array.from({ length: 250 }, (_, index) => index + 1));
+    expect(pc.committed[0]!.snapshot.server_id).toBe(pc.identity.server_id);
+  });
+
+  test("G1: a snapshot the service no longer holds throws the read away", async () => {
+    const pc = await setup(true, 150);
+    const outcome = await readSnapshot(async (cursor) => {
+      if (cursor.page === 1) pc.service.dropSnapshots();
+      return await pc.mailbox.snapshotPage(ACCOUNT, cursor);
+    }, pc.ports);
+    expect(outcome).toEqual({ committed: false, reason: "snapshot_gone", denials: 0 });
+    expect(pc.committed).toEqual([]);
+  });
+
+  test("G1: a service with the release flag off has no snapshot, so nothing is committed", async () => {
+    const pc = await setup(false, 1);
+    expect(await readSnapshot((cursor) => pc.mailbox.snapshotPage(ACCOUNT, cursor), pc.ports)).toEqual({ committed: false, reason: "page_failed", denials: 0 });
+    expect(pc.committed).toEqual([]);
+  });
+});
