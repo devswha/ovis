@@ -260,7 +260,8 @@ it("ends a relay start that never answers after 20 s, so Turn on can be pressed 
   jest.advanceTimersByTime(19_999);
   expect(requests[0]!.signal.aborted).toBe(false);
   jest.advanceTimersByTime(1);
-  expect(await stalled).toBeInstanceOf(Error);
+  // the deadline's own words, not the abort the browser answered with
+  expect(await stalled).toMatchObject({ name: "TimeoutError", message: "No answer" });
 
   // a stop may take the server longer: it is waited for
   void requestRelay("stop").catch(() => undefined);

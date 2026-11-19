@@ -739,6 +739,8 @@ const watchRelayStart = (watch: () => void): (() => void) => { relayStartWatcher
 const relayStarting = (): boolean => relayStartOut;
 const setRelayStartOut = (out: boolean): void => { relayStartOut = out; for (const watch of relayStartWatchers) watch(); };
 const useRelayStarting = (): boolean => useSyncExternalStore(watchRelayStart, relayStarting);
+// the whole start, this browser's own pairing included, as long as the relay's own request may take (api.ts requestRelay)
+const RELAY_START_MS = 20_000;
 
 interface PhoneBoxProps {
   opening: PhoneBoxOpening;
@@ -755,6 +757,7 @@ function PhoneBox({ opening, onWithdraw, auth, security, onOpenSettings, onPaire
   const relay = useRelay();
   const [other, setOther] = useState(false);
   const way = other ? "other" : phoneWay(relay, inRelayShell(), auth);
+  const starting = useRelayStarting();
   const led = useRef(false);
   if (way === "relay") led.current = true;
   const stays = phoneBoxStays(other ? "tap" : opening, way, led.current);
@@ -763,7 +766,7 @@ function PhoneBox({ opening, onWithdraw, auth, security, onOpenSettings, onPaire
   if (way === "wait") return (
     <div className="setup-phone-relay">
       <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>
-      <button type="button" className="setup-link setup-phone-other" onClick={() => setOther(true)}>{t("Use Tailscale or Wi-Fi instead")}</button>
+      <button type="button" className="setup-link setup-phone-other" disabled={starting} onClick={() => setOther(true)}>{t("Use Tailscale or Wi-Fi instead")}</button>
     </div>
   );
   if (way === "other") return <PhoneQr auth={auth} onOpenSettings={onOpenSettings} onPaired={onPaired} onPhonePaired={onPhonePaired} />;
@@ -796,17 +799,26 @@ function RelayBox({ relay, auth, closesGate, onPaired, onPhonePaired, onOther, t
     if (busy) return;
     setRelayStartOut(true);
     setError(null);
-    try {
+    // a pairing that never answers ends the start too: the ways are free again, and no relay start follows it
+    let gaveUp = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => { gaveUp = true; reject(new DOMException(t("No answer"), "TimeoutError")); }, RELAY_START_MS);
+    });
+    const run = async (): Promise<void> => {
       if (auth?.via === "open" && !pairedHere) {
         await pairThisBrowser();
         pairedHere = true;
         setPairedSelf(true);
         onPaired();
       }
-      await request("start");
+      if (!gaveUp) await request("start");
+    };
+    try {
+      await Promise.race([run(), deadline]);
     } catch (reason: unknown) {
       setError(reason instanceof UnconfirmedPairing ? t("Couldn't connect this browser. Turn on cookies.") : failureText(reason));
-    } finally { setRelayStartOut(false); }
+    } finally { clearTimeout(timer); setRelayStartOut(false); }
   };
   return (
     <div className="setup-phone-relay">

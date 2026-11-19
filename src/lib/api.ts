@@ -308,6 +308,9 @@ export async function requestRelay(action: "start" | "stop" | "reset-identity"):
       throw await errorFrom(url, response);
     }
     return (await response.json()) as RelayStatus;
+  } catch (error) {
+    // a browser may answer the abort with its own words (Safari 14): the deadline's are ours
+    throw bounded.signal.aborted ? bounded.signal.reason : error;
   } finally { clearTimeout(timer); }
 }
 
