@@ -50,6 +50,7 @@ import type { LocalConfirms } from "./account/local-confirm.ts";
 import { handleAccountRequest } from "./account/routes.ts";
 import type { AccountMailbox } from "./account/mailbox.ts";
 import type { AccountHolds } from "./account/holds.ts";
+import type { SafetyLog } from "./account/safety-log.ts";
 import type { AccountIntroductions } from "./account/introductions.ts";
 import type { RelayService } from "./relay/service.ts";
 import { handleTelemetryRequest, visitSurface } from "./telemetry.ts";
@@ -93,6 +94,8 @@ export interface RequestServices {
   readonly accountMailbox: AccountMailbox;
   readonly accountIntroductions: AccountIntroductions;
   readonly accountHolds: AccountHolds;
+  /** the account safety log; null while OVIS_ACCOUNT_OPENS_ALL is off */
+  readonly safetyLog: SafetyLog | null;
   readonly preferences: PreferenceStore;
   readonly herdrSidebar: HerdrSidebarConfig;
   /** `loginPath`: the request states a Tailscale login, so the PC's own login must be known, not merely cached as unknown */

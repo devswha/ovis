@@ -215,6 +215,7 @@ describe("the PC safety log (account-log.json)", () => {
       writeFileSync(join(dir, SAFETY_LOG_FILE), "{not json", { mode: 0o600 });
       const pairing = new DeviceStore(dir);
       const { token } = pairing.pair(pairing.startPairing().code, "Phone", "drive")!;
+      expect(pairing.match(token)).not.toBeNull();
       const fixture = relayFixture(false, { stateDir: dir });
       fixtures.push(fixture);
       dirs.splice(dirs.indexOf(dir), 1);
