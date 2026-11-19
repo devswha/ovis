@@ -76,6 +76,7 @@ export function useShownMachines<T extends HasId>({ machines, selectedMachineRef
     hiddenBefore.current = hidden;
     if (before === hidden) return;
     const next = selectionToMove(machinesRef.current, before, hidden, selectedMachineRef.current);
+    // the user hid the PC shown: their own move, so an earlier note goes (unlike the restore below)
     if (next !== null) selectTargetRef.current(next, null);
   }, [hidden]);
   const restoreChecked = useRef(!restored);

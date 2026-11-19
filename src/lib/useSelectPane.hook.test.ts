@@ -29,14 +29,14 @@ describe("selectPane", () => {
       const pendingFile = useRef(null);
       const selectionHint = useRef(null);
       const [, setLinkLanded] = useState(true);
-      const [, setSelectedPaneId] = useState<string | null>(null);
+      const [selectedPaneId, setSelectedPaneId] = useState<string | null>("w1:p1");
       const [, setNotificationViewTarget] = useState(null);
       const [, setTerminalPeek] = useState(null);
       const [, setAutoSelected] = useState(false);
       const [, setDrawerOpen] = useState(false);
       const [headerNote, setHeaderNote] = useState<"pane-closed" | "copied" | null>(first);
       note = headerNote;
-      select = useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, setHeaderNote, onPick: () => { picks += 1; } } as Parameters<typeof useSelectPane>[0]).selectPane;
+      select = useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, selectedPaneId, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, setHeaderNote, onPick: () => { picks += 1; } } as Parameters<typeof useSelectPane>[0]).selectPane;
       return null;
     }
     await act(async () => { renderer = create(createElement(Probe)); });
@@ -65,5 +65,13 @@ describe("selectPane", () => {
     await mount("copied");
     await act(async () => { select("w1:p2"); });
     expect(note).toBe("copied");
+  });
+
+  it("keeps the note when the pick is the pane already shown", async () => {
+    await mount();
+    await act(async () => { select("w1:p1"); });
+    expect(note).toBe("pane-closed");
+    await act(async () => { select("w1:p2"); });
+    expect(note).toBeNull();
   });
 });

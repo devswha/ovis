@@ -237,11 +237,12 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   return { selectedMachineRef, selectTarget, selectTargetRef, picks };
 }
 
-export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, setHeaderNote, onPick }: {
+export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, selectedPaneId, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, setHeaderNote, onPick }: {
   pendingLink: RefObject<AppLink | null>;
   pendingFile: RefObject<string | null>;
   setLinkLanded: Dispatch<SetStateAction<boolean>>;
   selectionHint: RefObject<SelectionHint>;
+  selectedPaneId: string | null;
   setSelectedPaneId: Dispatch<SetStateAction<string | null>>;
   setNotificationViewTarget: Dispatch<SetStateAction<NotificationTarget | null>>;
   setTerminalPeek: Dispatch<SetStateAction<TerminalPeek | null>>;
@@ -251,12 +252,17 @@ export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selecti
   onPick?: () => void;
 }) {
   const onPickRef = useRef(onPick); onPickRef.current = onPick;
+  const shownPane = useRef(selectedPaneId); shownPane.current = selectedPaneId;
   const selectPane = useCallback((paneId: string, focusInput = true) => {
+    // as selectTarget: a pick of another pane takes an earlier landing's note away, the pane shown keeps it
+    const leaves = paneId !== shownPane.current;
+    shownPane.current = paneId;
     if (focusInput) onPickRef.current?.();
     pendingLink.current = null; pendingFile.current = null; setLinkLanded(true);
     selectionHint.current = null;
     setSelectedPaneId(paneId);
-    setNotificationViewTarget(null); setTerminalPeek(null); setHeaderNote(noteAfterSelection);
+    setNotificationViewTarget(null); setTerminalPeek(null);
+    if (leaves) setHeaderNote(noteAfterSelection);
     setAutoSelected(!focusInput);
     setDrawerOpen(false);
   }, []);
