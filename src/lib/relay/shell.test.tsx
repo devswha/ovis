@@ -967,6 +967,9 @@ describe("the hosted shell's front page", () => {
       const store = deviceStore(await pcs("a".repeat(32)));
       launch();
       await mountRelayShell(mountFor({ store, entryUrl: "https://app.ovis.sh/#pane=w1", navigate: (path) => { went.push(path); } }));
+      // the phone app's saved row for the hosted app opens it on its list (app/web/connect.js)
+      launch();
+      await mountRelayShell(mountFor({ store, entryUrl: "https://app.ovis.sh/#pcs", navigate: (path) => { went.push(path); } }));
       launch();
       await mountRelayShell(mountFor({ store: deviceStore([]), entryUrl: `https://app.ovis.sh/s/${"a".repeat(32)}/` }));
       await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); } }));
