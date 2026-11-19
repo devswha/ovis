@@ -5,10 +5,10 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { StrictModePanel, type LockState } from "./StrictModePanel.tsx";
 
 const unlocked: LockState = {
-  bound: true, locked: null, strict: false,
+  bound: true, confirm: "available", locked: null, strict: false,
   preview: { rows: [{ id: "r1", label: "Galaxy S30", origin: { from: "remote", how: "list" }, file: "account" }, { id: "r2", label: "Old iPad", origin: null, file: "devices" }], grants: ["token", "tailscale"] },
 };
-const locked: LockState = { bound: true, locked: { id: "l1", at: "2026-11-20T04:00:00.000Z", by: "pc" }, strict: false };
+const locked: LockState = { bound: true, confirm: "available", locked: { id: "l1", at: "2026-11-20T04:00:00.000Z", by: "pc" }, strict: false };
 
 describe("the strict-mode screen", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -65,8 +65,14 @@ describe("the strict-mode screen", () => {
     expect((await mount(unlocked, false)).buttons).toEqual([]);
   });
 
+  it("P11: a PC with no way to confirm on its screen offers no switch and says strict mode is Linux only for now", async () => {
+    const { shown, buttons } = await mount({ ...unlocked, confirm: "unsupported" });
+    expect(buttons).toEqual([]);
+    expect(shown).toContain("Linux");
+  });
+
   it("P12: a PC in no account offers no strict mode and says it needs an account", async () => {
-    const { shown, buttons } = await mount({ bound: false, locked: null, strict: false });
+    const { shown, buttons } = await mount({ bound: false, confirm: "available", locked: null, strict: false });
     expect(buttons).toEqual([]);
     expect(shown).toContain("account");
   });
