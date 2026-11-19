@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection } from "../server/herdr-core/connection.ts";
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
+import { WORKSPACE_NAME_LABEL } from "../server/herdr-core/snapshot.ts";
 import { REATTACH_DEADLINE } from "./core/pane.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
 import { FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
@@ -673,7 +674,7 @@ describe("the loop", () => {
     expect(viewers.length).toBe(SCALE_LARGEST_TAB);
     expect(new Set(viewers.map((viewer) => viewer.terminal)).size).toBe(SCALE_LARGEST_TAB);
     expect(run.loop.report().writes).toBeGreaterThan(0);
-    expect(run.grid().join("\n")).toContain("|pane 0 ");
+    expect(run.grid().join("\n")).toContain("│pane 0 ");
   }, TEST_MS);
 });
 
@@ -839,11 +840,11 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     expect(run.loop.model().sidebarCollapsed).toBe(true);
     return { run };
   }],
-  ["a selection held after its copy", async () => {
+  ["a selection dropped by its copy", async () => {
     const run = await start({ fixture: demo });
     await run.live();
     await run.advance(1);
-    await run.keys("press@27:2,drag@30:2,release@30:2");
+    await run.keys("press@29:2,drag@32:2,release@32:2");
     expect(run.host.output()).toContain(`\x1b]52;c;${Buffer.from("echo").toString("base64")}\x1b\\`);
     return { run };
   }],
@@ -853,16 +854,16 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     run.core.program("t1").output(Array.from({ length: 60 }, (_, n) => `row-${n}`).join("\r\n"));
     await run.advance(20);
     await run.keys("wheelup@40:20");
-    // t1's grid has 36 rows: its screen shows the rows three above its newest
+    // t1's grid has 37 rows: its screen shows the rows three above its newest
     const history = run.loop.panes.view("t1")?.emulator?.history();
-    expect(history?.ok && history.value.total - 36 - history.value.viewportTop).toBe(3);
+    expect(history?.ok && history.value.total - 37 - history.value.viewportTop).toBe(3);
     return { run };
   }],
   ["a divider drag ended", async () => {
     const run = await start({ fixture: demo });
     await run.live();
     await run.advance(1);
-    await run.keys("press@71:10,drag@60:10,release@60:10");
+    await run.keys("press@72:10,drag@61:10,release@61:10");
     await run.advance(20);
     expect(run.loop.report().actions).toContain("divider:done");
     return { run };
@@ -1001,6 +1002,39 @@ describe("nothing in, nothing out, in every state the screen rests in", () => {
     expect(run.loop.report().due).toEqual(["link:reconnect"]);
     // a retry changes the link's state twice (Connecting, then Offline again): at most a pass each, writing nothing
     expect(run.loop.report().passes - passes).toBeLessThanOrEqual(2 * 10);
+  }, TEST_MS);
+});
+
+describe("the screen's own layout, as herdr's", () => {
+  it("an empty core gets a first workspace named ~ in the core's own folder, once a line, as herdr's server opens one", async () => {
+    const run = await start({ core: new FakeHcCore() });
+    await run.advance(50);
+    const made = run.core.calls().filter((call) => call.method === "terminal.run");
+    expect(made.length).toBe(1);
+    // no folder of the screen's: the core starts the shell where it starts its own (its home)
+    expect(made[0]!.params["cwd"]).toBeUndefined();
+    expect((made[0]!.params["labels"] as Record<string, string>)[WORKSPACE_NAME_LABEL]).toBe("~");
+    await run.advance(200);
+    expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["~"]);
+    expect(run.core.calls().filter((call) => call.method === "terminal.run").length).toBe(1);
+  }, TEST_MS);
+
+  it("a core with workspaces gets none", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    expect(run.core.calls().filter((call) => call.method === "terminal.run")).toEqual([]);
+  }, TEST_MS);
+
+  it("a program on the alternate screen gets its pane's scrollbar column, and gives it back when it leaves", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    expect(run.loop.panes.view("t1")?.wanted.cols).toBe(44);
+    run.core.program("t1").output("\x1b[?1049h");
+    await run.advance(50);
+    expect(run.loop.panes.view("t1")?.wanted.cols).toBe(45);
+    run.core.program("t1").output("\x1b[?1049l");
+    await run.advance(50);
+    expect(run.loop.panes.view("t1")?.wanted.cols).toBe(44);
   }, TEST_MS);
 });
 

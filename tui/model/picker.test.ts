@@ -144,20 +144,20 @@ describe("the picker on screen", () => {
     await run.advance(10);
     const grid = run.grid();
     expect(grid.slice(3, 17)).toEqual([
-      "+ Go to ---------------------- [close: esc] +",
-      "| o                                         |",
-      "| Type to filter · Enter to jump            |",
-      "|>· workspace ovis                          |",
-      "| · tab ovis/main                           |",
-      "| · tab ovis/logs                           |",
-      "| · tab 문서/notes                          |",
-      "|                                           |",
-      "|                                           |",
-      "|                                           |",
-      "|                                           |",
-      "|                                           |",
-      "|                                           |",
-      "+-------------------------------------------+",
+      "┌ Go to ────────────────────── [close: esc] ┐",
+      "│ o                                         │",
+      "│ Type to filter · Enter to jump            │",
+      "│>· workspace ovis                          │",
+      "│ · tab ovis/main                           │",
+      "│ · tab ovis/logs                           │",
+      "│ · tab 문서/notes                          │",
+      "│                                           │",
+      "│                                           │",
+      "│                                           │",
+      "│                                           │",
+      "│                                           │",
+      "│                                           │",
+      "└───────────────────────────────────────────┘",
     ]);
     expect(run.loop.screen()!.cols).toBe(45);
     await run.keys("down,enter");
@@ -166,10 +166,10 @@ describe("the picker on screen", () => {
     await run.keys("ctrl+b,g,z,q");
     await run.advance(10);
     expect(run.grid().slice(4, 8)).toEqual([
-      "| zq                                        |",
-      "| Type to filter · Enter to jump            |",
-      "| No matches                                |",
-      "|                                           |",
+      "│ zq                                        │",
+      "│ Type to filter · Enter to jump            │",
+      "│ No matches                                │",
+      "│                                           │",
     ]);
     // a lone Escape is a key once the host's wait for a sequence after it has passed
     await run.keys("esc");
@@ -183,7 +183,7 @@ describe("the picker on screen", () => {
     await run.live();
     await run.keys("ctrl+b,g,o");
     await run.advance(10);
-    expect(run.grid()[8]).toBe("| · tab ovis/logs                           |");
+    expect(run.grid()[8]).toBe("│ · tab ovis/logs                           │");
     run.type("\x1b[<0;12;9M");
     await run.settle();
     expect([run.loop.model().overlays, run.loop.model().focus.tabs["w-ovis"]]).toEqual([[], "t-logs"]);
@@ -202,7 +202,7 @@ describe("the picker on screen", () => {
     await run.live();
     await run.keys("ctrl+b,g,up");
     await run.advance(10);
-    expect(run.grid()[15]).toBe("|>· tab place5/shell                        |");
+    expect(run.grid()[15]).toBe("│>· tab place5/shell                        │");
     await run.keys("enter");
     expect(run.loop.model().focus.workspace).toBe("ws5");
   }, TEST_MS);
@@ -213,6 +213,6 @@ describe("the picker on screen", () => {
     await run.live();
     await run.keys("ctrl+b,g,c,l");
     await run.advance(10);
-    expect(run.grid()[6]).toBe("|>! agent claude agents/agents              |");
+    expect(run.grid()[6]).toBe("│>! agent claude agents/agents              │");
   }, TEST_MS);
 });

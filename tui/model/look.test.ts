@@ -338,9 +338,9 @@ describe("read state through herdr.seen (UB Q7)", () => {
       await run.keys("ctrl+b,a");
       await run.advance(20);
       const footer = () => run.grid()[rows - 1]!;
-      const line = (text: string) => `+- ${text} ${"-".repeat(cols - text.length - 5)}+`;
-      const selection = () => run.grid().find((row) => row.startsWith("|>"))?.slice(9, 12);
-      expect(footer()).toBe(`+${"-".repeat(cols - 2)}+`);
+      const line = (text: string) => `└─ ${text} ${"─".repeat(cols - text.length - 5)}┘`;
+      const selection = () => run.grid().find((row) => row.startsWith("│>"))?.slice(9, 12);
+      expect(footer()).toBe(`└${"─".repeat(cols - 2)}┘`);
       expect(selection()).toBe("one");
 
       run.core.reportStatus("t2", { state: "blocked", app: "claude" });
@@ -357,7 +357,7 @@ describe("read state through herdr.seen (UB Q7)", () => {
       await run.advance(20);
       expect(footer()).toBe(line("* Done: two"));
       await run.advance(NOTICE_SHOW_MS + 1);
-      expect(footer()).toBe(`+${"-".repeat(cols - 2)}+`);
+      expect(footer()).toBe(`└${"─".repeat(cols - 2)}┘`);
       expect(run.loop.report().mode.overlays).toEqual(["agents"]);
       await run.keys("enter");
       expect(focused(run.loop.model().world, run.loop.model().focus).pane?.id).toBe("t1");

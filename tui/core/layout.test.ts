@@ -174,9 +174,9 @@ describe("the screen's layout writes", () => {
     await two.advance(20);
     expect([tabOf(core, "t").zoomed, two.loop.panes.view("t1")?.covered, two.loop.panes.view("t2")?.covered]).toEqual(["t1", false, true]);
     // the other screen draws t1 alone over the whole pane area: its top border runs from the sidebar's edge to the right edge
-    expect(two.grid()[1]!.slice(24).startsWith("+")).toBe(true);
-    expect(two.grid()[1]!.endsWith("+")).toBe(true);
-    expect(two.grid()[1]!.slice(25, -1).includes("+")).toBe(false);
+    expect(two.grid()[1]!.slice(26).startsWith("┌")).toBe(true);
+    expect(two.grid()[1]!.endsWith("┐")).toBe(true);
+    expect(two.grid()[1]!.slice(27, -1).includes("┐")).toBe(false);
     // a narrow screen writes nothing of its own
     const narrow = twoWorkspaces();
     const small = await start(narrow, 64, 24);
@@ -300,12 +300,13 @@ describe("the screen's layout writes", () => {
     const run = await start(core);
     await run.keys("ctrl+b,c");
     expect(run.loop.report().mode.overlays).toEqual(["text"]);
-    await run.keys("logs,enter");
+    // herdr fills in the new tab's number: clear it, then name the tab
+    await run.keys("ctrl+c,logs,enter");
     await run.advance(20);
     const tabs = () => run.loop.model().world.workspaces.find((workspace) => workspace.id === "w")!.tabs.map((tab) => tab.name);
     const focusOf = () => { const state = run.loop.model(); return state.focus.panes[state.focus.tabs[state.focus.workspace!]!]; };
     expect([tabs(), focusOf()]).toEqual([["main", "side", "logs"], "t5"]);
-    expect(run.grid()[0]!.includes("3:logs")).toBe(true);
+    expect(run.grid()[0]!.includes("  logs  ")).toBe(true);
     // a key in the millisecond a pane goes live is refused by the pane machine: wait for the new pane first
     await run.live();
     await run.advance(1);
@@ -317,7 +318,7 @@ describe("the screen's layout writes", () => {
     await run.keys("ctrl+b,T,ctrl+u,build,enter");
     await run.advance(20);
     expect(tabs()).toEqual(["main", "side", "build"]);
-    expect(run.grid()[0]!.includes("3:build")).toBe(true);
+    expect(run.grid()[0]!.includes("  build  ")).toBe(true);
   }, TEST_MS);
 });
 

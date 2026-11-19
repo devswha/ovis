@@ -123,7 +123,7 @@ describe("the prefix machine", () => {
   const unboundKey = named("F5");
   const rows: Row[] = [
     { row: 1, name: "Idle, a prefix chord: Armed, the mode bar shows the keys after the prefix", from: idle, events: [prefix()], armed: true, pane: [],
-      check: (state) => { expect(modeBar(state).mode).toBe("prefix"); expect(modeBar(state).hints.map((hint) => hint.action)).toContain("new_tab"); } },
+      check: (state) => { expect(modeBar(state)!.mode).toBe("prefix"); expect(modeBar(state)!.hints.map((hint) => hint.label)).toEqual(["cancel", "sendPrefix", "workspaceNav", "keybinds"]); } },
     { row: 1, name: "Idle, a prefix chord: Armed with no deadline, and still Armed however late a deadline event comes", from: idle,
       events: [prefix(), { type: "deadline", name: "prefix", at: AT + 86_400_000 }], armed: true, pane: [],
       check: (state) => expect([...state.deadlines.keys()]).toEqual([]) },
@@ -333,7 +333,7 @@ describe("layout actions as data", () => {
     expect(runs(down)).toEqual([{ type: "run", action: "navigate_move_down", target: { kind: "workspace", id: "w2" }, index: null, name: null }]);
     const move = reduce(pointing, text("m"));
     expect([runs(move), move.state.mode.name]).toEqual([[{ type: "run", action: "navigate_move_pane", target: { kind: "pane", id: "p1" }, index: null, name: "a", to: "w2" }], "terminal"]);
-    expect(modeBar(pointing).hints.filter((hint) => hint.action.startsWith("navigate_move")).map((hint) => hint.keys)).toEqual([["shift+up"], ["shift+down"], ["m"]]);
+    expect(modeBar(pointing)).toMatchObject({ mode: "navigate", hints: [{ key: "", label: "escBack" }, { key: "↑/↓", label: "workspace" }, { key: "tab", label: "pane" }, { key: "?", label: "keybinds" }] });
   });
 
   it("a calm notice is marked calm; any other is not", () => {

@@ -26,14 +26,13 @@ const attached = (run: Run) => run.loop.panes.views().map((view) => view.termina
 const docSets = (run: Run) => run.core.calls().filter((call) => call.method === "doc.set").length;
 
 describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or fewer, the splits from 65", () => {
-  it("at 45 columns: a header, one terminal, and a hint line of at most 45 cells that names the menu key", async () => {
+  it("at 45 columns: a header and one terminal down to the last row, with no mode line in terminal mode", async () => {
     const run = await shown(45);
     const grid = run.grid();
     expect(grid[0]).toBe("·1:ovis 1/2:main hc:default            [menu]");
-    expect(grid[1]).toBe(`+- shell / ${"-".repeat(33)}+`);
-    expect(grid[2]).toBe(`|$ echo 안녕${" ".repeat(32)}|`);
-    expect(grid[28]).toBe(`+${"-".repeat(17)} id t1 (prefix+i copies) -+`);
-    expect(grid[29]).toBe(" TERMINAL  ctrl+b prefix prefix+enter menu");
+    expect(grid[1]).toBe(`┌ shell ${"─".repeat(36)}┐`);
+    expect(grid[2]).toBe(`│$ echo 안녕${" ".repeat(32)}│`);
+    expect(grid[29]).toBe(`└${"─".repeat(17)} id t1 (prefix+i copies) ─┘`);
     expect(run.loop.screen()!.cols).toBe(45);
     expect(attached(run)).toEqual(["t1"]);
   }, TEST_MS);
@@ -42,7 +41,7 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     const run = await shown(60);
     const grid = run.grid();
     expect(grid[0]).toBe(`·1:ovis 1/2:main hc:default${" ".repeat(27)}[menu]`);
-    expect(grid[1]).toBe(`+- shell / ${"-".repeat(48)}+`);
+    expect(grid[1]).toBe(`┌ shell ${"─".repeat(51)}┐`);
     expect(attached(run)).toEqual(["t1"]);
   }, TEST_MS);
 
@@ -50,16 +49,16 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     const run = await shown(64);
     const grid = run.grid();
     expect(grid[0]).toBe(`·1:ovis 1/2:main hc:default${" ".repeat(31)}[menu]`);
-    expect(grid[1]).toBe(`+- shell / ${"-".repeat(52)}+`);
-    expect(grid[29]).toBe(" TERMINAL  ctrl+b prefix prefix+enter menu prefix+? help");
+    expect(grid[1]).toBe(`┌ shell ${"─".repeat(55)}┐`);
+    expect(grid[29]).toBe(`└${"─".repeat(36)} id t1 (prefix+i copies) ─┘`);
     expect(attached(run)).toEqual(["t1"]);
   }, TEST_MS);
 
   it("at 65 columns: the sidebar and the tab's two panes side by side, both attached", async () => {
     const run = await shown(65);
     const grid = run.grid();
-    expect(grid[0]).toBe("hc:default           <<| 1:main  2:logs");
-    expect(grid[1]).toBe("Workspaces             |+- shell / ---------++- files / --------+");
+    expect(grid[0]).toBe(" Workspaces              │  main     logs    +");
+    expect(grid[1]).toBe("                         │┌ shell ───────────┐┌ files ──────────┐");
     expect(attached(run)).toEqual(["t1", "t2"]);
   }, TEST_MS);
 
@@ -68,7 +67,7 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     run.loop.dispatch({ type: "select", target: { kind: "pane", id: "t2" }, at: run.clock.current });
     await run.live();
     await run.advance(10);
-    expect(run.grid()[1]).toBe(`+- files / ${"-".repeat(33)}+`);
+    expect(run.grid()[1]).toBe(`┌ files ${"─".repeat(36)}┐`);
     expect(attached(run)).toEqual(["t2"]);
   }, TEST_MS);
 
@@ -91,8 +90,8 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     await run.keys("click@20:0");
     await run.advance(10);
     expect(run.loop.report().mode.overlays).toEqual(["menu"]);
-    expect(run.grid()[0]).toBe("+ Menu ----------------------- [close: esc] +");
-    expect(run.grid()[4]).toBe("| 4 · tab 2:logs                            |");
+    expect(run.grid()[0]).toBe("┌ Menu ─────────────────────── [close: esc] ┐");
+    expect(run.grid()[4]).toBe("│ 4 · tab 2:logs                            │");
     await run.keys("click@10:4");
     await run.live();
     await run.advance(10);
@@ -112,14 +111,15 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     expect(run.grid()[0]).toBe("!1:agents 1/1:agents hc:default        [menu]");
   }, TEST_MS);
 
-  it("at 120 columns the sidebar's header opens the menu, and its << still collapses the sidebar", async () => {
+  it("at 120 columns the sidebar's Menu button opens the menu, and its « collapses the sidebar", async () => {
     const run = await shown(120, 40);
-    await run.keys("click@3:0");
+    // the workspaces' footer, the last row of the sidebar's upper half, holds the menu button at its right
+    await run.keys("click@22:19");
     await run.advance(10);
     expect(run.loop.report().mode.overlays).toEqual(["menu"]);
     await run.keys("esc");
     await run.advance(200);
-    await run.keys("click@21:0");
+    await run.keys("click@24:39");
     await run.advance(10);
     expect([run.loop.report().mode.overlays, run.loop.model().sidebarCollapsed]).toEqual([[], true]);
   }, TEST_MS);
@@ -129,7 +129,7 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     await run.keys("ctrl+b,enter,up");
     await run.advance(10);
     const grid = run.grid();
-    expect(grid[28]).toMatch(/^\|>\w lock +ctrl\+alt\+g\|$/);
+    expect(grid[28]).toMatch(/^│>\w lock +ctrl\+alt\+g│$/);
     expect(grid.some((line) => line.includes("workspace 1:ovis"))).toBe(false);
   }, TEST_MS);
 });

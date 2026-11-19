@@ -136,18 +136,18 @@ describe("the agent list", () => {
     const pad = (text: string, width: number) => text + " ".repeat(width - [...text].length);
     const grid = run.grid();
     // the hint under the title names the keys the list takes: the digits, Enter and u
-    expect([grid[1]!.startsWith("| "), grid[1]!.endsWith("|"), ...["1-9", "Enter", "u:"].map((key) => grid[1]!.includes(key))]).toEqual([true, true, true, true, true]);
+    expect([grid[1]!.startsWith("│ "), grid[1]!.endsWith("│"), ...["1-9", "Enter", "u:"].map((key) => grid[1]!.includes(key))]).toEqual([true, true, true, true, true]);
     expect([grid[0]!, ...grid.slice(2, 11)]).toEqual([
-      `+ Agents ${"-".repeat(92)} [close: esc / q] +`,
-      `| ${pad("Needs you (1)", 117)}|`,
-      `|  1   ! ${pad("blocked / claude", 104)}agents|`,
-      `| ${pad("Working (1)", 117)}|`,
-      `|> 2   ~ ${pad("working / claude", 104)}agents|`,
-      `| ${pad("Done (1)", 117)}|`,
-      `|  3   * ${pad("done / claude", 104)}agents|`,
-      `| ${pad("Ready (1)", 117)}|`,
-      `|  4   - ${pad("idle / claude", 104)}agents|`,
-      `|${" ".repeat(118)}|`,
+      `┌ Agents ${"─".repeat(92)} [close: esc / q] ┐`,
+      `│ ${pad("Needs you (1)", 117)}│`,
+      `│  1   ! ${pad("blocked / claude", 104)}agents│`,
+      `│ ${pad("Working (1)", 117)}│`,
+      `│> 2   ~ ${pad("working / claude", 104)}agents│`,
+      `│ ${pad("Done (1)", 117)}│`,
+      `│  3   * ${pad("done / claude", 104)}agents│`,
+      `│ ${pad("Ready (1)", 117)}│`,
+      `│  4   - ${pad("idle / claude", 104)}agents│`,
+      `│${" ".repeat(118)}│`,
     ]);
     expect(run.loop.report().mode.overlays).toEqual(["agents"]);
     // the hit map: a click on the third row goes to that agent

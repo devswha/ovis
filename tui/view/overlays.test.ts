@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { version as OVIS_VERSION } from "../../package.json";
 import { FakeHcCore, FEATURES_0_1_17 } from "../../server/herdr-core/core.fake.ts";
+import { NOTICE_SHOW_MS } from "../model/deadlines.ts";
 import { OVERLAYS } from "../model/overlays.ts";
 import { demo } from "../testing/fixtures/demo.ts";
+import { place } from "../testing/fixtures/fixture.ts";
 import { Run } from "../testing/run.ts";
+import { SIDEBAR_COLUMNS } from "./screen.ts";
 
 const TEST_MS = 120_000;
 
@@ -21,13 +24,17 @@ async function start(core?: FakeHcCore, cols = 120, rows = 40): Promise<Run> {
   return run;
 }
 
-/** Each overlay kind, the action that opens it, the close control its frame shows and the keys that close it: written out here. */
+/**
+ * Each overlay kind, the action that opens it, the control a tap closes it with and the keys that close it: written out
+ * here. A dialog drawn as herdr's (the text field, the confirm) closes by its cancel button; the help has no close
+ * control until its own content changes with herdr's (docs/tui/visual-parity.md O5) and closes by its keys.
+ */
 const KINDS = [
-  { kind: "help", action: "help", control: "[close: esc / q / ?]", keys: ["esc", "q", "?"] },
+  { kind: "help", action: "help", control: null, keys: ["esc", "q", "?"] },
   { kind: "agents", action: "agents", control: "[close: esc / q]", keys: ["esc", "q"] },
   { kind: "about", action: "about", control: "[close: esc / q]", keys: ["esc", "q"] },
-  { kind: "text", action: "rename_tab", control: "[close: esc]", keys: ["esc"] },
-  { kind: "confirm", action: "close_workspace", control: "[close: esc / n]", keys: ["esc", "n"] },
+  { kind: "text", action: "rename_tab", control: " esc cancel ", keys: ["esc"] },
+  { kind: "confirm", action: "close_workspace", control: " esc cancel ", keys: ["esc", "n"] },
   { kind: "goto", action: "goto", control: "[close: esc]", keys: ["esc"] },
   { kind: "menu", action: "menu", control: "[close: esc]", keys: ["esc"] },
 ] as const;
@@ -43,7 +50,7 @@ const menuLabel = (run: Run, action: string): string => {
 };
 
 describe("the overlays' close keys, the pane id copy and the about page", () => {
-  it("every overlay registry entry has its close keys in its frame, and each of them closes it", async () => {
+  it("every overlay registry entry shows its close control, and each of its close keys closes it", async () => {
     // a kind added to the registry without a row here fails this line
     expect(Object.keys(OVERLAYS).sort()).toEqual(KINDS.map(({ kind }) => kind).sort());
     const run = await start();
@@ -52,7 +59,7 @@ describe("the overlays' close keys, the pane id copy and the about page", () => 
         run.loop.dispatch({ type: "action", action, at: run.clock.current });
         await run.advance(20);
         expect({ kind, open: run.loop.model().overlays.map((overlay) => overlay.kind) }).toEqual({ kind, open: [kind] });
-        expect({ kind, drawn: run.grid().some((line) => line.includes(control)) }).toEqual({ kind, drawn: true });
+        if (control !== null) expect({ kind, drawn: run.grid().some((line) => line.includes(control)) }).toEqual({ kind, drawn: true });
         await run.keys(key);
         await run.advance(200);
         expect({ kind, key, open: run.loop.model().overlays.length }).toEqual({ kind, key, open: 0 });
@@ -68,6 +75,7 @@ describe("the overlays' close keys, the pane id copy and the about page", () => 
     await run.advance(200);
     const focus = JSON.stringify(run.loop.model().focus);
     for (const { kind, action, control } of KINDS) {
+      if (control === null) continue;
       run.loop.dispatch({ type: "action", action, at: run.clock.current });
       await run.advance(20);
       const before = calls();
@@ -77,6 +85,59 @@ describe("the overlays' close keys, the pane id copy and the about page", () => 
       await run.advance(20);
       expect({ kind, open: run.loop.model().overlays.length, calls: calls(), focus: JSON.stringify(run.loop.model().focus) }).toEqual({ kind, open: 0, calls: before, focus });
     }
+  }, TEST_MS);
+
+  it("a dialog's buttons do what their keys do: clear empties the field, save renames, cancel closes with nothing written", async () => {
+    const run = await start();
+    const field = () => (run.loop.model().overlays.at(-1) as { field?: { graphemes: readonly string[] } } | undefined)?.field?.graphemes.join("") ?? null;
+    const button = (text: string) => {
+      const row = run.grid().findIndex((line) => line.includes(text));
+      return `click@${run.grid()[row]!.indexOf(text) + 2}:${row}`;
+    };
+    await run.keys("ctrl+b,T");
+    await run.advance(20);
+    // the tab's name in the field, the cursor after it, nothing selected
+    expect(field()).toBe("main");
+    await run.keys(button("^c clear"));
+    await run.advance(20);
+    expect(field()).toBe("");
+    await run.keys("x,y");
+    await run.keys(button("↵ save"));
+    await run.advance(50);
+    expect(run.loop.model().overlays).toEqual([]);
+    expect(run.loop.model().world.workspaces[0]!.tabs[0]!.name).toBe("xy");
+    const before = run.core.calls().length;
+    await run.keys("ctrl+b,T");
+    await run.advance(20);
+    await run.keys(button("esc cancel"));
+    await run.advance(20);
+    expect({ open: run.loop.model().overlays.length, name: run.loop.model().world.workspaces[0]!.tabs[0]!.name }).toEqual({ open: 0, name: "xy" });
+    expect(run.core.calls().slice(before).filter((call) => call.method !== "machine.list" && call.method !== "terminal.get")).toEqual([]);
+  }, TEST_MS);
+
+  it("a new tab's field holds the number it will have; the tab bar's + opens it too", async () => {
+    const run = await start();
+    const row = run.grid()[0]!;
+    await run.keys(`click@${row.indexOf("+")}:0`);
+    await run.advance(20);
+    expect(run.loop.model().overlays.at(-1)).toMatchObject({ kind: "text", purpose: "new_tab", field: { graphemes: ["3"], cursor: 1 } });
+  }, TEST_MS);
+
+  it("the tab bar's scroll buttons step to the tab before and after the one in front", async () => {
+    const core = new FakeHcCore();
+    for (let n = 0; n < 9; n++) place(core, { space: "w", spaceName: "work", tab: `tab${n}`, tabName: `tab-${n}` }, "ready\r\n");
+    const run = await Run.start({ core, cols: 70, rows: 20 });
+    runs.push(run);
+    await run.live();
+    const tab = () => run.loop.model().focus.tabs["w"];
+    expect(tab()).toBe("tab0");
+    const row = run.grid()[0]!;
+    await run.keys(`click@${row.indexOf(" > ") + 1}:0`);
+    await run.live();
+    expect(tab()).toBe("tab1");
+    await run.keys(`click@${row.indexOf(" < ") + 1}:0`);
+    await run.live();
+    expect(tab()).toBe("tab0");
   }, TEST_MS);
 
   it("the id copy is one OSC 52 write of the focused pane's id, and the program is sent nothing for it", async () => {
@@ -109,6 +170,8 @@ describe("the overlays' close keys, the pane id copy and the about page", () => 
     await run.keys(label);
     await run.advance(20);
     expect({ open: run.loop.model().overlays.length, writes: osc52Writes(run, from) }).toEqual({ open: 0, writes: [clipboardOf("t1")] });
+    // the copy toast lies over the bottom border at the panes' middle until its notice ends
+    await run.advance(NOTICE_SHOW_MS + 1);
     const row = run.grid().findIndex((line) => line.includes(" id t1 (prefix+i copies) "));
     from = run.host.log().length;
     await run.keys(`click@${run.grid()[row]!.indexOf(" id t1 (") + 3}:${row}`);
@@ -172,7 +235,8 @@ describe("the overlays' close keys, the pane id copy and the about page", () => 
     await run.keys(menuLabel(run, "lock"));
     await run.advance(20);
     expect(run.loop.model().locked).toBe(true);
-    await run.keys(`click@1:${run.grid().length - 1}`);
+    // the mode bar lies over the panes' last row, right of the sidebar
+    await run.keys(`click@${SIDEBAR_COLUMNS + 1}:${run.grid().length - 1}`);
     await run.advance(20);
     expect(run.loop.model().locked).toBe(false);
   }, TEST_MS);

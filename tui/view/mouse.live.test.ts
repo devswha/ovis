@@ -96,7 +96,7 @@ describe.skipIf(!bin || process.platform === "win32")("the mouse at the screen's
     return { core: started, hc, root: folder.root, file, run };
   }
 
-  /** The entry on a 100x30 pty in the core's environment: its one pane's program shows in cells x 25-98, y 2-27. */
+  /** The entry on a 100x30 pty in the core's environment: its one pane's program shows in cells x 26-98, y 1-29 (no border on a tab's only pane, its scrollbar column at x 99). */
   function screen(isolated: IsolatedCore, root: string): SupervisedRun {
     const env = { ...isolated.env, TERM: "xterm-256color", COLORTERM: "truecolor", OVIS_TUI_STATE_DIR: join(root, "tui-state"), TMPDIR: root };
     let tail = "";
@@ -123,12 +123,12 @@ describe.skipIf(!bin || process.platform === "win32")("the mouse at the screen's
     await run.until(/TYPE-G[\s\S]*\x1b\[\?25h/, "the live pane");
     type(run, "g");
     await run.until("MOUSE-READY", "the program's mouse mode");
-    // screen cell (30, 5) is the program's cell (5, 3): SGR counts from 1
-    type(run, "click@30:5");
+    // screen cell (31, 4) is the program's cell (5, 3): SGR counts from 1
+    type(run, "click@31:4");
     await run.until(/IN:[0-9a-f]*6d/, "the click's release at the program");
     expect(readFileSync(file, "latin1")).toBe("g\x1b[<0;6;4M\x1b[<0;6;4m");
-    // MOUSE-READY is the program's row 2: screen row 4, cells 25-35
-    type(run, "shift+press@25:4,shift+drag@35:4,shift+release@35:4");
+    // MOUSE-READY is the program's row 2: screen row 3, cells 26-36
+    type(run, "shift+press@26:3,shift+drag@36:3,shift+release@36:3");
     await run.until(osc52Of("MOUSE-READY"), "the copy at the host");
     type(run, "z");
     await run.until(`IN:${hex("z")}`, "the key after the drag");
@@ -141,7 +141,7 @@ describe.skipIf(!bin || process.platform === "win32")("the mouse at the screen's
     const { core, root, file } = await coreWithProgram(false);
     const run = screen(core, root);
     await run.until(/SELECT-ME[\s\S]*\x1b\[\?25h/, "the live pane");
-    type(run, "press@25:2,drag@33:2,release@33:2");
+    type(run, "press@26:1,drag@34:1,release@34:1");
     await run.until(osc52Of("SELECT-ME"), "the copy at the host");
     type(run, "q");
     await run.until(`IN:${hex("q")}`, "the key after the drag");
@@ -162,27 +162,27 @@ describe.skipIf(!bin || process.platform === "win32")("the mouse at the screen's
       tooLong: () => {},
     });
     const run = screen(core, root);
-    // the panes region is x 24-99: t1's box x 24-61, t2's x 62-99, the divider at x 61-62
+    // the panes region is x 26-99: t1's box x 26-62, t2's x 63-99, the divider at x 62-63
     await run.until(/TYPE-G[\s\S]*\x1b\[\?25h/, "the panes live");
     await run.until("MOUSE-ON", "the second program's mouse mode");
     // the second pane's program asked for the mouse: the first click only focuses it, the second reaches it in its cells
-    type(run, "click@70:5");
-    type(run, "click@70:5");
+    type(run, "click@71:5");
+    type(run, "click@71:5");
     await run.until("UP:1", "the second click at the second program");
     expect(readFileSync(second, "latin1")).toBe("\x1b[<0;8;4M\x1b[<0;8;4m");
     expect(readFileSync(file, "latin1")).toBe("");
-    // the divider dragged from x 61 to x 50: the first side is 27 of 76 columns
-    type(run, "press@61:10,drag@50:10,release@50:10");
+    // the divider dragged from x 62 to x 52: the first side is 27 of 74 columns
+    type(run, "press@62:10,drag@52:10,release@52:10");
     let bound: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([wrote, new Promise<never>((_, reject) => { bound = setTimeout(() => reject(new Error("no write of the layout document")), WAIT_MS); })]);
     clearTimeout(bound);
     const doc = await hc.call("doc.get", { name: OVIS_LAYOUT_DOC });
     const tab = (doc.value as { workspaces: { tabs: { id: string; root: { ratio?: number } }[] }[] }).workspaces[0]!.tabs.find((one) => one.id === "one")!;
-    expect(tab.root.ratio).toBe(27 / 76);
+    expect(tab.root.ratio).toBe(27 / 74);
     // the drag reached the divider alone, and no click came after the one the program got
     expect(readFileSync(second, "latin1")).toBe("\x1b[<0;8;4M\x1b[<0;8;4m");
-    // the tab bar: " 1:one  2:two" from x 24
-    type(run, "click@33:0");
+    // the tab bar: "  one     two   " from x 26
+    type(run, "click@37:0");
     await run.until("SELECT-ME", "the second tab's pane");
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);
@@ -192,11 +192,11 @@ describe.skipIf(!bin || process.platform === "win32")("the mouse at the screen's
   it("a signal in the middle of a drag or with a selection held gives the terminal back cooked, once", async () => {
     const { core, root } = await coreWithProgram(false);
     const codes = { SIGTERM: 143, SIGINT: 130, SIGHUP: 129 } as const;
-    for (const [signal, keys] of [["SIGTERM", "press@25:2,drag@33:2"], ["SIGINT", "press@25:2,drag@33:2,release@33:2"], ["SIGHUP", "press@61:10,drag@50:10"]] as const) {
+    for (const [signal, keys] of [["SIGTERM", "press@26:1,drag@34:1"], ["SIGINT", "press@26:1,drag@34:1,release@34:1"], ["SIGHUP", "press@62:10,drag@52:10"]] as const) {
       const run = screen(core, root);
       await run.until(/SELECT-ME[\s\S]*\x1b\[\?25h/, "the live pane");
       type(run, keys);
-      if (keys.endsWith("release@33:2")) await run.until(osc52Of("SELECT-ME"), "the copy at the host");
+      if (keys.endsWith("release@34:1")) await run.until(osc52Of("SELECT-ME"), "the copy at the host");
       else await run.until(/\x1b\[\?2026l[^]*\x1b\[\?2026l/, "a frame after the press");
       run.signal(signal);
       const end = await run.ended;
