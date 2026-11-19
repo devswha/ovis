@@ -33,7 +33,6 @@ import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-v
 import { type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect } from "./model/effects.ts";
 import { focused } from "./model/focus.ts";
-import { alertsOf } from "./model/look.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
 import { CopyView } from "./view/copy.ts";
@@ -268,14 +267,7 @@ export function startLoop(options: LoopOptions): Loop {
       readCore();
       return;
     }
-    const before = world.view();
-    const alerts = alertsOf(notice.event.type, notice.changes, (terminal) => before.panes.get(terminal)?.status, seen.current);
     if (world.notice(notice)) worldChanged();
-    const after = world.view();
-    for (const alert of alerts) {
-      const agent = after.agents.find((row) => row.paneId === alert.terminal)?.name ?? alert.terminal;
-      dispatch({ type: "notice", code: alert.kind === "blocked" ? "agent_blocked" : "agent_done", data: { agent }, calm: true, at: clock.now() });
-    }
     if (notice.event.type === "turn" && notice.event.terminal !== undefined) seen.turn(notice.event.terminal);
     readCore();
   }

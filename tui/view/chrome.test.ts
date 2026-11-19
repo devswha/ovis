@@ -609,15 +609,13 @@ it("names the hc session from its socket path", () => {
 });
 
 describe("calm notices", () => {
-  it("a calm notice is drawn without the error badge and with the plain glyph; another keeps both", () => {
-    // the bar repeats the newest notice at its right end while it shows (an armed prefix here)
+  it("a calm notice is drawn with the plain glyph, another with the error glyph; the bar repeats neither, as herdr's", () => {
+    // the bar is up for an armed prefix: it shows the mode and its hints only
     const armed = { type: "key", key: "B", mods: { ctrl: true, shift: false, alt: false, super: false }, action: "press", at: 2 } as unknown as ModelEvent;
     const calm = draw({ cols: 120, rows: 40, events: [{ type: "notice", code: "layout_unchanged", data: { action: "zoom", reason: "single_pane" }, calm: true, at: 1 }, armed] });
     const error = draw({ cols: 120, rows: 40, events: [{ type: "notice", code: "layout_refused", data: { action: "zoom", reason: "pane_not_found" }, at: 1 }, armed] });
-    expect(calm.rows[39]!.endsWith(" layout_unchanged: action=zoom reason=single_pane ")).toBe(true);
-    expect(calm.rows[39]!.includes("ERROR")).toBe(false);
+    for (const shot of [calm, error]) expect([shot.rows[39]!.slice(26, 34), shot.rows[39]!.includes("layout_")]).toEqual([" PREFIX ", false]);
     expect(calm.rows.some((row) => row.includes("- layout_unchanged: action=zoom reason=single_pane"))).toBe(true);
-    expect(error.rows[39]!.endsWith(" ERROR: layout_refused: action=zoom reason=pane_not_found ")).toBe(true);
     expect(error.rows.some((row) => row.includes("! layout_refused: action=zoom reason=pane_not_found"))).toBe(true);
   });
 });

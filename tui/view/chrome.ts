@@ -675,7 +675,7 @@ const COPY_FOOTER_COLUMNS = 50;
 /**
  * The mode bar, over the panes' last row: outside terminal mode the mode's badge and its hints, cut at the bar's edge;
  * herdr-core out of reach, or a prefix or detach no key reaches, shows an error badge and its reason; copy mode's
- * search its field; the newest notice at its right end. Otherwise none in terminal mode.
+ * search its field. Otherwise none in terminal mode. A notice is the toast's alone (herdr's bar repeats none).
  */
 function modeBarPart(input: ChromeInput, colors: Colors): { overlay: Part; input: Scene["input"] } | null {
   const { regions, state, link } = input;
@@ -686,7 +686,6 @@ function modeBarPart(input: ChromeInput, colors: Colors): { overlay: Part; input
   const unreachable = state.keymap.notes.filter((note) => note.code === "prefix_unreachable" || note.code === "detach_unreachable").map((note) => note.code);
   // as herdr's bar shows for an error in terminal mode too, a prefix or detach no key reaches keeps the bar up
   if (bar === null && offline === null && unreachable.length === 0) return null;
-  const latest = state.mode.name === "copy" ? undefined : state.notices.at(-1);
   const query = state.mode.name === "copy" && state.mode.phase === "query" ? fieldView(state.mode.field, Math.max(1, rect.width - COPY_QUERY_START - (rect.width >= COPY_FOOTER_COLUMNS ? widthOf(STRINGS.copySearchFooter) : 0))) : null;
   const overlay: Part = {
     key: "mode", rect, version: 0,
@@ -731,16 +730,6 @@ function modeBarPart(input: ChromeInput, colors: Colors): { overlay: Part; input
       });
       const notice = input.copying?.searchNotice ?? (state.mode.name === "copy" && state.mode.phase === "hints" && input.copying?.hints.length === 0 ? "copy_no_hints" : null);
       if (notice !== null) write(`  ${notice === "copy_no_hints" ? STRINGS.copyNoHints : STRINGS.noticeText(notice, {})}`, base);
-      // the newest notice again at the bar's right end, as the toast says it
-      if (latest) {
-        const text = ` ${latest.calm ? "" : `${STRINGS.errorBadge}: `}${STRINGS.noticeText(latest.code, latest.data)} `;
-        const room = Math.min(widthOf(text), Math.floor(rect.width * 0.65));
-        if (room > 0) {
-          const style = canvas.style({ fg: colors.dangerText, bg: colors.bgElevated, flags: STYLE_BOLD });
-          fillSpan(canvas, end - room, row, room, style);
-          printFit(canvas, end - room, row, text, room, style, true);
-        }
-      }
     },
   };
   const cursor = query === null ? null : { col: rect.x + COPY_QUERY_START + query.cursor, row: rect.y };
@@ -817,13 +806,10 @@ function copyToastPart(panes: Rect, text: string, colors: Colors): Part | null {
   };
 }
 
-/** An alert about an agent (tui/model/look.ts) shows the glyph of the state it tells of. */
-const ALERT_GLYPHS: Readonly<Record<string, string>> = { agent_blocked: STRINGS.glyphBlocked, agent_done: STRINGS.glyphDone };
-
 /** Every other notice: a box at the top right of the screen, the newest three. */
 function toastPart(width: number, height: number, notices: ModelState["notices"], colors: Colors): Part | null {
   if (notices.length === 0 || width < 16 || height < 3) return null;
-  const glyph = (notice: ModelState["notices"][number]) => ALERT_GLYPHS[notice.code] ?? (notice.calm ? STRINGS.glyphIdle : STRINGS.glyphBlocked);
+  const glyph = (notice: ModelState["notices"][number]) => notice.calm ? STRINGS.glyphIdle : STRINGS.glyphBlocked;
   const lines = notices.slice(-3).map((notice) => `${glyph(notice)} ${STRINGS.noticeText(notice.code, notice.data)}`);
   const toastWidth = Math.min(width, Math.max(20, Math.max(...lines.map((line) => widthOf(line))) + 4));
   const toastHeight = Math.min(height, lines.length + 2);

@@ -351,7 +351,6 @@ export const LEFT_OUT: readonly { readonly scene: string; readonly line: string;
   { scene: "agents-menu", line: "O6", why: "its overlay is O6's; every other cell is the agents scene's" },
   { scene: "picker", line: "O7", why: "its overlay is O7's; every other cell is the main scene's" },
   { scene: "agents-picker", line: "O7", why: "its overlay is O7's; every other cell is the agents scene's" },
-  { scene: "toast-agent", line: "N2", why: "its toast is N2's; every other cell is the agents scene's" },
   { scene: "viewers", line: "P6", why: "forced; this harness draws no second viewer, so the screen's side is the main scene" },
   { scene: "navigate", line: "L8", why: "herdr's narrow switcher covers the screen", narrow: true },
   { scene: "collapsed", line: "L6", why: "no sidebar at 64 columns or fewer on either side: the main scene again", narrow: true },
@@ -460,6 +459,18 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
     const ovisSpan = span(ovis);
     if (herdrSpan) holes.push(herdrSpan);
     if (ovisSpan) ovisHoles.push(ovisSpan);
+  }
+  if (scene === "toast-agent") {
+    // N2: the agent scenes were captured with herdr's toasts switched on (`ui.toast.delivery = "herdr"`); the screen
+    // follows herdr's default, off, and shows none, so herdr's card is left out and every other cell is compared
+    const text = gridText(herdr);
+    const row = text.findIndex((line) => line.includes("● claude"));
+    if (row >= 0) {
+      const line = text[row]!;
+      const boxed = (text[row - 1] ?? "").includes("┌");
+      const left = boxed ? line.lastIndexOf("│", line.indexOf("● claude")) : 0;
+      holes.push(boxed ? { line: "N2", x: left, y: row - 1, width: line.indexOf("│", left + 1) - left + 1, height: 4 } : { line: "N2", x: 0, y: row, width: cols, height: 1 });
+    }
   }
   if (scene === "ended") holes.push({ line: "P5", x: SIDEBAR, y: 1, width: cols, height: rows - 1 });
   return { words, holes, ovisHoles, ...(place ? { place } : {}) };

@@ -290,10 +290,6 @@ export const STRINGS = {
         return `locked: screen is locked (${data["action"] ?? ""})`;
       case "nothing_focused":
         return `nothing_focused: no target for ${data["action"] ?? "action"}`;
-      case "agent_blocked":
-        return `${STRINGS.stateBlocked}: ${data["agent"] ?? "agent"}`;
-      case "agent_done":
-        return `${STRINGS.stateDone}: ${data["agent"] ?? "agent"}`;
       case "nothing_waiting":
         return "nothing_waiting: no agent needs you";
       case "view_moved":
