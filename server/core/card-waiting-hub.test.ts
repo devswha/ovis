@@ -535,6 +535,21 @@ describe("an answer from a card, and the wait it ends", () => {
     expect(h.status.cards.waiting("t1")).toBe(false);
   });
 
+  it("ends at its first read without the card a wait begun after its card's answer was delivered", async () => {
+    serving(true);
+    const h = await started(asking);
+    openCodeAsks([field("only", "Yes")]);
+    const same = await prompt.waitingCard(asking as never, [asking as never], { openCodeState: new OpenCodePromptState(), ompLookups: new Map() });
+    // answered before the server's own read found it, and still drawn for a moment once the answer was delivered
+    const shown = screen(same);
+    expect(await answerShown()).toBe(200);
+    await h.status.cardTick();
+    expect(h.status.cards.waiting("t1")).toBe(true);
+    shown.show(null);
+    await h.status.cardTick();
+    expect(h.status.cards.waiting("t1")).toBe(false);
+  });
+
   it("does not end the wait on a new asking in the same words for an answer to the one before it", async () => {
     serving(true);
     const h = await started(asking);

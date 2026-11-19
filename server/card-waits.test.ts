@@ -118,6 +118,19 @@ describe("a wait on a card", () => {
     expect(cards.waiting("t1")).toBe(true);
   });
 
+  it("takes an answer delivered before any read found its card for the wait a read still catching that card begins", async () => {
+    const { cards, told } = waits([card("question", "asked"), null, null, card("question", "asked")]);
+    cards.answer(cards.answering("t1", "asked"), true);
+    // the answered card can still be drawn for a moment
+    await cards.tick(listed(() => [pane("codex")]), all);
+    await cards.tick(listed(() => [pane("codex")]), all);
+    expect(told).toEqual([["t1", true], ["t1", false]]);
+    // a read without its card drops it: the same card drawn again later is another asking
+    await cards.tick(listed(() => [pane("codex")]), all);
+    await cards.tick(listed(() => [pane("codex")]), all);
+    expect(cards.waiting("t1")).toBe(true);
+  });
+
   it("takes an answer for the card that took the place of the one waited on, and none that was not delivered", async () => {
     const { cards } = waits([card("question", "first"), card("question", "next"), null, card("question", "again"), null]);
     await cards.tick(listed(() => [pane("codex")]), all);

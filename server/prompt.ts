@@ -1497,7 +1497,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       // a plan card's id carries its plan file's revision: the file as it is now must match too
       if (inputUnverified || !prompt || (await withPlanFile(prompt, options.claudeTranscript?.(body.pane_id)))!.id !== body.prompt_id) return promptChanged();
       log.matched = true;
-      if (waitingKindOf(prompt) !== undefined) for (const listener of answeringListeners) answering.push(listener(body.pane_id, contentId(prompt)!));
+      const waitedOn = waitingKindOf(prompt) === undefined ? undefined : contentId(prompt);
+      if (waitedOn !== undefined) for (const listener of answeringListeners) answering.push(listener(body.pane_id, waitedOn));
 
       const parsedPrompt = parsedByPublicPrompt.get(prompt);
       // before each key: the look the key needs (beforeKey), then, for an omp card read under an open ask call, that
