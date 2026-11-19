@@ -304,7 +304,7 @@ async function main(): Promise<void> {
     const fresh = await tab(main.context);
     await fresh.goto(deskScope);
     await state(fresh, "relay-unreachable").waitFor();
-    await fresh.getByRole("heading", { name: "The relay could not be reached" }).waitFor();
+    await fresh.getByRole("heading", { name: "Could not reach this machine" }).waitFor();
     if (evidence) await fresh.screenshot({ path: join(evidence, "task-23-relay-down.png"), animations: "disabled" });
     note(`relay down: relay stopped mid-session -> "Reconnecting to Ovis…" after ${graceRan} ms of page time (the grace), with "${marker}" held; a second tab opening the paired PC shows relay-unreachable`);
     relay = startBunRelay(relayOptions);

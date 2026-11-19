@@ -545,8 +545,8 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const note = await hop(page, serverId).locator(".relay-map-hop-note").textContent() ?? "";
       const wired = await wire(page, serverId).getAttribute("data-wire");
       const answered = /^(Same network|Tailscale|relay\.test) · \d+ ms$/.test(note);
-      assert.ok(answered || /^(Paired · not checked|Offline|No answer|Not checked)$/.test(note), `the map reports this device's own check only ("${note}")`);
-      assert.equal(wired, answered ? "live" : note === "Offline" || note === "No answer" ? "off" : "still", `the wire follows that check ("${note}" -> ${wired})`);
+      assert.ok(answered || /^(Paired · not checked|Machine offline|Could not reach this machine|No answer|Not checked)$/.test(note), `the map reports this device's own check only ("${note}")`);
+      assert.equal(wired, answered ? "live" : ["Machine offline", "Could not reach this machine", "No answer"].includes(note) ? "off" : "still", `the wire follows that check ("${note}" -> ${wired})`);
       assert.equal(await page.locator(".relay-map-flow, .relay-map-dot").count(), 0, "nothing flows once the check settled");
       return `${note}, wire ${wired}`;
     };
@@ -650,7 +650,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await capture(a, "relay-stopped-1440-dark");
       await row(a, "Desk PC").getByRole("link", { name: "Open" }).click();
       await state(a, "relay-unreachable").waitFor();
-      await a.getByRole("heading", { name: "The relay could not be reached" }).waitFor();
+      await a.getByRole("heading", { name: "Could not reach this machine" }).waitFor();
       await capture(a, "relay-stopped-open-1440-dark");
       const back = pc1.resync();
       await restartRelay();
@@ -814,19 +814,20 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await row(a, "Desk PC").and(a.locator('[data-pc-state="offline"]')).waitFor();
       const offlineCell = await row(a, "Desk PC").locator(".relay-dash-state-cell").innerText();
       const [offlineState, ...offlineNote] = offlineCell.split("\n").map((line) => line.trim()).filter(Boolean);
-      assert.match(offlineState ?? "", /^Offline · \d+ min ago$/, `the offline row's state cell says Offline with its last-seen time ("${offlineCell}")`);
-      assert.ok(offlineNote.every((line) => line === "Answered this device's latest check"), `nothing in the offline row's state cell contradicts Offline ("${offlineCell}")`);
+      assert.equal(offlineState, "Machine offline", `the offline row's state cell says Machine offline ("${offlineCell}")`);
+      assert.ok(offlineNote.every((line) => line === "Answered this device's latest check"), `nothing in the offline row's state cell contradicts Machine offline ("${offlineCell}")`);
       const attention = a.locator(".relay-overview-attention-row", { hasText: "Desk PC" });
       assert.equal(await attention.getAttribute("data-pc-state"), "offline");
       assert.equal(await attention.locator(".status-dot").getAttribute("data-state"), "offline");
       const caption = a.locator(".relay-overview-attention-caption");
       const attentionText = await caption.count() > 0 ? await caption.innerText() : await attention.locator(".relay-overview-attention-why").innerText();
-      assert.equal(/\d+/.exec(attentionText)?.[0], /\d+/.exec(offlineState ?? "")?.[0], `the row ("${offlineState}") and the needs-attention list ("${attentionText}") give the same minutes`);
+      const offlineTitle = await row(a, "Desk PC").locator(".relay-pc-state-word").getAttribute("title") ?? "";
+      assert.equal(/\d+/.exec(attentionText)?.[0], /\d+/.exec(offlineTitle)?.[0], `the row ("${offlineTitle}") and the needs-attention list ("${attentionText}") give the same minutes`);
       await capture(a, "offline-1440-dark");
       await view(a, "relay");
       await wire(a, pc1.id).and(a.locator('[data-wire="off"]')).waitFor({ state: "attached" });
       const mapWords = await a.locator('.relay-map-hop[data-pc-state="offline"] .relay-map-hop-note').allTextContents();
-      assert.ok(mapWords.length > 0 && mapWords.every((word) => word === "Offline"), `the map's offline PCs say Offline (${JSON.stringify(mapWords)})`);
+      assert.ok(mapWords.length > 0 && mapWords.every((word) => word === "Machine offline"), `the map's offline PCs say Machine offline (${JSON.stringify(mapWords)})`);
       await view(a, "overview");
       log9(`offline: mailbox pulls stopped (last_seen_at ${pc1.lastSeen()}), browser clock +${(OFFLINE_AFTER_MS + 60_000) / 60_000} min, visibilitychange -> GET /v1/pcs -> wire dotted (data-wire=off), row data-pc-state=offline, visible state cell "${offlineCell.replace(/\s+/g, " ")}" (= needs attention "${attentionText}"), map words ${JSON.stringify(mapWords)}`);
 
@@ -1101,7 +1102,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       assert.equal(await state(page, "connecting").count(), 1, "still connecting 1 ms before the PC's deadline");
       await page.clock.runFor(1);
       await state(page, "pc-offline").waitFor();
-      await page.getByRole("heading", { name: "Desk PC is offline" }).waitFor();
+      await page.getByRole("heading", { name: "Machine offline" }).waitFor();
       assert.notEqual(await saved(page, ID), null, "an offline PC keeps the phone's key");
       await shot(page, "pc-offline");
       await startPcRelay();
@@ -1120,7 +1121,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       assert.equal(await state(page, "connecting").count(), 1, "still connecting 1 ms before the relay's deadline");
       await page.clock.runFor(1);
       await state(page, "relay-unreachable").waitFor();
-      await page.getByRole("heading", { name: "The relay could not be reached" }).waitFor();
+      await page.getByRole("heading", { name: "Could not reach this machine" }).waitFor();
       assert.equal(await page.locator(".relay-shell-detail").count(), 0, "a silent relay has no close code to show");
       await shot(page, "relay-silent");
       note(`relay-unreachable (silent): socket accepted, nothing assigned -> relay-unreachable at ${ASSIGNMENT_MS} ms, not pc-offline`);
@@ -1135,7 +1136,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await pairFrom(page, offer);
       bridge.release.resolve();
       await state(page, "relay-unreachable").waitFor();
-      await page.getByRole("heading", { name: "The relay could not be reached" }).waitFor();
+      await page.getByRole("heading", { name: "Could not reach this machine" }).waitFor();
       assert.equal(bridge.sockets.length, 1);
       await shot(page, "relay-unreachable");
       await restartRelay();
@@ -1255,7 +1256,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         assert.equal(await state(page, "connecting").count(), 1, "still connecting 1 ms before the admission deadline");
         await page.clock.runFor(1);
         await state(page, "pc-unresponsive").waitFor();
-        await page.getByRole("heading", { name: "Busy PC did not finish connecting" }).waitFor();
+        await page.getByRole("heading", { name: "Could not reach this machine" }).waitFor();
         await shot(page, "pc-unresponsive");
         note(`pc-unresponsive: handshake answered, HELLO never -> pc-unresponsive at ${ADMISSION_MS} ms, not pc-offline`);
         await closeMarked(context);
