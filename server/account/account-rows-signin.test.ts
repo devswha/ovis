@@ -40,7 +40,7 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
     journal: (entry) => { journal.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: entry.reason ?? "list", key: entry.key, no: entry.no ?? null, row: entry.row, label: entry.label ?? "", by: null, account: ACCOUNT }); },
     closeSessions: (id) => { devices.closeAccountSessions(id); },
     heldByDevicesJson: (candidate) => devices.hasKey(candidate),
-    admits: (candidate) => devices.admits(candidate),
+    admits: (key, account) => devices.admitsFromList(key, account),
     now: () => clock.now,
     admitOrigin: (at) => binding.admit("remote", "list", null, at),
   });

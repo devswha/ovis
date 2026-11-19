@@ -54,7 +54,7 @@ export interface AccountRowPorts {
   /** P2: a key a devices.json row holds stays there. */
   heldByDevicesJson(key: string): boolean;
   /** Every admission guard of the commit turn (G2 to G15) for this key, now. */
-  admits(key: string): boolean;
+  admits(key: string, account: string): boolean;
   now(): number;
   /**
    * Numbers one admission on this PC and returns its origin (PcAccountState.admit in pc-binding.ts, P12, P22): its
@@ -148,7 +148,7 @@ export class AccountDeviceStore implements AccountRowSource {
     for (const entry of eligible.values()) {
       if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) break;
       if (this.file.devices.some((row) => row.key === entry.key)) continue;
-      if (this.ports.heldByDevicesJson(entry.key) || !this.ports.admits(entry.key)) continue;
+      if (this.ports.heldByDevicesJson(entry.key) || !this.ports.admits(entry.key, list.account)) continue;
       this.admit(entry);
       admitted.push(entry.key);
     }
