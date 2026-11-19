@@ -556,8 +556,14 @@ export class AccountMailbox {
         for (const admission of waiting) admissions.set(scope(account, identity.server_id, admission.key), Date.parse(admission.at));
         if (entries.length === 0) { complete = true; break; }
         if (page === MAX_PAGES) break;
-        for (let start = 0; start < entries.length; start += ACCOUNT_RECORDS_MAX) {
-          const batch = entries.slice(start, start + ACCOUNT_RECORDS_MAX).map(({ record }) => record);
+        for (const { record } of entries) {
+          if (this.options.devices.opensAll() && typeof record === "object" && record !== null && "kind" in record && record.kind === "block") {
+            // applyBlock owns parseSafetyRecord and signature verification. Never ack an unwritten deny.
+            const receipt = await this.options.devices.applyBlock(record, "mailbox");
+            if (receipt.outcome === "refused") throw new Error(`Mailbox block not applied: ${receipt.reason}`);
+            if (receipt.outcome === "applied") applied++;
+            continue;
+          }
           // a remove waiting on its signer joins `early` at once, so an add for its key later in the page meets it
           const queued = new Set<unknown>();
           const keep = (record: unknown) => {
@@ -568,9 +574,9 @@ export class AccountMailbox {
             if (!early.some((kept) => JSON.stringify(kept) === text)) early.push(record);
             return true;
           };
-          const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id, Date.now(), { ...this.gates(), deferAdd: this.options.devices.opensAll() ? () => true : undefined }, keep);
-          applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
-          outcomes.forEach((outcome, index) => { if (waits(outcome)) keep(batch[index]); });
+          const [outcome] = await applyAccountRecords(this.options.devices, [record], identity.server_id, Date.now(), { ...this.gates(), deferAdd: this.options.devices.opensAll() ? () => true : undefined }, keep);
+          if (outcome?.outcome === "applied") applied++;
+          if (waits(outcome)) keep(record);
         }
         await retry();
         save();
