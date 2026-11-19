@@ -9,35 +9,18 @@
  * device journal, or that holds one id with two records, makes `strict` say why; a strict log appends nothing, so the
  * file it could not read is never written over. Read only while OVIS_ACCOUNT_OPENS_ALL is on.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isAccountKeyEncoding } from "../../shared/account-records.ts";
+import { AccountRecordError, parseSafetyRecord, type PcLiftRecord, type SafetyRecord, type SafetyRecordKind } from "../../shared/account-records.ts";
 import { writePrivateState } from "../private-state.ts";
 
 export const SAFETY_LOG_FILE = "account-log.json";
 /** The device journal (P15). A state folder that has one has had a log since, so a missing log there is damage. */
 export const ACCOUNT_JOURNAL_FILE = "account-journal.json";
 
-export type SafetyKind = "block" | "freeze" | "lift" | "lock" | "unlock" | "forget";
 /** How the record reached this PC; noted once and never compared (P24). */
 export type SafetyGot = "handed" | "mailbox" | "snapshot" | "pc" | "session" | "merge";
-
-/**
- * A record of the log. `signer` is a device key for a record a device signed, `pc` for one this PC wrote, `service`
- * for a freeze the account service states. `target`: the blocked or frozen key, the id a lift or an unlock ends, the
- * key a `forget` names, nothing for a lock. `forget` is only on a lift this PC wrote, which also ends that block's marker.
- */
-export interface SafetyRecord {
-  readonly id: string;
-  readonly kind: SafetyKind;
-  readonly account: string | null;
-  readonly target: string | null;
-  readonly signer: string;
-  readonly signed_at: string;
-  readonly sig: string;
-  readonly forget?: true;
-}
 
 /** What this PC's own table said when a block arrived (P21), kept with the entry and never changed. */
 export interface BlockAsOf {
@@ -48,12 +31,14 @@ export interface BlockAsOf {
   readonly signer_removed: boolean;
 }
 
+/**
+ * An entry: the record whole as shared/account-records.ts parses it (a device-signed one with its signature, so its
+ * signed bytes are those of the record and its id is their hash), and what this PC added once and never changes.
+ */
 export interface SafetyEntry {
   readonly n: number;
   readonly got: SafetyGot;
   readonly record: SafetyRecord;
-  /** the signed bytes of a record a device signed, whole, in base64url */
-  readonly bytes?: string;
   readonly asof?: BlockAsOf;
 }
 
@@ -75,69 +60,30 @@ export interface SafetyState {
 interface LogFile {
   v: 1;
   next: number;
-  /** folded records, one line each with no number (S2-02 folds; an id in it is known and ended) */
+  /** folded records, one line each with no number: an id in it is known and ended (P24) */
   base: { id: string }[];
   entries: SafetyEntry[];
   /** P19's waiting blocks (S2-10) */
   waiting: unknown[];
 }
 
-const KINDS: ReadonlySet<string> = new Set(["block", "freeze", "lift", "lock", "unlock", "forget"]);
 const GOTS: ReadonlySet<string> = new Set(["handed", "mailbox", "snapshot", "pc", "session", "merge"]);
-const PC_ID = /^[0-9a-f]{32}$/;
-const SIGNED_ID = /^[0-9a-f]{64}$/;
-const ACCOUNT = /^[A-Za-z0-9_-]{1,64}$/;
-const ISO_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const B64URL = /^[A-Za-z0-9_-]+$/;
 
-/** The id of a record a device signed: the SHA-256 of its signed bytes, so one id is one record in every folder. */
-export function signedRecordId(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
+/** The id of a record this PC writes: random, made then, in the form shared/account-records.ts accepts. */
 export function pcRecordId(): string {
   return randomBytes(16).toString("hex");
 }
 
-const isTime = (value: unknown): boolean => typeof value === "string" && ISO_MS.test(value) && new Date(value).toISOString() === value;
 const isNo = (value: unknown): boolean => value === null || (Number.isSafeInteger(value) && (value as number) >= 0);
-const isEndable = (value: unknown): boolean => typeof value === "string" && (PC_ID.test(value) || SIGNED_ID.test(value));
 
-/** Why `record` is no record of the log, or null; with `bytes` for the id of a record a device signed. */
-function recordProblem(record: SafetyRecord, bytes: string | undefined, asof: BlockAsOf | undefined): string | null {
-  if (typeof record !== "object" || record === null) return "a record is an object";
-  const allowed = new Set(["id", "kind", "account", "target", "signer", "signed_at", "sig", "forget"]);
-  if (Object.keys(record).some((name) => !allowed.has(name))) return "unexpected field";
-  if (!KINDS.has(record.kind)) return "unknown kind";
-  if (!isTime(record.signed_at)) return "invalid signed_at";
-  if (record.account !== null && !(typeof record.account === "string" && ACCOUNT.test(record.account))) return "invalid account";
-  if (record.forget !== undefined && !(record.forget === true && record.kind === "lift" && record.signer === "pc")) return "only a lift this PC writes forgets";
-  const device = isAccountKeyEncoding(record.signer);
-  if (device) {
-    if (record.kind !== "block" && record.kind !== "lift") return "a device signs blocks and lifts only";
-    if (record.account === null) return "a signed record names its account";
-    if (!(typeof record.sig === "string" && /^[A-Za-z0-9_-]{86}$/.test(record.sig))) return "invalid sig";
-    if (typeof bytes !== "string" || !B64URL.test(bytes)) return "a signed record keeps its signed bytes";
-    if (signedRecordId(Buffer.from(bytes, "base64url")) !== record.id) return "id is not the hash of the signed bytes";
-  } else {
-    if (bytes !== undefined || record.sig !== "") return "only a device-signed record carries a signature";
-    if (record.signer === "service") {
-      if (record.kind !== "freeze" || !(typeof record.id === "string" && record.id.startsWith("f:") && SIGNED_ID.test(record.id.slice(2)))) return "the service states freezes only";
-    } else if (record.signer !== "pc" || record.kind === "block" || record.kind === "freeze" || !PC_ID.test(record.id)) return "invalid signer";
+/** Why `record` is no record of the log, or null: the shared parser decides, and a block keeps what this PC knew. */
+function recordProblem(record: unknown, asof: BlockAsOf | undefined): string | null {
+  let parsed: SafetyRecord;
+  try { parsed = parseSafetyRecord(record); } catch (error) {
+    if (error instanceof AccountRecordError) return error.message;
+    throw error;
   }
-  switch (record.kind) {
-    case "block": case "freeze": case "forget":
-      if (!isAccountKeyEncoding(record.target)) return "invalid target key";
-      if (record.account === null) return "a record about a key names its account";
-      break;
-    case "lift": case "unlock":
-      if (!isEndable(record.target)) return "invalid target id";
-      break;
-    case "lock":
-      if (record.target !== null) return "a lock names no target";
-      break;
-  }
-  if (record.kind === "block") {
+  if (parsed.kind === "block") {
     if (asof === undefined) return "a block keeps what this PC knew when it arrived";
     const a = asof as unknown as Record<string, unknown>;
     if (typeof a !== "object" || a === null || Object.keys(a).length !== 5 || !isNo(a.signer_no) || !isNo(a.target_no) || !isNo(a.after) || !isNo(a.joined) || typeof a.signer_removed !== "boolean") return "invalid asof";
@@ -145,9 +91,10 @@ function recordProblem(record: SafetyRecord, bytes: string | undefined, asof: Bl
   return null;
 }
 
+/** Two copies of one record: the same fields with the same values, whatever order JSON kept them in. */
 function sameRecord(a: SafetyRecord, b: SafetyRecord): boolean {
-  return a.id === b.id && a.kind === b.kind && a.account === b.account && a.target === b.target && a.signer === b.signer
-    && a.signed_at === b.signed_at && a.sig === b.sig && (a.forget === true) === (b.forget === true);
+  const canonical = (record: SafetyRecord) => JSON.stringify(Object.entries(record).sort(([x], [y]) => x < y ? -1 : x > y ? 1 : 0));
+  return canonical(a) === canonical(b);
 }
 
 function parseLog(value: unknown): LogFile | string {
@@ -165,7 +112,7 @@ function parseLog(value: unknown): LogFile | string {
     if (!Number.isSafeInteger(entry.n) || entry.n < 1 || entry.n >= file.next! || numbers.has(entry.n)) return `entry number ${String(entry.n)} is taken twice or past next`;
     numbers.add(entry.n);
     if (!GOTS.has(entry.got)) return "invalid got";
-    const problem = recordProblem(entry.record, entry.bytes, entry.asof);
+    const problem = recordProblem(entry.record, entry.asof);
     if (problem !== null) return `entry ${entry.n}: ${problem}`;
     const known = seen.get(entry.record.id);
     // one id with two records is a damaged log; the same record twice is one record that was written twice
@@ -221,16 +168,15 @@ export class SafetyLog {
    * Appends one record with the next number, on disk before it counts. A record this log already holds answers its
    * receipt and appends nothing; another record under a known id is refused, and the log keeps what it holds.
    */
-  append(input: { record: SafetyRecord; got: SafetyGot; bytes?: Uint8Array; asof?: BlockAsOf }): SafetyReceipt {
+  append(input: { record: SafetyRecord; got: SafetyGot; asof?: BlockAsOf }): SafetyReceipt {
     const { record, got, asof } = input;
-    const bytes = input.bytes === undefined ? undefined : Buffer.from(input.bytes).toString("base64url");
     const id = typeof record?.id === "string" ? record.id : "";
     if (this.readError !== null) return { outcome: "refused", id, code: "log_unavailable" };
-    if (!GOTS.has(got) || recordProblem(record, bytes, asof) !== null) return { outcome: "refused", id, code: "record_invalid" };
+    if (!GOTS.has(got) || recordProblem(record, asof) !== null) return { outcome: "refused", id, code: "record_invalid" };
     const held = this.file.entries.find((entry) => entry.record.id === id);
     if (held !== undefined) return sameRecord(held.record, record) ? { outcome: "applied", id, n: held.n } : { outcome: "refused", id, code: "conflict" };
     if (this.file.base.some((line) => line.id === id)) return { outcome: "already_applied", id };
-    const entry: SafetyEntry = { n: this.file.next, got, record: { ...record }, ...(bytes === undefined ? {} : { bytes }), ...(asof === undefined ? {} : { asof: { ...asof } }) };
+    const entry: SafetyEntry = { n: this.file.next, got, record: { ...record }, ...(asof === undefined ? {} : { asof: { ...asof } }) };
     const next: LogFile = { ...this.file, next: this.file.next + 1, entries: [...this.file.entries, entry] };
     try { writePrivateState(this.path, next); } catch (error) {
       this.writeError = `Cannot write ${this.path} (${error instanceof Error ? error.message : String(error)})`;
@@ -247,13 +193,13 @@ export class SafetyLog {
     const forgotten = new Set<string>();
     const unlocked = new Set<string>();
     for (const { record } of this.file.entries) {
-      if (record.kind === "lift" && record.target !== null) {
+      if (record.kind === "lift") {
         lifted.add(record.target);
-        if (record.forget) forgotten.add(record.target);
-      } else if (record.kind === "unlock" && record.target !== null) unlocked.add(record.target);
+        if (record.signer === "pc" && (record as PcLiftRecord).forget) forgotten.add(record.target);
+      } else if (record.kind === "unlock") unlocked.add(record.target);
     }
     const byN = [...this.file.entries].sort((a, b) => a.n - b.n);
-    const of = (kind: SafetyKind) => byN.filter((entry) => entry.record.kind === kind);
+    const of = (kind: SafetyRecordKind) => byN.filter((entry) => entry.record.kind === kind);
     const locks = of("lock").filter((entry) => !unlocked.has(entry.record.id));
     const blocks = of("block").filter((entry) => !lifted.has(entry.record.id));
     const serviceFreezes = of("freeze").filter((entry) => !lifted.has(entry.record.id.slice(2)));
