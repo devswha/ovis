@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { exportAccountKey, registerSigningBytes } from "../../../shared/account-records.ts";
 import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import { AccountService, AccountServiceError } from "./service.ts";
+import { signInKey } from "./signInKey.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "./signin.ts";
 import { memoryAccountStore, memoryLock } from "./store.ts";
 
@@ -31,9 +32,8 @@ function withDeviceRoutes(fake: FakeAccountService, options: { opensAll: boolean
   return { fetch, registered };
 }
 
-async function signedIn(fetch: (input: Request | string | URL, init?: RequestInit) => Promise<Response>, fake: FakeAccountService) {
+async function signedIn(fetch: (input: Request | string | URL, init?: RequestInit) => Promise<Response>, fake: FakeAccountService, store = memoryAccountStore()) {
   fake.signInAs("github", "acct_1");
-  const store = memoryAccountStore();
   const start = await beginSignIn("github", { store, service: SERVICE, redirectUri: WEB_REDIRECT });
   const returned = signInReturn(new URL((await fake.fetch(start)).headers.get("location") ?? "").hash);
   await finishSignIn(returned!, { store, fetch });
@@ -72,3 +72,32 @@ describe("registering this sign-in's device key", () => {
   });
 });
 
+
+describe("this sign-in's own key", () => {
+  it("T34, P18: a sign-in makes its own key, apart from the account key, registers it once and keeps its number", async () => {
+    const fake = new FakeAccountService();
+    const routes = withDeviceRoutes(fake, { opensAll: true });
+    const store = memoryAccountStore();
+    const service = await signedIn(routes.fetch, fake, store);
+    const first = await signInKey(store, service);
+    expect(first?.no).toBe(3);
+    expect(first?.key.public_spki).not.toBe((await store.key()).public_spki);
+    expect((await signInKey(store, service))?.key.public_spki).toBe(first!.key.public_spki);
+    expect(routes.registered).toHaveLength(1);
+  });
+
+  it("P21: a new sign-in gets a new key, since a key registers once per account", async () => {
+    const fake = new FakeAccountService();
+    const store = memoryAccountStore();
+    const before = await signInKey(store, await signedIn(withDeviceRoutes(fake, { opensAll: true }).fetch, fake, store));
+    const after = await signInKey(store, await signedIn(withDeviceRoutes(fake, { opensAll: true }).fetch, fake, store));
+    expect(after!.key.public_spki).not.toBe(before!.key.public_spki);
+  });
+
+  it("G5: with the release off nothing is made or kept", async () => {
+    const fake = new FakeAccountService();
+    const store = memoryAccountStore();
+    expect(await signInKey(store, await signedIn(withDeviceRoutes(fake, { opensAll: false }).fetch, fake, store))).toBeNull();
+    expect(await store.get("signin_key")).toBeUndefined();
+  });
+});
