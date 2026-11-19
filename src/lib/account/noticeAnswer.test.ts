@@ -65,3 +65,17 @@ describe("where Not me goes", () => {
     expect(posted).toEqual(["home /api/account/records"]);
   });
 });
+
+describe("a PC's own relay channel (relay-hub ruling on T60)", () => {
+  it("T60: a PC this device reaches on its own relay channel is a counted route; only the rest go through the proxy", async () => {
+    const sends = notMeTransports({ id: "n1" } as never, "desk", ["desk", "home", "lab"], {
+      socket: () => new FakeSocket(),
+      post: () => async () => Response.json({ results: [], receipts: [] }),
+      channel: (pc) => pc === "home" ? async () => Response.json({ results: [], receipts: [{ outcome: "applied", id: "b", n: 1 }] }) : undefined,
+      timeoutMs: 1000,
+    });
+    expect([...sends.pcs.keys()].sort()).toEqual(["desk", "home"]);
+    expect([...sends.relayed.keys()]).toEqual(["lab"]);
+    expect(await sends.pcs.get("home")!([{ id: "b" } as never])).toEqual([{ outcome: "applied", id: "b", n: 1 }]);
+  });
+});
