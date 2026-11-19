@@ -134,9 +134,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       if (listed.current === round && asks.current.get(pc.server_id) === ask && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
     }, (error: unknown) => {
       if (listed.current !== round) return;
-      // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) leaves only its own row; anything
-      // else (a window this PC will not answer, owner_only) leaves no list rather than rows that say Checking… for good
-      // an entry this PC cannot use stays out of this round's list, also after a refresh reads it again
+      // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) stays out of this round's list, also after a refresh reads it again
       if (error instanceof ApiError && error.code === "account_pc_invalid") {
         round.invalid.add(pc.server_id);
         setPcs((current) => current?.filter((entry) => entry.server_id !== pc.server_id) ?? null);
@@ -203,7 +201,10 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     if (!await stillOurs()) throw new Error(t("Sign in again"));
     // the PC's last answer stays until the new one, and a failed ask leaves every row: it is told on this one
     const { pcs: [checked] } = await checkAccountPcs([pc]);
-    if (listed.current === round && asks.current.get(pc.server_id) === ask && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
+    if (listed.current !== round || asks.current.get(pc.server_id) !== ask || checked === undefined) return;
+    // it answered: a refresh need not ask it again
+    round.failed.delete(pc.server_id);
+    setStates((current) => new Map(current).set(checked.server_id, checked.state));
   };
   return { pcs, added, stateOf: (serverId) => states.get(serverId), pairing, failure, add, cancel, recheck };
 }

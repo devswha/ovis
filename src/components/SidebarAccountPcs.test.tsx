@@ -394,4 +394,18 @@ describe("the account's PCs in the sidebar", () => {
     await settle();
     expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
   });
+  it("asks a PC nothing more on the window's return once its Check again has answered", async () => {
+    failAwayCheck = true;
+    await mount();
+    failAwayCheck = false;
+    awayAnswers = ["ready"];
+    const away = renderer!.root.find((node) => node.type === "section" && node.props["aria-label"] === "PC Away");
+    await act(async () => { away.find((node) => node.type === "button" && text(node) === "Check again").props.onClick(); });
+    await settle();
+    expect(groups()[2]).toEqual(["PC Away", "ready", "Add"]);
+    const awayChecks = () => requests.filter((request) => request.path.endsWith("/check") && (request.body as { pcs: AccountPcEntry[] }).pcs[0]?.server_id === AWAY.server_id).length;
+    const before = awayChecks();
+    await comeBack();
+    expect(awayChecks()).toBe(before);
+  });
 });
