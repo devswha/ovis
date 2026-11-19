@@ -37,6 +37,8 @@ export interface AccountRowSource {
   access(id: string): AccessAnswer;
   pruneDenied(evidence: RemovalEvidence, legacyRevoke?: "revoke_all"): void;
   removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void;
+  /** "It's me" for the held row `id` (T53): true when it ended the hold. */
+  itsMe(id: string, sayer: Sayer): boolean;
 }
 
 export type AccountRow = AccountJoinedRow;
@@ -343,5 +345,6 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
     access: (id) => store()?.access(id) ?? { refused: "not_listed" },
     pruneDenied: (evidence, legacyRevoke) => { store()?.pruneDenied(evidence, legacyRevoke); },
     removeRows: (ids, reason, close) => { store()?.removeRows(ids, reason, close); },
+    itsMe: (id, sayer) => store()?.itsMe(id, sayer) ?? false,
   };
 }

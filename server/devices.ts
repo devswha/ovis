@@ -1838,6 +1838,23 @@ export class DeviceStore {
     return "ok" in answer ? { match: { id: current.id, label: current.label, role: "drive" } } : { refused: answer, holdUntil: current.hold_until };
   }
 
+  /**
+   * "It's me" (T53) from the row `sayerId` for the admission notice `noticeId`: the held account row it names ends its
+   * hold only when the sayer drives, is usable here, is older on this PC and was admitted here over an hour ago, and the
+   * final admission check passes. A notice it ends is decided.
+   */
+  itsMe(sayerId: string, noticeId: string): boolean {
+    const held = this.journal?.entries().find((entry) => entry.id === noticeId && entry.kind === "admit")?.row ?? null;
+    const sayer = this.anyRow(sayerId);
+    if (held === null || this.joinedRows === null || sayer === undefined || sayer.relay_public_key === undefined || sayer.origin === undefined) return false;
+    const joined = this.joinedRows.row(sayerId);
+    const state = joined !== null ? (joined.state === "hold" ? "hold" : "ok" in this.joinedRows.access(sayerId) ? "live" : "waiting")
+      : this.stale(sayer) ? "waiting" : "live";
+    const ended = this.joinedRows.itsMe(held, { key: sayer.relay_public_key, drives: sayer.role === "drive", state, no: null, late: false, admitNo: sayer.origin.admit_no, admittedAt: Date.parse(sayer.origin.at) });
+    if (ended) this.decideNotice(noticeId);
+    return ended;
+  }
+
   /** The account rows' store ends the sessions of a row it dropped (P8 step 3 for a list drop, T35). */
   closeAccountSessions(id: string): void {
     const listeners = this.revocations.get(id);

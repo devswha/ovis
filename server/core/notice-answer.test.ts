@@ -57,7 +57,7 @@ function noticeSocket(devices: DeviceStore, submit = (value: unknown) => devices
     end() {}, holdPending() {}, attachments: new Map(), clientSnapshot: async () => { throw new Error("Snapshot not used"); },
     herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
     accountEnabled: true,
-    notices: { replay: (id) => devices.noticeReplay(id), seen: (id, seq) => devices.noticeSeen(id, seq), block: submit, decide: (id) => devices.decideNotice(id) },
+    notices: { replay: (id) => devices.noticeReplay(id), seen: (id, seq) => devices.noticeSeen(id, seq), block: submit, decide: (id) => devices.decideNotice(id), itsMe: () => false },
   });
   const replies: ServerMessage[] = [];
   const client: Client = {
