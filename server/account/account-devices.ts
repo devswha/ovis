@@ -16,10 +16,14 @@ import { firstDevice, holdSecondsLeft, JOIN_HOLD_MS, mayEndHold, type Sayer } fr
 
 export const ACCOUNT_DEVICES_FILE = "account-devices.json";
 export const ACCOUNT_DEVICES_MAX = 100;
+/** Section 5: a row this PC saw no sign-in of for this many days expires here, whatever the service says. */
+export const EXPIRY_DAYS = 60;
+const DAY_MS = 24 * 60 * 60_000;
 
 const iso = (at: number): string => new Date(at).toISOString();
+const dayOf = (at: number): string => iso(at).slice(0, 10);
 
-export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke";
+export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke" | "expired";
 
 /**
  * What Track A's deny path (DeviceStore.attachAccountRows, set only with OVIS_ACCOUNT_OPENS_ALL=1) asks of the
@@ -59,7 +63,7 @@ export interface JournalEntry extends Pick<SnapshotDevice, "provider" | "two_ste
   readonly by?: string;
 }
 
-export type AccessAnswer = { readonly ok: true } | { readonly refused: "join_hold"; readonly seconds: number | null } | { readonly refused: "admission" | "not_listed" };
+export type AccessAnswer = { readonly ok: true } | { readonly refused: "join_hold"; readonly seconds: number | null } | { readonly refused: "admission" | "not_listed" | "expired" };
 
 export interface AccountRowPorts {
   readonly evidence?: RemovalEvidence;
@@ -205,6 +209,7 @@ export class AccountDeviceStore implements AccountRowSource {
   access(id: string): AccessAnswer {
     const row = this.rows().find((candidate) => candidate.id === id);
     if (!row) return { refused: "not_listed" };
+    if (row.state === "expired") return { refused: "expired" };
     if (row.state === "live") return { ok: true };
     const seconds = holdSecondsLeft(row.hold_until === null ? null : Date.parse(row.hold_until), this.ports.now());
     if (seconds === null || seconds > 0) return { refused: "join_hold", seconds };
@@ -223,6 +228,44 @@ export class AccountDeviceStore implements AccountRowSource {
     return true;
   }
 
+  /** Authenticated use of row `id` on this PC (a proved sign-in, or a request on its open session), at most once a day. */
+  seen(id: string): void {
+    const today = dayOf(this.ports.now());
+    const row = this.rows().find((candidate) => candidate.id === id && candidate.state === "live");
+    if (!row || row.last_signin_day === today) return;
+    this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate.id === id ? { ...candidate, last_signin_day: today } : candidate) });
+  }
+
+  /** T54: rows this PC saw no use of for EXPIRY_DAYS close and stay in the file as `expired`, so a list alone cannot bring them back. */
+  expire(): string[] {
+    this.usable();
+    const today = Date.parse(dayOf(this.ports.now()));
+    const idle = this.file.devices.filter((row) => row.state !== "expired"
+      && (row.last_signin_day === null || today - Date.parse(row.last_signin_day) >= EXPIRY_DAYS * DAY_MS));
+    for (const row of idle) {
+      this.ports.closeSessions(row.id, "expired");
+      this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason: "expired" });
+    }
+    const ids = new Set(idle.map((row) => row.id));
+    if (ids.size > 0) this.write({ ...this.file, devices: this.file.devices.map((row) => ids.has(row.id) ? { ...row, state: "expired", hold_until: null } : row) });
+    return idle.map((row) => row.key);
+  }
+
+  /**
+   * T55: the expired device itself tried to sign in here, and `list` is the whole read its refusal started. It comes
+   * back only as a new admission: named eligible by that read, through every guard, with a new notice and hold.
+   */
+  readmit(key: string, list: ListCommit): boolean {
+    this.usable();
+    const expired = this.file.devices.find((row) => row.key === key && row.state === "expired");
+    const entry = list.devices.find((candidate) => candidate.key === key && candidate.eligible);
+    if (!expired || !entry || list.removed.some((gone) => gone.key === key) || list.account !== this.file.account) return false;
+    if (this.ports.heldByDevicesJson(key) || !this.ports.admits(key)) return false;
+    this.file = { ...this.file, devices: this.file.devices.filter((row) => row !== expired) };
+    this.admit(entry, false);
+    return true;
+  }
+
   /** Publishes again every notice that could not be published: until it is, its row stays held. */
   republish(): void {
     for (const row of this.rows()) {
@@ -238,7 +281,10 @@ export class AccountDeviceStore implements AccountRowSource {
     const eligible = new Map(list.devices.filter((entry) => entry.eligible && !removed.has(entry.key)).map((entry) => [entry.key, entry]));
     const sameAccount = this.file.account === null || this.file.account === list.account;
     const leaving = this.file.devices.filter((row) => !sameAccount || !eligible.has(row.key));
-    const dropped = this.drop(leaving, "list", this.ports.closeSessions);
+    // an expired row was dropped when it expired: it only leaves the file
+    const forgotten = new Set(leaving.filter((row) => row.state === "expired").map((row) => row.id));
+    if (forgotten.size > 0) this.write({ ...this.file, devices: this.file.devices.filter((row) => !forgotten.has(row.id)) });
+    const dropped = this.drop(leaving.filter((row) => !forgotten.has(row.id)), "list", this.ports.closeSessions);
 
     // rows admitted from here on belong to this read's account and snapshot
     this.write({ ...this.file, account: list.account, snapshot: list.snapshot, version: list.version });
@@ -275,7 +321,7 @@ export class AccountDeviceStore implements AccountRowSource {
     const row: AccountRow = {
       id: accountDeviceId(this.serverId, entry.key), key: entry.key, no: entry.no, label: entry.label,
       origin: this.ports.admitOrigin(now),
-      confirmed_at: iso(now), last_signin_day: null, state: bypass ? "live" : "hold", hold_until: null,
+      confirmed_at: iso(now), last_signin_day: dayOf(now), state: bypass ? "live" : "hold", hold_until: null,
     };
     const standing = this.ports.admitListedRows(() => {
       this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.origin.admit_no, label: row.label,
