@@ -8,6 +8,7 @@ import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { useMyMachinesRoute } from "../lib/account/myMachinesRoute.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
+import { serverIdOfPath } from "../lib/shellMode.ts";
 import { dashboardPcs } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import type { AccountView, RelayShellState } from "../lib/relay/shellState.ts";
@@ -22,6 +23,7 @@ import { KeyId } from "./KeyId.tsx";
 import { MyMachinesPage } from "./MyMachinesPage.tsx";
 import { RelayDashboard } from "./RelayDashboard.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
+import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
 import { RelayAddPc } from "./RelayAddPc.tsx";
 import { INSTALLER_COMMAND, PLUGIN_COMMANDS, RelayShellCardContent, ScanQrStep, TypedDigits } from "./RelayShellScreens.tsx";
 import { RelayStepFrame, type RelayStepBack } from "./RelayStepFrame.tsx";
@@ -187,12 +189,18 @@ export function RelayShell(props: RelayShellProps) {
   const plain = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined;
 
   // Add a PC asked for by its address stands alone over the front page; its Back goes back to where it was asked from
+  // Add a PC hands over to a screen of its own (a code to type): coming back from there lands on the front page
+  if (addOpen && state.kind !== "list" && state.kind !== "empty") setAddOpen(false);
   if (addOpen && (state.kind === "list" || state.kind === "empty")) {
     return (
       <main className="relay-shell-screen relay-add-screen" data-relay-state={stateName} {...(account ? { "data-account-state": account.kind } : {})}>
         <div className="relay-shell account-centered relay-shell-signin">
-          <RelayAddPc onBack={() => { setAddOpen(false); if (window.history.length > 1) window.history.back(); }} devices={devices}
-            qr={(qrBack) => <ScanQrStep onCodeStart={onCodeStart} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />} />
+          <RelayAddPc onBack={() => { setAddOpen(false); leaveAddEntry(); }} devices={devices}
+            qr={(qrBack) => <ScanQrStep onCodeStart={() => {
+              // signed in, the code is typed in the dashboard's own pairing dialog, which takes the screens that follow
+              if (account?.kind === "signed-in") setAddingPc(true);
+              onCodeStart();
+            }} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />} />
         </div>
       </main>
     );
@@ -305,6 +313,18 @@ function pairingStep(state: RelayShellState): 1 | 2 | 3 | null | undefined {
     case "failed": return state.pairing ? null : undefined;
     default: return undefined;
   }
+}
+
+/**
+ * Back from Add a PC opened by its address (`/#add`): to the PC page whose More opened it (MachineSidebar.openAddPc
+ * marks it), or, for a link or a bookmark from elsewhere, the front page itself, the `#add` dropped so a reload does
+ * not open it again.
+ */
+function leaveAddEntry(): void {
+  let from: string | null = null;
+  try { from = sessionStorage.getItem(ADD_PC_FROM_KEY); sessionStorage.removeItem(ADD_PC_FROM_KEY); } catch { /* no storage: stay */ }
+  if (from !== null && serverIdOfPath(from) !== null) window.history.back();
+  else window.history.replaceState(null, "", "/");
 }
 
 function addingPcOpen(state: RelayShellState): boolean {

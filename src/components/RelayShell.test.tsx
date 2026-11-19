@@ -714,6 +714,15 @@ describe("the dashboard", () => {
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Your PCs, anywhere. Sign in to your Ovis account");
     });
 
+    it("takes Pair with a code from Add a PC opened by its address to the code field, signed in too", async () => {
+      const shown = { ...signedIn(four()), addEntry: true };
+      await mount(shown);
+      await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "add-qr").props.onClick(); });
+      await act(async () => { button("Pair with a code").props.onClick(); });
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: null } }) })); });
+      expect(renderer!.root.findAll((node) => node.type === "input" && node.props.name === "code")).toHaveLength(1);
+    });
+
     it("opens on Add a PC when asked by its address, signed in too, and its Back leaves it", async () => {
       await mount({ ...signedIn(four()), addEntry: true });
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Add a PC");
