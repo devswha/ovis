@@ -11,8 +11,8 @@ import { charChords, chordId, keyChords } from "./keymap.ts";
 import { chooseEntry, labelled, type MenuEntry, movedCursor } from "./menu.ts";
 import { chosenAt, type Place, placeKey, pickerMatches, placeTarget } from "./picker.ts";
 
-/** A one-line text field of graphemes. `fresh`: still the suggested text, replaced by the first character typed. */
-export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly fresh: boolean; readonly original: string }
+/** A one-line text field of graphemes, the cursor after the text it opened with; `original` that text. */
+export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly original: string }
 
 export type TextPurpose = "rename_workspace" | "rename_tab" | "rename_pane" | "new_tab";
 
@@ -56,20 +56,19 @@ export function graphemes(text: string): string[] {
 
 export function field(text: string): Field {
   const all = graphemes(text).slice(0, TEXT_FIELD_MAX_GRAPHEMES);
-  return { graphemes: all, cursor: all.length, fresh: all.length > 0, original: text };
+  return { graphemes: all, cursor: all.length, original: text };
 }
 
 /** `text` typed or pasted at the cursor: line breaks, tabs and other control characters become spaces. */
 function insert(current: Field, text: string): Field {
-  const base = current.fresh ? { ...current, graphemes: [], cursor: 0 } : current;
   // segmented together with the grapheme before the cursor, so a mark or joiner that comes in a later read than its
   // base joins it, as when both came in one read
-  const before = base.cursor > 0 ? base.graphemes[base.cursor - 1]! : "";
-  const head = base.graphemes.slice(0, base.cursor - (before === "" ? 0 : 1));
-  const tail = base.graphemes.slice(base.cursor);
+  const before = current.cursor > 0 ? current.graphemes[current.cursor - 1]! : "";
+  const head = current.graphemes.slice(0, current.cursor - (before === "" ? 0 : 1));
+  const tail = current.graphemes.slice(current.cursor);
   const room = TEXT_FIELD_MAX_GRAPHEMES - head.length - tail.length;
   const added = graphemes(before + text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")).slice(0, Math.max(0, room));
-  return { ...base, graphemes: [...head, ...added, ...tail], cursor: head.length + added.length, fresh: false };
+  return { ...current, graphemes: [...head, ...added, ...tail], cursor: head.length + added.length };
 }
 
 function wordStart(chars: readonly string[], from: number): number {
@@ -94,8 +93,8 @@ function edit(current: Field, event: KeyInput): Field | null {
   const letter = event.key.length === 1 ? event.key.toLowerCase() : "";
   const chars = current.graphemes;
   const at = current.cursor;
-  const moved = (cursor: number): Field => ({ ...current, cursor: Math.max(0, Math.min(chars.length, cursor)), fresh: false });
-  const cut = (from: number, to: number, cursor: number): Field => ({ ...current, graphemes: [...chars.slice(0, from), ...chars.slice(to)], cursor, fresh: false });
+  const moved = (cursor: number): Field => ({ ...current, cursor: Math.max(0, Math.min(chars.length, cursor)) });
+  const cut = (from: number, to: number, cursor: number): Field => ({ ...current, graphemes: [...chars.slice(0, from), ...chars.slice(to)], cursor });
   if (event.key === "ARROW_LEFT" || (ctrl && letter === "b")) return moved(at - 1);
   if (event.key === "ARROW_RIGHT" || (ctrl && letter === "f")) return moved(at + 1);
   if (event.key === "HOME" || (ctrl && letter === "a")) return moved(0);
@@ -108,7 +107,7 @@ function edit(current: Field, event: KeyInput): Field | null {
   if (ctrl && letter === "k") return cut(at, chars.length, at);
   if (ctrl && letter === "w") return cut(wordStart(chars, at), at, wordStart(chars, at));
   if (alt && letter === "d") return cut(at, wordEnd(chars, at), at);
-  if (ctrl && letter === "c") return { ...current, graphemes: [], cursor: 0, fresh: false };
+  if (ctrl && letter === "c") return { ...current, graphemes: [], cursor: 0 };
   return null;
 }
 

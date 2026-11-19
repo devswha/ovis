@@ -28,7 +28,7 @@ import type { Host, HostEnd } from "./host/index.ts";
 import type { InputEvent } from "./input/decode.ts";
 import { Framer } from "./input/framer.ts";
 import type { TuiThemeMode } from "./theme.generated.ts";
-import { buildChrome, sessionFromSocket } from "./view/chrome.ts";
+import { buildChrome, type PaneScroll, selectionColors, sessionFromSocket } from "./view/chrome.ts";
 import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-view.ts";
 import { type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect } from "./model/effects.ts";
@@ -131,7 +131,6 @@ export function startLoop(options: LoopOptions): Loop {
   let theme: TuiThemeMode = "dark";
   let shown: ShownLink = LINK_UNKNOWN;
   const session = options.session ?? sessionFromSocket(options.socket);
-  const cwd = options.cwd ?? "~";
   let grids = new Map<string, { emulator: unknown; grid: PaneGrid }>();
   let shape: ScreenShape | null = null;
   const pointer = new Pointer();
@@ -256,6 +255,7 @@ export function startLoop(options: LoopOptions): Loop {
             hello = info;
             world.setVersion(info.version);
             if (options.views) guard(() => dispatch({ type: "restore", ...options.views!.open(info.core.id), at: clock.now() }));
+            guard(openFirstWorkspace);
             arm();
           }
         }, () => {});
@@ -285,6 +285,22 @@ export function startLoop(options: LoopOptions): Loop {
     reshow();
   }
 
+  /** a first workspace was asked for on this line's empty core: once a line */
+  let firstAsked: number | null = null;
+
+  /**
+   * An empty core gets a first workspace, as herdr's server opens one when a client connects: checked once per line,
+   * right after its hello, never on a core the app arranges. A core that empties later (its last workspace closed, or
+   * the core shutting down) gets none.
+   */
+  function openFirstWorkspace(): void {
+    const view = world.view();
+    if (link.state.kind !== "Online" || hello === null || !view.ownsLayout || view.world.workspaces.length > 0 || firstAsked === link.state.epoch) return;
+    firstAsked = link.state.epoch;
+    act("open_first_workspace");
+    void layout.openFirst();
+  }
+
   /** The read of the core the world asks for, its answer handed back to it. */
   function readCore(): void {
     const read = world.nextRead();
@@ -307,6 +323,8 @@ export function startLoop(options: LoopOptions): Loop {
     }
     if (notice.type === "gone") grids.delete(notice.terminal);
     if (notice.type === "state" || notice.type === "gone") shownAfterWrites.check();
+    // a program that enters or leaves the alternate screen gives its pane's scrollbar gutter back or takes it again
+    if (altScreens() !== altShown) reshow();
     if (notice.type === "effect" && !closing) {
       const bytes = effectBytes(notice.effect, notice.terminal === paneFocus);
       if (bytes && !host.write(bytes)) painter?.invalidate();
@@ -476,7 +494,8 @@ export function startLoop(options: LoopOptions): Loop {
         // a copy command reads the pane as it is now, not as the last frame drew it: what one read holds (a scroll, hint
         // mode, a label) acts as it does read apart, with a frame between each
         const spot = effect.command.kind === "leave" ? undefined : shape?.spots.find((spot) => spot.pane === effect.pane && !spot.covered);
-        const answer = copyView.run(effect, panes.view(effect.pane), painter && spot ? sceneNow(painter.styles, spot) : drawn.get(effect.pane));
+        const shownScene = painter && spot ? sceneNow(painter.styles, spot) : drawn.get(effect.pane);
+        const answer = copyView.run(effect, panes.view(effect.pane), shownScene && copyScene(shownScene));
         if (answer.text !== undefined) writeCopy(answer.text);
         if (answer.close) dispatch({ type: "copy_closed", pane: effect.pane });
         if (answer.unavailable) dispatch({ type: "notice", code: "copy_unavailable", at: clock.now() });
@@ -575,6 +594,11 @@ export function startLoop(options: LoopOptions): Loop {
       case "choose":
         dispatch({ type: "choose", entry: step.entry, at: clock.now() });
         return;
+      case "button":
+        dispatch(step.button === "accept"
+          ? { type: "key", key: "ENTER", mods: {}, action: "press", at: clock.now() }
+          : { type: "key", key: "c", mods: { ctrl: true }, action: "press", at: clock.now() });
+        return;
     }
   }
 
@@ -615,12 +639,36 @@ export function startLoop(options: LoopOptions): Loop {
     return { hits, focus: paneFocus, tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: shape?.splits ?? [], look: (pane) => lookOf(pane) };
   }
 
+  /**
+   * A pane as copy mode sees it: without its last row while the mode bar lies over it, so the copy cursor, its hints and
+   * its scrolling stay in the rows the user can see.
+   */
+  function copyScene(scene: PaneScene): PaneScene {
+    const bar = shape?.regions.modeBar;
+    const { rect } = scene;
+    if (!bar || bar.height === 0 || rect.height < 2 || bar.y !== rect.y + rect.height - 1 || bar.x > rect.x || bar.x + bar.width < rect.x + rect.width) return scene;
+    return { ...scene, rect: { ...rect, height: rect.height - 1 } };
+  }
+
+  /** whether a pane's program is on the alternate screen */
+  function altScreen(pane: string): boolean {
+    const modes = panes.view(pane)?.emulator?.modes();
+    return modes?.ok === true && modes.value.altScreen;
+  }
+
+  /** the shown panes on the alternate screen, as the last layout counted them */
+  let altShown = "";
+  const altScreens = (): string => (shape?.spots ?? []).filter((spot) => altScreen(spot.pane)).map((spot) => spot.pane).join(" ");
+
   /** The shown tab's panes with their cells, told to the pane machine when anything about them changed. */
   function reshow(): void {
     const size = host.size();
     const view = world.view();
     const tab = focused(state.world, state.focus).tab;
-    shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed, pane: focused(state.world, state.focus).pane?.id ?? null });
+    shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, {
+      sidebarCollapsed: state.sidebarCollapsed, pane: focused(state.world, state.focus).pane?.id ?? null, gutter: (pane) => !altScreen(pane),
+    });
+    altShown = altScreens();
     const shown = shape.spots.map(({ pane, cells, covered }) => ({ terminal: pane, cols: cells.cols, rows: cells.rows, covered }));
     const key = JSON.stringify(shown);
     if (painter && key !== shownKey) {
@@ -724,6 +772,7 @@ export function startLoop(options: LoopOptions): Loop {
     const scenes: PaneScene[] = [];
     let copying: ReturnType<CopyView["draw"]> = null;
     const copied = new Set<string>();
+    const scroll = new Map<string, PaneScroll>();
     drawn.clear();
     for (const spot of shape.spots) {
       if (spot.covered) continue;
@@ -731,10 +780,11 @@ export function startLoop(options: LoopOptions): Loop {
       const scene = sceneNow(painter.styles, spot, view);
       if (view?.emulator) copied.add(spot.pane);
       const look = lookOf(spot.pane, view, scene);
+      if (look && look.history.total > look.grid.rows) scroll.set(spot.pane, { offset: rowsAboveBottom(look), max: look.history.total - look.grid.rows, viewport: look.grid.rows });
       const selection = pointer.shown(spot.pane, paneFocus, look);
-      const copy = copyView.draw(scene);
+      const copy = copyView.draw(copyScene(scene));
       if (copy) copying = copy;
-      scenes.push({ ...(copy?.pane ?? scene), scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(!copy && selection ? { selection } : {}) });
+      scenes.push({ ...(copy?.pane ?? scene), scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(!copy && selection ? { selection: { ...selection, colors: selectionColors(theme, host.colorDepth) } } : {}) });
     }
     const size = host.size();
     const paneViews = new Map(panes.views().map((v) => [v.terminal, v]));
@@ -745,18 +795,19 @@ export function startLoop(options: LoopOptions): Loop {
       state,
       world: world.view(),
       panes: paneViews,
+      scroll,
       link: shown,
       session,
-      cwd,
       ovis: version,
       core: shown.online ? hello?.version ?? null : null,
       theme,
       colors: host.colorDepth,
       copying,
+      copyLook: copyView.look(),
     });
     const frame = painter.paint({
       width: size.cols, height: size.rows, parts: chrome.parts,
-      panes: scenes, overlays: chrome.overlays, focus: paneFocus, input: chrome.input,
+      panes: scenes, overlays: chrome.overlays, focus: paneFocus, input: chrome.input, dim: chrome.dim,
     });
     hits = frame.hits;
     let taken = true;

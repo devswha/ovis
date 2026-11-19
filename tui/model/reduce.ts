@@ -776,7 +776,8 @@ function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: numbe
     }
     case "new_tab":
       if (shown.workspace === null) notice(acc, "nothing_focused", { action }, at);
-      else pushOverlay({ kind: "text", purpose: "new_tab", target: { kind: "workspace", id: shown.workspace.id }, field: field("") });
+      // herdr fills in the number the new tab will have
+      else pushOverlay({ kind: "text", purpose: "new_tab", target: { kind: "workspace", id: shown.workspace.id }, field: field(String(shown.workspace.tabs.length + 1)) });
       return;
     case "close_workspace":
     case "close_tab":

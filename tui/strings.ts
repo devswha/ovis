@@ -15,17 +15,23 @@ export const STRINGS = {
   agentsSection: "Agents",
   noSpaces: "No workspaces",
   noAgents: "No agents",
-  sidebarToggleCollapse: "<<",
-  worktreeMark: "|-",
+  /** at the right of the agents' header: how the list is ordered */
+  agentsSort: "grouped",
+  /** the workspaces' footer: a new workspace at the left, the menu at the right */
+  newWorkspaceButton: " new",
+  sidebarToggleCollapse: "«",
+  sidebarToggleExpand: "»",
   /** before an agent row that another agent row started */
   helperMark: "+",
   /** a section of an agent list: its state word and how many agents stand in it */
   agentSection: (word: string, count: number): string => `${word} (${count})`,
 
   // Tab bar
-  zoomMark: "ZOOM",
   tabZoomSuffix: " Z",
-  noTabs: "No tabs",
+  newTabButton: " + ",
+  tabsBefore: " < ",
+  tabsAfter: " > ",
+  tabsCut: "…",
 
   // State words (matching src/lib/inboxRow.ts and DESIGN.md)
   stateBlocked: "Needs you",
@@ -74,11 +80,42 @@ export const STRINGS = {
   failedPane: (reason: string): string => `failed: ${reason}`,
   idlePane: "not attached",
 
+  // Mode bar hints (tui/model/hints.ts names them); an action the key table names keeps its word from `actions`
+  modeHints: {
+    cancel: "cancel",
+    sendPrefix: "send prefix",
+    workspaceNav: "navigate",
+    keybinds: "help",
+    escBack: "esc back",
+    workspace: "workspace",
+    pane: "pane",
+    width: "width",
+    height: "height",
+    done: "done",
+    move: "move",
+    search: "search",
+    repeat: "repeat",
+    select: "select",
+    selecting: "selecting",
+    copy: "copy",
+    exit: "exit",
+    clearExit: "clear  q exit",
+    unlock: "unlock",
+  },
+  copySearchFooter: "  enter search  esc cancel",
+
   // Overlays
   helpTitle: "Keyboard Shortcuts",
   helpUnset: "unset",
-  helpCloseLabel: (keys: readonly string[]): string => `close: ${keys.join(" / ")}`,
   helpParityPrefix: "not built",
+  helpCloseLabel: (keys: readonly string[]): string => `close: ${keys.join(" / ")}`,
+  /** a dialog's buttons, each naming its key */
+  saveButton: " ↵ save ",
+  clearButton: " ^c clear ",
+  cancelButton: " esc cancel ",
+  confirmButton: " ↵ confirm ",
+  /** the copy feedback toast: its mark and its text are the notice's own (noticeText "copied") */
+  toastMark: "●",
   /** the about page's line, the session first so a narrow screen cuts the version of herdr-core and not the name: the hc session, Ovis's version, the version herdr-core reported (null: no live line) */
   aboutLine: (ovis: string, core: string | null, session: string): string => `${STRINGS.sessionHeader(session)} · Ovis ${ovis} · herdr-core ${core ?? "not connected"}`,
   aboutTitle: "About",
@@ -98,9 +135,8 @@ export const STRINGS = {
   textRenameTab: "Rename tab",
   textRenamePane: "Rename pane",
   textNewTab: "New tab name",
-  textPromptHint: "Enter to save · Ctrl+U to clear",
-  confirmCloseTitle: "Close workspace",
-  confirmCloseWorkspace: (name: string): string => `Close workspace ${name}? [y/N]`,
+  confirmCloseTitle: "Close workspace?",
+  confirmCloseDetail: (name: string, panes: number): string => `${name} — ${panes} ${panes === 1 ? "pane" : "panes"}`,
   gotoTitle: "Go to",
   gotoPromptHint: "Type to filter · Enter to jump",
   pickerNoMatch: "No matches",

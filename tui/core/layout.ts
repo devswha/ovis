@@ -39,6 +39,9 @@ interface LayoutWritesOptions {
   answer: (answer: LayoutAnswer) => void;
 }
 
+/** What herdr names the first workspace its server opens in its own home. */
+const HOME_NAME = "~";
+
 const SPLITS: Readonly<Record<string, SplitDirection>> = { split_vertical: "right", split_horizontal: "down" };
 const SWAPS: Readonly<Record<string, PaneDirection>> = { swap_pane_left: "left", swap_pane_down: "down", swap_pane_up: "up", swap_pane_right: "right" };
 const RESIZES: Readonly<Record<string, PaneDirection>> = { resize_pane_left: "left", resize_pane_down: "down", resize_pane_up: "up", resize_pane_right: "right" };
@@ -80,6 +83,16 @@ export class LayoutWrites {
       },
       terminalEnv: async () => ({ ...TERMINAL_COLOUR }),
     });
+  }
+
+  /**
+   * Opens a first workspace on a core that has none, as herdr's server does: a shell in the core's own folder (its home),
+   * not the screen's. Answers when it is done; a failure is a notice.
+   */
+  openFirst(): Promise<void> {
+    if (this.busy) return Promise.resolve();
+    this.busy = true;
+    return this.perform("new_workspace", async () => this.follow((await this.store.createWorkspace({ name: HOME_NAME })).root_pane.pane_id, null));
   }
 
   /**
