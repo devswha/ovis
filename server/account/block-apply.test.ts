@@ -24,11 +24,16 @@ async function key(): Promise<Key> {
   return { keys, spki: await exportAccountKey(keys.publicKey) };
 }
 
+function open(dir: string): DeviceStore {
+  const log = SafetyLog.open(dir);
+  return new DeviceStore(dir, null, null, { safety: log, pc: PcAccountState.open(dir), removals: RemovalEvidence.open(dir, log), journal: DeviceJournal.open(dir, () => log.ensureFile()) });
+}
+
 function pc() {
   const dir = mkdtempSync(join(tmpdir(), "ovis-block-apply-"));
   dirs.push(dir);
-  const log = SafetyLog.open(dir);
-  const devices = new DeviceStore(dir, null, null, { safety: log, pc: PcAccountState.open(dir), removals: RemovalEvidence.open(dir, log), journal: DeviceJournal.open(dir) });
+  const devices = open(dir);
+  const log = (devices as unknown as { safety: SafetyLog }).safety;
   return { dir, devices, log };
 }
 
@@ -173,4 +178,36 @@ describe("blocks and freezes on the PC (P16, P21, T51)", () => {
     socket.close();
     expect(devices.has(another.id)).toBe(false);
   });
+
+  test("S22: a frozen cookie row and a cookie row whose key is removed sign in nowhere", async () => {
+    const { devices } = pc();
+    const [older, target] = [await member(devices), await member(devices)];
+    const laptop = devices.pair(devices.startPairing().code, "Laptop", "drive")!;
+    devices.match(laptop.token);
+    expect(devices.match(laptop.token)).not.toBeNull();
+    expect(await devices.applyBlock(await block(target.spki, older), "handed")).toMatchObject({ outcome: "applied" });
+    // the laptop joined after the target: frozen in place, and its cookie opens nothing
+    expect(devices.has(laptop.device.id)).toBe(true);
+    expect(devices.match(laptop.token)).toBeNull();
+    // a cookie row that carries a key the account removed opens nothing either
+    const fresh = pc();
+    const keyed = fresh.devices.pair(fresh.devices.startPairing().code, "Desk", "drive")!;
+    fresh.devices.match(keyed.token);
+    const k = await key();
+    (fresh.devices as unknown as { devices: { id: string; relay_public_key?: string }[] }).devices.find((row) => row.id === keyed.device.id)!.relay_public_key = k.spki;
+    fresh.devices.removeAccountKey(k.spki, ACCOUNT, { id: "c".repeat(32), issuedAt: new Date().toISOString() });
+    expect(fresh.devices.match(keyed.token)).toBeNull();
+  });
+
+  test("P24: a block in the log whose marker was never written still denies its target after a restart", async () => {
+    const { dir, devices, log } = pc();
+    const [older, target] = [await member(devices), await member(devices)];
+    // the stop between the append and the marker: the block is in the log, nothing else was written
+    const record = await block(target.spki, older);
+    log.append({ record, got: "handed", asof: { signer_no: 1, target_no: 2, after: 2, joined: 2, signer_removed: false } });
+    const reopened = open(dir);
+    expect(reopened.removedByAccount(target.spki)).toBe(true);
+    expect(reopened.has(target.id)).toBe(false);
+  });
 });
+
