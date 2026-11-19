@@ -5,12 +5,10 @@ import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
 import { DeviceStore } from "../devices.ts";
 import { applyAccountRecords } from "./records.ts";
-import { signAccountRecord } from "../../shared/account-records.ts";
+import { accountDeviceId, signAccountRecord } from "../../shared/account-records.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { readFileSync } from "node:fs";
 import { AccountDeviceStore } from "./account-devices.ts";
-import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
-import { writePrivateState } from "../private-state.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { AccountOrder } from "./account-order.ts";
 import { listNotices } from "./list-notices.ts";
@@ -203,7 +201,7 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
   });
 
   test("S25, P17, P21: a held signer cannot block; a live older signer can", async () => {
-    const { devices, rows, dir } = pc();
+    const { devices, rows, clock, dir } = pc();
     await member(devices);
     const [signer, target] = [await key(), await key()];
     rows.commitList(listed(signer, target));
@@ -214,10 +212,8 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     const signed = await block(signer, target.spki);
     expect((await devices.applyBlock(signed, "handed")).outcome).toBe("refused");
     expect(rows.rowsByKey(target.spki)).toHaveLength(1);
-    // The release operation is S2-29. Open the same persisted row in its live state as the positive control.
-    const path = join(dir, ACCOUNT_DEVICES_FILE);
-    const file = parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8")));
-    writePrivateState(path, { ...file, devices: file.devices.map((row) => row.key === signer.spki ? { ...row, state: "live" } : row) });
+    clock.now += JOIN_HOLD_MS;
+    expect(rows.access(accountDeviceId(SERVER, signer.spki))).toEqual({ ok: true });
     expect((await pc(dir).devices.applyBlock(signed, "handed")).outcome).toBe("applied");
   });
 

@@ -318,7 +318,9 @@ export function createServer(
   // Step 2 (S2-24): with the release flag on, each pull is followed by a whole read applied to this PC's log and rows
   const serverIdNow = () => ovisRelay.currentIdentity()?.server_id ?? null;
   // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
-  const accountRows = safetyLog !== null && pcAccount !== null && journal !== null && removals !== null ? accountRowsFor(stateDir, serverIdNow, {
+  const opened: { rows: ReturnType<typeof accountRowsFor> | null } = { rows: null };
+  // Recovery can use row ports inside the DeviceStore constructor, before its caller has a reference.
+  const rowsForDevices = (devices: DeviceStore) => opened.rows = safetyLog !== null && pcAccount !== null && journal !== null && removals !== null ? accountRowsFor(stateDir, serverIdNow, {
     evidence: removals,
     ...listNotices(journal, removals, (entry) => devices.publish(entry)),
     closeSessions: (id) => { devices.closeAccountSessions(id); },
@@ -342,8 +344,9 @@ export function createServer(
     },
   }) : null;
   const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
-    safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: accountRows, held: (key) => accountMailbox.gates().held(key),
+    safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: rowsForDevices, held: (key) => accountMailbox.gates().held(key),
   });
+  const accountRows = opened.rows;
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
   const accountMailbox = new AccountMailbox({
     pendingPath: join(stateDir, "account-pending.json"), holds: accountHolds,
