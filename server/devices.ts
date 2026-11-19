@@ -18,6 +18,7 @@ import { type ClearReason, PcAccountState } from "./account/pc-binding.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device-journal.ts";
+import type { AccountOrder } from "./account/account-order.ts";
 import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceSafetyRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import type { BlockReceipt } from "../shared/account-devices-api.ts";
@@ -526,6 +527,7 @@ export class DeviceStore {
    * `pc`, every row admitted gets its origin and the PC's account is its binding, not its rows.
    */
   private readonly safety: SafetyLog | null;
+  private accountOrder: AccountOrder | null = null;
   private readonly pc: PcAccountState | null;
   private readonly evidence: RemovalEvidence | null;
   private readonly accountHeld: ((key: string) => boolean) | undefined;
@@ -1073,6 +1075,8 @@ export class DeviceStore {
     const blocked = this.safety.state().blocks.find((entry) => entry.record.id === record.target);
     const joined = blocked?.asof?.joined;
     if (blocked === undefined || joined === null || joined === undefined) return false;
+    // a key the account's order marks late is not trusted as older than the key it would free (P21, T52)
+    if (this.accountOrder?.late(record.signer) ?? false) return false;
     const signers = this.memberRows(record.signer, record.account);
     return signers.length > 0 && signers.every((d) => d.origin!.admit_no < joined && !this.frozen(d));
   }
@@ -1121,6 +1125,9 @@ export class DeviceStore {
     this.drop(gone, "pc", "locked");
     return gone.map((d) => d.id);
   }
+
+  /** Step 2 (S2-24): the account's order as this PC's whole reads saw it; set only with OVIS_ACCOUNT_OPENS_ALL=1. */
+  attachAccountOrder(order: AccountOrder | null): void { this.accountOrder = order; }
 
   /** Whether the account-opens-all release flag is on for this store. */
   opensAll(): boolean { return this.safety !== null; }

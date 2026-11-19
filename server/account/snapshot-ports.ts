@@ -6,6 +6,7 @@
  */
 import type { BlockRecord, DeviceLiftRecord } from "../../shared/account-records.ts";
 import type { DeviceStore } from "../devices.ts";
+import type { AccountOrder } from "./account-order.ts";
 import type { DeviceJournal } from "./device-journal.ts";
 import type { PcAccountState } from "./pc-binding.ts";
 import type { SafetyLog } from "./safety-log.ts";
@@ -16,6 +17,8 @@ export interface SnapshotDeps {
   readonly safetyLog: SafetyLog;
   readonly pc: PcAccountState;
   readonly journal: DeviceJournal;
+  /** The account's order, written in each whole read's commit turn (P21). */
+  readonly order: AccountOrder;
   /** This PC's relay identity now, or null without one. */
   serverId(): string | null;
   requestRead(): void;
@@ -51,6 +54,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       let lifted = false;
       for (const lift of stage.lifts) if (safetyLog.append({ record: lift, got: "snapshot" }).outcome === "applied") lifted = true;
       if (lifted) pc.raiseGen();
+      deps.order.record(stage.snapshot);
       lastVersion = stage.snapshot.version;
     },
     methodsVersion,

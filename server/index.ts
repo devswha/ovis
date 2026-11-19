@@ -58,6 +58,7 @@ import { mergeSafetyLogs, SafetyLog } from "./account/safety-log.ts";
 import { PcAccountState } from "./account/pc-binding.ts";
 import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
+import { AccountOrder } from "./account/account-order.ts";
 import { RemovalEvidence } from "./account/removal-evidence.ts";
 import { DeviceJournal } from "./account/device-journal.ts";
 import { mergeAccountState } from "./account/account-merge.ts";
@@ -575,8 +576,10 @@ export function createServer(
     removalsPending: () => devices.pendingLockRemovals().length > 0,
   } }) : undefined;
   // Step 2 (S2-24): with the release flag on, each pull is followed by a whole read applied to this PC's log and rows
-  const readPorts = safetyLog !== null && pcAccount !== null && journal !== null
-    ? snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, serverId: () => ovisRelay.currentIdentity()?.server_id ?? null, requestRead: () => { void accountMailbox.pull(); } })
+  const accountOrder = safetyLog !== null ? AccountOrder.open(stateDir) : null;
+  devices.attachAccountOrder(accountOrder);
+  const readPorts = safetyLog !== null && pcAccount !== null && journal !== null && accountOrder !== null
+    ? snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: () => ovisRelay.currentIdentity()?.server_id ?? null, requestRead: () => { void accountMailbox.pull(); } })
     : null;
   const services: RequestServices = {
     runtimeMove: options.runtimeService ? moveService({
