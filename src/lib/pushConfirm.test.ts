@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
-import { confirmation, recordConfirmation } from "./pushConfirm.ts";
+import { ApiError } from "./api.ts";
+import { confirmation, recordConfirmation, recordTestFailure } from "./pushConfirm.ts";
 
 const memory = () => {
   const values = new Map<string, string>();
@@ -17,6 +18,20 @@ describe("the confirmation push's outcome", () => {
     expect(confirmation(null, storage)).toBeNull();
     recordConfirmation("https://push.example/1", true, storage);
     expect(confirmation("https://push.example/1", storage)).toBe(true);
+  });
+
+  it("is kept as failed only when the PC said this subscription gets no push, not when the request never got that answer", () => {
+    const storage = memory();
+    for (const unsent of [new TypeError("Failed to fetch"), new ApiError("/api/push/test", 503, "restarting", "unavailable"), new ApiError("/api/push/test", 403, "read only", "read_only")]) {
+      recordTestFailure("https://push.example/1", unsent, storage);
+      expect(confirmation("https://push.example/1", storage)).toBeNull();
+    }
+    recordTestFailure("https://push.example/1", new ApiError("/api/push/test", 502, "push service answered 500", "push_failed"), storage);
+    expect(confirmation("https://push.example/1", storage)).toBe(false);
+    recordTestFailure("https://push.example/2", new ApiError("/api/push/test", 410, "retired", "subscription_gone"), storage);
+    expect(confirmation("https://push.example/2", storage)).toBe(false);
+    recordTestFailure("https://push.example/3", new ApiError("/api/push/test", 404, "unknown", "subscription_not_found"), storage);
+    expect(confirmation("https://push.example/3", storage)).toBe(false);
   });
 
   it("is none where storage refuses", () => {

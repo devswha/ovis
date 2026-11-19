@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { recordConfirmation } from "./pushConfirm.ts";
+import { recordConfirmation, recordTestFailure } from "./pushConfirm.ts";
 import type { AlertPrefs } from "../../shared/notify-policy.ts";
 import type { Settings } from "./settings.ts";
 import { ApiError, sendTestPush } from "./api.ts";
@@ -103,7 +103,7 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
         await sendTestPush(endpoint);
         recordConfirmation(endpoint, true);
       } catch (err) {
-        recordConfirmation(endpoint, false);
+        recordTestFailure(endpoint, err);
         // the subscription stays on the PC, and the next alert is tried through it as usual: the tab stays silent, so
         // one alert (with its answer buttons) arrives once delivery recovers, never two (#3907 review)
         console.warn("the confirmation push failed", err);
