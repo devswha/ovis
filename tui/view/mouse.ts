@@ -48,7 +48,7 @@ export interface PointerScene {
 
 export type PointerAct =
   | { readonly kind: "select"; readonly target: Target }
-  | { readonly kind: "action"; readonly action: "toggle_sidebar" | "new_workspace" | "menu" | "copy_pane_id" | "lock" | "new_tab" | "previous_tab" | "next_tab" }
+  | { readonly kind: "action"; readonly action: "toggle_sidebar" | "new_workspace" | "menu" | "lock" | "new_tab" | "previous_tab" | "next_tab" }
   /** a dialog's button: its main one (as Enter) or its clear one (as ctrl+c) */
   | { readonly kind: "button"; readonly button: "accept" | "clear" }
   /** the top overlay's entry with this index was clicked */
@@ -183,7 +183,7 @@ export class Pointer {
     const [kind, id] = splitId(hit.id);
     if (kind === "tab" || kind === "workspace") return [...dropped, { kind: "select", target: { kind, id } }];
     if (kind === "agent") return [...dropped, { kind: "select", target: { kind: "pane", id } }];
-    if (hit.id === "toggle_sidebar" || hit.id === "new_workspace" || hit.id === "menu" || hit.id === "copy_pane_id" || hit.id === "lock" || hit.id === "new_tab") return [...dropped, { kind: "action", action: hit.id }];
+    if (hit.id === "toggle_sidebar" || hit.id === "new_workspace" || hit.id === "menu" || hit.id === "lock" || hit.id === "new_tab") return [...dropped, { kind: "action", action: hit.id }];
     // the tab bar's scroll buttons step to the tab before or after the one in front, which the bar keeps in its middle
     if (hit.id === "tabs_before" || hit.id === "tabs_after") return [...dropped, { kind: "action", action: hit.id === "tabs_before" ? "previous_tab" : "next_tab" }];
     const split = scene.splits.find((candidate) => candidate.id === hit.id);

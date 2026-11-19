@@ -32,7 +32,7 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     expect(grid[0]).toBe("·1:ovis 1/2:main hc:default            [menu]");
     expect(grid[1]).toBe(`┌ shell ${"─".repeat(36)}┐`);
     expect(grid[2]).toBe(`│$ echo 안녕${" ".repeat(32)}│`);
-    expect(grid[29]).toBe(`└${"─".repeat(17)} id t1 (prefix+i copies) ─┘`);
+    expect(grid[29]).toBe(`└${"─".repeat(43)}┘`);
     expect(run.loop.screen()!.cols).toBe(45);
     expect(attached(run)).toEqual(["t1"]);
   }, TEST_MS);
@@ -50,7 +50,7 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     const grid = run.grid();
     expect(grid[0]).toBe(`·1:ovis 1/2:main hc:default${" ".repeat(31)}[menu]`);
     expect(grid[1]).toBe(`┌ shell ${"─".repeat(55)}┐`);
-    expect(grid[29]).toBe(`└${"─".repeat(36)} id t1 (prefix+i copies) ─┘`);
+    expect(grid[29]).toBe(`└${"─".repeat(62)}┘`);
     expect(attached(run)).toEqual(["t1"]);
   }, TEST_MS);
 
@@ -154,7 +154,7 @@ describe("plain route: every built action of the catalogue is an entry of the me
 
   it("each built id is an entry, in the catalogue's order, then the agent list, each with a digit or letter of its own", () => {
     const actions = entries.flatMap((entry) => (entry.kind === "action" ? [entry] : []));
-    expect(actions.map((entry) => entry.action)).toEqual([...built, "agents", "copy_pane_id", "about", "lock"]);
+    expect(actions.map((entry) => entry.action)).toEqual([...built, "agents", "about", "lock"]);
     for (const entry of actions) expect({ action: entry.action, label: /^[0-9A-Za-z]$/.test(entry.label) }).toEqual({ action: entry.action, label: true });
     const labels = entries.flatMap((entry) => (entry.label === null ? [] : [entry.label]));
     expect(new Set(labels).size).toBe(labels.length);

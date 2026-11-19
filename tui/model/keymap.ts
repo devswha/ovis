@@ -14,7 +14,7 @@ export type Mode = "terminal" | "navigate" | "resize" | "copy";
 /** Actions only the screen's modes and its lock know. */
 /** Navigate mode's moves (herdr has no key for them): the workspace pointed at one place up or down, the focused pane into it. */
 export type MoveAction = "navigate_move_up" | "navigate_move_down" | "navigate_move_pane";
-export type LocalAction = "lock" | "menu" | "agents" | "copy_pane_id" | "about" | "navigate_focus" | "navigate_cancel" | "navigate_index" | "navigate_cycle_next" | "navigate_cycle_previous" | "resize_leave" | CopyAction | MoveAction;
+export type LocalAction = "lock" | "menu" | "agents" | "about" | "navigate_focus" | "navigate_cancel" | "navigate_index" | "navigate_cycle_next" | "navigate_cycle_previous" | "resize_leave" | CopyAction | MoveAction;
 export type KeyAction = HerdrAction | HerdrNavigateKey | LocalAction;
 
 export interface KeyRow {
@@ -108,11 +108,8 @@ const LOCK_KEY = "ctrl+alt+g";
  */
 const MENU_KEY = "prefix+enter";
 
-/** The screen's copy of the focused pane's id to the host's clipboard (herdr has none): `i` for id, free in herdr's defaults. Fixed like the menu's key. */
-const COPY_ID_KEY = "prefix+i";
-
 /** The screen's own keys after the prefix, claimed before the config's bindings. */
-const FIXED_AFTER_PREFIX = [{ action: "menu", key: MENU_KEY }, { action: "copy_pane_id", key: COPY_ID_KEY }] as const;
+const FIXED_AFTER_PREFIX = [{ action: "menu", key: MENU_KEY }] as const;
 
 /**
  * The screen's full-screen agent list (herdr has none). Unlike the menu's it never takes a key: it is claimed after the

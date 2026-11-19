@@ -643,10 +643,6 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction | CopyAction>
     case "about":
       acc.s = { ...s, overlays: [...s.overlays, { kind: "about" }] };
       return;
-    case "copy_pane_id":
-      if (shown.pane === null) notice(acc, "nothing_focused", { action }, at);
-      else acc.effects.push({ type: "clipboard", text: shown.pane.id });
-      return;
     case "navigate_workspace_up":
     case "navigate_workspace_down": {
       if (s.mode.name !== "navigate") return;

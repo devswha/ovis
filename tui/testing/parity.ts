@@ -448,12 +448,6 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
     if (scene === "rename") words.push({ herdr: "rename tab", ovis: STRINGS.textRenameTab, row: rect.y + 1 });
     if (scene === "newtab") words.push({ herdr: "new tab", ovis: STRINGS.textNewTab, row: rect.y + 1 });
   }
-  // P4: the focused pane's id on its bottom border stays (owner, part 2)
-  for (const picture of base ? [ovis, base.ovis] : [ovis]) {
-    gridText(picture).forEach((text, y) => {
-      for (const match of text.matchAll(/ id \S+(?: \([^)]*\))? (?=─)/g)) ovisHoles.push({ line: "P4", x: match.index, y, width: match[0].length, height: 1 });
-    });
-  }
   if (scene === "toast") {
     // C2: the copy toast says the screen's `Copied`, so its box is narrower than herdr's: each box's cells are left out
     // in its own picture, and the toast's place, shape and colour roles are checked on their own (copyToastShape)

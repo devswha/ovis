@@ -144,7 +144,7 @@ describe("chrome frames as rows of cells", () => {
       " Done (1)                │",
       " * claude /proj          │",
     ]);
-    expect(shot.rows[39]).toBe(`                        «│└${"─".repeat(19)} id t1 (prefix+i copies) ─┘└${"─".repeat(45)}┘`);
+    expect(shot.rows[39]).toBe(`                        «│└${"─".repeat(45)}┘└${"─".repeat(45)}┘`);
     expect(cell(shot, 1, 0)).toEqual({ text: "W", fg: TEXT_DIM, bg: BG, bold: true });
     // the workspace in front on the raised row in bold, the other dim; each state mark in its state's colour
     expect(cell(shot, 3, 2)).toEqual({ text: "o", fg: TEXT, bg: BG_ELEVATED, bold: true });
@@ -175,7 +175,7 @@ describe("chrome frames as rows of cells", () => {
       ` ! ovis                  ││${" ".repeat(25)}││${" ".repeat(25)}│`,
       ` * 문서                  ││${" ".repeat(25)}││${" ".repeat(25)}│`,
     ]);
-    expect(shot.rows[23]).toBe(`                        «│└${"─".repeat(17)} id t1 ─┘└${"─".repeat(25)}┘`);
+    expect(shot.rows[23]).toBe(`                        «│└${"─".repeat(25)}┘└${"─".repeat(25)}┘`);
   });
 });
 
@@ -214,7 +214,7 @@ describe("each visible state has its own mark, told apart without colour", () =>
   const TWO = [term("t1", "w1", "work", "tab1", "tab", {}, "one"), term("t2", "w1", "work", "tab1", "tab", {}, "two")];
   // the first pane's bottom border at 120x40: row 39, its banner from column 28
   const states: [name: string, setup: Partial<Setup>, mark: string, col: number, row: number][] = [
-    ["live", {}, `└${"─".repeat(19)} id t1 (prefix+i copies) ─┘`, 26, 39],
+    ["live: a plain border, as herdr's", {}, `└${"─".repeat(45)}┘`, 26, 39],
     ["sized by another viewer", { panes: { t1: pane("t1", { kind: "Live" }, { cols: 150, rows: 50 }), t2: pane("t2") } }, " sized by another viewer (150x50) ", 28, 39],
     ["not attached", { panes: { t1: pane("t1", { kind: "Idle" }), t2: pane("t2") } }, " not attached ", 28, 39],
     ["opening", { panes: { t1: pane("t1", { kind: "Opening" }), t2: pane("t2") } }, " opening terminal ", 28, 39],
@@ -384,43 +384,9 @@ describe("each part is drawn again exactly when what it shows changed", () => {
   });
 });
 
-describe("the focused pane's id, the about page and the help's keys", () => {
+describe("the about page and the help's keys", () => {
   const help = (cols: number, rows: number, extra: Partial<Setup> = {}) => draw({ cols, rows, events: [{ type: "action", action: "help", at: 1 }], ...extra });
   const TERMS = ["Pane", "Tab", "Workspace", "PC", "Agent session"];
-
-  it("the id sits on the focused pane's bottom border only: not on the other pane, not offline", () => {
-    const focusFirst = draw({ cols: 120, rows: 40 });
-    expect(focusFirst.rows[39]!.slice(26, 73)).toBe(`└${"─".repeat(19)} id t1 (prefix+i copies) ─┘`);
-    expect(focusFirst.rows[39]!.includes("id t2")).toBe(false);
-    const focusSecond = draw({ cols: 120, rows: 40, events: [{ type: "select", target: { kind: "pane", id: "t2" }, at: 1 }] });
-    expect(focusSecond.rows[39]!.slice(73, 120)).toBe(`└${"─".repeat(19)} id t2 (prefix+i copies) ─┘`);
-    expect(focusSecond.rows[39]!.includes("id t1")).toBe(false);
-    const offline = draw({ cols: 200, rows: 40, link: { online: false, code: "closed" } });
-    expect(offline.rows.some((row) => row.includes(" id t"))).toBe(false);
-  });
-
-  const bottomEdge = (shot: Picture): string => shot.rows.filter((row) => /└─/.test(row)).at(-1)!;
-
-  it("the id takes the longest form the room leaves: the whole label, then ` id t1 `, then ` t1 `", () => {
-    const side = `${" ".repeat(24)}«│`;
-    expect(bottomEdge(draw({ cols: 45, rows: 30 }))).toBe(`└${"─".repeat(17)} id t1 (prefix+i copies) ─┘`);
-    expect(bottomEdge(draw({ cols: 65, rows: 24 }))).toBe(`${side}└${"─".repeat(10)} id t1 ─┘└${"─".repeat(17)}┘`);
-    expect(bottomEdge(draw({ cols: 72, rows: 24 }))).toBe(`${side}└${"─".repeat(13)} id t1 ─┘└${"─".repeat(21)}┘`);
-    expect(bottomEdge(draw({ cols: 80, rows: 24 }))).toBe(`${side}└${"─".repeat(17)} id t1 ─┘└${"─".repeat(25)}┘`);
-    expect(bottomEdge(draw({ cols: 100, rows: 24 }))).toBe(`${side}└${"─".repeat(9)} id t1 (prefix+i copies) ─┘└${"─".repeat(35)}┘`);
-    const six = [1, 2, 3, 4, 5, 6].map((n) => term(`t${n}`, "w1", "work", "tab1", "tab", {}, `p${n}`));
-    expect(bottomEdge(draw({ cols: 80, rows: 24, terminals: six }))).toBe(`${side}└── t1 ─┘${`└${"─".repeat(7)}┘`.repeat(5)}`);
-  });
-
-  it("the id's cells win the tap over the divider on the border they share, and the cells beside it stay the divider's", () => {
-    const layout = { schema: 1, workspaces: [{ id: "w1", tabs: [{ id: "tab1", root: { split: "down", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } } }] }] };
-    const shot = draw({ cols: 120, rows: 40, terminals: [term("t1", "w1", "work", "tab1", "tab", {}, "one"), term("t2", "w1", "work", "tab1", "tab", {}, "two")], docs: { [OVIS_LAYOUT_DOC]: layout } });
-    const target = (col: number, row: number) => { const hit = shot.frame.hits.at(col, row); return hit && "part" in hit ? hit.id : hit ? `pane:${hit.pane}` : null; };
-    const label = " id t1 (prefix+i copies) ";
-    const row = shot.rows.findIndex((line) => line.includes(label));
-    const col = shot.rows[row]!.indexOf(label);
-    expect({ row: row > 1, label: target(col + label.length - 1, row), before: target(col - 1, row)?.startsWith("split_"), after: target(col + label.length, row)?.startsWith("split_") }).toEqual({ row: true, label: "copy_pane_id", before: true, after: true });
-  });
 
   it("the LOCKED badge is a tap target that unlocks; no other mode's badge is", () => {
     // the badge starts the bar over the panes' last row, right of the sidebar

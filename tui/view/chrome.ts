@@ -592,7 +592,6 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
       outer,
       bordered: outer.width !== inner.width + (gutter.width > 0 ? 1 : 0) && outer.height !== inner.height,
       focused: focus,
-      idLabels: focus ? STRINGS.paneIdLabels(spot.pane, keyText(state, "copy_pane_id")) : null,
       title: outer.width > 4 ? ` ${truncateEnd((summary?.label || summary?.title || spot.pane).trim(), outer.width - 4)} ` : null,
       banner: paneBanner(panes.get(spot.pane), link),
       gutter,
@@ -608,7 +607,6 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
       printFit(canvas, rect.x + 2, rect.y + Math.max(0, Math.floor(rect.height / 2) - 1), lost, Math.max(0, rect.width - 4), canvas.style({ fg: colors.notice, bg: colors.bg, flags: STYLE_BOLD }), true);
       return;
     }
-    // a divider's cells first: the id on a border that is also a divider's row wins the tap
     for (const { id, divider } of seams) canvas.hit(divider, id);
     for (const pane of drawn) {
       if (pane.thumb) {
@@ -628,17 +626,6 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
       if (pane.banner && room > 0) {
         const fg = pane.banner.tone === "error" ? colors.dangerText : pane.banner.tone === "warn" ? colors.notice : colors.textDim;
         printFit(canvas, outer.x + 2, outer.y + outer.height - 1, ` ${pane.banner.text} `, room, canvas.style({ fg, bg: colors.bgElevated, flags: STYLE_BOLD }), true);
-      }
-      // the focused pane's id, at the right of its bottom border: the longest form the room leaves after its banner, whole
-      if (pane.idLabels !== null) {
-        const taken = pane.banner ? widthOf(` ${pane.banner.text} `) : 0;
-        const label = pane.idLabels.find((one) => room >= widthOf(one) + taken);
-        if (label !== undefined) {
-          const width = widthOf(label);
-          const at = outer.x + outer.width - 2 - width;
-          printFit(canvas, at, outer.y + outer.height - 1, label, width, canvas.style({ fg: colors.accent, bg: colors.bg, flags: STYLE_BOLD }));
-          canvas.hit({ x: at, y: outer.y + outer.height - 1, width, height: 1 }, "copy_pane_id");
-        }
       }
     }
   });
