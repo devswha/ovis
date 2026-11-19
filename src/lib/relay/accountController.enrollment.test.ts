@@ -494,15 +494,19 @@ describe("account enrollment ownership", () => {
     it("sends nothing while the page is hidden, and sends it again once the page is shown", async () => {
       browser.setVisibility("hidden");
       const run = await fixture("unused", { accountAnswer: (route, sent) => route.startsWith("PUT ") && sent === 1 ? dropped() : undefined });
-      const pending = run.controller.enroll(await run.open(), run.original.server_id, false);
+      let over = false;
+      const pending = run.controller.enroll(await run.open(), run.original.server_id, false).finally(() => { over = true; });
       await settle(() => run.sent(putRoute(run)).length === 1 && jest.getTimerCount() > 0);
-      jest.advanceTimersByTime(10 * 60_000);
-      await settle(() => jest.getTimerCount() === 0);
-      expect(run.sent(putRoute(run))).toEqual([0]);
+      // past the backoff, and past it again: a page that sent now would send, and finish, within these turns
+      for (const step of [NETWORK_RETRY_MS[0], 10 * 60_000]) {
+        jest.advanceTimersByTime(step);
+        for (let turn = 0; turn < 200; turn++) await crypto.subtle.digest("SHA-256", new Uint8Array(1));
+        expect([run.sent(putRoute(run)), over]).toEqual([[0], false]);
+      }
       browser.setVisibility("visible");
       document.dispatchEvent(new Event("visibilitychange"));
       expect(await pending).toEqual({ state: "complete", admitted: 2 });
-      expect(run.sent(putRoute(run))).toEqual([0, 10 * 60_000]);
+      expect(run.sent(putRoute(run))).toEqual([0, NETWORK_RETRY_MS[0] + 10 * 60_000]);
     });
 
     it("reads the account's PCs again rather than count an unanswered read as a PC it cannot check", async () => {
