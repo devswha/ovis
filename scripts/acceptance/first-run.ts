@@ -344,7 +344,7 @@ const steps: Step<World>[] = [
     const marker = await typeInto(w.phone!, w.desk.pane, "after-relay");
     return `"Reconnecting to Ovis" shown; both PCs and the phone came back; "echo ${marker}" reached herdr after it`;
   } },
-  { id: "phone.typing-held", title: "Text typed while the relay is away waits as a draft and is not sent by itself after it comes back", needs: ["phone.relay-lost"], run: async (w) => {
+  { id: "phone.typing-held", title: "Text typed in the open terminal while the relay is away waits as a draft after it comes back", needs: ["phone.relay-lost"], run: async (w) => {
     const { page } = w.phone!;
     const marker = `held-${randomBytes(3).toString("hex")}`;
     await withoutRelay([w.desk, w.laptop], async (back) => {
