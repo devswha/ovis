@@ -18,6 +18,8 @@ function dir(): string {
   dirs.push(made);
   return made;
 }
+/** A folder this process cannot write to: not one as root, nor on Windows, where the mode does not hold. */
+const NO_CHMOD = process.platform === "win32" || process.getuid?.() === 0;
 const lock = (): SafetyRecord => ({ v: 1, id: pcRecordId(), kind: "lock", account: "acct_1", target: null, signer: "pc", signed_at: new Date().toISOString(), signature: "" });
 
 describe("the safety log holds what it acknowledged (P24, T28, T41, S19)", () => {
@@ -38,7 +40,7 @@ describe("the safety log holds what it acknowledged (P24, T28, T41, S19)", () =>
     expect(fixture.app.context.services.safetyLog?.inForce.locked).toBe(true);
   });
 
-  test("S19: a failed append keeps the log strict until a reload finds it whole", () => {
+  test.skipIf(NO_CHMOD)("S19: a failed append keeps the log strict until a reload finds it whole", () => {
     const at = dir();
     const log = SafetyLog.open(at);
     log.append({ record: lock(), got: "pc" });
@@ -89,5 +91,15 @@ describe("the safety log holds what it acknowledged (P24, T28, T41, S19)", () =>
     expect(log.append({ record: lock(), got: "pc" })).toMatchObject({ outcome: "refused", code: "log_unavailable" });
     expect(log.strict).not.toBeNull();
     expect(existsSync(join(at, SAFETY_LOG_FILE))).toBe(false);
+  });
+
+  test.skipIf(process.platform === "win32")("S19: a log another account can write is no log this PC trusts", () => {
+    const at = dir();
+    SafetyLog.open(at).append({ record: lock(), got: "pc" });
+    chmodSync(join(at, SAFETY_LOG_FILE), 0o602);
+    const log = SafetyLog.open(at);
+    expect(log.strict).not.toBeNull();
+    // nothing it holds is taken as in force, and a strict log reads as locked
+    expect(log.inForce.locked).toBe(true);
   });
 });
