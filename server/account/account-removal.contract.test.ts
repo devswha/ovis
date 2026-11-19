@@ -15,7 +15,7 @@ const options = { accountOpensAll: true, accountService: { url: "https://offline
 
 type Removal = (pc: Awaited<ReturnType<typeof relayAccountFixture>>, target: string, serverId: string) => Promise<void>;
 
-/** Begin with a durable live row: satisfying the admission hold is a different transition (S2-29). */
+/** Begin with a durable live row this PC saw used today: the hold (S2-29) and idle expiry (S2-28) are other transitions. */
 async function expectRemoval(remove: Removal) {
   const pc = await relayAccountFixture("drive", account, options);
   let fixture = pc.fixture;
@@ -28,17 +28,20 @@ async function expectRemoval(remove: Removal) {
     const path = join(stateDir, ACCOUNT_DEVICES_FILE);
     writePrivateState(path, {
       v: 1, account, server_id: serverId, version: 1, snapshot: "1".padStart(32, "0"),
-      devices: [{ id, key: publicKey, no: 2, label: "Laptop", confirmed_at: at, last_signin_day: null,
+      devices: [{ id, key: publicKey, no: 2, label: "Laptop", confirmed_at: at, last_signin_day: new Date().toISOString().slice(0, 10),
         origin: { from: "remote", how: "list", by: null, admit_no: 1, at }, state: "live", hold_until: null }],
     } satisfies AccountDevicesFile);
     const persisted = () => parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8"))).devices.map((row) => row.id);
+    // the PC starts with this file, as it would after a restart: its rows are read at start, never behind its back
+    fixture.app.stop();
+    fixture = relayFixture(false, { ...options, stateDir });
     const link = await relayConnection(fixture, { serverId });
     expect(await link.auth({ id, publicKey, keys })).toMatchObject({ device_id: id });
     const disksAtClose: string[][] = [];
     const { devices } = fixture.app.context.services;
     devices.onRevoke(id, () => disksAtClose.push(persisted()));
 
-    await remove(pc, publicKey, serverId);
+    await remove({ ...pc, fixture }, publicKey, serverId);
 
     expect(disksAtClose).toEqual([[id]]);
     expect(await bounded(link.serverError)).toBe("auth_revoked");
