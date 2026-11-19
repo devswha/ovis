@@ -1397,15 +1397,16 @@ export async function waitingCard(pane: HerdrPane, panes: HerdrPane[], options: 
   return kind === undefined || id === undefined ? null : { kind, id };
 }
 
-type AnsweredListener = (paneId: string, cardId: string) => void;
-const answeredListeners = new Set<AnsweredListener>();
+type AnsweringListener = (paneId: string) => () => void;
+const answeringListeners = new Set<AnsweringListener>();
 /**
- * Told the pane of each answer a card's button delivered (POST /api/pane/prompt/answer), and which card it was, by the
- * id `waitingCard` reads for it: the answer is told once its form has settled, when the pane may show its next card.
+ * Told the pane as an answer from a card's button begins (POST /api/pane/prompt/answer), before anything is read or
+ * typed for it. What the listener gives back is called if that answer was delivered, once its form has settled: by
+ * then the pane may show its next card, so what the answer was for is the listener's to note as it begins.
  */
-export function onPromptAnswered(listener: AnsweredListener): () => void {
-  answeredListeners.add(listener);
-  return () => { answeredListeners.delete(listener); };
+export function onPromptAnswering(listener: AnsweringListener): () => void {
+  answeringListeners.add(listener);
+  return () => { answeringListeners.delete(listener); };
 }
 
 const SUGGESTION_PARSERS: Readonly<Record<string, (ansi: string) => string | null>> = {
@@ -1478,7 +1479,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     const log = { paneId: body.pane_id, matched: false };
     answerLog = log;
     let delivered = false;
-    let answeredCard: string | undefined;
+    const answered = [...answeringListeners].map((listener) => listener(body.pane_id));
     const response = await serialize(body.pane_id, async () => {
       if (request.signal.aborted) return promptChanged();
       const deadlineMs = options.answerDeadlineMs ?? 4_000;
@@ -1496,7 +1497,6 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       log.matched = true;
 
       const parsedPrompt = parsedByPublicPrompt.get(prompt);
-      answeredCard = parsedPrompt?.id;
       // before each key: the look the key needs (beforeKey), then, for an omp card read under an open ask call, that
       // call is still the pane's one open call: omp asking again since the last read takes none of this card's keys
       const ompCall = agent === "omp" ? parsedPrompt?.ompCall : undefined;
@@ -2219,7 +2219,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     if (form.still !== undefined) await formMovedOn(body.pane_id, form.still, options.codexHome, options.openCodeStateDir);
     if (response.ok && delivered) {
       options.onAnswered?.();
-      if (answeredCard !== undefined) for (const listener of answeredListeners) listener(body.pane_id, answeredCard);
+      for (const told of answered) told();
     }
     await logAnswer(log, response);
     return response;

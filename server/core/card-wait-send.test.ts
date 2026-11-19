@@ -144,11 +144,16 @@ async function page(port: number) {
     await socket.pendingAction("t1", "no-such-row", "discard");
     return seen.filter((message): message is Extract<ServerMessage, { type: "pending-messages" }> => message.type === "pending-messages" && message.pane_id === "t1").at(-1)?.messages ?? [];
   };
-  return { socket, frame, rows };
+  /** the status the page shows for the pane: its newest status frame's */
+  const status = (): AgentStatus | undefined => seen.filter((message): message is Extract<ServerMessage, { type: "pane-status" }> => message.type === "pane-status" && message.pane_id === "t1").at(-1)?.agent_status;
+  return { socket, frame, rows, status };
 }
 
-/** The chat composer's Send as PaneTerminal wires it: what the page knows of the pane and of its card, over the page's socket. */
-function composer(socket: HerdrSocket, agentStatus: AgentStatus, card: InteractivePrompt) {
+/**
+ * The chat composer's Send as PaneTerminal wires it, over the page's socket: what the page knows of the pane (`status`)
+ * and of the card it shows for it, if any, and whether held messages are sent by themselves.
+ */
+function composer(socket: HerdrSocket, { status: agentStatus, card, autoSend = false }: { status: AgentStatus | undefined; card: InteractivePrompt | null; autoSend?: boolean }) {
   let actions!: ReturnType<typeof useComposerSends>;
   function Composer() {
     const deps: Partial<ComposerSendsDeps> = {
@@ -157,8 +162,8 @@ function composer(socket: HerdrSocket, agentStatus: AgentStatus, card: Interacti
       heldRef: { current: false }, secretRef: { current: null }, observeRef: { current: false }, draftHeldForRef: { current: null },
       stillOpenRef: { current: null }, stillOpenNotedRef: { current: false }, chatNavigation: { current: 0 }, setChatLocalSend: () => {},
       // a question in Codex's queue is no card to answer from the composer, and only an open one holds the input (PaneTerminal)
-      answering: !card.queued && !card.fallback ? card : null, heldByOpenQueue: card.queued === "open",
-      ended: false, answerPending: false, pendingAnswer: null, settings: { autoSendQueued: false },
+      answering: card !== null && !card.queued && !card.fallback ? card : null, heldByOpenQueue: card?.queued === "open",
+      ended: false, answerPending: false, pendingAnswer: null, settings: { autoSendQueued: autoSend },
       knownOutcomes: () => [], inputRowNow: () => "ready", showSentCommand: () => {}, t: (key) => key,
       cardWaits: () => socket.typesArrows(),
       submitComposerMessage: (text, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly, holdOnly) =>
@@ -188,11 +193,36 @@ it("holds a normal Send to a Codex a herdr-core server shows blocked over its co
   const shown = await waits;
   const from = daemon.methods.length;
 
-  expect(await composer(socket, shown.agent_status, card).composerSend("next step")).toBe(true);
+  expect(await composer(socket, { status: shown.agent_status, card }).composerSend("next step")).toBe(true);
 
   const listed = await rows();
   expect(daemon.written(from)).toEqual([]);
   expect(listed).toMatchObject([{ text: "next step", state: "held" }]);
+}, 30_000);
+
+it.each([
+  ["off", "held", false],
+  ["on", "queued", true],
+] as const)("types nothing for a normal Send in the read or two a wait outlives its card, automatic sending %s: the message is %s", async (_setting, state, autoSend) => {
+  const { daemon, port, tickCards } = await serve(true, "working", approval);
+  const { socket, frame, rows, status } = await page(port);
+  // the page is in use, so the terminal it shows is read on every tick: the rows' answer says the server has taken that in
+  socket.setPresence(true);
+  await rows();
+  const waits = frame("the card's wait", (message): message is Extract<ServerMessage, { type: "pane-status" }> => message.type === "pane-status" && message.pane_id === "t1" && message.agent_status === "blocked");
+  await tickCards();
+  await waits;
+  // answered in the terminal: Codex works on, the page shows no card any more, and one read without it leaves the wait on
+  daemon.screen = inputBox;
+  await tickCards();
+  expect(status()).toBe("blocked");
+  const from = daemon.methods.length;
+
+  expect(await composer(socket, { status: status(), card: null, autoSend }).composerSend("next step")).toBe(true);
+
+  const listed = await rows();
+  expect(daemon.written(from)).toEqual([]);
+  expect(listed).toMatchObject([{ text: "next step", state }]);
 }, 30_000);
 
 it("still types a reply at once into a Codex that herdr itself calls blocked over its collapsed questions, automatic sending off", async () => {
@@ -202,7 +232,7 @@ it("still types a reply at once into a Codex that herdr itself calls blocked ove
   const roster = await frame("its snapshot", (message): message is Extract<ServerMessage, { type: "snapshot" }> => message.type === "snapshot");
   const from = daemon.methods.length;
 
-  expect(await composer(socket, roster.snapshot.panes[0]!.agent_status, collapsedCard()).composerSend("next step")).toBe(true);
+  expect(await composer(socket, { status: roster.snapshot.panes[0]!.agent_status, card: collapsedCard() }).composerSend("next step")).toBe(true);
 
   expect(await rows()).toEqual([]);
   expect(daemon.written(from)).toEqual(["agent.prompt", "pane.send_text", "pane.send_keys"]);

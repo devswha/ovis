@@ -17,8 +17,14 @@
  * restart of the server: a card still shown then is waited on, and alerted, once more.
  *
  * A read and a wait are one agent's (`Asker`): the screen read for Codex says nothing of the Claude Code that runs in
- * the terminal once the read comes back. So the panes are asked for anew (`roster`) right before a read starts and
- * when it returns, and a wait whose agent is no longer the terminal's ends.
+ * the terminal once the read comes back. So each pane is asked for anew (`Roster`) right before its read starts and
+ * when it returns, and a wait whose agent is no longer the terminal's ends. A terminal that changed hands and back
+ * while its screen was read looks the same before and after, so the caller counts every change of its agent or
+ * session it is told (`Roster.lifetime`): a read begun under an earlier count is dropped, and a wait ends.
+ *
+ * An answer is one wait's: it is given the wait it began under (`generation`), and ends that wait alone at its next
+ * read without a card. A form answered field by field is one wait throughout, whatever its last field's card is; a
+ * new asking in the same words is another.
  */
 import type { AgentStatus, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
@@ -34,9 +40,17 @@ const READS_AT_ONCE = 4;
 
 /** the agent a read or a wait is for: its name, and its session where the pane says one */
 interface Asker { readonly agent: string; readonly session: string | undefined }
-interface Wait { readonly kind: WaitingKind; readonly id: string; asker: Asker; empty: number; failed: number }
+interface Wait { readonly kind: WaitingKind; readonly id: string; readonly generation: number; readonly lifetime: number; asker: Asker; empty: number; failed: number }
+/** one pane picked for a read: whose it was, and under which count of its agents, as the tick began */
+interface Picked { readonly pane: HerdrPane; readonly asker: Asker; readonly lifetime: number }
+/**
+ * The panes as their agents' reports and the newest snapshot make them now: all of them once a tick, and one again
+ * around its own read. `lifetime`: how many times the pane's agent, or its session, was told to be another so far,
+ * a change back to the one before counted too.
+ */
+export interface Roster { all(): HerdrPane[]; pane(paneId: string): HerdrPane | undefined; lifetime(paneId: string): number }
 
-function askerOf(pane: HerdrPane): Asker | null {
+function askerOf(pane: Pick<HerdrPane, "agent" | "agent_session">): Asker | null {
   return pane.agent ? { agent: pane.agent, session: pane.agent_session?.agent === pane.agent ? pane.agent_session.value : undefined } : null;
 }
 /** another name is another agent, and so is another session of it; a session not known on one side tells nothing */
@@ -44,12 +58,20 @@ function sameAsker(one: Asker, other: Asker): boolean {
   return one.agent === other.agent && (one.session === undefined || other.session === undefined || one.session === other.session);
 }
 
+/** Whether the agent told for a pane now is not the one told before: another name, another session of it, or none any more. */
+export function changedHands(before: Pick<HerdrPane, "agent" | "agent_session">, now: Pick<HerdrPane, "agent" | "agent_session">): boolean {
+  const ran = askerOf(before);
+  const runs = askerOf(now);
+  return ran !== null && (runs === null || !sameAsker(ran, runs));
+}
+
 export class CardWaits {
   private readonly waits = new Map<string, Wait>();
   /** panes a card's answer went to since their last read that found no card */
   private readonly answered = new Set<string>();
-  /** panes picked for a read under way or still queued, that still count, and whom each read is for: forgetting a pane drops its read (ticks never overlap: the caller runs one at a time) */
-  private readonly reading = new Map<string, Asker>();
+  /** panes picked for a read under way or still queued, that still count: forgetting a pane drops its read (ticks never overlap: the caller runs one at a time) */
+  private readonly reading = new Set<string>();
+  private generations = 0;
 
   constructor(
     private readonly read: (pane: HerdrPane, panes: HerdrPane[]) => Promise<CardRead>,
@@ -65,12 +87,17 @@ export class CardWaits {
     return this.waits.get(paneId)?.kind;
   }
 
+  /** The wait the pane is in, for an answer that begins now to hand back once it was delivered (`answer`). */
+  generation(paneId: string): number | undefined {
+    return this.waits.get(paneId)?.generation;
+  }
+
   /**
-   * An answer went to the pane's card `cardId`: where that card is the one waited on, its next read that finds no card
-   * ends the wait. An answer that settled only after the next card came is not that card's.
+   * An answer begun under the wait `generation` was delivered: where that wait is still the pane's, its next read that
+   * finds no card ends it. A wait begun since is another asking, whatever its card says, and is not answered by it.
    */
-  answer(paneId: string, cardId: string): void {
-    if (this.waits.get(paneId)?.id === cardId) this.answered.add(paneId);
+  answer(paneId: string, generation: number): void {
+    if (this.waits.get(paneId)?.generation === generation) this.answered.add(paneId);
   }
 
   /** The pane is gone, or what is reported next tells its status: what it waited on goes, told to nobody. */
@@ -82,44 +109,44 @@ export class CardWaits {
 
   /**
    * One read of each pane of `roster` that `reads` picks (`only`: of those panes alone), and of each pane that waits. A
-   * pane no longer listed is forgotten, and a waiting pane ends its wait once no agent runs in it, another one does, or
-   * a tracker of its own tells its status (`owned`). Such a pane is never read: not when it became one while it waited
-   * its turn behind the panes read before it, and a read of it under way then counts for nothing.
+   * pane no longer listed is forgotten, and a waiting pane ends its wait once no agent runs in it, another one does or
+   * did since (`Roster.lifetime`), or a tracker of its own tells its status (`owned`). Such a pane is never read: not
+   * when it became one while it waited its turn behind the panes read before it, and a read of it under way then
+   * counts for nothing.
    */
-  async tick(roster: () => HerdrPane[], reads: (pane: HerdrPane) => boolean, owned: (paneId: string) => boolean = () => false, only?: ReadonlySet<string>): Promise<void> {
-    const panes = roster();
+  async tick(roster: Roster, reads: (pane: HerdrPane) => boolean, owned: (paneId: string) => boolean = () => false, only?: ReadonlySet<string>): Promise<void> {
+    const panes = roster.all();
     const listed = new Set(panes.map((pane) => pane.pane_id));
     for (const paneId of [...this.waits.keys()]) if (!listed.has(paneId)) this.forget(paneId);
     for (const pane of panes) {
       const wait = this.waits.get(pane.pane_id);
       if (!wait) continue;
       const asker = askerOf(pane);
-      if (asker === null || owned(pane.pane_id) || !sameAsker(wait.asker, asker)) this.end(pane.pane_id);
+      if (asker === null || owned(pane.pane_id) || !sameAsker(wait.asker, asker) || wait.lifetime !== roster.lifetime(pane.pane_id)) this.end(pane.pane_id);
       else if (wait.asker.session === undefined) wait.asker = asker;
     }
-    const candidates = panes.flatMap((pane) => {
+    const candidates = panes.flatMap((pane): Picked[] => {
       const asker = askerOf(pane);
-      return asker !== null && !owned(pane.pane_id) && (only === undefined || only.has(pane.pane_id)) && (this.waits.has(pane.pane_id) || reads(pane)) ? [{ pane, asker }] : [];
+      return asker !== null && !owned(pane.pane_id) && (only === undefined || only.has(pane.pane_id)) && (this.waits.has(pane.pane_id) || reads(pane))
+        ? [{ pane, asker, lifetime: roster.lifetime(pane.pane_id) }] : [];
     });
-    for (const { pane, asker } of candidates) this.reading.set(pane.pane_id, asker);
-    /** the pane is still this read's: not forgotten since it was picked, and the same agent's, with no tracker of its own, as listed now */
-    const still = (now: HerdrPane[], { pane, asker }: { pane: HerdrPane; asker: Asker }): boolean => {
-      const current = now.find((shown) => shown.pane_id === pane.pane_id);
+    for (const { pane } of candidates) this.reading.add(pane.pane_id);
+    /** the pane is still this read's: not forgotten since it was picked, in the same lifetime, and the same agent's with no tracker of its own as it is now */
+    const still = ({ pane, asker, lifetime }: Picked): boolean => {
+      const current = roster.pane(pane.pane_id);
       const runs = current ? askerOf(current) : null;
-      return this.reading.get(pane.pane_id) === asker && runs !== null && sameAsker(asker, runs) && !owned(pane.pane_id);
+      return this.reading.has(pane.pane_id) && roster.lifetime(pane.pane_id) === lifetime && runs !== null && sameAsker(asker, runs) && !owned(pane.pane_id);
     };
     for (let at = 0; at < candidates.length; at += READS_AT_ONCE) {
       const picked = candidates.slice(at, at + READS_AT_ONCE);
-      const before = roster();
-      const batch = picked.filter((candidate) => still(before, candidate));
-      const found = await Promise.all(batch.map(({ pane }) => this.read(pane, before).catch((): CardRead => undefined)));
-      const after = roster();
-      batch.forEach((candidate, index) => { if (still(after, candidate)) this.settle(candidate.pane.pane_id, candidate.asker, found[index]); });
-      for (const { pane, asker } of picked) if (this.reading.get(pane.pane_id) === asker) this.reading.delete(pane.pane_id);
+      const batch = picked.filter(still);
+      const found = await Promise.all(batch.map(({ pane }) => this.read(pane, panes).catch((): CardRead => undefined)));
+      batch.forEach((candidate, index) => { if (still(candidate)) this.settle(candidate, found[index]); });
+      for (const { pane } of picked) this.reading.delete(pane.pane_id);
     }
   }
 
-  private settle(paneId: string, asker: Asker, read: CardRead): void {
+  private settle({ pane: { pane_id: paneId }, asker, lifetime }: Picked, read: CardRead): void {
     const wait = this.waits.get(paneId);
     if (read === undefined) {
       if (wait && ++wait.failed >= FAILED_READS_END) this.end(paneId);
@@ -139,7 +166,7 @@ export class CardWaits {
     // another card where one was waited on (its answer brought the next asking before a read found the screen
     // without a card): that wait is over, an answer to it with it, and this card's begins
     if (wait) this.end(paneId);
-    this.waits.set(paneId, { kind: read.kind, id: read.id, asker, empty: 0, failed: 0 });
+    this.waits.set(paneId, { kind: read.kind, id: read.id, generation: ++this.generations, lifetime, asker, empty: 0, failed: 0 });
     this.changed(paneId, true);
   }
 

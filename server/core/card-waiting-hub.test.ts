@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as herdr from "../herdr/client.ts";
+import * as service from "../opencode-service.ts";
 import * as prompt from "../prompt.ts";
+import { handlePromptRequest, OpenCodePromptState } from "../prompt.ts";
 import * as served from "../runtime/capabilities.ts";
 import { HERDR, HERDR_CORE } from "../runtime/capabilities.ts";
 import { handlers, hub } from "./status.fake.ts";
 import type { CardRead } from "../card-waits.ts";
 import { shouldNotifyStatus } from "../../shared/notify-policy.ts";
-import type { AgentStatus } from "../../shared/protocol.ts";
+import type { AgentStatus, InteractivePrompt } from "../../shared/protocol.ts";
 
 const spies: { mockRestore(): void }[] = [];
 afterEach(() => { for (const spy of spies.splice(0)) spy.mockRestore(); });
@@ -20,6 +23,10 @@ function screen(initial: CardRead) {
 }
 const question = { kind: "question" as const, id: "q1" };
 const pane = (agent: string | null, agent_status: string, extra: Record<string, unknown> = {}) => ({ pane_id: "t1", workspace_id: "w1", tab_id: "w1:t1", agent, agent_status, cwd: "/tmp", ...extra });
+/** an answer from the card the pane waits on now was delivered */
+const answered = (h: { status: { cards: { answer(paneId: string, generation: number): void; generation(paneId: string): number | undefined } } }): void => {
+  h.status.cards.answer("t1", h.status.cards.generation("t1")!);
+};
 /** the waiting alerts web push would schedule: it takes a status equal to the last one as no change (push.ts onStatus) */
 const waitingAlerts = (alerts: string[]) => alerts.filter((status, at) => status === "blocked" && alerts[at - 1] !== "blocked").length;
 /** A hub that knows the pane as herdr and its agent's own reports tell it, its snapshot read once (what the card reads go over). */
@@ -77,7 +84,7 @@ describe("a herdr-core pane whose agent asks on screen what it did not report", 
     const h = await started(pane("codex", "working"));
     const shown = screen(question);
     await h.status.cardTick();
-    h.status.cards.answer("t1", question.id);
+    answered(h);
     shown.show(null);
     await h.status.cardTick();
     expect(h.last().status).toBe("working");
@@ -226,7 +233,7 @@ describe("what ends a card's wait, and what it leaves", () => {
     // the turn ends while the card is still drawn: still waiting, and the finish is kept for after
     handlers.onStatus("t1", "idle", "hermes");
     expect(h.last().status).toBe("blocked");
-    h.status.cards.answer("t1", question.id);
+    answered(h);
     shown.show(null);
     await h.status.cardTick();
     expect(h.last().status).toBe("done");
@@ -329,7 +336,7 @@ describe("what ends a card's wait, and what it leaves", () => {
     await h.status.cardTick();
     // the agent reports idle; herdr's last snapshot still says working
     handlers.onStatus("t1", "idle", "codex");
-    h.status.cards.answer("t1", question.id);
+    answered(h);
     shown.show(null);
     await h.status.cardTick();
     expect(h.last().status).not.toBe("working");
@@ -342,7 +349,7 @@ describe("what ends a card's wait, and what it leaves", () => {
     const sent = pushHears(h);
     const shown = screen(question);
     await h.status.cardTick();
-    h.status.cards.answer("t1", question.id);
+    answered(h);
     // the answer brought Codex's next asking, a command to approve, before any read found the screen without a card
     shown.show({ kind: "permission", id: "p1" });
     await h.status.cardTick();
@@ -350,18 +357,26 @@ describe("what ends a card's wait, and what it leaves", () => {
     expect((await h.snapshot()).panes[0]).toMatchObject({ agent_status: "blocked", agent_kind: "permission" });
   });
 
-  it("does not take an answer that settled after the next card came for an answer to that card", async () => {
+  const codexSession = (value: string) => pane("codex", "working", { agent_session: { agent: "codex", kind: "id", source: "test", value } });
+  it.each([
+    ["another agent and back, told by status events", [pane("codex", "working"), pane("claude", "working"), pane("codex", "working")], true],
+    ["another agent and back, told by snapshots alone", [pane("codex", "working"), pane("claude", "working"), pane("codex", "working")], false],
+    ["another session of its agent and back", [codexSession("one"), codexSession("two"), codexSession("one")], false],
+  ] as const)("starts no wait from a read begun before the pane changed hands and back: %s", async (_how, [began, between, again], events) => {
     serving(true);
-    const h = await started(pane("codex", "working"));
-    const shown = screen(question);
-    await h.status.cardTick();
-    shown.show({ kind: "permission", id: "p1" });
-    await h.status.cardTick();
-    // the question's answer is told only now, its form having settled while the approval was already read
-    h.status.cards.answer("t1", question.id);
-    shown.show(null);
-    await h.status.cardTick();
-    expect(h.status.cards.waiting("t1")).toBe(true);
+    const h = await started(began);
+    const read = heldRead();
+    const tick = h.status.cardTick();
+    await read.begun;
+    for (const now of [between, again]) {
+      h.herdrSays(now);
+      if (events) handlers.onStatus("t1", "working", now.agent);
+      await h.snapshot();
+    }
+    read.answer(question);
+    await tick;
+    expect(h.status.cards.waiting("t1")).toBe(false);
+    expect(h.alerts).not.toContain("blocked");
   });
 
   it("starts no wait for an agent from the read of the one it replaced in the pane", async () => {
@@ -445,6 +460,77 @@ describe("what ends a card's wait, and what it leaves", () => {
     expect(h.status.cards.waiting("t1")).toBe(false);
     expect(h.last().status).toBe("working");
     expect(shown.read.length).toBe(reads);
+  });
+});
+
+describe("an answer from a card, and the wait it ends", () => {
+  const asking = pane("opencode", "working", { agent_session: { agent: "opencode", kind: "id", source: "herdr:opencode", value: "ses_fixture" } });
+  const field = (key: string, label: string) => ({ key, type: "select", required: true, options: [{ value: label.toLowerCase(), label }] });
+  /** OpenCode's service asking with a form of these fields, until a reply to it is in; `reply` holds that reply back */
+  function openCodeAsks(fields: ReturnType<typeof field>[], reply: Promise<void> = Promise.resolve()) {
+    let asked = true;
+    const sent = Promise.withResolvers<void>();
+    spies.push(
+      spyOn(service, "openCodeService").mockResolvedValue({ config: { baseUrl: "http://127.0.0.1:1234", port: 1234, pid: 123, password: "fixture" }, version: "2.0.32" }),
+      spyOn(service, "listPendingQuestionForms").mockImplementation(async () => asked ? [{ id: "form_fixture", sessionID: "ses_fixture", title: "Fixture question", metadata: { kind: "question" }, fields }] : []),
+      spyOn(service, "replyOpenCodeForm").mockImplementation(async () => { sent.resolve(); await reply; asked = false; return { ok: true, status: 200 }; }),
+      // with no form, OpenCode's screen is read for a question of its older versions: an empty one
+      spyOn(herdr, "paneRead").mockResolvedValue({ text: "" } as never),
+    );
+    return { sent: sent.promise };
+  }
+  const page = new OpenCodePromptState();
+  /** the card the page shows for the pane, and its first option answered from it: the answer's HTTP status */
+  async function answerShown(): Promise<number> {
+    const shown = new URL("http://127.0.0.1/api/pane/prompt?pane_id=t1");
+    const card = ((await (await handlePromptRequest(new Request(shown), shown, { openCodeState: page }))!.json()) as { prompt: InteractivePrompt }).prompt;
+    const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
+    return (await handlePromptRequest(new Request(url, { method: "POST", body: JSON.stringify({ pane_id: "t1", prompt_id: card.id, option_index: 0 }) }), url, { openCodeState: page }))!.status;
+  }
+
+  it("ends the wait on a form answered field by field at the first read after its last field was sent", async () => {
+    serving(true);
+    const h = await started(asking);
+    openCodeAsks([field("first", "Yes"), field("last", "Red")]);
+    await h.status.cardTick();
+    expect(h.status.cards.waiting("t1")).toBe(true);
+    expect(await answerShown()).toBe(200);
+    // a read of the pane is under way as the last field is sent, and looks at the form only once that is done
+    const looks = Promise.withResolvers<void>();
+    const reader = prompt.waitingCard;
+    spies.push(spyOn(prompt, "waitingCard").mockImplementation(async (...read) => { await looks.promise; return reader(...read); }));
+    const read = h.status.cardTick();
+    expect(await answerShown()).toBe(200);
+    looks.resolve();
+    await read;
+    expect(h.status.cards.waiting("t1")).toBe(false);
+  });
+
+  it("does not end the wait on a new asking in the same words for an answer to the one before it", async () => {
+    serving(true);
+    const h = await started(asking);
+    const held = Promise.withResolvers<void>();
+    const reply = openCodeAsks([field("only", "Yes")], held.promise);
+    // what a wait on this asking goes by: the next one, in the same words, goes by the same
+    const same = await prompt.waitingCard(asking as never, [asking as never], { openCodeState: new OpenCodePromptState(), ompLookups: new Map() });
+    const shown = screen(same);
+    await h.status.cardTick();
+    const answer = answerShown();
+    await reply.sent;
+    // its reply is still on its way when the asking is gone from the pane, and the agent asks the same again
+    shown.show(null);
+    await h.status.cardTick();
+    await h.status.cardTick();
+    expect(h.status.cards.waiting("t1")).toBe(false);
+    shown.show(same);
+    await h.status.cardTick();
+    held.resolve();
+    expect(await answer).toBe(200);
+    // the read the answer set off, if it is still under way, sees the new asking; then one repaint without it
+    await h.status.cardTick();
+    shown.show(null);
+    await h.status.cardTick();
+    expect(h.status.cards.waiting("t1")).toBe(true);
   });
 });
 
@@ -532,14 +618,14 @@ describe("a card's wait across a resync of herdr's events, and across an exit", 
     { exit: "Claude's folder trust answered \"No, exit\"", agent: "claude", card: { kind: null, id: "trust" }, reported: null, answered: true, left: false },
     { exit: "Codex killed with its card left whole on screen", agent: "codex", card: question, reported: "working", answered: false, left: true },
   ];
-  it.each(exits)("still ends the wait for good when the agent exits at its card: $exit", async ({ agent, card, reported, answered, left }) => {
+  it.each(exits)("still ends the wait for good when the agent exits at its card: $exit", async ({ agent, card, reported, answered: byCard, left }) => {
     serving(true);
     const h = await started(pane(agent, reported ?? "unknown"), reported);
     const sent = pushHears(h);
     const shown = screen(card);
     await h.status.cardTick();
     expect(sent()).toBe(1);
-    if (answered && card) h.status.cards.answer("t1", card.id);
+    if (byCard) answered(h);
     if (!left) shown.show(null);
     const reads = shown.read.length;
     // the shell is back: its event names no agent, and the core's next snapshot names none either
@@ -554,13 +640,13 @@ describe("a card's wait across a resync of herdr's events, and across an exit", 
     expect(sent()).toBe(1);
   });
 
-  it.each(exits)("alerts again for the same card asked anew once the agent exits at it and is started again: $exit", async ({ agent, card, reported, answered, left }) => {
+  it.each(exits)("alerts again for the same card asked anew once the agent exits at it and is started again: $exit", async ({ agent, card, reported, answered: byCard, left }) => {
     serving(true);
     const h = await started(pane(agent, reported ?? "unknown"), reported);
     const sent = pushHears(h);
     const shown = screen(card);
     await h.status.cardTick();
-    if (answered && card) h.status.cards.answer("t1", card.id);
+    if (byCard) answered(h);
     if (!left) shown.show(null);
     h.herdrSays(pane(null, "unknown"));
     handlers.onStatus("t1", "unknown", null);

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswered, waitingCard } from "./prompt.ts";
+import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering } from "./prompt.ts";
 import { rememberPaneCommands } from "./commands.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
@@ -5225,15 +5225,17 @@ ${omoRule}
     });
   });
 
-  test("tells its listeners which card an answer went to, by the id a wait on that card goes by", async () => {
+  test("tells its listeners as an answer begins, before any key, and again once it was delivered", async () => {
     await withPane("codex", "blocked", menu(RESUME), async (pane) => {
       moving(pane, RESUME);
-      const heard: [string, string][] = [];
-      const stop = onPromptAnswered((paneId, cardId) => { heard.push([paneId, cardId]); });
+      const told: string[] = [];
+      const stop = onPromptAnswering((paneId) => {
+        told.push(`${paneId} begins after ${pane.sent.length} keys`);
+        return () => { told.push(`delivered after ${pane.sent.length} keys`); };
+      });
       try {
-        const waited = await waitingCard({ pane_id: "p_1", agent: "codex", agent_status: "working" } as HerdrPane, [], { openCodeState: new OpenCodePromptState(), ompLookups: new Map() });
         expect(await answer((await card())!.id, { option_index: 2 })).toEqual({ status: 200, code: undefined });
-        expect(heard).toEqual([["p_1", waited!.id]]);
+        expect(told).toEqual(["p_1 begins after 0 keys", "delivered after 3 keys"]);
       } finally { stop(); }
     });
   });
