@@ -31,7 +31,8 @@
  *
  * An alert waits before it goes out, and a change of the pane's status meanwhile calls it
  * off: a question answered at the desk, or a finish followed by the next prompt, never
- * reaches the phone. herdr says nothing of whether anyone is at the PC, so a change that
+ * reaches the phone. So does the pane going away: closed (`closed`), or no longer in a
+ * snapshot (`gone`), as when its tab or workspace closed (#4217). herdr says nothing of whether anyone is at the PC, so a change that
  * quick is taken for someone being there (as Claude Code waits ~6 s on a permission
  * prompt and ~60 s after a reply before it notifies). A question waits `short`; a finish
  * waits `long`, and only one after a turn that worked `longTurn` or more is worth it,
@@ -193,6 +194,10 @@ export interface PushService {
    * card's wait, server/card-waits.ts) is news rather than a first sighting.
    */
   assume(paneId: string, status: AgentStatus, machineId?: string): void;
+  /** this PC's panes the snapshot no longer lists, `newer` aside (an event since it was asked for), are gone: their alerts are called off, silently */
+  gone(panes: readonly HerdrPane[], newer: ReadonlySet<string>, machineId?: string): void;
+  /** a pane closed with no exit of its own: its alerts are called off, silently (an exit's alert is `onEnded`'s) */
+  closed(paneId: string, machineId?: string): void;
   onStatus(paneId: string, status: AgentStatus, machineId?: string): Promise<void>;
   onEnded(paneId: string, machineId?: string): Promise<void>;
   onFailed(paneId: string, machineId?: string): Promise<void>;
@@ -777,6 +782,24 @@ export function createPushService(options: PushServiceOptions): PushService {
     waiting.delete(key);
   }
 
+  /** an alert under way for it is dropped too (`changes`), and with no status left a late one is not told */
+  function forget(key: string): void {
+    callOff(key);
+    changes.delete(key);
+    turnStart.delete(key);
+    lastStatus.delete(key);
+  }
+
+  function gone(panes: readonly HerdrPane[], newer: ReadonlySet<string>, machineId: string): void {
+    const present = new Set(panes.map((pane) => paneStorageId(machineId, pane.pane_id)));
+    const newerKeys = new Set([...newer].map((paneId) => paneStorageId(machineId, paneId)));
+    const remotePrefix = `remote:${encodeURIComponent(machineId)}:`;
+    const onThisPc = (key: string): boolean => machineId === "local" ? !key.startsWith("remote:") : key.startsWith(remotePrefix);
+    for (const key of [...lastStatus.keys()]) {
+      if (onThisPc(key) && !present.has(key) && !newerKeys.has(key)) forget(key);
+    }
+  }
+
   const muted = (machineId: string, paneId: string): boolean => options.muted?.(machineId, paneId) === true;
   // A web push the device received has to be shown (iOS takes the subscription away from a page
   // that shows none), so a device's alert choices are applied here, not on the device.
@@ -920,17 +943,7 @@ export function createPushService(options: PushServiceOptions): PushService {
 
     resync(panes, newer, machineId = "local") {
       const busy = (value: AgentStatus | undefined): boolean => value === "working" || value === "blocked";
-      const present = new Set(panes.map((pane) => paneStorageId(machineId, pane.pane_id)));
-      const newerKeys = new Set([...newer].map((paneId) => paneStorageId(machineId, paneId)));
-      const remotePrefix = `remote:${encodeURIComponent(machineId)}:`;
-      const onThisPc = (key: string): boolean => machineId === "local" ? !key.startsWith("remote:") : key.startsWith(remotePrefix);
-      for (const key of [...lastStatus.keys()]) {
-        if (!onThisPc(key) || present.has(key) || newerKeys.has(key)) continue;
-        callOff(key);
-        changes.delete(key);
-        turnStart.delete(key);
-        lastStatus.delete(key);
-      }
+      gone(panes, newer, machineId);
       for (const pane of panes) {
         if (newer.has(pane.pane_id)) continue;
         const key = paneStorageId(machineId, pane.pane_id);
@@ -945,6 +958,14 @@ export function createPushService(options: PushServiceOptions): PushService {
         callOff(key);
         if (busy(status) !== busy(previous)) turnStart.delete(key);
       }
+    },
+
+    gone(panes, newer, machineId = "local") {
+      gone(panes, newer, machineId);
+    },
+
+    closed(paneId, machineId = "local") {
+      forget(paneStorageId(machineId, paneId));
     },
 
     async onStatus(paneId, status, machineId = "local") {
