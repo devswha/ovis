@@ -131,4 +131,6 @@ export const RELAY_ZH: Record<string, string> = {
   "Point at the QR code on the PC's screen": "对准 PC 屏幕上的二维码",
   "That is not an http or https address.": "这不是 http 或 https 地址。",
   "Add a PC|screen": "添加电脑",
+  "This pairing link is not this app's. Scan the QR code your PC shows.": "此配对链接不属于此应用。请扫描电脑上显示的二维码。",
+  "{host} is not on a tailnet or a home network, so plain http would send everything you type across the internet unencrypted. Use its https address, or open it again to go ahead.": "{host} 不在 tailnet 或家庭网络中，使用普通 http 会让你输入的所有内容未经加密地经过互联网。请使用它的 https 地址，或再次打开以继续。",
 };

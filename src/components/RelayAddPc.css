@@ -13,8 +13,8 @@
 .relay-add-back {
   display: grid;
   place-items: center;
-  width: calc(var(--space-8));
-  height: calc(var(--space-8));
+  width: var(--touch-target);
+  height: var(--touch-target);
   padding: 0;
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-pill);
@@ -25,7 +25,9 @@
 
 .relay-add-back > svg { width: var(--space-4); height: var(--space-4); }
 
-.relay-add > .sheep-badge { margin-top: var(--space-6); }
+.relay-add > .sheep-badge { margin-top: var(--space-4); }
+
+.relay-add-title:focus { outline: none; }
 
 .relay-add-title {
   margin: var(--space-5) 0 var(--space-6);

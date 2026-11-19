@@ -962,6 +962,13 @@ describe("the hosted shell's front page", () => {
       expect(last().state).toMatchObject({ kind: "list", account: { kind: "signed-out" } });
     });
 
+    it("leaves a page that moved while the saved pairings were read where it was taken", async () => {
+      launch();
+      const went: string[] = [];
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs("a".repeat(32))), navigate: (path) => { went.push(path); }, navigatedSinceEntry: () => true }));
+      expect(went).toEqual([]);
+    });
+
     it("stays on a front page that came with a fragment, or after a PC's own page in this tab", async () => {
       const went: string[] = [];
       const store = deviceStore(await pcs("a".repeat(32)));

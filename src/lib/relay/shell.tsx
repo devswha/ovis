@@ -141,7 +141,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let refusalProvider: AccountProvider | null = null;
   // the sign-in each confirm that names an account was drawn for (kept off the rendered state: it holds the tokens)
   const drawnFor = new WeakMap<RelayShellState, AccountSession>();
+  let signingIn = false;
   const accountChanged = async (): Promise<void> => {
+    // a sign-in that finished on this page (the phone app's own sheet) goes on as the launch it interrupted, as a
+    // browser's return to the page does
+    const finished = signingIn && account.state?.kind === "signed-in";
+    signingIn = account.state?.kind === "signing-in";
+    if (finished && !scoped) { launching = signedInNow = true; }
     const read = account.state?.kind !== "signing-in";
     if (read) accountRead = true;
     if (read && (account.state?.kind !== "signed-in" || account.state.pcs !== null)) unanswered = false;
@@ -153,6 +159,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     }
     if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
     else if (frontUp()) { if (sheetJoin && shown) show(shown); else await showFront(); }
+    signedInNow = false;
   };
   /**
    * The account as the sign-in screen draws it: a refusal a web return brought along shows, with its provider, until the
@@ -250,7 +257,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (shown !== before) return;
     // the app opens on a PC: the first front page of a launch goes straight into the PC this device opened last, by its
     // saved pairing (a page scoped to it connects with the key it holds; nothing is paired here)
-    const pc = left ? null : launchPc(devices, launching, signedInNow);
+    // nothing moved since the entry was read (a link, Back, a sheet's route): the page stays where it was taken
+    const pc = left || navigatedSinceEntry() || entries !== 0 ? null : launchPc(devices, launching, signedInNow);
     if (pc !== null) { left = true; navigate(serverScopePath(pc)); }
     if (left) return;
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
