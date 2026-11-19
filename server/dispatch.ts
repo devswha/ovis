@@ -647,7 +647,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const ingress = requestIngress(true);
     const security: SecuritySummary | undefined = access.level === "full" ? {
       token_configured: token !== "",
-      pairing_gate: devices.error !== null ? "unavailable" : devices.gated ? "closed" : "open",
+      pairing_gate: devices.error !== null || devices.accountError !== null ? "unavailable" : devices.gated ? "closed" : "open",
       bind_scope: bindScope(hostname),
       observed_ingress: ingress,
       public_exposure: ingress === "funnel" ? "observed" : "unknown",

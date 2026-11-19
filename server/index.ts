@@ -266,7 +266,7 @@ export function createServer(
   if (safetyLog?.strict) console.error(safetyLog.strict);
   const devices = new DeviceStore(stateDir, merge?.devicesBlocked ?? null, accountBlocked, safetyLog);
   // the machine profile has no open install: from its first answer only the caller on its owner's socket and a device through the relay with its proof get in
-  if (options.profile === "machine" && !devices.gated) devices.closeGate();
+  if (options.profile === "machine") devices.closeGate();
   const preferences = new PreferenceStore(stateDir);
   readOmpHeldFilesSetting(() => preferences.get().settings.ompHeldFiles === true);
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too

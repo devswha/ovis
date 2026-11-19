@@ -564,6 +564,7 @@ export class DeviceStore {
   }
 
   /** Relay opt-in closes open LAN access before any outbound connection is made. */
+  /** Closes the registry's own gate, whatever the safety log says; closing a closed gate does nothing. */
   closeGate(): void {
     this.assertWritable();
     if (this.rawGated) return;
