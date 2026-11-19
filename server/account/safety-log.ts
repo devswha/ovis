@@ -149,7 +149,7 @@ function writableByOthers(path: string): string | null {
   let stats: Stats;
   try { stats = statSync(path); } catch { return null; }
   if (stats.uid !== process.getuid?.()) return `it is owned by uid ${stats.uid}`;
-  return (stats.mode & 0o022) !== 0 ? "another account can write it" : null;
+  return (stats.mode & 0o022) !== 0 ? `another account can write it (chmod 600 ${path} once it is known to be this PC's own)` : null;
 }
 
 /** What a strict log reads as: locked, so nothing that reads it before checking `strict` takes it as open. */
@@ -183,7 +183,10 @@ export class SafetyLog {
     return log;
   }
 
-  /** The server that held this folder's handle stopped: the next open starts a fresh one. */
+  /**
+   * The server that held this folder's handle stopped: the next open starts a fresh one. One server per state folder
+   * runs in a process (createServer), so the handle is not counted; two servers on one folder are not supported.
+   */
   close(): void {
     if (HANDLES.get(this.path) === this) HANDLES.delete(this.path);
   }
