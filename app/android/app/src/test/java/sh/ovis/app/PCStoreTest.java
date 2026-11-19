@@ -538,6 +538,16 @@ public class PCStoreTest {
     }
 
     @Test
+    public void opensAPairingLinkInPlaceOnlyOverTheHostedShell() {
+        assertTrue(PCStore.showsHostedShell("https://app.ovis.sh"));
+        assertTrue(PCStore.showsHostedShell("https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/"));
+        assertFalse(PCStore.showsHostedShell(null));
+        assertFalse(PCStore.showsHostedShell("http://desktop.lan:7317"));
+        assertFalse(PCStore.showsHostedShell("https://app.ovis.sh.evil.example"));
+        assertFalse(PCStore.showsHostedShell("http://app.ovis.sh"));
+    }
+
+    @Test
     public void backIsThePagesOnlyOverAnotherPageOfTheSamePlace() {
         String pc = "https://pc.tail1234.ts.net";
         assertTrue(PCStore.pageTakesBack(pc + "/?pane=w1%3Ap2", pc + "/?pane=w1%3Ap1", pc));

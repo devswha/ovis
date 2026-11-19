@@ -57,6 +57,11 @@ final class PCStore {
         return appScope(data) == null ? null : data;
     }
 
+    /** Whether the page the app shows (`current`, a saved key) is the hosted shell's: its own list, or one of its PCs. */
+    static boolean showsHostedShell(String current) {
+        return "https://app.ovis.sh".equals(origin(current));
+    }
+
     static String appScope(String link) {
         URI uri;
         try {

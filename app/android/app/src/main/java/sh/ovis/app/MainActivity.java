@@ -800,12 +800,19 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
-     * A link to pair from waits for the connect screen (PCStore.link); a view of a PC (a file, a pane)
-     * opens that PC at that view when the app has it saved, as the browser would have; for any other
-     * PC the app has nothing to show.
+     * A link to pair from opens at its PC's page when the app shows the hosted shell (its account's
+     * list), so a scanned QR code lands on that PC; otherwise it waits for the connect screen
+     * (PCStore.link). A view of a PC (a file, a pane) opens that PC at that view when the app has it
+     * saved, as the browser would have; for any other PC the app has nothing to show.
      */
     private boolean openAppLink(String link) {
         if (PCStore.pairingLink(link)) {
+            if (PCStore.showsHostedShell(PCStore.current(this))) {
+                PCStore.open(this, PCStore.appScope(link), link);
+                PCStore.fail(null, null);
+                PCStore.redirects = 0;
+                return true;
+            }
             PCStore.link = link;
             return true;
         }

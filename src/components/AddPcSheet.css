@@ -249,3 +249,8 @@
     animation: none;
   }
 }
+
+.add-pc-command {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}

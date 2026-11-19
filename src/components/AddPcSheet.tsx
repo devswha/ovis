@@ -62,6 +62,15 @@ export interface AddPcSheetProps {
   onTypeNumber?: () => void;
 }
 
+const APPROVE_COMMAND = "ovis add --approve";
+
+/** A sentence with a command in it, the command kept on one line as code. */
+function withCommand(sentence: string, command: string): ReactNode {
+  const at = sentence.indexOf(command);
+  if (at < 0) return sentence;
+  return <>{sentence.slice(0, at)}<code className="add-pc-command">{command}</code>{sentence.slice(at + command.length)}</>;
+}
+
 export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, onOpenPc, onCancel, onClose, onPairByQr, onAskToJoin, onTypeNumber }: AddPcSheetProps) {
   const t = useT(), locale = useLocale(), phone = useMediaQuery(SHEET_QUERY);
   const id = useId();
@@ -176,7 +185,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
           body = (
             <>
               <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>
-              <p className="relay-shell-copy">{t("Check that this number matches where you approve, then approve.")}</p>
+              <p className="relay-shell-copy">{withCommand(t("Approve this number on {name}'s Ovis page, or with ovis add --approve.", { name }), APPROVE_COMMAND)}</p>
             </>
           );
           actions = pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onMatch()}>{t("The numbers match")}</button>);

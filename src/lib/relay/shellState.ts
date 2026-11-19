@@ -234,6 +234,8 @@ export interface SheetJoin {
   readonly mode: "new" | "join";
   readonly server_id: string;
   readonly returnHash?: string;
+  /** the join a PC's own page started for itself: drawn alone, with no list behind it */
+  readonly alone?: true;
 }
 export function dashboardHash(hash: string): string {
   return isDashboardHash(hash) ? formatDashboardHash(parseDashboardHash(hash)) : "";
@@ -245,11 +247,11 @@ export function sheetContext(serverId?: string): SheetJoin | null {
     if (typeof kept !== "object" || kept === null || !("mode" in kept) || !("server_id" in kept)) return null;
     if ((kept.mode !== "new" && kept.mode !== "join") || kept.server_id !== serverId || typeof kept.server_id !== "string") return null;
     const returnHash = "returnHash" in kept && typeof kept.returnHash === "string" ? dashboardHash(kept.returnHash) : "";
-    return { mode: kept.mode, server_id: kept.server_id, ...(returnHash ? { returnHash } : {}) };
+    return { mode: kept.mode, server_id: kept.server_id, ...(returnHash ? { returnHash } : {}), ...("alone" in kept && kept.alone === true ? { alone: true as const } : {}) };
   } catch { return null; }
 }
 export function keepSheetContext(join: SheetJoin): void {
-  try { sessionStorage.setItem("ovis-add-pc-sheet", JSON.stringify({ mode: join.mode, server_id: join.server_id, returnHash: dashboardHash(join.returnHash ?? "") })); }
+  try { sessionStorage.setItem("ovis-add-pc-sheet", JSON.stringify({ mode: join.mode, server_id: join.server_id, returnHash: dashboardHash(join.returnHash ?? ""), ...(join.alone ? { alone: true } : {}) })); }
   catch {}
 }
 export function typedJoin(serverId: string): boolean {

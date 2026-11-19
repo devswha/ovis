@@ -163,7 +163,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       state, scoped, iosTab, pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onCheckPc: (serverId: string) => void sweep.checkOne(serverId), onPair: confirmed, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget,
       onForgetPc: async (serverId: string) => { account.cancelEnrollment(serverId); await forgetSavedPc(serverId, store); await account.refresh(); if (frontUp()) await showFront(); },
       onUpdate: updates.update, onMatch: match, onJoinInstead: joinInstead, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, onOpenPc: openPc, defaultRelay: GLOBAL_RELAY, meLabel: label,
-      directoryRelays: account.directory, sheetJoin, continuedAccount: sheetJoin ? account.state : null, observedVersions: observedVersions(),
+      directoryRelays: account.directory, sheetJoin,
+      // a join a PC's own page started for itself stands alone: no list is drawn behind it (the tabs open the list)
+      ...(sheetJoin?.alone ? {} : { continuedAccount: sheetJoin ? account.state : null }), observedVersions: observedVersions(),
       ...(account.enabled ? { onSignIn: account.signIn, accountProviders: account.providers, onJoin: joinPc, onSignOut: account.signOut, onLeave: account.leave, onDeleteAccount: account.deleteAccount, ...(account.signedInAs?.sign_in_id === undefined ? {} : { accountSignIn: account.signedInAs.sign_in_id }), onRefreshAccount: () => account.refreshNow() } : {}),
     })))); account.armRefresh();
   };
@@ -174,15 +176,23 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
     if (devices.length && !checked) { checked = true; void sweep.check(); }
   };
-  const joinPc = (pc: MyPc, options: { typed?: boolean; sheet?: "new" | "join" } = {}): void => {
+  const joinPc = (pc: MyPc, options: { typed?: boolean; sheet?: "new" | "join"; alone?: true } = {}): void => {
     if (!pc.join) return;
     const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, ...pc.join, name: pc.name }, window.location.origin));
     keepTypedJoin(options.typed ? pc.server_id : null);
     if (options.sheet) {
-      keepSheetContext({ mode: options.sheet, server_id: pc.server_id, returnHash: dashboardHash(window.location.hash) });
+      keepSheetContext({ mode: options.sheet, server_id: pc.server_id, returnHash: dashboardHash(window.location.hash), ...(options.alone ? { alone: true } : {}) });
       keepConfirmedPc(pc.server_id);
     }
     navigate(link.pathname + link.hash);
+  };
+  /** The signed-in account's row for this PC when this device is not paired with it and may ask to join it. */
+  const accountPcToJoin = async (serverId: string): Promise<MyPc | undefined> => {
+    if (!account.enabled) return undefined;
+    show({ kind: "connecting", name: null });
+    await account.load(null);
+    const view = account.state;
+    return view?.kind === "signed-in" ? view.pcs?.find((pc) => pc.server_id === serverId && !pc.paired && pc.join !== undefined) : undefined;
   };
   const failed = async (error: unknown, attempt: Attempt): Promise<void> => {
     if (last !== attempt) return;
@@ -552,7 +562,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   if (arrived()) return;
   if (entry.serverId !== null) {
     const saved = await store.get(entry.serverId);
-    if (saved === undefined) show({ kind: "empty" });
+    if (saved === undefined) {
+      // a PC's own page that this device has no pairing for: a PC of the account that needs this device approved joins
+      // right here, on a screen of its own, and never the list (which only the tabs open)
+      const joinable = await accountPcToJoin(entry.serverId);
+      if (joinable !== undefined) joinPc(joinable, { sheet: "join", alone: true });
+      else show({ kind: "empty" });
+    }
     // a key saved from a forged link (an earlier build saved before admission): Forget removes it
     else if (forgedOffer(offerOf(saved))) show({ kind: "failed", failure: "identity-changed", name: saved.name ?? null, detail: null, mismatch: keyMismatch(saved.server_id, [{ key: saved.server_public_key, from: "saved" }]) });
     else {

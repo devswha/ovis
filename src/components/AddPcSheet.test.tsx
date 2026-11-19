@@ -194,7 +194,7 @@ describe("the Add-a-PC sheet", () => {
     await click("Ask to join");
     expect(calls.joins).toEqual([[pc]]);
     await update(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false }));
-    expect(all()).toContain("Check that this number matches where you approve, then approve.");
+    expect(all()).toContain(translate("en", "Approve this number on {name}'s Ovis page, or with ovis add --approve.", { name: "desk2" }));
     const digits = renderer!.root.findByProps({ className: "relay-shell-digits" });
     expect(text(digits)).toBe("123 456");
     expect(digits.props["aria-label"]).toBe("1 2 3 4 5 6");
