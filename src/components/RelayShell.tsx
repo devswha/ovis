@@ -22,7 +22,8 @@ import { KeyId } from "./KeyId.tsx";
 import { MyMachinesPage } from "./MyMachinesPage.tsx";
 import { RelayDashboard } from "./RelayDashboard.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
-import { INSTALLER_COMMAND, PLUGIN_COMMANDS, RelayShellCardContent, TypedDigits } from "./RelayShellScreens.tsx";
+import { RelayAddPc } from "./RelayAddPc.tsx";
+import { INSTALLER_COMMAND, PLUGIN_COMMANDS, RelayShellCardContent, ScanQrStep, TypedDigits } from "./RelayShellScreens.tsx";
 import { RelayStepFrame, type RelayStepBack } from "./RelayStepFrame.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
 
@@ -58,6 +59,8 @@ export interface RelayShellProps {
   directoryRelays?: readonly { server_id: string; relay: string | null }[];
   defaultRelay?: string; meLabel?: string;
   onCodeStart: () => void; onCodeSubmit: (code: string) => void; onCodeMatch: () => void;
+  /** the front page was opened on Add a PC (`/#add`: the app's More → Add a PC), whatever the account's state */
+  addEntry?: boolean;
 }
 
 /** The field a code is typed in, kept in the input itself (src/AGENTS.md: secret input stays in the DOM). */
@@ -163,6 +166,7 @@ export function RelayShell(props: RelayShellProps) {
   const [signedOutView, setSignedOutView] = useState<"sign-in" | "pair">("sign-in");
   const [sheet, setSheet] = useState<{ pc: MyPc | null; mode: AddPcSheetMode } | null>(null);
   const [addingPc, setAddingPc] = useState(false);
+  const [addOpen, setAddOpen] = useState(props.addEntry === true);
   const machinesRoute = useMyMachinesRoute();
   // a sheet opened on one of the two screens goes with it, whether by a link or the browser's Back
   const onMachines = machinesRoute !== null;
@@ -181,6 +185,18 @@ export function RelayShell(props: RelayShellProps) {
   const devices = state.kind === "list" ? state.devices : [];
   // a pairing's sign-in reads on the plain page, with nothing around it; its other steps are on the step frame
   const plain = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined;
+
+  // Add a PC asked for by its address stands alone over the front page; its Back goes back to where it was asked from
+  if (addOpen && (state.kind === "list" || state.kind === "empty")) {
+    return (
+      <main className="relay-shell-screen relay-add-screen" data-relay-state={stateName} {...(account ? { "data-account-state": account.kind } : {})}>
+        <div className="relay-shell account-centered relay-shell-signin">
+          <RelayAddPc onBack={() => { setAddOpen(false); if (window.history.length > 1) window.history.back(); }} devices={devices}
+            qr={(qrBack) => <ScanQrStep onCodeStart={onCodeStart} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />} />
+        </div>
+      </main>
+    );
+  }
 
   if (account?.kind === "signed-in") {
     const signedIn = account;

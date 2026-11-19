@@ -714,6 +714,14 @@ describe("the dashboard", () => {
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Your PCs, anywhere. Sign in to your Ovis account");
     });
 
+    it("opens on Add a PC when asked by its address, signed in too, and its Back leaves it", async () => {
+      await mount({ ...signedIn(four()), addEntry: true });
+      expect(textOf(renderer!.root.findByType("h1"))).toBe("Add a PC");
+      expect(renderer!.root.findAll((node) => node.props.className === "relay-dash")).toHaveLength(0);
+      await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Back").props.onClick(); });
+      expect(renderer!.root.findAll((node) => node.props.className === "relay-dash")).toHaveLength(1);
+    });
+
     it("takes Start without signing in to Add a PC, which lists this device's own pairings by their pages, and Back to the sign-in", async () => {
       await mount({ ...props({ kind: "list", devices: [device(ids.desk, "p620", AP), device(ids.mac, "nuc", GLOBAL)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
       await act(async () => { button("Start without signing in").props.onClick(); });
