@@ -478,7 +478,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
    * for a fresh snapshot.
    */
   type GitAnswer = { facts: WorkspaceWorktreeInfo; gitId: string | null } | null;
-  type GitEntry = { until: number; answer: GitAnswer; asking: Promise<GitAnswer> | null; first: Promise<GitAnswer> | null; waitedOut: boolean };
+  type GitEntry = { until: number; answer: GitAnswer; asking: Promise<GitAnswer> | null; first: Promise<GitAnswer> | null; waitedOut: boolean; used: number };
   const checkoutFacts = new Map<string, GitEntry>();
   const askGit = (folder: string, entry: GitEntry): Promise<GitAnswer> => {
     entry.asking = repositoryOf(folder).then((repository) => ({ facts: factsOf(repository, repository.checkout), gitId: gitDirIdentity(repository.git_dir) }), () => null).then((answer) => {
@@ -491,7 +491,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   };
   const answerFor = (folder: string): Promise<GitAnswer> => {
     let entry = checkoutFacts.get(folder);
-    if (!entry) checkoutFacts.set(folder, entry = { until: 0, answer: null, asking: null, first: null, waitedOut: false });
+    if (!entry) checkoutFacts.set(folder, entry = { until: 0, answer: null, asking: null, first: null, waitedOut: false, used: 0 });
+    entry.used = Date.now();
     // never answered: the first snapshot waits a moment for the first answer, and the ones after it share that wait
     if (entry.until === 0) {
       const waiting = entry;
@@ -504,11 +505,14 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     return Promise.resolve(entry.answer);
   };
   /**
-   * The git folder identity each workspace's checkout had when first seen from a fresh answer, for
-   * the folder its first terminal started in: a checkout removed and added again at that path since
-   * is not the one drawn, however often git is asked again.
+   * The folder each workspace's checkout is read from, and the git folder identity it had when first
+   * seen from a fresh answer. It stays while a terminal of the workspace started there: a tab moved in
+   * front does not change the checkout a confirmation names, and a checkout removed and added again at
+   * that path since is not the one drawn, however often git is asked again.
    */
-  const firstIdentities = new Map<string, { folder: string; gitId: string | null; at: number }>();
+  const pinned = new Map<string, { folder: string; gitId: string | null; at: number }>();
+  /** per snapshot, the folder each workspace without a label is read from, as its row is drawn */
+  const homesOf = new WeakMap<SessionSnapshot, Map<string, string>>();
   /**
    * herdr's snapshot of the core, whether Ovis keeps its layout (ownsLayout), from one read of the
    * app's document, and the git folder identity behind each workspace's facts that git gave.
@@ -525,6 +529,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     const shown = buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value, sessionOf, coreHost(options.otherMachine, platform));
     const gitIds = new Map<string, string | null>();
     const started = new Map(list.terminals.map((terminal) => [terminal.address, terminal.cwd]));
+    const homes = new Map<string, string>();
+    homesOf.set(shown, homes);
     // herdr reports every workspace's checkout from git; hc has none, so a workspace no label claims (one
     // the app arranges, or a checkout Ovis did not open) gets git's facts for the folder its first
     // terminal started in: as herdr's stays with a workspace, a shell there going elsewhere (a `cd`, an
@@ -535,23 +541,26 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const asked = new Map<SessionSnapshot["workspaces"][number], string>();
       for (const workspace of shown.workspaces) {
         if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
-        const first = shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id);
-        const folder = first && started.get(first.pane_id);
-        if (folder) asked.set(workspace, folder);
+        const folders = shown.panes.filter((pane) => pane.workspace_id === workspace.workspace_id).map((pane) => started.get(pane.pane_id));
+        const kept = pinned.get(workspace.workspace_id)?.folder;
+        const folder = kept !== undefined && folders.includes(kept) ? kept : folders[0];
+        if (!folder) continue;
+        asked.set(workspace, folder);
+        homes.set(workspace.workspace_id, folder);
       }
+      // an older read finishing late does not forget what a newer one asked
       const folders = new Set(asked.values());
-      for (const [folder, entry] of checkoutFacts) if (!folders.has(folder) && !entry.asking) checkoutFacts.delete(folder);
-      // a read begun before a workspace was first seen does not forget it
+      for (const [folder, entry] of checkoutFacts) if (!folders.has(folder) && !entry.asking && entry.used < began) checkoutFacts.delete(folder);
       const ids = new Set(shown.workspaces.map((workspace) => workspace.workspace_id));
-      for (const [id, first] of firstIdentities) if (!ids.has(id) && first.at < began) firstIdentities.delete(id);
+      for (const [id, pin] of pinned) if (!ids.has(id) && pin.at < began) pinned.delete(id);
       await Promise.all([...asked].map(async ([workspace, folder]) => {
         const answer = await answerFor(folder);
         if (!answer) return;
         workspace.worktree = { ...answer.facts };
-        let first = firstIdentities.get(workspace.workspace_id);
+        let pin = pinned.get(workspace.workspace_id);
         // a cached answer git has not confirmed since may be of a checkout no longer there
-        if (first?.folder !== folder && (checkoutFacts.get(folder)?.until ?? 0) > Date.now()) firstIdentities.set(workspace.workspace_id, first = { folder, gitId: answer.gitId, at: Date.now() });
-        gitIds.set(workspace.workspace_id, first?.folder === folder ? first.gitId : answer.gitId);
+        if (pin?.folder !== folder && (checkoutFacts.get(folder)?.until ?? 0) > Date.now()) pinned.set(workspace.workspace_id, pin = { folder, gitId: answer.gitId, at: Date.now() });
+        gitIds.set(workspace.workspace_id, pin?.folder === folder ? pin.gitId : answer.gitId);
       }));
     }
     return { shown, own: ownsLayout(doc.value), gitIds, started };
@@ -779,9 +788,16 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     const shown = await ownLayout();
     const workspace = shown.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
     if (!workspace) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
-    const folder = workspace.worktree?.checkout_path ?? shown.panes.find((pane) => pane.workspace_id === workspaceId)?.cwd;
+    // where its row is read from, else where its shell is now: a shell gone into a repository from outside makes worktrees there
+    const home = workspace.worktree?.checkout_path ?? homesOf.get(shown)?.get(workspaceId);
+    const now = shown.panes.find((pane) => pane.workspace_id === workspaceId)?.cwd;
+    const folder = home ?? now;
     if (!folder) throw new AdapterError("not_git_worktree", `workspace ${workspaceId} has no folder`);
-    return { shown, repository: await repositoryOf(folder) };
+    const repository = await repositoryOf(folder).catch((error: unknown) => {
+      if (!now || now === folder) throw error;
+      return repositoryOf(now);
+    });
+    return { shown, repository };
   };
   /**
    * Which workspace shows each checkout: the one its facts name, else the one whose first pane works
@@ -793,7 +809,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     for (const workspace of shown.workspaces) {
       if (workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
       const facts = workspace.worktree;
-      const folder = facts ? (facts.repo_key === repository.repo_key ? facts.checkout_path : null) : shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id)?.cwd;
+      const folder = facts ? (facts.repo_key === repository.repo_key ? facts.checkout_path : null) : homesOf.get(shown)?.get(workspace.workspace_id) ?? shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id)?.cwd;
       if (!folder) continue;
       const real = realPath(folder);
       const checkout = checkoutHolding(repository.checkouts, real);

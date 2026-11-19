@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, jest, setSystemTime } from "bun:test";
 import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { HerdrError, herdrRpc, paneGet, paneProcessInfo, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveBeside, paneMoveToNewTab, tabClose, tabCreate, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "../herdr/client.ts";
+import { HerdrError, herdrRpc, paneGet, paneProcessInfo, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveBeside, paneMoveToNewTab, tabClose, tabCreate, tabMove, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "../herdr/client.ts";
 import { claudeInputDraft, viewportShowsLive } from "../claude-input.ts";
 import { type AdapterOptions, paintedScreen, type SeenObserver, sessionLabeler, startHerdrCoreAdapter } from "./adapter.ts";
 import { SeenMarker } from "./seen-label.ts";
@@ -922,13 +922,13 @@ describe("herdr-core adapter, new and closed terminals", () => {
   }
   async function labeling(start: HcTerminal[], extra: Record<string, Handler> = {}) {
     const ready = await living(start, {
-      ...extra,
       ...NO_DOC,
       "terminal.label": (params) => {
         const found = start.find((entry) => entry.address === params["terminal"])!;
         found.labels = { ...found.labels, ...(params["labels"] as Record<string, string>) };
         return found;
       },
+      ...extra,
     });
     return ready;
   }
@@ -1100,6 +1100,37 @@ describe("herdr-core adapter, new and closed terminals", () => {
     await expect(worktreeRemove("A", true, elsewhere.socket)).rejects.toMatchObject({ code: "worktree_in_use", message: expect.stringContaining("notes") });
     expect(existsSync(join(linked, "README.md"))).toBeTrue();
     expect(elsewhere.ends).toEqual([]);
+  });
+
+  it("keeps a workspace's checkout while a tab of it started there, whichever tab is in front, and claims no checkout by where a shell went (#3890)", async () => {
+    const { dir, repo, git } = repository();
+    const [a, b] = [join(dir, "a"), join(dir, "b")];
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "a", a).exitCode).toBe(0);
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "b", b).exitCode).toBe(0);
+    mkdirSync(join(dir, "plain"));
+    const terminals = [
+      terminal("t1", { cwd: a, labels: { "herdr.space": "S", "herdr.tab": "T1" } }),
+      terminal("t2", { cwd: b, labels: { "herdr.space": "S", "herdr.tab": "T2" } }),
+      terminal("t3", { cwd: repo, labels: { "herdr.space": "R", "herdr.tab": "U" } }),
+      terminal("t4", { cwd: join(dir, "plain"), foreground: { pid: 14, name: "bash", cwd: b }, labels: { "herdr.space": "P", "herdr.tab": "V" } }),
+    ];
+    // Ovis's layout document, which a tab move writes
+    let kept: { value: unknown; version: number } = { value: null, version: 0 };
+    const { socket } = await labeling(terminals, {
+      "doc.get": (params) => params["name"] === "ovis-layout" ? kept : { value: null, version: 0 },
+      "doc.set": (params) => { kept = { value: params["value"], version: kept.version + 1 }; return { version: kept.version }; },
+    });
+    const checkoutOf = async (id: string) => (await sessionSnapshot(socket)).workspaces.find((workspace) => workspace.workspace_id === id)?.worktree?.checkout_path;
+    expect(await checkoutOf("S")).toBe(a);
+    // another client moves b's tab in front while a confirmation names a
+    await tabMove("T2", 0, socket);
+    const shown = await sessionSnapshot(socket);
+    expect(shown.panes.find((pane) => pane.workspace_id === "S")?.pane_id).toBe("t2");
+    expect(await checkoutOf("S")).toBe(a);
+    // a shell that went into b from outside git does not make its workspace b's
+    expect((await worktreeOpen({ workspaceId: "R", path: b }, socket)).already_open).toBeFalse();
+    expect(await worktreeRemove("S", true, socket)).toMatchObject({ type: "worktree_removed", path: a });
+    expect([existsSync(a), existsSync(join(b, "README.md"))]).toEqual([false, true]);
   });
 
   it("deletes no checkout added again at the path after git was asked again (#3890)", async () => {
