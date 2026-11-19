@@ -13,7 +13,7 @@ import type { Translate } from "./i18n.ts";
 import { storedSelection, storeSelection } from "./useSplitView.ts";
 
 type SelectionHint = { machine: string; pane: string; workspace: string } | null;
-/** `keepNote`: a link or a tapped notification selects, not the user: it leaves the header's note to the landings (the service worker names a tapped pane twice, before and after focus, and the second must not take the first's note away) */
+/** `keepNote`: a selection the user did not make (a link, a tapped notification, a pane moved, the selection restored on load) leaves the header's note to the landings (the service worker names a tapped pane twice, before and after focus, and the second must not take the first's note away) */
 type SelectTarget = (machineId: string, paneId: string | null, view?: PaneView, keepNote?: boolean) => void;
 
 export function linkSelects(initialLink: AppLink | null): boolean {

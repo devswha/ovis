@@ -275,13 +275,32 @@ describe("a desktop link to a pane the cached roster lacks", () => {
     expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
   });
 
-  it("keeps a landing's note when a link selects the pane already shown, as a delivery the roster has not caught up with does", async () => {
+  it("keeps a landing's note when a link the roster lists selects another pane: a link selects, not the user", async () => {
     answer("roster");
     await mount();
     await open(`?ws=${gamma}-gamma&pane=t99`);
     expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
-    await act(async () => { take(linkTarget(`?ws=${gamma}-gamma&pane=t5`)!); });
+    await act(async () => { take(linkTarget("?ws=3-alpha&pane=t2")!); });
+    expect(shown).toEqual({ pane: "t2", note: "pane-closed" });
+  });
+
+  it("keeps a landing's note through a tapped notification's second delivery, though that delivery's read fails", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
     expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    answer("fails");
+    await act(async () => { take({ machine_id: "local", pane_id: "t99", view: "chat", workspace_id: gamma }); });
+    expect(shown.note).toBe("pane-closed");
+  });
+
+  it("keeps a landing's note when a tapped notification names a pane the roster lists: a notification selects, not the user", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    await act(async () => { take({ machine_id: "local", pane_id: "t2", view: "chat", workspace_id: "3" }); });
+    expect(shown).toEqual({ pane: "t2", note: "pane-closed" });
   });
 
   it("keeps a landing's note when the user picks the pane already shown, and takes it away when they pick another", async () => {
