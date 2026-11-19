@@ -680,6 +680,24 @@ describe("a pane created while the collector listens", () => {
     collector.stop();
   });
 
+  it("forgets it when the lifecycle subscription closes: a herdr started again lists another pane under the same ID", async () => {
+    const { herdr, log, collector } = await listening();
+    herdr.hold();
+    herdr.lifecycle().emit(createdFrame("w2:p1", "unknown"));
+    await elapse(20);
+    herdr.lifecycle().drop("socket_error");
+    await elapse(20);
+    herdr.lifecycle().start();
+    herdr.setPanes([paneOf("w1:p1", "idle"), paneOf("w2:p1", "blocked")]);
+    herdr.answerAll();
+    await elapse(20);
+    herdr.answerAll();
+    await elapse(20);
+    expect(log.baselines).toBeGreaterThan(2);
+    expect(log.created).toEqual([]);
+    collector.stop();
+  });
+
   it("forgets it once a snapshot asked for after its creation was read does not list it", async () => {
     const { herdr, log, collector } = await listening();
     herdr.lifecycle().emit(createdFrame("w2:p1", "unknown"));

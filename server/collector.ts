@@ -182,6 +182,7 @@ function resilientSubscription(
   isStopped: () => boolean,
   onFirstStart?: () => void,
   liveness?: { identity: () => string | null; onChange: (identity: string | null) => void },
+  onLost?: () => void,
 ): { close: () => void } {
   let subscription: Subscription | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -209,6 +210,7 @@ function resilientSubscription(
       onClose: () => {
         subscription = null;
         liveness?.onChange(null);
+        onLost?.();
         if (isStopped()) return;
         retryTimer = setTimeout(open, delay);
         delay = Math.min(delay * 2, deps.reconnectMaxMs);
@@ -536,6 +538,9 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
       if (trackedPanes.size > 0) void reconcile();
     },
     handlers.herdrLive,
+    // a close or an exit may have gone unheard meanwhile, and a herdr started again reuses pane IDs: no creation frame
+    // read before can be told which pane a later snapshot lists under its ID
+    () => born.clear(),
   );
 
   // Its own connection: a focus type an older herdr refuses must not cost pane exits.
