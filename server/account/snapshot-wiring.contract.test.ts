@@ -1,4 +1,5 @@
 import { AccountMailbox } from "./mailbox.ts";
+import { SafetyLog } from "./safety-log.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
@@ -107,23 +108,38 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
   });
 
   test("T52, P14: a handed lift requests a read but a snapshot without it keeps the freeze", async () => {
-    const { services, service, identity, member, fixture } = await server(true);
+    const { services, service, identity, member, token, fixture } = await server(true);
     const target = await relayDevice(fixture);
+    const signerNo = service.registerDevice(ACCOUNT, member.publicKey, "Signer");
+    const targetNo = service.registerDevice(ACCOUNT, target.publicKey, "Target");
     const at = "2026-11-01T00:00:00.000Z";
-    const block = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.publicKey, target_no: 2,
-      signer: member.publicKey, signer_no: 1, signed_at: at, nonce: newRecordId() }, member.keys.privateKey);
+    const block = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.publicKey, target_no: targetNo,
+      signer: member.publicKey, signer_no: signerNo, signed_at: at, nonce: newRecordId() }, member.keys.privateKey);
     const lift = await signSafetyRecord({ v: 1, kind: "lift", account: ACCOUNT, target: block.id,
-      signer: member.publicKey, signer_no: 1, signed_at: at }, member.keys.privateKey);
+      signer: member.publicKey, signer_no: signerNo, signed_at: at }, member.keys.privateKey);
     expect((await services.devices.applyBlock(block, "handed")).outcome).toBe("applied");
     const link = await relayConnection(fixture, { serverId: identity.server_id });
     await link.auth(member);
     const requests = () => service.requests.filter((path) => path.includes("/v1/pc/snapshot")).length;
     const before = requests();
+    service.opensAll = false;
     const answer = await ask(link, "/api/account/records", { method: "POST", body: { records: [lift] } });
     await services.accountMailbox.settle();
     expect(requests()).toBe(before + 1);
     expect(answer.body.results).toEqual([{ id: lift.id, outcome: "refused", code: "read_pending" }]);
+    const waiting = () => SafetyLog.open(fixture.stateDir).snapshot().waiting.map(({ record }) => record);
+    expect(waiting()).toEqual([lift]);
+    service.opensAll = true;
+    expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(waiting()).toEqual([lift]);
     expect(services.safetyLog?.state().blocks.map(({ record }) => record.id)).toEqual([block.id]);
+    for (const record of [block, lift]) {
+      expect((await service.fetch("https://account.test/v1/safety-records", { method: "POST",
+        headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ record }) })).ok).toBe(true);
+    }
+    expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true, liftsRefused: 0 });
+    expect(waiting()).toEqual([]);
+    expect(SafetyLog.open(fixture.stateDir).receipt(lift.id)).toMatchObject({ outcome: "applied" });
   });
 
   test("T60: only a negotiated refusal with the signer's valid proof carries its PC receipts", async () => {
