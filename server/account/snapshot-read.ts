@@ -47,7 +47,9 @@ export interface SnapshotPorts {
   requestRead(): void;
 }
 
-export type ReadRefusal = "unbound" | typeof SNAPSHOT_GONE | "mixed_snapshot" | "scope_mismatch" | "stale" | "malformed" | "incomplete" | "page_failed" | "scope_changed" | "generation_changed";
+export class SnapshotWriteRefused extends Error {}
+
+export type ReadRefusal = "unbound" | typeof SNAPSHOT_GONE | "mixed_snapshot" | "scope_mismatch" | "stale" | "malformed" | "incomplete" | "page_failed" | "scope_changed" | "generation_changed" | "commit_failed";
 
 export type ReadOutcome =
   | { readonly committed: true; readonly snapshot: string; readonly denials: number; readonly liftsRefused: number }
@@ -111,6 +113,7 @@ export async function readSnapshot(
   if (last !== null && snapshot.version < last) return refused("stale");
   try { ports.commit({ snapshot, lifts: authorized }); } catch (error) {
     if (error instanceof OrderConflict) return refused("malformed");
+    if (error instanceof SnapshotWriteRefused) return refused("commit_failed");
     throw error;
   }
   if (ports.methodsVersion() !== snapshot.methods_version) ports.journalMethod(snapshot.methods_version);

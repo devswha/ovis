@@ -8,7 +8,9 @@ import { AdmissionRefusedError, ReplacementNeedsAppError, type DeviceStore, type
 import type { PairedDevice } from "../../shared/protocol.ts";
 import type { Vouch } from "./mailbox.ts";
 
-export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable" | "enrolling" | "removal_pending" | "closed" | "older_device";
+import { handedLift } from "./handed-lift.ts";
+
+export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable" | "enrolling" | "removal_pending" | "closed" | "read_pending" | "older_device";
 
 /** What holds an `add` back on this PC (mailbox.ts `gates`, docs/account.md "Enrolling a PC"). */
 export interface AddGates {
@@ -90,13 +92,17 @@ function withUndecided(gates: AddGates | undefined, undecided: ReadonlySet<strin
   return { enrolling: () => gates?.enrolling() ?? false, held: (key, includeWaiting = true) => (includeWaiting && undecided.has(key)) || (gates?.held(key, includeWaiting) ?? false), removing: (key) => undecided.has(key) || (gates?.removing?.(key) ?? false) };
 }
 
-export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now(), gates?: AddGates, wait?: (record: unknown) => boolean): Promise<RecordOutcome[]> {
+export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now(), gates?: AddGates & { requestRead?(): void }, wait?: (record: unknown) => boolean): Promise<RecordOutcome[]> {
   if (values.length > ACCOUNT_RECORDS_MAX) throw new RangeError(`At most ${ACCOUNT_RECORDS_MAX} records at once`);
   const outcomes: RecordOutcome[] = [];
   const undecided = new Set<string>();
   const batchGates = withUndecided(gates, undecided);
   for (const value of values) {
     // a denial while this record is verified means its add no longer stands on what was checked (P14)
+    if (gates?.requestRead && typeof value === "object" && value !== null && "kind" in value && value.kind === "lift") {
+      outcomes.push(await handedLift(value, store));
+      continue;
+    }
     const noted = store.gen();
     const record = await read(value);
     if (!("refused" in record) && record.kind === "add" && (gates?.deferAdd || store.gen() !== noted)) {
@@ -105,6 +111,7 @@ export async function applyAccountRecords(store: DeviceStore, values: readonly u
     }
     outcomes.push("refused" in record ? { id: record.id, outcome: "refused", code: record.refused } : waited(apply(store, record, serverId, now, batchGates), record, value, wait, undecided));
   }
+  if (outcomes.some((result) => result.outcome === "refused" && result.code === "read_pending")) gates?.requestRead?.();
   return outcomes;
 }
 

@@ -10,7 +10,7 @@ import { OrderConflict, type AccountOrder } from "./account-order.ts";
 import type { DeviceJournal } from "./device-journal.ts";
 import type { PcAccountState } from "./pc-binding.ts";
 import type { SafetyLog } from "./safety-log.ts";
-import type { SnapshotPorts, StagedRead } from "./snapshot-read.ts";
+import { SnapshotWriteRefused, type SnapshotPorts, type StagedRead } from "./snapshot-read.ts";
 
 export interface SnapshotDeps {
   readonly devices: DeviceStore;
@@ -62,9 +62,11 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
         if (receipt.outcome !== "applied") throw new Error("Cannot record the snapshot freeze line");
         pc.raiseGen();
       }
-      let lifted = false;
-      for (const lift of stage.lifts) if (safetyLog.append({ record: lift, got: "snapshot" }).outcome === "applied") lifted = true;
-      if (lifted) pc.raiseGen();
+      for (const lift of stage.lifts) {
+        const receipt = safetyLog.append({ record: lift, got: "snapshot" });
+        if (receipt.outcome === "refused") throw new SnapshotWriteRefused(receipt.code);
+        if (receipt.outcome === "applied") pc.raiseGen();
+      }
       recordOrder();
     },
     methodsVersion: () => deps.order.methodsVersion(),
