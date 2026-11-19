@@ -294,4 +294,8 @@ export const DEVICES_JA: Record<string, string> = {
   "{pc} holds this device after a Not me from another device": "{pc}: 別のデバイスで「自分ではない」が押されたため止まっています",
   "{pc} is checking your account first": "{pc}: 先にアカウントを確認しています",
   "{pc} is telling your other devices first": "{pc}: 先にほかのデバイスに知らせています",
+  "Waiting for this PC's screen. Approve only a key whose fingerprint your device shows too.": "この PC の画面での確認を待っています。デバイスにも同じフィンガープリントが表示される場合だけ承認してください。",
+  "Says it is {name}": "{name} と名乗っています",
+  "Approve this device on {pc}'s screen": "{pc} の画面でこのデバイスを承認してください",
+  "The PC shows the same code.": "PC にも同じコードが表示されます。",
 };

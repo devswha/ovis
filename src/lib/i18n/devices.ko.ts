@@ -294,4 +294,8 @@ export const DEVICES_KO: Record<string, string> = {
   "{pc} holds this device after a Not me from another device": "{pc}: 다른 기기에서 '내가 아니에요'를 눌러 멈췄어요",
   "{pc} is checking your account first": "{pc}: 계정을 먼저 확인하는 중",
   "{pc} is telling your other devices first": "{pc}: 다른 기기에 먼저 알리는 중",
+  "Waiting for this PC's screen. Approve only a key whose fingerprint your device shows too.": "이 PC 화면의 확인을 기다리는 중이에요. 기기에도 같은 지문이 보일 때만 승인하세요.",
+  "Says it is {name}": "{name} · 기기가 밝힌 이름",
+  "Approve this device on {pc}'s screen": "{pc} 화면에서 이 기기를 승인하세요",
+  "The PC shows the same code.": "PC에도 같은 코드가 보여요.",
 };

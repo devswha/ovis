@@ -294,4 +294,8 @@ export const DEVICES_ZH: Record<string, string> = {
   "{pc} holds this device after a Not me from another device": "{pc}：另一台设备点了“不是我”，已暂停",
   "{pc} is checking your account first": "{pc}：正在先检查你的账户",
   "{pc} is telling your other devices first": "{pc}：正在先通知你的其他设备",
+  "Waiting for this PC's screen. Approve only a key whose fingerprint your device shows too.": "正在等待这台 PC 的屏幕确认。只有设备上显示相同指纹时才批准。",
+  "Says it is {name}": "自称 {name}",
+  "Approve this device on {pc}'s screen": "请在 {pc} 的屏幕上批准此设备",
+  "The PC shows the same code.": "PC 上会显示相同的代码。",
 };
