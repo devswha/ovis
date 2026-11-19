@@ -35,6 +35,8 @@ export interface SnapshotPorts {
   scope(): ReadScope | null;
   /** The version of the last snapshot this PC applied, null for none. */
   lastVersion(): number | null;
+  /** The ids of the blocks this PC's safety log holds: a freeze line may name one the snapshot no longer carries. */
+  knownBlocks(): ReadonlySet<string>;
   classify(record: unknown): RecordClass;
   /** Applies a block or a remove now; true when it raised `gen`. */
   deny(record: BlockRecord | unknown): Promise<boolean>;
@@ -102,7 +104,7 @@ export async function readSnapshot(
   }
 
   let snapshot: AccountSnapshot;
-  try { snapshot = assembleSnapshot(pages, { account: noted.account, server_id: noted.serverId, lastApplied: ports.lastVersion() }); } catch (error) {
+  try { snapshot = assembleSnapshot(pages, { account: noted.account, server_id: noted.serverId, lastApplied: ports.lastVersion(), knownBlocks: ports.knownBlocks() }); } catch (error) {
     if (error instanceof AccountSnapshotError) return refused("malformed");
     throw error;
   }

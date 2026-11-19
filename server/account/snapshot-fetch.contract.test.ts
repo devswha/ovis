@@ -30,6 +30,7 @@ async function setup(opensAll: boolean, devices: number) {
   const ports: SnapshotPorts = {
     scope: () => ({ account: ACCOUNT, serverId: identity.server_id, gen: 0, lock: null }),
     lastVersion: () => null,
+    knownBlocks: () => new Set(),
     classify: () => "invalid",
     deny: async () => false,
     liftAuthority: () => false,

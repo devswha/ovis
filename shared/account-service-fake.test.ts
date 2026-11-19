@@ -542,13 +542,13 @@ describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
     const block = await signSafetyRecord({ ...signed, kind: "block", target: target.spki, target_no: targetNo, signer: older.spki, signer_no: olderNo, nonce: newRecordId() }, older.pair.privateKey);
     expect((await send(block)).status).toBe(200);
     const frozen = parseSnapshotPage((await read(service, pc(), {})).body);
-    expect(frozen.devices.map((device) => device.no)).toEqual([olderNo]);
+    expect(frozen.devices.filter((device) => device.eligible).map((device) => device.no)).toEqual([olderNo]);
     const byFrozen = await signSafetyRecord({ ...signed, kind: "block", target: later.spki, target_no: laterNo, signer: newest.spki, signer_no: newestNo, nonce: newRecordId() }, newest.pair.privateKey);
     expect(await send(byFrozen)).toEqual({ status: 403, code: "frozen" });
     const liftByFrozen = await signSafetyRecord({ ...signed, kind: "lift", target: block.id, signer: newest.spki, signer_no: newestNo }, newest.pair.privateKey);
     expect(await send(liftByFrozen)).toEqual({ status: 403, code: "frozen" });
     const lift = await signSafetyRecord({ ...signed, kind: "lift", target: block.id, signer: older.spki, signer_no: olderNo }, older.pair.privateKey);
     expect((await send(lift)).status).toBe(200);
-    expect(parseSnapshotPage((await read(service, pc(), {})).body).devices.map((device) => device.no)).toEqual([olderNo, newestNo, laterNo]);
+    expect(parseSnapshotPage((await read(service, pc(), {})).body).devices.filter((device) => device.eligible).map((device) => device.no)).toEqual([olderNo, newestNo, laterNo]);
   });
 });

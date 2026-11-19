@@ -142,7 +142,11 @@ export function parseSnapshotPage(value: unknown): AccountSnapshotPage {
  * and only the last saying so. `lastApplied` is the version of the last snapshot this PC applied.
  * A key appears once across `devices` and `removed`, and one `no` names one key.
  */
-export function assembleSnapshot(pages: readonly AccountSnapshotPage[], expected: { account: string; server_id: string; lastApplied: number | null }): AccountSnapshot {
+/**
+ * Device table P6, G1, G12 (continued): each block and lift is named once in a read, and every freeze line names a block
+ * this snapshot carries or one this PC already holds (`knownBlocks`, its safety log's blocks).
+ */
+export function assembleSnapshot(pages: readonly AccountSnapshotPage[], expected: { account: string; server_id: string; lastApplied: number | null; knownBlocks?: ReadonlySet<string> }): AccountSnapshot {
   const first = pages[0];
   if (first === undefined) fail("A read has at least one page");
   pages.forEach((page, index) => {
@@ -164,6 +168,10 @@ export function assembleSnapshot(pages: readonly AccountSnapshotPage[], expected
     keys.add(key);
     numbers.add(no);
   }
+  const blocks = new Set(snapshot.blocks.map((record) => record.id));
+  check(blocks.size === snapshot.blocks.length, "A block appears twice");
+  check(new Set(snapshot.lifts.map((record) => record.id)).size === snapshot.lifts.length, "A lift appears twice");
+  for (const line of snapshot.freezes) check(blocks.has(line.block) || (expected.knownBlocks?.has(line.block) ?? false), "A freeze line names a block nobody holds");
   return snapshot;
 }
 
@@ -209,7 +217,7 @@ export type AccountDevicesFile =
   | { readonly v: 1; readonly account: string; readonly server_id: string; readonly snapshot: string; readonly version: number; readonly devices: readonly AccountJoinedRow[] }
   | { readonly v: 1; readonly account: null; readonly server_id: string; readonly snapshot: null; readonly version: number; readonly devices: readonly [] };
 
-/** Device table P22: an origin as stored; one that does not parse counts as `remote` with no age, which the caller decides. */
+/** Device table P22: an origin as stored; throws AccountSnapshotError for one that does not parse, and the caller decides what that row may do. */
 export function parseAdmissionOrigin(value: unknown): AdmissionOrigin {
   const origin = object(value, ["from", "how", "by", "admit_no", "at"], "An origin");
   check(FROM.includes(origin.from as string) && HOW.includes(origin.how as string), "Invalid origin path");
@@ -246,4 +254,24 @@ export function parseAccountDevicesFile(value: unknown): AccountDevicesFile {
     check(row.state === "hold" ? row.hold_until === null || isIso(row.hold_until) : (row.state === "live" || row.state === "expired") && row.hold_until === null, "Invalid state");
   });
   return file as unknown as AccountDevicesFile;
+}
+
+/**
+ * Device table P9, section 5, T54: the days this PC saw each key used, sent with page 0 of a snapshot read. A UTC day per
+ * key, each key once, at most SNAPSHOT_PAGE_MAX. The service keeps the latest day per (account, key), and a day only
+ * delays an expiry: it never makes a key eligible. A breached or hostile PC of the account can keep a still signed-in
+ * key from expiring for lack of use; it cannot add, lift or bring back a key.
+ */
+export interface UsedDay { readonly key: string; readonly day: string }
+export type UsedReport = readonly UsedDay[];
+
+/** Throws AccountSnapshotError. */
+export function parseUsedReport(value: unknown): UsedReport {
+  const seen = new Set<string>();
+  list(value, "used", SNAPSHOT_PAGE_MAX, (entry) => {
+    const used = object(entry, ["key", "day"], "A used day");
+    check(isAccountKeyEncoding(used.key) && isDay(used.day) && !seen.has(used.key as string), "Invalid used day");
+    seen.add(used.key as string);
+  });
+  return value as UsedReport;
 }

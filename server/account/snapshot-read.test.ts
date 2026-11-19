@@ -40,6 +40,7 @@ function pc(options: { lastVersion?: number | null; methods?: number | null; lif
   const ports: SnapshotPorts = {
     scope: options.scope ?? (() => ({ account: state.account, serverId: state.serverId, gen: state.gen, lock: state.lock })),
     lastVersion: () => options.lastVersion === undefined ? 6 : options.lastVersion,
+    knownBlocks: () => new Set(),
     classify: (record) => {
       const kind = (record as { kind: string }).kind;
       return kind === "block" || kind === "remove" ? "denial" : kind === "lift" ? "lift" : kind === "add" ? "add" : "invalid";
