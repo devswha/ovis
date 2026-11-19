@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Locator, type Page } from "playwright-core";
+import { chromium, errors as playwrightErrors, type Locator, type Page } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { forgetPageMedia, PAGE_MEDIA_LIFETIME_MS, pageFileHooks, pageMediaResponse } from "../server/file-view.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
@@ -52,6 +52,44 @@ const reloadFollowingEnd = async (page: Page): Promise<void> => {
 // presented, which is what data-pane-content acknowledges.
 const activateInTranscript = (page: Page, link: Locator): Promise<void> =>
   transcriptLink(page, link).dispatchEvent("click");
+
+async function activateWithPaneDiagnostic(page: Page, link: Locator, expectedPane: string): Promise<void> {
+  try {
+    await activateInTranscript(page, link);
+  } catch (error) {
+    if (!(error instanceof playwrightErrors.TimeoutError)) throw error;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const snapshot = await Promise.race([
+      page.evaluate((expectedPane) => {
+        const frame = document.querySelector(".pane-frame.is-current");
+        const currentPane = frame?.getAttribute("data-layout-pane") ?? null;
+        const chat = frame?.querySelector(".chat-view");
+        const sideNotesPanes = new Set<string | null>();
+        for (const element of document.querySelectorAll("body *")) {
+          if (element.textContent?.trim() === "side notes") {
+            sideNotesPanes.add(element.closest(".pane-frame")?.getAttribute("data-layout-pane") ?? null);
+          }
+        }
+        return {
+          currentPane,
+          matchesExpectedPane: currentPane === expectedPane,
+          hasChatView: chat !== undefined && chat !== null,
+          paneContent: chat?.getAttribute("data-pane-content") ?? frame?.querySelector(".chat-frame")?.getAttribute("data-pane-content") ?? null,
+          chatRows: chat?.querySelectorAll("[data-chat-row]").length ?? 0,
+          conversationSource: chat?.getAttribute("data-conversation-source") ?? chat?.querySelector("[data-conversation-source]")?.getAttribute("data-conversation-source") ?? null,
+          sideNotesFound: sideNotesPanes.size > 0,
+          sideNotesPanes: [...sideNotesPanes],
+        };
+      }, expectedPane).catch((cause: unknown) => ({ snapshotError: cause instanceof Error ? cause.message : String(cause) })),
+      // Page.evaluate has no timeout and may never return if the renderer is stuck.
+      new Promise<{ snapshotError: string }>((resolve) => {
+        timer = setTimeout(() => resolve({ snapshotError: "DOM snapshot timed out" }), 2_000);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    console.error(`Transcript link timeout: ${JSON.stringify({ expectedPane, url: page.url(), ...snapshot })}`);
+    throw error;
+  }
+}
 
 const root = mkdtempSync(join(tmpdir(), "ovis-file-back-"));
 const reportServer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(
@@ -878,18 +916,13 @@ try {
   await rowOf(sidePane).waitFor();
   const sameStart = await entryIndex();
   const sideNotes = page.getByRole("button", { name: "side notes", exact: true });
-  const activatePaneNotes = async (paneId: string, link: Locator) => {
-    await onPane(paneId);
-    // The URL moves before the selected pane has fetched and drawn its conversation.
-    const chat = page.locator(`.pane-frame.is-current[data-layout-pane=${JSON.stringify(paneId)}] .chat-view[data-conversation-source="codex-transcript"]`);
-    await chat.locator("[data-chat-row]").first().waitFor({ state: "attached" });
-    await chat.locator(link).dispatchEvent("click");
-  };
   await rowOf(sidePane).click();
-  await activatePaneNotes(sidePane, sideNotes);
+  await onPane(sidePane);
+  await activateWithPaneDiagnostic(page, sideNotes, sidePane);
   await panel.getByText("Side pane notes", { exact: true }).waitFor();
   await rowOf(pane).click();
-  await activatePaneNotes(pane, notesLink);
+  await onPane(pane);
+  await activateWithPaneDiagnostic(page, notesLink, pane);
   await panel.getByText("File preview history regression", { exact: true }).waitFor();
   // the viewer showing the first pane's file is marked: a viewer the switch reused would keep that
   // file's loaded content, and show it for the side pane's file until it read its own
