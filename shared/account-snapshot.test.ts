@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { accountDeviceId, exportAccountKey, newRecordId, signSafetyRecord } from "./account-records.ts";
-import { ACCOUNT_ROWS_MAX, AccountSnapshotError, SNAPSHOT_PAGE_MAX, assembleSnapshot, parseAccountDevicesFile, parseAdmissionOrigin, parseSnapshotPage, type AccountSnapshotPage } from "./account-snapshot.ts";
+import { ACCOUNT_ROWS_MAX, AccountSnapshotError, SNAPSHOT_PAGE_MAX, assembleSnapshot, parseAccountDevicesFile, parseAdmissionOrigin, parseSnapshotPage, type AccountSnapshotPage, parseUsedReport } from "./account-snapshot.ts";
 
 async function key() {
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
@@ -164,5 +164,34 @@ describe("account-devices.json (device table S21, S25, P22)", () => {
       { ...file, devices: Array.from({ length: ACCOUNT_ROWS_MAX + 1 }, (_, i) => ({ ...row, id: i.toString(16).padStart(16, "0") })) },
     ];
     for (const value of bad) expect(() => parseAccountDevicesFile(value)).toThrow(AccountSnapshotError);
+  });
+});
+
+describe("a whole read names each record once and every freeze line's block (device table P6, P16, G12)", () => {
+  test("G1: a block or a lift repeated across pages is refused", () => {
+    const first = page({ last: false, devices: page().devices.slice(0, 1) });
+    for (const repeat of [{ blocks: [block], lifts: [], freezes: [] }, { blocks: [], lifts: [lift], freezes: [] }]) {
+      const second = page({ page: 1, devices: page().devices.slice(1), removed: [], ...repeat });
+      expect(() => assembleSnapshot([first, second], expected)).toThrow(AccountSnapshotError);
+    }
+  });
+
+  test("G12: a freeze line whose block is in neither the snapshot nor this PC's known blocks is refused", () => {
+    const orphan = page({ blocks: [], lifts: [] });
+    expect(() => assembleSnapshot([orphan], expected)).toThrow(AccountSnapshotError);
+    expect(assembleSnapshot([orphan], { ...expected, knownBlocks: new Set([block.id]) }).freezes).toEqual(orphan.freezes);
+  });
+});
+
+describe("the days a PC saw each key used (device table P9, section 5, T54)", () => {
+  test("P9: a used report is a list of a key and a real UTC day, each key once, at most a page of them", () => {
+    const report = [{ key: older.spki, day: "2026-11-20" }, { key: newer.spki, day: "2026-09-22" }];
+    expect(parseUsedReport(JSON.parse(JSON.stringify(report)))).toEqual(report);
+    expect(parseUsedReport([])).toEqual([]);
+    for (const bad of [
+      null, {}, [{ key: older.spki }], [{ key: older.spki, day: "2026-02-30" }], [{ key: "not-a-key", day: "2026-11-20" }],
+      [{ key: older.spki, day: "2026-11-20", at: 1 }], [{ key: older.spki, day: "2026-11-20" }, { key: older.spki, day: "2026-11-19" }],
+      Array.from({ length: SNAPSHOT_PAGE_MAX + 1 }, () => ({ key: older.spki, day: "2026-11-20" })),
+    ]) expect(() => parseUsedReport(bad)).toThrow(AccountSnapshotError);
   });
 });
