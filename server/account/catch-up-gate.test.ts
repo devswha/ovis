@@ -15,6 +15,7 @@ const rows: Record<string, GatedRow> = {
   legacy: { id: "2".repeat(16), origin: origin("legacy", "legacy") },
   bare: { id: "3".repeat(16), origin: undefined },
 };
+const rowOf = (id: string) => Object.values(rows).find((row) => row.id === id);
 const waiting = (gate: CatchUpGate) => Object.entries(rows).filter(([, row]) => gate.waits(row)).map(([name]) => name);
 
 describe("S2-27 devices.json rows wait for the first whole read (T41, T42, T65, T70)", () => {
@@ -32,13 +33,13 @@ describe("S2-27 devices.json rows wait for the first whole read (T41, T42, T65, 
 
   test("T65: with the service off no read comes, so the wait stays; only screen-paired rows and named releases get in", () => {
     const gate = new CatchUpGate(() => true);
-    expect(gate.release([rows.legacy!.id])).toEqual([rows.legacy!.id]);
+    expect(gate.release([rows.legacy!.id], rowOf)).toEqual([rows.legacy!.id]);
     expect(waiting(gate)).toEqual(["confirmed", "linked", "member", "recover", "bare"]);
   });
 
   test("T70: release names only rows that wait, lasts until the next whole read, and a restart forgets it", () => {
     const gate = new CatchUpGate(() => true);
-    expect(gate.release([rows.member!.id, rows.code!.id, "9".repeat(16)])).toEqual([rows.member!.id]);
+    expect(gate.release([rows.member!.id, rows.code!.id, "9".repeat(16)], rowOf)).toEqual([rows.member!.id]);
     expect(gate.waits(rows.member!)).toBe(false);
     gate.wholeRead();
     gate.bound();
