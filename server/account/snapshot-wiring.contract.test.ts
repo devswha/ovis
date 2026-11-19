@@ -55,8 +55,8 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
     expect(services.devices.hasKey(key)).toBe(true);
   });
 
-  for (const delivery of ["mailed while locked", "handed before a read"] as const) {
-    test(`T15, P14, P23: ${delivery} add is decided only by the whole read`, async () => {
+  for (const delivery of ["mailed while locked", "handed before a read", "enrollment before a read"] as const) {
+    test(`T15, P6, P14, P23: ${delivery} add is decided only by the whole read`, async () => {
       const { services, service, identity, token, member, fixture } = await server(true);
       const { spki: key } = await phone();
       const record = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key, signer: member.publicKey,
@@ -75,13 +75,15 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
         service.opensAll = false;
         const link = await relayConnection(fixture, { serverId: identity.server_id });
         await link.auth(member);
-        expect((await ask(link, "/api/account/records", { method: "POST", body: { records: [record] } })).status).toBe(200);
+        const route = delivery === "enrollment before a read" ? "/api/account/enroll" : "/api/account/records";
+        expect((await ask(link, route, { method: "POST", body: { account: ACCOUNT, records: [record] } })).status).toBe(200);
         await services.accountMailbox.settle();
+        expect(await services.accountMailbox.readSnapshot()).not.toMatchObject({ committed: true });
         expect(services.devices.hasKey(key)).toBe(false);
         service.opensAll = true;
       }
       expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
-      expect(services.devices.hasKey(key)).toBe(delivery === "handed before a read");
+      expect(services.devices.hasKey(key)).toBe(delivery !== "mailed while locked");
     });
   }
 
