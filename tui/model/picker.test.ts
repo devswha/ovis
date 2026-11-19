@@ -37,10 +37,15 @@ describe("the picker overlay", () => {
   const open = after(reduce(initialState(undefined), { type: "world", world, at: AT }).state, key("B", { ctrl: true }), text("g"));
   const chosen = (state: ModelState) => (state.overlays.at(-1) as { chosen: string | null }).chosen;
 
-  it("opens on the terminal in front; j, k and the arrows move a row and wrap; left and right go to the next workspace's first terminal", () => {
+  it("opens on the terminal in front; j, k and the arrows move a row over headings and terminals and wrap; left and right go to the next workspace's first terminal", () => {
     expect([open.overlays.map((overlay) => overlay.kind), chosen(open)]).toEqual([["goto"], "p1"]);
     expect(chosen(after(open, text("j"), key("ARROW_DOWN")))).toBe("p3");
-    expect(chosen(after(open, text("k")))).toBe("p4");
+    // as herdr measured: Up from a workspace's first terminal goes to its heading, Up from a heading to the terminal above it
+    // (wrapping round to the last row), and Down from a workspace's last terminal to the next heading
+    expect(chosen(after(open, text("k")))).toBe("heading:w1");
+    expect(chosen(after(open, text("k"), text("k")))).toBe("p4");
+    expect(chosen(after(open, text("j"), text("j"), text("j")))).toBe("heading:w2");
+    expect(chosen(after(open, text("j"), text("j"), text("j"), key("ARROW_UP")))).toBe("p3");
     expect(chosen(after(open, key("ARROW_RIGHT")))).toBe("p4");
     expect(chosen(after(open, key("ARROW_RIGHT"), key("ARROW_RIGHT")))).toBe("p1");
     const step = reduce(after(open, key("ARROW_DOWN")), key("ENTER"));
