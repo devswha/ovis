@@ -617,6 +617,7 @@ export class DeviceStore {
         this.takeInEvidence([...tombstones ?? [], ...pending]);
         // the log is the truth (P24): a block in force whose marker never reached the disk gets it before anything is served
         this.markBlockTargets();
+        this.joinedRows?.pruneDenied((key, account) => this.coveredByEvidence({ relay_public_key: key, account }));
       } else {
         if (pending.length) {
           this.writeTombstones(this.tombstones);
@@ -868,7 +869,7 @@ export class DeviceStore {
 
   /** A list read is not local pairing: it cannot supersede any standing removal. */
   admitsFromList(key: string, account: string): boolean {
-    return this.admits(key) && !this.isTombstoned(key) && !this.coveredByEvidence({ relay_public_key: key, account });
+    return this.journal?.admitsFromList() !== false && this.admits(key) && !this.isTombstoned(key) && !this.coveredByEvidence({ relay_public_key: key, account });
   }
 
   /** Hears every key a deny takes, in the deny turn, rows or not (Revoke, account remove, block, Revoke all). */
@@ -1033,9 +1034,8 @@ export class DeviceStore {
     // the account rows it freezes end their sessions in this turn too; its account-row targets end and leave their store
     const joinedIds = new Set(joinedTargets.map((d) => d.id));
     for (const row of this.joinedRows?.rows() ?? []) if (!joinedIds.has(row.id) && this.frozen(this.joinedAsStored(row))) this.closeAccountSessions(row.id);
-    for (const id of joinedIds) this.closeAccountSessions(id);
     if (joinedIds.size > 0) {
-      try { this.joinedRows!.removeRows([...joinedIds], "block"); }
+      try { this.joinedRows?.removeRows([...joinedIds], "block", id => this.closeAccountSessions(id)); }
       catch (error) { console.error(`[devices] the account rows of a blocked key could not be written after its deny; they stay denied by its marker: ${error instanceof Error ? error.message : String(error)}`); }
     }
     this.dropWaiting([record.target], "block");
@@ -1199,9 +1199,7 @@ export class DeviceStore {
   /** Every account-joined row ends: its sessions close first, then it leaves account-devices.json (T44, P8 order). */
   private endAccountRows(reason: "revoke_all" | "identity_reset" | "left_on_pc"): void {
     const ids = (this.joinedRows?.rows() ?? []).map((row) => row.id);
-    if (ids.length === 0) return;
-    for (const id of ids) this.closeAccountSessions(id);
-    this.joinedRows!.removeRows(ids, reason);
+    if (ids.length) this.joinedRows?.removeRows(ids, reason, id => this.closeAccountSessions(id));
   }
 
   /**
@@ -2530,8 +2528,7 @@ export class DeviceStore {
     if (gone.some((d) => this.pending?.holders.has(d.id))) this.endPairing(undefined, "revoked");
     for (const device of gone) this.closeAccountSessions(device.id);
     if (joined?.ids.length) {
-      for (const id of joined.ids) this.closeAccountSessions(id);
-      this.joinedRows?.removeRows(joined.ids, joined.reason);
+      this.joinedRows?.removeRows(joined.ids, joined.reason, id => this.closeAccountSessions(id));
     }
     try { for (const device of gone) this.journalRemoval(device, by, why, user); } catch (error) {
       // a removal its journal does not hold writes nothing more: its rows stay out by row and the PC closed (P24, P8)

@@ -21,14 +21,15 @@ export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset"
 /**
  * What Track A's deny path (DeviceStore.attachAccountRows, set only with OVIS_ACCOUNT_OPENS_ALL=1) asks of the
  * account-joined rows: they are target and signer candidates of blocks, removes and Revokes like devices.json rows.
- * On a deny the device store closes the sessions itself (P8 step 3); removeRows only journals and writes.
+ * Removal detaches the whole batch before notifying session owners or writing the journal (P8 step 3).
  */
 export interface AccountRowSource {
   rows(): readonly AccountRow[];
   row(id: string): AccountRow | null;
   rowsByKey(key: string): readonly AccountRow[];
   access(id: string): AccessAnswer;
-  removeRows(ids: readonly string[], reason: "remove" | "block" | "revoke" | "revoke_all" | "identity_reset" | "left_on_pc"): void;
+  pruneDenied(denied: (key: string, account: string) => boolean): void;
+  removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void;
 }
 
 export type AccountRow = AccountJoinedRow;
@@ -114,11 +115,17 @@ export class AccountDeviceStore implements AccountRowSource {
     return this.rows().filter((row) => row.key === key);
   }
 
-  removeRows(ids: readonly string[], reason: "remove" | "block" | "revoke" | "revoke_all" | "identity_reset" | "left_on_pc"): void {
+  /** Startup replay: the durable deny already stands. Do not notify sessions or duplicate a drop entry. */
+  pruneDenied(denied: (key: string, account: string) => boolean): void {
+    const { account, devices } = this.file;
+    if (account === null) return;
+    const kept = devices.filter(row => !denied(row.key, account));
+    if (kept.length !== devices.length) this.write({ ...this.file, devices: kept });
+  }
+
+  removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void {
     this.usable();
-    const gone = this.file.devices.filter((row) => ids.includes(row.id));
-    for (const row of gone) this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason });
-    if (gone.length > 0) this.write({ ...this.file, devices: this.file.devices.filter((row) => !ids.includes(row.id)) });
+    this.drop(this.file.devices.filter(row => ids.includes(row.id)), reason, close);
   }
 
   live(id: string): boolean {
@@ -139,7 +146,7 @@ export class AccountDeviceStore implements AccountRowSource {
     const eligible = new Map(list.devices.filter((entry) => entry.eligible && !removed.has(entry.key)).map((entry) => [entry.key, entry]));
     const sameAccount = this.file.account === null || this.file.account === list.account;
     const leaving = this.file.devices.filter((row) => !sameAccount || !eligible.has(row.key));
-    const dropped = this.drop(leaving, "list");
+    const dropped = this.drop(leaving, "list", this.ports.closeSessions);
 
     // rows admitted from here on belong to this read's account and snapshot
     this.write({ ...this.file, account: list.account, snapshot: list.snapshot, version: list.version });
@@ -158,7 +165,7 @@ export class AccountDeviceStore implements AccountRowSource {
   /** The PC's account was cleared or its relay identity reset (T44): every account-joined row goes. */
   clear(reason: Exclude<DropReason, "list">): void {
     this.usable();
-    this.drop(this.file.devices, reason);
+    this.drop(this.file.devices, reason, this.ports.closeSessions);
     this.write({ ...this.file, account: null, snapshot: null });
   }
 
@@ -173,14 +180,18 @@ export class AccountDeviceStore implements AccountRowSource {
     this.write({ ...this.file, devices: [...this.file.devices, row] });
   }
 
-  private drop(rows: readonly AccountRow[], reason: DropReason): string[] {
+  private drop(rows: readonly AccountRow[], reason: DropReason, close?: AccountRowPorts["closeSessions"]): string[] {
     if (rows.length === 0) return [];
     const ids = new Set(rows.map((row) => row.id));
+    this.file = { ...this.file, devices: this.file.devices.filter(row => !ids.has(row.id)) };
+    for (const row of rows) close?.(row.id, reason);
+    let failure: Error | undefined;
     for (const row of rows) {
-      this.ports.closeSessions(row.id, reason);
-      this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason });
+      try { this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason }); }
+      catch (error) { failure ??= error instanceof Error ? error : new Error(String(error)); }
     }
-    this.write({ ...this.file, devices: this.file.devices.filter((row) => !ids.has(row.id)) });
+    this.write(this.file);
+    if (failure) throw failure;
     return rows.map((row) => row.key);
   }
 
@@ -207,8 +218,7 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
       // the rows of the identity this PC had end here: their sessions close, and the file is the new identity's (T44)
       if (open !== null) {
         const gone = open.store.rows().map((row) => row.id);
-        for (const row of gone) ports.closeSessions(row, "identity_reset");
-        open.store.removeRows(gone, "identity_reset");
+        open.store.removeRows(gone, "identity_reset", id => ports.closeSessions(id, "identity_reset"));
       }
       open = { serverId: id, store: new AccountDeviceStore(stateDir, id, ports) };
     }
@@ -220,6 +230,7 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
     row: (id) => store()?.row(id) ?? null,
     rowsByKey: (key) => store()?.rowsByKey(key) ?? [],
     access: (id) => store()?.access(id) ?? { refused: "not_listed" },
-    removeRows: (ids, reason) => { store()?.removeRows(ids, reason); },
+    pruneDenied: denied => { store()?.pruneDenied(denied); },
+    removeRows: (ids, reason, close) => { store()?.removeRows(ids, reason, close); },
   };
 }
