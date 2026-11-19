@@ -1191,6 +1191,23 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["socket GET /api/health"]);
   }, 30_000);
 
+  it("names the settings file when its OVIS_STATE_DIR hides the profile named on the command line, and only then", async () => {
+    const pc = profilePc();
+    const other = join(pc.home, "other-state");
+    try {
+      pc.settings(`OVIS_STATE_DIR=${other}\n`);
+      const status = await run("status", pc.env);
+      const add = await run("add", pc.env);
+      const wayOut = `${join(configDir, ".env")} sets OVIS_STATE_DIR to ${other}, which wins over ${pc.state}. Run it with that profile's HERDR_PLUGIN_CONFIG_DIR, or set the same OVIS_STATE_DIR in the file.`;
+      expect([status.out.split("\n").slice(0, 2), add.err, add.exitCode]).toEqual([[`down http://127.0.0.1:${pc.port}`, wayOut], `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n${wayOut}\n`, 1]);
+      printed(pc, status, add);
+      pc.settings(`OVIS_STATE_DIR=${pc.state}\n`);
+      const same = await run("status", pc.env);
+      expect(same.out.split("\n")[0], same.err).toBe(`running http://127.0.0.1:${pc.port}`);
+    } finally { await pc.stop(); }
+    expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["socket GET /api/health"]);
+  }, 30_000);
+
   const ENGINE_DOWN = { ok: true, auth: { required: false, authenticated: true, via: "local", role: "drive" }, machine_profile: { engine: "herdr", runtime_down: true, reason: "herdr is not running for the selected session" } };
 
   it("takes a profile whose engine does not answer as running on its owner socket: status says the engine is down, add goes on", async () => {

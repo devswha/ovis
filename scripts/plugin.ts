@@ -219,6 +219,26 @@ function ownerDoor(): string | null {
   } catch { return null; }
 }
 /**
+ * The way out when a machine profile is not found because the plugin's settings file sets OVIS_STATE_DIR over the one
+ * the command was run with (the file wins, as INSTALL.md documents): the command looked for the owner socket in another
+ * folder (#4210). Empty in any other case.
+ */
+function stateDirWayOut(): string {
+  const given = mergeEnvLayers([process.env])["OVIS_STATE_DIR"] ?? "";
+  if (!machineProfile || given === "" || resolve(given) === resolve(APP_STATE_DIR)) return "";
+  // the last file that sets it is the one that wins
+  const setting = CONFIG_FILES.filter((_, index) => "OVIS_STATE_DIR" in mergeEnvLayers([fileVars[index]!]));
+  const file = setting[setting.length - 1];
+  if (file === undefined) return "";
+  return `${file} sets OVIS_STATE_DIR to ${APP_STATE_DIR}, which wins over ${given}. Run it with that profile's HERDR_PLUGIN_CONFIG_DIR, or set the same OVIS_STATE_DIR in the file.\n`;
+}
+
+function notRunning(): number {
+  process.stderr.write(`Ovis is not running at ${origin}; start it first\n${stateDirWayOut()}`);
+  return 1;
+}
+
+/**
  * The door of this command: the one its first passing health check went to (appHealth), kept for every later request
  * of the command, so a command never moves from one door to the other.
  */
@@ -874,10 +894,7 @@ async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<n
     return 1;
   }
   const { qr, decodeOffer } = parts ?? await pairingParts();
-  if (!(await health())) {
-    process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
-    return 1;
-  }
+  if (!(await health())) return notRunning();
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1" };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
   let code: string;
@@ -943,10 +960,7 @@ async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<n
 /** The PC's terminal is the PC itself, so this is approval on this PC (docs/account.md, "Who may admit a device"). */
 async function approvePairings(): Promise<number> {
   const { approveWaiting, discardTyped } = await import("./plugin-link.ts");
-  if (!(await health())) {
-    process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
-    return 1;
-  }
+  if (!(await health())) return notRunning();
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: serverOrigin() };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
   let pairings: WaitingDevice[];
@@ -1019,10 +1033,7 @@ async function linkCommand(): Promise<number> {
   // Always "link", whichever name it was run by: a release from before `add` and `login` knows only that one
   if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) return await handOn(active, ["link", ...process.argv.slice(3)]);
   const { discardTyped, link: linkPc, linkSettings } = await import("./plugin-link.ts");
-  if (!(await health())) {
-    process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
-    return 1;
-  }
+  if (!(await health())) return notRunning();
   const headers: Record<string, string> = {};
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
   const stop = new AbortController();
@@ -1202,7 +1213,7 @@ const deviceLine = (title: string, devices: readonly ShownDevice[]): string => {
 async function status(): Promise<number> {
   const pid = recordedPid();
   const answer = await appHealth();
-  process.stdout.write(`${answer !== null ? "running" : "down"} ${origin}${pid === null ? "" : ` (pid ${pid})`}\n`);
+  process.stdout.write(`${answer !== null ? "running" : "down"} ${origin}${pid === null ? "" : ` (pid ${pid})`}\n${answer === null ? stateDirWayOut() : ""}`);
   if (typeof answer?.engineDown === "string") process.stdout.write(`engine: down${answer.engineDown === "" ? "" : ` (${answer.engineDown})`}\n`);
   // the groups of the app's own answer, which carries no token: on a machine profile's owner socket, or over TCP when
   // the app lets the command in without one. Nothing proves which program holds a TCP port, so no token goes there
