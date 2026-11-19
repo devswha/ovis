@@ -95,65 +95,12 @@ describe("a wait on a card", () => {
   it("ends at the first read without a card after an answer from a card", async () => {
     const { cards, told } = waits([card("question"), card("question"), null]);
     await cards.tick(listed(() => [pane("codex")]), all);
-    cards.answer(cards.answering("t1", "c1"), true);
+    cards.answer("t1", cards.generation("t1")!);
     // the answered card can still be drawn for a moment
     await cards.tick(listed(() => [pane("codex")]), all);
     expect(cards.waiting("t1")).toBe(true);
     await cards.tick(listed(() => [pane("codex")]), all);
     expect(told).toEqual([["t1", true], ["t1", false]]);
-  });
-
-  it("takes an answer sent before any read found its card, and gives none to the wait for another card", async () => {
-    const { cards, told } = waits([card("question", "asked"), null, card("question", "other"), null]);
-    const asked = cards.answering("t1", "asked");
-    await cards.tick(listed(() => [pane("codex")]), all);
-    cards.answer(asked, true);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    expect(told).toEqual([["t1", true], ["t1", false]]);
-    // an answer to a card no read found before another card's wait began
-    const missed = cards.answering("t1", "asked");
-    await cards.tick(listed(() => [pane("codex")]), all);
-    cards.answer(missed, true);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    expect(cards.waiting("t1")).toBe(true);
-  });
-
-  it("takes an answer delivered before any read found its card for the wait a read still catching that card begins", async () => {
-    const { cards, told } = waits([card("question", "asked"), null, null, card("question", "asked")]);
-    cards.answer(cards.answering("t1", "asked"), true);
-    // the answered card can still be drawn for a moment
-    await cards.tick(listed(() => [pane("codex")]), all);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    expect(told).toEqual([["t1", true], ["t1", false]]);
-    // a read without its card drops it: the same card drawn again later is another asking
-    await cards.tick(listed(() => [pane("codex")]), all);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    expect(cards.waiting("t1")).toBe(true);
-  });
-
-  it("takes an answer for the card that took the place of the one waited on, and none that was not delivered", async () => {
-    const { cards } = waits([card("question", "first"), card("question", "next"), null, card("question", "again"), null]);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    // the first card was answered in the terminal, and the next one from its card before a read found it
-    const next = cards.answering("t1", "next");
-    await cards.tick(listed(() => [pane("codex")]), all);
-    cards.answer(next, true);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    expect(cards.waiting("t1")).toBe(false);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    cards.answer(cards.answering("t1", "again"), false);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    expect(cards.waiting("t1")).toBe(true);
-  });
-
-  it("takes an answer delivered for the card drawn in place of the one waited on before any read found it", async () => {
-    const { cards, told } = waits([card("question", "first"), card("question", "next"), null]);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    // the first card was answered in the terminal, and the next one from its card, delivered before a read found it
-    cards.answer(cards.answering("t1", "next"), true);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    await cards.tick(listed(() => [pane("codex")]), all);
-    expect(told).toEqual([["t1", true], ["t1", false], ["t1", true], ["t1", false]]);
   });
 
   it("keeps a wait through reads that say nothing, and ends it after ten in a row rather than stay stuck", async () => {
@@ -167,7 +114,7 @@ describe("a wait on a card", () => {
   it("is another wait for another card in its place: told anew, and an answer to the first does not end it", async () => {
     const { cards, told } = waits([card("question", "asked"), card("permission", "next"), null, null]);
     await cards.tick(listed(() => [pane("codex")]), all);
-    cards.answer(cards.answering("t1", "asked"), true);
+    cards.answer("t1", cards.generation("t1")!);
     // the answer brought Codex's next asking before any read found the screen without a card
     await cards.tick(listed(() => [pane("codex")]), all);
     expect(told).toEqual([["t1", true], ["t1", false], ["t1", true]]);

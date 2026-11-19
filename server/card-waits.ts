@@ -22,10 +22,9 @@
  * while its screen was read looks the same before and after, so the caller counts every change of its agent or
  * session it is told (`Roster.lifetime`): a read begun under an earlier count is dropped, and a wait ends.
  *
- * An answer is one asking's (`answering`): told only for a card the agent waits on, it is the wait's the pane is in
- * once its card was matched, or, where none is on yet, the one a read begins next for that card. Delivered, it ends
- * that wait alone at its next read without a card. A form answered field by field is one wait throughout, whatever
- * its last field's card is; a new asking in the same words is another, and so is a wait for another card.
+ * An answer is one wait's: it is given the wait it began under (`generation`), and ends that wait alone at its next
+ * read without a card. A form answered field by field is one wait throughout, whatever its last field's card is; a
+ * new asking in the same words is another.
  */
 import type { AgentStatus, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
@@ -41,12 +40,7 @@ const READS_AT_ONCE = 4;
 
 /** the agent a read or a wait is for: its name, and its session where the pane says one */
 interface Asker { readonly agent: string; readonly session: string | undefined }
-interface Wait { readonly kind: WaitingKind; readonly id: string; readonly lifetime: number; asker: Asker; empty: number; failed: number }
-/**
- * an answer from a card's button, from its card matched until it ended: the wait it is for, or null while no read found
- * its card yet. One delivered before any read found its card is kept, `delivered`, until a read finds or misses that card.
- */
-interface CardAnswer { readonly paneId: string; readonly id: string; wait: Wait | null; delivered: boolean }
+interface Wait { readonly kind: WaitingKind; readonly id: string; readonly generation: number; readonly lifetime: number; asker: Asker; empty: number; failed: number }
 /** one pane picked for a read: whose it was, and under which count of its agents, as the tick began */
 interface Picked { readonly pane: HerdrPane; readonly asker: Asker; readonly lifetime: number }
 /**
@@ -77,8 +71,7 @@ export class CardWaits {
   private readonly answered = new Set<string>();
   /** panes picked for a read under way or still queued, that still count: forgetting a pane drops its read (ticks never overlap: the caller runs one at a time) */
   private readonly reading = new Set<string>();
-  /** answers whose card was matched and that have not ended yet */
-  private readonly answers = new Set<CardAnswer>();
+  private generations = 0;
 
   constructor(
     private readonly read: (pane: HerdrPane, panes: HerdrPane[]) => Promise<CardRead>,
@@ -94,33 +87,17 @@ export class CardWaits {
     return this.waits.get(paneId)?.kind;
   }
 
-  /**
-   * An answer went to the card `id` the agent waits on, and nothing is typed for it yet: it is for the wait the pane is
-   * in now, whatever card that wait was read with (the next field of a form), or, where none is on, for the wait a read
-   * begins next for that card. Its end is told to `answer`.
-   */
-  answering(paneId: string, id: string): CardAnswer {
-    const answer = { paneId, id, wait: this.waits.get(paneId) ?? null, delivered: false };
-    this.answers.add(answer);
-    return answer;
+  /** The wait the pane is in, for an answer that begins now to hand back once it was delivered (`answer`). */
+  generation(paneId: string): number | undefined {
+    return this.waits.get(paneId)?.generation;
   }
 
   /**
-   * That answer ended: where it was delivered and the wait it is for is still the pane's, its next read that finds no
-   * card ends it. A wait begun since for no card it answered is another asking, and is not answered by it. Delivered
-   * before any read found its card, it is kept for the wait a read still catching that card begins (`settle`).
+   * An answer begun under the wait `generation` was delivered: where that wait is still the pane's, its next read that
+   * finds no card ends it. A wait begun since is another asking, whatever its card says, and is not answered by it.
    */
-  answer(answer: CardAnswer, delivered: boolean): void {
-    if (!this.answers.has(answer)) return;
-    if (delivered && answer.wait !== null && this.waits.get(answer.paneId) === answer.wait) this.answered.add(answer.paneId);
-    // its card is not the one a read found for its wait (none yet, or the next one drawn in its place): a read may still
-    // catch that card, and the wait it begins is answered
-    if (delivered && answer.wait?.id !== answer.id) {
-      answer.wait = null;
-      answer.delivered = true;
-      return;
-    }
-    this.answers.delete(answer);
+  answer(paneId: string, generation: number): void {
+    if (this.waits.get(paneId)?.generation === generation) this.answered.add(paneId);
   }
 
   /** The pane is gone, or what is reported next tells its status: what it waited on goes, told to nobody. */
@@ -128,7 +105,6 @@ export class CardWaits {
     this.waits.delete(paneId);
     this.answered.delete(paneId);
     this.reading.delete(paneId);
-    for (const answer of this.answers) if (answer.paneId === paneId) this.answers.delete(answer);
   }
 
   /**
@@ -177,8 +153,6 @@ export class CardWaits {
       return;
     }
     if (read === null) {
-      // the screen without a card: an answer no read found the card of is for no wait that begins after it
-      for (const answer of this.answers) if (answer.paneId === paneId && answer.wait === null) this.answers.delete(answer);
       if (!wait) return;
       wait.failed = 0;
       if (this.answered.has(paneId) || ++wait.empty >= EMPTY_READS_END) this.end(paneId);
@@ -192,18 +166,7 @@ export class CardWaits {
     // another card where one was waited on (its answer brought the next asking before a read found the screen
     // without a card): that wait is over, an answer to it with it, and this card's begins
     if (wait) this.end(paneId);
-    const next: Wait = { kind: read.kind, id: read.id, lifetime, asker, empty: 0, failed: 0 };
-    this.waits.set(paneId, next);
-    // an answer sent to this card before a read found it, or while the wait it takes the place of was on, is this wait's;
-    // one sent to another card no read found is no wait's
-    for (const answer of this.answers) {
-      if (answer.paneId !== paneId) continue;
-      if (answer.id === read.id && answer.delivered) {
-        this.answers.delete(answer);
-        this.answered.add(paneId);
-      } else if (answer.id === read.id && (answer.wait === null || answer.wait === wait)) answer.wait = next;
-      else if (answer.wait === null) this.answers.delete(answer);
-    }
+    this.waits.set(paneId, { kind: read.kind, id: read.id, generation: ++this.generations, lifetime, asker, empty: 0, failed: 0 });
     this.changed(paneId, true);
   }
 

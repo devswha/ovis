@@ -686,13 +686,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       .catch(() => undefined).finally(() => { cardReading = null; });
     return cardReading;
   }
-  // an answer from a card is for the asking it answered (server/card-waits.ts `answering`): once it was delivered the pane
-  // is read, and where that wait is still on, its first read without a card ends it
-  const stopAnswered = onPromptAnswering((paneId, card) => {
-    const answer = cards.answering(paneId, card);
+  // an answer from a card the agent waits on is its wait's, the one the pane is in as the answer matched that card: once it
+  // was delivered the pane is read, and where that wait is still on, its first read without a card ends it
+  const stopAnswered = onPromptAnswering((paneId) => {
+    const wait = cards.generation(paneId);
     return (delivered) => {
-      cards.answer(answer, delivered);
-      if (delivered) void cardTick(new Set([paneId]));
+      if (!delivered) return;
+      if (wait !== undefined) cards.answer(paneId, wait);
+      void cardTick(new Set([paneId]));
     };
   });
 
