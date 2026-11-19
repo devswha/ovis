@@ -40,17 +40,22 @@ export async function recordsOnPc(post: (path: string, body: unknown) => Promise
   return answer.receipts;
 }
 
-/** One transport per PC for a Not me on `notice` from PC `own`: its answer on that PC's socket, every other PC's records route. */
+/**
+ * Where a Not me on `notice` from PC `own` goes: the answer on that PC's own socket, whose receipts count, and every other
+ * PC's records route through the page's PC, which delivers the blocks but is not that PC's own word (relay-hub ruling on T60).
+ */
 export function notMeTransports(notice: DeviceNotice, own: string, pcs: readonly string[], deps: {
   socket: (pc: string) => AnswerSocket | undefined;
   post: (pc: string) => (path: string, body: unknown) => Promise<Response>;
   timeoutMs: number;
-}): Map<string, BlockSend> {
-  return new Map(pcs.map((pc): [string, BlockSend] => [pc, pc === own
-    ? (blocks) => {
-      const socket = deps.socket(pc);
-      if (socket === undefined) return Promise.reject(new Error("The PC is not connected"));
-      return answerOnPc(socket, { type: "notice-answer", id: notice.id, answer: "not_me", blocks } as NoticeAnswer, deps.timeoutMs);
-    }
-    : (blocks) => recordsOnPc(deps.post(pc), blocks)]));
+}): { pcs: Map<string, BlockSend>; relayed: Map<string, BlockSend> } {
+  const answer: BlockSend = (blocks) => {
+    const socket = deps.socket(own);
+    if (socket === undefined) return Promise.reject(new Error("The PC is not connected"));
+    return answerOnPc(socket, { type: "notice-answer", id: notice.id, answer: "not_me", blocks } as NoticeAnswer, deps.timeoutMs);
+  };
+  return {
+    pcs: new Map(pcs.includes(own) ? [[own, answer]] : []),
+    relayed: new Map(pcs.filter((pc) => pc !== own).map((pc): [string, BlockSend] => [pc, (blocks) => recordsOnPc(deps.post(pc), blocks)])),
+  };
 }
