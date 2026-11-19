@@ -104,6 +104,26 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
     expect(services.devices.has(target.id)).toBe(false);
   });
 
+  test("T52, P14: a handed lift requests a read but a snapshot without it keeps the freeze", async () => {
+    const { services, service, identity, member, fixture } = await server(true);
+    const target = await relayDevice(fixture);
+    const at = "2026-11-01T00:00:00.000Z";
+    const block = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.publicKey, target_no: 2,
+      signer: member.publicKey, signer_no: 1, signed_at: at, nonce: newRecordId() }, member.keys.privateKey);
+    const lift = await signSafetyRecord({ v: 1, kind: "lift", account: ACCOUNT, target: block.id,
+      signer: member.publicKey, signer_no: 1, signed_at: at }, member.keys.privateKey);
+    expect((await services.devices.applyBlock(block, "handed")).outcome).toBe("applied");
+    const link = await relayConnection(fixture, { serverId: identity.server_id });
+    await link.auth(member);
+    const requests = () => service.requests.filter((path) => path.includes("/v1/pc/snapshot")).length;
+    const before = requests();
+    const answer = await ask(link, "/api/account/records", { method: "POST", body: { records: [lift] } });
+    await services.accountMailbox.settle();
+    expect(requests()).toBe(before + 1);
+    expect(answer.body.results).toEqual([{ id: lift.id, outcome: "refused", code: "read_pending" }]);
+    expect(services.safetyLog?.state().blocks.map(({ record }) => record.id)).toEqual([block.id]);
+  });
+
   test("T60: only a negotiated refusal with the signer's valid proof carries its PC receipts", async () => {
     const { services, service, member, identity, fixture } = await server(true);
     service.registerDevice(ACCOUNT, member.publicKey, "Signer");

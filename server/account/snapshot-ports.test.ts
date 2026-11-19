@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -169,6 +169,22 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     newer.page = { ...newer.page, version: 5 };
     expect(await read(ports, newer)).toMatchObject({ committed: true });
     expect(await read(ports, older)).toEqual({ committed: false, reason: "stale", denials: 0 });
+  });
+
+  test("T52, P14: a refused durable lift does not advance the watermark", async () => {
+    const { devices, ports, safetyLog } = pc();
+    const [older, target] = [await member(devices), await member(devices)];
+    const blocked = await block(target.spki, older);
+    expect((await devices.applyBlock(blocked, "handed")).outcome).toBe("applied");
+    expect(await read(ports, page({ version: 1, devices: [{ key: older.spki, no: 1, eligible: false, label: "Phone" }],
+      removed: [{ key: target.spki, no: 2 }] }))).toMatchObject({ committed: true });
+    const record = await lift(blocked.id, older);
+    const refused = spyOn(safetyLog, "append").mockReturnValue({ outcome: "refused", id: record.id, code: "log_unavailable" });
+    try {
+      expect(await read(ports, page({ version: 2, lifts: [record] }))).toMatchObject({ committed: false });
+      expect(ports.lastVersion()).toBe(1);
+      expect(safetyLog.state().blocks.map(({ record }) => record.id)).toEqual([blocked.id]);
+    } finally { refused.mockRestore(); }
   });
 
   test("P21, G1: renumbering a pinned key refuses and journals the read without moving its watermark", async () => {
