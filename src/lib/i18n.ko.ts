@@ -42,6 +42,7 @@ const BASE: Record<string, string> = {
   "Only for {pc}": "{pc}에만",
   "Could not verify this device. It was declined: approve only a device you are signing in yourself.": "이 기기를 확인할 수 없어 거절했습니다. 직접 로그인 중인 기기만 승인하세요.",
   "Account": "계정",
+  "PC": "PC",
   "Finish signing in in your browser.": "브라우저에서 로그인을 마치세요.",
   "Signed in with {provider}": "{provider}로 로그인함",
   "Signing in…": "로그인하는 중…",

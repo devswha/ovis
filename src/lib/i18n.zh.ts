@@ -46,6 +46,7 @@ const BASE: Record<string, string> = {
   "Only for {pc}": "仅限 {pc}",
   "Could not verify this device. It was declined: approve only a device you are signing in yourself.": "无法验证此设备，已拒绝。请只批准你自己正在登录的设备。",
   "Account": "账户",
+  "PC": "PC",
   "Finish signing in in your browser.": "请在浏览器中完成登录。",
   "Signed in with {provider}": "已使用 {provider} 登录",
   "Signing in…": "正在登录…",

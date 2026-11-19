@@ -294,7 +294,7 @@ describe("RelayShellScreens", () => {
 
     it("signed in with a PC the account does not list, says the pairing adds it to the account and shows the PC's ID", () => {
       const html = confirm("unlisted");
-      expect(html).toContain("Add Desk PC to your account?");
+      expect(html).toMatch(/Add Desk PC<\/span> <span class="relay-shell-hero-quiet">to your account\?/);
       expect(html).toContain("Pairing adds this PC to your Ovis account, so every device of your account can open it. Pair only with a PC you are setting up yourself.");
       expect(html).toContain(pcId);
       expect(html).toContain('<button type="button" class="btn btn-primary">Add and pair</button>');
@@ -309,7 +309,7 @@ describe("RelayShellScreens", () => {
       expect(html).toContain("This device joins Desk PC with your account&#x27;s key. The PC lists it under Settings → Devices and PCs, where it can be removed.");
       expect(html).toContain('<button type="button" class="btn btn-primary">Pair</button>');
       expect(html).not.toContain("a key of its own");
-      expect(html).not.toContain("Add Desk PC to your account?");
+      expect(html).not.toMatch(/Add Desk PC<\/span> <span class="relay-shell-hero-quiet">to your account\?/);
     });
 
     it("until the sign-in is read, claims neither, says it is checking and takes no confirmation", () => {
@@ -324,7 +324,7 @@ describe("RelayShellScreens", () => {
 
     it("keeps the wording a press was made on while the press is checked, with its button held", () => {
       const adds = confirm("checking", "unlisted");
-      expect(adds).toContain("Add Desk PC to your account?");
+      expect(adds).toMatch(/Add Desk PC<\/span> <span class="relay-shell-hero-quiet">to your account\?/);
       expect(adds).toContain("Pairing adds this PC to your Ovis account");
       expect(adds).toContain(pcId);
       expect(adds).toContain('<button type="button" class="btn btn-primary" disabled="" aria-busy="true">Add and pair</button>');
@@ -379,5 +379,49 @@ describe("RelayShellScreens", () => {
     } finally {
       await act(async () => { renderer?.unmount(); });
     }
+  });
+  it("offers the account service's providers on a marked pairing's sign-in screen, and says how that sign-in went", () => {
+    const failed = { kind: "failed" as const, failure: "sign-in-first" as const, name: "Desk", detail: null, server_id: "a".repeat(32) };
+    const card = (state: RelayShellProps["state"], signIn: boolean) => render(createElement(RelayShellCardContent, {
+      props: { ...baseProps(state), ...(signIn ? { onSignIn: none, accountProviders: ["github", "google"] as const } : {}) },
+      view: null, signInFirst: false, saved: 0, addingPc: false, setSignedOutView: none, setAddingPc: none,
+    }));
+    const offered = card(failed, true);
+    expect(offered).toContain("Your PCs, anywhere.");
+    expect(offered).toContain("Sign in to your Ovis account");
+    expect(offered).not.toContain("then scan the QR code again");
+    // every way in weighs the same: no provider is the filled one
+    expect([...offered.matchAll(/class="([^"]*)" data-provider="([a-z]+)"/g)].map(([, classes = "", provider]) => [provider, classes.includes("btn-primary")])).toEqual([["github", false], ["google", false]]);
+    // each button names only its provider; the title already says what they are for
+    expect(offered).toContain("</svg>GitHub</button>");
+    expect(offered).toContain("</svg>Google</button>");
+    expect(offered).toMatch(/you agree to the <a href="https:\/\/ovis\.sh\/privacy\/"[^>]*>Privacy Policy<\/a>\./);
+    // a page without an account service has no sign-in to offer: the sentence that says where to go stays
+    const withoutService = card(failed, false);
+    expect(withoutService).toContain("Sign in on this device, then scan the QR code again.");
+    expect(withoutService).not.toContain("data-provider");
+    const busy = card({ ...failed, account: { kind: "signing-in", provider: "google" } }, true);
+    expect(busy).toMatch(/data-provider="google"[^>]*aria-busy="true"/);
+    const refused = card({ ...failed, account: { kind: "signed-out", error: "The sign-in was cancelled.", provider: "google" } }, true);
+    expect(refused).toContain("The sign-in was cancelled.");
+    expect(refused).toContain('data-action="retry-signin"');
+    const expired = card({ kind: "failed", failure: "scan-expired", name: "Desk", detail: null }, true);
+    expect(expired).toContain("The QR code ran out while you signed in");
+    expect(expired).toContain("Show a new QR code on Desk and scan it.");
+    expect(expired).not.toContain("data-provider");
+  });
+  it("keeps the PC's ID of an Add and pair confirm folded under Details", () => {
+    const offer = { v: 1 as const, server_id: "a3f9c2e17b4d5a6c8e9f0b1d2c3a4e5f", server_public_key: "key", relay: "wss://relay.example", name: "Desk", code: "123456" };
+    const confirm = (account: "unlisted" | "listed") => render(createElement(RelayShellCardContent, {
+      props: baseProps({ kind: "confirm", offer, account }), view: null, signInFirst: false, saved: 0, addingPc: false, setSignedOutView: none, setAddingPc: none,
+    }));
+    const adding = confirm("unlisted");
+    expect(adding).toContain("Add Desk");
+    expect(adding).toContain("to your account?");
+    expect(adding).toMatch(/<dt>PC<\/dt><dd>Desk<\/dd><dt>Account<\/dt><dd>Your Ovis account<\/dd>/);
+    expect(adding).toMatch(/<details class="relay-shell-key-details"><summary>Details<\/summary><p class="relay-shell-copy">[^<]*<\/p><p class="relay-shell-code-id">/);
+    expect(adding).not.toMatch(/<details[^>]*open/);
+    expect(adding).toContain("a3f9");
+    expect(confirm("listed")).not.toContain("relay-shell-key-details");
   });
 });

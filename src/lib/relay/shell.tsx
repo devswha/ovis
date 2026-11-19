@@ -6,8 +6,8 @@ import { GLOBAL_RELAY } from "../../../shared/relay-regions.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import type { MyPc } from "../account/myPcs.ts";
 import { sameSignIn } from "../account/service.ts";
-import type { AccountSession } from "../account/store.ts";
-import { signInReturn } from "../account/signin.ts";
+import type { AccountProvider, AccountSession, PendingPairing } from "../account/store.ts";
+import { SIGN_IN_MS, signInReturn } from "../account/signin.ts";
 import { deviceLabel } from "../phone.ts";
 import { registerPendingPush } from "../push.ts";
 import { alertPrefs, loadSettings, SettingsProvider } from "../settings.ts";
@@ -91,12 +91,22 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let press = 0;
   let unanswered = false;
   let readWait: ReturnType<typeof setTimeout> | undefined;
+  // a marked pairing that stopped for a sign-in, while the sign-in its failure screen started runs: it is asked about again after it
+  let signInFor: PendingPairing | null = null;
+  // the providers that screen offers: the account service's own list, once read
+  let offered: readonly AccountProvider[] | null = null;
   // the sign-in each confirm that names an account was drawn for (kept off the rendered state: it holds the tokens)
   const drawnFor = new WeakMap<RelayShellState, AccountSession>();
   const accountChanged = async (): Promise<void> => {
     const read = account.state?.kind !== "signing-in";
     if (read) accountRead = true;
     if (read && (account.state?.kind !== "signed-in" || account.state.pcs !== null)) unanswered = false;
+    if (app === null && signInFor !== null && shown?.kind === "failed" && shown.failure === "sign-in-first") {
+      const kept = signInFor;
+      if (account.state?.kind === "signed-in" || Date.now() - kept.at > SIGN_IN_MS) resumePairing(kept);
+      else show({ ...shown, account: account.state });
+      return;
+    }
     if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
     else if (frontUp()) { if (sheetJoin && shown) show(shown); else await showFront(); }
   };
@@ -162,6 +172,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const show = (state: RelayShellState): void => {
     shown = state;
+    const signInFirst = state.kind === "failed" && state.failure === "sign-in-first";
+    if (signInFirst && offered === null && account.enabled) {
+      offered = account.providers;
+      void account.offered().then((list) => { offered = list; if (shown?.kind === "failed" && shown.failure === "sign-in-first") show(shown); });
+    }
     shell ??= (mount.createRoot ?? createRoot)(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null, createElement(RelayShell, {
       state, scoped, iosTab, pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onCheckPc: (serverId: string) => void sweep.checkOne(serverId), onPair: confirmed, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget,
@@ -170,7 +185,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       directoryRelays: account.directory, sheetJoin,
       // a join a PC's own page started for itself stands alone: no list is drawn behind it (the tabs open the list)
       ...(sheetJoin?.alone ? {} : { continuedAccount: sheetJoin ? account.state : null }), observedVersions: observedVersions(),
-      ...(account.enabled ? { onSignIn: account.signIn, accountProviders: account.providers, onJoin: joinPc, onSignOut: account.signOut, onLeave: account.leave, onDeleteAccount: account.deleteAccount, ...(account.signedInAs?.sign_in_id === undefined ? {} : { accountSignIn: account.signedInAs.sign_in_id }), onRefreshAccount: () => account.refreshNow() } : {}),
+      ...(account.enabled ? { onSignIn: signInFirst ? signInToPair : account.signIn, accountProviders: signInFirst && offered !== null ? offered : account.providers, onJoin: joinPc, onSignOut: account.signOut, onLeave: account.leave, onDeleteAccount: account.deleteAccount, ...(account.signedInAs?.sign_in_id === undefined ? {} : { accountSignIn: account.signedInAs.sign_in_id }), onRefreshAccount: () => account.refreshNow() } : {}),
     })))); account.armRefresh();
   };
   const showFront = async (): Promise<void> => {
@@ -426,7 +441,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       // connecting screen, before the app has a terminal for them to end; the rest of the enrollment goes on behind the app
       if (attempt.fresh && attempt.accountEnrollment && !attempt.accountless) {
         last = attempt;
-        show({ kind: "connecting", name: attempt.offer.name ?? null });
+        show({ kind: "connecting", name: attempt.offer.name ?? null, approved: true });
         let waited: ReturnType<typeof setTimeout> | undefined;
         // a Cancel on this screen ends the account steps too: no link, no store write, no app after it
         const steps = new AbortController();
@@ -480,7 +495,28 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     }, asked);
   };
   const consentOf = (attempt: Attempt): AccountSession | null | undefined => attempt.accountless ? null : attempt.signIn;
-  const cancelAttempt = (): void => { press++; confirming = false; comparison = null; last = null; opening?.abort(); opening = null; frontSteps?.abort(); frontSteps = null; updates.cancel(); if (transport && !enrolling.has(transport)) transport.close(); transport = null; };
+  /**
+   * A provider on the failure screen of a marked pairing that stopped for a sign-in: the sign-in starts with the offer (a web
+   * sign-in leaves the page, and its pending record carries the offer back). A second try keeps the first one's start, so
+   * the code's time is counted from then.
+   */
+  const signInToPair = (provider: AccountProvider): void => {
+    const offer = entry.offer;
+    if (offer === null || shown?.kind !== "failed" || shown.failure !== "sign-in-first") return;
+    signInFor = { offer, at: signInFor?.offer === offer ? signInFor.at : Date.now() };
+    account.signIn(provider, signInFor);
+  };
+  /**
+   * Signed in: the same pairing's confirm, as after a scan, and nothing is paired until its button is pressed. A sign-in
+   * that took longer than a code is good for asks for a new scan instead; the PC checks the code itself either way.
+   */
+  const resumePairing = (kept: PendingPairing): void => {
+    signInFor = null;
+    if (Date.now() - kept.at > SIGN_IN_MS) { show({ kind: "failed", failure: "scan-expired", name: kept.offer.name ?? null, detail: null, server_id: kept.offer.server_id }); return; }
+    entry = { ...entry, offer: kept.offer, damaged: false };
+    arrived();
+  };
+  const cancelAttempt = (): void => { signInFor = null; press++; confirming = false; comparison = null; last = null; opening?.abort(); opening = null; frontSteps?.abort(); frontSteps = null; updates.cancel(); if (transport && !enrolling.has(transport)) transport.close(); transport = null; };
   const retry = (): void => {
     if (shown?.kind === "ready" && shown.enrollment === "failed" && transport && last) { show({ ...shown, enrollment: "pending" }); enroll(transport, last); return; }
     if (last === null || !(shown?.kind === "failed" || shown?.kind === "outdated" || shown?.kind === "compare" && shown.wrong)) return;
@@ -609,5 +645,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   }
 
   await showFront();
-  await account.load(account.enabled ? signInReturn(new URL(mount.entryUrl).hash) : null);
+  // the return of a sign-in that a marked pairing's failure screen started: that screen comes back until the sign-in is read
+  await account.load(account.enabled ? signInReturn(new URL(mount.entryUrl).hash) : null, (kept) => {
+    if (forgedOffer(kept.offer)) return;
+    signInFor = kept;
+    entry = { ...entry, offer: kept.offer };
+    show({ kind: "failed", failure: "sign-in-first", name: kept.offer.name ?? null, detail: null, server_id: kept.offer.server_id, account: account.state });
+  });
 }

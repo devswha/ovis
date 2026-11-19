@@ -58,7 +58,9 @@ export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable
   /** after the pairing, this device's account key changed and the account service did not take the new one: no link was sent */
   | "new-key-unvouched"
   /** the PC refused this device's first link: its code ended or ran out, the code is for another account, or the account service did not vouch for this device */
-  | "link-required" | "account-mismatch" | "unverified-device";
+  | "link-required" | "account-mismatch" | "unverified-device"
+  /** the sign-in a marked pairing stopped for took longer than its code is good for: only a new scan pairs */
+  | "scan-expired";
 
 export type PcUpdate =
   | { phase: "reading" }
@@ -87,7 +89,8 @@ export type RelayShellState =
    * the device's own) stays on screen meanwhile.
    */
   | { kind: "confirm"; offer: RelayOffer; account?: "checking" | "unlisted" | "listed"; pressed?: "unlisted" | "listed" | "own"; /** a join a PC's own page offers: its one press, drawn alone */ alone?: true }
-  | { kind: "connecting"; name: string | null }
+  /** `approved`: the PC accepted the pairing, and the account steps go on behind this screen; absent before that */
+  | { kind: "connecting"; name: string | null; approved?: true }
   | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion }
   | { kind: "code-entry"; failure: TypedCodeFailure | null }
   | { kind: "code-looking" }
@@ -99,8 +102,11 @@ export type RelayShellState =
   | { kind: "forgotten"; name: string | null }
   /** a link with another key under a PC's id (forgedOffer): refused every time, and no saved key is touched */
   | { kind: "forged"; name: string | null; mismatch: KeyMismatch | null }
-  /** `mismatch`: on identity-changed, the key that is not the PC's, when the phone can name it; `server_id`: the PC a connection attempt failed for */
-  | { kind: "failed"; failure: RelayFailure; name: string | null; detail: string | null; mismatch?: KeyMismatch | null; server_id?: string };
+  /**
+   * `mismatch`: on identity-changed, the key that is not the PC's, when the phone can name it; `server_id`: the PC a connection attempt failed for;
+   * `account`: on sign-in-first, the sign-in started from this screen (busy, or why it did not finish)
+   */
+  | { kind: "failed"; failure: RelayFailure; name: string | null; detail: string | null; mismatch?: KeyMismatch | null; server_id?: string; account?: AccountView | null };
 
 export interface ShellEntry {
   serverId: string | null;
