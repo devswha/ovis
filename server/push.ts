@@ -32,7 +32,8 @@
  * An alert waits before it goes out, and a change of the pane's status meanwhile calls it
  * off: a question answered at the desk, or a finish followed by the next prompt, never
  * reaches the phone. So does the pane going away: closed (`closed`), or no longer in a
- * snapshot (`gone`), as when its tab or workspace closed (#4217). herdr says nothing of whether anyone is at the PC, so a change that
+ * snapshot (`gone`), as when its tab or workspace closed (#4217). A pane moved to another
+ * workspace is not gone: its new ID takes its status and its waiting alert (`moved`). herdr says nothing of whether anyone is at the PC, so a change that
  * quick is taken for someone being there (as Claude Code waits ~6 s on a permission
  * prompt and ~60 s after a reply before it notifies). A question waits `short`; a finish
  * waits `long`, and only one after a turn that worked `longTurn` or more is worth it,
@@ -198,6 +199,8 @@ export interface PushService {
   gone(panes: readonly HerdrPane[], newer: ReadonlySet<string>, machineId?: string): void;
   /** a pane closed with no exit of its own: its alerts are called off, silently (an exit's alert is `onEnded`'s) */
   closed(paneId: string, machineId?: string): void;
+  /** herdr gave a pane a new ID (moved to another workspace): its status and an alert waiting or under way go with it */
+  moved(from: string, to: string, machineId?: string): void;
   onStatus(paneId: string, status: AgentStatus, machineId?: string): Promise<void>;
   onEnded(paneId: string, machineId?: string): Promise<void>;
   onFailed(paneId: string, machineId?: string): Promise<void>;
@@ -815,7 +818,7 @@ export function createPushService(options: PushServiceOptions): PushService {
     return worked === null || worked >= timing.longTurn ? timing.long : null;
   }
 
-  function schedule(key: string, machineId: string, paneId: string, groups: Map<number, PushSubscriptionRecord[]>, send: (to: PushSubscriptionRecord[], silenced: () => boolean, delay: number) => Promise<void>): void {
+  function schedule(key: string, machineId: string, paneId: string, groups: Map<number, PushSubscriptionRecord[]>, send: (to: PushSubscriptionRecord[], silenced: () => boolean, delay: number, pane: Scheduled) => Promise<void>): void {
     const cancels: Array<() => void> = [];
     let remaining = groups.size;
     let open = groups.size;
@@ -827,7 +830,7 @@ export function createPushService(options: PushServiceOptions): PushService {
           fired = true;
           remaining -= 1;
           if (remaining === 0 && waiting.get(key) === entry) waiting.delete(key);
-          send(to, () => entry.silenced, delay).catch((error: unknown) => {
+          send(to, () => entry.silenced, delay, entry).catch((error: unknown) => {
             console.error(`web push failed: ${error instanceof Error ? error.message : String(error)}`);
           }).finally(resolve);
         }, delay);
@@ -968,6 +971,23 @@ export function createPushService(options: PushServiceOptions): PushService {
       forget(paneStorageId(machineId, paneId));
     },
 
+    moved(from, to, machineId = "local") {
+      const before = paneStorageId(machineId, from);
+      const after = paneStorageId(machineId, to);
+      forget(after);
+      for (const state of [lastStatus, turnStart, changes, titles, workspaces, kinds, waiting] as Map<string, unknown>[]) {
+        if (!state.has(before)) continue;
+        state.set(after, state.get(before));
+        state.delete(before);
+      }
+      // its alert reads the pane it is for when it goes out: under way already, it goes out under the new ID too
+      for (const entry of unsent) {
+        if (entry.key !== before) continue;
+        entry.key = after;
+        entry.paneId = to;
+      }
+    },
+
     async onStatus(paneId, status, machineId = "local") {
       const key = paneStorageId(machineId, paneId);
       const previous = lastStatus.get(key);
@@ -997,16 +1017,16 @@ export function createPushService(options: PushServiceOptions): PushService {
       if (groups.size === 0) return;
       // the destination the alert arose for: one set before the timer fires was not there to be told
       const hookAt = options.webhook?.generation();
-      schedule(key, machineId, paneId, groups, async (to, silenced, delay) => {
-        if (options.inUse?.() || muted(machineId, paneId)) return;
+      schedule(key, machineId, paneId, groups, async (to, silenced, delay, pane) => {
+        if (options.inUse?.() || muted(machineId, pane.paneId)) return;
         // only this PC's prompts are read here, and only a question's alert carries buttons
-        const reading = status === "blocked" && machineId === "local" ? readActions(paneId) : Promise.resolve(null);
-        const asked = changes.get(key);
-        const [{ title, agentKind }, answer] = await Promise.all([lookUp(key, machineId, paneId), reading]);
-        if (options.inUse?.() || silenced() || muted(machineId, paneId)) return;
+        const reading = status === "blocked" && machineId === "local" ? readActions(pane.paneId) : Promise.resolve(null);
+        const asked = changes.get(pane.key);
+        const [{ title, agentKind }, answer] = await Promise.all([lookUp(pane.key, machineId, pane.paneId), reading]);
+        if (options.inUse?.() || silenced() || muted(machineId, pane.paneId)) return;
         // a question whose pane changed while its prompt was read: the next asking's alert, under the same tag, holds what
         // the pane asks now, and this one's buttons must not replace it. A finish already under way still goes out
-        if (status === "blocked" && changes.get(key) !== asked) return;
+        if (status === "blocked" && changes.get(pane.key) !== asked) return;
         const kind: AlertKind = status === "blocked" ? blockedAlertKind(agentKind) : "done";
         // a device that dropped out meanwhile is not written to, nor one that does not want this kind
         const live = to.flatMap((subscription) => {
@@ -1015,10 +1035,10 @@ export function createPushService(options: PushServiceOptions): PushService {
         });
         const hook = delay === hookDelay && options.webhook?.wants(kind) === true;
         if (live.length === 0 && !hook) return;
-        const message = statusMessage(paneId, title, status, kind);
-        if (hook) tellWebhook(key, machineId, paneId, message, hookAt);
+        const message = statusMessage(pane.paneId, title, status, kind);
+        if (hook) tellWebhook(pane.key, machineId, pane.paneId, message, hookAt);
         if (live.length === 0) return;
-        const alert: PushPayload = { ...message, ...where(key, machineId), tag: paneNotificationTag(paneId, machineId) };
+        const alert: PushPayload = { ...message, ...where(pane.key, machineId), tag: paneNotificationTag(pane.paneId, machineId) };
         const urgency = status === "blocked" ? "high" : "normal";
         const answering = answer === null ? [] : live.filter((subscription) => options.canAnswer?.(subscription.device_id) ?? true);
         await Promise.all([
@@ -1040,20 +1060,20 @@ export function createPushService(options: PushServiceOptions): PushService {
       const hooked = options.webhook?.wants("error") === true;
       if (to.length === 0 && !hooked) return;
       const hookAt = options.webhook?.generation();
-      schedule(key, machineId, paneId, new Map([[timing.short, to]]), async (group, silenced) => {
-        if (options.inUse?.() || muted(machineId, paneId)) return;
-        const { title } = await lookUp(key, machineId, paneId);
-        if (options.inUse?.() || silenced() || muted(machineId, paneId)) return;
+      schedule(key, machineId, paneId, new Map([[timing.short, to]]), async (group, silenced, _delay, pane) => {
+        if (options.inUse?.() || muted(machineId, pane.paneId)) return;
+        const { title } = await lookUp(pane.key, machineId, pane.paneId);
+        if (options.inUse?.() || silenced() || muted(machineId, pane.paneId)) return;
         const live = group.flatMap((subscription) => {
           const current = store().get(subscription.endpoint);
           return current && current.device_id === subscription.device_id && wants(current, "error", machineId) ? [current] : [];
         });
         const hook = options.webhook?.wants("error") === true;
         if (live.length === 0 && !hook) return;
-        const message = failedMessage(paneId, title);
-        if (hook) tellWebhook(key, machineId, paneId, message, hookAt);
+        const message = failedMessage(pane.paneId, title);
+        if (hook) tellWebhook(pane.key, machineId, pane.paneId, message, hookAt);
         if (live.length === 0) return;
-        await broadcast({ ...message, ...where(key, machineId), tag: paneNotificationTag(paneId, machineId) }, "normal", live, true);
+        await broadcast({ ...message, ...where(pane.key, machineId), tag: paneNotificationTag(pane.paneId, machineId) }, "normal", live, true);
       });
     },
 
