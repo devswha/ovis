@@ -14,11 +14,12 @@ import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { PcFetch } from "../account/join.ts";
 import { enrollPc, planEnroll, rememberDevice } from "../account/join.ts";
 import { memoryAccountStore, memoryLock } from "../account/store.ts";
-import { AccountService } from "../account/service.ts";
+import { AccountService, AccountServiceUnreachableError } from "../account/service.ts";
 import { myPcs } from "../account/myPcs.ts";
 import { SettingsProvider } from "../settings.ts";
 import { setCurrentLanguage, translate } from "../i18n.ts";
 import { ConsentChangedError, createAccountController } from "./accountController.ts";
+import { ACCOUNT_SENDS, NETWORK_RETRY_MS, RETRY_AFTER_MAX_MS } from "./networkRetry.ts";
 import { offerOf } from "./shellState.ts";
 import { enrollmentOf, type RelayDevice, type ShellDeviceStore } from "./device.ts";
 import { dashboardModel, dashboardPcs } from "./dashboard.ts";
@@ -40,7 +41,8 @@ describe("account enrollment ownership", () => {
     setCurrentLanguage("en");
   });
 
-  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch; readonly heldAccount?: string } = {}) {
+  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch; readonly heldAccount?: string;
+    readonly accountAnswer?: (route: string, sent: number) => Response | TypeError | undefined } = {}) {
     const identity = generateKeyPair();
     const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.invalid", name: "Desk" };
     const accountStore = memoryAccountStore();
@@ -66,6 +68,8 @@ describe("account enrollment ownership", () => {
     const renewalRequested = Promise.withResolvers<void>();
     const renewalResponse = Promise.withResolvers<void>();
     const putPcs: string[] = [];
+    // every request to the account service, with the fake clock's time it went at
+    const sends: { readonly route: string; readonly at: number }[] = [];
     const accountRequested = Promise.withResolvers<void>();
     const accountRelease = Promise.withResolvers<void>();
     const signOutAsked = Promise.withResolvers<void>();
@@ -103,6 +107,10 @@ describe("account enrollment ownership", () => {
       store, accountStore, accountService: "https://account.invalid", accountProviders: ["github"], open,
       accountFetch: async (input, init) => {
         const route = `${init?.method ?? "GET"} ${new URL(input instanceof Request ? input.url : String(input)).pathname}`;
+        sends.push({ route, at: Date.now() });
+        const given = options.accountAnswer?.(route, sends.filter((sent) => sent.route === route).length);
+        if (given instanceof TypeError) throw given;
+        if (given !== undefined) return given;
         if (route === "POST /v1/signout") signOutAsked.resolve();
         if (route === options.heldAccount && !accountHeld) { accountHeld = true; accountRequested.resolve(); await accountRelease.promise; }
         if (init?.method === "PUT") putPcs.push("put");
@@ -113,6 +121,8 @@ describe("account enrollment ownership", () => {
     return {
       controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service, linked: () => linked,
       accountRequested, accountRelease, signOutAsked, viewChanged: viewChanged.promise, introductions: () => introductions,
+      /** the times, from the first, that `route` went to the account service */
+      sent: (route: string) => sends.filter((sent) => sent.route === route).map((sent, _index, all) => sent.at - (all[0]?.at ?? 0)),
     };
   }
   type Run = Awaited<ReturnType<typeof fixture>>;
@@ -441,5 +451,104 @@ describe("account enrollment ownership", () => {
   it("reports no admitted devices when directory peers cannot be read", async () => {
     const run = await fixture("unused", { listed: true });
     expect(await run.controller.enroll(await run.open(), run.original.server_id, false)).toEqual({ state: "complete", admitted: 0 });
+  });
+
+  describe("a request to the account service the connection dropped under", () => {
+    const dropped = (): TypeError => new TypeError("Failed to fetch");
+    /** lets the enrollment run on without moving the fake clock, until `done` holds */
+    const settle = async (done: () => boolean): Promise<void> => {
+      for (let turn = 0; !done() && turn < 5_000; turn++) await crypto.subtle.digest("SHA-256", new Uint8Array(1));
+      expect(done()).toBe(true);
+    };
+    /** `pending` to its end, the fake clock moved to each timer it sets meanwhile */
+    const onFakeClock = async <T>(pending: Promise<T>): Promise<T> => {
+      let over = false;
+      void pending.then(() => { over = true; }, () => { over = true; });
+      for (let turn = 0; !over && turn < 5_000; turn++) {
+        if (jest.getTimerCount() > 0) jest.advanceTimersToNextTimer();
+        await crypto.subtle.digest("SHA-256", new Uint8Array(1));
+      }
+      return pending;
+    };
+    const putRoute = (run: Run): string => `PUT /v1/pcs/${run.original.server_id}`;
+    const savedState = async (run: Run) => enrollmentOf((await run.store.get(run.original.server_id))!);
+    beforeEach(() => { jest.useFakeTimers(); browser.setVisibility("visible"); });
+
+    it("lists the PC once the connection is back, after a pause", async () => {
+      const run = await fixture("unused", { accountAnswer: (route, sent) => route.startsWith("PUT ") && sent === 1 ? dropped() : undefined });
+      expect(await onFakeClock(run.controller.enroll(await run.open(), run.original.server_id, false))).toEqual({ state: "complete", admitted: 2 });
+      expect(run.sent(putRoute(run))).toEqual([0, NETWORK_RETRY_MS[0]]);
+      expect((await new AccountService({ store: run.accountStore, fetch: run.service.fetch }).listPcs()).map((pc) => pc.server_id)).toEqual([run.original.server_id]);
+      expect(await savedState(run)).toBe("complete");
+    });
+
+    it("sends it again as soon as the browser is online again", async () => {
+      const run = await fixture("unused", { accountAnswer: (route, sent) => route.startsWith("PUT ") && sent === 1 ? dropped() : undefined });
+      const pending = run.controller.enroll(await run.open(), run.original.server_id, false);
+      await settle(() => run.sent(putRoute(run)).length === 1 && jest.getTimerCount() > 0);
+      window.dispatchEvent(new Event("online"));
+      expect(await pending).toEqual({ state: "complete", admitted: 2 });
+      expect(run.sent(putRoute(run))).toEqual([0, 0]);
+    });
+
+    it("sends nothing while the page is hidden, and sends it again once the page is shown", async () => {
+      browser.setVisibility("hidden");
+      const run = await fixture("unused", { accountAnswer: (route, sent) => route.startsWith("PUT ") && sent === 1 ? dropped() : undefined });
+      const pending = run.controller.enroll(await run.open(), run.original.server_id, false);
+      await settle(() => run.sent(putRoute(run)).length === 1 && jest.getTimerCount() > 0);
+      jest.advanceTimersByTime(10 * 60_000);
+      await settle(() => jest.getTimerCount() === 0);
+      expect(run.sent(putRoute(run))).toEqual([0]);
+      browser.setVisibility("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(await pending).toEqual({ state: "complete", admitted: 2 });
+      expect(run.sent(putRoute(run))).toEqual([0, 10 * 60_000]);
+    });
+
+    it("reads the account's PCs again rather than count an unanswered read as a PC it cannot check", async () => {
+      const run = await fixture("unused", { accountAnswer: (route, sent) => route === "GET /v1/pcs" && sent === 1 ? dropped() : undefined });
+      expect(await onFakeClock(run.controller.enroll(await run.open(), run.original.server_id, false))).toEqual({ state: "complete", admitted: 2 });
+      expect(run.sent("GET /v1/pcs")).toEqual([0, NETWORK_RETRY_MS[0]]);
+    });
+
+    it("waits as long as a busy service's retry-after asks, and the browser being online does not cut it short", async () => {
+      const busy = () => Response.json({ error: { code: "rate_limited" } }, { status: 429, headers: { "retry-after": "30" } });
+      const run = await fixture("unused", { accountAnswer: (route, sent) => route.startsWith("PUT ") && sent === 1 ? busy() : undefined });
+      const pending = run.controller.enroll(await run.open(), run.original.server_id, false);
+      await settle(() => run.sent(putRoute(run)).length === 1 && jest.getTimerCount() > 0);
+      window.dispatchEvent(new Event("online"));
+      await settle(() => jest.getTimerCount() > 0);
+      expect(run.sent(putRoute(run))).toEqual([0]);
+      expect(await onFakeClock(pending)).toEqual({ state: "complete", admitted: 2 });
+      expect(run.sent(putRoute(run))).toEqual([0, 30_000]);
+    });
+
+    it("does not send it again when a busy service asks for a longer wait than it is given, and the setup fails as before", async () => {
+      const run = await fixture("unused", { accountAnswer: (route) => route.startsWith("PUT ") ? Response.json({ error: { code: "rate_limited" } }, { status: 429, headers: { "retry-after": String(RETRY_AFTER_MAX_MS / 1000 + 1) } }) : undefined });
+      await expect(run.controller.enroll(await run.open(), run.original.server_id, false)).rejects.toMatchObject({ status: 429, retryAfterMs: RETRY_AFTER_MAX_MS + 1_000 });
+      expect([run.sent(putRoute(run)), jest.getTimerCount(), await savedState(run)]).toEqual([[0], 0, "failed"]);
+    });
+
+    it("sends it no more than its bound when the connection stays down, then leaves the setup failed with nothing left to send", async () => {
+      const run = await fixture("unused", { accountAnswer: (route) => route.startsWith("PUT ") ? dropped() : undefined });
+      await expect(onFakeClock(run.controller.enroll(await run.open(), run.original.server_id, false))).rejects.toBeInstanceOf(AccountServiceUnreachableError);
+      expect(run.sent(putRoute(run))).toEqual([0, NETWORK_RETRY_MS[0], NETWORK_RETRY_MS[0] + NETWORK_RETRY_MS[1]]);
+      expect(run.sent(putRoute(run))).toHaveLength(ACCOUNT_SENDS);
+      expect(jest.getTimerCount()).toBe(0);
+      jest.advanceTimersByTime(60 * 60_000);
+      window.dispatchEvent(new Event("online"));
+      await settle(() => true);
+      expect([run.sent(putRoute(run)).length, await savedState(run)]).toEqual([ACCOUNT_SENDS, "failed"]);
+    });
+
+    it("sends nothing again for a pairing forgotten while it waited", async () => {
+      const run = await fixture("unused", { accountAnswer: (route) => route.startsWith("PUT ") ? dropped() : undefined });
+      const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+      await settle(() => run.sent(putRoute(run)).length === 1 && jest.getTimerCount() > 0);
+      run.controller.cancelEnrollment(run.original.server_id);
+      await forgetSavedPc(run.original.server_id, run.store);
+      expect(await onFakeClock(pending)).toBeInstanceOf(DOMException);
+      expect([run.sent(putRoute(run)), await run.store.get(run.original.server_id)]).toEqual([[0], undefined]);
+    });
   });
 });

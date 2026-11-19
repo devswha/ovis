@@ -22,6 +22,7 @@ import type { AccountView, EnrollmentCompletion } from "./shellState.ts";
 import { AdmissionRefusedError, firstLinkRefusal, refusalOf } from "./firstLink.ts";
 import type { RelayShellMount } from "./shell.tsx";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
+import { sendAgainWhenBack } from "./networkRetry.ts";
 
 const INTRODUCTION_WAIT_MS = 60_000;
 const INTRODUCTION_POLL_MS = 3_000;
@@ -421,6 +422,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       if (epoch !== forgotten.get(serverId) || current === undefined || current.device_id !== pairing.device_id || current.public_spki !== pairing.public_spki || current.server_public_key !== pairing.server_public_key) throw new DOMException("The pairing was forgotten or replaced", "AbortError");
       return current;
     };
+    const owned = async (): Promise<void> => { assertPairing(await store.get(serverId)); };
     // Every enrollment writer, including linking and introductions, loses ownership on Forget.
     const enrollmentStore: RelayDeviceStore = {
       ...store,
@@ -533,8 +535,10 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       }
       const publicKey = Array.from(importPublicKey(device.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
       assertPairing(await store.get(serverId));
-      // the directory of the sign-in this enrollment began with: one stored meanwhile (another tab) is another account's
-      await account.forSignIn(session).putPc(serverId, { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay });
+      // the directory of the sign-in this enrollment began with: one stored meanwhile (another tab) is another account's.
+      // A send the connection dropped under goes again once it is back, while this enrollment still owns the pairing
+      const listing = { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay };
+      await sendAgainWhenBack(() => account.forSignIn(session).putPc(serverId, listing), { before: owned, signal });
       // listed first, so a removal this client signs from now on reaches it by mailbox too
       if ((await accountStore.get("enrolls"))?.[serverId] !== undefined) {
         // the PC takes an enrollment only from a session that signed in with the account key, which the ones above did not
@@ -550,7 +554,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
             const timer = setTimeout(() => controller.abort(), PEER_STATUS_MS);
             const peer = await open(offerOf(other), { store, label, signal: controller.signal }).finally(() => clearTimeout(timer));
             peers.push(peer);
-            return { serverId: other.server_id, assertOwned: async () => { assertPairing(await store.get(serverId)); }, fetch: async (path: string, init?: RequestInit) => {
+            return { serverId: other.server_id, assertOwned: owned, fetch: async (path: string, init?: RequestInit) => {
               assertPairing(await store.get(serverId));
               const response = await peer.fetch(path, init);
               assertPairing(await store.get(serverId));
@@ -560,14 +564,14 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           const pc = { server_id: serverId, server_public_key: device.server_public_key, relay: device.relay, name: (device.name ?? serverId.slice(0, 8)).slice(0, 48) };
           // PCs the directory lists that this device cannot read: their removals are unknown here
           // the directory unread counts as one more PC this device cannot read
-          const listed = await account.forSignIn(session).listPcs().then((pcs) => pcs.filter((entry) => entry.server_id !== serverId).length, () => 1);
+          const listed = await sendAgainWhenBack(() => account.forSignIn(session).listPcs(), { before: owned, signal }).then((pcs) => pcs.filter((entry) => entry.server_id !== serverId).length, () => 1);
           const enrollment = await enrollOnPc({
             fetch: async (path, init) => {
               assertPairing(await store.get(serverId));
               const response = await signedIn.fetch(path, init);
               assertPairing(await store.get(serverId));
               return response;
-            }, store: accountStore, account: session.account, serverId, pc, listed, assertOwned: async () => { assertPairing(await store.get(serverId)); },
+            }, store: accountStore, account: session.account, serverId, pc, listed, assertOwned: owned,
             others: reached.map((result) => result.status === "fulfilled" ? result.value : { serverId: "", fetch: () => Promise.reject(result.reason) }),
           });
           if (enrollment?.finished !== true) throw new AccountPcError(409, "enrolling");

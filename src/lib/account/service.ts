@@ -107,10 +107,22 @@ export interface AccountIdentity {
 /** A refresh this long before the access token runs out, so a request never leaves with one about to. */
 const REFRESH_EARLY_MS = 60_000;
 
+/** `retryAfterMs`: the wait the answer's `retry-after` named (a 429's), or null without one. */
 export class AccountServiceError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) {
+  constructor(readonly status: number, readonly code: string, message: string, readonly retryAfterMs: number | null = null) {
     super(message);
     this.name = "AccountServiceError";
+  }
+}
+
+/**
+ * A request to the account service got no answer at all: the connection dropped under it, or the network was down or
+ * changed. Any HTTP answer is an AccountServiceError (or a sign-out) instead. Still a TypeError, as fetch's own failure is.
+ */
+export class AccountServiceUnreachableError extends TypeError {
+  constructor(options: { readonly cause: unknown }) {
+    super("The account service could not be reached", options);
+    this.name = "AccountServiceUnreachableError";
   }
 }
 
@@ -155,7 +167,8 @@ export async function failure(response: Response): Promise<AccountServiceError> 
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
   }
-  return new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`);
+  const seconds = Number(response.headers.get("retry-after") ?? Number.NaN);
+  return new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null);
 }
 
 export function parseAccountLimits(value: unknown): AccountLimits | null {
@@ -240,7 +253,11 @@ export class AccountService {
   private readonly lock: AccountLock;
 
   constructor(private readonly options: AccountServiceOptions) {
-    this.fetch = options.fetch ?? ((input, init) => fetch(input, init));
+    const send: Fetch = options.fetch ?? ((input, init) => fetch(input, init));
+    // fetch fails with a TypeError only when no answer came (an abort is a DOMException, and passes as it is)
+    this.fetch = (input, init) => send(input, init).catch((error: unknown) => {
+      throw error instanceof TypeError ? new AccountServiceUnreachableError({ cause: error }) : error;
+    });
     this.now = options.now ?? Date.now;
     this.lock = options.lock ?? accountLock;
   }
