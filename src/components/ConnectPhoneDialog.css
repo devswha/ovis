@@ -86,8 +86,42 @@
   color: var(--text);
 }
 
-.connect-tabs {
+/* the three ways to add a PC, and pairing a phone apart at their end */
+.connect-ways {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   align-self: stretch;
+}
+
+.connect-tabs {
+  flex: 1;
+  min-width: 0;
+}
+
+.connect-phone-way {
+  flex: none;
+}
+
+.connect-phone-way[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--bg-elevated);
+}
+
+.connect-picks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.connect-picks-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.connect-outside-help {
+  align-self: flex-start;
 }
 
 .connect-tabs > button {
