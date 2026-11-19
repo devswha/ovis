@@ -102,6 +102,16 @@ app version that sends snapshots:
 bunx wrangler deploy
 ```
 
+A Worker change goes to staging first: the `staging` environment in `wrangler.toml` is the same
+Worker with a database of its own, `herdr-web-ui-telemetry-staging`, at
+`https://herdr-web-ui-telemetry-staging.<account>.workers.dev`, which no app sends to. Post the new
+message there and read it back before deploying to production:
+
+```sh
+bunx wrangler d1 execute herdr-web-ui-telemetry-staging --env staging --remote --file schema.sql   # a new staging database only
+bunx wrangler deploy --env staging
+```
+
 Then record the deploy with `bun scripts/release-guards.ts --worker-deployed` and commit
 `telemetry/deployed.json`: a release whose Worker sources differ from the recorded ones fails. Any
 edit to `telemetry/worker.ts` or `shared/telemetry.ts` counts, comments included, so a redeploy that
