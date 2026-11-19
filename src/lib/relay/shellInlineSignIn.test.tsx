@@ -133,7 +133,7 @@ describe("signing in from a marked pairing's failure screen", () => {
     expect(first.current().state).toMatchObject({ kind: "failed", failure: "sign-in-first", account: { kind: "signing-in", provider: "google" } });
     expect((await accountStore.get("pending"))?.[state]?.pairing?.offer).toEqual(offer);
     // the pairing waits in the account store, never in this tab's session storage (which holds only the tab's launch mark)
-    expect([...browser.sessionStore.keys()].filter((key) => key !== "ovis.relay.launched")).toEqual([]);
+    expect([...browser.sessionStore.keys()].filter((key) => key !== "ovis-launched")).toEqual([]);
     const { front, pcPage } = await comeBack(await returnUrl());
     // the front page, where the service sends a browser back, only hands the pairing on
     expect(front.current().state.kind).not.toBe("confirm");

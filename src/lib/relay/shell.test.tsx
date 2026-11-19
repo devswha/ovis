@@ -46,7 +46,7 @@ export function createShellTestPage() {
   let visibility: "visible" | "hidden" = "visible";
   const page = new EventTarget();
   // a tab past its launch: a front page stays on screen instead of opening the PC saved last (shell.tsx, launchPc)
-  const sessionStore = new Map<string, string>([["ovis.relay.launched", "1"]]);
+  const sessionStore = new Map<string, string>([["ovis-launched", "1"]]);
     for (const key of ["window", "document", "navigator", "localStorage", "sessionStorage", "matchMedia"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const storage = (store: Map<string, string>) => ({ getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() });
     const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
@@ -885,11 +885,11 @@ describe("the hosted shell's front page", () => {
       const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
       return ids.map((server_id) => ({ server_id, server_public_key: "k", relay: AP, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" }));
     };
-    const launch = (): void => { browser.sessionStore.delete("ovis.relay.launched"); };
+    const launch = (): void => { browser.sessionStore.delete("ovis-launched"); };
 
     it("opens the PC this device opened last, by its saved pairing, once per tab", async () => {
       launch();
-      localStorage.setItem("ovis.relay.last-pc", "b".repeat(32));
+      localStorage.setItem("ovis-last-pc", "b".repeat(32));
       const went: string[] = [];
       const store = deviceStore(await pcs("a".repeat(32), "b".repeat(32)));
       await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); } }));
@@ -903,7 +903,7 @@ describe("the hosted shell's front page", () => {
 
     it("opens the first saved PC when the one opened last is gone, and nothing with none saved", async () => {
       launch();
-      localStorage.setItem("ovis.relay.last-pc", "f".repeat(32));
+      localStorage.setItem("ovis-last-pc", "f".repeat(32));
       const went: string[] = [];
       await mountRelayShell(mountFor({ store: deviceStore(await pcs("a".repeat(32))), navigate: (path) => { went.push(path); } }));
       expect(went).toEqual([`/s/${"a".repeat(32)}/`]);

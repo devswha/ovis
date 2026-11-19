@@ -37,8 +37,8 @@ export const ACCOUNT_READ_WAIT_MS = 8_000;
 export const ACCOUNT_STEPS_WAIT_MS = 15_000;
 
 
-const LAST_PC = "ovis.relay.last-pc";
-const LAUNCHED = "ovis.relay.launched";
+const LAST_PC = "ovis-last-pc";
+const LAUNCHED = "ovis-launched";
 
 /** The PC this device opened last, kept by its id alone (no key), so the next launch opens it again. */
 function rememberPc(serverId: string): void {
