@@ -1,16 +1,15 @@
 /**
- * The ports of a whole account read (snapshot-read.ts) on this PC's real state (Step 2, S2-24). Every denial goes
- * through the device store's own verified path: a block through DeviceStore.applyBlock, which checks its signature and
- * its signer's age by this PC's admission order before anything is written, and a remove through applyAccountRecords.
- * A lift counts only after DeviceStore.liftAuthority, and is appended to the safety log in the commit turn.
+ * The ports of a whole account read (snapshot-read.ts) on this PC's real state (Step 2, S2-24). Every block of the
+ * snapshot goes through DeviceStore.applyBlock, which checks its signature and its signer's age by this PC's admission
+ * order before anything is written. A lift counts only after DeviceStore.liftAuthority, and is appended to the safety
+ * log in the commit turn.
  */
-import { AccountRecordError, parseAccountRecord, parseSafetyRecord, type DeviceLiftRecord } from "../../shared/account-records.ts";
+import type { BlockRecord, DeviceLiftRecord } from "../../shared/account-records.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { DeviceJournal } from "./device-journal.ts";
 import type { PcAccountState } from "./pc-binding.ts";
-import { applyAccountRecords } from "./records.ts";
 import type { SafetyLog } from "./safety-log.ts";
-import type { RecordClass, SnapshotPorts, StagedRead } from "./snapshot-read.ts";
+import type { SnapshotPorts, StagedRead } from "./snapshot-read.ts";
 
 export interface SnapshotDeps {
   readonly devices: DeviceStore;
@@ -24,22 +23,6 @@ export interface SnapshotDeps {
 
 /** A method entry's `how` carries the methods version it saw: the journal is where this PC remembers it (T58). */
 const METHOD_HOW = /^methods_version:(\d+)$/;
-
-function classify(record: unknown): RecordClass {
-  try {
-    const safety = parseSafetyRecord(record);
-    return safety.kind === "block" ? "denial" : safety.kind === "lift" && safety.signer !== "pc" ? "lift" : "invalid";
-  } catch (error) {
-    if (!(error instanceof AccountRecordError)) throw error;
-  }
-  try {
-    const account = parseAccountRecord(record);
-    return account.kind === "remove" ? "denial" : account.kind === "add" ? "add" : "invalid";
-  } catch (error) {
-    if (error instanceof AccountRecordError) return "invalid";
-    throw error;
-  }
-}
 
 export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
   const { devices, safetyLog, pc, journal } = deps;
@@ -58,17 +41,9 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
     },
     lastVersion: () => lastVersion,
     knownBlocks: () => new Set(safetyLog.blockIds()),
-    classify,
-    async deny(record) {
+    async deny(block: BlockRecord) {
       const before = devices.gen();
-      if (classify(record) !== "denial") return false;
-      try {
-        parseSafetyRecord(record);
-        await devices.applyBlock(record, "snapshot");
-      } catch (error) {
-        if (!(error instanceof AccountRecordError)) throw error;
-        await applyAccountRecords(devices, [record], deps.serverId());
-      }
+      await devices.applyBlock(block, "snapshot");
       return devices.gen() > before;
     },
     liftAuthority: (lift: DeviceLiftRecord) => devices.liftAuthority(lift),

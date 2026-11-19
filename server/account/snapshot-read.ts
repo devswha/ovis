@@ -1,17 +1,16 @@
 /**
  * One whole read of the account's snapshot (Step 2, rows G1, G13, T15, T52, T58, T60). Every page must carry the
  * first page's snapshot id, version and methods version, for this PC's account and relay identity, in order, and the
- * last page says it is the last. Denials (blocks in the snapshot, removes in the mailbox) only narrow, so each applies
- * as it is read and stands whatever happens to the read. Everything that widens (adds, lifts, the list itself) is
- * staged and committed only when the whole read validated, in one turn with no wait inside, and only while `gen`
- * moved by nothing but this read's own denials.
+ * last page says it is the last. The snapshot's blocks only narrow, so each applies as it is read and stands whatever
+ * happens to the read. Everything that widens (lifts, the list itself) is staged and committed only when the whole read
+ * validated, in one turn with no wait inside, and only while `gen` moved by nothing but this read's own denials.
  */
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import type { BlockRecord, DeviceLiftRecord } from "../../shared/account-records.ts";
 import { AccountSnapshotError, assembleSnapshot, parseSnapshotPage, SNAPSHOT_GONE, type AccountSnapshot, type AccountSnapshotPage } from "../../shared/account-snapshot.ts";
 
-/** One page of the snapshot as the service sent it, with the mailbox records read beside it. */
-export type PageAnswer = { readonly page: unknown; readonly records?: readonly unknown[] } | { readonly snapshot_gone: true };
+/** One page of the snapshot as the service sent it. */
+export type PageAnswer = { readonly page: unknown } | { readonly snapshot_gone: true };
 
 /** What a read is judged under: noted when it starts and asked again in the commit turn. */
 export interface ReadScope {
@@ -23,12 +22,8 @@ export interface ReadScope {
 
 export interface StagedRead {
   readonly snapshot: AccountSnapshot;
-  readonly adds: readonly unknown[];
   readonly lifts: readonly DeviceLiftRecord[];
 }
-
-/** How a mailbox or handed record bears on the read: a denial narrows at once, an add or lift waits for a whole read. */
-export type RecordClass = "denial" | "lift" | "add" | "invalid";
 
 export interface SnapshotPorts {
   /** The binding, relay identity, `gen` and lock now; null for a PC in no account. */
@@ -37,9 +32,8 @@ export interface SnapshotPorts {
   lastVersion(): number | null;
   /** The ids of the blocks this PC's safety log holds: a freeze line may name one the snapshot no longer carries. */
   knownBlocks(): ReadonlySet<string>;
-  classify(record: unknown): RecordClass;
-  /** Applies a block or a remove now; true when it raised `gen`. */
-  deny(record: BlockRecord | unknown): Promise<boolean>;
+  /** Applies a block of the snapshot now, through this PC's verified path; true when it raised `gen`. */
+  deny(block: BlockRecord): Promise<boolean>;
   /**
    * This PC's own authority for a lift the service took (DeviceStore.liftAuthority): its signature holds and its signer
    * is older here than the blocked key and not removed. Asked before the commit turn; a change it relied on raises gen.
@@ -70,13 +64,8 @@ export async function readSnapshot(
   let raised = 0;
   const refused = (reason: ReadRefusal): ReadOutcome => ({ committed: false, reason, denials });
   if (noted === null) return refused("unbound");
-  const deny = async (record: unknown) => {
-    denials++;
-    if (await ports.deny(record)) raised++;
-  };
 
   const pages: AccountSnapshotPage[] = [];
-  const adds: unknown[] = [];
   for (let index = 0; ; index++) {
     if (index === maxPages) return refused("incomplete");
     let answer: PageAnswer;
@@ -97,11 +86,9 @@ export async function readSnapshot(
     }
     if (page.page !== index) return refused("malformed");
     pages.push(page);
-    for (const block of page.blocks) await deny(block);
-    for (const record of answer.records ?? []) {
-      const kind = ports.classify(record);
-      if (kind === "denial") await deny(record);
-      else if (kind === "add") adds.push(record);
+    for (const block of page.blocks) {
+      denials++;
+      if (await ports.deny(block)) raised++;
     }
     if (page.last) break;
   }
@@ -119,37 +106,9 @@ export async function readSnapshot(
   const now = ports.scope();
   if (now === null || now.account !== noted.account || now.serverId !== noted.serverId || now.lock !== noted.lock) return refused("scope_changed");
   if (now.gen !== noted.gen + raised) return refused("generation_changed");
-  ports.commit({ snapshot, adds, lifts: authorized });
+  ports.commit({ snapshot, lifts: authorized });
   if (ports.methodsVersion() !== snapshot.methods_version) ports.journalMethod(snapshot.methods_version);
   return { committed: true, snapshot: snapshot.snapshot, denials, liftsRefused: snapshot.lifts.length - authorized.length };
-}
-
-export type HandedOutcome =
-  | { readonly id: string | null; readonly outcome: "applied" | "unchanged" | "staged" }
-  | { readonly id: string | null; readonly outcome: "refused"; readonly code: "record_invalid" };
-
-const idOf = (record: unknown): string | null => {
-  const id = typeof record === "object" && record !== null ? (record as { id?: unknown }).id : undefined;
-  return typeof id === "string" ? id : null;
-};
-
-/**
- * Records handed to the PC directly (POST /api/account/records, a device's own session). A denial applies at once;
- * an add or a lift is never applied as handed: it asks for a whole read, which commits it only if that snapshot
- * carries it (T15, T52).
- */
-export async function handRecords(records: readonly unknown[], ports: Pick<SnapshotPorts, "classify" | "deny" | "requestRead">): Promise<HandedOutcome[]> {
-  const outcomes: HandedOutcome[] = [];
-  let staged = false;
-  for (const record of records) {
-    const kind = ports.classify(record);
-    const id = idOf(record);
-    if (kind === "denial") outcomes.push({ id, outcome: await ports.deny(record) ? "applied" : "unchanged" });
-    else if (kind === "invalid") outcomes.push({ id, outcome: "refused", code: "record_invalid" });
-    else { staged = true; outcomes.push({ id, outcome: "staged" }); }
-  }
-  if (staged) ports.requestRead();
-  return outcomes;
 }
 
 /**

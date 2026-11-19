@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { exportAccountKey, newRecordId, signSafetyRecord, type DeviceLiftRecord } from "../../shared/account-records.ts";
 import type { AccountSnapshotPage } from "../../shared/account-snapshot.ts";
-import { handRecords, readSnapshot, refusalReceipts, type PageAnswer, type ReadScope, type SnapshotPorts, type StagedRead } from "./snapshot-read.ts";
-
-type Mail = { readonly kind: "add" | "remove" | "junk"; readonly id: string };
+import { readSnapshot, refusalReceipts, type PageAnswer, type ReadScope, type SnapshotPorts, type StagedRead } from "./snapshot-read.ts";
 
 async function key() {
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
@@ -27,7 +25,7 @@ function page(over: Partial<AccountSnapshotPage> = {}): AccountSnapshotPage {
     ...over,
   };
 }
-const answer = (over: Partial<AccountSnapshotPage> = {}, records: readonly Mail[] = []): PageAnswer => ({ page: page(over), records });
+const answer = (over: Partial<AccountSnapshotPage> = {}): PageAnswer => ({ page: page(over) });
 
 /** A PC as the read sees it: the scope it reads under, its `gen`, and what each port did, in order. */
 function pc(options: { lastVersion?: number | null; methods?: number | null; liftOk?: (lift: DeviceLiftRecord) => boolean; scope?: () => ReadScope | null } = {}) {
@@ -41,10 +39,6 @@ function pc(options: { lastVersion?: number | null; methods?: number | null; lif
     scope: options.scope ?? (() => ({ account: state.account, serverId: state.serverId, gen: state.gen, lock: state.lock })),
     lastVersion: () => options.lastVersion === undefined ? 6 : options.lastVersion,
     knownBlocks: () => new Set(),
-    classify: (record) => {
-      const kind = (record as { kind: string }).kind;
-      return kind === "block" || kind === "remove" ? "denial" : kind === "lift" ? "lift" : kind === "add" ? "add" : "invalid";
-    },
     deny: async (record) => { events.push(`deny ${name(record)}`); state.gen++; return true; },
     liftAuthority: async (candidate) => { events.push("lift checked"); return options.liftOk?.(candidate) ?? true; },
     commit: (stage) => { events.push("commit"); committed.push(stage); },
@@ -71,20 +65,19 @@ function serve(answers: readonly (PageAnswer | Error)[]) {
 
 describe("S2-24 whole account reads (G1, T15, T52, T58, T60)", () => {
   test("G1: partial, mixed or stale snapshots commit no widening or list drop", async () => {
-    const add: Mail = { kind: "add", id: "a1" };
     const first = answer({ last: false, blocks: [block] });
     const cases: { name: string; answers: (PageAnswer | Error)[]; reason: string; lastVersion?: number }[] = [
-      { name: "mixed snapshot ids", answers: [first, answer({ page: 1, snapshot: SNAP_B, lifts: [lift] }, [add])], reason: "mixed_snapshot" },
-      { name: "mixed methods version", answers: [first, answer({ page: 1, methods_version: 2 }, [add])], reason: "mixed_snapshot" },
+      { name: "mixed snapshot ids", answers: [first, answer({ page: 1, snapshot: SNAP_B, lifts: [lift] })], reason: "mixed_snapshot" },
+      { name: "mixed methods version", answers: [first, answer({ page: 1, methods_version: 2 })], reason: "mixed_snapshot" },
       { name: "snapshot_gone", answers: [first, { snapshot_gone: true }], reason: "snapshot_gone" },
       { name: "a page fails", answers: [first, new Error("503")], reason: "page_failed" },
-      { name: "no last page", answers: [first, answer({ page: 1, last: false }, [add]), answer({ page: 2, last: false })], reason: "incomplete" },
-      { name: "pages out of order", answers: [first, answer({ page: 2 }, [add])], reason: "malformed" },
-      { name: "another account", answers: [first, answer({ page: 1, account: "acct_2" }, [add])], reason: "scope_mismatch" },
-      { name: "another relay identity", answers: [first, answer({ page: 1, server_id: "f".repeat(32) }, [add])], reason: "scope_mismatch" },
-      { name: "older than the last snapshot applied", answers: [answer({ version: 5, blocks: [block] }, [add])], reason: "stale", lastVersion: 6 },
-      { name: "a missing part is not an empty part", answers: [first, { page: { ...page({ page: 1 }), devices: undefined }, records: [add] }], reason: "malformed" },
-      { name: "a key named twice across pages", answers: [first, answer({ page: 1 }, [add])], reason: "malformed" },
+      { name: "no last page", answers: [first, answer({ page: 1, last: false }), answer({ page: 2, last: false })], reason: "incomplete" },
+      { name: "pages out of order", answers: [first, answer({ page: 2 })], reason: "malformed" },
+      { name: "another account", answers: [first, answer({ page: 1, account: "acct_2" })], reason: "scope_mismatch" },
+      { name: "another relay identity", answers: [first, answer({ page: 1, server_id: "f".repeat(32) })], reason: "scope_mismatch" },
+      { name: "older than the last snapshot applied", answers: [answer({ version: 5, blocks: [block] })], reason: "stale", lastVersion: 6 },
+      { name: "a missing part is not an empty part", answers: [first, { page: { ...page({ page: 1 }), devices: undefined } }], reason: "malformed" },
+      { name: "a key named twice across pages", answers: [first, answer({ page: 1 })], reason: "malformed" },
     ];
     for (const { name, answers, reason, lastVersion } of cases) {
       const machine = pc(lastVersion === undefined ? {} : { lastVersion });
@@ -111,7 +104,7 @@ describe("S2-24 whole account reads (G1, T15, T52, T58, T60)", () => {
     for (const change of ["account", "serverId", "lock"] as const) {
       const machine = pc();
       const fetchPage = async (cursor: { snapshot: string | null }) => {
-        if (cursor.snapshot === null) return answer({ last: false, devices: [] }, [{ kind: "add", id: "a1" }]);
+        if (cursor.snapshot === null) return answer({ last: false, devices: [], lifts: [lift] });
         if (change === "lock") machine.state.lock = "lock-1";
         else machine.state[change] = `${machine.state[change]}-changed`;
         return answer({ page: 1 });
@@ -129,47 +122,27 @@ describe("S2-24 whole account reads (G1, T15, T52, T58, T60)", () => {
     expect(asked).toEqual([]);
   });
 
-  test("T15: denials apply first and an add commits only at a validated unchanged generation", async () => {
-    const add: Mail = { kind: "add", id: "a1" };
-    const remove: Mail = { kind: "remove", id: "r1" };
-    // the add is read before the block, yet the block applies as it is read and the add only at the commit
+  test("T15: denials apply as they are read and a widening commits only at a validated unchanged generation", async () => {
+    // the lift is read before the block, yet the block applies at once and the lift only at the commit
     const machine = pc();
-    const { fetchPage } = serve([answer({ last: false, devices: [], blocks: [block] }, [add]), answer({ page: 1 }, [remove])]);
+    const { fetchPage } = serve([answer({ last: false, devices: [], lifts: [lift] }), answer({ page: 1, blocks: [block] })]);
     const outcome = await readSnapshot(fetchPage, machine.ports);
-    expect(machine.events).toEqual(["deny block", "deny r1", "commit"]);
-    expect(outcome).toEqual({ committed: true, snapshot: SNAP_A, denials: 2, liftsRefused: 0 });
-    expect(machine.committed[0]?.adds).toEqual([add]);
+    expect(machine.events).toEqual(["deny block", "lift checked", "commit"]);
+    expect(outcome).toEqual({ committed: true, snapshot: SNAP_A, denials: 1, liftsRefused: 0 });
+    expect(machine.committed[0]?.lifts).toEqual([lift]);
 
     // another denial landed during the read (a handed block, a Revoke): gen moved past what this read raised
     const raced = pc();
     const racing = async (cursor: { snapshot: string | null }) => {
-      if (cursor.snapshot === null) return answer({ last: false, devices: [], blocks: [block] }, [add]);
+      if (cursor.snapshot === null) return answer({ last: false, devices: [], blocks: [block], lifts: [lift] });
       raced.state.gen += 1;
       return answer({ page: 1 });
     };
     expect(await readSnapshot(racing, raced.ports)).toEqual({ committed: false, reason: "generation_changed", denials: 1 });
     expect(raced.committed).toEqual([]);
-    expect(raced.events).toEqual(["deny block"]);
   });
 
-  test("T15: a handed add or lift is staged for a whole read and never applied as it is handed; a handed denial applies at once", async () => {
-    const machine = pc();
-    const outcomes = await handRecords([{ kind: "add", id: "a1" }, block, lift, { kind: "junk", id: "j1" }], machine.ports);
-    expect(outcomes).toEqual([
-      { id: "a1", outcome: "staged" },
-      { id: block.id, outcome: "applied" },
-      { id: lift.id, outcome: "staged" },
-      { id: "j1", outcome: "refused", code: "record_invalid" },
-    ]);
-    expect(machine.events).toEqual(["deny block", "read requested"]);
-    expect(machine.committed).toEqual([]);
-  });
-
-  test("T52: a handed or partial-read lift cannot thaw; a complete accepted lift still needs PC-local age authority", async () => {
-    const handed = pc();
-    await handRecords([lift], handed.ports);
-    expect(handed.committed).toEqual([]);
-
+  test("T52: a partial-read lift cannot thaw; a complete accepted lift still needs PC-local age authority", async () => {
     const partial = pc();
     await readSnapshot(serve([answer({ last: false, lifts: [lift] }), new Error("timeout")]).fetchPage, partial.ports);
     expect(partial.committed).toEqual([]);

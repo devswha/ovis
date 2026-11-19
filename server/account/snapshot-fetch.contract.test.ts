@@ -36,7 +36,6 @@ async function setup(opensAll: boolean, devices: number, wired = true) {
     scope: () => ({ account: ACCOUNT, serverId: identity.server_id, gen: 0, lock: null }),
     lastVersion: () => null,
     knownBlocks: () => new Set(),
-    classify: () => "invalid",
     deny: async () => false,
     liftAuthority: async () => false,
     commit: (stage) => { committed.push(stage); },
