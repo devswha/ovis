@@ -1019,6 +1019,17 @@ describe("the screen's own layout, as herdr's", () => {
     expect(run.core.calls().filter((call) => call.method === "terminal.run").length).toBe(1);
   }, TEST_MS);
 
+  it("two screens that find the core empty at once open one first workspace between them: the layout document's claim decides which", async () => {
+    const core = new FakeHcCore();
+    const [a, b] = await Promise.all([start({ core }), start({ core })]);
+    for (let turn = 0; turn < 10; turn++) {
+      await a.advance(50);
+      await b.advance(50);
+    }
+    expect(core.calls().filter((call) => call.method === "terminal.run").length).toBe(1);
+    for (const run of [a, b]) expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["~"]);
+  }, TEST_MS);
+
   it("a core with workspaces gets none", async () => {
     const run = await start({ fixture: demo });
     await run.live();

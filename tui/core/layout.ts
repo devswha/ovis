@@ -13,7 +13,7 @@
 import type { HcConnection } from "../../server/herdr-core/connection.ts";
 import { HcError } from "../../server/herdr-core/connection.ts";
 import { AdapterError } from "../../server/herdr-core/errors.ts";
-import { foreignLayout, leaves, OVIS_LAYOUT_DOC, type PaneDirection, type SplitDirection } from "../../server/herdr-core/layout-doc.ts";
+import { foreignLayout, leaves, OVIS_LAYOUT_DOC, OVIS_LAYOUT_SCHEMA, type PaneDirection, type SplitDirection } from "../../server/herdr-core/layout-doc.ts";
 import { type CloseTarget, layoutCalls, LayoutStore, type LayoutView, newLayoutId, ownsLayout, readCore, RESIZE_STEP, resizeEdit, swapEdit, TERMINAL_COLOUR, zoomEdit } from "../../server/herdr-core/layout-ops.ts";
 import { type CoreHost, type FirstTurn, LAYOUT_DOC, OTHER_WORKSPACE_ID } from "../../server/herdr-core/snapshot.ts";
 import { errorCode } from "../crash.ts";
@@ -41,6 +41,20 @@ interface LayoutWritesOptions {
 
 /** What herdr names the first workspace its server opens in its own home. */
 const HOME_NAME = "~";
+
+/** The layout document's key for the first workspace's claim (`LayoutWrites.claimFirst`). */
+const FIRST_CLAIM = "first_workspace";
+/** A claim: the terminal its screen opened, null while it is opening it. */
+interface FirstClaim { readonly terminal: string | null }
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** The claim a layout document holds, if any. */
+function firstClaim(doc: unknown): FirstClaim | undefined {
+  const claim = isRecord(doc) ? doc[FIRST_CLAIM] : undefined;
+  if (!isRecord(claim)) return undefined;
+  return { terminal: typeof claim["terminal"] === "string" ? claim["terminal"] : null };
+}
 
 const SPLITS: Readonly<Record<string, SplitDirection>> = { split_vertical: "right", split_horizontal: "down" };
 const SWAPS: Readonly<Record<string, PaneDirection>> = { swap_pane_left: "left", swap_pane_down: "down", swap_pane_up: "up", swap_pane_right: "right" };
@@ -87,12 +101,62 @@ export class LayoutWrites {
 
   /**
    * Opens a first workspace on a core that has none, as herdr's server does: a shell in the core's own folder (its home),
-   * not the screen's. Answers when it is done; a failure is a notice.
+   * not the screen's. Every screen on the core, and the browser, share it, so the create is guarded by a claim in the
+   * layout document taken by compare-and-set (`claimFirst`): of the screens that find the core empty at once, one
+   * creates. Answers when it is done; a failure is a notice.
    */
   openFirst(): Promise<void> {
     if (this.busy) return Promise.resolve();
     this.busy = true;
-    return this.perform("new_workspace", async () => this.follow((await this.store.createWorkspace({ name: HOME_NAME })).root_pane.pane_id, null));
+    return this.perform("new_workspace", () => this.claimFirst());
+  }
+
+  /**
+   * The first workspace's claim. The claim is a key of the layout document beside its workspaces; every reader keeps
+   * only the schema and the workspaces (snapshot.ts `keptLayout`), so no reader sees it and the next layout edit drops
+   * it. Steps:
+   * 1. read the document, then the terminals: nothing to do unless the core has no terminal, Ovis arranges its layout and
+   *    no claim is in flight (a claim naming no terminal yet);
+   * 2. write the claim with the version read: a screen that loses the race gets a conflict and stops;
+   * 3. read the terminals again: another client may have opened one meanwhile, then the claim is let go;
+   * 4. create the workspace, then write the terminal into the claim, so a claim whose terminal is gone (the user closed
+   *    it) can be taken again on a later connection.
+   * A screen that dies between 2 and 4 leaves a claim in flight until the next layout edit drops it: the core then stays
+   * empty, and the sidebar's new button still opens a workspace.
+   */
+  private async claimFirst(): Promise<void> {
+    const { hc } = this.options;
+    if (!layoutCalls(await hc.hello())) return;
+    const doc = await hc.call("doc.get", { name: OVIS_LAYOUT_DOC });
+    const [list, app] = await Promise.all([hc.call("terminal.list", {}), hc.call("doc.get", { name: LAYOUT_DOC })]);
+    if (!ownsLayout(app.value) || foreignLayout(doc.value) || list.terminals.length > 0) return;
+    const held = firstClaim(doc.value);
+    if (held !== undefined && held.terminal === null) return;
+    const layout = isRecord(doc.value) ? doc.value : { schema: OVIS_LAYOUT_SCHEMA, workspaces: [] };
+    const write = async (claim: FirstClaim | null, version: number): Promise<number | null> => {
+      const { [FIRST_CLAIM]: _old, ...rest } = layout;
+      try {
+        return (await hc.call("doc.set", { name: OVIS_LAYOUT_DOC, value: claim === null ? rest : { ...rest, [FIRST_CLAIM]: claim }, version })).version;
+      } catch (error) {
+        if (error instanceof HcError && error.kind === "conflict") return null;
+        throw error;
+      }
+    };
+    const claimed = await write({ terminal: null }, doc.version);
+    if (claimed === null) return;
+    if ((await hc.call("terminal.list", {})).terminals.length > 0) {
+      await write(null, claimed);
+      return;
+    }
+    let address: string;
+    try {
+      address = (await this.store.createWorkspace({ name: HOME_NAME })).root_pane.pane_id;
+    } catch (error) {
+      await write(null, claimed);
+      throw error;
+    }
+    await write({ terminal: address }, claimed);
+    this.follow(address, null);
   }
 
   /**

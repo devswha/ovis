@@ -4,7 +4,7 @@ import { constants } from "node:os";
 import { join } from "node:path";
 import { coreFolder, IsolatedCore, type StopReport, stoppedCleanly } from "../scripts/test-hc.ts";
 import { HcConnection } from "../server/herdr-core/connection.ts";
-import { SPACE_LABEL, TAB_LABEL } from "../server/herdr-core/snapshot.ts";
+import { SPACE_LABEL, TAB_LABEL, WORKSPACE_NAME_LABEL } from "../server/herdr-core/snapshot.ts";
 import { connectCoreSocket } from "../server/herdr-core/socket-transport.ts";
 import { gridText, runSupervised, stopAllPtyRuns, type SupervisedRun } from "./testing/pty.ts";
 
@@ -108,6 +108,21 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     expect((await again.ended).code).toBe(0);
     expect(readFileSync(ran, "utf8")).toBe("typed-42\n");
     expect((await hc.call("terminal.get", { terminal: address })).state).toBe("live");
+  }, TEST_MS);
+
+  it("two screens started together on an empty core open one first workspace between them", async () => {
+    const { core: isolated, hc, root } = await core();
+    const folders = ["a", "b"].map((name) => join(root, name));
+    for (const folder of folders) mkdirSync(folder);
+    const both = folders.map((folder) => screen(isolated, folder));
+    // the cursor is shown only once a pane is Live: each screen shows the one first workspace's shell
+    await Promise.all(both.map((run, at) => run.until(/\x1b\[\?1049h[\s\S]*\x1b\[\?25h/, `screen ${at + 1}'s live first pane`)));
+    const { terminals } = await hc.call("terminal.list", {});
+    expect(terminals.map((terminal) => terminal.labels?.[WORKSPACE_NAME_LABEL])).toEqual(["~"]);
+    for (const run of both) {
+      run.type(DETACH);
+      expect((await run.ended).code).toBe(0);
+    }
   }, TEST_MS);
 
   it("refuses inside its own core's pane, runs inside another core's", async () => {
