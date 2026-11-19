@@ -33,12 +33,14 @@ interface LayoutWritesOptions {
   model: { readonly firstTurn: FirstTurn; readonly host: CoreHost };
   /** the folder the screen was opened in: a new workspace starts there */
   folder: string | undefined;
+  /** the user's home: the first workspace opened there is named as herdr's server names its own */
+  home?: string | undefined;
   /** Publish the authoritative document before the model settles a zoom intent. */
   refreshLayout: () => Promise<boolean>;
   answer: (answer: LayoutAnswer) => void;
 }
 
-/** What herdr names the first workspace its server opens in its own home. */
+/** What herdr names the first workspace its server opens in its own home; a workspace in any other folder is named after it. */
 const HOME_NAME = "~";
 
 /** The layout document's key for the first workspace's claim (`LayoutWrites.claimFirst`). */
@@ -92,8 +94,9 @@ export class LayoutWrites {
   }
 
   /**
-   * Opens a first workspace on a core that has none, as herdr's server does: a shell in the core's own folder (its home),
-   * not the screen's. Every screen on the core, and the browser, share it, so the create is guarded by a claim in the
+   * Opens a first workspace on a core that has none, as herdr's server does when a client connects: a shell in the folder
+   * the screen was started from (the core's own folder when it has none), named `~` in the home and after the folder
+   * anywhere else, as a new workspace is (`firstShell`). Every screen on the core, and the browser, share it, so the create is guarded by a claim in the
    * layout document taken by compare-and-set (`claimFirst`): of the screens that find the core empty at once, one
    * creates. Answers when it is done; a failure is a notice.
    */
@@ -141,13 +144,20 @@ export class LayoutWrites {
     }
     let address: string;
     try {
-      address = (await this.store.createWorkspace({ name: HOME_NAME })).root_pane.pane_id;
+      address = (await this.store.createWorkspace(this.firstShell())).root_pane.pane_id;
     } catch (error) {
       await write(false, claimed);
       throw error;
     }
     await write(false, claimed);
     this.follow(address, null);
+  }
+
+  /** The first workspace's shell: the screen's folder, and herdr's name for the home there (a new workspace's otherwise). */
+  private firstShell(): { cwd?: string; name?: string } {
+    const { folder, home } = this.options;
+    if (folder === undefined) return { name: HOME_NAME };
+    return folder === home ? { cwd: folder, name: HOME_NAME } : { cwd: folder };
   }
 
   /**

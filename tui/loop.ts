@@ -59,8 +59,10 @@ export interface LoopOptions {
   connect?: (path: string) => Promise<HcTransport>;
   /** the hc session joined, shown in the header */
   session?: string;
-  /** the folder the command was typed in, shown when the core has no workspaces */
+  /** the folder the command was typed in: a new workspace starts there */
   cwd?: string;
+  /** the user's home: a first workspace opened there is named `~`, as herdr's server names its own */
+  home?: string;
   /** where the view is kept per core between runs; none: nothing is kept */
   views?: ViewStore;
 }
@@ -228,6 +230,7 @@ export function startLoop(options: LoopOptions): Loop {
     hc: link,
     model: world.model,
     folder: options.cwd,
+    home: options.home,
     refreshLayout: () => link.refreshLayout(),
     answer: (answer) => {
       guard(() => dispatch({ ...answer, at: clock.now() }));

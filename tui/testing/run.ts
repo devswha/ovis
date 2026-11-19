@@ -96,6 +96,9 @@ export interface RunOptions {
   views?: ViewStore;
   /** what the host answers before its DA1 besides the probe's own answers (a background colour, for the light theme) */
   answerFirst?: string;
+  /** the folder the screen was started from, and the user's home (the loop's `cwd` and `home`) */
+  cwd?: string;
+  home?: string;
 }
 
 export class Run {
@@ -117,9 +120,10 @@ export class Run {
     readonly folder: string,
     readonly socket: string,
     views: ViewStore | undefined,
+    where: Pick<RunOptions, "cwd" | "home"> = {},
   ) {
     this.nextBeat = HEARTBEAT_MS;
-    this.loop = startLoop({ host, clock, socket, keys: undefined, connect: (path) => this.connect(path), ...(views ? { views } : {}) });
+    this.loop = startLoop({ host, clock, socket, keys: undefined, connect: (path) => this.connect(path), ...(views ? { views } : {}), ...where });
   }
 
   readonly loop: Loop;
@@ -131,7 +135,7 @@ export class Run {
     const folder = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "run-"));
     const socket = join(folder, "hc.sock");
     const host = new HeadlessHost({ cols: options.cols ?? 120, rows: options.rows ?? 40, colorTerm: options.colorTerm ?? "truecolor", answer: (options.answerFirst ?? "") + PROBE_ANSWER });
-    const run = new Run(core, host, new ManualClock(), folder, socket, options.views);
+    const run = new Run(core, host, new ManualClock(), folder, socket, options.views, { cwd: options.cwd, home: options.home });
     await run.listen();
     await run.settle();
     if (run.loop.link.state.kind === "Online") fixture?.online?.(core);

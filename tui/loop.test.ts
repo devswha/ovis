@@ -985,28 +985,44 @@ describe("nothing in, nothing out, in every state the screen rests in", () => {
 });
 
 describe("the screen's own layout, as herdr's", () => {
-  it("an empty core gets a first workspace named ~ in the core's own folder, once a line, as herdr's server opens one", async () => {
-    const run = await start({ core: new FakeHcCore() });
+  it("an empty core gets a first workspace in the folder the screen was started from, named after it, once a line, as herdr's server opens one", async () => {
+    const run = await start({ core: new FakeHcCore(), cwd: "/work/project", home: "/home/user" });
     await run.advance(50);
     const made = run.core.calls().filter((call) => call.method === "terminal.run");
     expect(made.length).toBe(1);
-    // no folder of the screen's: the core starts the shell where it starts its own (its home)
-    expect(made[0]!.params["cwd"]).toBeUndefined();
-    expect((made[0]!.params["labels"] as Record<string, string>)[WORKSPACE_NAME_LABEL]).toBe("~");
+    expect(made[0]!.params["cwd"]).toBe("/work/project");
+    // no name of its own: the workspace is named after its folder, as any new workspace is
+    expect((made[0]!.params["labels"] as Record<string, string>)[WORKSPACE_NAME_LABEL]).toBeUndefined();
     await run.advance(200);
-    expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["~"]);
+    expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["project"]);
     expect(run.core.calls().filter((call) => call.method === "terminal.run").length).toBe(1);
+  }, TEST_MS);
+
+  it("started from the home, or from no folder, the first workspace is named ~, as herdr's server names the one it opens in its home", async () => {
+    for (const where of [{ cwd: "/home/user", home: "/home/user" }, {}]) {
+      const run = await start({ core: new FakeHcCore(), ...where });
+      await run.advance(50);
+      const made = run.core.calls().filter((call) => call.method === "terminal.run");
+      expect({ where, made: made.map((call) => [call.params["cwd"], (call.params["labels"] as Record<string, string>)[WORKSPACE_NAME_LABEL]]) })
+        .toEqual({ where, made: [["cwd" in where ? where.cwd : undefined, "~"]] });
+      await run.advance(200);
+      expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["~"]);
+    }
   }, TEST_MS);
 
   it("two screens that find the core empty at once open one first workspace between them: the layout document's claim decides which", async () => {
     const core = new FakeHcCore();
-    const [a, b] = await Promise.all([start({ core }), start({ core })]);
+    const [a, b] = await Promise.all([start({ core, cwd: "/work/a" }), start({ core, cwd: "/work/b" })]);
     for (let turn = 0; turn < 10; turn++) {
       await a.advance(50);
       await b.advance(50);
     }
-    expect(core.calls().filter((call) => call.method === "terminal.run").length).toBe(1);
-    for (const run of [a, b]) expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["~"]);
+    const made = core.calls().filter((call) => call.method === "terminal.run");
+    expect(made.length).toBe(1);
+    // the one that won the claim opened it in its own folder; both show that one workspace
+    const name = String(made[0]!.params["cwd"]).slice("/work/".length);
+    expect(["a", "b"]).toContain(name);
+    for (const run of [a, b]) expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual([name]);
     // the claim that decided it is gone again: the document holds what every reader knows
     const claims = core.calls().filter((call) => call.method === "doc.set").map((call) => Object.keys((call.params["value"] ?? {}) as object).includes("first_workspace"));
     expect([claims.includes(true), claims.at(-1)]).toEqual([true, false]);

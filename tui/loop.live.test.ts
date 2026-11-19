@@ -7,6 +7,7 @@ import { HcConnection } from "../server/herdr-core/connection.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { SPACE_LABEL, TAB_LABEL, WORKSPACE_NAME_LABEL } from "../server/herdr-core/snapshot.ts";
 import { connectCoreSocket } from "../server/herdr-core/socket-transport.ts";
+import { SCREEN_FOLDER } from "./start.ts";
 import { gridText, runSupervised, stopAllPtyRuns, type SupervisedRun } from "./testing/pty.ts";
 
 /**
@@ -61,8 +62,8 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
   }
 
   /** The entry on a pty of its own, in the core's environment, answering the probe as a terminal does. */
-  function screen(isolated: IsolatedCore, root: string): SupervisedRun {
-    const env = { ...isolated.env, TERM: "xterm-256color", COLORTERM: "truecolor", OVIS_TUI_STATE_DIR: join(root, "tui-state"), TMPDIR: root };
+  function screen(isolated: IsolatedCore, root: string, folder?: string): SupervisedRun {
+    const env = { ...isolated.env, TERM: "xterm-256color", COLORTERM: "truecolor", OVIS_TUI_STATE_DIR: join(root, "tui-state"), TMPDIR: root, ...(folder ? { [SCREEN_FOLDER]: folder } : {}) };
     let tail = "";
     const run: SupervisedRun = runSupervised({
       entry: [process.execPath, ENTRY], env, cols: 100, rows: 30, deadlineMs: WAIT_MS * 4,
@@ -115,11 +116,14 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     const { core: isolated, hc, root } = await core();
     const folders = ["a", "b"].map((name) => join(root, name));
     for (const folder of folders) mkdirSync(folder);
-    const both = folders.map((folder) => screen(isolated, folder));
+    const both = folders.map((folder) => screen(isolated, folder, folder));
     // the cursor is shown only once a pane is Live: each screen shows the one first workspace's shell
     await Promise.all(both.map((run, at) => run.until(/\x1b\[\?1049h[\s\S]*\x1b\[\?25h/, `screen ${at + 1}'s live first pane`)));
+    // one workspace, its shell in the folder of the screen that won the claim, named after it (no name of its own)
     const { terminals } = await hc.call("terminal.list", {});
-    expect(terminals.map((terminal) => terminal.labels?.[WORKSPACE_NAME_LABEL])).toEqual(["~"]);
+    expect(terminals.length).toBe(1);
+    expect(folders).toContain(terminals[0]!.cwd);
+    expect(terminals[0]!.labels?.[WORKSPACE_NAME_LABEL]).toBeUndefined();
     // the claim that decided it is out of the layout document again
     expect(Object.keys(((await hc.call("doc.get", { name: OVIS_LAYOUT_DOC })).value ?? {}) as object)).not.toContain("first_workspace");
     for (const run of both) {
