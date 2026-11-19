@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Machine, MachineEvent } from "../shared/machines.ts";
+import type { HerdrIdentity, Machine, MachineEvent } from "../shared/machines.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { addressOrigin, checkAddressTarget, openAddressPcForward, pairAddressPc } from "./address-pc.ts";
 import { createServer } from "./index.ts";
@@ -84,6 +84,8 @@ it("adds another PC's Ovis by its address with the code it shows, shows its pane
   expect(connected.snapshot!.workspaces.map((workspace) => workspace.workspace_id)).toEqual(direct.snapshot.workspaces.map((workspace) => workspace.workspace_id));
   const proxied = await fetch(`${a.base}/api/machines/${machine.id}/session`, { headers: { origin: a.base } });
   expect(proxied.status).toBe(200);
+  const health = await (await fetch(`${b.base}/api/health`, { headers: { authorization: "Bearer fictional-b-token" } })).json() as { herdr: HerdrIdentity };
+  expect((await machineWhen(a.base, (pc) => pc.id === machine.id && pc.herdr !== undefined)).herdr).toEqual(health.herdr);
   expect(await failure({ address: b.base, code: devices.startPairing().code })).toEqual([409, "address_pc_added"]);
 
   expect(devices.revoke(paired!.id)).toBe(true);

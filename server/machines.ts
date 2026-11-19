@@ -1889,7 +1889,7 @@ export class MachineManager {
     const endpoint = runtime.endpoint;
     const generation = runtime.generation;
     try {
-      if ((runtime.tunnel || runtime.hc) && !runtime.machine.herdr) {
+      if ((runtime.tunnel || runtime.forward || runtime.hc) && !runtime.machine.herdr) {
         await this.readRelayHerdr(runtime, endpoint, generation);
         if (generation !== runtime.generation || this.stopped) return;
       }
@@ -1929,7 +1929,7 @@ export class MachineManager {
     if (runtime.ssh) runtime.ssh.onExit = () => this.lost(runtime, generation, new Error("SSH connection ended"));
     runtime.poll = setInterval(() => void this.refresh(runtime).catch((e) => this.lost(runtime, generation, e)), 5000);
     runtime.poll.unref();
-    if (runtime.ssh || runtime.tunnel) this.watchMove(runtime, generation);
+    if (runtime.ssh || runtime.tunnel || runtime.forward) this.watchMove(runtime, generation);
   }
   private watchMove(runtime: Runtime, generation: number): void {
     const watch = runtime.moveWatch ??= { reading: false, again: false };
@@ -1979,7 +1979,7 @@ export class MachineManager {
       this.emit({ type: "machine-message", machine_id: runtime.machine.id, message });
       if (["pane-status", "pane-exited", "session-changed"].includes(message.type)) void this.refresh(runtime).catch((e) => this.lost(runtime, generation, e));
     };
-    ws.onclose = () => this.lost(runtime, generation, new Error(runtime.tunnel ? "Relay connection to this PC was lost" : runtime.hc ? "This machine's server connection was lost" : "SSH bridge connection interrupted"));
+    ws.onclose = () => this.lost(runtime, generation, new Error(runtime.tunnel ? "Relay connection to this PC was lost" : runtime.forward ? "Connection to this PC was lost" : runtime.hc ? "This machine's server connection was lost" : "SSH bridge connection interrupted"));
     ws.onerror = () => ws.close();
   }
   private tunnelOptions(runtime: Runtime, generation: number): Parameters<typeof openRelayPcTunnel>[2] {
@@ -2264,11 +2264,13 @@ export class MachineManager {
       enabled: true, state: "connecting", error: null, snapshot: null,
     });
     const generation = runtime.generation;
-    runtime.forward = openAddressPcForward(origin, deviceToken, (error) => this.lost(runtime, generation, error));
-    runtime.endpoint = runtime.forward.endpoint;
-    this.machines.set(id, runtime);
     // the PC is added only once its registration is on disk: a save that fails leaves no PC, connection or token behind
-    try { saveAddressPcToken(tokenPath, deviceToken); this.persist("address"); } catch (error) {
+    try {
+      runtime.forward = openAddressPcForward(origin, deviceToken, (error) => this.lost(runtime, generation, error));
+      runtime.endpoint = runtime.forward.endpoint;
+      this.machines.set(id, runtime);
+      saveAddressPcToken(tokenPath, deviceToken); this.persist("address");
+    } catch (error) {
       this.machines.delete(id);
       runtime.machine.enabled = false; this.disconnect(runtime);
       removeAddressPcToken(tokenPath);
