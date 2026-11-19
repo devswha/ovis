@@ -912,6 +912,43 @@ describe("the hosted shell's front page", () => {
       expect(went).toHaveLength(1);
     });
 
+    // the page a sign-in returns to (#code=…) opens the saved PC once its sign-in is read, as the launch it continues would
+    const returned = async (store: ShellDeviceStore, went: string[], listed: unknown[] = []): Promise<void> => {
+      const accountStore = memoryAccountStore();
+      await accountStore.set("pending", { "state-1": { service: SERVICE, provider: "github", state: "state-1", verifier: "verifier-123", redirect_uri: "https://app.ovis.sh/", started_at: Date.now() } });
+      let exchanged = 0;
+      await mountRelayShell(mountFor({
+        entryUrl: "https://app.ovis.sh/#code=good-code&state=state-1", store, navigate: (path) => { went.push(path); },
+        accountStore, accountService: SERVICE, accountProviders: ["github"],
+        accountFetch: async (input) => {
+          if (new URL(String(input)).pathname === "/v1/pcs") return Response.json({ pcs: listed });
+          exchanged++;
+          return Response.json({ access_token: "access", refresh_token: "refresh", expires_in: 3600, account: "acct-test", provider: "github" });
+        },
+      }));
+      expect(exchanged).toBe(1);
+      expect(await accountStore.get("session")).toMatchObject({ account: "acct-test" });
+    };
+
+    it("opens the saved PC once a sign-in's return is read, exactly once, and a reload after it stays on the front page", async () => {
+      browser.setVisibility("hidden");
+      const went: string[] = [];
+      const store = deviceStore(await pcs("a".repeat(32)));
+      // the launch that started the sign-in already passed this tab's first front page
+      await returned(store, went);
+      expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
+      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); } }));
+      expect(went).toHaveLength(1);
+    });
+
+    it("opens nothing after a sign-in's return with no saved pairing, though the account lists PCs", async () => {
+      browser.setVisibility("hidden");
+      const went: string[] = [];
+      await returned(deviceStore([]), went, [{ server_id: "b".repeat(32), label: "Desk PC", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: AP }]);
+      expect(went).toEqual([]);
+      expect(last().state.kind).toBe("empty");
+    });
+
     it("stays on a front page that came with a fragment, or after a PC's own page in this tab", async () => {
       const went: string[] = [];
       const store = deviceStore(await pcs("a".repeat(32)));
