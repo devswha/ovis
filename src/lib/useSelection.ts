@@ -168,10 +168,12 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     }
     const linked = pendingLink.current;
     if (linked && linked.machine === selectedMachineId) {
-      const land = (landed: ReturnType<typeof resolveLink>): boolean => {
+      // `answered`: this PC's answer, not a failed read; a link that lands on its pane takes away a note it waited beside
+      const land = (landed: ReturnType<typeof resolveLink>, answered = true): boolean => {
         pendingLink.current = null;
         setLinkLanded(true);
         if (landed.note) { setHeaderNote(landed.note); onLinkMissRef.current?.(); }
+        else if (answered && landed.pane) setHeaderNote(noteAfterSelection);
         if (landed.pane) {
           if (landed.pane !== selectedPaneId) {
             setSelectedPaneId(landed.pane);
@@ -195,8 +197,8 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
           // A failed read is not evidence that anything closed: a pane still selected stays, and the
           // link settles without a word.
           if (read === null) {
-            if (selectedPaneId !== null) { land({ pane: null, workspace: null, note: null }); return; }
-            if (!land({ ...landed, note: null })) setSelectedPaneId(fallback(snapshot));
+            if (selectedPaneId !== null) { land({ pane: null, workspace: null, note: null }, false); return; }
+            if (!land({ ...landed, note: null }, false)) setSelectedPaneId(fallback(snapshot));
             return;
           }
           const { current, confirmed } = read;
