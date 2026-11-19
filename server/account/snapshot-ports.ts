@@ -106,7 +106,10 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       journal.recordSnapshotLifts(safetyLog);
       devices.handedLifts.decide(stage.snapshot.lifts);
     },
-    commitList: deps.commitList,
+    commitList(snapshot) {
+      deps.commitList?.(snapshot);
+      devices.resumePromotedHolds();
+    },
     methodsVersion: () => deps.order.methodsVersion(),
     journalMethod(version) {
       journal.append({ kind: "method", how: `methods_version:${version}`, key: null, no: null, row: null, label: "The account's sign-in methods changed", by: null, account: devices.account() });

@@ -33,6 +33,7 @@ export interface AccountRowSource {
   missing(): boolean;
   rows(): readonly AccountRow[];
   row(id: string): AccountRow | null;
+  promoted(id: string): void;
   rowsByKey(key: string): readonly AccountRow[];
   access(id: string): AccessAnswer;
   pruneDenied(evidence: RemovalEvidence, legacyRevoke?: "revoke_all"): void;
@@ -125,7 +126,8 @@ export class AccountDeviceStore implements AccountRowSource {
   constructor(stateDir: string, private readonly serverId: string, private readonly ports: AccountRowPorts) {
     this.path = join(stateDir, ACCOUNT_DEVICES_FILE);
     const { file, error, foreign } = load(this.path, serverId);
-    this.file = foreign ? CLEARED : file;
+    // restart: a promoted key's list row is finished (an interrupted promotion), and every hold waits for a fresh read (T42)
+    this.file = foreign ? CLEARED : { ...file, devices: file.devices.filter((row) => !ports.heldByDevicesJson(row.key)).map((row) => row.state === "hold" ? { ...row, hold_until: null } : row) };
     this.error = error ?? (foreign ? ports.evidence?.strict ?? null : null);
     // Never serve a foreign row. Finish its old admission before replacing the only copy on disk.
     if (foreign && this.error === null) {
@@ -135,6 +137,8 @@ export class AccountDeviceStore implements AccountRowSource {
       }
       this.write(CLEARED);
     }
+    // Finish a promotion interrupted between the member write and the list-row removal.
+    if (!foreign && this.file.devices.length !== file.devices.length) this.write(this.file);
   }
 
   blocked(): string | null { return this.error; }
@@ -181,6 +185,10 @@ export class AccountDeviceStore implements AccountRowSource {
     this.drop(this.file.devices.filter(row => ids.includes(row.id)), reason, close);
   }
 
+  promoted(id: string): void {
+    this.write({ ...this.file, devices: this.file.devices.filter((row) => row.id !== id) });
+  }
+
   live(id: string): boolean {
     return this.rows().some((row) => row.id === id && row.state === "live");
   }
@@ -214,7 +222,7 @@ export class AccountDeviceStore implements AccountRowSource {
 
   /** Publishes again every notice that could not be published: until it is, its row stays held. */
   republish(): void {
-    for (const row of this.rows()) if (row.state === "hold" && row.hold_until === null) this.publish(row);
+    for (const row of this.rows()) if (row.state === "hold" && row.hold_until === null && this.file.account !== null && this.ports.admits(row.key, this.file.account)) this.publish(row);
   }
 
   /** Applies a whole read's list: drops what it no longer names, then admits what it newly names and the guards let in. */
@@ -230,6 +238,7 @@ export class AccountDeviceStore implements AccountRowSource {
     this.write({ ...this.file, account: list.account, snapshot: list.snapshot, version: list.version });
 
     const admitted: string[] = [];
+    this.republish();
     const listKeys = list.devices.map((entry) => entry.key);
     for (const entry of eligible.values()) {
       if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) break;
@@ -346,6 +355,7 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
     missing: () => store()?.missing() ?? true,
     rows: () => store()?.rows() ?? [],
     row: (id) => store()?.row(id) ?? null,
+    promoted: (id) => store()?.promoted(id),
     rowsByKey: (key) => store()?.rowsByKey(key) ?? [],
     access: (id) => store()?.access(id) ?? { refused: "not_listed" },
     pruneDenied: (evidence, legacyRevoke) => { store()?.pruneDenied(evidence, legacyRevoke); },

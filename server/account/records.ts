@@ -66,7 +66,7 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   if (gates?.held(record.key) || gates?.removing?.(record.signer)) return refused("removal_pending");
   if (serverId === null) return refused("account_unavailable");
   const id = accountDeviceId(serverId, record.key);
-  if (store.has(id)) return refused("record_invalid");
+  if (!store.canAddAt(id, record.key)) return refused("record_invalid");
   try { store.addAccountDevice({ id, key: record.key, label: record.label, role: record.role, account: record.account, addedBy: signer.id, record }, now); }
   catch (error) {
     if (error instanceof AdmissionRefusedError) return refused("removal_pending");

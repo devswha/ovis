@@ -25,6 +25,8 @@ import { HandedLifts } from "./account/handed-lift.ts";
 import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
 import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceSafetyRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
+import { PromotedHolds } from "./account/promoted-holds.ts";
+import { mayEndHold, type Sayer } from "./account/join-hold.ts";
 import type { BlockReceipt } from "../shared/account-devices-api.ts";
 import { verifyRelayProof } from "./relay/auth-proof.ts";
 import { type AccountPairing, type AccountPairingEnd, type AccountPairingState, type AccountPairingTurnedAway, type DevicePairedEvent, type DeviceRemovedEvent, type DevicePairToken, type DeviceRole, type DevicesRevokedAll, type PairedDevice, type DeviceConnection, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts";
@@ -198,6 +200,8 @@ export interface StoredDevice {
   origin?: RowOrigin;
   /** a copy a sibling merge brought into this dir with the release flag on: no row of this dir's own, never legacy (T50) */
   imported?: true;
+  /** A promoted list admission keeps the original notice ID until its hold ends. */
+  held?: string;
   /** the account removals of its key that its pairing on this PC knew, and stands over (P13) */
   paired_over?: string[];
 }
@@ -341,6 +345,7 @@ export function readDeviceRegistry(path: string): DeviceRegistry {
       && (d.link_moved_key === undefined || typeof d.link_moved_key === "boolean")
       && (d.imported === undefined || d.imported === true)
       && (d.account_add === undefined || isJsonObject(d.account_add))
+      && (d.held === undefined || (typeof d.held === "string" && /^[0-9a-f]{32}$/.test(d.held)))
       && (d.paired_over === undefined || (Array.isArray(d.paired_over) && d.paired_over.every((id) => typeof id === "string")))
       )) return { kind: "bad" };
   // an origin that cannot be read is no age (P22): the row stays, without it
@@ -535,6 +540,7 @@ export class DeviceStore {
   private accountOrder: AccountOrder | null = null;
   readonly handedLifts: HandedLifts;
   private joinedRows: AccountRowSource | null = null;
+  private readonly promotedHolds = new PromotedHolds((key) => this.admits(key), (row) => this.releasePromoted(row));
   private readonly pc: PcAccountState | null;
   private readonly evidence: RemovalEvidence | null;
   private readonly accountHeld: ((key: string) => boolean) | undefined;
@@ -1756,7 +1762,7 @@ export class DeviceStore {
     // a row its evidence covers serves no request, whatever session it holds (S14); while the PC fails closed no
     // session opens another stream either: only this PC itself gets in (S19, P8)
     if (this.evidence !== null && (this.failsClosed || (device !== undefined && this.stale(device)))) return null;
-    if (device) return { role: device.role, key: device.relay_public_key, provisional: false };
+    if (device) return this.promotedHolds.refusal(device, Date.now()) ? null : { role: device.role, key: device.relay_public_key, provisional: false };
     const waiting = this.pending?.waiting?.rows.get(id);
     if (waiting) return { role: "watch", key: waiting.key, provisional: true };
     // an account-joined row serves while it is usable here: out of its hold and its waits, and not covered or frozen
@@ -1816,27 +1822,23 @@ export class DeviceStore {
    */
   async matchAccountRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string): Promise<{ match: DeviceMatch } | { refused: Exclude<AccessAnswer, { ok: true }>; holdUntil: string | null } | null> {
     if (this.joinedRows === null || this.failsClosed || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
-    if (this.devices.some((d) => d.id === deviceId)) return null;
+    const member = this.devices.find((d) => d.id === deviceId);
     const row = this.joinedRows.row(deviceId);
-    if (row === null || this.accountRowStale(row)) return null;
-    const signed = Buffer.from(signature, "base64url");
-    if (signed.length !== 64 || signed.toString("base64url") !== signature) return null;
-    const message = Buffer.concat([Buffer.from("ovis-relay-auth/1"), nonce, Buffer.from(serverId)]);
-    let verified: boolean;
-    try {
-      const key = await crypto.subtle.importKey("spki", Buffer.from(row.key, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-      verified = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signed, message);
-    } catch (error) {
-      if (error instanceof DOMException) return null;
-      throw error;
+    if (member ? !member.held || this.stale(member) : !row || this.accountRowStale(row)) return null;
+    const key = member?.relay_public_key ?? row?.key;
+    if (!key || !await verifyRelayProof(key, { nonce, signature, serverId }) || this.failsClosed) return null;
+    const currentMember = this.devices.find((d) => d.id === deviceId);
+    if (member) {
+      if (!currentMember || currentMember.relay_public_key !== key || this.stale(currentMember)) return null;
+      return this.promotedHolds.refusal(currentMember, Date.now()) ?? { match: { id: deviceId, label: currentMember.label, role: currentMember.role } };
     }
-    // the row went, changed key or was covered while its signature was checked: the proof was for a row that is no more
     const current = this.joinedRows.row(deviceId);
-    if (!verified || current === null || current.key !== row.key) return null;
+    if (currentMember || current === null || current.key !== key) return null;
     const answer = this.listedAccess(current);
     if (!answer) return null;
     return "ok" in answer ? { match: { id: current.id, label: current.label, role: "drive" } } : { refused: answer, holdUntil: current.hold_until };
   }
+
 
   /**
    * "It's me" (T53) from the row `sayerId` for the admission notice `noticeId`: the held account row it names ends its
@@ -1845,15 +1847,42 @@ export class DeviceStore {
    */
   itsMe(sayerId: string, noticeId: string, provedKey: string): boolean {
     const notice = this.journal?.openNotices().find((entry) => entry.id === noticeId);
-    const held = notice?.row ? this.joinedRows?.row(notice.row) : null;
-    if (!held || held.key !== notice?.key || held.origin.admit_no !== notice.no) return false;
-    const sayer = this.anyRow(sayerId);
-    if (this.joinedRows === null || !provedKey || sayer?.relay_public_key !== provedKey || sayer.origin === undefined) return false;
-    const joined = this.joinedRows.row(sayerId);
-    const state = joined !== null ? (joined.state === "hold" ? "hold" : !this.accountRowStale(joined) && "ok" in this.joinedRows.access(sayerId) ? "live" : "waiting")
-      : this.stale(sayer) ? "waiting" : "live";
-    return this.joinedRows.itsMe(held.id, { key: sayer.relay_public_key, drives: sayer.role === "drive", state, no: this.accountOrder?.no(provedKey) ?? null, late: this.accountOrder?.late(provedKey) ?? false, admitNo: sayer.origin.admit_no, admittedAt: Date.parse(sayer.origin.at) });
+    const sayer = this.provedSayer(sayerId, provedKey);
+    if (!notice?.row || !notice.key || !sayer) return false;
+    const member = this.devices.find((d) => d.id === notice.row);
+    if (member) {
+      if (member.held !== notice.id || member.relay_public_key !== notice.key || !member.origin || !this.promotedHolds.running(notice.id)
+        || !mayEndHold(sayer, { key: notice.key, no: this.accountOrder?.no(notice.key) ?? null, admitNo: member.origin.admit_no }, Date.now()) || !this.admits(notice.key)) return false;
+      const decision = this.journal?.append({ ...notice, kind: "confirm", how: "its_me", by: provedKey }, notice.id);
+      if (!decision) return false;
+      this.releasePromoted(member);
+      this.publish(decision);
+      return true;
+    }
+    const held = this.joinedRows?.row(notice.row);
+    return held?.key === notice.key && held.origin.admit_no === notice.no && (this.joinedRows?.itsMe(held.id, sayer) ?? false);
   }
+
+  private provedSayer(id: string, key: string): Sayer | null {
+    const row = this.anyRow(id);
+    if (!key || row?.relay_public_key !== key || !row.origin || this.failsClosed) return null;
+    const joined = this.joinedRows?.row(id);
+    const live = joined ? joined.state === "live" && !this.accountRowStale(joined) : !this.stale(row) && !this.promotedHolds.refusal(row, Date.now());
+    return { key, drives: row.role === "drive", state: live ? "live" : "waiting", no: this.accountOrder?.no(key) ?? null,
+      late: this.accountOrder?.late(key) ?? false, admitNo: row.origin.admit_no, admittedAt: Date.parse(row.origin.at) };
+  }
+
+  resumePromotedHolds(): void { this.promotedHolds.resume(this.devices, Date.now()); }
+
+  private releasePromoted(row: StoredDevice): void {
+    const { held, ...live } = row;
+    if (!held) return;
+    const next = this.devices.map((d) => d === row ? live : d);
+    this.save(next);
+    this.devices = next;
+    this.promotedHolds.forget(held);
+  }
+
 
   /** The account rows' store ends the sessions of a row it dropped (P8 step 3 for a list drop, T35). */
   closeAccountSessions(id: string): void {
@@ -2190,7 +2219,7 @@ export class DeviceStore {
   /** A drive account member: the only device that may approve a pairing or start a code through the relay (docs/account.md). */
   isAccountApprover(id: string): boolean {
     const device = this.devices.find((d) => d.id === id);
-    return device !== undefined && device.role === "drive" && device.account !== undefined && device.relay_public_key !== undefined && !this.stale(device);
+    return device !== undefined && device.role === "drive" && device.account !== undefined && device.relay_public_key !== undefined && !this.stale(device) && !this.promotedHolds.refusal(device, Date.now());
   }
 
   /** The account `id` may approve a pairing for (isAccountApprover), or null. */
@@ -2239,7 +2268,7 @@ export class DeviceStore {
     // Authorization changes during WebCrypto invalidate the proof; a rename does not.
     const current = this.devices.find((d) => d.id === deviceId);
     // a block, a freeze or a removal that came while the proof was checked ends it here, before any stream (T66)
-    if (!verified || !current || device === undefined || current.role !== device.role || current.relay_public_key !== device.relay_public_key || this.stale(current)) return null;
+    if (!verified || !current || device === undefined || current.role !== device.role || current.relay_public_key !== device.relay_public_key || this.stale(current) || this.promotedHolds.refusal(current, now)) return null;
     this.noteSeen(current, now);
     return { id: current.id, label: current.label, role: current.role };
   }
@@ -2275,7 +2304,7 @@ export class DeviceStore {
     for (const device of this.devices) {
       if (!same(digest, device.token_hash)) continue;
       // a row its evidence covers or a block freezes opens nothing, whichever way it signs in (S14, S22)
-      if (this.evidence !== null && this.stale(device)) return null;
+      if ((this.evidence !== null && this.stale(device)) || this.promotedHolds.refusal(device, now)) return null;
       this.noteSeen(device, now);
       return { id: device.id, label: device.label, role: device.role };
     }
@@ -2331,7 +2360,9 @@ export class DeviceStore {
   private journalAdmission(device: StoredDevice, by?: string): void {
     if (this.journal === null) return;
     const recovered = device.origin?.from === "recover";
-    this.publish(this.journal.append({ kind: "admit", how: recovered ? "recover" : device.origin?.how ?? "code", key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: recovered ? by ?? null : device.added_by ?? null, account: device.account ?? null }));
+    const promotion = device.origin?.how === "promoted";
+    const original = promotion && !device.held ? this.listNotice(device.id)?.id : undefined;
+    this.publish(this.journal.append({ kind: promotion ? "promote" : "admit", how: recovered ? "recover" : device.origin?.how ?? "code", key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: recovered ? by ?? null : promotion ? device.origin?.by ?? null : device.added_by ?? null, account: device.account ?? null }, original));
   }
 
   /** A removal's journal entry, after its deny (P8 step 4). A journal that cannot be written stops no removal. */
@@ -2750,7 +2781,7 @@ export class DeviceStore {
   /** The drive member of `account` whose key is `key`, the only signer whose `add` or `remove` applies. */
   /** The member of `account` holding `key`: a drive one, unless `anyRole` (a device signing its own leave). */
   accountSigner(key: string, account: string, anyRole = false): DeviceMatch | null {
-    const device = this.devices.find((d) => d.relay_public_key === key && d.account === account && (anyRole || d.role === "drive") && !this.stale(d));
+    const device = this.devices.find((d) => d.relay_public_key === key && d.account === account && (anyRole || (d.role === "drive" && !this.promotedHolds.refusal(d, Date.now()))) && !this.stale(d));
     if (device) return { id: device.id, label: device.label, role: device.role };
     // an account-joined key signs its own leave, held or not (P5, S25); it signs nothing else here
     const joined = anyRole && account === this.account() ? this.joinedRows?.rowsByKey(key)[0] : undefined;
@@ -2837,21 +2868,45 @@ export class DeviceStore {
 
   relayKeyOf(id: string): string | undefined { return this.devices.find((d) => d.id === id)?.relay_public_key; }
 
+  /** Only the list row for this very key may transfer its ID to a member. */
+  canAddAt(id: string, key: string): boolean {
+    const joined = this.joinedRows?.row(id);
+    return !this.devices.some((row) => row.id === id) && (!joined || joined.key === key);
+  }
+
+  private listNotice(id: string): JournalEntry | undefined {
+    const row = this.joinedRows?.row(id);
+    return row ? this.journal?.openNotices().find((notice) => notice.row === id && notice.key === row.key && notice.no === row.origin.admit_no) : undefined;
+  }
+
   /** An `add` that verified: a new member row, announced like any other enrollment. Never for a tombstoned key. */
   addAccountDevice(entry: { id: string; key: string; label: string; role: DeviceRole; account: string; addedBy: string; record?: AddRecord }, now = Date.now()): DeviceMatch {
     this.assertAccountWritable();
     if (this.isTombstoned(entry.key)) throw new Error("tombstoned key");
     // an id another row holds would merge two devices' authority; a derived id collides only for the same key
-    if (this.has(entry.id)) throw new Error("device id in use");
+    if (!this.canAddAt(entry.id, entry.key)) throw new Error("device id in use");
+    const joined = this.joinedRows?.row(entry.id);
+    const signer = entry.record && this.provedSayer(entry.addedBy, entry.record.signer);
+    const approved = joined && signer && mayEndHold(signer, { key: joined.key, no: joined.no, admitNo: joined.origin.admit_no }, now);
+    const carry = joined?.state === "hold" && (joined.hold_until === null || (!approved && Date.parse(joined.hold_until) > now));
+    const held = carry ? this.listNotice(entry.id)?.id : undefined;
+    if (carry && !held) throw new Error("The held admission has no durable notice");
     const device: StoredDevice = {
       id: entry.id, label: normalizeLabel(entry.label, "Device"), role: entry.role,
       token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: entry.key,
       created_at: new Date(now).toISOString(), last_seen_at: null, account: entry.account, added_by: entry.addedBy,
       ...(entry.record === undefined ? {} : { account_add: entry.record }),
+      ...(joined && this.pc ? { origin: this.pc.admit("remote", "promoted", entry.record?.signer ?? null, now) } : {}),
+      ...(held ? { held } : {}),
     };
     if (!this.enroll(device, now, [], false)) throw new AdmissionRefusedError();
     // another key joined the account: the PC has had other devices, for good (T67, H2)
     if (this.pc !== null && this.pc.first()?.key !== entry.key) this.pc.setOthersEver();
+    if (joined) {
+      if (held) this.promotedHolds.carry(held, joined.hold_until);
+      this.joinedRows?.promoted(joined.id);
+      this.closeAccountSessions(joined.id);
+    }
     return { id: device.id, label: device.label, role: device.role };
   }
 
