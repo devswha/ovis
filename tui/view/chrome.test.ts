@@ -6,6 +6,7 @@ import type { PaneState, PaneView } from "../core/pane.ts";
 import { CoreWorld } from "../core/world.ts";
 import { STYLE_BOLD } from "../emulator/index.ts";
 import { focused } from "../model/focus.ts";
+import { helpRows } from "../model/hints.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "../model/reduce.ts";
 import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
@@ -442,15 +443,18 @@ describe("the focused pane's id, the about page and the help's keys", () => {
     expect(about(45, 30).rows[17]!.slice(2, 2 + 31)).toBe("hc:work · Ovis 9.9.9 · herdr-co");
   });
 
-  it("the help is a dialog of 76x22 at most with its title inside: 19 key rows at 120x40 and at 80x24, and the hint for the about page on its bottom edge", () => {
+  it("the help fills the screen less its margins, its title inside: every key row that fits, in two columns when wide, and the hint for the about page on its bottom edge", () => {
     const shown = (shot: ReturnType<typeof draw>, rows: number[], column: number) => rows.map((y) => shot.rows[y]![column] ?? " ").filter((char) => char !== " ").length;
+    const all = helpRows(initialState(undefined).keymap).length;
     const large = help(120, 40);
-    expect(large.rows[9]!.slice(22, 98)).toBe(`┌${"─".repeat(74)}┐`);
-    expect(large.rows[10]!.slice(23, 41)).toBe("Keyboard Shortcuts");
-    expect(shown(large, Array.from({ length: 19 }, (_, at) => 11 + at), 24)).toBe(19);
-    expect(large.rows[30]!.slice(24, 24 + 20)).toBe(" a: terms and about ");
+    expect(large.rows[1]!.slice(2, 118)).toBe(`┌${"─".repeat(114)}┐`);
+    expect(large.rows[2]!.slice(3, 21)).toBe("Keyboard Shortcuts");
+    const lines = Array.from({ length: 35 }, (_, at) => 3 + at);
+    expect(shown(large, lines, 4) + shown(large, lines, 60)).toBe(Math.min(all, 70));
+    expect(large.rows[38]!.slice(4, 4 + 20)).toBe(" a: terms and about ");
     const small = help(80, 24);
-    expect(shown(small, Array.from({ length: 19 }, (_, at) => 3 + at), 4)).toBe(19);
+    expect(small.rows[1]!.slice(2, 78)).toBe(`┌${"─".repeat(74)}┐`);
+    expect(shown(small, Array.from({ length: 19 }, (_, at) => 3 + at), 4)).toBe(Math.min(all, 19));
     expect(small.rows[22]!.slice(4, 4 + 20)).toBe(" a: terms and about ");
   });
 });
@@ -586,8 +590,8 @@ describe("whole-screen proofs on the runner", () => {
       expect(bar().startsWith(" PREFIX  esc cancel  ctrl+b send prefix  w navigate  ? help")).toBe(true);
       await run.keys("?");
       await run.advance(20);
-      expect(run.grid()[9]!.slice(22, 98)).toBe(`┌${"─".repeat(74)}┐`);
-      expect(run.grid()[10]!.slice(23, 41)).toBe("Keyboard Shortcuts");
+      expect(run.grid()[1]!.slice(2, 118)).toBe(`┌${"─".repeat(114)}┐`);
+      expect(run.grid()[2]!.slice(3, 21)).toBe("Keyboard Shortcuts");
       await run.keys("q");
       await run.advance(200);
       expect(run.grid()[2]!.slice(0, 26)).toBe(" · ovis                  │");

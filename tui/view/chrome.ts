@@ -152,12 +152,16 @@ function panel(canvas: Canvas, rect: Rect, border: WrittenColor, colors: Colors)
   return { x: rect.x + 1, y: rect.y + 1, width: rect.width - 2, height: rect.height - 2 };
 }
 
-/** A dialog of `width` x `height` in the middle of the screen, at most the screen less `cap` columns and 2 rows; null when that leaves under 4x4. */
-function popup(screenWidth: number, screenHeight: number, width: number, height: number, cap = 4): Rect | null {
-  const w = Math.min(width, Math.max(0, screenWidth - cap));
-  const h = Math.min(height, Math.max(0, screenHeight - 2));
-  if (w < 4 || h < 4) return null;
-  return { x: Math.floor((screenWidth - w) / 2), y: Math.floor((screenHeight - h) / 2), width: w, height: h };
+/** What a dialog leaves free of the screen: columns at each side, rows above and below. */
+const DIALOG_MARGIN = { cols: 2, rows: 1 } as const;
+/** A dialog with less room than this in either direction is not drawn. */
+const DIALOG_LEAST = 4;
+
+/** A dialog of the size it asks for, shrunk to keep the screen's margins free and centred; null when too small to draw. */
+function dialogRect(screenWidth: number, screenHeight: number, width: number, height: number): Rect | null {
+  const fitted = { width: Math.min(width, screenWidth - 2 * DIALOG_MARGIN.cols), height: Math.min(height, screenHeight - 2 * DIALOG_MARGIN.rows) };
+  if (fitted.width < DIALOG_LEAST || fitted.height < DIALOG_LEAST) return null;
+  return { x: Math.floor((screenWidth - fitted.width) / 2), y: Math.floor((screenHeight - fitted.height) / 2), ...fitted };
 }
 
 /** A dialog of `width` x `height` in the middle of the screen, never larger than it. */
@@ -167,24 +171,27 @@ function centred(screenWidth: number, screenHeight: number, width: number, heigh
   return { x: Math.floor((screenWidth - w) / 2), y: Math.floor((screenHeight - h) / 2), width: w, height: h };
 }
 
-/** A row of buttons of the given widths, `gap` apart, centred in `inner` on its row `off` (its last row at most). */
-function buttonRow(inner: Rect, widths: readonly number[], gap: number, off: number): Rect[] {
-  const total = widths.reduce((sum, width) => sum + width, 0) + gap * Math.max(0, widths.length - 1);
-  let x = inner.x + Math.floor(Math.max(0, inner.width - total) / 2);
-  const y = inner.y + Math.min(off, Math.max(0, inner.height - 1));
-  return widths.map((width) => {
-    const rect = { x, y, width: Math.max(0, Math.min(width, inner.width - (x - inner.x))), height: 1 };
-    x += width + gap;
-    return rect;
+/**
+ * Buttons side by side, `spacing` columns apart, the group centred in `area` on its row `line` (its last row when
+ * `line` is past it); a button that reaches past the area's right edge is cut there.
+ */
+function buttonsCentred(area: Rect, widths: readonly number[], spacing: number, line: number): Rect[] {
+  const span = widths.reduce((sum, width, at) => sum + width + (at > 0 ? spacing : 0), 0);
+  const first = area.x + Math.max(0, Math.floor((area.width - span) / 2));
+  const y = area.y + Math.max(0, Math.min(line, area.height - 1));
+  const end = area.x + area.width;
+  return widths.map((width, at) => {
+    const x = first + widths.slice(0, at).reduce((sum, before) => sum + before + spacing, 0);
+    return { x, y, width: Math.max(0, Math.min(width, end - x)), height: 1 };
   });
 }
 
-/** A button: its cells in `style`, its text centred in them. */
-function button(canvas: Canvas, rect: Rect, text: string, style: number): void {
+/** A button: its cells filled in its look, its label centred among them (from its first cell when wider). */
+function drawButton(canvas: Canvas, rect: Rect, label: string, style: number): void {
   if (rect.width <= 0) return;
   fillSpan(canvas, rect.x, rect.y, rect.width, style);
-  const width = Math.min(widthOf(text), rect.width);
-  printFit(canvas, rect.x + Math.floor((rect.width - width) / 2), rect.y, text, width, style);
+  const lead = Math.max(0, Math.floor((rect.width - widthOf(label)) / 2));
+  printFit(canvas, rect.x + lead, rect.y, label, rect.width - lead, style);
 }
 
 /** Each state's glyph and word (the glyph its own, so a state never shows by colour alone) and its colour. */
@@ -241,15 +248,10 @@ function windowStart(count: number, size: number, focus: number): number {
   return count <= size ? 0 : Math.min(Math.max(0, focus - Math.floor(size / 2)), count - size);
 }
 
-/** The sidebar's two halves: workspaces above, agents below, by half of its height (at least 3 rows each from 6 rows on). */
-function sectionHeights(height: number): { workspaces: number; agents: number } {
-  if (height <= 0) return { workspaces: 0, agents: 0 };
-  if (height < 6) {
-    const workspaces = Math.ceil(height / 2);
-    return { workspaces, agents: height - workspaces };
-  }
-  const workspaces = Math.min(Math.max(Math.round(height * 0.5), 3), height - 3);
-  return { workspaces, agents: height - workspaces };
+/** The sidebar's height shared by its two halves: the workspaces take the upper half and the odd row, the agents the rest. */
+function sidebarHalves(height: number): { workspaces: number; agents: number } {
+  const workspaces = Math.max(0, Math.ceil(height / 2));
+  return { workspaces, agents: Math.max(0, height) - workspaces };
 }
 
 /** The workspaces' header: its title and the blank row under it. */
@@ -277,7 +279,7 @@ function sidebarPart(input: ChromeInput, colors: Colors, look: string): Part {
   const { regions, state, world } = input;
   const rect = regions.sidebar;
   const width = Math.max(0, rect.width - 1);
-  const heights = sectionHeights(rect.height);
+  const heights = sidebarHalves(rect.height);
   const body = Math.max(0, heights.workspaces - WORKSPACE_HEADER_ROWS - 1);
   const lines = workspaceLines(state, world);
   const wsStart = windowStart(lines.length, body, Math.max(0, lines.findIndex((line) => line.chosen || line.front)));
@@ -445,29 +447,25 @@ const NEW_TAB_COLUMNS = 3;
 const SCROLL_BUTTON_COLUMNS = 3;
 const MIN_STRIP_COLUMNS = MIN_TAB_COLUMNS + NEW_TAB_COLUMNS + SCROLL_BUTTON_COLUMNS * 2;
 
-/** The first tab shown when the tabs overflow `room`: the one that puts the active tab nearest the middle. */
-function centredStart(widths: readonly number[], active: number, room: number): number {
-  let best = active;
-  let distance = Infinity;
-  for (let start = 0; start <= active; start++) {
-    const before = widths.slice(start, active).reduce((sum, width) => sum + width + 1, 0);
-    if (before >= room) continue;
-    const centre = before * 2 + Math.min(widths[active]!, room - before);
-    if (Math.abs(centre - room) <= distance) {
-      distance = Math.abs(centre - room);
-      best = start;
-    }
-  }
-  return best;
+/**
+ * The tab shown first while the tabs overflow `room`, so that the tab in front stands in the middle of the strip: the tabs
+ * before it are taken, nearest first, while they fit in the columns a centred tab in front leaves at its left.
+ */
+function tabCentringFirst(widths: readonly number[], front: number, room: number): number {
+  let free = Math.floor((room - Math.min(widths[front] ?? 0, room)) / 2);
+  let first = front;
+  for (; first > 0 && widths[first - 1]! + 1 <= free; first--) free -= widths[first - 1]! + 1;
+  return first;
 }
 
-/** The first tab of the longest run of whole tabs at the end that fits `room`. */
-function lastStart(widths: readonly number[], room: number): number {
-  if (widths.length === 0) return 0;
-  let start = widths.length - 1;
-  let used = widths[start]!;
-  while (start > 0 && used + 1 + widths[start - 1]! <= room) used += 1 + widths[--start]!;
-  return start;
+/** The tab shown first when the strip ends at the last tab: the longest run of whole tabs at the end that fits `room`, at least the last tab. */
+function tabEndFirst(widths: readonly number[], room: number): number {
+  let taken = -1; // the first tab shown has no blank column before it
+  for (let at = widths.length - 1; at >= 0; at--) {
+    taken += widths[at]! + 1;
+    if (taken > room) return Math.min(widths.length - 1, at + 1);
+  }
+  return 0;
 }
 
 function tabBarPart(input: ChromeInput, colors: Colors, look: string): Part {
@@ -487,17 +485,17 @@ function tabBarPart(input: ChromeInput, colors: Colors, look: string): Part {
   const overflow = total > content && content >= MIN_STRIP_COLUMNS;
   const room = overflow ? content - NEW_TAB_COLUMNS - SCROLL_BUTTON_COLUMNS * 2 : content - NEW_TAB_COLUMNS;
   const widths = entries.map((entry) => entry.width);
-  const start = overflow ? Math.min(centredStart(widths, Math.max(0, entries.findIndex((entry) => entry.active)), room), lastStart(widths, room)) : 0;
-  const data = { entries, start, overflow, room, content, showOwned, ownedBadge, canRight: overflow && start < lastStart(widths, room) };
+  const start = overflow ? Math.min(tabCentringFirst(widths, Math.max(0, entries.findIndex((entry) => entry.active)), room), tabEndFirst(widths, room)) : 0;
+  const data = { entries, start, overflow, room, content, showOwned, ownedBadge };
   return part("tabs", rect, look, data, (canvas, d) => {
     if (rect.width <= 0 || rect.height <= 0) return;
     const row = rect.y;
     const bar = canvas.style({ fg: colors.textDim, bg: colors.bgPanel });
     canvas.fill(bar);
     let x = rect.x;
-    const scrollStyle = (lit: boolean) => canvas.style({ fg: colors.textDim, bg: colors.bgHover, flags: lit ? 0 : 0 });
+    const scrollButton = canvas.style({ fg: colors.textDim, bg: colors.bgHover });
     if (d.overflow) {
-      printFit(canvas, x, row, STRINGS.tabsBefore, SCROLL_BUTTON_COLUMNS, scrollStyle(d.start > 0));
+      printFit(canvas, x, row, STRINGS.tabsBefore, SCROLL_BUTTON_COLUMNS, scrollButton);
       canvas.hit({ x, y: row, width: SCROLL_BUTTON_COLUMNS, height: 1 }, "tabs_before");
       x += SCROLL_BUTTON_COLUMNS;
     }
@@ -522,7 +520,7 @@ function tabBarPart(input: ChromeInput, colors: Colors, look: string): Part {
     }
     let plus = Math.min(x, rect.x + d.content);
     if (d.overflow) {
-      printFit(canvas, tabRight, row, STRINGS.tabsAfter, SCROLL_BUTTON_COLUMNS, scrollStyle(d.canRight));
+      printFit(canvas, tabRight, row, STRINGS.tabsAfter, SCROLL_BUTTON_COLUMNS, scrollButton);
       canvas.hit({ x: tabRight, y: row, width: SCROLL_BUTTON_COLUMNS, height: 1 }, "tabs_after");
       plus = tabRight + SCROLL_BUTTON_COLUMNS;
     }
@@ -568,13 +566,15 @@ function keyText(state: ModelState, action: string): string | null {
   return helpRows(state.keymap).find((row) => row.action === action)?.keys[0] ?? null;
 }
 
-/** A scrollbar's thumb in a track of `height` rows: its first row and its length; null when nothing scrolls. */
-function thumbOf(scroll: PaneScroll, height: number): { top: number; length: number } | null {
-  if (scroll.max <= 0 || height <= 0) return null;
-  const length = Math.max(1, Math.min(height, Math.round((scroll.viewport * height) / (scroll.max + scroll.viewport))));
-  const room = height - length;
-  const fromTop = scroll.max - scroll.offset;
-  return { top: room === 0 ? 0 : Math.max(0, Math.min(room, Math.round((fromTop * room) / scroll.max))), length };
+/**
+ * A scrollbar's thumb in a track of `track` rows: as long as the screen's share of all the rows (at least one row), and as
+ * far down the track as the view is down the history; null when nothing scrolls.
+ */
+function scrollThumb(scroll: PaneScroll, track: number): { top: number; length: number } | null {
+  if (scroll.max <= 0 || track <= 0) return null;
+  const length = Math.min(track, Math.max(1, Math.round((track * scroll.viewport) / (scroll.max + scroll.viewport))));
+  const down = (scroll.max - scroll.offset) / scroll.max;
+  return { top: Math.round((track - length) * down), length };
 }
 
 function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
@@ -596,7 +596,7 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
       title: outer.width > 4 ? ` ${truncateEnd((summary?.label || summary?.title || spot.pane).trim(), outer.width - 4)} ` : null,
       banner: paneBanner(panes.get(spot.pane), link),
       gutter,
-      thumb: history && gutter.width > 0 ? thumbOf(history, gutter.height) : null,
+      thumb: history && gutter.width > 0 ? scrollThumb(history, gutter.height) : null,
     };
   });
   const dividers = splits.filter((split) => split.divider.width > 0).map(({ id, divider }) => ({ id, divider }));
@@ -773,13 +773,13 @@ function fieldView(field: Field, width: number): { text: string; cursor: number 
 interface DialogButton { readonly text: string; readonly width: number; readonly main: "accent" | "danger" | null; readonly hit: string }
 
 function drawButtons(canvas: Canvas, inner: Rect, buttons: readonly DialogButton[], off: number, colors: Colors): void {
-  const rects = buttonRow(inner, buttons.map((one) => one.width), 2, off);
+  const rects = buttonsCentred(inner, buttons.map((one) => one.width), 2, off);
   buttons.forEach((one, at) => {
     const rect = rects[at]!;
     const style = one.main === null
       ? canvas.style({ fg: colors.text, bg: colors.bgHover, flags: STYLE_BOLD })
       : canvas.style({ fg: colors.primaryText, bg: one.main === "danger" ? colors.statusBlocked : colors.accent, flags: STYLE_BOLD });
-    button(canvas, rect, one.text, style);
+    drawButton(canvas, rect, one.text, style);
     canvas.hit(rect, one.hit);
   });
 }
@@ -792,7 +792,7 @@ const FIELD_BUTTONS: readonly DialogButton[] = [
 
 /** A dialog with its title, one text field across it and its buttons under the field; the field's cell takes typing. */
 function fieldOverlay(width: number, height: number, title: string, field: Field, colors: Colors): { overlay: Part; input: Scene["input"] } | null {
-  const rect = popup(width, height, 56, 7);
+  const rect = dialogRect(width, height, 56, 7);
   if (!rect) return null;
   const room = Math.max(1, rect.width - 3);
   const view = fieldView(field, room);
@@ -853,9 +853,14 @@ function toastPart(width: number, height: number, notices: ModelState["notices"]
   };
 }
 
-/** The help, 76x22 at most: the notes on the key config, then every row of the key table in its order, keys first. */
+/**
+ * The help, drawn as herdr's dialogs are (a panel with its title inside, the about hint on its bottom edge) and as large
+ * as the screen's margins allow, so it keeps every key row the screen has room for: the notes on the key config, then
+ * the key table's rows in its order, keys first, in two columns when the dialog is wide enough. It does not scroll:
+ * herdr's scrolling help comes with its content (docs/tui/visual-parity.md O5).
+ */
 function helpPart(width: number, height: number, state: ModelState, world: CoreView, colors: Colors): Part | null {
-  const rect = popup(width, height, HELP_SIZE.width, HELP_SIZE.height);
+  const rect = dialogRect(width, height, width, height);
   if (!rect) return null;
   const refusals = shownRefusals(state.keymap);
   const notes = state.keymap.notes.map((note) => ({ text: noteText(note), unreachable: note.code === "prefix_unreachable" || note.code === "detach_unreachable" }));
@@ -904,7 +909,6 @@ function helpPart(width: number, height: number, state: ModelState, world: CoreV
   };
 }
 
-const HELP_SIZE = { width: 76, height: 22 } as const;
 
 /** The about page: the five terms, a blank row, then the about line. */
 function aboutPart(width: number, height: number, about: string, colors: Colors): Part {
@@ -982,7 +986,7 @@ function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; 
       return { overlays: field ? [...overlays, field.overlay] : overlays, input: field?.input ?? "overlay", dim: true };
     }
     case "confirm": {
-      const rect = popup(width, height, 64, 6);
+      const rect = dialogRect(width, height, 64, 6);
       if (!rect) return { overlays, input: "overlay", dim: true };
       const workspace = state.world.workspaces.find((one) => one.id === top.target.id);
       const name = workspace?.name || top.target.id;
@@ -1178,17 +1182,22 @@ function menuPart(width: number, height: number, menu: Extract<Overlay, { kind: 
 }
 
 /**
- * The banner of a pane drawn without a border (a tab's only pane): over the pane's bottom row, in the columns a border
- * would carry it, so why its picture is not live, or who sizes it (docs/tui/parity.md), still shows.
+ * The banner of a pane drawn without a border (a tab's only pane): why its picture is not live, or who sizes it
+ * (docs/tui/parity.md). With no border to carry it, it goes in the row above the pane (the tab bar, or the narrow
+ * screen's header) at that row's right end, clear of the narrow header's menu mark, so it never covers the pane's own
+ * text. herdr has no such state on a pane, so there is no herdr place for it.
  */
 function bannerParts(input: ChromeInput, colors: Colors, look: string): Part[] {
   return input.spots.filter((spot) => !spot.covered).flatMap((spot) => {
     const { outer, inner, gutter } = spot.cells;
     const bordered = outer.width !== inner.width + (gutter.width > 0 ? 1 : 0) && outer.height !== inner.height;
     const banner = bordered ? null : paneBanner(input.panes.get(spot.pane), input.link);
-    if (!banner || outer.width < 5 || outer.height < 1) return [];
+    if (!banner || outer.y === 0) return [];
     const text = ` ${banner.text} `;
-    const rect: Rect = { x: outer.x + 2, y: outer.y + outer.height - 1, width: Math.min(widthOf(text), outer.width - 4), height: 1 };
+    const right = outer.x + outer.width - (input.regions.narrow ? widthOf(` ${STRINGS.menuMark}`) : 0);
+    const width = Math.min(widthOf(text), right - outer.x);
+    if (width <= 0) return [];
+    const rect: Rect = { x: right - width, y: outer.y - 1, width, height: 1 };
     return [part(`banner:${spot.pane}`, rect, look, [text, banner.tone], (canvas) => {
       const fg = banner.tone === "error" ? colors.dangerText : banner.tone === "warn" ? colors.notice : colors.textDim;
       printFit(canvas, rect.x, rect.y, text, rect.width, canvas.style({ fg, bg: colors.bgElevated, flags: STYLE_BOLD }), true);
