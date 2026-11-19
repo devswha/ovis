@@ -6,11 +6,11 @@ export type DashboardPc = MyPc & { relay: string | null };
 /** `unreachable`: this device's own check reached no relay, so it knows nothing of the PC itself (Could not reach this machine) */
 export type DashboardState = MyPcState | "unchecked" | "unreachable";
 
-/** What this device's own finished check says of a paired PC, or null while none has finished. */
+/** What this device's own last finished check says of a paired PC (a re-check in flight keeps it), or null while none has finished. */
 function checkedState(check: PcStatus | null): "paired" | "offline" | "unreachable" | null {
   if (check === null) return null;
   switch (check.kind) {
-    case "checking": return null;
+    case "checking": return checkedState(check.previous ?? null);
     case "answered": return "paired";
     case "offline": return check.reason === "pc" ? "offline" : "unreachable";
   }

@@ -1,6 +1,6 @@
 /** Probe results never imply account or version state. A sweep a minute while the list is shown, at most CHECK_PCS PCs each. */
 import { checkPc, sweepOf } from "./pcStatus.ts";
-import type { PcStatus } from "./pcStatus.ts";
+import type { PcFinding, PcStatus } from "./pcStatus.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
 import type { RelaySocket } from "./channel.ts";
 import { OFFLINE_AFTER_MS } from "../account/myPcs.ts";
@@ -19,7 +19,7 @@ function localStorageSet(key: string, value: string): void {
   try { localStorage.setItem(key, value); } catch {}
 }
 
-interface QueuedCheck { readonly device: RelayDevice; readonly before: PcStatus | undefined; readonly settled: ReturnType<typeof Promise.withResolvers<void>> }
+interface QueuedCheck { readonly device: RelayDevice; readonly before: PcFinding | undefined; readonly settled: ReturnType<typeof Promise.withResolvers<void>> }
 
 export function createPcSweep(store: RelayDeviceStore, view: { readonly active: () => boolean; readonly redraw: () => void }, options: { readonly probe?: typeof checkPc; readonly directSocket?: (url: string) => RelaySocket } = {}) {
   const pcStatus = new Map<string, PcStatus>();
@@ -39,8 +39,11 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
   const cursorNow = (): number => Number(localStorageGet(CHECK_CURSOR_KEY) ?? "0");
 
   const enqueue = (device: RelayDevice, where: "front" | "back"): Promise<void> => {
-    const entry: QueuedCheck = { device, before: pcStatus.get(device.server_id), settled: Promise.withResolvers<void>() };
-    pcStatus.set(device.server_id, { kind: "checking" });
+    const shown = pcStatus.get(device.server_id);
+    const before = shown?.kind === "checking" ? shown.previous : shown;
+    const entry: QueuedCheck = { device, before, settled: Promise.withResolvers<void>() };
+    // a re-check keeps what the last one found on screen until it finishes: an off PC must not read Ready meanwhile
+    pcStatus.set(device.server_id, before === undefined ? { kind: "checking" } : { kind: "checking", previous: before });
     if (where === "front") queue.unshift(entry); else queue.push(entry);
     return entry.settled.promise;
   };
@@ -56,7 +59,14 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
         refused.delete(serverId);
         pcStatus.set(serverId, found);
       }
-      if (found.kind === "answered") setTimeout(() => { lapsed.add(found); if (pcStatus.get(serverId) === found) { pcStatus.delete(serverId); redraw(); } }, OFFLINE_AFTER_MS);
+      if (found.kind === "answered") setTimeout(() => {
+        lapsed.add(found);
+        const shown = pcStatus.get(serverId);
+        if (shown === found) pcStatus.delete(serverId);
+        else if (shown?.kind === "checking" && shown.previous === found) pcStatus.set(serverId, { kind: "checking" });
+        else return;
+        redraw();
+      }, OFFLINE_AFTER_MS);
       redraw();
       next.settled.resolve();
     }

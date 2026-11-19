@@ -91,12 +91,15 @@ describe("this device's own check of a paired PC", () => {
 
   // `paired`: the account heard from it lately; `offline`: not for fifteen minutes. An answer beats a stale Offline, nobody
   // at the relay is Machine offline whatever the account last heard, and a relay this device could not reach says nothing
-  // of the PC, so the account's word stands beside it
+  // of the PC, so the account's word stands beside it. A re-check in flight keeps the last finished check's word; before
+  // any has finished, the account's word stands
   it.each([
     ["paired", null, "paired"], ["paired", { kind: "checking" }, "paired"], ["paired", answered, "paired"],
     ["paired", nobody, "offline"], ["paired", unreached, "unreachable"],
+    ["paired", { kind: "checking", previous: nobody }, "offline"], ["paired", { kind: "checking", previous: unreached }, "unreachable"],
     ["offline", null, "offline"], ["offline", { kind: "checking" }, "offline"], ["offline", answered, "paired"],
     ["offline", nobody, "offline"], ["offline", unreached, "offline"],
+    ["offline", { kind: "checking", previous: answered }, "paired"], ["offline", { kind: "checking", previous: unreached }, "offline"],
   ] as const)("reads a listed PC the account calls %s, checked %j, as %s", (state, check, expected) => {
     expect(dashboardState({ state, listed: true }, check)).toBe(expected);
   });
@@ -112,6 +115,7 @@ describe("this device's own check of a paired PC", () => {
     expect(m.attention.map(({ server_id, reason }) => [server_id, reason])).toEqual([["far", "unreachable"], ["off", "offline"]]);
     expect(Object.fromEntries(m.map.hubs[0]?.nodes.map((node) => [node.server_id, node.state]) ?? [])).toEqual({ far: "unreachable", off: "offline", up: "paired" });
   });
+
 });
 
 describe("dashboardModel urgency", () => {
