@@ -1,6 +1,8 @@
-:root { color-scheme: light dark; --bg: #12100e; --panel: #181613; --input: #1c1916; --border: #2d2924; --text: #d8d0c3; --dim: #9b9183; --strong: #f2ebdf; --primary: #f0a830; --primary-text: #1b1407; --danger: #ff7b70; }
+:root { color-scheme: dark; --bg: #12100e; --panel: #181613; --input: #1c1916; --border: #2d2924; --text: #d8d0c3; --dim: #9b9183; --strong: #f2ebdf; --primary: #f0a830; --primary-text: #1b1407; --danger: #ff7b70; }
+/* the app's own screens (index.html) follow the phone's light mode; error.html stays dark */
+:root.screens { color-scheme: light dark; }
 @media (prefers-color-scheme: light) {
-  :root { --bg: #eeeae2; --panel: #faf8f3; --input: #fffdf9; --border: #dcd4c6; --text: #2a251f; --dim: #685e52; --strong: #16120d; --primary: #8c5000; --primary-text: #fffdf9; --danger: #8f1d1d; }
+  :root.screens { --bg: #eeeae2; --panel: #faf8f3; --input: #fffdf9; --border: #dcd4c6; --text: #2a251f; --dim: #685e52; --strong: #16120d; --primary: #8c5000; --primary-text: #fffdf9; --danger: #8f1d1d; }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 -apple-system, system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
@@ -8,15 +10,12 @@ main { max-width: 32rem; margin: 0 auto; padding: calc(env(safe-area-inset-top) 
 h1 { color: var(--strong); font-size: 1.75rem; margin: 0 0 .25rem; }
 h2 { color: var(--dim); font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin: 2rem 0 .5rem; }
 p { margin: 0 0 1rem; color: var(--dim); }
-label { display: block; color: var(--strong); font-weight: 600; margin: 1.5rem 0 .4rem; }
 input { width: 100%; font: inherit; color: var(--strong); background: var(--input); border: 1px solid var(--border); border-radius: .6rem; padding: .75rem .85rem; }
 input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 button { font: inherit; border-radius: .6rem; padding: .75rem 1rem; border: 1px solid var(--border); background: var(--panel); color: var(--strong); cursor: pointer; }
 button.primary { background: var(--primary); color: var(--primary-text); border-color: var(--primary); font-weight: 600; }
 .row { display: flex; gap: .6rem; margin-top: .75rem; }
 .row > button { flex: 1; }
-.hint { font-size: .85rem; margin: .5rem 0 0; }
-code { font: .85em ui-monospace, monospace; color: var(--text); }
 .error { color: var(--danger); margin: .5rem 0 0; }
 .error:empty { display: none; }
 .status { display: flex; align-items: center; gap: .6rem; color: var(--text); }

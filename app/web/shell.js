@@ -27,7 +27,36 @@ export function localize() {
 }
 
 export function shell(method, options = {}) {
-  return window.Capacitor.nativePromise("HerdrShell", method, options);
+  const call = window.Capacitor.nativePromise("HerdrShell", method, options);
+  if (method !== "open") return call;
+  // a PC's page draws its own bars, on the app's dark start: they go back to light icons before it opens, and follow
+  // this screen again when it did not open (refused, cancelled), as the screen stays
+  barsFor(false);
+  return call.catch((err) => { if (LIGHT !== null) barsFor(LIGHT.matches); throw err; });
+}
+
+const LIGHT = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : null;
+
+/**
+ * The system bars' icons for the screen's colours: Android takes them from the page's theme-color (MainActivity,
+ * BAR_COLOR_SCRIPT), iOS from Capacitor's SystemBars, set to light icons for the app (capacitor.config.json). Only the
+ * app's own screens are ever light (shell.css), so only they ask for dark icons, and every PC opens with light ones.
+ */
+function barsFor(light) {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = light ? "#eeeae2" : "#12100e";
+  // on iOS a call to a plugin the app lacks never settles (src/lib/nativeApp.ts, hasNativePlugin): asked only when announced
+  if (window.Capacitor?.getPlatform?.() === "ios" && (window.Capacitor.PluginHeaders ?? []).some((header) => header.name === "SystemBars")) {
+    window.Capacitor.nativePromise("SystemBars", "setStyle", { style: light ? "LIGHT" : "DARK" }).catch(() => undefined);
+  }
+}
+
+/** The app's own screens follow the phone's light or dark mode, the system bars with them. */
+export function followScheme() {
+  if (LIGHT === null) return;
+  const apply = () => barsFor(LIGHT.matches);
+  LIGHT.addEventListener("change", apply);
+  apply();
 }
 
 /**
