@@ -35,6 +35,10 @@ export interface OrderedRead {
 
 const EMPTY: OrderDoc = { v: 1, account: null, max_no: 0, keys: {} };
 
+export class OrderConflict extends Error {
+  constructor(readonly key: string) { super("Snapshot changes a pinned account number"); }
+}
+
 function parse(value: unknown): OrderDoc | null {
   if (typeof value !== "object" || value === null) return null;
   const doc = value as Partial<OrderDoc>;
@@ -90,16 +94,27 @@ export class AccountOrder {
 
   /** The commit turn of a whole read: new keys enter, marked late when their number is not above the highest seen. */
   record(read: OrderedRead, bindId: string): void {
-    if (this.problem !== null) return;
+    this.prepare(read, bindId)();
+  }
+
+  /** Validate before any widening; persist the watermark only after the other commit writes succeed. */
+  prepare(read: OrderedRead, bindId: string): () => void {
+    if (this.problem !== null) throw new Error(this.problem);
     const base = this.doc.account === read.account ? this.doc : { ...EMPTY, account: read.account };
     const known = Object.keys(base.keys).length > 0;
     const keys: Record<string, OrderEntry> = { ...base.keys };
     let max = base.max_no;
     const listed = [...read.devices, ...read.removed].sort((a, b) => a.no - b.no);
-    for (const { key, no } of listed) if (keys[key] === undefined) keys[key] = { no, late: known && no <= base.max_no };
+    for (const { key, no } of listed) {
+      const pinned = keys[key];
+      if (pinned === undefined) keys[key] = { no, late: known && no <= base.max_no };
+      else if (pinned.no !== no) throw new OrderConflict(key);
+    }
     for (const { no } of listed) max = Math.max(max, no);
     const next: OrderDoc = { ...base, bind_id: bindId, server_id: read.server_id, last_version: read.version, max_no: max, keys };
-    writePrivateState(this.path, next);
-    this.doc = next;
+    return () => {
+      writePrivateState(this.path, next);
+      this.doc = next;
+    };
   }
 }

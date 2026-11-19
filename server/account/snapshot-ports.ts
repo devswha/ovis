@@ -6,7 +6,7 @@
  */
 import type { BlockRecord, DeviceLiftRecord } from "../../shared/account-records.ts";
 import type { DeviceStore } from "../devices.ts";
-import type { AccountOrder } from "./account-order.ts";
+import { OrderConflict, type AccountOrder } from "./account-order.ts";
 import type { DeviceJournal } from "./device-journal.ts";
 import type { PcAccountState } from "./pc-binding.ts";
 import type { SafetyLog } from "./safety-log.ts";
@@ -46,6 +46,11 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
     commit(stage: StagedRead) {
       const binding = pc.binding();
       if (binding === null) throw new Error("Snapshot commit requires a current binding");
+      let recordOrder: () => void;
+      try { recordOrder = deps.order.prepare(stage.snapshot, binding.bind_id); } catch (error) {
+        if (error instanceof OrderConflict) journal.append({ kind: "account", how: "order_conflict", key: error.key, no: null, row: null, label: error.message, by: null, account: binding.account });
+        throw error;
+      }
       const blocks = new Map(stage.snapshot.blocks.map((block) => [block.id, block]));
       for (const line of stage.snapshot.freezes) {
         const block = blocks.get(line.block);
@@ -60,7 +65,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       let lifted = false;
       for (const lift of stage.lifts) if (safetyLog.append({ record: lift, got: "snapshot" }).outcome === "applied") lifted = true;
       if (lifted) pc.raiseGen();
-      deps.order.record(stage.snapshot, binding.bind_id);
+      recordOrder();
     },
     methodsVersion: () => deps.order.methodsVersion(),
     journalMethod(version) {

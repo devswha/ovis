@@ -6,6 +6,7 @@
  * validated, in one turn with no wait inside, and only while `gen` moved by nothing but this read's own denials.
  */
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
+import { OrderConflict } from "./account-order.ts";
 import type { BlockRecord, DeviceLiftRecord } from "../../shared/account-records.ts";
 import { AccountSnapshotError, assembleSnapshot, parseSnapshotPage, SNAPSHOT_GONE, type AccountSnapshot, type AccountSnapshotPage } from "../../shared/account-snapshot.ts";
 
@@ -108,7 +109,10 @@ export async function readSnapshot(
   if (now.gen !== noted.gen + raised) return refused("generation_changed");
   const last = ports.lastVersion();
   if (last !== null && snapshot.version < last) return refused("stale");
-  ports.commit({ snapshot, lifts: authorized });
+  try { ports.commit({ snapshot, lifts: authorized }); } catch (error) {
+    if (error instanceof OrderConflict) return refused("malformed");
+    throw error;
+  }
   if (ports.methodsVersion() !== snapshot.methods_version) ports.journalMethod(snapshot.methods_version);
   return { committed: true, snapshot: snapshot.snapshot, denials, liftsRefused: snapshot.lifts.length - authorized.length };
 }
