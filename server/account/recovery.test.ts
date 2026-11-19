@@ -67,6 +67,14 @@ test.if(unix)("R11: a state folder others may write without the sticky bit is re
   expect(socket).not.toHaveProperty("refused");
 });
 
+test.if(unix)("R11: a state folder owned by another user is refused", () => {
+  const dir = stateDir();
+  expect(openRecoverySocket({ stateDir: dir, handle: echo, ownerOf: () => (process.getuid?.() ?? 0) + 1 })).toEqual({ refused: "state_dir_unsafe" });
+  const socket = openRecoverySocket({ stateDir: dir, handle: echo, ownerOf: () => 0 });
+  if ("stop" in socket) socket.stop();
+  expect(socket).not.toHaveProperty("refused");
+});
+
 test.if(unix)("R11: a socket whose mode was widened after it was bound answers nothing", async () => {
   const dir = stateDir();
   const socket = opened(dir);
@@ -195,4 +203,13 @@ test("T70: the rows a source registers are the candidates, across every source, 
   expect(store.candidates().map((row) => row.id)).toEqual(["a", "b"]);
   unregister();
   expect(store.candidates().map((row) => row.id)).toEqual(["b"]);
+});
+
+test("T70: undo of one row ends that row's whole release, its other rows included", () => {
+  const { store } = releases();
+  const release = store.release([waiting("a"), waiting("b")], "owner");
+  const undone = store.undo(["a"], "owner");
+  expect(undone.releases).toEqual([release]);
+  expect(store.releaseOf("a")).toBeNull();
+  expect(store.releaseOf("b")).toBeNull();
 });
