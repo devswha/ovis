@@ -11,7 +11,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { AccountRecordError, parseSafetyRecord, type PcLiftRecord, type SafetyRecord, type SafetyRecordKind } from "../../shared/account-records.ts";
 import { writePrivateState } from "../private-state.ts";
 
@@ -125,6 +125,9 @@ function parseLog(value: unknown): LogFile | string {
   return file as LogFile;
 }
 
+/** The one handle of each folder's log in this process (P24: one writer, one numbering). */
+const HANDLES = new Map<string, SafetyLog>();
+
 export class SafetyLog {
   private file: LogFile = { v: 1, next: 1, base: [], entries: [], waiting: [] };
   private readError: string | null = null;
@@ -133,24 +136,39 @@ export class SafetyLog {
   /** What is in force, worked out at open and after every append: the replay runs before anything is served (T41). */
   inForce: SafetyState = { locked: false, locks: [], blocks: [], freezes: [], markers: [] };
 
-  private constructor(private readonly path: string) {}
+  private constructor(private readonly path: string, private readonly stateDir: string) {}
 
-  /** Reads and replays the log of `stateDir`. Never throws: a log that cannot be trusted makes `strict` say why. */
+  /**
+   * The one handle of `stateDir`'s log in this process, read and replayed again from disk: a second open is the same
+   * handle, so no two handles of one folder ever give numbers. Never throws: a log that cannot be trusted makes
+   * `strict` say why.
+   */
   static open(stateDir: string): SafetyLog {
-    const log = new SafetyLog(join(stateDir, SAFETY_LOG_FILE));
-    let text: string;
-    try { text = readFileSync(log.path, "utf8"); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") log.readError = `Cannot read ${log.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
-      else if (existsSync(join(stateDir, DEVICE_JOURNAL_FILE))) log.readError = `${log.path} is missing beside the device journal`;
-      return log;
-    }
-    let value: unknown;
-    try { value = JSON.parse(text); } catch { log.readError = `${log.path} is not JSON`; return log; }
-    const parsed = parseLog(value);
-    if (typeof parsed === "string") log.readError = `${log.path} cannot be trusted: ${parsed}`;
-    else log.file = parsed;
-    log.inForce = log.state();
+    const path = resolve(stateDir, SAFETY_LOG_FILE);
+    const log = HANDLES.get(path) ?? new SafetyLog(path, stateDir);
+    HANDLES.set(path, log);
+    log.readError = null;
+    log.writeError = null;
+    log.load();
     return log;
+  }
+
+  /** Reads the file as open() does; false, with the log strict, when it is missing where it must exist or untrusted. */
+  private load(): boolean {
+    let text: string;
+    try { text = readFileSync(this.path, "utf8"); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.readError = `Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
+      else if (existsSync(join(this.stateDir, DEVICE_JOURNAL_FILE))) this.readError = `${this.path} is missing beside the device journal`;
+      else if (this.file.next !== 1) this.readError = `${this.path} is missing after this PC wrote it`;
+      else { this.inForce = this.state(); return true; }
+      return false;
+    }
+    let parsed: LogFile | string;
+    try { parsed = parseLog(JSON.parse(text)); } catch { parsed = "it is not JSON"; }
+    if (typeof parsed === "string") { this.readError = `${this.path} cannot be trusted: ${parsed}`; return false; }
+    this.file = parsed;
+    this.inForce = this.state();
+    return true;
   }
 
   /**
@@ -181,7 +199,7 @@ export class SafetyLog {
     if (this.readError !== null || this.writeError !== null) return { outcome: "refused", id, code: "log_unavailable" };
     if (!GOTS.has(got) || recordProblem(record, asof) !== null) return { outcome: "refused", id, code: "record_invalid" };
     // what another handle of this folder appended is read first, so no number is given twice and none is lost (P24)
-    if (!this.reread()) return { outcome: "refused", id, code: "log_unavailable" };
+    if (!this.load()) return { outcome: "refused", id, code: "log_unavailable" };
     const held = this.file.entries.find((entry) => entry.record.id === id);
     if (held !== undefined) return sameRecord(held.record, record) ? { outcome: "applied", id, n: held.n } : { outcome: "refused", id, code: "conflict" };
     if (this.file.base.some((line) => line.id === id)) return { outcome: "already_applied", id };
@@ -196,20 +214,6 @@ export class SafetyLog {
     return { outcome: "applied", id, n: entry.n };
   }
 
-  /** The file as it is on disk now; false, with the log strict, when it is no longer one this log can trust. */
-  private reread(): boolean {
-    let text: string;
-    try { text = readFileSync(this.path, "utf8"); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && this.file.next === 1) return true;
-      this.readError = `Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
-      return false;
-    }
-    let parsed: LogFile | string;
-    try { parsed = parseLog(JSON.parse(text)); } catch { parsed = "it is not JSON"; }
-    if (typeof parsed === "string") { this.readError = `${this.path} cannot be trusted: ${parsed}`; return false; }
-    this.file = parsed;
-    return true;
-  }
 
   /** What is in force, worked out from the log alone. Each ending ends only the record it names, and only of its kind. */
   state(): SafetyState {
