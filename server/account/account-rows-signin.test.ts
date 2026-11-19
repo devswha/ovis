@@ -9,6 +9,7 @@ import { accountDeviceId, signAccountRecord } from "../../shared/account-records
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { readFileSync } from "node:fs";
 import { AccountDeviceStore } from "./account-devices.ts";
+import { CatchUpGate } from "./catch-up-gate.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { AccountOrder } from "./account-order.ts";
 import { listNotices } from "./list-notices.ts";
@@ -50,7 +51,7 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-")), admits?: (key: s
     admitListedRows: write => devices.admitListedRows(write),
   });
   devices.attachAccountRows(rows);
-  return { devices, rows, clock, dir, evidence, journal };
+  return { devices, rows, clock, dir, evidence, journal, binding };
 }
 
 async function member(devices: DeviceStore): Promise<Key & { id: string }> {
@@ -337,5 +338,20 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     clock.now += 2 * 24 * 60 * 60_000;
     expect(devices.sessionRow(row!.id)).not.toBeNull();
     expect(rows.usedReport()).toEqual([{ key: phone.spki, day: new Date(clock.now).toISOString().slice(0, 10) }]);
+  });
+
+  test("T41, T53: a sayer whose own row still waits for the first whole read cannot end a hold", async () => {
+    const { devices, rows, clock, journal, binding } = pc();
+    const older = await member(devices);
+    const gate = new CatchUpGate(() => binding.binding()?.bind_id ?? null);
+    devices.attachCatchUp(gate);
+    const phone = await key();
+    clock.now += 2 * 60 * 60_000;
+    rows.commitList(listed(phone));
+    const [row] = rows.rows();
+    const notice = journal.entries().find((entry) => entry.kind === "admit" && entry.row === row!.id)!;
+    expect(devices.itsMe(older.id, notice.id)).toBe(false);
+    gate.wholeRead();
+    expect(devices.itsMe(older.id, notice.id)).toBe(true);
   });
 });
