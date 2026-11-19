@@ -2,7 +2,7 @@
  * The account snapshot a PC reads from the account service, and the account-joined rows a PC keeps
  * from it. Shapes and validators only: what a PC does with a snapshot is decided elsewhere.
  */
-import { AccountRecordError, isAccountKeyEncoding, isDeviceSafetyRecord, parseSafetyRecord, type BlockRecord, type DeviceLiftRecord, type SafetyRecord } from "./account-records.ts";
+import { AccountRecordError, accountDeviceId, isAccountKeyEncoding, isDeviceSafetyRecord, parseSafetyRecord, type BlockRecord, type DeviceLiftRecord, type SafetyRecord } from "./account-records.ts";
 
 /** Wire format of a snapshot page and of `account-devices.json`. */
 export const ACCOUNT_SNAPSHOT_V = 1;
@@ -213,8 +213,8 @@ export type AccountDevicesFile =
 export function parseAdmissionOrigin(value: unknown): AdmissionOrigin {
   const origin = object(value, ["from", "how", "by", "admit_no", "at"], "An origin");
   check(FROM.includes(origin.from as string) && HOW.includes(origin.how as string), "Invalid origin path");
-  // `pc` is a key confirmed on this PC's screen when it redeemed a code, digits or a QR
-  check(origin.from !== "pc" || ["code", "digits", "qr"].includes(origin.how as string), "Only a pairing at this PC is from pc");
+  // `pc` is a key confirm on this PC's screen: a code, digits or a QR redeemed there, a row confirmed there (T68), a replacement confirmed there (T72)
+  check(origin.from !== "pc" || ["code", "digits", "qr", "confirmed", "link"].includes(origin.how as string), "Only a key confirm at this PC is from pc");
   check((origin.from === "legacy") === (origin.how === "legacy"), "A legacy row is legacy both ways");
   check(origin.by === null || isAccountKeyEncoding(origin.by), "Invalid origin by");
   check(isOrder(origin.admit_no) && isIso(origin.at), "Invalid origin order");
@@ -233,10 +233,12 @@ export function parseAccountDevicesFile(value: unknown): AccountDevicesFile {
   const ids = new Set<unknown>();
   list(file.devices, "devices", ACCOUNT_ROWS_MAX, (entry) => {
     const row = object(entry, ROW_FIELDS, "A row");
-    check(typeof row.id === "string" && /^[0-9a-f]{16}$/.test(row.id) && !ids.has(row.id), "Invalid row id");
-    ids.add(row.id);
     check(isAccountKeyEncoding(row.key) && isOrder(row.no) && isLabel(row.label) && isIso(row.confirmed_at), "Invalid row");
-    parseAdmissionOrigin(row.origin);
+    // S21: the id is the key's accountDeviceId on this PC, and the list admitted it
+    check(row.id === accountDeviceId(file.server_id as string, row.key as string) && !ids.has(row.id), "Invalid row id");
+    ids.add(row.id);
+    const origin = parseAdmissionOrigin(row.origin);
+    check(origin.from === "remote" && origin.how === "list", "An account-joined row came in from the list");
     check(row.last_signin_day === null || isDay(row.last_signin_day), "Invalid last_signin_day");
     check(row.state === "hold" ? row.hold_until === null || isIso(row.hold_until) : (row.state === "live" || row.state === "expired") && row.hold_until === null, "Invalid state");
   });

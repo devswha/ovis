@@ -2,7 +2,7 @@
  * What an app and a PC say to each other about the account's devices: notices, block receipts, holds
  * and the recovery acts. Shapes and validators only, and nothing here is sent while the release flag is off.
  */
-import { AccountRecordError, parseSafetyRecord, type BlockRecord, type SafetyRecord } from "./account-records.ts";
+import { AccountRecordError, isAccountKeyEncoding, parseSafetyRecord, type BlockRecord, type SafetyRecord } from "./account-records.ts";
 
 /**
  * The release flag of step 2: unset or anything but `1` keeps every existing path. Read only through
@@ -185,7 +185,9 @@ export function parseRecoveryAction(value: unknown): RecoveryAction {
       case "list": case "revoke_all": return only();
       case "release": return only("rows") && ids(action.rows, ROW_ID);
       case "undo": return only("rows") && (action.rows === null || ids(action.rows, ROW_ID));
-      case "remove": return only("targets") && ids(action.targets, /^[A-Za-z0-9_-]{1,122}$/);
+      // a row id or an account key, nothing in between
+      case "remove": return only("targets") && Array.isArray(action.targets) && action.targets.length >= 1 && action.targets.length <= 64
+        && action.targets.every((target) => typeof target === "string" && (ROW_ID.test(target) || isAccountKeyEncoding(target)));
       case "lift": return only("blocks") && ids(action.blocks, HEX64);
       case "admit": return only("pending") && typeof action.pending === "string" && HEX32.test(action.pending);
       default: return false;
