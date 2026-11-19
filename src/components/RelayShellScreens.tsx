@@ -271,7 +271,8 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
           {!state.confirmed && <p className="relay-shell-copy">{t("If they match, approve this device on {name}.", { name: pc })}</p>}
           <div className="relay-step-cards">
             <div className="relay-step-card relay-step-number">
-              <p className="relay-shell-digits" aria-label={state.digits.split("").join(" ")}>{`${state.digits.slice(0, 3)} ${state.digits.slice(3)}`}</p>
+              {/* a typed comparison's digits are only on the PC's screen: the card keeps the 90 seconds line alone */}
+              {!state.typed && <p className="relay-shell-digits" aria-label={state.digits.split("").join(" ")}>{`${state.digits.slice(0, 3)} ${state.digits.slice(3)}`}</p>}
               {state.confirmed && <p className="relay-shell-detail">{t("Approve this device on {name} within 90 seconds to finish.", { name: pc })}</p>}
             </div>
           </div>
@@ -285,6 +286,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
             busyProvider={pairSignIn?.kind === "signing-in" ? (pairSignIn.provider ?? null) : null} failedProvider={pairSignIn?.kind === "signed-out" ? (pairSignIn.provider ?? null) : null}
             {...(accountProviders ? { providers: accountProviders } : {})} />
           <AgreementLine />
+          {failure.detail !== null && <p className="relay-shell-detail"><code>{failure.detail}</code></p>}
           {back && <div className="relay-shell-actions relay-shell-quiet">{back}</div>}
         </div>
       )}

@@ -311,7 +311,7 @@ describe("RelayShellScreens", () => {
       expect(html).toContain("This device joins Desk PC with your account&#x27;s key. The PC lists it under Settings → Devices and PCs, where it can be removed.");
       expect(html).toContain('<button type="button" class="btn btn-primary">Pair</button>');
       expect(html).not.toContain("a key of its own");
-      expect(html).not.toContain('<h1 class="relay-shell-title">Add Desk PC to your account?</h1>');
+      expect(html).not.toContain("Add Desk PC to your account?");
     });
 
     it("until the sign-in is read, claims neither, says it is checking and takes no confirmation", () => {

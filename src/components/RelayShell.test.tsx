@@ -356,6 +356,42 @@ describe("the dashboard", () => {
     const button = (label: string) => { const found = buttons(label); if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`); return found[0]!; };
     const rows = () => renderer!.root.findAll((node) => node.type === "tr" && node.props["data-pc-state"] !== undefined).map((row) => textOf(row.find((node) => node.props.className === "relay-pc-name-label")));
 
+    describe("a pairing's step frame", () => {
+      const offer = { v: 1 as const, server_id: EXPECTED, server_public_key: "k", relay: "wss://relay.example", name: "Desk" };
+      const backOf = (): ReactTestInstance[] => renderer!.root.findAll((node) => node.type === "button" && node.props.className === "relay-step-back");
+      const stepOf = (): unknown => renderer!.root.findAll((node) => node.type === "div" && node.props.className === "relay-step-progress")[0]?.props["data-step"] ?? null;
+
+      it("cancels the pairing from its round Back on the confirm, the comparison and the connection, each named for what it does", async () => {
+        const steps: [RelayShellProps["state"], string, number][] = [
+          [{ kind: "confirm", offer, account: "unlisted" }, "Back", 1],
+          [{ kind: "compare", name: "Desk", digits: "123456", confirmed: false }, "Cancel", 2],
+          [{ kind: "compare", name: "Desk", digits: "123456", confirmed: true }, "Cancel", 2],
+          [{ kind: "connecting", name: "Desk" }, "Cancel", 2],
+          [{ kind: "connecting", name: "Desk", approved: true }, "Cancel", 3],
+        ];
+        for (const [state, label, step] of steps) {
+          let cancelled = 0;
+          await mount({ ...props(state), onCancel: () => { cancelled++; } });
+          const back = backOf();
+          expect(back.map((button) => button.props["aria-label"])).toEqual([label]);
+          await act(async () => { back[0]!.props.onClick(); });
+          expect(cancelled).toBe(1);
+          expect(stepOf()).toBe(step);
+          await act(async () => { renderer!.unmount(); });
+        }
+      });
+
+      it("offers no Back once the PC is ready or the pairing failed, and draws the failure without a step", async () => {
+        await mount(props({ kind: "ready", name: "Desk", server_id: EXPECTED, enrollment: "local" }));
+        expect(backOf()).toEqual([]);
+        expect(stepOf()).toBe(3);
+        await act(async () => { renderer!.unmount(); });
+        await mount(props({ kind: "failed", failure: "pair-declined", name: "Desk", detail: null, server_id: EXPECTED }));
+        expect(backOf()).toEqual([]);
+        expect(stepOf()).toBeNull();
+      });
+    });
+
     describe("My machines at #my-machines", () => {
       const landmarks = () => renderer!.root.findAll((n) => n.type === "main").length;
       const machinesShown = () => renderer!.root.findAll((n) => typeof n.props.className === "string" && n.props.className.split(" ").includes("acct-stack")).length > 0;
@@ -704,5 +740,14 @@ describe("pairing with a typed code", () => {
     expect(html).toContain("Settings → Devices and PCs → Add a connection → Ovis relay");
     expect(html).not.toContain("older Ovis");
     expect(html).toContain("No PC shows this code");
+  });
+});
+
+describe("a pairing's step frame", () => {
+  it("shows a typed comparison's waiting card without digits, which only the PC holds", () => {
+    const html = render(props({ kind: "compare", name: "Desk", digits: "", confirmed: true, typed: true }));
+    expect(html).toContain("Approve on the PC if it shows the same number");
+    expect(html).not.toContain("relay-shell-digits");
+    expect(html).toContain("Approve this device on Desk within 90 seconds to finish.");
   });
 });
