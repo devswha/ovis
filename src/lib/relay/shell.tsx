@@ -56,13 +56,15 @@ function markLaunched(): void {
  * its page, or a reload lands on the front page and stays there. `signedIn`: the page a sign-in returned to, which
  * opens one once its sign-in is read, as the launch it continues would have.
  */
-function launchPc(devices: readonly { readonly server_id: string }[], opens: boolean, signedIn = false): string | null {
+function launchPc(devices: readonly { readonly server_id: string; readonly device_id: string | null }[], opens: boolean, signedIn = false): string | null {
   try {
     const first = sessionStorage.getItem(LAUNCHED) === null;
     sessionStorage.setItem(LAUNCHED, "1");
-    if (!(opens && (first || signedIn)) || devices.length === 0) return null;
+    // a row with no device id is a pairing that never finished: opening its page would ask to pair again
+    const paired = devices.filter((device) => device.device_id !== null);
+    if (!(opens && (first || signedIn)) || paired.length === 0) return null;
     const last = localStorage.getItem(LAST_PC);
-    return devices.find((device) => device.server_id === last)?.server_id ?? devices[0]?.server_id ?? null;
+    return paired.find((device) => device.server_id === last)?.server_id ?? paired[0]?.server_id ?? null;
   } catch { return null; }
 }
 

@@ -172,6 +172,8 @@ export function RelayShell(props: RelayShellProps) {
   const signInFirst = view === "sign-in";
   // a sign-out found while the QR dialog is open closes it: the sign-in stays the only screen, and a later sign-in opens no stale dialog
   if (addingPc && signInFirst) setAddingPc(false);
+  // a sign-in puts Start without signing in behind it: a later sign-out opens on the sign-in again
+  if (account?.kind === "signed-in" && signedOutView !== "sign-in") setSignedOutView("sign-in");
   const name = state.kind === "confirm" || state.kind === "code-compare" ? state.offer.name ?? null
     : state.kind === "list" || state.kind === "empty" || state.kind === "code-entry" || state.kind === "code-looking" ? null : state.name;
   const pc = name ?? t("this PC");

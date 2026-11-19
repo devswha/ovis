@@ -901,6 +901,15 @@ describe("the hosted shell's front page", () => {
       expect(rendered.length).toBeGreaterThan(0);
     });
 
+    it("opens only a finished pairing, never a row still waiting for one", async () => {
+      launch();
+      const went: string[] = [];
+      const [unfinished, done] = await pcs("a".repeat(32), "b".repeat(32));
+      localStorage.setItem("ovis-last-pc", "a".repeat(32));
+      await mountRelayShell(mountFor({ store: deviceStore([{ ...unfinished!, device_id: null }, done!]), navigate: (path) => { went.push(path); } }));
+      expect(went).toEqual([`/s/${"b".repeat(32)}/`]);
+    });
+
     it("opens the first saved PC when the one opened last is gone, and nothing with none saved", async () => {
       launch();
       localStorage.setItem("ovis-last-pc", "f".repeat(32));

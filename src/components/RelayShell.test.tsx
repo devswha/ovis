@@ -704,6 +704,16 @@ describe("the dashboard", () => {
       expect(button("Forget this PC")).toBeDefined();
     });
 
+    it("opens on the sign-in again after a sign-out that follows Start without signing in and a sign-in", async () => {
+      const signedOut = { ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none };
+      await mount(signedOut);
+      await act(async () => { button("Start without signing in").props.onClick(); });
+      expect(textOf(renderer!.root.findByType("h1"))).toBe("Add a PC");
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) })); });
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedOut) })); });
+      expect(textOf(renderer!.root.findByType("h1"))).toBe("Your PCs, anywhere. Sign in to your Ovis account");
+    });
+
     it("takes Start without signing in to Add a PC, which lists this device's own pairings by their pages, and Back to the sign-in", async () => {
       await mount({ ...props({ kind: "list", devices: [device(ids.desk, "p620", AP), device(ids.mac, "nuc", GLOBAL)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
       await act(async () => { button("Start without signing in").props.onClick(); });
