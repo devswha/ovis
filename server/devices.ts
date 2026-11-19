@@ -1306,6 +1306,8 @@ export class DeviceStore {
     try {
       const key = await crypto.subtle.importKey("spki", Buffer.from(publicKey, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
       const verified = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signed, message);
+      // a log that turned strict while the proof was checked refuses it too (S19)
+      if (this.failsClosed) return null;
       // the row went, or linked, while its signature was checked: the proof was for a row that is no more
       if (waiting !== undefined) return verified && this.provisional(deviceId) === waiting ? { id: waiting.id, label: waiting.label, role: "watch" } : null;
       // Authorization changes during WebCrypto invalidate the proof; a rename does not.
