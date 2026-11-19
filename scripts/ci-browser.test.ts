@@ -204,6 +204,7 @@ const MANUAL_BROWSER_SCRIPTS = [
   "scripts/reconnect-header-demo-regression.ts", // upstream's connection line in the header's crumb: this fork's header has tabs and no crumb
   "scripts/skill-activity-browser-qa.ts",
   "scripts/tab-agent-mark-demo-regression.ts", // upstream's agent logo in a header tab (.tab-strip-agent): this fork's tabs show the agent's friend in .tab-strip-faces
+  "scripts/terminal-arrows-core-regression.ts", // a real hc (OVIS_TEST_HC_BIN), which no browser lane installs
   "scripts/terminal-file-links-regression.ts",
   "scripts/update-browser-qa.ts", // a private Git remote and install (docs/app-updates.md)
   "scripts/windows-lens-browser-qa.ts",

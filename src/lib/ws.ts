@@ -871,6 +871,14 @@ export class HerdrSocket {
     return this.terminalHistory;
   }
 
+  /**
+   * Whether a plain arrow is typed as xterm encodes it (`terminal-modes`: the attach carries the program's modes),
+   * rather than named for the runtime to encode; false until the features come, and on herdr.
+   */
+  typesArrows(): boolean {
+    return this.features.has("terminal-modes");
+  }
+
   unwatch(paneId: string): void {
     if (this.watched.delete(paneId) && this.connected && this.features.has("watch")) {
       this.rawSend({ type: "unwatch", pane_id: paneId });
@@ -938,6 +946,11 @@ export class HerdrSocket {
   holdsSize(paneId: string): boolean {
     const state = this.attached.get(paneId);
     return state !== undefined && !state.keepSize;
+  }
+
+  /** Attached without sizing the pty: its grid is another device's, or the pane's own. */
+  keepsSize(paneId: string): boolean {
+    return this.attached.get(paneId)?.keepSize === true;
   }
 
   setPresence(active: boolean): void {

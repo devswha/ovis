@@ -221,7 +221,12 @@ Fast checks, Integration tests and both Browser regression jobs each run `bun ru
 commit: about 60 CPU seconds apiece on the P620. `run.sh --build-cache DIR --build-cache-writer LOGIN`
 lets the first of them build it and the others restore its `dist/` in a fraction of a second
 (`scripts/build-cache.ts`). Point it at RAM (`/dev/shm/ovis-build-cache`); `--build-cache-mb`
-(default 2048, about 50 builds) bounds it, least recently used first. Measured (four builds of one
+(default 2048, about 50 builds) bounds it, least recently used first. Under SELinux the launcher labels
+the cache and each slot's outbox `container_file_t` as it starts (new files keep their directory's
+label), or runs without the cache when it cannot. A label set this way lasts until the next
+`restorecon` or full relabel, so on such a host put the cache in a directory a `semanage fcontext`
+rule labels `container_file_t` (on disk it is read through the page cache, as fast as `/dev/shm`),
+and give the outboxes (`~/.local/state/ovis-ci-runner/build-outbox`) such a rule too. Measured (four builds of one
 commit, as one run's jobs do): 246-266 CPU s without it, 53-70 CPU s with it; four started at once
 build once.
 
@@ -569,7 +574,6 @@ the rules.
 | ci.yml | browser-main | HO ubuntu-24.04, else ROUTE linux | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only; actions/cache (Cache Playwright browser, hosted runners, off under hosted_only) |
 | ci.yml | browser-other | HO ubuntu-24.04, else ROUTE linux | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only; actions/cache (Cache Playwright browser, hosted runners, off under hosted_only) |
 | ci.yml | integration-browser | HO ubuntu-24.04, else LIGHT | yes under hosted_only; else no: self-hosted unless a fork PR | - | none |
-| cla.yml | cla | `ubuntu-24.04` | yes | actions, contents, pull-requests write (workflow) | none |
 | desktop.yml | build | matrix: ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2025 | yes | secrets MAC_NOTARY_KEY_P8, MAC_DEVELOPER_ID_P12, MAC_DEVELOPER_ID_P12_PASSWORD, MAC_NOTARY_KEY_ID, MAC_NOTARY_ISSUER, WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD | none |
 | desktop.yml | feed | `ubuntu-24.04` | yes | - | none |
 | desktop.yml | attach | `ubuntu-24.04` | yes | contents write | none |

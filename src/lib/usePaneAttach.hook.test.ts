@@ -23,7 +23,7 @@ class FakeSocket {
 
 const BEFORE = "w1:p1";
 const AFTER = "w1:p2";
-const COLORS = {} as TerminalRefitsDeps["terminalColors"];
+const COLORS = {} as TerminalRefitsDeps["colors"];
 
 describe("usePaneAttach with the inbox mode's list over the pane", () => {
   const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -70,7 +70,7 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     const shared = { activeRef: ref(false), autoSelected: false, coarseRef: ref(false), findOpenRef: ref(false), fitRef: ref(null), fittedRef: ref(nothing), fixedGridRef: ref(false), followCursorRef: ref(nothing), keyboardHoldsRef: ref(() => false), observeRef: ref(false), sharedGridRef: ref(null), socketRef: ref(client), termRef, chatViewRef: ref(false), fontSettledRef: ref(settled) };
     useTerminalRefits({
       ...shared, baseFontRef: ref(13), pinchingRef: ref(false), chatView: false, covered, follow: false, narrowFont: false, narrowFontFitted: ref(false),
-      terminalColors: COLORS, paneRef, peekRef: ref(null), shown: true, sizesPty: () => !coveredRef.current, terminalFontFamily: "", terminalFontSize: 13,
+      colors: COLORS, paneRef, peekRef: ref(null), shown: true, sizesPty: () => !coveredRef.current, terminalFontFamily: "", terminalFontSize: 13,
     });
     const attach: PaneAttachDeps = {
       ...shared, cached: false, watched: false, coveredRef, deferAttachRef: ref(() => false), draftPaneRef: ref(null), frameGateRef: ref({ reset: nothing }),

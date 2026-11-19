@@ -1266,7 +1266,7 @@ export function App() {
                         split={herdrSplit || paneSplit}
                         terminalWheelSpeed={settings.terminalWheelSpeed}
                         terminalFontFamily={settings.terminalFontFamily}
-                        terminalColors={resolvedEntry.terminal}
+                        colors={resolvedEntry.terminal}
                         onConnectionChange={active && itemActive ? (next, before) => { setConnected(next); setConnectedBefore(before); setReportedBy(`${slot}:${machineId}`); if (next) setOutputStopped(false); } : undefined}
                         onServerMessage={active && itemActive ? handleServerMessage : undefined}
                       />

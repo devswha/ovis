@@ -450,6 +450,18 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     expect(typedDraft("pi", screen("draft-multiline"))).toBeTrue();
     expect(inputRowState("pi", screen("draft-empty"))).toBe("ready");
     expect(typedDraft("pi", screen("draft-empty"))).toBeFalse();
+    // Left moves pi's cursor onto the `2`, which its editor then draws inverse: still typed text
+    const onCursor = readFileSync(join(FIXTURES, "pi/powerline-draft-typed-200.ansi"), "utf8").replace(" 2\u001b[0m\u001b[7m\u001b[0m", " \u001b[7m2\u001b[0m");
+    expect(typedDraft("pi", screenFromAnsi(onCursor))).toBeTrue();
+    // after the first prompt the extension draws it under the editor (`powerline-last-prompt`, on by default), as
+    // its renderLastPromptLines does
+    const lastPrompt = (name: string, rows: string): ScreenSnapshot => screenFromAnsi(`${readFileSync(join(FIXTURES, `pi/powerline-${name}-200.ansi`), "utf8").replace(/\n$/, "")}\n${rows}\n`);
+    const arrow = " \u001b[38;2;102;102;102m↳\u001b[0m \u001b[38;2;102;102;102mwhat does this repo do?\u001b[0m";
+    expect(inputRowState("pi", lastPrompt("draft-typed", arrow))).toBe("draft");
+    expect(typedDraft("pi", lastPrompt("draft-typed", arrow))).toBeTrue();
+    expect(inputRowState("pi", lastPrompt("draft-empty", arrow))).toBe("ready");
+    // anything else under the editor (its autocomplete list) still fails safe
+    expect(inputRowState("pi", lastPrompt("draft-typed", `   /model  Select model\n${arrow}`))).toBe("gone");
   });
 
   test("pi's editor holding a line typed with leading spaces is a draft to the send, still a dialog's row to the peek", () => {

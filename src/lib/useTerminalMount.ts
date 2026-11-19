@@ -42,7 +42,7 @@ import { visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import type { ShortcutOverrides } from "./shortcutBindings.ts";
 import { takeTypeAhead, type TypeAheadItem } from "./typeAhead.ts";
-import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_MS, VIEW_BUFFER_MAX, afterSwitch, dropViewChange, holdViews, inUse, connectedSockets, plainError, releaseViews, CONTROL_CHARACTER } from "./paneTerminalShared.ts";
+import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_MS, VIEW_BUFFER_MAX, afterSwitch, dropViewChange, holdViews, inUse, keepsCoreGrid as keptCoreGrid, takeKeptCoreGrid, connectedSockets, plainError, releaseViews, setTerminalTimeout, CONTROL_CHARACTER } from "./paneTerminalShared.ts";
 import { copyOnSelect, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
 import { captureForGhostty } from "./ghostty/capture.ts";
 import { holdForPictures } from "./terminalImages.ts";
@@ -54,7 +54,7 @@ import { holdForPictures } from "./terminalImages.ts";
 declare const __HERDR_TEST_HOOKS__: boolean;
 
 /** `automatic`: xterm made the input itself (a query's answer), nobody typed it */
-type Typed = { input: string; keys: string[] | null; chord: boolean; stop: boolean; secret: boolean; automatic?: boolean };
+type Typed = { input: string; keys: string[] | null; chord: boolean; stop: boolean; secret: boolean; arrowModeEpoch?: number | null; automatic?: boolean };
 
 export interface TerminalMountDeps {
   activeRef: RefObject<boolean>;
@@ -179,7 +179,7 @@ export interface TerminalMountDeps {
   tRef: RefObject<Translate>;
   termRef: RefObject<Terminal | null>;
   terminalFontSize: number;
-  terminalColors: TerminalColors;
+  colors: TerminalColors;
   updateSettings: (patch: Partial<Settings>) => void;
   uploadFileRef: RefObject<(pane: string, image: Blob) => Promise<string>>;
   /** set here: files picked from the key bar's Attach files key, stored and pasted as a drop's are, while
@@ -190,7 +190,7 @@ export interface TerminalMountDeps {
 }
 
 export function useTerminalMount(deps: TerminalMountDeps): void {
-  const { setTerminalHistory, picturesChoiceRef, typeAheadRef, activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, codexDragRef, outputTargetRef,  paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, coveredRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, terminalColors, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef, readsDragsRef, setChatLive } = deps;
+  const { setTerminalHistory, picturesChoiceRef, typeAheadRef, activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, codexDragRef, outputTargetRef,  paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, coveredRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, colors, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef, readsDragsRef, setChatLive } = deps;
 
     // Where this terminal is: its pane, and whether it is active, presented, shown and not the chat view.
     // Counted on every commit that changes it: an explicit copy still waiting for herdr's text is
@@ -234,7 +234,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         allowProposedApi: true,
         fontSize: terminalFontSize,
         fontFamily: measurableFontStack(openingFontStack(TERMINAL_FONT_STACK)),
-        theme: { ...terminalColors },
+        theme: { ...colors },
         // a program's own colors suit one background (Claude Code's question titles are #ffffff, near
         // 1:1 on a light palette): xterm moves a foreground under 4.5:1 toward black or white. Dim text
         // needs half that, and box, block and powerline glyphs keep their color.
@@ -412,7 +412,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       fitRef.current = fit;
 
       // A mirror has no cursor; xterm's own rests on the last row with text, which serves the same.
-      const adopted = (): boolean => observeRef.current || fixedGridRef.current || followRef.current;
+      // A page attached without sizing a herdr-core pty (away when it attached, or let go of the size since) draws it in
+      // the pty's grid: in its own, a wrapped row or a taller screen put each redraw in rows the program never drew, and
+      // the old frames stayed on screen. A grid held under the soft keyboard is the keyboard's to give back (keyboardHolds).
+      const keepsCoreGrid = (): boolean => !keyboardHeld && keptCoreGrid(socketRef.current, paneRef.current);
+      const adopted = (): boolean => observeRef.current || fixedGridRef.current || followRef.current || keepsCoreGrid();
       const scrollableMirror = (): boolean => fixedGridRef.current && !observeRef.current && !followRef.current;
       // The soft keyboard takes the bottom of the screen, not the pane: a fit to what is left above
       // it would size the shared pty to that strip, and every other viewer of the pane, herdr's own
@@ -439,7 +443,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       const wideOwner = {};
       const fold = createTerminalFold(term, host, {
-        foreign: () => (fixedGridRef.current || observeRef.current || keyboardHeld) && !followRef.current,
+        foreign: () => (fixedGridRef.current || observeRef.current || keyboardHeld || keepsCoreGrid()) && !followRef.current,
         wrap: () => mirrorWrapRef.current,
         onWide: (wide) => {
           const current = paneRef.current;
@@ -449,7 +453,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           if (!panned) followFold();
           syncInputViewport();
         },
-        onTap: () => { if (activeRef.current && !findOpenRef.current) term.focus(); },
+        onTap: () => {
+          // folded rows are outside xterm's element, where a press takes the pane back (reclaim)
+          reassertIfStaleRef.current();
+          if (activeRef.current && !findOpenRef.current) term.focus();
+        },
         onLink: (target, event) => {
           if (!linkPressed(event)) return false;
           if ("url" in target) {
@@ -879,13 +887,18 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // bridge marked `replay` (the screen from before this attach) is presentation history, and a
       // copy request in it was answered when it was new. The flag holds from the frame's write
       // until its callback; xterm's own parser state says whether a replayed OSC is still open.
-      const outputFrames: { data: string; replay: boolean; view?: boolean; done?: () => void; acknowledge?: () => void; seq: number }[] = [];
+      const outputFrames: { data: string; replay: boolean; view?: boolean; done?: () => void; acknowledge?: () => void; mode?: { pane: string; generation: number; lifetime: number }; seq: number }[] = [];
       let writingOutput = false;
       let holdingForPictures = false;
       let parsingReplay = false;
       // a hidden tab's view parsed on its return (resume): what it drew is history, and a query in it
       // was answered when it was new, so xterm's replies to it never reach the pane (queryReplies below)
       let parsingView = false;
+      let parsingCurrentPtyOutput = false;
+      let parsingModeEpoch = 0;
+      let parsingModePane: string | null = null;
+      let parsingModeGeneration = -1;
+      let parsingModeLifetime = -1;
       // Which output the frames belong to: a pane switch or reconnect starts new output, and the
       // frame xterm is parsing then is the old output's (`parsingOwner`), which copies nothing.
       let outputOwner = 0;
@@ -941,6 +954,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const frame = outputFrames.shift();
         if (!frame || disposed) {
           writingOutput = false;
+          if (!disposed && arrowModeCandidate === arrowModeEpoch) arrowModesReady = true;
           return;
         }
         writingOutput = true;
@@ -948,9 +962,17 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         parsingView = frame.view === true;
         parsingFrame = frame.seq;
         const owner = parsingOwner = outputOwner;
+        const mode = frame.mode;
+        parsingCurrentPtyOutput = mode !== undefined && mode.pane === paneRef.current
+          && mode.generation === outputGeneration && mode.lifetime === outputLifetime && recoveringPane !== mode.pane;
+        parsingModeEpoch = arrowModeEpoch;
+        parsingModePane = mode?.pane ?? null;
+        parsingModeGeneration = mode?.generation ?? -1;
+        parsingModeLifetime = mode?.lifetime ?? -1;
         term.write(frame.data, () => {
           parsingReplay = false;
           parsingView = false;
+          parsingCurrentPtyOutput = false;
           if (!disposed) {
             if (frame.replay || owner !== outputOwner) replayOscOpen = oscMayCopy();
             else if (replayOscOpen && !term.oscStringState().open) replayOscOpen = false;
@@ -969,8 +991,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         frame.acknowledge = undefined;
         acknowledge?.();
       };
-      const writeOutput = (data: string, replay = false, done?: () => void, view = false, acknowledge?: () => void): void => {
-        const frame = { data, replay, view, done, acknowledge, seq: ++framesReceived };
+      const writeOutput = (data: string, replay = false, done?: () => void, view = false, acknowledge?: () => void, mode?: { pane: string; generation: number; lifetime: number }): void => {
+        const frame = { data, replay, view, done, acknowledge, mode, seq: ++framesReceived };
         outputFrames.push(frame);
         if (holdingForPictures) acknowledgeFrame(frame);
         if (!writingOutput) writeNextOutput();
@@ -995,6 +1017,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       const retireOutput = (): void => {
         outputOwner++;
+        invalidateArrowModes();
         outputFrames.length = 0;
         cancelCopy();
         if (recoveringPane !== paneRef.current) endRecovery();
@@ -1018,7 +1041,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           write(data, () => { inFlight--; callback?.(); });
         };
         Object.assign(host, { outputProbe: () => ({ ...term.oscStringState(), parsingReplay, replayOscOpen, retired: writingOutput && parsingOwner !== outputOwner, queued: outputFrames.length, inFlight, peakInFlight, writes, written, frameSettled: frameGateRef.current.current,
-          history: { scrollback: term.options.scrollback ?? 0, length: term.buffer.active.length, viewportY: term.buffer.active.viewportY, baseY: term.buffer.active.baseY } }) });
+          history: { scrollback: term.options.scrollback ?? 0, length: term.buffer.active.length, viewportY: term.buffer.active.viewportY, baseY: term.buffer.active.baseY },
+          grid: { cols: term.cols, rows: term.rows } }) });
       }
 
       // OSC 52: the pane program asked the terminal to set the clipboard - the pty
@@ -1063,6 +1087,21 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         return false;
       });
       const modifyOtherKeysSet = modifyOtherKeys("m");
+
+      // xterm's public mode flags start at defaults, which are not proof of the attached program's
+      // current state. Witness only explicit DECCKM set/reset sequences in this current pty parse.
+      const arrowModeWitnesses = (["h", "l"] as const).map((final) => term.parser.registerCsiHandler({ prefix: "?", final }, (params) => {
+        const setsCursorMode = params.some((param) => param === 1);
+        if (setsCursorMode && parsingCurrentPtyOutput && parsingOwner === outputOwner && parsingModeEpoch === arrowModeEpoch
+          && parsingModePane === paneRef.current && parsingModeGeneration === outputGeneration && parsingModeLifetime === outputLifetime
+          && recoveringPane !== parsingModePane) {
+          arrowModeEpoch++;
+          parsingModeEpoch = arrowModeEpoch;
+          arrowModesReady = false;
+          arrowModeCandidate = arrowModeEpoch;
+        }
+        return false;
+      }));
       const modifyOtherKeysOff = modifyOtherKeys("n");
 
       const session = machineSessions?.get(machineId) ?? new MachineSession(machineId);
@@ -1110,6 +1149,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       ghosttyFaintObserver.observe(host, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] });
       setConnectedBefore(connectedSockets.has(socket));
       let outputGeneration = 0;
+      // A raw arrow is safe only after this attachment's output has finished parsing in xterm.
+      // Capture this on the Typed item too: input waiting for an attach may flush after the first paint.
+      let arrowModesReady = false;
+      let arrowModeEpoch = 0;
+      // A witness becomes sendable only after the ordered output queue has drained.
+      let arrowModeCandidate: number | null = null;
+      const invalidateArrowModes = (): void => { arrowModesReady = false; arrowModeCandidate = null; arrowModeEpoch++; };
       let touchWheelDispatching = false;
       // Bumped by readiness receipts: revokes only the proof that queued output is current, never
       // the parse itself (a masked prompt must still keep typing out of every draft).
@@ -1183,7 +1229,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             // and a draft held for this pane (a late attach held what came first) takes what follows it
             const secret = secretRef.current !== null;
             const arrow = item.arrow !== undefined ? terminalChord(item.arrow, NO_STICKY_MODIFIERS) : null;
-            const typed: Typed = { input: item.input, keys: arrow !== null ? [arrow] : null, chord: false, stop: false, secret };
+            const typed: Typed = { input: item.input, keys: arrow !== null ? [arrow] : null, chord: false, stop: false, secret, ...(arrow !== null ? { arrowModeEpoch: null } : {}) };
             if (held || draftHeldForRef.current === pane) retainTyped(pane, typed, secret);
             else if (!secret && resumeInput !== null && resumeInput.pane === pane) resumeInput.items.push(typed);
             else if (paneRef.current === pane) sendTyped(pane, typed);
@@ -1281,6 +1327,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           && (message.pane_id === undefined || message.pane_id === resumeInput.pane)) failResume();
         if (message.type === "input-ready" || message.type === "output-recovering") {
           if (message.type === "output-recovering" || message.ready === false) {
+            invalidateArrowModes();
             recoveringPane = message.pane_id;
             joinReplay = message.type === "output-recovering";
             rejoin = false;
@@ -1290,6 +1337,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           } else if (recoveringPane === message.pane_id) {
             // Recovery revokes parses queued before this receipt too. The new stream, not
             // input permission (which observers never have), proves the screen is current.
+            invalidateArrowModes();
             endRecovery();
             outputLifetime++;
           }
@@ -1303,10 +1351,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           if (message.replay === true && recoveringPane === owner) {
             if (joinReplay) joinReplay = false;
             else if (rejoin) {
+              invalidateArrowModes();
               endRecovery();
               outputLifetime++;
             }
           }
+      // A raw arrow is safe only after this attachment has parsed an explicit DECCKM set/reset.
+          // Suspend raw sends while these bytes wait for xterm. Keep an established mode witness:
+          // ordinary output does not change DECCKM unless its parsed CSI explicitly does so.
+          arrowModesReady = false;
           const generation = outputGeneration;
           const lifetime = outputLifetime;
           const target = outputTargetRef.current;
@@ -1343,8 +1396,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
               showSecret(owner, prompt);
             }
             term.options.disableStdin = observeRef.current || heldRef.current;
-            if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && recoveringPane !== owner && gridMatches())) onInputRowFrameRef.current();
-          }, false, acknowledge);
+            if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && recoveringPane !== owner && gridMatches())) {
+              onInputRowFrameRef.current();
+              if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__ && stamp.synchronized && message.flow) {
+                // The write callback has parsed the complete synchronized update in this xterm grid.
+                host.dispatchEvent(new CustomEvent("ovis:test-terminal-frame", { bubbles: true,
+                  detail: { pane: owner, cols: term.cols, rows: term.rows, replay: message.replay === true, stream: message.flow.stream_id } }));
+              }
+            }
+          }, false, acknowledge, { pane: owner, generation, lifetime });
         } else if (message.type === "watch-data") {
           if (message.pane_id !== paneRef.current || !releasedRef.current || !watchingRef.current) return;
           if (!presentedRef.current) {
@@ -1407,7 +1467,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           followCursor();
         } else if (message.type === "pane-geometry") {
           // observe clients adopt the pty's grid; interact clients drive it and ignore this,
-          // unless the grid is fixed: then nobody here drives it
+          // unless the grid is fixed (nobody here drives it) or a herdr-core pty is kept at another size
           if (message.pane_id !== paneRef.current) return;
           if (message.fixed) {
             fixedGridRef.current = true;
@@ -1419,7 +1479,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           sharedGridRef.current = { cols: message.cols, rows: message.rows };
           // the pty took a new size: herdr may draw the old screen reflowed before the agent redraws (lib/inputRow.ts FrameGate)
           if (!message.fixed && before !== null && (before.cols !== message.cols || before.rows !== message.rows)) frameGateRef.current.reflowed();
-          if (!observeRef.current && !fixedGridRef.current && !followRef.current && !chatViewRef.current) {
+          if (!adopted() && !chatViewRef.current) {
             if (!keyboardHeld) return;
             heldForce = true;
           }
@@ -1435,6 +1495,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           if (message.code === "attach_held") {
             if (message.pane_id !== undefined && message.pane_id !== paneRef.current) return;
             // not an end: the server attaches as soon as the other bridge lets go
+            invalidateArrowModes();
             setHeld(true);
             setOutputReady(false);
             term.options.disableStdin = true;
@@ -1443,6 +1504,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
           if (message.code === "attach_failed") {
             if (message.pane_id !== undefined && message.pane_id !== paneRef.current) return;
+            invalidateArrowModes();
             setOutputError(t("herdr could not be started on the server, so this terminal cannot attach. Put herdr on the server's PATH or set OVIS_HERDR_BIN to its full path."));
             setEnded(true);
             term.options.disableStdin = true;
@@ -1451,12 +1513,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
           if (message.code === "terminal_unsupported") {
             if (message.pane_id !== undefined && message.pane_id !== paneRef.current) return;
+            invalidateArrowModes();
             setUnsupported(true);
             term.options.disableStdin = true;
             setConnected(socket.connected);
             return;
           }
           if (message.code === "output_stalled" || message.code === "attach_conflict") {
+            invalidateArrowModes();
             if (message.code === "output_stalled") stalledRef.current = true;
             setOutputError(message.message);
             setEnded(true);
@@ -1581,7 +1645,18 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       host.addEventListener("keydown", onCommandArrow);
       // a key, a chord or text for the pane: sent now, or, when the pane cannot take it, told or held for review
       const sendTyped = (current: string, typed: Typed): void => {
-        if (typed.keys !== null && socket.sendKeys(current, typed.keys)) return;
+        // xterm encodes an arrow from its parsed mode, so only one encoded after this attachment's output
+        // parsed may go as text. Logical type-ahead arrows and keys queued before that fence stay named.
+        const rawArrow = typed.arrowModeEpoch !== undefined && typed.arrowModeEpoch !== null
+          && typed.arrowModeEpoch === arrowModeEpoch && arrowModesReady && !writingOutput && outputFrames.length === 0 && socket.typesArrows();
+        if (typed.keys !== null && (typed.chord || !rawArrow)) {
+          if (socket.sendKeys(current, typed.keys)) return;
+          // A named arrow that could not be sent must never fall through as its possibly stale CSI bytes.
+          if (typed.arrowModeEpoch !== undefined) {
+            retainTyped(current, typed, false);
+            return;
+          }
+        }
         if (!typed.chord && !holdPendingTextRef.current && socket.sendInput(current, typed.input, typed.stop, typed.automatic === true, typed.secret)) return;
         retainTyped(current, typed, false);
       };
@@ -1685,10 +1760,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // herdr's attach stream never tells xterm that the program asked for application cursor
         // keys (DECCKM), so xterm's `ESC [ A` misses in less, git log and other full-screen
         // programs. herdr encodes a named key in the program's own mode (#621). A key the socket
-        // cannot take now goes the way typing does below, as an arrow always did.
+        // cannot take now goes the way typing does below, as an arrow always did. hc's attach does
+        // tell xterm, and there sendTyped types the arrow as xterm encoded it.
         const arrow = chord === null && !pasting && !composingRef.current && !compositionCommitPendingRef.current && key?.startsWith("Arrow")
           ? terminalChord(key, NO_STICKY_MODIFIERS) : null;
-        const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey && input === "\u001b", secret, ...(automatic ? { automatic } : {}) };
+        const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey && input === "\u001b", secret,
+          ...(arrow !== null ? { arrowModeEpoch: arrowModesReady ? arrowModeEpoch : null } : {}), ...(automatic ? { automatic } : {}) };
         adoptTypeAhead(current);
         // typed into a tab taking its pane back from idleness: it waits for the new attach (never a password)
         if (resumeInput !== null && resumeInput.pane !== current) takeResume();
@@ -1772,7 +1849,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const observer = new ResizeObserver(() => {
         syncInputViewport();
         if (resizeTimer !== null) window.clearTimeout(resizeTimer);
-        resizeTimer = window.setTimeout(() => {
+        resizeTimer = setTerminalTimeout(() => {
           resizeTimer = null;
           // the grid belongs to the pty while observing, and to herdr when fixed: only the view moves
           // (a soft keyboard opening must not leave the prompt under it)
@@ -2243,6 +2320,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           promptUnknownFor = current;
         }
         const generation = ++outputGeneration;
+        invalidateArrowModes();
         endRecovery();
         // Reset in stream order: synchronous reset would let old queued writes draw afterward.
         // A frame the old stream left open is not the new one's
@@ -2289,7 +2367,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (cachedRef.current) { release(); return; }
         const current = paneRef.current;
         if (current && !observeRef.current && !fixedGridRef.current) socket.keepSize(current, document.visibilityState === "hidden");
-        if (releaseAwayRef.current && releaseTimer === null && !releasedRef.current) releaseTimer = window.setTimeout(() => {
+        if (!keyboardHeld && takeKeptCoreGrid(term, socket, current, sharedGridRef.current)) followCursorRef.current();
+        if (releaseAwayRef.current && releaseTimer === null && !releasedRef.current) releaseTimer = setTerminalTimeout(() => {
           if (paneRef.current === current) release();
         }, RELEASE_AFTER_MS);
         if (hiddenOnTouch()) release();
@@ -2368,7 +2447,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
         const shared = sharedGridRef.current;
         if (!shared || releasedRef.current || !inUse()) return;
-        if (shared.cols !== term.cols || shared.rows !== term.rows) refit();
+        if ((keepsCoreGrid() && sizesPty()) || shared.cols !== term.cols || shared.rows !== term.rows) refit();
       };
       reassertIfStaleRef.current = reassertIfStale;
       const reclaim = (event: Event): void => {
@@ -2483,11 +2562,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         editor?.removeEventListener("input", noteRefusedText, true);
         outputFrames.length = 0;
         parsingReplay = false;
+        parsingCurrentPtyOutput = false;
         replayOscOpen = false;
         retireOutputRef.current = () => {};
         osc52.dispose();
         cancelCopy();
         for (const handler of queryReplies) handler.dispose();
+        for (const handler of arrowModeWitnesses) handler.dispose();
         osc8.dispose();
         modifyOtherKeysSet.dispose();
         modifyOtherKeysOff.dispose();
