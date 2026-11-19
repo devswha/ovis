@@ -309,6 +309,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem(`ovis:pc-collapsed:${machine.id}`) === "1"; } catch { return false; } });
   const [menu, setMenu] = useState<HTMLElement | null>(null);
   const manageButton = useRef<HTMLButtonElement>(null);
+  const titleButton = useRef<HTMLButtonElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(machine.name);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -425,14 +426,14 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     {!headerless && <header className={`machine-header${compact ? " is-compact" : ""}`}>
       {renaming
         ? <div className="machine-title">{titleBody}</div>
-        : <button type="button" className={`machine-title${current ? " is-current" : ""}`} aria-expanded={!folded} aria-label={foldLabel} title={machine.name} aria-current={current ? "true" : undefined} onClick={toggle}>{titleBody}</button>}
+        : <button ref={titleButton} type="button" className={`machine-title${current ? " is-current" : ""}`} aria-expanded={!folded} aria-label={foldLabel} title={machine.name} aria-current={current ? "true" : undefined} onClick={toggle}>{titleBody}</button>}
       {online && agentCount > 0 && <SidebarCount className="machine-agent-count" n={agentCount} words={agentCount === 1 ? t("1 agent") : t("{n} agents", { n: agentCount })} tooltip={false} />}
       {machine.kind !== "local" && <button ref={manageButton} type="button" className="sidebar-row-action machine-manage" aria-label={t("Manage {name}", { name: machine.name })} title={t("Manage PC")} aria-haspopup={sheet ? "dialog" : "menu"} aria-expanded={menu !== null} onClick={(event) => setMenu(menu === null ? event.currentTarget : null)}><SlidersHorizontal aria-hidden="true" /></button>}
       <button className="sidebar-row-action machine-toggle" tabIndex={-1} aria-hidden="true" aria-expanded={!folded} aria-label={foldLabel} title={foldLabel} onClick={toggle}>{folded ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
       <button className="sidebar-row-action machine-new" disabled={!canCreate} aria-label={t("New workspace on {name}", { name: machine.name })} title={createTitle} onClick={() => props.onNew(machine.id)}><Plus aria-hidden="true" /></button>
     </header>}
     {noticed && <MachineActionNotice machine={machine} onSetup={props.onSetup} />}
-    {away !== null ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} onCheck={recheck.check} />
+    {away !== null ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} onCheck={recheck.check} returnFocus={() => titleButton.current} />
     : <p className={`machine-state is-${machine.state}${online || stateWord === null ? " visually-hidden" : ""}`} role={machine.state === "error" ? "alert" : "status"} title={noticed || machine.error === null ? undefined : machineErrorText(machine.error, t)}>
       <span className="machine-state-word">{stateWord}</span>
       {!noticed && machine.error && <span className="machine-state-detail">{sshWords ?? machineErrorText(machine.error, t)}</span>}

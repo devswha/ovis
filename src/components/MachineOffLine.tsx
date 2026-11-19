@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n.ts";
 import { outOfReachWord } from "./relayPcState.tsx";
 import "./Machines.css";
@@ -35,13 +35,18 @@ export function useRecheck(key: string, run: () => void): { checking: boolean; c
  * account's PCs list and Needs you say the same, relayPcState.tsx). `off`: nothing answered for the PC;
  * `unreachable`: what stands between this server and the PC (the relay) did not answer, so the PC may be on.
  */
-export function MachineOffLine({ state, reason, title, checking, onCheck }: { state: "off" | "unreachable"; reason: string | null; title?: string; checking: boolean; onCheck(): void }) {
+export function MachineOffLine({ state, reason, title, checking, onCheck, returnFocus }: { state: "off" | "unreachable"; reason: string | null; title?: string; checking: boolean; onCheck(): void; returnFocus?: () => HTMLElement | null }) {
   const t = useT();
+  const button = useRef<HTMLButtonElement>(null);
+  const focusBack = useRef(returnFocus);
+  focusBack.current = returnFocus;
+  // the PC answering takes this row away: a focused Check again hands the focus on while it is still in the page
+  useLayoutEffect(() => () => { if (document.activeElement === button.current) focusBack.current?.()?.focus({ preventScroll: true }); }, []);
   return <div className="machine-off">
     <p className="machine-state is-off" role="status" title={title}>
       <span className="machine-state-word">{state === "off" ? t("Switched off") : outOfReachWord("unreachable", t)}</span>
       {reason !== null && <span className="machine-state-detail">{reason}</span>}
     </p>
-    <button type="button" className="btn machine-recheck" aria-disabled={checking || undefined} aria-busy={checking || undefined} onClick={() => { if (!checking) onCheck(); }}>{t(checking ? "Checking…" : "Check again")}</button>
+    <button ref={button} type="button" className="btn machine-recheck" aria-disabled={checking || undefined} aria-busy={checking || undefined} onClick={() => { if (!checking) onCheck(); }}>{t(checking ? "Checking…" : "Check again")}</button>
   </div>;
 }
