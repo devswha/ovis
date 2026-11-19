@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { exportAccountKey } from "../../shared/account-records.ts";
+import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
 import { DeviceStore } from "../devices.ts";
 import { AccountDeviceStore } from "./account-devices.ts";
 import { DeviceJournal } from "./device-journal.ts";
@@ -86,5 +86,35 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     expect(closed).toEqual([row!.id]);
     expect(devices.has(row!.id)).toBe(false);
     expect(await signIn(devices, row!.id, phone)).toBeNull();
+  });
+
+  test("T64: a block of an account-joined key ends its row and closes the sessions of the account rows it freezes, in the apply turn", async () => {
+    const { devices, rows } = pc();
+    const signer = await member(devices);
+    const [target, newer] = [await key(), await key()];
+    rows.commitList(listed(target, newer));
+    const [targetRow, newerRow] = rows.rows();
+    const closed: string[] = [];
+    for (const row of [targetRow!, newerRow!]) devices.onRevoke(row.id, () => { closed.push(row.id); });
+    devices.onRevoke(signer.id, () => { closed.push(signer.id); });
+    const record = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.spki, target_no: 10, signer: signer.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, signer.keys.privateKey) as BlockRecord;
+    expect(await devices.applyBlock(record, "handed")).toMatchObject({ outcome: "applied" });
+    expect(closed.sort()).toEqual([targetRow!.id, newerRow!.id].sort());
+    expect(rows.row(targetRow!.id)).toBeNull();
+    expect(rows.row(newerRow!.id)).not.toBeNull();
+    expect(devices.sessionRow(newerRow!.id)).toBeNull();
+  });
+
+  test("P21: an account-joined row signs as a member, and every row of the target, in both stores, must have joined after it", async () => {
+    const { devices, rows } = pc();
+    await member(devices);
+    const [signer, target] = [await key(), await key()];
+    rows.commitList(listed(signer, target));
+    const late = await member(devices);
+    const block = (by: Key, of: string) => signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: of, target_no: 9, signer: by.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, by.keys.privateKey) as Promise<BlockRecord>;
+    // the devices.json row that joined after both account rows cannot block the older account row
+    expect(await devices.applyBlock(await block(late, signer.spki), "handed")).toMatchObject({ outcome: "refused", reason: "signer_not_older" });
+    // the older account row can block the newer one
+    expect(await devices.applyBlock(await block(signer, target.spki), "handed")).toMatchObject({ outcome: "applied" });
   });
 });
