@@ -13,7 +13,8 @@ import { deviceOs } from "../lib/phone.ts";
 
 /** The account as this list uses it: its PCs that a device can pair with (key and relay from the directory), and the admission that vouches for this PC. */
 export interface AccountPcsSource {
-  list(): Promise<readonly AccountPcEntry[] | null>;
+  /** the account's PCs with a key and relay to pair with, and the account they were read under; null when this page is not signed in */
+  list(): Promise<{ account: string; pcs: readonly AccountPcEntry[] } | null>;
   /** the account this page is signed in to; null when it is not */
   account(): Promise<string | null>;
   /** says, under the sign-in the list was read with, that this PC's server waits at `serverId` with `key` */
@@ -32,7 +33,8 @@ export function signedInAccount(): AccountPcsSource {
       const session = await service.session();
       if (session === undefined) return null;
       bound = service.forSignIn(session);
-      return myPcs(await bound.listPcs(), [], { now: Date.now() }).flatMap((pc) => pc.join === undefined ? [] : [{ server_id: pc.server_id, name: pc.name, ...pc.join }]);
+      const pcs = myPcs(await bound.listPcs(), [], { now: Date.now() }).flatMap((pc) => pc.join === undefined ? [] : [{ server_id: pc.server_id, name: pc.name, ...pc.join }]);
+      return { account: session.account, pcs };
     },
     async admit(serverId, label, key) {
       if (bound === null) throw new Error("Not signed in");
@@ -57,17 +59,19 @@ export interface AccountPcs {
   failure: { server_id: string; message: string } | null;
   add(pc: AccountPcEntry): Promise<void>;
   cancel(): void;
-  /** asks that PC again whether it would pair (Check again on one that did not answer) */
-  recheck(pc: AccountPcEntry): void;
+  /** asks that PC again whether it would pair (Check again on one that did not answer); rejects when it could not be asked */
+  recheck(pc: AccountPcEntry): Promise<void>;
 }
 
 /**
  * The account's other PCs, read once `enabled`: each not in this app yet is asked on its own whether it would pair, so a
  * PC slow to answer (offline) holds no other row on Checking…. Add has this PC's server pair with it through the relay
  * once a member of the account approves it on another device (docs/account.md, "Adding a PC of your account"), then
- * hands the new PC to `onAdded`.
+ * hands the new PC to `onAdded`. With `expect`, only that account's PCs are kept, and a press asks nothing once this page
+ * is signed in to another account or none. Nothing is read until this PC's own server id is known, so it never lists
+ * itself; `enabled` going false ends a pairing under way.
  */
-export function useAccountPcs({ machines, source, enabled = true, onAdded }: { machines: readonly Machine[]; source?: AccountPcsSource; enabled?: boolean; onAdded: (machine: Machine) => void }): AccountPcs {
+export function useAccountPcs({ machines, source, enabled = true, expect, onAdded }: { machines: readonly Machine[]; source?: AccountPcsSource; enabled?: boolean; expect?: string; onAdded: (machine: Machine) => void }): AccountPcs {
   const t = useT();
   const account = useRef<AccountPcsSource | null>(null);
   account.current ??= source ?? signedInAccount();
@@ -78,19 +82,28 @@ export function useAccountPcs({ machines, source, enabled = true, onAdded }: { m
   const own = machines.find((machine) => machine.kind === "local")?.server_id;
   const added = (serverId: string): Machine | undefined => machines.find((machine) => machine.kind !== "local" && (machine.relay?.server_id ?? machine.server_id) === serverId);
   const listed = useRef({ asked: new Set<string>() });
+  // closing the list cancels a comparison under way: that PC's server ends it, and nothing is kept
+  const running = useRef<AbortController | null>(null);
   useEffect(() => {
-    if (!enabled) { setPcs(null); return; }
+    if (!enabled) {
+      running.current?.abort();
+      setPairing(null);
+      setPcs(null);
+      return;
+    }
+    if (own === undefined) return;
     let live = true;
     account.current!.list().then((read) => {
       if (!live || read === null) return;
+      if (expect !== undefined && read.account !== expect) { setPcs(null); return; }
       listed.current = { asked: new Set() };
-      setPcs(read.filter((pc) => pc.server_id !== own));
+      setPcs(read.pcs.filter((pc) => pc.server_id !== own));
     }).catch((error: unknown) => {
       console.warn("Ovis: the account's PCs could not be read", error instanceof Error ? error.name : error);
       if (live) setPcs(null);
     });
     return () => { live = false; };
-  }, [own, enabled]);
+  }, [own, enabled, expect]);
   const check = (pc: AccountPcEntry, round: { asked: Set<string> }): void => {
     round.asked.add(pc.server_id);
     checkAccountPcs([pc]).then(({ pcs: [checked] }) => {
@@ -112,9 +125,9 @@ export function useAccountPcs({ machines, source, enabled = true, onAdded }: { m
     for (const pc of pcs) if (added(pc.server_id) === undefined && !round.asked.has(pc.server_id)) check(pc, round);
   }, [pcs, machines]);
   useEffect(() => () => { listed.current = { asked: new Set() }; }, []);
-  // closing the list cancels a comparison under way: that PC's server ends it, and nothing is kept
-  const running = useRef<AbortController | null>(null);
   useEffect(() => () => running.current?.abort(), []);
+  /** this page is still signed in to the account the list was read for */
+  const stillOurs = async (): Promise<boolean> => expect === undefined || await account.current!.account() === expect;
 
   const add = async (pc: AccountPcEntry): Promise<void> => {
     const abort = new AbortController();
@@ -122,6 +135,12 @@ export function useAccountPcs({ machines, source, enabled = true, onAdded }: { m
     setFailure(null);
     setPairing({ server_id: pc.server_id, digits: null, abort });
     try {
+      // signed out, or into another account, since the list was read: nothing is asked of that PC
+      if (!await stillOurs()) {
+        if (!abort.signal.aborted) { setPairing(null); setFailure({ server_id: pc.server_id, message: t("Sign in again") }); }
+        return;
+      }
+      abort.signal.throwIfAborted();
       const { ticket, key, label } = await startAccountPc(pc);
       abort.signal.throwIfAborted();
       await account.current!.admit(pc.server_id, label, key);
@@ -139,10 +158,17 @@ export function useAccountPcs({ machines, source, enabled = true, onAdded }: { m
     pairing?.abort.abort();
     setPairing(null);
   };
-  const recheck = (pc: AccountPcEntry): void => {
+  // the newest Check again of each PC: an older one answering late changes nothing
+  const rechecks = useRef(new Map<string, number>());
+  const recheck = async (pc: AccountPcEntry): Promise<void> => {
     setFailure((current) => current?.server_id === pc.server_id ? null : current);
-    // the PC's last answer stays until the new one: the off row keeps its Check again, held while it asks
-    check(pc, listed.current);
+    const round = listed.current;
+    const ask = (rechecks.current.get(pc.server_id) ?? 0) + 1;
+    rechecks.current.set(pc.server_id, ask);
+    if (!await stillOurs()) throw new Error(t("Sign in again"));
+    // the PC's last answer stays until the new one, and a failed ask leaves every row: it is told on this one
+    const { pcs: [checked] } = await checkAccountPcs([pc]);
+    if (listed.current === round && rechecks.current.get(pc.server_id) === ask && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
   };
   return { pcs, added, stateOf: (serverId) => states.get(serverId), pairing, failure, add, cancel, recheck };
 }

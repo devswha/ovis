@@ -27,6 +27,12 @@ describe("the account's PCs in the sidebar", () => {
   let pcAccount: string | null;
   let relayPhase: string;
   let awayAnswers: string[];
+  let listAccount: string | null;
+  let lists: number;
+  let admitted: string[];
+  let failAwayCheck: boolean;
+  // Check again's hold is per PC for the page's life (MachineOffLine.tsx): each test starts a minute after the last
+  let clock = 0;
   let events: EventTarget;
 
   beforeEach(() => {
@@ -36,7 +42,18 @@ describe("the account's PCs in the sidebar", () => {
     pcAccount = "acct";
     relayPhase = "online";
     awayAnswers = ["offline"];
-    source = { account: async () => mine, list: async () => [OWN, DESK, LAB, OLD, AWAY], admit: async () => {} };
+    listAccount = null;
+    lists = 0;
+    admitted = [];
+    failAwayCheck = false;
+    clock += 60_000;
+    const realNow = performance.now.bind(performance);
+    spyOn(performance, "now").mockImplementation(() => realNow() + clock);
+    source = {
+      account: async () => mine,
+      list: async () => { lists += 1; const who = listAccount ?? mine; return who === null ? null : { account: who, pcs: [OWN, DESK, LAB, OLD, AWAY] }; },
+      admit: async (serverId) => { admitted.push(serverId); },
+    };
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -62,6 +79,7 @@ describe("the account's PCs in the sidebar", () => {
       if (path === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [] });
       if (path === "/api/machines/relay/account/check") {
         const asked = (body as { pcs: AccountPcEntry[] }).pcs;
+        if (failAwayCheck && asked[0]?.server_id === AWAY.server_id) return Response.json({ error: { code: "relay_unavailable", message: "The relay did not answer." } }, { status: 503 });
         const states: Record<string, string> = { [DESK.server_id]: "ready", [LAB.server_id]: "ready", [OLD.server_id]: "outdated" };
         return Response.json({ pcs: asked.map((entry) => ({ server_id: entry.server_id, state: entry.server_id === AWAY.server_id ? awayAnswers.shift() : states[entry.server_id] })) });
       }
@@ -90,8 +108,9 @@ describe("the account's PCs in the sidebar", () => {
   ]);
   const button = (label: string) => renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === label);
   const settle = async () => { for (let round = 0; round < 6; round += 1) await act(async () => {}); };
+  const tree = (onAdded: (machine: Machine) => void, machines: readonly Machine[], hidden = false) => <SettingsProvider><SidebarAccountPcs machines={machines} onAdded={onAdded} source={source} hidden={hidden} /></SettingsProvider>;
   const mount = async (onAdded: (machine: Machine) => void = () => {}, machines: readonly Machine[] = [local, lab]) => {
-    await act(async () => { renderer = create(<SettingsProvider><SidebarAccountPcs machines={machines} onAdded={onAdded} source={source} /></SettingsProvider>); });
+    await act(async () => { renderer = create(tree(onAdded, machines)); });
     await settle();
   };
 
@@ -121,6 +140,7 @@ describe("the account's PCs in the sidebar", () => {
     await act(async () => { button("Add Desk").props.onClick(); });
     await settle();
     await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
+    expect(admitted).toEqual([DESK.server_id]);
     expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toBe("Approve on another device of your account123 456");
     await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ machine: desk })}\n`)); pairLines!.close(); });
     await settle();
@@ -143,6 +163,7 @@ describe("the account's PCs in the sidebar", () => {
       await mount();
       expect(groups()).toEqual([]);
       expect(requests.some((request) => request.path.startsWith("/api/machines/relay/account"))).toBe(false);
+      expect(lists).toBe(0);
       await act(async () => { renderer!.unmount(); });
       renderer = undefined;
     }
@@ -161,5 +182,59 @@ describe("the account's PCs in the sidebar", () => {
   it("leaves out a PC that is in this app already: the sidebar lists it as its own", async () => {
     await mount(() => {}, [local, lab, desk]);
     expect(groups().map(([name]) => name)).toEqual(["PC Old box", "PC Away"]);
+  });
+  it("keeps only the account it checked this PC against: a list read under another sign-in shows and asks nothing", async () => {
+    listAccount = "someone-else";
+    await mount();
+    expect(groups()).toEqual([]);
+    expect(requests.some((request) => request.path.startsWith("/api/machines/relay/account"))).toBe(false);
+  });
+
+  it("asks nothing on Add once this page is signed out, and says to sign in again", async () => {
+    await mount();
+    mine = null;
+    await act(async () => { button("Add Desk").props.onClick(); });
+    await settle();
+    expect(requests.some((request) => request.path.endsWith("/start"))).toBe(false);
+    expect(admitted).toEqual([]);
+    expect(text(renderer!.root)).toContain("Sign in again");
+  });
+
+  it("keeps every row when a Check again fails, and tells it on that PC's row", async () => {
+    await mount();
+    failAwayCheck = true;
+    const away = renderer!.root.find((node) => node.type === "section" && node.props["aria-label"] === "PC Away");
+    await act(async () => { away.find((node) => node.type === "button" && text(node) === "Check again").props.onClick(); });
+    await settle();
+    expect(groups().map(([name]) => name)).toEqual(["PC Desk", "PC Old box", "PC Away"]);
+    expect(text(away)).toContain("The relay did not answer.");
+  });
+
+  it("steps aside for the sidebar filter without ending a pairing under way", async () => {
+    await mount();
+    await act(async () => { button("Add Desk").props.onClick(); });
+    await settle();
+    await act(async () => { renderer!.update(tree(() => {}, [local, lab], true)); });
+    const hidden = Object.fromEntries(renderer!.root.findAll((node) => node.type === "section").map((group) => [group.props["aria-label"], group.props.hidden]));
+    expect(hidden).toEqual({ "PC Desk": false, "PC Old box": true, "PC Away": true });
+    await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "654321" })}\n`)); });
+    expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("654 321");
+  });
+
+  it("lists nothing, not even this PC, until it knows which PC it is on", async () => {
+    await mount(() => {}, []);
+    expect(groups()).toEqual([]);
+    expect(lists).toBe(0);
+  });
+
+  it("adds no poll of its own: the relay and the PC's account are read once, and again only when the window comes back", async () => {
+    await mount();
+    const reads = () => requests.filter((request) => request.path === "/api/relay" || request.path === "/api/account/status").length;
+    expect(reads()).toBe(2);
+    await settle();
+    expect(reads()).toBe(2);
+    await act(async () => { events.dispatchEvent(new Event("focus")); });
+    await settle();
+    expect(reads()).toBe(4);
   });
 });

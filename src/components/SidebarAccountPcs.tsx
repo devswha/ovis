@@ -7,8 +7,8 @@ import "./SidebarAccountPcs.css";
 import type { Machine } from "../../shared/machines.ts";
 import { pcAccountStatus } from "../lib/account/join.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
+import { fetchRelay } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
-import { useRelay } from "../lib/useRelay.ts";
 import type { AccountPcEntry } from "../lib/api.ts";
 import { MachineOffLine, useRecheck } from "./MachineOffLine.tsx";
 import { signedInAccount, spaced, useAccountPcs, type AccountPcs, type AccountPcsSource } from "./RelayAccountPcs.tsx";
@@ -20,7 +20,7 @@ import { signedInAccount, spaced, useAccountPcs, type AccountPcs, type AccountPc
  * list), Switched off with Check again where it did not answer, or that its Ovis needs an update. A PC once added is
  * the sidebar's own group above. A page that is not signed in asks this PC nothing for it.
  */
-export function SidebarAccountPcs({ machines, onAdded, source }: { machines: readonly Machine[]; onAdded: (machine: Machine) => void; source?: AccountPcsSource }) {
+export function SidebarAccountPcs({ machines, onAdded, source, hidden = false }: { machines: readonly Machine[]; onAdded: (machine: Machine) => void; source?: AccountPcsSource; /** the sidebar filter is on: the rows step aside, a pairing under way stays */ hidden?: boolean }) {
   const account = useRef<AccountPcsSource | null>(null);
   account.current ??= source ?? signedInAccount();
   const [mine, setMine] = useState<string | null>(null);
@@ -42,35 +42,39 @@ export function SidebarAccountPcs({ machines, onAdded, source }: { machines: rea
     return () => { live = false; };
   }, [reads]);
   if (mine === null) return null;
-  return <JoinedAccountPcs account={mine} reads={reads} machines={machines} onAdded={onAdded} source={account.current} />;
+  // another account is another list from scratch: nothing read for the one before carries over
+  return <JoinedAccountPcs key={mine} account={mine} reads={reads} machines={machines} onAdded={onAdded} source={account.current} hidden={hidden} />;
 }
 
-/** Signed in to `account`: its PCs once this PC is in that same account with its relay online. */
-function JoinedAccountPcs({ account, reads, machines, onAdded, source }: { account: string; reads: number; machines: readonly Machine[]; onAdded: (machine: Machine) => void; source: AccountPcsSource }) {
-  const relay = useRelay();
-  const online = relay.status?.phase === "online" && relay.status.blocked === null;
+/**
+ * Signed in to `account`: its PCs once this PC is in that same account with its relay online. Both are read once, and
+ * again when the window comes back, never polled: a sidebar adds no request of its own while the window just sits there.
+ */
+function JoinedAccountPcs({ account, reads, machines, onAdded, source, hidden }: { account: string; reads: number; machines: readonly Machine[]; onAdded: (machine: Machine) => void; source: AccountPcsSource; hidden: boolean }) {
   const [joined, setJoined] = useState(false);
   useEffect(() => {
-    if (!online) { setJoined(false); return; }
     let live = true;
-    pcAccountStatus(apiFetch).then((pc) => { if (live) setJoined(pc.account === account); }, () => { if (live) setJoined(false); });
+    Promise.all([fetchRelay(), pcAccountStatus(apiFetch)]).then(([relay, pc]) => {
+      if (live) setJoined(relay.phase === "online" && relay.blocked === null && pc.account === account);
+    }, () => { if (live) setJoined(false); });
     return () => { live = false; };
-  }, [online, account, reads]);
-  const accountPcs = useAccountPcs({ machines, source, enabled: joined, onAdded });
+  }, [account, reads]);
+  const accountPcs = useAccountPcs({ machines, source, enabled: joined, expect: account, onAdded });
   const waiting = accountPcs.pcs?.filter((pc) => accountPcs.added(pc.server_id) === undefined) ?? [];
   if (waiting.length === 0) return null;
-  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} />)}</>;
+  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} hidden={hidden} />)}</>;
 }
 
 /** One PC of the account not in this app yet, as a PC group's header with its state under it. */
-function AccountPcRow({ pc, pcs: { stateOf, pairing, failure, add, cancel, recheck } }: { pc: AccountPcEntry; pcs: AccountPcs }) {
+function AccountPcRow({ pc, hidden, pcs: { stateOf, pairing, failure, add, cancel, recheck } }: { pc: AccountPcEntry; hidden: boolean; pcs: AccountPcs }) {
   const t = useT();
+  const row = useRef<HTMLElement>(null);
   const state = stateOf(pc.server_id);
   // the same hold as a PC of the roster: one check per PC however often it is pressed (MachineOffLine.tsx)
-  const again = useRecheck(pc.server_id, async () => { recheck(pc); }, state === "offline");
+  const again = useRecheck(pc.server_id, () => recheck(pc), state === "offline");
   const adding = pairing?.server_id === pc.server_id;
   return (
-    <section className="machine-group is-offline account-pc-group" aria-label={t("PC {name}", { name: pc.name })} data-pc-state={state ?? "checking"}>
+    <section ref={row} tabIndex={-1} hidden={hidden && !adding} className="machine-group is-offline account-pc-group" aria-label={t("PC {name}", { name: pc.name })} data-pc-state={state ?? "checking"}>
       <header className="machine-header">
         <div className="machine-title">
           <span className="sidebar-mark" aria-hidden="true"><Monitor /></span>
@@ -79,7 +83,7 @@ function AccountPcRow({ pc, pcs: { stateOf, pairing, failure, add, cancel, reche
         </div>
       </header>
       {state === "offline"
-        ? <MachineOffLine state="off" reason={null} checking={again.checking} failure={again.failure} onCheck={again.check} />
+        ? <MachineOffLine state="off" reason={null} checking={again.checking} failure={again.failure} onCheck={again.check} returnFocus={() => row.current} />
         : (
           <div className="account-pc-line">
             {state === undefined && <span className="machine-state-word" role="status">{t("Checking…")}</span>}
