@@ -19,6 +19,12 @@ export function listNotices(journal: DeviceJournal, evidence: RemovalEvidence, s
       const notice = journal.recordAccountRow(entry, evidence);
       if (notice && entry.kind === "drop") send(notice);
     },
-    publish(entry) { send(current(entry)); },
+    publish(entry) {
+      const open = journal.openNotices().filter((n) => n.row === entry.row && n.key === entry.key && n.account === entry.account && n.how === "list").at(-1);
+      if (open && open.no === entry.no) { send(open); return; }
+      // Old builds used the account number. Never give an old notice ID authority over the repaired admission.
+      const obsolete = open && open.no === entry.accountNo && !journal.entries().some((n) => n.row === entry.row && n.seq > open.seq) ? open.id : undefined;
+      send(journal.append({ kind: "admit", how: "list", key: entry.key, no: entry.no ?? null, row: entry.row, label: entry.label ?? "", by: null, account: entry.account }, obsolete));
+    },
   };
 }

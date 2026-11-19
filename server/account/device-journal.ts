@@ -198,7 +198,8 @@ export class DeviceJournal {
       trimmed = cut.at(-1)!.seq;
       entries = entries.slice(cut.length);
     }
-    const open = entry.kind === "admit" && !entry.awaitingListCheck ? [...this.doc.open, entry] : decides === undefined ? this.doc.open : this.doc.open.filter((notice) => notice.id !== decides);
+    const remaining = decides === undefined ? this.doc.open : this.doc.open.filter((notice) => notice.id !== decides);
+    const open = entry.kind === "admit" && !entry.awaitingListCheck ? [...remaining, entry] : remaining;
     if (!this.exists) this.companions();
     this.write({ ...this.doc, next_seq: entry.seq + 1, entries, open, trimmed, ...(drop && { last_row_drop: { ...drop, journalled: entry.seq } }),
       ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) });
