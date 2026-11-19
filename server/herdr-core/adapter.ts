@@ -558,9 +558,11 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
         if (!answer) return;
         workspace.worktree = { ...answer.facts };
         let pin = pinned.get(workspace.workspace_id);
-        // a cached answer git has not confirmed since may be of a checkout no longer there
-        if (pin?.folder !== folder && (checkoutFacts.get(folder)?.until ?? 0) > Date.now()) pinned.set(workspace.workspace_id, pin = { folder, gitId: answer.gitId, at: Date.now() });
-        gitIds.set(workspace.workspace_id, pin?.folder === folder ? pin.gitId : answer.gitId);
+        // the folder drawn is kept from the first draw; a pin a newer read took stands over this older one
+        if (!pin || (pin.folder !== folder && pin.at < began)) pinned.set(workspace.workspace_id, pin = { folder, gitId: null, at: Date.now() });
+        // its identity only from an answer git gave since: a cached one may be of a checkout no longer there
+        if (pin.folder === folder && pin.gitId === null && (checkoutFacts.get(folder)?.until ?? 0) > Date.now()) pin.gitId = answer.gitId;
+        gitIds.set(workspace.workspace_id, pin.folder === folder ? pin.gitId ?? answer.gitId : answer.gitId);
       }));
     }
     return { shown, own: ownsLayout(doc.value), gitIds, started };
@@ -794,7 +796,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     const folder = home ?? now;
     if (!folder) throw new AdapterError("not_git_worktree", `workspace ${workspaceId} has no folder`);
     const repository = await repositoryOf(folder).catch((error: unknown) => {
-      if (!now || now === folder) throw error;
+      if (workspace.worktree || !now || now === folder) throw error;
       return repositoryOf(now);
     });
     return { shown, repository };
@@ -1343,7 +1345,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     // (started there or gone there since), would be left in a deleted folder
     const inCheckout = (folder: string | null | undefined): boolean => {
       if (!folder) return false;
-      const below = relative(facts.checkout_path, folder);
+      // git names the checkout by its real path; a terminal may have started through a link to it
+      const below = relative(facts.checkout_path, realPath(folder));
       return below === "" || (below !== ".." && !below.startsWith(`..${sep}`) && !isAbsolute(below));
     };
     const sharing = shown.workspaces.filter((candidate) => candidate.workspace_id !== workspaceId && (candidate.worktree?.checkout_path === facts.checkout_path
