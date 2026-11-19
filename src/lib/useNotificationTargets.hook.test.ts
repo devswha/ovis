@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, useEffect, useRef, useState } from "react";
+import { createElement, useRef, useState } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { Machine } from "../../shared/machines.ts";
 import type { AppLink, LinkNote } from "./deepLink.ts";
@@ -52,7 +52,7 @@ describe("a desktop link's landing", () => {
       const [, setLinkTick] = useState(0);
       const selectTargetRef = useRef((machineId: string, paneId: string | null, view?: string) => { selected.push([machineId, paneId, view]); pendingLink.current = null; });
       take = useNotificationTargets({
-        machinesRef, selectTargetRef, selectionHint, pendingLink, notedLink: { current: null }, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick,
+        machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick,
         load: async () => {}, onLinkWait: () => { waits += 1; },
       } as Parameters<typeof useNotificationTargets>[0]).takeNotificationTarget;
       return null;
@@ -160,9 +160,6 @@ describe("a desktop link to a pane the cached roster lacks", () => {
       const [selectedMachineId, setSelectedMachineId] = useState("local");
       const [selectedPaneId, setSelectedPaneId] = useState<string | null>("t1");
       const [headerNote, setHeaderNote] = useState<LinkNote | "copied" | null>(null);
-      // as useLinkLanding keeps it: the link whose landing left the note, while the note shows
-      const notedLink = useRef<AppLink | null>(null);
-      useEffect(() => { if (headerNote === null) notedLink.current = null; }, [headerNote]);
       const [linkTick, setLinkTick] = useState(0);
       const [, setLinkLandedState] = useState(true);
       const setLinkLanded = (value: boolean) => {
@@ -183,10 +180,10 @@ describe("a desktop link to a pane the cached roster lacks", () => {
         selectedMachineId, setConnected: noop, setConnectedBefore: noop, setSelectedMachineId, setSelectedPaneId, setAutoSelected: noop,
         setDrawerOpen: noop, setOutputStopped: noop, setNotificationViewTarget: noop, setTerminalPeek: noop, pendingLink, pendingFile,
         setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot: selectedMachine?.snapshot ?? null, selectedMachine, selectedPaneId,
-        setHeaderNote, notedLink, linkTick, movingPanes, onLinkMiss: () => { misses += 1; },
+        setHeaderNote, linkTick, movingPanes, onLinkMiss: () => { misses += 1; },
       } as Parameters<typeof useSelectTarget>[0]);
       take = useNotificationTargets({
-        machinesRef, selectTargetRef, selectionHint, pendingLink, notedLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load: async () => {},
+        machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load: async () => {},
       } as Parameters<typeof useNotificationTargets>[0]).takeNotificationTarget;
       shown = { pane: selectedPaneId, note: headerNote };
       return null;
@@ -264,15 +261,25 @@ describe("a desktop link to a pane the cached roster lacks", () => {
     expect(misses).toBe(0);
   });
 
-  it("keeps a landing's note when the same link comes again, as a tapped notification's second delivery does", async () => {
+  it("keeps a landing's note while the same link comes again, as a tapped notification's second delivery does, though its own read fails", async () => {
     answer("roster");
     await mount();
     await open(`?ws=${gamma}-gamma&pane=t99`);
     expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
     const asked = reads;
+    answer("fails");
     await act(async () => { take(linkTarget(`?ws=${gamma}-gamma&pane=t99`)!); });
+    expect(reads).toBeGreaterThan(asked);
     expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
-    expect(reads).toBe(asked);
+  });
+
+  it("keeps a landing's note when a link selects the pane already shown, as a delivery the roster has not caught up with does", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    await act(async () => { take(linkTarget(`?ws=${gamma}-gamma&pane=t5`)!); });
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
   });
 
   it("takes an earlier landing's note away when the next link selects a live pane", async () => {

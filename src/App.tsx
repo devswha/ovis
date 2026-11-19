@@ -249,7 +249,7 @@ export function App() {
   const desktopUpdate = useDesktopUpdate();
   const { selectedPaneId, setSelectedPaneId, notificationViewTarget, setNotificationViewTarget, terminalPeek, setTerminalPeek, endPeek, pendingLink, linkLanded, setLinkLanded, rosterSeq, linkSince, selectionSince, rosterTick, setRosterTick, linkTick, setLinkTick } = useSelectionState({ initialLink });
   const { otherRecheck, otherRosterTick, setOtherRosterTick } = useSplitRecheck();
-  const { rosterIn, pendingFile, selectionHint, headerNote, setHeaderNote, notedLink, note: linkNote, autoSelected, setAutoSelected } = useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, pendingLink, rosterSeq, setRosterTick, linkLanded, t });
+  const { rosterIn, pendingFile, selectionHint, headerNote, setHeaderNote, note: linkNote, autoSelected, setAutoSelected } = useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, pendingLink, rosterSeq, setRosterTick, linkLanded, t });
   const inboxMode = useInboxMode({ startsIn: () => pageStartsInInbox(phoneInboxOn(settings), window.matchMedia?.(SHEET_QUERY).matches === true, initialLink) });
   const { drawerOpen, setDrawerOpen, drawerOpenRef, toggleDrawerByButton, secondTapOfOpening, wideScreen, sidebarCollapsed, setSidebarCollapsed, sidebarWidth, setSidebarWidth, filePanelAvailable, filePanelWidth, setFilePanelWidth, sidebarFilterRequest, openSidebarFilter } = useSidebarLayout({ initialLink, drawerBlocked: inboxMode.drawerBlocked });
   const inbox = useInbox({ on: inboxMode.on, initialLink, drawerOpenRef });
@@ -402,7 +402,7 @@ export function App() {
     if (reload) window.location.reload();
   }, [auth?.via, loadHealth, t]);
 
-  const { selectedMachineRef, selectTarget, selectTargetRef, picks } = useSelectTarget({ selectedMachineId, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setDrawerOpen, setOutputStopped, setNotificationViewTarget, setTerminalPeek, pendingLink, pendingFile, setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot, selectedMachine, selectedPaneId, setHeaderNote, notedLink, linkTick, movingPanes, onPick: (paneId) => { setupGuide.stepAside(); if (paneId !== null) inbox.leave(); },
+  const { selectedMachineRef, selectTarget, selectTargetRef, picks } = useSelectTarget({ selectedMachineId, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setDrawerOpen, setOutputStopped, setNotificationViewTarget, setTerminalPeek, pendingLink, pendingFile, setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot, selectedMachine, selectedPaneId, setHeaderNote, linkTick, movingPanes, onPick: (paneId) => { setupGuide.stepAside(); if (paneId !== null) inbox.leave(); },
     onLinkMiss: () => { if (inbox.enabled) inbox.show(); } });
 
   const { selectPane } = useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, setHeaderNote, onPick: () => { picks.current += 1; setupGuide.stepAside(); inbox.leave(); } });
@@ -444,7 +444,7 @@ export function App() {
     selectTargetRef.current(machineId, view.selection);
     if (listed) inbox.show();
   };
-  const { takeNotificationTargetRef } = useNotificationTargets({ machinesRef, selectTargetRef, selectionHint, pendingLink, notedLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load, onLinkWait: () => inbox.leave() });
+  const { takeNotificationTargetRef } = useNotificationTargets({ machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load, onLinkWait: () => inbox.leave() });
 
 
   const { selectedPane } = useSelectedPane({ snapshot, selectedPaneId });

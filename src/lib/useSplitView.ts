@@ -241,7 +241,9 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
     const before = was ? (was.active === after ? current : was.panes[after] ?? null) : after === soloSlot ? current : null;
     if (before === null || before.machineId !== change.select.machineId) { setConnected(false); setConnectedBefore(false); }
     applyLayout(change);
-    setSelectedMachineId(change.select.machineId); setSelectedPaneId(change.select.paneId); setAutoSelected(keepFocus); setOutputStopped(false); setHeaderNote(noteAfterSelection);
+    setSelectedMachineId(change.select.machineId); setSelectedPaneId(change.select.paneId); setAutoSelected(keepFocus); setOutputStopped(false);
+    // a layout change that keeps the pane shown keeps its note
+    if (current === null || current.machineId !== change.select.machineId || current.paneId !== change.select.paneId) setHeaderNote(noteAfterSelection);
     storeSelection(change.select.machineId, change.select.paneId);
   };
   const activateSlot = (slot: SplitSlot, keepFocus = false): void => {
