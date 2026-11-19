@@ -271,7 +271,7 @@ export function App() {
   const moreMenu = useMoreMenu();
   // where Add a PC leads on a phone: a PC reached through the hosted app (in a browser or in the phone app, which opens
   // it there) goes to the hosted app's Add a PC, one the phone app opened by its address to the app's own screens
-  const addPcExit = useMemo(() => pcListExit({ nativeApp: false, relayShell: shellMode() === "relay", pathname: window.location.pathname }) ?? (inNativeApp() ? "app" : null), []);
+  const addPcExit = pcListExit({ nativeApp: false, relayShell: shellMode() === "relay", pathname: window.location.pathname }) ?? (inNativeApp() ? "app" : null);
   const { more, setMore, closeMore, group: moreGroup, openGroup: openMoreGroup, closeGroup: closeMoreGroup } = moreMenu;
   const paneActionsRef = useRef<((target: HerdrPane, options?: { counted?: boolean }) => RowMenuItem[]) | null>(null);
   const paneLocked = usePaneLocked(selectedMachineId);
