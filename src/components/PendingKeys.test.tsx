@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { SettingsProvider } from "../lib/settings.ts";
-import { KeyFingerprintWait, PendingKeys, type PendingKey } from "./PendingKeys.tsx";
+import type { PendingKey } from "../../shared/machines.ts";
+import { KeyFingerprintWait, PendingKeys } from "./PendingKeys.tsx";
 
 const pending = (id: string, label: string, fingerprint: string): PendingKey => ({ id, label, fingerprint, via: "relay", redeemed_at: "2026-11-20T04:00:00.000Z", slots: { used: 2, of: 5 } });
 

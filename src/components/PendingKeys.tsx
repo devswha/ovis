@@ -1,17 +1,7 @@
 import "./PendingKeys.css";
 
+import type { PendingKey } from "../../shared/machines.ts";
 import { useT } from "../lib/i18n.ts";
-
-/** One key waiting for this PC's screen (Track B's GET /api/devices/pending, S2-13). */
-export interface PendingKey {
-  readonly id: string;
-  readonly code_label?: string;
-  readonly label: string;
-  readonly fingerprint: string;
-  readonly via: "relay" | "address";
-  readonly redeemed_at: string;
-  readonly slots: { readonly used: number; readonly of: number };
-}
 
 /**
  * Keys that redeemed a code and wait for this PC's screen (device table T71, T72): each shows the fingerprint its
