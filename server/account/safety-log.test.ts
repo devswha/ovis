@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { DeviceStore } from "../devices.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
 import { exportAccountKey, newRecordId, signSafetyRecord, type SafetyRecord } from "../../shared/account-records.ts";
-import { ACCOUNT_JOURNAL_FILE, pcRecordId, SAFETY_LOG_FILE, SafetyLog, type BlockAsOf } from "./safety-log.ts";
+import { DEVICE_JOURNAL_FILE, pcRecordId, SAFETY_LOG_FILE, SafetyLog, type BlockAsOf } from "./safety-log.ts";
 
 const dirs: string[] = [];
 const fixtures: ReturnType<typeof relayFixture>[] = [];
@@ -157,7 +157,7 @@ describe("the PC safety log (account-log.json)", () => {
 
     const journalled = () => {
       const dir = stateDir();
-      writeFileSync(join(dir, ACCOUNT_JOURNAL_FILE), JSON.stringify({ v: 1, entries: [] }), { mode: 0o600 });
+      writeFileSync(join(dir, DEVICE_JOURNAL_FILE), JSON.stringify({ v: 1, entries: [] }), { mode: 0o600 });
       return dir;
     };
     // missing beside a journal
@@ -235,7 +235,7 @@ describe("the PC safety log (account-log.json)", () => {
     try {
       // a log that would fail closed, beside a journal: with the flag off nobody reads it, and nothing is written
       const dir = stateDir();
-      writeFileSync(join(dir, ACCOUNT_JOURNAL_FILE), JSON.stringify({ v: 1, entries: [] }), { mode: 0o600 });
+      writeFileSync(join(dir, DEVICE_JOURNAL_FILE), JSON.stringify({ v: 1, entries: [] }), { mode: 0o600 });
       writeFileSync(join(dir, SAFETY_LOG_FILE), "{not json", { mode: 0o600 });
       const pairing = new DeviceStore(dir);
       const { token } = pairing.pair(pairing.startPairing().code, "Phone", "drive")!;

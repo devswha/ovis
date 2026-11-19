@@ -16,8 +16,8 @@ import { AccountRecordError, parseSafetyRecord, type PcLiftRecord, type SafetyRe
 import { writePrivateState } from "../private-state.ts";
 
 export const SAFETY_LOG_FILE = "account-log.json";
-/** The device journal (P15). A state folder that has one has had a log since, so a missing log there is damage. */
-export const ACCOUNT_JOURNAL_FILE = "account-journal.json";
+/** The device journal (P15, S2-07). A state folder that has one has had a log since, so a missing log there is damage. */
+export const DEVICE_JOURNAL_FILE = "device-journal.json";
 
 /** How the record reached this PC; noted once and never compared (P24). */
 export type SafetyGot = "handed" | "mailbox" | "snapshot" | "pc" | "session" | "merge";
@@ -107,6 +107,9 @@ function parseLog(value: unknown): LogFile | string {
   const seen = new Map<string, SafetyRecord>();
   const numbers = new Set<number>();
   for (const id of file.base.map((line) => line.id)) seen.set(id, { id } as SafetyRecord);
+  // every number this log gave is a whole entry or a folded line: a history with numbers that account for nothing
+  // is none this writer made (P24)
+  if (file.next! - 1 > file.entries.length + file.base.length) return `next ${String(file.next)} accounts for more records than the log holds`;
   for (const entry of file.entries as SafetyEntry[]) {
     if (typeof entry !== "object" || entry === null) return "an entry is an object";
     if (!Number.isSafeInteger(entry.n) || entry.n < 1 || entry.n >= file.next! || numbers.has(entry.n)) return `entry number ${String(entry.n)} is taken twice or past next`;
@@ -127,6 +130,9 @@ export class SafetyLog {
   private readError: string | null = null;
   private writeError: string | null = null;
 
+  /** What is in force, worked out at open and after every append: the replay runs before anything is served (T41). */
+  inForce: SafetyState = { locked: false, locks: [], blocks: [], freezes: [], markers: [] };
+
   private constructor(private readonly path: string) {}
 
   /** Reads and replays the log of `stateDir`. Never throws: a log that cannot be trusted makes `strict` say why. */
@@ -135,7 +141,7 @@ export class SafetyLog {
     let text: string;
     try { text = readFileSync(log.path, "utf8"); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") log.readError = `Cannot read ${log.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
-      else if (existsSync(join(stateDir, ACCOUNT_JOURNAL_FILE))) log.readError = `${log.path} is missing beside the device journal`;
+      else if (existsSync(join(stateDir, DEVICE_JOURNAL_FILE))) log.readError = `${log.path} is missing beside the device journal`;
       return log;
     }
     let value: unknown;
@@ -143,12 +149,13 @@ export class SafetyLog {
     const parsed = parseLog(value);
     if (typeof parsed === "string") log.readError = `${log.path} cannot be trusted: ${parsed}`;
     else log.file = parsed;
+    log.inForce = log.state();
     return log;
   }
 
   /**
    * Why this PC fails closed, or null: nothing but this PC itself signs in until the log is put right. A failed append
-   * counts until an append is written.
+   * counts until a reload finds the log whole (S19): nothing else is appended on this handle meanwhile.
    */
   get strict(): string | null {
     const why = this.readError ?? this.writeError;
@@ -171,8 +178,10 @@ export class SafetyLog {
   append(input: { record: SafetyRecord; got: SafetyGot; asof?: BlockAsOf }): SafetyReceipt {
     const { record, got, asof } = input;
     const id = typeof record?.id === "string" ? record.id : "";
-    if (this.readError !== null) return { outcome: "refused", id, code: "log_unavailable" };
+    if (this.readError !== null || this.writeError !== null) return { outcome: "refused", id, code: "log_unavailable" };
     if (!GOTS.has(got) || recordProblem(record, asof) !== null) return { outcome: "refused", id, code: "record_invalid" };
+    // what another handle of this folder appended is read first, so no number is given twice and none is lost (P24)
+    if (!this.reread()) return { outcome: "refused", id, code: "log_unavailable" };
     const held = this.file.entries.find((entry) => entry.record.id === id);
     if (held !== undefined) return sameRecord(held.record, record) ? { outcome: "applied", id, n: held.n } : { outcome: "refused", id, code: "conflict" };
     if (this.file.base.some((line) => line.id === id)) return { outcome: "already_applied", id };
@@ -183,8 +192,23 @@ export class SafetyLog {
       return { outcome: "refused", id, code: "log_unavailable" };
     }
     this.file = next;
-    this.writeError = null;
+    this.inForce = this.state();
     return { outcome: "applied", id, n: entry.n };
+  }
+
+  /** The file as it is on disk now; false, with the log strict, when it is no longer one this log can trust. */
+  private reread(): boolean {
+    let text: string;
+    try { text = readFileSync(this.path, "utf8"); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && this.file.next === 1) return true;
+      this.readError = `Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
+      return false;
+    }
+    let parsed: LogFile | string;
+    try { parsed = parseLog(JSON.parse(text)); } catch { parsed = "it is not JSON"; }
+    if (typeof parsed === "string") { this.readError = `${this.path} cannot be trusted: ${parsed}`; return false; }
+    this.file = parsed;
+    return true;
   }
 
   /** What is in force, worked out from the log alone. Each ending ends only the record it names, and only of its kind. */
