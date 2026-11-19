@@ -34,8 +34,8 @@ function signInFragment(hash: string): boolean {
 }
 
 /**
- * The start screen while the shell loads and reads this device's pairings: the page's loading ring
- * gives way to the mascot in its badge, nothing else; the shell's first screen replaces it.
+ * The start screen while the shell loads and reads this device's pairings: once the mascot is drawn, the page's
+ * loading ring gives way to it in its badge, nothing else; the shell's first screen replaces it.
  */
 function showStart(container: HTMLElement): void {
   const boot = container.querySelector(".boot"), ring = boot?.querySelector(".boot-spinner");
@@ -44,11 +44,15 @@ function showStart(container: HTMLElement): void {
   badge.className = "sheep-badge sheep-badge-112";
   sheep.className = "sheep-mascot sheep-mascot-112";
   badge.append(sheep);
-  ring.replaceWith(badge);
-  boot.classList.add("relay-start");
-  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  const quiet = window.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null;
+  // the ring and its words stay until the sheep is there to take their place
   import("./mascot.ts")
-    .then(({ playMascot, SMALL_BELOW_PX }) => { if (sheep.isConnected) playMascot(sheep, SHEEP_FOR.start, { small: 112 < SMALL_BELOW_PX, still }); })
+    .then(({ playMascot, SMALL_BELOW_PX }) => {
+      if (!ring.isConnected) return;
+      ring.replaceWith(badge);
+      boot.classList.add("relay-start");
+      playMascot(sheep, SHEEP_FOR.start, { small: 112 < SMALL_BELOW_PX, quiet });
+    })
     .catch((error: unknown) => { console.warn("Ovis: the mascot was not drawn", error); });
 }
 

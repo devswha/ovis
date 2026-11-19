@@ -174,7 +174,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
   const failure = state.kind === "failed" ? relayFailureText(t, state.failure, pc, state.detail) : null;
   // a marked pairing that stopped for a sign-in signs in right here, and goes on after it without a new scan
   const pairSignIn = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn ? state.account ?? null : undefined;
-  const statusText = signingIn ? t("Signing in…") : state.kind === "code-looking" ? t("Looking for the PC…") : state.kind === "connecting" ? t("Connecting to {name}…", { name: pc })
+  const statusText = signingIn ? t("Signing in…") : state.kind === "code-looking" ? t("Looking for the PC…") : state.kind === "connecting" ? (state.approved ? t("Approved. {name} opens in a moment.", { name: pc }) : t("Connecting to {name}…", { name: pc }))
     : state.kind === "compare" && state.confirmed ? t("Approve this device on {name} within 90 seconds to finish.", { name: pc })
     : state.kind === "outdated" && state.update.phase === "reading" ? t("Checking {name}…", { name: pc })
     : state.kind === "outdated" && state.update.phase === "installing" ? (progress ? `${progress.step}: ${t(progress.label)}` : t("Asking the PC to update…"))

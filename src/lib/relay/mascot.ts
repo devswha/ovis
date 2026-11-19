@@ -165,26 +165,28 @@ export function mascotSvg(state: MascotState, seconds: number, small: boolean): 
 }
 
 /**
- * Draws the mascot into `host` and plays its loop until the returned stop is called or the drawing leaves
- * the page. `still` draws the loop's first frame and leaves it (reduced motion).
+ * Draws the mascot into `host` and plays one pass of its loop (4.8 s, under the 5 s past which moving content
+ * needs a pause control), then settles on the loop's first pose. `quiet`, the reduced-motion query, is read on
+ * every frame: matching, the first pose is drawn and the play ends, whenever it starts to match.
  */
-export function playMascot(host: HTMLElement, state: MascotState, { small, still }: { readonly small: boolean; readonly still: boolean }): () => void {
+export function playMascot(host: HTMLElement, state: MascotState, { small, quiet }: { readonly small: boolean; readonly quiet: MediaQueryList | null }): () => void {
   const template = document.createElement("template");
   template.innerHTML = mascotSvg(state, 0, small);
   const svg = template.content.firstElementChild as SVGSVGElement;
   host.replaceChildren(svg);
-  if (still) return () => { svg.remove(); };
+  if (quiet?.matches === true) return () => { svg.remove(); };
   const eyes = [svg.querySelector('[data-eye="left"]')!, svg.querySelector('[data-eye="right"]')!];
   const rigs = RIG_NAMES.map((name) => [name, svg.querySelector(`[data-rig="${name}"]`)!] as const);
   let frame = 0, start: number | null = null;
   const tick = (now: number): void => {
     if (!svg.isConnected) return;
     start ??= now;
-    const p = choreography(state, (now - start) / 1000);
+    const done = (now - start) / 1000 >= DURATION || quiet?.matches === true;
+    const p = choreography(state, done ? 0 : (now - start) / 1000);
     eyes[0]!.setAttribute("d", p.eyeLeft);
     eyes[1]!.setAttribute("d", p.eyeRight);
     for (const [name, el] of rigs) el.setAttribute(rigAttr(name), rigValue(name, p));
-    frame = requestAnimationFrame(tick);
+    if (!done) frame = requestAnimationFrame(tick);
   };
   frame = requestAnimationFrame(tick);
   return () => { cancelAnimationFrame(frame); svg.remove(); };

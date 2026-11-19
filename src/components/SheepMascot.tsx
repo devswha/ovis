@@ -8,7 +8,7 @@ export type SheepSize = 56 | 80 | 112;
 
 /**
  * The owner's mascot for one pairing screen, decorative. Its engine is a chunk of its own, fetched when
- * the first sheep shows; until then the box keeps its size. Reduced motion draws the loop's first frame.
+ * the first sheep shows; until then the box keeps its size. It plays one pass, then rests; reduced motion draws its first pose.
  */
 export function SheepMascot({ screen, size, badge = false }: { readonly screen: SheepScreen; readonly size: SheepSize; readonly badge?: boolean }) {
   const host = useRef<HTMLSpanElement>(null);
@@ -17,9 +17,9 @@ export function SheepMascot({ screen, size, badge = false }: { readonly screen: 
     const target = host.current;
     if (target === null) return;
     let stop: (() => void) | null = null, gone = false;
-    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+    const quiet = window.matchMedia?.("(prefers-reduced-motion: reduce)") ?? null;
     import("../lib/relay/mascot.ts")
-      .then(({ playMascot, SMALL_BELOW_PX }) => { if (!gone) stop = playMascot(target, state, { small: size < SMALL_BELOW_PX, still }); })
+      .then(({ playMascot, SMALL_BELOW_PX }) => { if (!gone) stop = playMascot(target, state, { small: size < SMALL_BELOW_PX, quiet }); })
       .catch((error: unknown) => { console.warn("Ovis: the mascot was not drawn", error); });
     return () => { gone = true; stop?.(); };
   }, [state, size]);

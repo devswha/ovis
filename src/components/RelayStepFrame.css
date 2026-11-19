@@ -31,6 +31,7 @@
 }
 
 .relay-step-back {
+  position: relative;
   display: grid;
   place-items: center;
   width: var(--space-8);
@@ -41,6 +42,13 @@
   background: var(--bg-elevated);
   color: var(--text-dim);
   cursor: pointer;
+}
+
+/* the round button stays small to the eye and takes a whole touch target */
+.relay-step-back::before {
+  content: "";
+  position: absolute;
+  inset: calc((var(--space-8) - var(--touch-target)) / 2);
 }
 
 .relay-step-back > svg {
@@ -111,6 +119,7 @@
 
 .relay-step .relay-shell-copy {
   margin-top: var(--space-2);
+  overflow-wrap: anywhere;
 }
 
 .relay-step .sheep-badge {
@@ -210,10 +219,7 @@
 
 .relay-step .relay-shell-actions .btn-primary {
   min-height: calc(var(--touch-target) + var(--space-1));
-  border: 0;
   border-radius: var(--radius-lg);
-  background: var(--accent);
-  color: var(--bg-input);
   font-weight: var(--fw-semibold);
 }
 
