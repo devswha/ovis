@@ -292,7 +292,7 @@ it("marks a socket that only the open LAN let in, one relayed to another PC too,
 it("names a visit's way in from what the server knows, its relay session or Portal's proof, never from forwarding headers alone", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-visit-ingress-"));
   const portal = new PortalService({ stateDir });
-  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, portal, token: "", tailscaleOwner: null, machines: false, sidecar: false });
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, portal, token: "", bridgeToken: "bridge-token", tailscaleOwner: null, machines: false, sidecar: false });
   const proof = spyOn(portal, "vouches").mockImplementation((value) => value === "valid-portal-proof");
   const role = spyOn(portal, "roleFor").mockReturnValue("drive");
   const taken: (string | undefined)[] = [];
@@ -316,13 +316,17 @@ it("names a visit's way in from what the server knows, its relay session or Port
     expect(await visit(local, here, { ...forwarded, ...portalHeaders, "x-portal-proof": "valid-portal-proof" })).toBe("portal");
     // Portal's headers without its proof are any proxy's
     expect(await visit(local, here, { ...forwarded, ...portalHeaders, "x-portal-proof": "forged" })).toBe("proxy");
-    // a Portal with no sign-in sends no proof: from this PC, over HTTPS, to an address Portal serves is all there is
+    // a Portal with no sign-in sends no proof: /api/health takes its shape (from this PC, over HTTPS, to an address
+    // Portal serves) as Portal's, but that shape is headers, so a visit counts it as any proxy
     const serves = spyOn(portal, "serves").mockReturnValue(true);
     try {
-      expect(await visit(local, here, forwarded)).toBe("portal");
-      expect(await visit({ ...local, requestIP: () => ({ address: "192.168.0.20" }) }, here, forwarded)).toBe("proxy");
-      serves.mockReturnValue(false);
       expect(await visit(local, here, forwarded)).toBe("proxy");
+      const health = await handleRequest(new Request(`${here}/api/health`, { headers: { host: new URL(here).host, ...forwarded } }), local);
+      expect(await health?.json()).toMatchObject({ security: { observed_ingress: "portal" } });
+      // another server's bridge is not a visit: nothing is worked out for it
+      serves.mockClear();
+      expect(await visit(local, here, { ...forwarded, authorization: "Bearer bridge-token" })).toBeUndefined();
+      expect(serves).not.toHaveBeenCalled();
     } finally { serves.mockRestore(); }
     expect(await visit(local, here)).toBe("local");
   } finally {
