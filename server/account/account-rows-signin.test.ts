@@ -323,4 +323,19 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     rows.commitList(listed(phone));
     expect(devices.itsMe(owner.id, old.id, owner.spki)).toBe(false);
   });
+
+  test("T54: a proved sign-in and each request of the row's session are the use this PC sees, written once a day", async () => {
+    const { devices, rows, clock } = pc();
+    await member(devices);
+    const phone = await key();
+    rows.commitList(listed(phone));
+    clock.now += JOIN_HOLD_MS;
+    const [row] = rows.rows();
+    expect(rows.usedReport()).toEqual([]);
+    expect(await signIn(devices, row!.id, phone)).toMatchObject({ match: { id: row!.id } });
+    expect(rows.usedReport()).toEqual([{ key: phone.spki, day: new Date(clock.now).toISOString().slice(0, 10) }]);
+    clock.now += 2 * 24 * 60 * 60_000;
+    expect(devices.sessionRow(row!.id)).not.toBeNull();
+    expect(rows.usedReport()).toEqual([{ key: phone.spki, day: new Date(clock.now).toISOString().slice(0, 10) }]);
+  });
 });
