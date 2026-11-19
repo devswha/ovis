@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { exportAccountKey, newRecordId, signSafetyRecord } from "./account-records.ts";
-import { ACCOUNT_ROWS_MAX, AccountSnapshotError, SNAPSHOT_PAGE_MAX, assembleSnapshot, parseAccountDevicesFile, parseSnapshotPage, type AccountSnapshotPage } from "./account-snapshot.ts";
+import { accountDeviceId, exportAccountKey, newRecordId, signSafetyRecord } from "./account-records.ts";
+import { ACCOUNT_ROWS_MAX, AccountSnapshotError, SNAPSHOT_PAGE_MAX, assembleSnapshot, parseAccountDevicesFile, parseAdmissionOrigin, parseSnapshotPage, type AccountSnapshotPage } from "./account-snapshot.ts";
 
 async function key() {
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
@@ -92,10 +92,26 @@ describe("account snapshot pages (device table P6, G1)", () => {
 
 describe("account-devices.json (device table S21, S25, P22)", () => {
   const row = {
-    id: "0123456789abcdef", key: newer.spki, no: 2, label: "Laptop",
+    id: accountDeviceId(serverId, newer.spki), key: newer.spki, no: 2, label: "Laptop",
     origin: { from: "remote", how: "list", by: null, admit_no: 4, at }, confirmed_at: at, last_signin_day: "2026-11-05", state: "hold", hold_until: at,
   };
   const file = { v: 1, account: "acct_1", server_id: serverId, snapshot: "a".repeat(32), version: 7, devices: [row] };
+
+  test("an origin from pc is a key confirm on this PC's screen: a code, digits or a QR, a confirmed row, or a confirmed replacement (P22, T68, T72)", () => {
+    for (const how of ["code", "digits", "qr", "confirmed", "link"]) {
+      const origin = { from: "pc", how, by: null, admit_no: 1, at };
+      expect(parseAdmissionOrigin(origin)).toEqual(origin as never);
+    }
+    for (const how of ["list", "add", "member", "promoted", "legacy"]) expect(() => parseAdmissionOrigin({ from: "pc", how, by: null, admit_no: 1, at })).toThrow(AccountSnapshotError);
+  });
+
+  test("an account-joined row has the id its key gives on this PC and came in from the list (S21)", () => {
+    const bad = [
+      { ...row, id: "0123456789abcdef" }, { ...row, id: accountDeviceId("f".repeat(32), newer.spki) },
+      { ...row, origin: { ...row.origin, from: "pc", how: "code" } }, { ...row, origin: { ...row.origin, how: "add" } },
+    ];
+    for (const entry of bad) expect(() => parseAccountDevicesFile({ ...file, devices: [entry] })).toThrow(AccountSnapshotError);
+  });
 
   test("a file survives JSON", () => {
     expect(parseAccountDevicesFile(JSON.parse(JSON.stringify(file)))).toEqual(file as never);
