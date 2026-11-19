@@ -140,6 +140,8 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     setOutputStopped(false);
     setNotificationViewTarget(view && paneId !== null ? { machine_id: machineId, pane_id: paneId, view } : null);
     setTerminalPeek(null);
+    // an earlier landing's note speaks of a pane this choice leaves behind
+    setHeaderNote(null);
     // this browser's choice only: herdr's focus, its TUI and every other device stay where they are
     storeSelection(machineId, paneId);
     pendingLink.current = null; pendingFile.current = null; setLinkLanded(true);
@@ -231,7 +233,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   return { selectedMachineRef, selectTarget, selectTargetRef, picks };
 }
 
-export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, onPick }: {
+export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, setHeaderNote, onPick }: {
   pendingLink: RefObject<AppLink | null>;
   pendingFile: RefObject<string | null>;
   setLinkLanded: Dispatch<SetStateAction<boolean>>;
@@ -241,6 +243,7 @@ export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selecti
   setTerminalPeek: Dispatch<SetStateAction<TerminalPeek | null>>;
   setAutoSelected: Dispatch<SetStateAction<boolean>>;
   setDrawerOpen: Dispatch<SetStateAction<boolean>>;
+  setHeaderNote: Dispatch<SetStateAction<LinkNote | "copied" | null>>;
   onPick?: () => void;
 }) {
   const onPickRef = useRef(onPick); onPickRef.current = onPick;
@@ -249,7 +252,7 @@ export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selecti
     pendingLink.current = null; pendingFile.current = null; setLinkLanded(true);
     selectionHint.current = null;
     setSelectedPaneId(paneId);
-    setNotificationViewTarget(null); setTerminalPeek(null);
+    setNotificationViewTarget(null); setTerminalPeek(null); setHeaderNote(null);
     setAutoSelected(!focusInput);
     setDrawerOpen(false);
   }, []);
@@ -359,7 +362,8 @@ export function useMachineGone({ machines, pendingLink, pendingFile, pendingCrea
     if (!machineGone(machines, rosterSeq.current, since, machineId)) return;
     pendingLink.current = null; pendingFile.current = null; pendingCreate.current = null;
     setLinkLanded(true);
-    setHeaderNote("machine-missing");
+    // after the selection, which takes an earlier note away
     selectTargetRef.current("local", null);
+    setHeaderNote("machine-missing");
   }, [machines, rosterTick, linkTick]);
 }

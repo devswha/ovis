@@ -260,4 +260,13 @@ describe("a desktop link to a pane the cached roster lacks", () => {
     expect(reads).toBe(0);
     expect(misses).toBe(0);
   });
+
+  it("takes an earlier landing's note away when the next link selects a live pane", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    await act(async () => { take(linkTarget("?ws=3-alpha&pane=t2")!); });
+    expect(shown).toEqual({ pane: "t2", note: null });
+  });
 });

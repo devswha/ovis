@@ -8,6 +8,7 @@ describe("selectPane", () => {
   let renderer: ReactTestRenderer | undefined;
   let select: (paneId: string, focusInput?: boolean) => void;
   let picks: number;
+  let note: string | null;
 
   beforeEach(() => {
     saved = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
@@ -33,7 +34,9 @@ describe("selectPane", () => {
       const [, setTerminalPeek] = useState(null);
       const [, setAutoSelected] = useState(false);
       const [, setDrawerOpen] = useState(false);
-      select = useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, onPick: () => { picks += 1; } } as Parameters<typeof useSelectPane>[0]).selectPane;
+      const [headerNote, setHeaderNote] = useState<"pane-closed" | null>("pane-closed");
+      note = headerNote;
+      select = useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, setHeaderNote, onPick: () => { picks += 1; } } as Parameters<typeof useSelectPane>[0]).selectPane;
       return null;
     }
     await act(async () => { renderer = create(createElement(Probe)); });
@@ -49,5 +52,12 @@ describe("selectPane", () => {
     await mount();
     await act(async () => { select("w1:p2", false); });
     expect(picks).toBe(0);
+  });
+
+  it("takes away the note an earlier link's landing left in the header", async () => {
+    await mount();
+    expect(note).toBe("pane-closed");
+    await act(async () => { select("w1:p2"); });
+    expect(note).toBeNull();
   });
 });
