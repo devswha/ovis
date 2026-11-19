@@ -2,9 +2,9 @@
  * Where a PC's folded header is kept: by its id, and in the hosted app also by the PC whose page this is, as every PC
  * there names its own machine "local".
  */
-function collapsedKey(machineId: string): string {
-  const page = shellMode() === "relay" ? serverIdOfPath(window.location.pathname) : null;
-  return page === null ? `ovis:pc-collapsed:${machineId}` : `ovis:pc-collapsed:${page}:${machineId}`;
+export function collapsedKey(machineId: string, page: { relayShell: boolean; pathname: string } = { relayShell: shellMode() === "relay", pathname: window.location.pathname }): string {
+  const server = page.relayShell ? serverIdOfPath(page.pathname) : null;
+  return server === null ? `ovis:pc-collapsed:${machineId}` : `ovis:pc-collapsed:${server}:${machineId}`;
 }
 
 import { tally } from "../lib/usageCounters.ts";
@@ -115,12 +115,11 @@ export function MachineSidebar(props: Props) {
   const loneHost = props.machines.length === 1 && props.machines[0]!.kind === "local" ? props.machines[0]!.id : null;
 
   const exitToPcs = useMemo(() => pcListExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname }), []);
-  const drawerShown = useMediaQuery(DRAWER_QUERY) ? props.drawerOpen === true : true;
-  const shellPcs = useShellPcs(exitToPcs === "shell", drawerShown);
+  const drawerWidth = useMediaQuery(DRAWER_QUERY);
+  const shellPcs = useShellPcs(exitToPcs === "shell", drawerWidth ? props.drawerOpen === true : true);
   // the lone host goes unnamed only while it is drawn without its header: beside other PCs its name is shown, and found
   const headerless = loneHost !== null && shellPcs.pcs.length === 0;
-  const unnamed = useMemo(() => new Set(headerless && loneHost !== null ? [loneHost] : []), [headerless, loneHost]);
-  const drawerWidth = useMediaQuery(DRAWER_QUERY);
+  const unnamed = useMemo(() => new Set(headerless ? [loneHost] : []), [headerless, loneHost]);
   const loneHostName = loneHost === null ? null : props.machines[0]!.name || null;
   const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels, unnamed), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels, unnamed]);
   const filterView = useMemo(() => ({ filter, reportBranches }), [filter, reportBranches]);

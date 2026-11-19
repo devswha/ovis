@@ -342,11 +342,28 @@ it("starts no sweep of its own while its page is hidden, and the first minute af
   } finally { Reflect.deleteProperty(globalThis, "document"); }
 });
 
-it("starts no new check while its view is out of sight, and its next check goes on with what waited", async () => {
+it("keeps draining its queue while the front page shows another screen, as it always did", async () => {
   const { store } = await savedPcs(4);
   const { pending, checked, arrived, probe } = heldProbe();
   let shown = true;
   const sweep = createPcSweep(store, { active: () => shown, redraw() {} }, { probe });
+  const swept = sweep.check();
+  await arrived(2);
+  shown = false;
+  pending[0]!.resolve({ kind: "offline", reason: "pc" });
+  pending[1]!.resolve({ kind: "offline", reason: "pc" });
+  await arrived(4);
+  pending[2]!.resolve({ kind: "offline", reason: "pc" });
+  pending[3]!.resolve({ kind: "offline", reason: "pc" });
+  await swept;
+  expect(new Set(checked).size).toBe(4);
+});
+
+it("starts no new check while a pausing view is out of sight, and its next check goes on with what waited", async () => {
+  const { store } = await savedPcs(4);
+  const { pending, checked, arrived, probe } = heldProbe();
+  let shown = true;
+  const sweep = createPcSweep(store, { active: () => shown, redraw() {} }, { probe, pauseOutOfSight: true });
   const swept = sweep.check();
   await arrived(2);
   shown = false;

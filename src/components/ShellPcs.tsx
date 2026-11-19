@@ -6,10 +6,32 @@ import { Monitor } from "lucide-react";
 import { useT } from "../lib/i18n.ts";
 import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
+import type { RelayDeviceStore, ShellDeviceStore } from "../lib/relay/device.ts";
+import type { createPcSweep as createPcSweepType } from "../lib/relay/pcSweep.ts";
 import { StatusDot } from "./StatusDot.tsx";
 
 interface ShellPc { readonly server_id: string; readonly name: string | null }
 interface Sweep { readonly status: ReadonlyMap<string, PcStatus>; readonly check: () => Promise<void>; readonly checkOne: (serverId: string) => Promise<void>; readonly stop: () => void }
+
+/** What the sidebar's list reads and checks with: this device's pairings, the front page's sweep and the key's id. */
+export interface ShellPcsDeps {
+  readonly store: Pick<ShellDeviceStore, "get" | "list"> & RelayDeviceStore;
+  readonly createPcSweep: typeof createPcSweepType;
+  readonly keyIdOf: (publicKey: string) => string | null;
+}
+
+const loadDeps = async (): Promise<ShellPcsDeps> => {
+  const [{ indexedDeviceStore }, { createPcSweep }, { keyIdOf }] = await Promise.all([import("../lib/relay/device.ts"), import("../lib/relay/pcSweep.ts"), import("../lib/relay/shellState.ts")]);
+  return { store: indexedDeviceStore, createPcSweep, keyIdOf };
+};
+
+/**
+ * The pairings a row stands for: finished ones whose key is the one their id names (a mismatch is its own page's to
+ * say), never the PC of this page and never one the account merely lists (those are not in this device's store).
+ */
+export function shellPcRows<T extends { readonly server_id: string; readonly device_id: string | null; readonly server_public_key: string }>(devices: readonly T[], here: string | null, keyIdOf: (publicKey: string) => string | null): T[] {
+  return devices.filter((device) => device.server_id !== here && device.device_id !== null && keyIdOf(device.server_public_key) === device.server_id);
+}
 
 /**
  * The other PCs this device is paired with, for the hosted app's sidebar: each opens on its own page, which connects
@@ -18,7 +40,7 @@ interface Sweep { readonly status: ReadonlyMap<string, PcStatus>; readonly check
  * real connection away for them), and only while the list is in sight (`shown`). `on`: only the hosted app on a PC's
  * page has such a list.
  */
-export function useShellPcs(on: boolean, shown: boolean): { readonly pcs: readonly ShellPc[]; readonly status: ReadonlyMap<string, PcStatus>; readonly recheck: (serverId: string) => void } {
+export function useShellPcs(on: boolean, shown: boolean, load: () => Promise<ShellPcsDeps> = loadDeps): { readonly pcs: readonly ShellPc[]; readonly status: ReadonlyMap<string, PcStatus>; readonly recheck: (serverId: string) => void } {
   const [pcs, setPcs] = useState<readonly ShellPc[]>([]);
   const [, redraw] = useState(0);
   const sweep = useRef<Sweep | null>(null);
@@ -29,25 +51,22 @@ export function useShellPcs(on: boolean, shown: boolean): { readonly pcs: readon
     if (!on) return;
     let gone = false;
     const here = serverIdOfPath(window.location.pathname);
-    void Promise.all([import("../lib/relay/device.ts"), import("../lib/relay/pcSweep.ts"), import("../lib/relay/shellState.ts")]).then(async ([{ indexedDeviceStore }, { createPcSweep }, { keyIdOf }]) => {
-      // the PCs a row stands for: paired ones whose key is the one their id names (a mismatch is its own page's to say), not this one
-      const usable = (device: { readonly server_id: string; readonly device_id: string | null; readonly server_public_key: string }): boolean =>
-        device.server_id !== here && device.device_id !== null && keyIdOf(device.server_public_key) === device.server_id;
-      const others = { ...indexedDeviceStore, list: async () => (await indexedDeviceStore.list()).filter(usable) };
+    void load().then(async ({ store, createPcSweep, keyIdOf }) => {
+      const others = { ...store, list: async () => shellPcRows(await store.list(), here, keyIdOf) };
       const devices = await others.list();
       if (gone) return;
       setPcs(devices.map((device) => ({ server_id: device.server_id, name: device.name ?? null })));
-      sweep.current = createPcSweep(others, { active: () => !gone && visible.current, redraw: () => { if (!gone) redraw((n) => n + 1); } });
+      sweep.current = createPcSweep(others, { active: () => !gone && visible.current, redraw: () => { if (!gone) redraw((n) => n + 1); } }, { pauseOutOfSight: true });
       // a PC forgotten in another tab since: its row goes instead of being checked
       forget.current = async (serverId) => {
-        if ((await indexedDeviceStore.get(serverId)) !== undefined || gone) return false;
+        if ((await store.get(serverId)) !== undefined || gone) return false;
         setPcs((rows) => rows.filter((row) => row.server_id !== serverId));
         return true;
       };
       if (visible.current) void sweep.current.check();
     }).catch((error: unknown) => { console.warn("Ovis: this device's other PCs could not be read", error); });
     return () => { gone = true; sweep.current?.stop(); sweep.current = null; };
-  }, [on]);
+  }, [on, load]);
   useEffect(() => { if (shown) void sweep.current?.check(); }, [shown]);
   return {
     pcs, status: sweep.current?.status ?? new Map(),

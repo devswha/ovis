@@ -21,7 +21,11 @@ function localStorageSet(key: string, value: string): void {
 
 interface QueuedCheck { readonly device: RelayDevice; readonly before: PcFinding | undefined; readonly settled: ReturnType<typeof Promise.withResolvers<void>> }
 
-export function createPcSweep(store: RelayDeviceStore, view: { readonly active: () => boolean; readonly redraw: () => void }, options: { readonly probe?: typeof checkPc; readonly directSocket?: (url: string) => RelaySocket } = {}) {
+/**
+ * `pauseOutOfSight`: a view that is out of sight starts no queued check (the sidebar's list, ShellPcs.tsx) and goes on
+ * from its queue on its next check; the front page's list keeps draining its queue while another screen is up, as before.
+ */
+export function createPcSweep(store: RelayDeviceStore, view: { readonly active: () => boolean; readonly redraw: () => void }, options: { readonly probe?: typeof checkPc; readonly directSocket?: (url: string) => RelaySocket; readonly pauseOutOfSight?: boolean } = {}) {
   const pcStatus = new Map<string, PcStatus>();
   const probe = options.probe ?? checkPc;
   const directSocket = options.directSocket;
@@ -48,12 +52,15 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     return entry.settled.promise;
   };
   let stopped = false;
+  const startsNow = (): boolean => !stopped && (options.pauseOutOfSight !== true || view.active());
   /** the timers that let an answer lapse, let go with the sweep */
   const expiries = new Set<ReturnType<typeof setTimeout>>();
   const probeNext = async (): Promise<void> => {
     // a view out of sight starts no new check: what is queued waits for the next time it is shown
-    for (let next = view.active() && !stopped ? queue.shift() : undefined; next; next = view.active() && !stopped ? queue.shift() : undefined) {
+    for (let next = startsNow() ? queue.shift() : undefined; next; next = startsNow() ? queue.shift() : undefined) {
       const found = await probe(next.device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
+      // stopped while this check ran: its answer goes nowhere
+      if (stopped) { next.settled.resolve(); return; }
       const serverId = next.device.server_id;
       // a relay that turned this device away, or that it could not reach, said nothing of the PC: the row keeps what it said
       // until a second such check in a row
@@ -82,7 +89,7 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
   };
   // only a view in sight starts checks; what waited for it starts here once it is shown again
   const drain = (): void => {
-    if (stopped || !view.active()) return;
+    if (!startsNow()) return;
     for (let spare = Math.min(CHECK_AT_ONCE - workers, queue.length); spare > 0; spare -= 1) {
       workers += 1;
       void probeNext().finally(() => { workers -= 1; });
