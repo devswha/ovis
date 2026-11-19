@@ -1282,6 +1282,32 @@ describe("another server on the same state directory", () => {
     expect(other.telemetry.status().enabled).toBe(false);
   });
 
+  test("an off done while an on waits for the lock wins over that on", () => {
+    const { telemetry, stateDir } = setup();
+    const other = setup({ stateDir });
+    telemetry.change({ enabled: false });
+    telemetry.change({ enabled: true });
+    const off = join(stateDir, "telemetry-off");
+    const lock = join(stateDir, "telemetry.lock");
+    const lstatSync = fs.lstatSync;
+    let offDone = false;
+    const interleave: ProxyHandler<typeof fs.lstatSync> = {
+      apply(target, receiver, args) {
+        if (args[0] === off && !offDone && fs.existsSync(lock)) {
+          offDone = true;
+          // the other server's off, between this on taking the lock and reading the mark: it cannot wait for the lock
+          other.telemetry.change({ enabled: false });
+        }
+        return Reflect.apply(target, receiver, args);
+      },
+    };
+    const lstat = spyOn(fs, "lstatSync").mockImplementation(new Proxy(lstatSync, interleave));
+    try { telemetry.change({ enabled: true }); }
+    finally { lstat.mockRestore(); }
+    expect(offDone).toBe(true);
+    expect([telemetry.status().enabled, other.telemetry.status().enabled]).toEqual([false, false]);
+  });
+
   test("each active POST uses the usage re-read under the lock for that day", async () => {
     const held = Promise.withResolvers<Response>();
     const started = Promise.withResolvers<void>();

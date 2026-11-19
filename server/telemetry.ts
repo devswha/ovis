@@ -600,8 +600,11 @@ export class Telemetry {
       // stops it at once, whatever the wait for the lock
       this.markOff();
     }
+    // the off mark an on was asked against: an off marked after it, even one done before this server gets the lock, wins
+    const markAsked = clean.enabled === true ? offMark(this.offFile) : null;
     const apply = () => this.locked((): "applied" | "superseded" => {
       const markAtStart = offMark(this.offFile);
+      if (clean.enabled === true && markAtStart !== markAsked) return "superseded";
       this.refresh();
       // the counter as the request found it: settings told with the generation the page heard last are from now
       const heard = this.saved.forgotten;
