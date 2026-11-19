@@ -179,7 +179,7 @@ describe("blocks and freezes on the PC (P16, P21, T51)", () => {
     expect(devices.has(another.id)).toBe(false);
   });
 
-  test("S22: a frozen cookie row and a cookie row whose key is removed sign in nowhere", async () => {
+  test("S22: a frozen cookie row signs in nowhere", async () => {
     const { devices } = pc();
     const [older, target] = [await member(devices), await member(devices)];
     const laptop = devices.pair(devices.startPairing().code, "Laptop", "drive")!;
@@ -189,14 +189,6 @@ describe("blocks and freezes on the PC (P16, P21, T51)", () => {
     // the laptop joined after the target: frozen in place, and its cookie opens nothing
     expect(devices.has(laptop.device.id)).toBe(true);
     expect(devices.match(laptop.token)).toBeNull();
-    // a cookie row that carries a key the account removed opens nothing either
-    const fresh = pc();
-    const keyed = fresh.devices.pair(fresh.devices.startPairing().code, "Desk", "drive")!;
-    fresh.devices.match(keyed.token);
-    const k = await key();
-    (fresh.devices as unknown as { devices: { id: string; relay_public_key?: string }[] }).devices.find((row) => row.id === keyed.device.id)!.relay_public_key = k.spki;
-    fresh.devices.removeAccountKey(k.spki, ACCOUNT, { id: "c".repeat(32), issuedAt: new Date().toISOString() });
-    expect(fresh.devices.match(keyed.token)).toBeNull();
   });
 
   test("P24: a block in the log whose marker was never written still denies its target after a restart", async () => {

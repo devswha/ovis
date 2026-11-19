@@ -593,6 +593,8 @@ export class DeviceStore {
     if (this.error === null && this.accountProblem === null && this.pc?.strict == null) {
       if (this.evidence !== null) {
         this.takeInEvidence([...tombstones ?? [], ...pending]);
+        // the log is the truth (P24): a block in force whose marker never reached the disk gets it before anything is served
+        this.markBlockTargets();
       } else {
         if (pending.length) {
           this.writeTombstones(this.tombstones);
@@ -886,6 +888,18 @@ export class DeviceStore {
     if (known !== null && known.outcome !== "refused") return known;
     if (!await verifySafetyRecord(record)) return refused(record.id, "record_invalid");
     return this.commitBlock(record, got);
+  }
+
+  /** Every block in force gives its target a marker and takes its rows, as its commit turn would have (P24). */
+  private markBlockTargets(): void {
+    for (const entry of this.safety?.state().blocks ?? []) {
+      const record = entry.record as BlockRecord;
+      if (!this.evidence!.addRemoval(record.target, record.account, { id: record.id, at: record.signed_at, records: [record] })) continue;
+      this.refreshTombstones();
+      const targets = this.devices.filter((d) => d.relay_public_key === record.target);
+      if (targets.length > 0) this.save(this.devices.filter((d) => !targets.includes(d)));
+      this.devices = this.devices.filter((d) => !targets.includes(d));
+    }
   }
 
   /** The commit turn of a verified block, in P8's order, with no wait inside. */
@@ -1856,6 +1870,8 @@ export class DeviceStore {
     }
     for (const device of this.devices) {
       if (!same(digest, device.token_hash)) continue;
+      // a row its evidence covers or a block freezes opens nothing, whichever way it signs in (S14, S22)
+      if (this.evidence !== null && this.stale(device)) return null;
       this.noteSeen(device, now);
       return { id: device.id, label: device.label, role: device.role };
     }
