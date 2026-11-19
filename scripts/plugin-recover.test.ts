@@ -22,9 +22,8 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
     send: async (request) => {
       if (options.unreachable) throw new Error("ENOENT");
       sent.push(request);
-      const act = (request as { act: string }).act;
-      if (act === "list") return { rows };
-      if (act === "release") return { released: (request as { rows: string[] }).rows };
+      if (request.act === "list") return { rows };
+      if (request.act === "release") return { released: request.rows };
       return { releases: ["r1"] };
     },
   };
