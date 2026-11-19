@@ -545,7 +545,8 @@ export class DeviceStore {
   private denyProblem: string | null = null;
   private readonly revokeAllPath: string;
   private readonly stateDirPath: string;
-  constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; held?: (key: string) => boolean } = {}) {
+  constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; joinedRows?: AccountRowSource | null; held?: (key: string) => boolean } = {}) {
+    this.joinedRows = account.joinedRows ?? null;
     this.safety = account.safety ?? null;
     this.handedLifts = new HandedLifts(stateDir);
     this.pc = account.pc ?? null;
@@ -2592,8 +2593,9 @@ export class DeviceStore {
 
   /** The writes of a Revoke all whose file is on disk: its Revokes, the empty registry, the PC's account; then the file goes. */
   private finishRevokeAll(rows: readonly StoredDevice[], gate: string): void {
+    const joined = this.joinedRows?.rows() ?? [];
+    this.tombstone([...rows, ...joined.map((row) => this.joinedAsStored(row))], Date.now());
     this.endAccountRows("revoke_all");
-    this.tombstone(rows, Date.now());
     this.save([], gate);
     this.devices = [];
     this.gateClosedAt = gate;

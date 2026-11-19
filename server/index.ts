@@ -314,8 +314,19 @@ export function createServer(
   const removals = opensAll ? RemovalEvidence.open(stateDir, safetyLog) : null;
   // the journal's first entry makes the safety log too, so a journal never stands without its log (P24)
   const journal = opensAll ? DeviceJournal.open(stateDir, () => safetyLog?.ensureFile()) : null;
-  const devices = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
-    safety: safetyLog, pc: pcAccount, removals, journal, carried, held: (key) => accountMailbox.gates().held(key),
+  // Step 2 (S2-24): with the release flag on, each pull is followed by a whole read applied to this PC's log and rows
+  const serverIdNow = () => ovisRelay.currentIdentity()?.server_id ?? null;
+  // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
+  const accountRows = safetyLog !== null && pcAccount !== null && journal !== null ? accountRowsFor(stateDir, serverIdNow, {
+    journal: (entry) => { journal.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: entry.reason ?? "list", key: entry.key, no: entry.no ?? null, row: entry.row, label: entry.label ?? "", by: null, account: pcAccount.account() }); },
+    closeSessions: (id) => { devices.closeAccountSessions(id); },
+    heldByDevicesJson: (key) => devices.hasKey(key),
+    admits: (key) => devices.admits(key),
+    now: () => Date.now(),
+    admitOrigin: (at) => pcAccount.admit("remote", "list", null, at),
+  }) : null;
+  const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
+    safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: accountRows, held: (key) => accountMailbox.gates().held(key),
   });
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
   const accountMailbox = new AccountMailbox({
@@ -579,18 +590,6 @@ export function createServer(
     },
     removalsPending: () => devices.pendingLockRemovals().length > 0,
   } }) : undefined;
-  // Step 2 (S2-24): with the release flag on, each pull is followed by a whole read applied to this PC's log and rows
-  const serverIdNow = () => ovisRelay.currentIdentity()?.server_id ?? null;
-  // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
-  const accountRows = safetyLog !== null && pcAccount !== null && journal !== null ? accountRowsFor(stateDir, serverIdNow, {
-    journal: (entry) => { journal.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: entry.reason ?? "list", key: entry.key, no: entry.no ?? null, row: entry.row, label: entry.label ?? "", by: null, account: devices.account() }); },
-    closeSessions: (id) => { devices.closeAccountSessions(id); },
-    heldByDevicesJson: (key) => devices.hasKey(key),
-    admits: (key) => devices.admits(key),
-    now: () => Date.now(),
-    admitOrigin: (at) => pcAccount.admit("remote", "list", null, at),
-  }) : null;
-  devices.attachAccountRows(accountRows);
   const accountOrder = safetyLog !== null ? AccountOrder.open(stateDir) : null;
   devices.attachAccountOrder(accountOrder);
   const readPorts = safetyLog !== null && pcAccount !== null && journal !== null && accountOrder !== null
