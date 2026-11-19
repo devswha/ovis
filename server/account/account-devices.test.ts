@@ -79,8 +79,8 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     expect(result).toEqual({ admitted: [], dropped: [keyOf("k-2"), keyOf("k-3")] });
     // sessions first, then the journal, then the file
     expect(events).toEqual([
-      `close ${two!.id} list`, "journal drop k-2 file=[k-1,k-2,k-3]",
-      `close ${three!.id} list`, "journal drop k-3 file=[k-1,k-2,k-3]",
+      `close ${two!.id} list`, `close ${three!.id} list`,
+      "journal drop k-2 file=[k-1,k-2,k-3]", "journal drop k-3 file=[k-1,k-2,k-3]",
     ]);
     expect(fileKeys(dir)).toEqual(["k-1"]);
     expect(store.rows().map((row) => row.id)).toEqual([one!.id]);
@@ -93,6 +93,21 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     expect(store.live(two!.id)).toBe(false);
   });
 
+  test("T35: a failed drop journal cannot keep omitted rows or their sessions", () => {
+    const dir = stateDir();
+    const closed: string[] = [];
+    const store = new AccountDeviceStore(dir, SERVER, ports(dir, {
+      closeSessions: id => { closed.push(id); },
+      journal: entry => { if (entry.kind === "drop") throw new Error("journal unavailable"); },
+    }).ports);
+    store.commitList(list(["k-1", "k-2", "k-3"]));
+    const omitted = store.rows().filter(row => row.key !== keyOf("k-2")).map(row => row.id);
+
+    expect(() => store.commitList(list(["k-2"], [], 2))).toThrow("journal unavailable");
+    expect({ closed, memory: store.rows().map(row => nameOf(row.key)), disk: fileKeys(dir) })
+      .toEqual({ closed: omitted, memory: ["k-2"], disk: ["k-2"] });
+  });
+
   test("T44: clearing binding or resetting identity drops account rows, but the last member leaving does not", () => {
     for (const reason of ["left_on_pc", "revoke_all", "identity_reset"] as const) {
       const dir = stateDir();
@@ -102,7 +117,7 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
       events.length = 0;
       const ids = store.rows().map((row) => row.id);
       store.clear(reason);
-      expect({ reason, events }).toEqual({ reason, events: [`close ${ids[0]} ${reason}`, "journal drop k-1 file=[k-1,k-2]", `close ${ids[1]} ${reason}`, "journal drop k-2 file=[k-1,k-2]"] });
+      expect({ reason, events }).toEqual({ reason, events: [`close ${ids[0]} ${reason}`, `close ${ids[1]} ${reason}`, "journal drop k-1 file=[k-1,k-2]", "journal drop k-2 file=[k-1,k-2]"] });
       expect(fileKeys(dir)).toEqual([]);
       expect(new AccountDeviceStore(dir, SERVER, p).rows()).toEqual([]);
     }
