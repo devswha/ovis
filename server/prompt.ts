@@ -5,6 +5,7 @@ import { piRecordText } from "./pi-delivery.ts";
 import { agentProcesses, ompTranscriptPath, paneRunsOmo, readCommandTranscript } from "./conversation.ts";
 import { ConversationNotStarted } from "./conversation-shared.ts";
 import { agentProcessInFront } from "./agent-process.ts";
+import { labelledAgent } from "./agent-identity.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { processAlive, processStartedAt, processStartUpperBoundAsync } from "./process-start.ts";
 import { commandInvocations, commandOutcome, CommandReservations, dialogSettlingScreen, ownsCommandDialog, WINDOW_MS as COMMAND_WINDOW_MS, type CommandSend } from "./outcome.ts";
@@ -667,7 +668,7 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   openCodeState.reconcile(panes, before);
   const pane = panes.find((candidate) => candidate.pane_id === paneId);
   if (!pane) throw new HerdrError("pane_not_found", `pane ${paneId} not found`);
-  const agent = pane.agent ?? "";
+  const agent = labelledAgent(pane.agent) ?? "";
   const status = pane.agent_status;
   const turns = answerTurns.get(paneId) ?? 0;
   const known = await readKnownPrompt(paneId, pane, agent, codexHome, panes, openCodeStateDir, openCodeState, signal, true);
@@ -1350,8 +1351,8 @@ export async function currentPrompt(paneId: string, options: { codexHome?: strin
  * an answer stands on.
  */
 export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], options: { codexHome?: string; openCodeStateDir?: string; openCodeState: OpenCodePromptState; ompLookups: OmpLookups; answers?: OpenCodePromptState }): Promise<string | null | undefined> {
-  if (pane.agent === "pi") return undefined;
-  const agent = pane.agent ?? "";
+  const agent = labelledAgent(pane.agent) ?? "";
+  if (agent === "pi") return undefined;
   const known = await readKnownPrompt(pane.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, options.openCodeState, undefined, false, false, options.ompLookups);
   if (known.stale) return undefined;
   const shown = contentId(known.prompt ?? (await fallbackCard(pane.pane_id, agent, pane.agent_status, known))?.prompt ?? null) ?? null;

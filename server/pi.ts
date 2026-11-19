@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { PI_ASK_BRIDGE_DIRECTORY, type PiAskBridgeState, type PiBridgeCommands } from "../shared/pi-ask-bridge.ts";
 import type { SlashCommand } from "../shared/protocol.ts";
+import { labelledAgent } from "./agent-identity.ts";
 import { registerCatalogSource } from "./catalog-sources.ts";
 import { agentGet, paneProcessInfo } from "./herdr/client.ts";
 import { runsAgent } from "./gjc-runtime.ts";
@@ -269,7 +270,7 @@ export async function piTranscriptPath(
   options: PiTranscriptOptions = {},
 ): Promise<{ path: string; agentDir: string | null; identity: string } | { unwritten: { id: string; path: string } } | null> {
   const agent = options.agent === undefined ? await agentGet(paneId).catch(() => null) : options.agent;
-  if (agent?.agent !== "pi") return null;
+  if (!agent || labelledAgent(agent.agent) !== "pi") return null;
   const session = agent.agent_session;
   const absent = session === undefined || session === null;
   if (!absent && (session.agent !== "pi" || session.source !== "herdr:pi" || session.kind !== "path" || typeof session.value !== "string")) return null;
