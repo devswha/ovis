@@ -133,5 +133,41 @@ describe("the safety log holds what it acknowledged (P24, T28, T41, S19)", () =>
     const registry = readDeviceRegistry(join(at, "devices.json"));
     expect(registry.kind === "ok" && registry.gateClosedAt !== null).toBe(true);
   });
+
+  test("P24: one id twice among the folded lines is a damaged log", () => {
+    const at = dir();
+    writeFileSync(join(at, SAFETY_LOG_FILE), JSON.stringify({ v: 1, next: 3, base: [{ id: "a".repeat(32) }, { id: "a".repeat(32) }], entries: [], waiting: [] }), { mode: 0o600 });
+    expect(SafetyLog.open(at).strict).not.toBeNull();
+  });
+
+  test("P24: a closed server gives its folder's log handle up", () => {
+    const at = dir();
+    const fixture = relayFixture(false, { stateDir: at, accountOpensAll: true });
+    const served = fixture.app.context.services.safetyLog;
+    fixture.close();
+    dirs.splice(dirs.indexOf(at), 1);
+    expect(SafetyLog.open(at)).not.toBe(served);
+    rmSync(at, { recursive: true, force: true });
+  });
+
+  test("a machine profile with a broken devices.json still starts, flag on or off, for its recovery", () => {
+    for (const accountOpensAll of [false, true]) {
+      const at = dir();
+      writeFileSync(join(at, "devices.json"), "not json", { mode: 0o600 });
+      const fixture = relayFixture(false, { stateDir: at, accountOpensAll, profile: "machine" });
+      fixtures.push(fixture);
+      dirs.splice(dirs.indexOf(at), 1);
+      expect(fixture.app.context.services.devices.error).not.toBeNull();
+    }
+  });
+
+  test("S19: pairing_gate reads the safety log alone, not an old tombstone file it cannot read", () => {
+    const at = dir();
+    const devices = new DeviceStore(at, null, "the account tombstones could not be merged", null);
+    expect(devices.failsClosed).toBe(false);
+    const strict = dir();
+    writeFileSync(join(strict, SAFETY_LOG_FILE), "not json", { mode: 0o600 });
+    expect(new DeviceStore(strict, null, null, SafetyLog.open(strict)).failsClosed).toBe(true);
+  });
 });
 
