@@ -51,6 +51,8 @@ import type { RecoveryReleases } from "./account/recovery.ts";
 import type { PendingRedemption, PendingRedemptions } from "./account/pending.ts";
 import type { KeyProofPairings } from "./account/key-proof.ts";
 import { handlePendingRequest } from "./account/pending-routes.ts";
+import type { lockRoutes } from "./account/lock-routes.ts";
+import { lockBoundary } from "./lock-boundary.ts";
 import { handleAccountRequest } from "./account/routes.ts";
 import type { AccountMailbox } from "./account/mailbox.ts";
 import type { AccountHolds } from "./account/holds.ts";
@@ -137,6 +139,8 @@ export interface RequestServices {
   readonly keyProofPairings?: KeyProofPairings;
   /** puts a waiting key on this PC's screen */
   readonly askScreenForKey?: (entry: PendingRedemption) => void;
+  /** /api/account/lock and /unlock (server/account/lock-routes.ts); only with the release flag */
+  readonly lockRoutes?: ReturnType<typeof lockRoutes>;
   readonly portalStartupResult: PortalStartup | undefined;
   readonly portalStartup: Promise<PortalStartup>;
 }
@@ -243,7 +247,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     if (portalProven || (portalShape && loopback && request.headers.get("x-forwarded-proto") === "https" && (options.portal?.serves(requestHost) ?? false))) return "portal";
     return observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
   };
-  const access = options.profile === "machine" ? decideMachineAccess({ relayPeer, ownerSocket: ctx.ownerSocket === true, host: requestHost, forwarded: machineForwardingHeaders(request.headers) }) : decideAccess({
+  let access = options.profile === "machine" ? decideMachineAccess({ relayPeer, ownerSocket: ctx.ownerSocket === true, host: requestHost, forwarded: machineForwardingHeaders(request.headers) }) : decideAccess({
     relayPeer,
     ...requestShape,
     host: requestHost,
@@ -259,6 +263,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       role: portalProven ? options.portal?.roleFor(request.headers.get("x-portal-user"), request.headers.get("x-portal-auth")) ?? "watch" : "watch",
     },
   });
+  // the lock and a log that cannot be read decide here, once, for every way in (server/lock-boundary.ts)
+  const safety = ctx.services.safetyLog;
+  if (safety !== null && safety !== undefined) {
+    access = lockBoundary(access, { locked: safety.state().locked, strict: safety.strict !== null }, {
+      localProof: false, ownProgram: ctx.ownerSocket === true, originOf: (rowId) => devices.originOf(rowId),
+    });
+  }
   const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized);
 
   // on the owner's socket a request naming another host or showing a proxy gets nothing, its health included
@@ -558,6 +569,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/herdr/update") { setRequestRoute(pathname); return handleHerdrUpdateRequest(request, options.herdrUpdate); }
   if (pathname === "/api/portal" || pathname.startsWith("/api/portal/")) {
     return handlePortalRequest(request, pathname, options.portal, { port: ctx.port ?? DEFAULT_PORT, ...portalGuards() });
+  }
+  if (ctx.services.lockRoutes !== undefined && (pathname === "/api/account/lock" || pathname === "/api/account/unlock")) {
+    return ctx.services.lockRoutes(request, pathname, access, ctx.peer.kind === "relay");
   }
   if (pathname.startsWith("/api/account/")) return handleAccountRequest(request, pathname, ctx, access);
   if (pathname === "/api/relay" || pathname.startsWith("/api/relay/")) {
