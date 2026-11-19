@@ -41,6 +41,7 @@ async function expectRemoval(remove: Removal) {
     await remove(pc, publicKey, serverId);
 
     expect(disksAtClose).toEqual([[id]]);
+    expect(await bounded(link.serverError)).toBe("auth_revoked");
     await bounded(link.closed);
     expect(devices.has(id)).toBe(false);
     expect(persisted()).toEqual([]);
@@ -68,7 +69,7 @@ test("T36, P8: signed removal closes the account session before persistence and 
   });
 });
 
-test("T64, P8: a block closes the account session before persistence and survives restart", async () => {
+test("T51, T64, P8: a block revokes the target session before persistence and survives restart", async () => {
   await expectRemoval(async ({ fixture, member }, target) => {
     const record = await signSafetyRecord({ v: 1, kind: "block", account, target, target_no: 2,
       signer: member.publicKey, signer_no: 1, signed_at: at, nonce: newRecordId() }, member.keys.privateKey);
