@@ -314,6 +314,9 @@ export class SafetyLog {
     for (const { record } of this.file.entries) {
       if ((record.kind !== "lift" && record.kind !== "unlock")) continue;
       const named = at(record.account, record.target);
+      // a lift folds only with the record it ends: never while a block it lifts is still whole here
+      const blockWhole = this.file.entries.some((entry) => entry.record.id === record.target && entry.record.account === record.account && !folds.has(named));
+      if (blockWhole) continue;
       if (folds.has(named) || folds.has(at(record.account, `f:${record.target}`)) || this.file.base.some((line) => line.id === record.target && line.account === record.account)) folds.add(at(record.account, record.id));
     }
     if (folds.size === 0) return 0;
@@ -357,7 +360,20 @@ export function mergeSafetyLogs(active: string, sibling: string): string | null 
       if (known !== undefined && !sameRecord(known, entry.record)) return `The account safety logs of ${active} and ${sibling} hold two different records under the id ${entry.record.id}`;
       records.set(entry.record.id, entry.record);
     }
+    // a folded line and a whole record under one id are one record only when they agree on what it was (T48)
+    for (const line of [...a.base, ...b.base]) {
+      const whole = records.get(line.id);
+      if (whole !== undefined && (whole.kind !== line.kind || whole.account !== line.account || whole.target !== line.target)) return `The account safety logs of ${active} and ${sibling} hold two different records under the id ${line.id}`;
+    }
     const base = [...a.base, ...b.base.filter((line) => !a.base.some((own) => own.id === line.id))];
+    // one block noted with two freeze lines: both folders keep the stricter, lower one (P24)
+    const after = new Map<string, number>();
+    for (const entry of [...a.entries, ...b.entries]) {
+      const line = entry.asof?.after;
+      if (line == null) continue;
+      after.set(entry.record.id, Math.min(after.get(entry.record.id) ?? line, line));
+    }
+    const strictest = (entry: SafetyEntry): SafetyEntry => entry.asof === undefined || entry.asof.after === null || after.get(entry.record.id) === entry.asof.after ? entry : { ...entry, asof: { ...entry.asof, after: after.get(entry.record.id)! } };
     const folded = new Set(base.map((line) => line.id));
     const merged = (mine: typeof a, theirs: typeof a): LogFile => {
       const held = new Set(mine.entries.map((entry) => entry.record.id));
@@ -366,12 +382,12 @@ export function mergeSafetyLogs(active: string, sibling: string): string | null 
         .filter((entry) => !held.has(entry.record.id) && !folded.has(entry.record.id))
         .map((entry) => ({ ...entry, n: next++, got: "merge" as const }));
       const waiting = [...mine.waiting, ...theirs.waiting.filter((item) => !mine.waiting.some((own) => JSON.stringify(own) === JSON.stringify(item)))];
-      return { v: 1, next, base, entries: [...mine.entries.filter((entry) => !folded.has(entry.record.id)), ...taken], waiting };
+      return { v: 1, next, base, entries: [...mine.entries.filter((entry) => !folded.has(entry.record.id)), ...taken].map(strictest), waiting };
     };
     const [forOwn, forOther] = [merged(a, b), merged(b, a)];
     const written: string[] = [];
     for (const [dir, file, before] of [[active, forOwn, a], [sibling, forOther, b]] as const) {
-      if (file.entries.length === before.entries.length && file.base.length === before.base.length && file.waiting.length === before.waiting.length) continue;
+      if (JSON.stringify(file) === JSON.stringify({ v: 1, ...before })) continue;
       try { writePrivateState(join(dir, SAFETY_LOG_FILE), file); written.push(dir); } catch (error) {
         // a merge half written fails this PC closed rather than its start: what each dir holds stays a whole log
         return `Cannot write the merged account safety log into ${dir}${written.length ? ` (already written into ${written.join(", ")})` : ""}: ${error instanceof Error ? error.message : String(error)}`;
