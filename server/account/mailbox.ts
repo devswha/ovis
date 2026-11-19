@@ -14,7 +14,8 @@ import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { AccountHolds } from "./holds.ts";
-import type { PageAnswer } from "./snapshot-read.ts";
+import { accountOpensAll } from "../../shared/account-devices-api.ts";
+import { readSnapshot, type PageAnswer, type ReadOutcome, type SnapshotPorts } from "./snapshot-read.ts";
 import { applyAccountRecords, type AddGates, type RecordOutcome } from "./records.ts";
 
 export const MAILBOX_PULL_MS = 5 * 60_000;
@@ -125,6 +126,11 @@ export interface AccountMailboxOptions {
   readonly service: string | Error;
   readonly fetch?: (request: Request) => Promise<Response>;
   readonly holds?: AccountHolds;
+  /**
+   * The account's whole snapshot read (Step 2, S2-24), run after each pull only while OVIS_ACCOUNT_OPENS_ALL is on:
+   * the account it reads and the ports that apply it, or null for none now.
+   */
+  readonly snapshot?: { account(): string | null; ports(): SnapshotPorts | null };
 }
 
 export class AccountMailbox {
@@ -212,8 +218,29 @@ export class AccountMailbox {
   private waiting(): unknown[] { return [...this.draining, ...this.pending]; }
 
   pull(): Promise<number> {
-    this.pulling ??= this.exclusively(() => this.drain()).finally(() => { this.pulling = undefined; });
+    this.pulling ??= this.exclusively(async () => {
+      const applied = await this.drain();
+      await this.readSnapshotNow();
+      return applied;
+    }).finally(() => { this.pulling = undefined; });
     return this.pulling;
+  }
+
+  /** One whole snapshot read now, in turn with pulls; null when the release flag is off or there is nothing to read for. */
+  readSnapshot(): Promise<ReadOutcome | null> {
+    return this.exclusively(() => this.readSnapshotNow());
+  }
+
+  private async readSnapshotNow(): Promise<ReadOutcome | null> {
+    const snapshot = this.options.snapshot;
+    if (!accountOpensAll() || !snapshot) return null;
+    const account = snapshot.account();
+    const ports = snapshot.ports();
+    if (account === null || ports === null) return null;
+    try { return await readSnapshot((cursor) => this.snapshotPage(account, cursor), ports); } catch (error) {
+      this.error = error instanceof Error ? error.message : String(error);
+      return null;
+    }
   }
 
   /** The waiting records are retried by one run at a time (a pull, or settle), so none of them is ever out of the gate's sight. */
