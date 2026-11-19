@@ -37,7 +37,7 @@ describe("the account's PCs in the relay tab", () => {
     refuseCheck = false;
     invalid = new Set();
     slow = new Map();
-    source = { list: async () => [OWN, DESK, LAB, OLD, AWAY], admit: async (...args) => { admitted.push(args); } };
+    source = { account: async () => "acct", list: async () => [OWN, DESK, LAB, OLD, AWAY], admit: async (...args) => { admitted.push(args); } };
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -169,7 +169,7 @@ describe("the account's PCs in the relay tab", () => {
   });
 
   it("shows nothing when this page is not signed in", async () => {
-    source = { list: async () => null, admit: async () => { throw new Error("not signed in"); } };
+    source = { account: async () => null, list: async () => null, admit: async () => { throw new Error("not signed in"); } };
     await mount();
     expect(renderer!.toJSON()).toBeNull();
     expect(requests).toEqual([]);

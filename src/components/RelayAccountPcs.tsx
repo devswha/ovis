@@ -14,6 +14,8 @@ import { deviceOs } from "../lib/phone.ts";
 /** The account as this list uses it: its PCs that a device can pair with (key and relay from the directory), and the admission that vouches for this PC. */
 export interface AccountPcsSource {
   list(): Promise<readonly AccountPcEntry[] | null>;
+  /** the account this page is signed in to; null when it is not */
+  account(): Promise<string | null>;
   /** says, under the sign-in the list was read with, that this PC's server waits at `serverId` with `key` */
   admit(serverId: string, label: string, key: string): Promise<void>;
 }
@@ -23,6 +25,9 @@ export function signedInAccount(): AccountPcsSource {
   const service = new AccountService({ store: indexedAccountStore });
   let bound: AccountService | null = null;
   return {
+    async account() {
+      return (await service.session())?.account ?? null;
+    },
     async list() {
       const session = await service.session();
       if (session === undefined) return null;
@@ -36,16 +41,33 @@ export function signedInAccount(): AccountPcsSource {
   };
 }
 
-type Pairing = { server_id: string; digits: string | null; abort: AbortController };
+export type Pairing = { server_id: string; digits: string | null; abort: AbortController };
 
-const spaced = (digits: string): string => `${digits.slice(0, 3)} ${digits.slice(3)}`;
+export const spaced = (digits: string): string => `${digits.slice(0, 3)} ${digits.slice(3)}`;
+
+/** The account's other PCs as both lists use them: which would pair, and Add, which pairs one once a member approves it. */
+export interface AccountPcs {
+  /** the account's PCs but this one; null until read, when not signed in, or when this PC will not check them */
+  pcs: readonly AccountPcEntry[] | null;
+  /** the PC of this app's roster an account PC already is */
+  added(serverId: string): Machine | undefined;
+  /** what the PC answered when asked whether it would pair; undefined while it is asked */
+  stateOf(serverId: string): AccountPcState | undefined;
+  pairing: Pairing | null;
+  failure: { server_id: string; message: string } | null;
+  add(pc: AccountPcEntry): Promise<void>;
+  cancel(): void;
+  /** asks that PC again whether it would pair (Check again on one that did not answer) */
+  recheck(pc: AccountPcEntry): void;
+}
 
 /**
- * One already in this app reads Connect; one that would pair reads Add, which has this PC's server pair with it
- * through the relay once a member of the account approves it on another device (docs/account.md, "Adding a PC of
- * your account"); an older or offline one says so and gets no button.
+ * The account's other PCs, read once `enabled`: each not in this app yet is asked on its own whether it would pair, so a
+ * PC slow to answer (offline) holds no other row on Checking…. Add has this PC's server pair with it through the relay
+ * once a member of the account approves it on another device (docs/account.md, "Adding a PC of your account"), then
+ * hands the new PC to `onAdded`.
  */
-export function RelayAccountPcs({ machines, onConnectMachine, source }: { machines: readonly Machine[]; onConnectMachine: (machine: Machine) => void; source?: AccountPcsSource }) {
+export function useAccountPcs({ machines, source, enabled = true, onAdded }: { machines: readonly Machine[]; source?: AccountPcsSource; enabled?: boolean; onAdded: (machine: Machine) => void }): AccountPcs {
   const t = useT();
   const account = useRef<AccountPcsSource | null>(null);
   account.current ??= source ?? signedInAccount();
@@ -57,6 +79,7 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
   const added = (serverId: string): Machine | undefined => machines.find((machine) => machine.kind !== "local" && (machine.relay?.server_id ?? machine.server_id) === serverId);
   const listed = useRef({ asked: new Set<string>() });
   useEffect(() => {
+    if (!enabled) { setPcs(null); return; }
     let live = true;
     account.current!.list().then((read) => {
       if (!live || read === null) return;
@@ -67,29 +90,29 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
       if (live) setPcs(null);
     });
     return () => { live = false; };
-  }, [own]);
+  }, [own, enabled]);
+  const check = (pc: AccountPcEntry, round: { asked: Set<string> }): void => {
+    round.asked.add(pc.server_id);
+    checkAccountPcs([pc]).then(({ pcs: [checked] }) => {
+      if (listed.current === round && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
+    }, (error: unknown) => {
+      if (listed.current !== round) return;
+      // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) leaves only its own row; anything
+      // else (a window this PC will not answer, owner_only) leaves no list rather than rows that say Checking… for good
+      if (error instanceof ApiError && error.code === "account_pc_invalid") setPcs((current) => current?.filter((entry) => entry.server_id !== pc.server_id) ?? null);
+      else {
+        console.warn("Ovis: the account's PCs could not be checked", error instanceof Error ? error.name : error);
+        setPcs(null);
+      }
+    });
+  };
   useEffect(() => {
     if (pcs === null) return;
     const round = listed.current;
-    for (const pc of pcs) {
-      if (added(pc.server_id) !== undefined || round.asked.has(pc.server_id)) continue;
-      round.asked.add(pc.server_id);
-      checkAccountPcs([pc]).then(({ pcs: [checked] }) => {
-        if (listed.current === round && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
-      }, (error: unknown) => {
-        if (listed.current !== round) return;
-        // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) leaves only its own row; anything
-        // else (a window this PC will not answer, owner_only) leaves no list rather than rows that say Checking… for good
-        if (error instanceof ApiError && error.code === "account_pc_invalid") setPcs((current) => current?.filter((entry) => entry.server_id !== pc.server_id) ?? null);
-        else {
-          console.warn("Ovis: the account's PCs could not be checked", error instanceof Error ? error.name : error);
-          setPcs(null);
-        }
-      });
-    }
+    for (const pc of pcs) if (added(pc.server_id) === undefined && !round.asked.has(pc.server_id)) check(pc, round);
   }, [pcs, machines]);
   useEffect(() => () => { listed.current = { asked: new Set() }; }, []);
-  // closing the sheet cancels a comparison under way: that PC's server ends it, and nothing is kept
+  // closing the list cancels a comparison under way: that PC's server ends it, and nothing is kept
   const running = useRef<AbortController | null>(null);
   useEffect(() => () => running.current?.abort(), []);
 
@@ -104,7 +127,7 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
       await account.current!.admit(pc.server_id, label, key);
       const machine = await pairAccountPc(ticket, (digits) => setPairing((current) => current?.abort === abort ? { ...current, digits } : current), abort.signal);
       setPairing(null);
-      onConnectMachine(machine);
+      onAdded(machine);
     } catch (error) {
       if (abort.signal.aborted) return;
       setPairing(null);
@@ -116,6 +139,21 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
     pairing?.abort.abort();
     setPairing(null);
   };
+  const recheck = (pc: AccountPcEntry): void => {
+    setFailure((current) => current?.server_id === pc.server_id ? null : current);
+    // the PC's last answer stays until the new one: the off row keeps its Check again, held while it asks
+    check(pc, listed.current);
+  };
+  return { pcs, added, stateOf: (serverId) => states.get(serverId), pairing, failure, add, cancel, recheck };
+}
+
+/**
+ * One already in this app reads Connect; one that would pair reads Add (useAccountPcs); an older or offline one says so
+ * and gets no button.
+ */
+export function RelayAccountPcs({ machines, onConnectMachine, source }: { machines: readonly Machine[]; onConnectMachine: (machine: Machine) => void; source?: AccountPcsSource }) {
+  const t = useT();
+  const { pcs, added, stateOf, pairing, failure, add, cancel } = useAccountPcs({ machines, source, onAdded: onConnectMachine });
 
   if (pcs === null || pcs.length === 0) return null;
   return (
@@ -124,7 +162,7 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
       <ul className="connect-found-list">
         {pcs.map((pc) => {
           const machine = added(pc.server_id);
-          const state = states.get(pc.server_id);
+          const state = stateOf(pc.server_id);
           const waiting = pairing?.server_id === pc.server_id;
           const detail = machine !== undefined ? t("In this app") : state === undefined ? t("Checking…") : state === "ready" ? t("Online")
             : state === "outdated" ? t("Update Ovis on that PC") : t("Offline");
