@@ -49,7 +49,7 @@ const lift = (target: string, by: Key): Promise<DeviceLiftRecord> =>
   signSafetyRecord({ v: 1, kind: "lift", account: ACCOUNT, target, signer: by.spki, signer_no: 1, signed_at: new Date().toISOString() }, by.keys.privateKey) as Promise<DeviceLiftRecord>;
 
 let snapshots = 0;
-function page(over: Partial<AccountSnapshotPage>): PageAnswer {
+function page(over: Partial<AccountSnapshotPage>): { page: AccountSnapshotPage } {
   snapshots++;
   return { page: { v: 1, snapshot: snapshots.toString(16).padStart(32, "0"), account: ACCOUNT, server_id: SERVER, version: snapshots, methods_version: 0, page: 0, last: true, devices: [], removed: [], blocks: [], lifts: [], freezes: [], ...over } };
 }
@@ -107,8 +107,8 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     await member(devices);
     const newer = page({});
     const older = page({});
-    (older.page as { version: number }).version = 1;
-    (newer.page as { version: number }).version = 5;
+    older.page = { ...older.page, version: 1 };
+    newer.page = { ...newer.page, version: 5 };
     expect(await read(ports, newer)).toMatchObject({ committed: true });
     expect(await read(ports, older)).toEqual({ committed: false, reason: "stale", denials: 0 });
   });
