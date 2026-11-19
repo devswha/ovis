@@ -101,3 +101,20 @@ describe("sending a Not me to every PC", () => {
     expect(fleet.outcomes.get(B)?.state).toBe("waiting");
   });
 });
+
+describe("which answers count (relay-hub ruling on T60)", () => {
+  const block = { id: "c".repeat(64) } as unknown as import("../../../shared/account-records.ts").BlockRecord;
+  const applied = async () => [{ outcome: "applied", id: block.id, n: 1 }];
+
+  it("T60: a receipt relayed by another PC's proxy is delivered but stays waiting; over that PC's own channel it is done", async () => {
+    const proxied = await sendBlocks([block], { pcs: new Map(), relayed: new Map([["b".repeat(32), applied]]), service: async () => {} });
+    expect(proxied.outcomes.get("b".repeat(32))?.state).toBe("waiting");
+    const own = await sendBlocks([block], { pcs: new Map([["b".repeat(32), applied]]), service: async () => {} });
+    expect(own.outcomes.get("b".repeat(32))?.state).toBe("applied");
+  });
+
+  it("T60: a PC reached both ways is done only by its own channel's receipt", async () => {
+    const both = await sendBlocks([block], { pcs: new Map([["b".repeat(32), async () => []]]), relayed: new Map([["b".repeat(32), applied]]), service: async () => {} });
+    expect(both.outcomes.get("b".repeat(32))?.state).toBe("waiting");
+  });
+});
