@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
 import { DeviceStore } from "../devices.ts";
+import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
+import { readFileSync } from "node:fs";
 import { AccountDeviceStore } from "./account-devices.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
@@ -39,7 +41,7 @@ function pc() {
     admitOrigin: (at) => binding.admit("remote", "list", null, at),
   });
   devices.attachAccountRows(rows);
-  return { devices, rows, clock };
+  return { devices, rows, clock, dir };
 }
 
 async function member(devices: DeviceStore): Promise<Key & { id: string }> {
@@ -127,4 +129,23 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     expect(devices.removeAuthority(joined.spki, joined.spki, ACCOUNT)).toBe(true);
     expect(devices.removeAuthority(older.spki, newer.spki, ACCOUNT)).toBe(true);
   });
+
+  for (const [name, leave] of [
+    ["binding clear", (devices: DeviceStore) => { devices.clearAccountBinding("left_on_pc", "pc"); }],
+    ["Revoke all", (devices: DeviceStore) => { devices.revokeAll(); }],
+  ] as const) {
+    test(`T44: ${name} ends every account row: its session closes and it is gone from the file, also after a restart`, async () => {
+      const { devices, rows, dir } = pc();
+      await member(devices);
+      const phone = await key();
+      rows.commitList(listed(phone));
+      const [row] = rows.rows();
+      const closed: string[] = [];
+      devices.onRevoke(row!.id, () => { closed.push(row!.id); });
+      leave(devices);
+      expect(closed).toEqual([row!.id]);
+      expect(rows.rows()).toEqual([]);
+      expect((JSON.parse(readFileSync(join(dir, ACCOUNT_DEVICES_FILE), "utf8")) as { devices: unknown[] }).devices).toEqual([]);
+    });
+  }
 });

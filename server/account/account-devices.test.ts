@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeviceStore } from "../devices.ts";
-import { ACCOUNT_DEVICES_FILE, ACCOUNT_DEVICES_MAX, AccountDeviceStore, type AccountRowPorts } from "./account-devices.ts";
+import { ACCOUNT_DEVICES_FILE, ACCOUNT_DEVICES_MAX, AccountDeviceStore, type AccountRowPorts, accountRowsFor } from "./account-devices.ts";
 import { keyOf, listOrigins, snapshotList as list, nameOf, SERVER } from "./account-devices.test-helpers.ts";
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -155,5 +155,27 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     expect(events).toEqual(["journal drop k-2 file=[k-1,k-2]"]);
     expect(fileKeys(dir)).toEqual(["k-1"]);
     expect(store.row(two!.id)).toBeNull();
+  });
+
+  test("T44: a new relay identity ends the rows of the old one: their sessions close and the file holds none", () => {
+    const dir = stateDir();
+    const { ports: p } = ports(dir);
+    const closed: string[] = [];
+    let serverId: string | null = SERVER;
+    const source = accountRowsFor(dir, () => serverId, { ...p, closeSessions: (id) => { closed.push(id); } });
+    source.store()!.commitList(list(["k-1"]));
+    const [row] = source.rows();
+    serverId = "f".repeat(32);
+    expect(source.rows()).toEqual([]);
+    expect(closed).toEqual([row!.id]);
+    expect(fileKeys(dir)).toEqual([]);
+  });
+
+  test("T44: a store opened for another relay identity empties the file at once", () => {
+    const dir = stateDir();
+    const { ports: p } = ports(dir);
+    new AccountDeviceStore(dir, SERVER, p).commitList(list(["k-1"]));
+    new AccountDeviceStore(dir, "f".repeat(32), p);
+    expect(fileKeys(dir)).toEqual([]);
   });
 });
