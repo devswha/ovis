@@ -16,6 +16,7 @@ import type { RelayChannelOptions } from "../../../shared/relay-channel.ts";
 import { withAccountDevice } from "../account/accountDevice.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
 import { ACCOUNT_OPENS_ALL_MUX_FEATURE } from "../../../shared/account-devices-api.ts";
+import { pairFingerprint, verifyPairProof } from "../../../shared/pair-fingerprint.ts";
 import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
 import { probePc } from "../../../shared/relay-channel.ts";
 import { isFatalRelayError } from "./transport.ts";
@@ -57,7 +58,7 @@ class FakeSocket implements RelaySocket {
   }
 }
 
-async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account", onClose?: (error: Error) => void,
+async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account" | "key-proof", onClose?: (error: Error) => void,
   pc: { relay?: string; hints?: readonly string[]; features?: readonly string[]; provisional?: boolean; wrap?: (store: MemoryDeviceStore, device: RelayDevice) => RelayDeviceStore } = {}, channel: Partial<RelayChannelOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -139,7 +140,15 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
     bytes[0] = 1; bytes[1] = type; bytes.set(body, 8);
     return bytes;
   };
+  let keyProofSent: MuxFrame | undefined;
+  const keyProof = { challenge: base64url(new Uint8Array(32).fill(7)), proved: Promise.withResolvers<string>() };
   const handle = async (frame: MuxFrame): Promise<void> => {
+    if (frame.type === FrameType.KEY_PROVE) {
+      keyProof.proved.resolve(frame.payload.signature);
+      // a waiting frame that tries to name a fingerprint: the device must never show it
+      await secure.send(raw(FrameType.KEY_PENDING, { fingerprint: "ZZZZ-ZZZZ" }).slice().buffer);
+      return;
+    }
     if (frame.type === FrameType.HELLO) {
       offered = frame.payload.features;
       hinting = pc.hints !== undefined && offered.includes("relay-hints");
@@ -166,6 +175,11 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
       return;
     }
     let deviceId: string;
+    if (frame.type === FrameType.PAIR && attack === "key-proof" && offered.includes("key-proof-1") && !keyProofSent) {
+      keyProofSent = frame;
+      await secure.send(raw(FrameType.KEY_CHALLENGE, { challenge: keyProof.challenge, fingerprint: "ZZZZ-ZZZZ" }).slice().buffer);
+      await keyProof.proved.promise;
+    }
     if (frame.type === FrameType.PAIR) {
       const paired = registry.pairRelay(frame.payload.code, frame.payload.label, frame.payload.public_key);
       if (!paired) throw new Error("Pairing rejected");
@@ -189,7 +203,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
     queueMicrotask(() => socket.deliver(JSON.stringify(attack === "assigned" ? { type: "wrong" } : { type: "assigned", connection_id: "ef".repeat(16) })));
     return socket;
   } });
-  return { opening, trace, authSeen, allowAuth, httpSeen, receiptSeen, socket, store, offer, get offered() { return offered; } };
+  return { opening, trace, authSeen, allowAuth, httpSeen, receiptSeen, socket, store, offer, keyProof, get offered() { return offered; } };
 }
 
 for (const pairing of [false, true]) {
@@ -704,4 +718,25 @@ it("T34, T40: a sign-in through the account row's store completes, and the row k
   f.allowAuth.resolve();
   const channel = await f.opening;
   expect(channel).toBeDefined();
+});
+
+it("T71, T72: proves its own key over the PC's challenge and shows only the fingerprint it computed itself", async () => {
+  const shown: string[] = [];
+  const f = await fixture(true, "key-proof", undefined, {}, { keyProof: (fingerprint) => { shown.push(fingerprint); } });
+  const signature = await f.keyProof.proved.promise;
+  await f.authSeen.promise;
+  f.allowAuth.resolve();
+  await f.opening;
+  expect(f.offered).toContain("key-proof-1");
+  const key = (await f.store.get(f.offer.server_id))!.public_spki;
+  expect(await verifyPairProof(f.offer.server_id, f.keyProof.challenge, key, signature)).toBe(true);
+  expect(shown).toEqual([await pairFingerprint(f.offer.server_id, f.keyProof.challenge, key)]);
+});
+
+it("G5: without asking for key proof, HELLO does not offer it", async () => {
+  const f = await fixture(true);
+  await f.authSeen.promise;
+  expect(f.offered).not.toContain("key-proof-1");
+  f.allowAuth.resolve();
+  await f.opening;
 });
