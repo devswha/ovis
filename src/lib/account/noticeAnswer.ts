@@ -47,6 +47,8 @@ export async function recordsOnPc(post: (path: string, body: unknown) => Promise
 export function notMeTransports(notice: DeviceNotice, own: string, pcs: readonly string[], deps: {
   socket: (pc: string) => AnswerSocket | undefined;
   post: (pc: string) => (path: string, body: unknown) => Promise<Response>;
+  /** that PC's own relay channel, when this device has one: authenticated to that PC itself, so its receipts count */
+  channel?: (pc: string) => ((path: string, body: unknown) => Promise<Response>) | undefined;
   timeoutMs: number;
 }): { pcs: Map<string, BlockSend>; relayed: Map<string, BlockSend> } {
   const answer: BlockSend = (blocks) => {
@@ -54,8 +56,13 @@ export function notMeTransports(notice: DeviceNotice, own: string, pcs: readonly
     if (socket === undefined) return Promise.reject(new Error("The PC is not connected"));
     return answerOnPc(socket, { type: "notice-answer", id: notice.id, answer: "not_me", blocks } as NoticeAnswer, deps.timeoutMs);
   };
-  return {
-    pcs: new Map(pcs.includes(own) ? [[own, answer]] : []),
-    relayed: new Map(pcs.filter((pc) => pc !== own).map((pc): [string, BlockSend] => [pc, (blocks) => recordsOnPc(deps.post(pc), blocks)])),
-  };
+  const counted = new Map<string, BlockSend>(pcs.includes(own) ? [[own, answer]] : []);
+  const relayed = new Map<string, BlockSend>();
+  for (const pc of pcs) {
+    if (pc === own) continue;
+    const channel = deps.channel?.(pc);
+    if (channel !== undefined) counted.set(pc, (blocks) => recordsOnPc(channel, blocks));
+    else relayed.set(pc, (blocks) => recordsOnPc(deps.post(pc), blocks));
+  }
+  return { pcs: counted, relayed };
 }
