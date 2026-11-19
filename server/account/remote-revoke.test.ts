@@ -129,7 +129,7 @@ describe("remote Revokes reach the caller itself and the rows that joined after 
   test("T20: resetting the relay identity, which ends every relay row, is done at the PC only", async () => {
     const { f, devices } = pc();
     await member(devices);
-    const refused = await handleRelayRequest(new Request("http://127.0.0.1/api/relay/reset-identity", { method: "POST" }), "/api/relay/reset-identity", f.app.context, null, false);
+    const refused = await handleRelayRequest(new Request("http://127.0.0.1/api/relay/reset-identity", { method: "POST", headers: { origin: "http://127.0.0.1", "x-herdr-update": "1" } }), "/api/relay/reset-identity", f.app.context, null, false);
     expect(refused.status).toBe(403);
     expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("local_required");
     expect(devices.list(null)).toHaveLength(1);
