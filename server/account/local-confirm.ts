@@ -313,6 +313,7 @@ export function openConfirmListener(confirms: LocalConfirms, options: {
         const open = confirms.pending().find((entry) => entry.id === id);
         if (open === undefined) return new Response(donePage("This request is no longer waiting."), { status: 404, headers: PAGE_HEADERS });
         const nonce = randomBytes(24).toString("base64url");
+        for (const [earlier, of] of nonces) if (of === id) nonces.delete(earlier);
         nonces.set(nonce, id);
         return new Response(confirmPage(open, nonce), { headers: PAGE_HEADERS });
       }

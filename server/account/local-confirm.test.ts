@@ -168,6 +168,16 @@ test.if(linux)("Q20: a nonce minted for one confirm answers no other", async () 
   expect(confirms.pending().map((open) => open.id).sort()).toEqual([first.id, second.id].sort());
 });
 
+test.if(linux)("Q20: opening a confirm's page again ends the nonce its earlier page was given", async () => {
+  const { confirms } = clocked();
+  const { origin } = listener(confirms);
+  const { id } = confirms.request(LOCK, { title: "Lock this PC", lines: [] });
+  const earlier = await page(origin, id);
+  const later = await page(origin, id);
+  expect((await answer(origin, id, { nonce: earlier.nonce!, answer: "approve" })).status).toBe(403);
+  expect((await answer(origin, id, { nonce: later.nonce!, answer: "approve" })).status).toBe(200);
+});
+
 test.if(linux)("Q20: a nonce expires with its confirm", async () => {
   const { confirms, advance } = clocked();
   const { origin } = listener(confirms);
