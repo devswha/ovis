@@ -224,5 +224,40 @@ describe("merging and folding the PC safety log", () => {
     expect(mergeSafetyLogs(own, other)).toBeNull();
     for (const dir of [own, other]) expect(SafetyLog.open(dir).state().blocks.map((e) => e.record.id)).toEqual([]);
   });
+
+  test("P24: a lift already folded into base still ends the block a sibling brings whole", async () => {
+    const [own, other] = [stateDir(), stateDir()];
+    const x = await block(await key(), await signer());
+    writeFileSync(join(own, SAFETY_LOG_FILE), JSON.stringify({ v: 1, next: 2, base: [{ id: "d".repeat(32), kind: "lift", account: ACCOUNT, target: x.id, ended_by: [] }], entries: [], waiting: [] }), { mode: 0o600 });
+    SafetyLog.open(other).append({ record: x, got: "handed", asof: asof(3) });
+    expect(mergeSafetyLogs(own, other)).toBeNull();
+    for (const dir of [own, other]) {
+      expect(SafetyLog.open(dir).state().blocks).toEqual([]);
+      expect(SafetyLog.open(dir).state().freezes).toEqual([]);
+    }
+  });
+
+  test("T48: one id folded in both folders under different accounts fails closed and writes neither", async () => {
+    const [own, other] = [stateDir(), stateDir()];
+    const k = await key();
+    const line = (account: string) => ({ id: "e".repeat(32), kind: "forget", account, target: k, ended_by: [] });
+    writeFileSync(join(own, SAFETY_LOG_FILE), JSON.stringify({ v: 1, next: 2, base: [line(ACCOUNT)], entries: [], waiting: [] }), { mode: 0o600 });
+    writeFileSync(join(other, SAFETY_LOG_FILE), JSON.stringify({ v: 1, next: 2, base: [line("acct_2")], entries: [], waiting: [] }), { mode: 0o600 });
+    const [ownBefore, otherBefore] = [readFileSync(join(own, SAFETY_LOG_FILE), "utf8"), readFileSync(join(other, SAFETY_LOG_FILE), "utf8")];
+    expect(mergeSafetyLogs(own, other)).not.toBeNull();
+    expect(readFileSync(join(own, SAFETY_LOG_FILE), "utf8")).toBe(ownBefore);
+    expect(readFileSync(join(other, SAFETY_LOG_FILE), "utf8")).toBe(otherBefore);
+  });
+
+  test("P21: a merge keeps one arrival note per block in both folders, the stricter of the two", async () => {
+    const [own, other] = [stateDir(), stateDir()];
+    const x = await block(await key(), await signer());
+    SafetyLog.open(own).append({ record: x, got: "handed", asof: { ...asof(7), signer_removed: false } });
+    SafetyLog.open(other).append({ record: x, got: "mailbox", asof: { ...asof(4), signer_removed: true } });
+    expect(mergeSafetyLogs(own, other)).toBeNull();
+    const notes = [own, other].map((dir) => SafetyLog.open(dir).entries().find((e) => e.record.id === x.id)?.asof);
+    expect(notes[0]).toEqual(notes[1]);
+    expect(notes[0]).toMatchObject({ after: 4, signer_removed: true });
+  });
 });
 
