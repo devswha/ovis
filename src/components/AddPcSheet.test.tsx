@@ -114,8 +114,15 @@ describe("the Add-a-PC sheet", () => {
     expect(addPcSteps("join", "failed", "pair-declined")).toEqual(["done", "done", "failed", "todo"]);
   });
 
-  it("shows a join a PC's own page started as the number alone: no steps, no choices, Cancel the one button, the other way folded away", async () => {
-    await mount(props("join", pcOf(), { kind: "compare", name: "desk2", digits: "123456", confirmed: true, challenge: 1, alone: true }));
+  it("shows a join a PC's own page offers as one press, then the number alone: no steps, no choices, Cancel the one button, the other way folded away", async () => {
+    const offer = { v: 1 as const, server_id: SERVER_ID, server_public_key: "k", relay: "wss://relay.example", name: "desk2" };
+    await mount(props("join", pcOf(), { kind: "confirm", offer, account: "listed", alone: true }));
+    expect(renderer!.root.findByProps({ role: "dialog" }).props["data-add-pc-phase"]).toBe("confirm");
+    expect(steps()).toEqual([]);
+    expect(renderer!.root.findAll((instance) => instance.type === "button").map(text).sort()).toEqual(["Ask to join", "Cancel"]);
+    await click("Ask to join");
+    expect(calls.pairs).toBe(1);
+    await update(props("join", pcOf(), { kind: "compare", name: "desk2", digits: "123456", confirmed: true, challenge: 1, alone: true }));
     const dialog = renderer!.root.findByProps({ role: "dialog" });
     expect(dialog.props["data-add-pc-phase"]).toBe("compare");
     expect(text(renderer!.root.findByProps({ className: "modal-title" }))).toBe(translate("en", "Approve it on {name}", { name: "desk2" }));

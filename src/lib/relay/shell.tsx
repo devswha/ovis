@@ -43,6 +43,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const navigate = mount.navigate ?? ((path: string) => window.location.assign(path));
   const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
   let entry = shellEntry(mount.entryUrl);
+  // bumped by every link this page takes after it loaded: a step of the page's own load that waited meanwhile is stale
+  let entries = 0;
   const scoped = entry.serverId !== null;
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
@@ -112,7 +114,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       : view?.kind !== "signed-in" ? undefined
       : signIn === undefined || (view.pcs === null && !unanswered) ? "checking" as const
       : !unanswered && view.error === null && account.directory.some((pc) => pc.server_id === offer.server_id) ? "listed" as const : "unlisted" as const;
-    const state: Extract<RelayShellState, { kind: "confirm" }> = { kind: "confirm", offer, ...(said === undefined ? {} : { account: said }), ...(confirming && pressed !== undefined ? { pressed } : {}) };
+    const state: Extract<RelayShellState, { kind: "confirm" }> = { kind: "confirm", offer, ...(said === undefined ? {} : { account: said }), ...(confirming && pressed !== undefined ? { pressed } : {}), ...(sheetJoin?.alone ? { alone: true as const } : {}) };
     if (signIn !== undefined && (said === "listed" || said === "unlisted")) drawnFor.set(state, signIn);
     return state;
   };
@@ -182,7 +184,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     keepTypedJoin(options.typed ? pc.server_id : null);
     if (options.sheet) {
       keepSheetContext({ mode: options.sheet, server_id: pc.server_id, returnHash: dashboardHash(window.location.hash), ...(options.alone ? { alone: true } : {}) });
-      keepConfirmedPc(pc.server_id);
+      // a join a PC's own page offers waits for its press: a load of that page (a reload, a restore, a relaunch) asks nothing
+      if (!options.alone) keepConfirmedPc(pc.server_id);
     }
     navigate(link.pathname + link.hash);
   };
@@ -192,7 +195,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     show({ kind: "connecting", name: null });
     await account.load(null);
     const view = account.state;
-    return view?.kind === "signed-in" ? view.pcs?.find((pc) => pc.server_id === serverId && !pc.paired && pc.join !== undefined) : undefined;
+    // only a row this device has no pairing for carries a join (myPcs)
+    return view?.kind === "signed-in" ? view.pcs?.find((pc) => pc.server_id === serverId && pc.join !== undefined) : undefined;
   };
   const failed = async (error: unknown, attempt: Attempt): Promise<void> => {
     if (last !== attempt) return;
@@ -457,8 +461,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    */
   const confirmed = (): void => {
     const asked = shown, offer = entry.offer;
-    if (offer === null || asked?.kind !== "confirm" || asked.account === "checking") return;
-    if (sheetJoin !== null || !account.enabled) { pair(); return; }
+    if (offer === null || asked?.kind !== "confirm") return;
+    // a sheet's join acts as whoever is signed in when it pairs, so it waits for no read
+    if (sheetJoin !== null) { pair(); return; }
+    if (asked.account === "checking") return;
+    if (!account.enabled) { pair(); return; }
     const named = drawnFor.get(asked);
     // a confirm that names an account was drawn for a sign-in: without one, there is nothing it can be held to
     if (asked.account !== undefined && named === undefined) { show(confirmOf(offer)); return; }
@@ -559,6 +566,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     cancelAttempt();
     sheetJoin = null;
     entry = next;
+    entries++;
     arrived();
   });
 
@@ -568,11 +576,15 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const deviceOnly = deviceOnlyPc(), namedSignIn = confirmedSignIn();
   if (arrived()) return;
   if (entry.serverId !== null) {
+    const loaded = entries;
     const saved = await store.get(entry.serverId);
+    // a link taken meanwhile owns the page: this load's own entry is not opened, joined or drawn over it
+    if (entries !== loaded) return;
     if (saved === undefined) {
       // a PC's own page that this device has no pairing for: a PC of the account that needs this device approved joins
       // right here, on a screen of its own, and never the list (which only the tabs open)
       const joinable = await accountPcToJoin(entry.serverId);
+      if (entries !== loaded) return;
       if (joinable !== undefined) joinPc(joinable, { sheet: "join", alone: true });
       else show({ kind: "empty" });
     }
