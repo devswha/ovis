@@ -10,6 +10,7 @@ import { OrderConflict, type AccountOrder, type LiftOrder } from "./account-orde
 import type { DeviceJournal } from "./device-journal.ts";
 import type { PcAccountState } from "./pc-binding.ts";
 import type { SafetyLog } from "./safety-log.ts";
+import type { AccountSnapshot } from "../../shared/account-snapshot.ts";
 import { SnapshotWriteRefused, type SnapshotPorts, type StagedRead } from "./snapshot-read.ts";
 
 export interface SnapshotDeps {
@@ -22,6 +23,8 @@ export interface SnapshotDeps {
   /** This PC's relay identity now, or null without one. */
   serverId(): string | null;
   requestRead(): void;
+  /** The account-joined rows' store, given the whole read's list in its commit turn (S2-25); absent without one. */
+  commitList?(snapshot: AccountSnapshot): void;
 }
 
 
@@ -102,6 +105,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       journal.recordSnapshotLifts(safetyLog);
       devices.handedLifts.decide(stage.snapshot.lifts);
     },
+    commitList: deps.commitList,
     methodsVersion: () => deps.order.methodsVersion(),
     journalMethod(version) {
       journal.append({ kind: "method", how: `methods_version:${version}`, key: null, no: null, row: null, label: "The account's sign-in methods changed", by: null, account: devices.account() });

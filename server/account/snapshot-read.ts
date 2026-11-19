@@ -41,6 +41,8 @@ export interface SnapshotPorts {
   liftAuthority(lift: DeviceLiftRecord, snapshot: AccountSnapshot): Promise<boolean>;
   /** Synchronous: every guard again, then the journal, the files and memory, in one turn. */
   commit(stage: StagedRead): void;
+  /** List admissions follow the safety writes and staged signed adds in the same synchronous turn. */
+  commitList?(snapshot: AccountSnapshot): void;
   methodsVersion(): number | null;
   journalMethod(version: number): void;
   requestRead(): void;
@@ -116,6 +118,7 @@ export async function readSnapshot(
     if (error instanceof SnapshotWriteRefused) return refused("commit_failed");
     throw error;
   }
+  ports.commitList?.(snapshot);
   if (ports.methodsVersion() !== snapshot.methods_version) ports.journalMethod(snapshot.methods_version);
   return { committed: true, snapshot: snapshot.snapshot, denials, liftsRefused: snapshot.lifts.length - authorized.length };
 }

@@ -243,6 +243,7 @@ export class AccountMailbox {
         if (cursor.page === 0) staged = await stageMailboxAdds(this.pending);
         return this.snapshotPage(account, cursor);
       }, { ...ports, commit: (stage) => {
+        // Validate pins and persist the safety decisions before applying staged adds.
         ports.commit(stage);
         const removed = new Set(stage.snapshot.removed.map((row) => row.key));
         const settled = new Set<unknown>();

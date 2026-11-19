@@ -59,6 +59,7 @@ import { PcAccountState } from "./account/pc-binding.ts";
 import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
 import { AccountOrder } from "./account/account-order.ts";
+import { accountRowsFor } from "./account/account-devices.ts";
 import { RemovalEvidence } from "./account/removal-evidence.ts";
 import { DeviceJournal } from "./account/device-journal.ts";
 import { mergeAccountState } from "./account/account-merge.ts";
@@ -579,10 +580,22 @@ export function createServer(
     removalsPending: () => devices.pendingLockRemovals().length > 0,
   } }) : undefined;
   // Step 2 (S2-24): with the release flag on, each pull is followed by a whole read applied to this PC's log and rows
+  const serverIdNow = () => ovisRelay.currentIdentity()?.server_id ?? null;
+  // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
+  const accountRows = safetyLog !== null && pcAccount !== null && journal !== null ? accountRowsFor(stateDir, serverIdNow, {
+    journal: (entry) => { journal.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: entry.reason ?? "list", key: entry.key, no: entry.no ?? null, row: entry.row, label: entry.label ?? "", by: null, account: devices.account() }); },
+    closeSessions: (id) => { devices.closeAccountSessions(id); },
+    heldByDevicesJson: (key) => devices.hasKey(key),
+    admits: (key) => devices.admits(key),
+    now: () => Date.now(),
+    admitOrigin: (at) => pcAccount.admit("remote", "list", null, at),
+  }) : null;
+  devices.attachAccountRows(accountRows);
   const accountOrder = safetyLog !== null ? AccountOrder.open(stateDir) : null;
   devices.attachAccountOrder(accountOrder);
   const readPorts = safetyLog !== null && pcAccount !== null && journal !== null && accountOrder !== null
-    ? snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: () => ovisRelay.currentIdentity()?.server_id ?? null, requestRead: () => { void accountMailbox.pull(); } })
+    ? snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: serverIdNow, requestRead: () => { void accountMailbox.pull(); },
+      commitList: (snapshot) => { accountRows?.store()?.commitList(snapshot); } })
     : null;
   const services: RequestServices = {
     runtimeMove: options.runtimeService ? moveService({
