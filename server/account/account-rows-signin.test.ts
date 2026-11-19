@@ -12,6 +12,7 @@ import { AccountDeviceStore } from "./account-devices.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { writePrivateState } from "../private-state.ts";
 import { DeviceJournal } from "./device-journal.ts";
+import { AccountOrder } from "./account-order.ts";
 import { listNotices } from "./list-notices.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { PcAccountState } from "./pc-binding.ts";
@@ -30,7 +31,7 @@ async function key(): Promise<Key> {
 }
 
 /** A PC in ACCOUNT with its real log, binding and journal, and the account rows attached to its device store. */
-function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
+function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-")), admits?: (key: string, account: string) => boolean) {
   if (!dirs.includes(dir)) dirs.push(dir);
   const safety = SafetyLog.open(dir);
   const binding = PcAccountState.open(dir);
@@ -43,7 +44,7 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
     ...listNotices(journal, evidence, (entry) => devices.publish(entry)),
     closeSessions: (id) => { devices.closeAccountSessions(id); },
     heldByDevicesJson: (candidate) => devices.hasKey(candidate),
-    admits: (key, account) => devices.admitsFromList(key, account),
+    admits: admits ?? ((key, account) => devices.admitsFromList(key, account)),
     now: () => clock.now,
     admitOrigin: (at) => binding.admit("remote", "list", null, at),
     publish: entry => journal.openListedRows([entry.row]),
@@ -87,6 +88,44 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     expect(entry).toMatchObject({ how: "list", provider: "google", two_step: "set" });
   });
 
+  test("T53/H1: a proved local elder with a late or higher account number cannot decide", async () => {
+    for (const mode of ["late", "higher", "lower"] as const) {
+      const { devices, rows, clock, journal, dir } = pc();
+      const owner = await member(devices);
+      const phone = await key();
+      clock.now += 2 * 60 * 60_000;
+      const order = AccountOrder.open(dir);
+      const list = listed(phone);
+      if (mode === "late") order.record({ ...list, server_id: SERVER }, "binding");
+      order.record({ ...list, server_id: SERVER, devices: [...list.devices, { key: owner.spki, no: mode === "higher" ? 11 : 1 }] }, "binding");
+      devices.attachAccountOrder(order);
+      rows.commitList(list);
+      const notice = journal.openNotices().find((n) => n.key === phone.spki);
+      if (!notice) throw new Error("Missing current admission");
+      expect({ mode, ended: devices.itsMe(owner.id, notice.id, owner.spki) }).toEqual({ mode, ended: mode === "lower" });
+    }
+  });
+  test("T53, P16: an account-joined sayer that a block froze cannot end a hold; unfrozen, it can", async () => {
+    for (const frozen of [false, true]) {
+      const { devices, rows, clock, journal } = pc(undefined, () => true); // Isolate the sayer: the target passes its independent final guard.
+      const [older, target] = [await member(devices), await member(devices)];
+      const sayer = await key();
+      rows.commitList(listed(sayer));
+      clock.now += 2 * 60 * 60_000;
+      const [sayerRow] = rows.rows();
+      expect(rows.access(sayerRow!.id)).toEqual({ ok: true });
+      const phone = await key();
+      rows.commitList({ ...listed(sayer, phone), snapshot: "2".padStart(32, "0"), version: 2 });
+      const held = rows.rows().find((row) => row.key === phone.spki)!;
+      const notice = journal.entries().find((entry) => entry.kind === "admit" && entry.row === held.id)!;
+      if (frozen) {
+        const block = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.spki, target_no: 2, signer: older.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, older.keys.privateKey) as BlockRecord;
+        expect(await devices.applyBlock(block, "handed")).toMatchObject({ outcome: "applied" });
+        expect(devices.sessionRow(sayerRow!.id)).toBeNull();
+      }
+      expect({ frozen, ended: devices.itsMe(sayerRow!.id, notice.id, sayer.spki) }).toEqual({ frozen, ended: !frozen });
+    }
+  });
   test("S25: a proved sign-in of a held row is refused with its reason, and a wrong key learns nothing", async () => {
     const { devices, rows } = pc();
     await member(devices);
@@ -249,6 +288,7 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     const notice = journal.entries().find((entry) => entry.kind === "admit" && entry.row === row!.id)!;
     const newer = await member(devices);
     expect(devices.itsMe(newer.id, notice.id)).toBe(false);
+    expect(devices.itsMe(older.id, notice.id, newer.spki)).toBe(false);
     expect(rows.access(row!.id)).toMatchObject({ refused: "join_hold" });
     expect(devices.itsMe(older.id, notice.id)).toBe(true);
     expect(rows.access(row!.id)).toEqual({ ok: true });

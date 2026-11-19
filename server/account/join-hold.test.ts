@@ -75,6 +75,7 @@ describe("S2-29 the join hold and the first device (T34, T53, T67)", () => {
       ["not older", established({ no: 5 })],
       ["newer", established({ no: 9 })],
       ["late order number", established({ late: true })],
+      ["exactly one hour", established({ admittedAt: clock.now - ITS_ME_MIN_AGE_MS })],
       ["admitted within the hour", established({ admittedAt: clock.now - ITS_ME_MIN_AGE_MS + 1 })],
       ["admission time ahead of the clock", established({ admittedAt: clock.now + 60_000 })],
       ["no age at all", established({ no: null, admitNo: null })],
