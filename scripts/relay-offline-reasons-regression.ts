@@ -12,7 +12,7 @@
  *
  * Every state is read by its markup (data-pc-state, data-pc-action, data-relay-state) and its heading in the page's
  * language. Each check is one PC's own (Check now in its details, or the row's Check again), so no sweep's timing
- * decides a row. Walked side by side at 390 px (a phone profile) light and dark, 1440 px light and dark, and in Korean
+ * decides a row. Walked side by side at 390 px (a phone profile) light and dark, 1280 px light and dark, and in Korean
  * at 390 px light; pc-a is stopped once every page has seen it answer.
  *
  * The shell is dist-shell/ (`bun run build:shell`), or the folder given as the first argument, served as Cloudflare Pages
@@ -130,13 +130,13 @@ async function seed(page: Page): Promise<void> {
   }, { entries, relay: RELAY });
 }
 
-interface Run { readonly width: 390 | 1440; readonly theme: "light" | "dark"; readonly language: Language }
+interface Run { readonly width: 390 | 1280; readonly theme: "light" | "dark"; readonly language: Language }
 const tagOf = (run: Run): string => `${run.width}-${run.theme}-${run.language}`;
 
 /** Every page has seen pc-a answer (or given up): pc-a is stopped once, for all of them. */
 const runs: Run[] = [
   { width: 390, theme: "light", language: "en" }, { width: 390, theme: "dark", language: "en" },
-  { width: 1440, theme: "light", language: "en" }, { width: 1440, theme: "dark", language: "en" },
+  { width: 1280, theme: "light", language: "en" }, { width: 1280, theme: "dark", language: "en" },
   { width: 390, theme: "light", language: "ko" },
 ];
 let arrived = 0;
@@ -181,9 +181,12 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
   });
   // the relay out of this device's reach: each new socket to it closes before the relay assigns it
   let relayReachable = true;
+  const turnedAway: (() => void)[] = [];
+  const nextTurnedAway = (): Promise<void> => new Promise((resolve) => { turnedAway.push(resolve); });
   await context.routeWebSocket(/^wss:\/\/relay\.test\//, (ws) => {
-    if (relayReachable) relayBrowserSocket(ws, () => relayUrl(ws.url()));
-    else ws.close({ code: 1011, reason: "out of reach" });
+    if (relayReachable) { relayBrowserSocket(ws, () => relayUrl(ws.url())); return; }
+    ws.close({ code: 1011, reason: "out of reach" });
+    for (const resolve of turnedAway.splice(0)) resolve();
   });
   await context.addInitScript(({ language, theme }) => {
     if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language, theme }));
@@ -217,7 +220,8 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
     if (!row || row.getAttribute("data-pc-state") !== state || row.querySelector('.status-dot[data-state="checking"]')) return null;
     const word = row.querySelector<HTMLElement>(".relay-pc-state-word");
     return { state, word: word?.textContent ?? null, title: word?.title ?? null, line: row.querySelector(".relay-pc-probe-line")?.textContent ?? null,
-      action: row.querySelector("[data-pc-action]")?.getAttribute("data-pc-action") ?? null, whole: word === null || word.scrollWidth <= word.clientWidth + 1 };
+      action: row.querySelector("[data-pc-action]")?.getAttribute("data-pc-action") ?? null,
+      whole: word === null || (word.scrollWidth <= word.clientWidth + 1 && word.scrollHeight <= word.clientHeight + 1) };
   }, { id: entry.server_id, state }).then((handle) => handle.jsonValue());
   const details = (entry: Entry) => page.locator(`[data-pc-details="${entry.server_id}"]`);
   const openDetails = async (entry: Entry): Promise<void> => {
@@ -234,9 +238,19 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
    */
   const checkFromDetails = async (entry: Entry, state: "paired" | "offline" | "unreachable") => {
     await openDetails(entry);
-    await details(entry).locator('[data-action="check-pc"]').click();
+    const button = details(entry).locator('[data-action="check-pc"]');
     const glyph = { paired: "ready", offline: "offline", unreachable: "failed" }[state];
-    await details(entry).locator(`.relay-pc-details-location .status-dot[data-state="${glyph}"]`).waitFor();
+    const dot = details(entry).locator(`.relay-pc-details-location .status-dot[data-state="${glyph}"]`);
+    if (state === "unreachable") {
+      // a relay turning this device away is believed on the second refusal in a row (pcSweep.ts): check until it is
+      for (let tries = 0; tries < 2 && await dot.count() === 0; tries++) {
+        const refused = nextTurnedAway();
+        await button.click();
+        await refused;
+        await page.waitForFunction((id) => document.querySelector(`[data-pc-details="${id}"] .relay-pc-details-location .status-dot[data-state="checking"]`) === null, entry.server_id);
+      }
+    } else await button.click();
+    await dot.waitFor();
     const value = details(entry).locator(".relay-pc-details-row").first();
     return { state: await value.locator(".relay-pc-details-value").innerText(), why: await value.locator(".relay-pc-details-sub").allInnerTexts() };
   };
