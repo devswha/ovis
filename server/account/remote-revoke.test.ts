@@ -3,6 +3,7 @@ import { exportAccountKey, newRecordId, signAccountRecord } from "../../shared/a
 import type { DeviceStore } from "../devices.ts";
 import { relayConnection, relayFixture } from "../relay/test-helpers.ts";
 import { applyAccountRecords } from "./records.ts";
+import { handleRelayRequest } from "../relay/routes.ts";
 
 const ACCOUNT = "acct_1";
 const SERVER_ID = "0123456789abcdef0123456789abcdef";
@@ -124,4 +125,14 @@ describe("remote Revokes reach the caller itself and the rows that joined after 
     expect((await applyAccountRecords(devices, [remove], SERVER_ID))[0]).toMatchObject({ outcome: "refused", code: "older_device" });
     expect(devices.has(first.id)).toBe(true);
   });
+
+  test("T20: resetting the relay identity, which ends every relay row, is done at the PC only", async () => {
+    const { f, devices } = pc();
+    await member(devices);
+    const refused = await handleRelayRequest(new Request("http://127.0.0.1/api/relay/reset-identity", { method: "POST" }), "/api/relay/reset-identity", f.app.context, null, false);
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("local_required");
+    expect(devices.list(null)).toHaveLength(1);
+  });
 });
+
