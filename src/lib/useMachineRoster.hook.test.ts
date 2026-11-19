@@ -11,6 +11,7 @@ import { expandMachineEvent, wireMachineEvent } from "../../shared/compact-agent
 const local = (state: Machine["state"] = "connected"): Machine => ({ id: "local", name: "This PC", kind: "local", enabled: true, state, error: null, snapshot: null });
 const noop = () => {};
 let said: string | null = null;
+let pendingShown: unknown[] = [];
 let shown: Machine[] = [];
 describe("roster and health polling beside the event stream", () => {
   const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -57,6 +58,7 @@ describe("roster and health polling beside the event stream", () => {
       setTerminalPeek: noop, setAutoSelected: noop, preferencesResubscribedRef: { current: noop },
       preferencesDisconnectedRef: { current: noop }, preferencesClosedRef: { current: noop },
       dropIn: noop, chime: noop, setPairedNotices: noop, setRelayPairings: noop, getTakeNotificationTargetRef: () => ({ current: noop }),
+      setPendingKeys: (pending) => { pendingShown = [...pending]; },
     });
     return null;
   }
@@ -122,6 +124,15 @@ describe("roster and health polling beside the event stream", () => {
   }
   async function healthyStream() { await stream("opened"); await stream([local()]); }
   const counts = () => ["/api/machines?compact_agents=1", "/api/health", "/api/health?scope=bridge"].map((path) => reads.filter((read) => read === path).length);
+
+  it("T71: keeps the PC's list of keys waiting for its screen as each change comes", async () => {
+    await healthyStream();
+    const key = { id: "p1", label: "Pixel 9", fingerprint: "AB12-CD34", via: "relay", redeemed_at: "2026-11-20T04:00:00.000Z", slots: { used: 1, of: 5 } };
+    await act(async () => { source.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "pending-redemptions", pending: [key] }) })); });
+    expect(pendingShown).toEqual([key]);
+    await act(async () => { source.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "pending-redemptions", pending: [] }) })); });
+    expect(pendingShown).toEqual([]);
+  });
 
   it("reads the roster in full, once, after a pushed compact snapshot that cannot be read", async () => {
     await stream("opened");
