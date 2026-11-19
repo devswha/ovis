@@ -43,7 +43,7 @@ function addressBar(url: string) {
 describe("a link that opens the hosted shell on a provider's sign-in (#sign-in=<provider>)", () => {
   let browser: ReturnType<typeof createShellTestPage>;
   beforeEach(() => { browser = createShellTestPage(); });
-  afterEach(() => { browser.dispose(); waiting = []; });
+  afterEach(() => { Reflect.deleteProperty(globalThis, "Capacitor"); browser.dispose(); waiting = []; });
 
   function service(offered: readonly ("github" | "google")[] = ["github", "google"]): FakeAccountService {
     const fake = new FakeAccountService();
@@ -296,5 +296,31 @@ describe("a link that opens the hosted shell on a provider's sign-in (#sign-in=<
     await signInElsewhere(fake, memory);
     release();
     await control(fake, signIns, 0);
+  });
+
+  it("opens no sign-in sheet in the phone app when another tab signed in while the sign-in's pending record was written", async () => {
+    const opened: string[] = [];
+    Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+      isNativePlatform: () => true, PluginHeaders: [{ name: "OvisAuth" }],
+      nativePromise: async (_plugin: string, method: string, options: { url: string }) => { if (method === "authenticate") { opened.push(options.url); changed(); } return new Promise(() => {}); },
+    } });
+    const fake = service();
+    const memory = memoryAccountStore();
+    let release = (): void => {};
+    let writing = false;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const store: AccountStore = { ...memory, update: async (key, change) => {
+      if (key === "pending" && !writing) { writing = true; changed(); await gate; }
+      return memory.update(key, change);
+    } } as AccountStore;
+    await load(addressBar(`${ORIGIN}/#sign-in=google`), fake, store, []);
+    await until(() => writing);
+    await signInElsewhere(fake, memory);
+    release();
+    // a later page in the app that does start one: once its sheet opens, any sheet before it would have opened too
+    await load(addressBar(`${ORIGIN}/#sign-in=github`), fake, memoryAccountStore(), []);
+    await until(() => opened.length > 0);
+    expect(opened).toHaveLength(1);
+    expect(new URL(opened[0]!).pathname).toContain("github");
   });
 });

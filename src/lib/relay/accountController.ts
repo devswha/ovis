@@ -12,7 +12,7 @@ import type { AccountProvider, AccountSession, PendingPairing } from "../account
 import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
 import { leaveAccount } from "../account/leave.ts";
-import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
+import { nativeSignIn, nativeSignInAvailable, SignInNotWanted } from "../account/native.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
 import { t } from "../i18n.ts";
 import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
@@ -327,8 +327,10 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     // in the phone app the system's sign-in sheet brings the return back to the page; elsewhere the page goes to the provider
     const leave = mount.openSignIn ?? ((url: string) => window.location.assign(url));
     const unwanted = async (): Promise<void> => { accountView = { kind: "signed-out", error: null }; await changed(); };
-    const native = (): Promise<void> => nativeSignIn(provider, { store: accountStore, service: accountService }).then(() => refresh(true));
-    // a press starts as before; a start that asks `wanted` waits on it (the link entry, shell.tsx)
+    const native = (): Promise<void> => nativeSignIn(provider, { store: accountStore, service: accountService, ...(wanted ? { wanted } : {}) })
+      .then(() => refresh(true), (error: unknown) => error instanceof SignInNotWanted ? unwanted() : Promise.reject(error));
+    // a press starts as before; a start that asks `wanted` waits on it before it starts, and again before the page (or
+    // the app's sheet) leaves for the provider (the link entry, shell.tsx)
     const started = nativeSignInAvailable()
       ? (wanted === undefined ? native() : Promise.resolve(wanted()).then((go) => go ? native() : unwanted()))
       : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...(pairing ? { pairing } : {}) })
