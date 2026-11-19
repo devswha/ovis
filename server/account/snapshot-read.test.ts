@@ -46,7 +46,7 @@ function pc(options: { lastVersion?: number | null; methods?: number | null; lif
       return kind === "block" || kind === "remove" ? "denial" : kind === "lift" ? "lift" : kind === "add" ? "add" : "invalid";
     },
     deny: async (record) => { events.push(`deny ${name(record)}`); state.gen++; return true; },
-    liftAuthority: (candidate) => options.liftOk?.(candidate) ?? true,
+    liftAuthority: async (candidate) => { events.push("lift checked"); return options.liftOk?.(candidate) ?? true; },
     commit: (stage) => { events.push("commit"); committed.push(stage); },
     methodsVersion: () => methods,
     journalMethod: (version) => { journaled.push(version); methods = version; },
@@ -179,6 +179,14 @@ describe("S2-24 whole account reads (G1, T15, T52, T58, T60)", () => {
     const outcome = await readSnapshot(serve([answer({ lifts: [lift, youngLift] })]).fetchPage, whole.ports);
     expect(outcome).toEqual({ committed: true, snapshot: SNAP_A, denials: 0, liftsRefused: 1 });
     expect(whole.committed[0]?.lifts).toEqual([lift]);
+    // each lift's authority is asked only once the read is whole, before the commit turn
+    expect(whole.events).toEqual(["lift checked", "lift checked", "commit"]);
+
+    // a denial that lands while the lifts are judged throws the read away: the commit turn sees gen moved
+    const raced = pc();
+    raced.ports.liftAuthority = async () => { raced.state.gen += 1; return true; };
+    expect(await readSnapshot(serve([answer({ lifts: [lift] })]).fetchPage, raced.ports)).toEqual({ committed: false, reason: "generation_changed", denials: 0 });
+    expect(raced.committed).toEqual([]);
   });
 
   test("T58: committed method version change journals once and never treats a bell as authority", async () => {
