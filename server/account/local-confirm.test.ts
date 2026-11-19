@@ -298,13 +298,24 @@ test("N6: a descriptor that is not a pipe or a socket gives no channel", () => {
   }
 });
 
-test("N6: a process that is not the server drops the descriptor and its argument", () => {
+test("N6: a process that is not the server drops the argument and closes only a socket it names", async () => {
   const dir = stateDir();
   const fd = openSync(join(dir, "plain"), "w");
+  ends.push(() => closeSync(fd));
   const argv = ["supervisor", "--desktop-owner-fd", String(fd), "--other"];
   dropDesktopOwnerFd(argv);
   expect(argv).toEqual(["supervisor", "--other"]);
-  expect(() => fstatSync(fd)).toThrow();
+  expect(fstatSync(fd).isFile()).toBe(true);
+  const script = `const { dropDesktopOwnerFd } = await import(${JSON.stringify(join(import.meta.dir, "local-confirm.ts"))});
+    const { fstatSync } = await import("node:fs");
+    dropDesktopOwnerFd(["supervisor", "--desktop-owner-fd", "3"]);
+    let open = true; try { fstatSync(3); } catch { open = false; }
+    process.stdout.write(JSON.stringify({ open }));`;
+  const parent = `const { spawn } = require("node:child_process");
+    const c = spawn(process.execPath, ["-e", ${JSON.stringify(script)}], { stdio: ["ignore", "pipe", "inherit", "pipe"] });
+    let out = ""; c.stdout.on("data", (d) => { out += d; }); c.on("exit", () => { process.stdout.write(out); process.exit(0); });`;
+  const run = Bun.spawn([process.execPath, "-e", parent], { stdout: "pipe", stderr: "inherit" });
+  expect(JSON.parse(await bounded(new Response(run.stdout).text()))).toEqual({ open: false });
 });
 
 test.if(linux)("Q20: a page's nonce is used up even by an answer that was refused", async () => {

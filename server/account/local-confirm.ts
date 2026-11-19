@@ -161,13 +161,16 @@ export function takeDesktopOwnerFd(argv: string[]): number | null {
 }
 
 /**
- * For a process that is not the server (server/supervisor.ts): the argument is removed and the descriptor closed, so it
- * is neither passed on nor held by a child. Only a directly started `serve` takes the channel.
+ * For a process that is not the server (server/supervisor.ts): the argument is removed and the socket it names closed,
+ * so it is neither passed on nor held by a child; a number that names no socket closes nothing. Only a directly
+ * started `serve` takes the channel.
  */
 export function dropDesktopOwnerFd(argv: string[]): void {
   const fd = desktopOwnerArgument(argv);
   if (fd === null) return;
-  try { closeSync(fd); } catch {}
+  try {
+    if (fstatSync(fd).isSocket()) closeSync(fd);
+  } catch {}
 }
 
 function desktopOwnerArgument(argv: string[]): number | null {
