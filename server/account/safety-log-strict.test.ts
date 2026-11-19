@@ -91,5 +91,18 @@ describe("the safety log's endings and its failed writes (P24, S19)", () => {
     chmodSync(at, 0o700);
     expect(await pending).toBeNull();
   });
+
+  test("P24: an ending of another account folds nothing, and the marker it does not end stays", async () => {
+    const at = dir();
+    const log = SafetyLog.open(at);
+    const by = await signer();
+    const block = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: (await signer()).spki, target_no: 3, signer: by.spki, signer_no: 1, signed_at: AT, nonce: newRecordId() }, by.keys.privateKey);
+    log.append({ record: block, got: "handed", asof: { signer_no: 1, target_no: 3, after: 3, joined: 3, signer_removed: false } });
+    log.append({ record: pc("lift", "acct_1", block.id), got: "pc" });
+    log.append({ record: { ...pc("lift", "acct_2", block.id), forget: true } as SafetyRecord, got: "pc" });
+    expect(log.state().markers).toHaveLength(1);
+    log.fold();
+    expect(SafetyLog.open(at).state().markers).toHaveLength(1);
+  });
 });
 
