@@ -6,6 +6,7 @@ import { exportAccountKey } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { DeviceStore } from "../devices.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
+import { OVIS_ACCOUNT_OPENS_ALL } from "../../shared/account-devices-api.ts";
 import { AccountMailbox } from "./mailbox.ts";
 import { readSnapshot, type SnapshotPorts, type StagedRead } from "./snapshot-read.ts";
 
@@ -25,7 +26,6 @@ async function setup(opensAll: boolean, devices: number) {
   const service = new FakeAccountService();
   service.opensAll = opensAll;
   for (let index = 0; index < devices; index++) service.registerDevice(ACCOUNT, await spki(), `Device ${index + 1}`);
-  const mailbox = new AccountMailbox({ devices: new DeviceStore(stateDir), identity: () => identity, service: "https://account.test", fetch: service.fetch });
   const committed: StagedRead[] = [];
   const ports: SnapshotPorts = {
     scope: () => ({ account: ACCOUNT, serverId: identity.server_id, gen: 0, lock: null }),
@@ -38,6 +38,7 @@ async function setup(opensAll: boolean, devices: number) {
     journalMethod: () => {},
     requestRead: () => {},
   };
+  const mailbox = new AccountMailbox({ devices: new DeviceStore(stateDir), identity: () => identity, service: "https://account.test", fetch: service.fetch, snapshot: { account: () => ACCOUNT, ports: () => ports } });
   return { service, mailbox, ports, committed, identity };
 }
 
@@ -65,5 +66,24 @@ describe("S2-24 the PC reads the account's snapshot with a proof of its relay ke
     const pc = await setup(false, 1);
     expect(await readSnapshot((cursor) => pc.mailbox.snapshotPage(ACCOUNT, cursor), pc.ports)).toEqual({ committed: false, reason: "page_failed", denials: 0 });
     expect(pc.committed).toEqual([]);
+  });
+
+  test("G1: the mailbox's own read runs the snapshot only while OVIS_ACCOUNT_OPENS_ALL is on", async () => {
+    const saved = process.env[OVIS_ACCOUNT_OPENS_ALL];
+    try {
+      delete process.env[OVIS_ACCOUNT_OPENS_ALL];
+      const off = await setup(true, 3);
+      expect(await off.mailbox.readSnapshot()).toBeNull();
+      expect(off.service.requests.some((request) => request.includes("/v1/pc/snapshot"))).toBe(false);
+      expect(off.committed).toEqual([]);
+
+      process.env[OVIS_ACCOUNT_OPENS_ALL] = "1";
+      const on = await setup(true, 3);
+      expect(await on.mailbox.readSnapshot()).toMatchObject({ committed: true });
+      expect(on.committed.map((stage) => stage.snapshot.devices.length)).toEqual([3]);
+    } finally {
+      if (saved === undefined) delete process.env[OVIS_ACCOUNT_OPENS_ALL];
+      else process.env[OVIS_ACCOUNT_OPENS_ALL] = saved;
+    }
   });
 });
