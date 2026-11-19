@@ -67,10 +67,14 @@ export function parseProcessTable(json: string): ProcessRow[] {
 
 const TABLE_SCRIPT = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine, @{n='Started';e={([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds()}} | ConvertTo-Json -Compress";
 
-export async function windowsProcessTable(timeoutMs = 10_000, command: string[] = ["powershell", "-NoProfile", "-NonInteractive", "-Command", TABLE_SCRIPT]): Promise<ProcessRow[]> {
+export async function tryWindowsProcessTable(timeoutMs = 10_000, command: string[] = ["powershell", "-NoProfile", "-NonInteractive", "-Command", TABLE_SCRIPT]): Promise<ProcessRow[] | null> {
   try {
     const probe = Bun.spawn(command, { windowsHide: true, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: timeoutMs, killSignal: "SIGKILL" });
     const [code, out] = await Promise.all([probe.exited, new Response(probe.stdout).text()]);
-    return code === 0 ? parseProcessTable(out) : [];
-  } catch { return []; }
+    return code === 0 ? parseProcessTable(out) : null;
+  } catch { return null; }
+}
+
+export async function windowsProcessTable(timeoutMs = 10_000, command: string[] = ["powershell", "-NoProfile", "-NonInteractive", "-Command", TABLE_SCRIPT]): Promise<ProcessRow[]> {
+  return await tryWindowsProcessTable(timeoutMs, command) ?? [];
 }

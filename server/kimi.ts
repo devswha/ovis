@@ -20,7 +20,7 @@ import { runsAgent } from "./gjc-runtime.ts";
 import { paneProcessInfo } from "./herdr/client.ts";
 import { processAlive, processStartedAt, processStartUpperBound } from "./process-start.ts";
 import { trimOutput } from "./tool-output.ts";
-import { descendantProcesses, windowsProcessTable, type ProcessRow } from "./windows-processes.ts";
+import { descendantProcesses, tryWindowsProcessTable, type ProcessRow } from "./windows-processes.ts";
 
 function wireLogsHeld(pid: number, sessions: string): string[] {
   let dir: ReturnType<typeof opendirSync>;
@@ -242,7 +242,8 @@ export function kimiWireForPane(paneId: string, pids: number[], home = homedir()
 
 const KIMI_EXECUTABLE = /(^|[\\/])kimi(?:-code)?(?:\.exe|\.[cm]?js)?$/i;
 
-export function kimiWireForWindowsProcesses(paneId: string, shellPid: number, rows: ProcessRow[], home = homedir()): string | null {
+export function kimiWireForWindowsProcesses(paneId: string, shellPid: number, rows: ProcessRow[] | null, home = homedir()): string | null {
+  if (rows === null) return null;
   const pids = descendantProcesses(rows, shellPid).filter((process) => runsAgent(process.argv, KIMI_EXECUTABLE)).map((process) => process.pid);
   const starts = new Map<number, number>();
   for (const row of rows) if (typeof row.started === "number") starts.set(row.pid, row.started);
@@ -262,7 +263,7 @@ export async function kimiTranscriptPathForPane(pane: HerdrPane, home = homedir(
   if (process.platform === "win32") {
     if (typeof info.shell_pid !== "number") return null;
     // A fresh table never proves a reused PID from a cached row.
-    return kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, await windowsProcessTable(), home);
+    return kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, await tryWindowsProcessTable(), home);
   }
   const pids = [info.shell_pid, ...(info.foreground_processes ?? []).map((process) => process.pid)];
   return kimiWireForPane(pane.pane_id, pids.filter((pid): pid is number => typeof pid === "number"), home);

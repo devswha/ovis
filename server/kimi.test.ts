@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { forgetTranscriptState, MAX_PAGE_PROMPTS, TRANSCRIPT_WINDOW_BYTES, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { kimiWireForPane, kimiWireForWindowsProcesses, parseKimiTranscript } from "./kimi.ts";
-import type { ProcessRow } from "./windows-processes.ts";
+import { tryWindowsProcessTable, type ProcessRow } from "./windows-processes.ts";
 import { TOOL_OUTPUT_CHARS } from "./tool-output.ts";
 import { turnStarts } from "./transcript-turns.ts";
 
@@ -183,6 +183,23 @@ it("refuses a Windows lock from before the process started and a pane without Ki
   lock("session_a", { ...liveLock(), startedAt: rows[1]!.started! - 1 });
   expect(kimiWireForWindowsProcesses("win:p2", 10_000, rows, home)).toBeNull();
   expect(kimiWireForWindowsProcesses("win:p3", 10_000, [rows[0]!], home)).toBeNull();
+});
+
+it("distinguishes an unavailable Windows process table from a successful empty one", async () => {
+  expect(await tryWindowsProcessTable(1_000, [process.execPath, "-e", "console.log('[]')"])).toEqual([]);
+  expect(await tryWindowsProcessTable(1_000, [process.execPath, "-e", "process.exit(1)"])).toBeNull();
+});
+
+it("keeps an idle Windows Kimi binding through an unavailable process table", () => {
+  const { home, wire, lock } = kimiHome("session_a");
+  const rows = windowsKimiRows();
+  const started = rows[1]!.started!;
+  lock("session_a", { ...liveLock(), startedAt: started + 1 });
+  expect(kimiWireForWindowsProcesses("win:probe", 10_000, rows, home)).toBe(wire("session_a"));
+  rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
+  expect(kimiWireForWindowsProcesses("win:probe", 10_000, rows, home)).toBe(wire("session_a"));
+  expect(kimiWireForWindowsProcesses("win:probe", 10_000, null, home)).toBeNull();
+  expect(kimiWireForWindowsProcesses("win:probe", 10_000, rows, home)).toBe(wire("session_a"));
 });
 
 it("keeps an idle Kimi's last session while the same process runs in the pane, and only then", () => {
