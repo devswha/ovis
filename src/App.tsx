@@ -441,7 +441,8 @@ export function App() {
     if (view.split !== null) setSplit(view.split);
     if (view.selection === null) return;
     const listed = inbox.shownRef.current;
-    selectTargetRef.current(machineId, view.selection);
+    // the shown pane moved, not picked: its note stays
+    selectTargetRef.current(machineId, view.selection, undefined, true);
     if (listed) inbox.show();
   };
   const { takeNotificationTargetRef } = useNotificationTargets({ machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load, onLinkWait: () => inbox.leave() });

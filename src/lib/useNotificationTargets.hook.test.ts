@@ -112,6 +112,7 @@ describe("a desktop link to a pane the cached roster lacks", () => {
   let saved: PropertyDescriptor | undefined;
   let renderer: ReactTestRenderer | undefined;
   let take: (target: NotificationTarget) => void;
+  let pick: (machineId: string, paneId: string | null) => void;
   let shown: { pane: string | null; note: LinkNote | "copied" | null };
   let misses: number;
   let reads = 0;
@@ -176,7 +177,7 @@ describe("a desktop link to a pane the cached roster lacks", () => {
       const selectionSince = useRef(0);
       const movingPanes = useRef(new Set<string>());
       const selectedMachine = machines.find((machine) => machine.id === selectedMachineId);
-      const { selectTargetRef } = useSelectTarget({
+      const { selectTargetRef, selectTarget } = useSelectTarget({
         selectedMachineId, setConnected: noop, setConnectedBefore: noop, setSelectedMachineId, setSelectedPaneId, setAutoSelected: noop,
         setDrawerOpen: noop, setOutputStopped: noop, setNotificationViewTarget: noop, setTerminalPeek: noop, pendingLink, pendingFile,
         setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot: selectedMachine?.snapshot ?? null, selectedMachine, selectedPaneId,
@@ -185,6 +186,7 @@ describe("a desktop link to a pane the cached roster lacks", () => {
       take = useNotificationTargets({
         machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load: async () => {},
       } as Parameters<typeof useNotificationTargets>[0]).takeNotificationTarget;
+      pick = selectTarget;
       shown = { pane: selectedPaneId, note: headerNote };
       return null;
     }
@@ -282,5 +284,14 @@ describe("a desktop link to a pane the cached roster lacks", () => {
     expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
   });
 
-
+  it("keeps a landing's note when the user picks the pane already shown, and takes it away when they pick another", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    await act(async () => { pick("local", "t5"); });
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    await act(async () => { pick("local", "t2"); });
+    expect(shown).toEqual({ pane: "t2", note: null });
+  });
 });
