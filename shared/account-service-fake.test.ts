@@ -409,7 +409,12 @@ describe("the fake account service's doorbell and limits", () => {
 });
 
 describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
-  async function read(service: FakeAccountService, machine: ReturnType<typeof pc>, ask: { snapshot?: string; page?: number }) {
+  async function read(service: FakeAccountService, machine: ReturnType<typeof pc>, ask: { snapshot?: string; page?: number }, listed = true) {
+    // only a PC the account lists reads its snapshot
+    if (listed) {
+      const body = JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.ovis.sh" });
+      await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "PUT", body, headers: { authorization: `Bearer ${service.issueToken("acct_1")}` } }));
+    }
     const challenge = await (await service.fetch(post("/v1/pc/challenge", { server_id: machine.serverId, public_key: machine.publicKey }))).json() as { challenge_id: string; frame: string };
     const proof = answerServerChallenge(challenge.frame, machine.keys.secretKey, { server_id: machine.serverId, role: "account", connection_id: challenge.challenge_id });
     const response = await service.fetch(post("/v1/pc/snapshot", { server_id: machine.serverId, challenge_id: challenge.challenge_id, proof, account: "acct_1", ...ask }));
@@ -418,7 +423,7 @@ describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
 
   test("with the flag off the routes do not exist", async () => {
     const service = new FakeAccountService();
-    expect((await read(service, pc(), {})).status).toBe(404);
+    expect((await read(service, pc(), {}, false)).status).toBe(404);
     expect((await service.fetch(post("/v1/safety-records", { record: {} }, service.issueToken("acct_1")))).status).toBe(404);
   });
 
@@ -438,6 +443,14 @@ describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
     service.dropSnapshots();
     const gone = await read(service, machine, { snapshot: first.body.snapshot, page: 1 });
     expect({ status: gone.status, code: gone.body.error?.code }).toEqual({ status: 410, code: "snapshot_gone" });
+  });
+
+  test("a PC the account does not list reads nothing of it", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    service.registerDevice("acct_1", (await client()).spki, "Phone");
+    const stranger = await read(service, pc(), {}, false);
+    expect({ status: stranger.status, code: stranger.body.error?.code }).toEqual({ status: 403, code: "not_listed" });
   });
 
   test("removed keys are paged like devices, so no page passes the page size", async () => {

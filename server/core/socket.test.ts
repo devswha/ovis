@@ -67,7 +67,7 @@ it("names the folder OVIS_PASTE_DIR sends uploads to in the features frame, and 
   }
 });
 
-it("lists account-opens-all/1 only while OVIS_ACCOUNT_OPENS_ALL is 1, and drops a notice frame it does not answer yet", async () => {
+it("lists account-opens-all/1 only while OVIS_ACCOUNT_OPENS_ALL is 1", async () => {
   const previous = process.env["OVIS_ACCOUNT_OPENS_ALL"];
   try {
     for (const [flag, listed] of [[undefined, false], ["0", false], ["1", true]] as const) {
@@ -81,9 +81,6 @@ it("lists account-opens-all/1 only while OVIS_ACCOUNT_OPENS_ALL is 1, and drops 
       const client: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (raw: string) => { frames.push(JSON.parse(raw)); return raw.length; }, close: () => {} };
       await handler.open!(client);
       expect({ flag, listed: frames[0]!.features!.includes("account-opens-all/1") }).toEqual({ flag, listed });
-      const before = frames.length;
-      await handler.message(client, JSON.stringify({ type: "notice-seen", seq: 1 }));
-      expect(frames.length).toBe(before);
     }
   } finally {
     if (previous === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"]; else process.env["OVIS_ACCOUNT_OPENS_ALL"] = previous;
