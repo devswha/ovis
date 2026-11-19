@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { OWN_UPDATE_OFFER, type Machine, type RemoteOvis } from "../../shared/machines.ts";
-import { addPcExit, machineAway, manageActions, ownOvisAction, ownUpdateFailure, pcListExit, removablePc } from "./MachineSidebar.tsx";
+import { ADD_PC_FROM_KEY, addPcExit, machineAway, openAddPc, manageActions, ownOvisAction, ownUpdateFailure, pcListExit, removablePc } from "./MachineSidebar.tsx";
 
 const offer = (updatable: boolean): RemoteOvis => ({ version: "0.4.16", latest_version: updatable ? "0.4.18" : null, updatable, reason: updatable ? null : "it cannot", address: "pc.invalid:4000", url: null });
 const pc = (patch: Partial<Pick<Machine, "remote_ovis" | "action_required" | "error">>) => ({ remote_ovis: null, action_required: null, error: null, ...patch });
@@ -14,6 +14,22 @@ describe("where a phone's More → Add a PC leads", () => {
     expect(addPcExit({ nativeApp: true, relayShell: false, pathname: "/" })).toBe("app");
     expect(addPcExit({ nativeApp: false, relayShell: false, pathname: "/" })).toBeNull();
     expect(addPcExit({ nativeApp: false, relayShell: true, pathname: "/" })).toBeNull();
+  });
+
+  it("opens the hosted app's Add a PC marking the PC page it came from, for its Back", () => {
+    const saved = new Map<string, PropertyDescriptor | undefined>();
+    for (const key of ["window", "sessionStorage"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    const store = new Map<string, string>();
+    const went: string[] = [];
+    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } } });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { pathname: pcPage, assign: (url: string) => { went.push(url); } } } });
+    try {
+      openAddPc("shell");
+      expect(went).toEqual(["/#add"]);
+      expect(store.get(ADD_PC_FROM_KEY)).toBe(pcPage);
+    } finally {
+      for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
+    }
   });
 });
 

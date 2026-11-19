@@ -169,6 +169,8 @@ export function RelayShell(props: RelayShellProps) {
   const [sheet, setSheet] = useState<{ pc: MyPc | null; mode: AddPcSheetMode } | null>(null);
   const [addingPc, setAddingPc] = useState(false);
   const [addOpen, setAddOpen] = useState(props.addEntry === true);
+  // the PC page whose More opened Add a PC, read once as it opens: a mark left by an earlier one never sends Back elsewhere
+  const [addFrom] = useState(() => props.addEntry === true ? takeAddFrom() : null);
   const machinesRoute = useMyMachinesRoute();
   // a sheet opened on one of the two screens goes with it, whether by a link or the browser's Back
   const onMachines = machinesRoute !== null;
@@ -195,10 +197,11 @@ export function RelayShell(props: RelayShellProps) {
     return (
       <main className="relay-shell-screen relay-add-screen" data-relay-state={stateName} {...(account ? { "data-account-state": account.kind } : {})}>
         <div className="relay-shell account-centered relay-shell-signin">
-          <RelayAddPc onBack={() => { setAddOpen(false); leaveAddEntry(); }} devices={devices}
+          <RelayAddPc onBack={() => { setAddOpen(false); leaveAddEntry(addFrom); }} devices={devices}
             qr={(qrBack) => <ScanQrStep onCodeStart={() => {
-              // signed in, the code is typed in the dashboard's own pairing dialog, which takes the screens that follow
-              if (account?.kind === "signed-in") setAddingPc(true);
+              // signed in, the code is typed in the dashboard's own pairing dialog; signed out, on the way past the sign-in,
+              // as from Start without signing in: either takes the screens that follow
+              if (account?.kind === "signed-in") setAddingPc(true); else setSignedOutView("pair");
               onCodeStart();
             }} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />} />
         </div>
@@ -315,16 +318,22 @@ function pairingStep(state: RelayShellState): 1 | 2 | 3 | null | undefined {
   }
 }
 
+/** The PC page that opened Add a PC by its address (MachineSidebar.openAddPc), taken off so it serves that one opening alone. */
+function takeAddFrom(): string | null {
+  try {
+    const from = sessionStorage.getItem(ADD_PC_FROM_KEY);
+    sessionStorage.removeItem(ADD_PC_FROM_KEY);
+    return from !== null && serverIdOfPath(from) !== null ? from : null;
+  } catch { return null; }
+}
+
 /**
- * Back from Add a PC opened by its address (`/#add`): to the PC page whose More opened it (MachineSidebar.openAddPc
- * marks it), or, for a link or a bookmark from elsewhere, the front page itself, the `#add` dropped so a reload does
- * not open it again.
+ * Back from Add a PC opened by its address (`/#add`): to the PC page whose More opened it (`from`), or, for a link or a
+ * bookmark from elsewhere, the front page itself, the `#add` dropped so a reload does not open it again.
  */
-function leaveAddEntry(): void {
-  let from: string | null = null;
-  try { from = sessionStorage.getItem(ADD_PC_FROM_KEY); sessionStorage.removeItem(ADD_PC_FROM_KEY); } catch { /* no storage: stay */ }
-  if (from !== null && serverIdOfPath(from) !== null) window.history.back();
-  else window.history.replaceState(null, "", "/");
+export function leaveAddEntry(from: string | null, history: Pick<History, "back" | "replaceState"> = window.history): void {
+  if (from !== null) history.back();
+  else history.replaceState(null, "", "/");
 }
 
 function addingPcOpen(state: RelayShellState): boolean {
