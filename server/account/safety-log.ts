@@ -8,6 +8,9 @@
  * Fails closed (S19 in its strict form): a log that cannot be read, that is missing from a state folder that keeps a
  * device journal, or that holds one id with two records, makes `strict` say why; a strict log appends nothing, so the
  * file it could not read is never written over. Read only while OVIS_ACCOUNT_OPENS_ALL is on.
+ *
+ * One writer: the server process, through the one handle open() gives per folder. `ovis recover` and every other tool
+ * change the log through the server's recovery socket (S2-15), never by writing this file.
  */
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
