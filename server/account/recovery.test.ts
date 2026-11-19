@@ -187,3 +187,12 @@ test("T70: undo closes each session opened under the named release, also when it
   expect(closed).toEqual([`a@${first}`, `a@${first}`, `b@${second}`]);
   expect(journal.at(-1)).toEqual({ kind: "undo", releases: [second], rows: ["b"], by: "owner" });
 });
+
+test("T70: the rows a source registers are the candidates, across every source, and a source can be removed", () => {
+  const { store } = releases();
+  const unregister = store.registerRecoverySource(() => [waiting("a")]);
+  store.registerRecoverySource(() => [waiting("b", { waiting: null })]);
+  expect(store.candidates().map((row) => row.id)).toEqual(["a", "b"]);
+  unregister();
+  expect(store.candidates().map((row) => row.id)).toEqual(["b"]);
+});
