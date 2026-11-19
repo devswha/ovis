@@ -72,10 +72,10 @@ test("T47: a forwarded window gets no such passage on a locked PC", async () => 
   expect(tried.status).toBeGreaterThanOrEqual(400);
 });
 
-test("P11: a lock taken under one account holds whatever the PC's binding is now, none or another", async () => {
-  const made = await lockedPc();
-  expect((await made.local("/api/account/lock")).body.bound).toBe(false);
-  expect((await made.local("/api/devices")).body.error?.code).toBe("locked");
-  expect(made.app.context.services.safetyLog!.appendLock({ account: "acct_2" }).outcome).toBe("applied");
+test("P11: a lock holds whatever account it names, the PC's binding or another", async () => {
+  const member = await memberRow("acct_1");
+  const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true } });
+  pcs.push(made);
+  expect(made.app.context.services.safetyLog!.appendLock({ account: "acct_other" }).outcome).toBe("applied");
   expect((await made.local("/api/devices")).body.error?.code).toBe("locked");
 });
