@@ -205,6 +205,27 @@ describe("the PC safety log (account-log.json)", () => {
     expect(fixture.app.context.services.devices.match(token)).toBeNull();
   });
 
+  test("P24: no route appends to the log; only this PC's own code does", async () => {
+    // S2-01 gives no network or mailbox path an append: a block reaches the log only after S2-09 verified it
+    const fixture = relayFixture(false, { accountOpensAll: true });
+    fixtures.push(fixture);
+    const signer = await key();
+    const block = signed("block", await key(), signer);
+    const lock = pcRecord("lock", null);
+    const headers = { "content-type": "application/json", "x-herdr-machine": "1" };
+    for (const [path, body] of [
+      ["/api/account/records", { records: [block.record, lock] }],
+      ["/api/account/enroll", { account: ACCOUNT, records: [block.record, lock] }],
+      ["/api/account/link", { record: block.record }],
+      ["/api/account/introduce", { record: block.record }],
+    ] as const) {
+      const response = await fetch(`http://127.0.0.1:${fixture.app.port}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+      await response.text();
+    }
+    expect(existsSync(join(fixture.stateDir, SAFETY_LOG_FILE))).toBe(false);
+    expect(fixture.app.context.services.safetyLog!.entries()).toHaveLength(0);
+  });
+
   test("P24: missing release flag leaves the existing PC path and files untouched", () => {
     const previous = process.env["OVIS_ACCOUNT_OPENS_ALL"];
     delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
