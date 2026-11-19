@@ -52,4 +52,12 @@ describe("keys waiting for this PC's screen", () => {
     await act(async () => { renderer = create(<SettingsProvider><KeyFingerprintWait pc="Desk" fingerprint="AB12-CD34" /></SettingsProvider>); });
     expect(text(renderer!.root)).toContain("AB12-CD34");
   });
+
+  it("P11: where the PC has no screen proof the device says to approve on the PC and asks for no comparison", async () => {
+    await act(async () => { renderer = create(<SettingsProvider><KeyFingerprintWait pc="Desk" fingerprint={null} /></SettingsProvider>); });
+    const shown = text(renderer!.root);
+    expect(shown).toContain("Desk");
+    expect(shown).not.toMatch(/[0-9A-Z]{4}-[0-9A-Z]{4}/);
+    expect(renderer!.root.findAll((node) => node.props.className === "pending-key-fingerprint")).toEqual([]);
+  });
 });
