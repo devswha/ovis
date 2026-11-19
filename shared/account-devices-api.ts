@@ -2,7 +2,7 @@
  * What an app and a PC say to each other about the account's devices: notices, block receipts, holds
  * and the recovery acts. Shapes and validators only, and nothing here is sent while the release flag is off.
  */
-import { parseSafetyRecord, type BlockRecord } from "./account-records.ts";
+import { AccountRecordError, parseSafetyRecord, type BlockRecord, type SafetyRecord } from "./account-records.ts";
 
 /**
  * The release flag of step 2: unset or anything but `1` keeps every existing path. Read only through
@@ -148,7 +148,14 @@ export function parseNoticeAnswer(value: unknown): NoticeAnswer {
   if (answer.type !== "notice-answer" || typeof answer.id !== "string" || !HEX32.test(answer.id)) fail("Invalid notice answer");
   if (answer.answer === "its_me" && !("blocks" in answer)) return answer as unknown as NoticeAnswer;
   if (answer.answer !== "not_me" || !Array.isArray(answer.blocks) || answer.blocks.length < 1 || answer.blocks.length > 2) fail("Invalid notice answer");
-  const blocks = answer.blocks.map((entry) => parseSafetyRecord(entry));
+  const blocks = answer.blocks.map((entry): SafetyRecord => {
+    try {
+      return parseSafetyRecord(entry);
+    } catch (error) {
+      if (error instanceof AccountRecordError) fail(`Invalid block: ${error.message}`);
+      throw error;
+    }
+  });
   const first = blocks[0]!;
   if (first.kind !== "block") fail("Not me carries blocks only");
   for (const block of blocks) {

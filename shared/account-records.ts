@@ -1,6 +1,6 @@
 /**
  * Account records (docs/account.md, "Records"): `add`, `remove` and `link`, each signed on its own
- * by a client's account key. Safety records (`block`, `freeze`, `lift`, `lock`, `unlock`) are the
+ * by a client's account key. Safety records (`block`, `freeze`, `lift`, `lock`, `unlock`, `forget`) are the
  * entries of a PC's safety log; they have a parser of their own, so nothing that reads the three
  * older kinds ever sees one.
  */

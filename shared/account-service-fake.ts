@@ -6,7 +6,7 @@
  */
 import {
   ACCOUNT_RECORDS_MAX, AccountRecordError, isAccountKeyEncoding, isDeviceSafetyRecord, parseSafetyRecord, readAccountRecord, verifySafetyRecord,
-  type AccountRecord, type BlockRecord, type DeviceLiftRecord,
+  type AccountRecord, type BlockRecord, type DeviceLiftRecord, type SafetyRecord,
 } from "./account-records.ts";
 import { ACCOUNT_SNAPSHOT_V, SNAPSHOT_GONE, type AccountSnapshotPage, type SnapshotFreezeLine } from "./account-snapshot.ts";
 import { accountOsOf, type AccountOs, type AccountPlace } from "./account-asker.ts";
@@ -87,7 +87,7 @@ interface Registry {
   freezes: SnapshotFreezeLine[];
 }
 
-type SnapshotState = Omit<AccountSnapshotPage, "server_id" | "page" | "last" | "v">;
+type SnapshotState = Omit<AccountSnapshotPage, "page" | "last" | "v">;
 
 export class FakeAccountService {
   private readonly tokens = new Map<string, Session>();
@@ -601,7 +601,7 @@ export class FakeAccountService {
       const registry = this.registry(account);
       const entries = [...registry.devices].sort(([, a], [, b]) => a.no - b.no);
       state = {
-        snapshot: randomHex(16), account, version: registry.version, methods_version: registry.methods_version,
+        snapshot: randomHex(16), account, server_id: serverId, version: registry.version, methods_version: registry.methods_version,
         devices: entries.filter(([, d]) => !d.removed).map(([key, { no, eligible, label }]) => ({ key, no, eligible, label })),
         removed: entries.filter(([, d]) => d.removed).map(([key, { no }]) => ({ key, no })),
         blocks: [...registry.blocks], lifts: [...registry.lifts], freezes: [...registry.freezes],
@@ -609,17 +609,18 @@ export class FakeAccountService {
       this.snapshots.set(state.snapshot, state);
     } else if (typeof id === "string") {
       state = this.snapshots.get(id);
-      if (state === undefined || state.account !== account) return problem(410, SNAPSHOT_GONE, "Start the read again");
+      if (state === undefined || state.account !== account || state.server_id !== serverId) return problem(410, SNAPSHOT_GONE, "Start the read again");
     }
     if (state === undefined || !Number.isSafeInteger(page ?? 0) || (page ?? 0) as number < 0) return problem(400, "invalid_request", "Ask page 0 with no snapshot, then each page by its snapshot id");
     const index = (page ?? 0) as number;
-    const pages = Math.max(1, Math.ceil(state.devices.length / SNAPSHOT_PAGE));
+    // every list is paged on its own, so no page holds more than SNAPSHOT_PAGE entries of any list
+    const lists = [state.devices, state.removed, state.blocks, state.lifts, state.freezes];
+    const pages = Math.max(1, ...lists.map((list) => Math.ceil(list.length / SNAPSHOT_PAGE)));
     if (index >= pages) return problem(400, "invalid_request", "No such page");
-    const first = index === 0;
+    const slice = <T>(list: readonly T[]) => list.slice(index * SNAPSHOT_PAGE, (index + 1) * SNAPSHOT_PAGE);
     const body: AccountSnapshotPage = {
       v: ACCOUNT_SNAPSHOT_V, snapshot: state.snapshot, account, server_id: serverId, version: state.version, methods_version: state.methods_version, page: index, last: index === pages - 1,
-      devices: state.devices.slice(index * SNAPSHOT_PAGE, (index + 1) * SNAPSHOT_PAGE),
-      removed: first ? state.removed : [], blocks: first ? state.blocks : [], lifts: first ? state.lifts : [], freezes: first ? state.freezes : [],
+      devices: slice(state.devices), removed: slice(state.removed), blocks: slice(state.blocks), lifts: slice(state.lifts), freezes: slice(state.freezes),
     };
     return json(body);
   }
@@ -629,7 +630,13 @@ export class FakeAccountService {
    * kept); a lift ends that block's service line. Each signer must be a registered member older than the target.
    */
   private async safetyRecord(account: string, body: { record?: unknown }): Promise<Response> {
-    const record = parseSafetyRecord(body.record);
+    let record: SafetyRecord;
+    try {
+      record = parseSafetyRecord(body.record);
+    } catch (error) {
+      if (error instanceof AccountRecordError) return problem(400, "record_invalid", error.message);
+      throw error;
+    }
     if (!isDeviceSafetyRecord(record)) return problem(400, "record_invalid", "Send a block or a device's lift");
     if (!await verifySafetyRecord(record)) return problem(400, "signature_invalid", "The signature does not hold");
     if (record.account !== account) return problem(403, "account_mismatch", "The record is for another account");
@@ -639,8 +646,10 @@ export class FakeAccountService {
     if (record.kind === "block") {
       const target = registry.devices.get(record.target);
       if (!target || target.no !== record.target_no) return problem(403, "unknown_target", "The target is not where the block says");
+      if (signer.no >= target.no) return problem(403, "signer_not_older", "Only a device older than the target blocks it");
       if (!registry.blocks.some((held) => held.id === record.id)) {
-        if (target) target.removed = true;
+        if (target.removed) return problem(409, "target_removed", "The target is already removed");
+        target.removed = true;
         registry.blocks.push(record);
         registry.freezes.push({ block: record.id, target: record.target, after: record.target_no });
         registry.version += 1;

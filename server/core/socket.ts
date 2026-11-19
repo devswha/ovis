@@ -153,6 +153,8 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       if (terminalHistory()) features.push("terminal-history");
       if (terminalModes()) features.push("terminal-modes");
       if (client.data.machineEvents) features.push("machine-events");
+      // advertised for the step 2 tracks to build on; the notice handlers land later, and the flag stays off
+      // anywhere real until the release gate (S2-38)
       if (accountOpensAll()) features.push(ACCOUNT_OPENS_ALL_CAPABILITY);
       // a folder OVIS_PASTE_DIR names lets the page read an upload's path whole through it (#2771); a
       // watch-only connection, which may list no folder, is not told where it is
