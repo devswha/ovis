@@ -6,7 +6,7 @@ import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord, type
 import type { AccountSnapshotPage } from "../../shared/account-snapshot.ts";
 import { DeviceStore } from "../devices.ts";
 import { AccountOrder } from "./account-order.ts";
-import { DeviceJournal } from "./device-journal.ts";
+import { DeviceJournal, JOURNAL_MAX } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
 import { SafetyLog } from "./safety-log.ts";
@@ -132,6 +132,21 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(again.devices.admits(newer.spki)).toBe(false);
     expect(await read(again.ports, page({ lifts: [await lift(record.id, signer)] }))).toMatchObject({ committed: true, liftsRefused: 0 });
     expect(again.devices.admits(newer.spki)).toBe(true);
+  });
+
+  test("T58: an unchanged methods version is not announced after retention and restart", async () => {
+    const first = pc();
+    await member(first.devices);
+    expect(await read(first.ports, page({ methods_version: 5 }))).toMatchObject({ committed: true });
+    for (let i = 0; i < JOURNAL_MAX; i++) {
+      first.journal.append({ kind: "merge", how: "merge", key: null, no: null, row: null, label: "Merge", by: null, account: ACCOUNT });
+    }
+    const again = pc(first.dir);
+    expect(again.journal.entries().some((entry) => entry.kind === "method")).toBe(false);
+    expect(await read(again.ports, page({ methods_version: 5 }))).toMatchObject({ committed: true });
+    expect(again.journal.entries().filter((entry) => entry.kind === "method")).toHaveLength(0);
+    expect(await read(again.ports, page({ methods_version: 6 }))).toMatchObject({ committed: true });
+    expect(again.journal.entries().filter((entry) => entry.kind === "method")).toHaveLength(1);
   });
 
   test("T58: a committed methods version change is journalled once", async () => {
