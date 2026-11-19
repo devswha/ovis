@@ -53,3 +53,21 @@ test("T46: a PC in no account offers no lock", async () => {
   expect([tried.status, tried.body.error?.code]).toEqual([409, "not_bound"]);
   expect((await made.local("/api/account/lock")).body.bound).toBe(false);
 });
+
+test("T47: on a locked PC, this PC's own window may read the lock and ask for an unlock, which only the screen grants", async () => {
+  const made = await lockedPc();
+  const read = await made.local("/api/account/lock");
+  expect(read.status).toBe(200);
+  const lockId = read.body.locked as string;
+  expect(lockId).toMatch(/./);
+  const asked = await made.local("/api/account/unlock", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { lock: lockId } });
+  expect(asked.status).toBe(202);
+  expect((await made.local("/api/account/lock")).body.locked).toBe(lockId);
+  expect((await made.local("/api/devices")).body.error?.code).toBe("locked");
+});
+
+test("T47: a forwarded window gets no such passage on a locked PC", async () => {
+  const made = await lockedPc();
+  const tried = await made.local("/api/account/lock", { headers: { "x-forwarded-for": "100.64.0.9" } });
+  expect(tried.status).toBeGreaterThanOrEqual(400);
+});
