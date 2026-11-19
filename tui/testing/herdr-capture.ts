@@ -13,7 +13,7 @@ import { isAbsolute, join } from "node:path";
 import { isolatedHcEnv } from "../../scripts/test-hc.ts";
 import { entryPty } from "./entry-pty.ts";
 import { type Cells, encodeGrid, hostResponder, type PaletteName, Screen, type StoredGrid } from "./herdr-grid.ts";
-import { CAPTURE_FOLDER, type Checkout, type PaneSpec, PARITY_SIZES, SCENES, type SceneKeys, WORLDS, type WorldName } from "./parity-scenes.ts";
+import { CAPTURE_FOLDER, type Checkout, type PaneSpec, sizesOf, PARITY_SIZES, SCENES, type SceneKeys, WORLDS, type WorldName } from "./parity-scenes.ts";
 import { stopAllPtyRuns, type SupervisedRun } from "./pty.ts";
 
 const SESSION = "r72";
@@ -33,6 +33,15 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 const FIXTURE = `#!/bin/sh
 stty -echo 2>/dev/null
 if [ -z "$R72_PANE" ]; then printf '$ '; while IFS= read -r line; do printf '$ '; done; exit 0; fi
+if [ -n "$R72_MOUSE" ]; then
+  printf '%s-READY\\r\\n' "$R72_PANE"
+  stty raw -echo 2>/dev/null
+  printf '\\033[?1000h\\033[?1002h\\033[?1006h'
+  while :; do
+    got=$(dd bs=64 count=1 2>/dev/null | od -An -c | tr -s ' \\n' ' ')
+    printf 'GOT%s\\r\\n' "$got"
+  done
+fi
 printf '%s-READY\\r\\n' "$R72_PANE"
 i=1
 while [ "$i" -le 3 ]; do printf 'line %s of %s\\r\\n' "$i" "$R72_PANE"; i=$((i + 1)); done
@@ -119,9 +128,10 @@ class Client {
 }
 
 /** Where `needle` first stands in the screen's text: its row and column. */
-function find(text: string, needle: string): { col: number; row: number } | null {
+function find(text: string, needle: string, only?: number): { col: number; row: number } | null {
   const lines = text.split("\n");
   for (let row = 0; row < lines.length; row++) {
+    if (only !== undefined && row !== only) continue;
     const col = lines[row]!.indexOf(needle);
     if (col >= 0) return { col, row };
   }
@@ -131,6 +141,7 @@ function find(text: string, needle: string): { col: number; row: number } | null
 /** SGR mouse reports (mode 1006), 0-based cells. */
 const mouse = {
   click: (col: number, row: number): string => `\x1b[<0;${col + 1};${row + 1}M\x1b[<0;${col + 1};${row + 1}m`,
+  rightClick: (col: number, row: number): string => `\x1b[<2;${col + 1};${row + 1}M\x1b[<2;${col + 1};${row + 1}m`,
   drag: (from: number, to: number, row: number): string => `\x1b[<0;${from + 1};${row + 1}M\x1b[<32;${to + 1};${row + 1}M\x1b[<0;${to + 1};${row + 1}m`,
 };
 
@@ -220,11 +231,17 @@ async function build(server: Server, panes: readonly PaneSpec[], checkouts: read
       const ran = Bun.spawn(["git", ...args], { cwd: folder, env, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
       if (await ran.exited !== 0) throw new Error(`git ${args.join(" ")}: ${await new Response(ran.stderr).text()}`);
     };
+    if (checkout.linkedTo) {
+      // a linked worktree of the checkout made before it: made from that repository, in this folder
+      const made = Bun.spawn(["git", "worktree", "add", "-q", "-b", checkout.branch, folder], { cwd: join(server.home, checkout.linkedTo), env: { ...TOOL_ENV, HOME: server.home, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+      if (await made.exited !== 0) throw new Error(`git worktree add ${folder}: ${await new Response(made.stderr).text()}`);
+      continue;
+    }
     await git("init", "-q", "-b", checkout.branch);
     await git("commit", "-q", "--allow-empty", "-m", "first");
   }
   const cwdOf = (pane: PaneSpec) => pane.folder ? join(server.home, pane.folder) : server.home;
-  const paneEnv = async (pane: PaneSpec) => ["--env", `R72_PANE=${pane.name}`, "--env", `R72_CTL=${await server.pipe(pane.name)}`];
+  const paneEnv = async (pane: PaneSpec) => ["--env", `R72_PANE=${pane.name}`, "--env", `R72_CTL=${await server.pipe(pane.name)}`, ...(pane.mouse ? ["--env", "R72_MOUSE=1"] : [])];
   const report = async (name: string, state: string) => {
     await server.call("pane", "report-agent", ids.get(name)!, "--source", "r72", "--agent", agents.get(name) ?? "claude", "--state", state, "--seq", String(seq++));
   };
@@ -301,6 +318,25 @@ async function keysOf(keys: SceneKeys, context: Context): Promise<string | null>
     case "viewer": {
       context.second = new Client([...context.server.args], context.server.env, Math.max(40, context.cols - 14), Math.max(12, context.rows - 6), context.palette);
       await context.second.settle({ quiet: 400, max: 8000, until: (text) => text.includes("READY") });
+      return "";
+    }
+    case "rclick": {
+      const at = find(context.client.text(), keys.label, keys.row);
+      return at ? mouse.rightClick(at.col + (keys.dx ?? 0), at.row) : null;
+    }
+    case "rclickAt": {
+      const [col, row] = keys.at(context.cols, context.rows);
+      return mouse.rightClick(col, row);
+    }
+    case "steps": {
+      // each step typed once the one before it has drawn its picture
+      for (const step of keys.steps) {
+        const before = context.client.look();
+        const typed = await keysOf(step, context);
+        if (typed === null) return null;
+        if (typed !== "") context.client.type(typed);
+        await context.client.settle({ quiet: 300, max: 3000, until: () => context.client.look() !== before });
+      }
       return "";
     }
   }
@@ -389,19 +425,25 @@ await Screen.load();
 let failed = false;
 try {
   for (const world of worlds) {
-    const server = await herdrServer(herdr, WORLDS[world].herdrConfig ?? "");
-    const out: Pictures = { version: (await server.call("--version")).replace(/^herdr\s+/, ""), grids: new Map() };
-    try {
-      const scene = await build(server, WORLDS[world].panes, WORLDS[world].checkouts);
-      if (world === "ended") {
-        await server.tell("RIGHT", "quit");
-        // fixed wait: herdr closes an ended program's pane by itself and tells the command line nothing the script can wait on
-        await sleep(1500);
+    const measured = sizesOf(world).map(([c, r]) => `${c}x${r}`);
+    const runs = sizes.filter(([c, r]) => measured.includes(`${c}x${r}`)).flatMap(([cols, rows]) => (["dark", "light"] as const).map((palette) => ({ cols, rows, palette })));
+    const out: Pictures = { version: "", grids: new Map() };
+    // one server for every session of the world, or one each when what a scene leaves must not reach the next
+    for (const group of WORLDS[world].freshServer ? runs.map((one) => [one]) : [runs]) {
+      const server = await herdrServer(herdr, WORLDS[world].herdrConfig ?? "");
+      out.version = (await server.call("--version")).replace(/^herdr\s+/, "");
+      try {
+        const scene = await build(server, WORLDS[world].panes, WORLDS[world].checkouts);
+        if (world === "ended") {
+          await server.tell("RIGHT", "quit");
+          // fixed wait: herdr closes an ended program's pane by itself and tells the command line nothing the script can wait on
+          await sleep(1500);
+        }
+        for (const { cols, rows, palette } of group) await session(world, server, scene, cols, rows, palette, only, out);
+      } finally {
+        await stopAllPtyRuns();
+        await server.stop();
       }
-      for (const [cols, rows] of sizes) for (const palette of ["dark", "light"] as const) await session(world, server, scene, cols, rows, palette, only, out);
-    } finally {
-      await stopAllPtyRuns();
-      await server.stop();
     }
     mkdirSync(CAPTURE_FOLDER, { recursive: true });
     for (const [key, { dark, light }] of out.grids) {
