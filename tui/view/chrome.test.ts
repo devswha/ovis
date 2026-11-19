@@ -580,17 +580,13 @@ describe("whole-screen proofs on the runner", () => {
     }
   }, 120_000);
 
-  it("a pane whose program exits shows ended (code) in its place until the core removes it", async () => {
+  it("a pane whose program exits is gone at once, as herdr closes it: its neighbour takes the room and loses its border", async () => {
     const run = await Run.start({ fixture: demo, cols: 120, rows: 40 });
     try {
       await run.live();
       await run.advance(1);
-      run.core.program("t1").exit(3);
-      await run.settle();
-      await run.advance(20);
-      expect(run.grid()[39]!.slice(26, 42)).toBe("└─ ended (3) ───");
       expect(run.grid()[1]!.slice(26, 34)).toBe("┌ shell ");
-      run.core.remove("t1");
+      run.core.program("t1").exit(3);
       await run.settle();
       await run.advance(20);
       // t2 alone in its tab now: no border, its first row at the top

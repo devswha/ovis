@@ -4,7 +4,7 @@ import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
 import { buildSnapshot, coreHost, type HcTerminal, PANE_NAME_LABEL, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { agentRoster, groupAgentRows as browserGroups } from "../../src/lib/agentRoster.ts";
-import { CoreWorld, jumpOrder, keepsPlace } from "../core/world.ts";
+import { CoreWorld, jumpOrder } from "../core/world.ts";
 import { focused } from "../model/focus.ts";
 import { pickerPlaces } from "../model/picker.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "../model/reduce.ts";
@@ -157,7 +157,7 @@ describe("the agent list in the browser's order", () => {
       const screen = worldOf(records).view().agents.map((agent) => agent.paneId);
       // the browser (src/lib/agentInbox.ts inboxOrder, src/components/AgentSidebar.tsx): its roster of the PC, then its groups;
       // the first snapshot dates every state alike, as the browser's empty counters do
-      const snapshot = buildSnapshot(records.map(keepsPlace), null, "", (terminal) => terminal.turn ?? 0, null, undefined, coreHost(false));
+      const snapshot = buildSnapshot(records, null, "", (terminal) => terminal.turn ?? 0, null, undefined, coreHost(false));
       const machine = { id: "local", state: "connected", snapshot } as unknown as Machine;
       const seqs = new Map<string, number>();
       const browser = browserGroups(agentRoster([machine], { byActivity: false, seqs: () => seqs, pinned: [] }).rest, {

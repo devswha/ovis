@@ -19,7 +19,6 @@ import { type CoreHost, type FirstTurn, LAYOUT_DOC, OTHER_WORKSPACE_ID } from ".
 import { errorCode } from "../crash.ts";
 import type { RunEffect, Seen } from "../model/effects.ts";
 import type { Target } from "../model/focus.ts";
-import { keepsPlace } from "./world.ts";
 
 /** What a layout write tells the screen: a notice (`calm` when it reports how things are, not a failure), or a pane to focus once shown. */
 export type LayoutAnswer =
@@ -65,7 +64,7 @@ function unknownWrite(error: unknown): boolean {
 }
 
 /** The core read afresh: the snapshot as the screen shows it, when the core made each terminal, and those whose program already ended. */
-interface Fresh { readonly view: LayoutView; readonly created: ReadonlyMap<string, number>; readonly finished: ReadonlySet<string> }
+interface Fresh { readonly view: LayoutView; readonly created: ReadonlyMap<string, number> }
 
 /** Whether the terminals a close ends now are exactly the ones the user saw, each made at the time it was shown. */
 function sameTerminals(ends: readonly string[], seen: readonly Seen[], created: ReadonlyMap<string, number>): boolean {
@@ -247,25 +246,24 @@ export class LayoutWrites {
     return null;
   }
 
-  /** The core as the screen shows it, read now (the same terminals its world shows: world.ts `keepsPlace`), with each terminal's created_ms and state. */
+  /** The core as the screen shows it, read now (the same terminals its world shows: no finished one), with each terminal's created_ms. */
   private async fresh(): Promise<Fresh> {
-    const { terminals, ...view } = await readCore(this.options.hc, { ...this.options.model, all: true, shown: (listed) => listed.map(keepsPlace) });
+    const { terminals, ...view } = await readCore(this.options.hc, { ...this.options.model, all: true });
     return {
       view,
       created: new Map(terminals.map((terminal) => [terminal.address, terminal.created_ms])),
-      finished: new Set(terminals.filter((terminal) => terminal.state !== "live").map((terminal) => terminal.address)),
     };
   }
 
   /** A close, once the core still holds exactly the terminals the user saw: it ends those and no other; anything else ends nothing. */
   private async close(action: string, target: CloseTarget, seen: readonly Seen[]): Promise<void> {
-    const { view, created, finished } = await this.fresh();
+    const { view, created } = await this.fresh();
     const ends = this.store.endsOf(view.shown, target);
     if (!sameTerminals(ends, seen, created)) {
       this.notice("target_changed", { action });
       return;
     }
-    await this.store.end(ends, finished);
+    await this.store.end(ends);
   }
 
   private follow(pane: string, away: string | null): void {

@@ -355,7 +355,6 @@ export const LEFT_OUT: readonly { readonly scene: string; readonly line: string;
   { scene: "navigate", line: "L8", why: "herdr's narrow switcher covers the screen", narrow: true },
   { scene: "collapsed", line: "L6", why: "no sidebar at 64 columns or fewer on either side: the main scene again", narrow: true },
   { scene: "agents-collapsed", line: "L6", why: "no sidebar at 64 columns or fewer on either side: the agents scene again", narrow: true },
-  { scene: "ended", line: "P5", why: "P5 covers its panes and L6 its header", narrow: true },
 ];
 
 /** Whether a case compares a scene at a width. */
@@ -472,7 +471,6 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
       holes.push(boxed ? { line: "N2", x: left, y: row - 1, width: line.indexOf("│", left + 1) - left + 1, height: 4 } : { line: "N2", x: 0, y: row, width: cols, height: 1 });
     }
   }
-  if (scene === "ended") holes.push({ line: "P5", x: SIDEBAR, y: 1, width: cols, height: rows - 1 });
   return { words, holes, ovisHoles, ...(place ? { place } : {}) };
 }
 

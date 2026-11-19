@@ -79,17 +79,6 @@ export interface CoreRead {
   readonly told: number;
 }
 
-/**
- * A terminal whose program ended by itself keeps its place in its tab, its last picture and "ended (code)" drawn there
- * (the pane machine's Ended state), for as long as the core keeps its finished record: until something removes it (hc
- * 0.1.17 and 0.1.18 keep it until `terminal.rm`). A terminal someone killed, or one finished by the core stopping, leaves
- * at once, as in the browser.
- */
-export function keepsPlace<T extends object>(record: T): T {
-  const fields = record as Record<string, unknown>;
-  return fields["state"] === "finished" && fields["reason"] === "exited" ? { ...record, state: "live" } : record;
-}
-
 function byAddress(terminals: readonly unknown[]): Map<string, Record<string, unknown>> {
   const records = new Map<string, Record<string, unknown>>();
   for (const record of terminals) if (isRecord(record) && typeof record["address"] === "string") records.set(record["address"], record);
@@ -267,7 +256,7 @@ export class CoreWorld {
     this.stale = false;
     const appDoc = this.docs.get(LAYOUT_DOC) ?? null;
     const ovisDoc = this.docs.get(OVIS_LAYOUT_DOC) ?? null;
-    const snapshot = buildSnapshot([...this.records.values()].map(keepsPlace) as unknown as HcTerminal[], appDoc, this.version, this.model.firstTurn, ovisDoc, undefined, this.model.host);
+    const snapshot = buildSnapshot([...this.records.values()] as unknown as HcTerminal[], appDoc, this.version, this.model.firstTurn, ovisDoc, undefined, this.model.host);
     const tabs = new Map<string, TabShape>();
     for (const layout of snapshot.layouts) {
       const root = treeOf(layout);
