@@ -941,7 +941,7 @@ export class DeviceStore {
    * the signer's row, by this PC's own admission order: the record's numbers are claims and decide nothing (P21). A
    * target this PC has no row of waits for the order table (S2-10) and applies nothing.
    */
-  async applyBlock(value: unknown, got: SafetyGot): Promise<BlockReceipt> {
+  async applyBlock(value: unknown, got: SafetyGot, onRaise?: () => void): Promise<BlockReceipt> {
     const refused = (id: string, reason: Extract<BlockReceipt, { outcome: "refused" }>["reason"]): BlockReceipt => ({ outcome: "refused", id, reason });
     let record: SafetyRecord;
     try { record = parseSafetyRecord(value); } catch (error) {
@@ -950,7 +950,7 @@ export class DeviceStore {
     }
     if (record.kind !== "block" || this.safety === null || this.failsClosed) return refused(record.id, "record_invalid");
     if (!await verifySafetyRecord(record)) return refused(record.id, "record_invalid");
-    return this.commitBlock(record, got);
+    return this.commitBlock(record, got, onRaise);
   }
 
   /** Every block in force gives its target a marker and takes its rows, as its commit turn would have (P24). */
@@ -966,7 +966,7 @@ export class DeviceStore {
   }
 
   /** The commit turn of a verified block, in P8's order, with no wait inside. */
-  private commitBlock(record: BlockRecord, got: SafetyGot): BlockReceipt {
+  private commitBlock(record: BlockRecord, got: SafetyGot, onRaise?: () => void): BlockReceipt {
     const refused = (reason: Extract<BlockReceipt, { outcome: "refused" }>["reason"]): BlockReceipt => ({ outcome: "refused", id: record.id, reason });
     const { safety, evidence } = this;
     if (safety === null || this.failsClosed) return refused("record_invalid");
@@ -1006,6 +1006,7 @@ export class DeviceStore {
       this.keepOut([...targets, ...affected], false);
       return refused("record_invalid");
     }
+    if (this.pc !== null) onRaise?.();
     this.keepOut(affected, false);
     this.dropWaiting([record.target], "block");
     safety.unwait(record.id);

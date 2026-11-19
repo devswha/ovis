@@ -44,9 +44,9 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
     lastVersion: () => deps.order.lastVersion(pc.binding()?.bind_id, deps.serverId()),
     knownBlocks: () => new Set(safetyLog.blockIds()),
     async deny(block: BlockRecord) {
-      const before = devices.gen();
-      await devices.applyBlock(block, "snapshot");
-      return devices.gen() > before;
+      let raised = false;
+      await devices.applyBlock(block, "snapshot", () => { raised = true; });
+      return raised;
     },
     liftAuthority: (lift: DeviceLiftRecord) => devices.liftAuthority(lift),
     commit(stage: StagedRead) {
