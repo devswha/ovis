@@ -25,6 +25,10 @@ export interface HostHooks {
   signal(name: HostSignal): void;
   exit(): void;
   resize(): void;
+  /** a stop from outside (SIGTSTP): the terminal is given back, then the process stops */
+  stop(): void;
+  /** the process goes on after a stop (SIGCONT) */
+  cont(): void;
 }
 
 /** What a host is made of: the real one wires the process (unix.ts), the headless one memory. */
@@ -46,6 +50,8 @@ export interface TerminalPort {
   /** installs the hooks; returns their removal */
   hook(hooks: HostHooks): () => void;
   exit(code: number): void;
+  /** stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action) */
+  suspend(): void;
 }
 
 /** EIO and EPIPE: the terminal is gone; EAGAIN reaches here only once the port gave up waiting for it. */
@@ -209,6 +215,38 @@ export function guardedHost(port: TerminalPort): Host {
     if (failed) throw failed.error;
   };
 
+  /**
+   * A stop from outside (SIGTSTP, as a shell's job control sends): every mode undone as on leave, raw mode off, then the
+   * process stops, so whatever reads the terminal meanwhile gets no mouse reports; on SIGCONT the modes are entered again
+   * and the resize listeners told, so the screen is repainted whole.
+   */
+  let suspended = false;
+  const stopped = () => {
+    if (state !== "entered" || ending || suspended) return;
+    port.stopReading();
+    if (modesOn) {
+      try { send(encoder.encode(watchingDisplay ? `\x1b[?2031l${LEAVE}` : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
+    }
+    modesOn = false;
+    if (rawOn) {
+      rawOn = false;
+      try { port.setRaw(false); } catch { /* the terminal is gone */ }
+    }
+    suspended = true;
+    port.suspend();
+  };
+  const continued = () => {
+    if (!suspended || state !== "entered" || ending) return;
+    suspended = false;
+    port.setRaw(true);
+    rawOn = true;
+    modesOn = true;
+    send(encoder.encode(watchingDisplay ? `${ENTER}\x1b[?2031h` : ENTER));
+    port.startReading(take);
+    const size = port.size();
+    for (const listener of resizes) listener(size);
+  };
+
   const onSignal = (name: HostSignal) => {
     if (entering) { deferred ??= name; return; }
     if (ending) return;
@@ -234,7 +272,7 @@ export function guardedHost(port: TerminalPort): Host {
       if (state === "left" || !port.isTerminal) return false;
       entering = true;
       try {
-        unhook = port.hook({ signal: onSignal, exit: leave, resize: resized });
+        unhook = port.hook({ signal: onSignal, exit: leave, resize: resized, stop: stopped, cont: continued });
         state = "entered";
         port.setRaw(true);
         rawOn = true;

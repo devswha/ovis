@@ -74,7 +74,9 @@ export type PointerAct =
   /** a right press on a pane's box, a tab or a workspace's row: its menu, at the pressed cell */
   | { readonly kind: "context"; readonly target: Target; readonly cell: { readonly x: number; readonly y: number } }
   /** the pointer over the open right-click menu's entry */
-  | { readonly kind: "hover"; readonly entry: number };
+  | { readonly kind: "hover"; readonly entry: number; readonly heading?: true }
+  /** a left press on the picker's chosen heading: Enter on it */
+  | { readonly kind: "choose_heading" };
 
 type Grab =
   | { readonly kind: "none" }
@@ -118,7 +120,8 @@ export class Pointer {
         // herdr's menus, switcher and picker choose the entry under the pointer
         const hit = scene.hits?.at(event.col, event.row);
         const [kind, entry] = hit && "part" in hit && hit.part === `overlay:${scene.overlay}` ? splitId(hit.id) : ["", ""];
-        return kind === "menu" && /^\d+$/.test(entry) ? [{ kind: "hover", entry: Number(entry) }] : [];
+        if (kind !== "menu" || !/^h?\d+$/.test(entry)) return [];
+        return [{ kind: "hover", entry: Number(entry.replace("h", "")), ...(entry.startsWith("h") ? { heading: true } : {}) }];
       }
       if (event.action !== "press") return [];
       this.grab = NONE;
@@ -129,6 +132,7 @@ export class Pointer {
       if (hit.id === "close") return [{ kind: "close_overlay" }];
       if (hit.id === "accept" || hit.id === "clear") return [{ kind: "button", button: hit.id }];
       const [kind, entry] = splitId(hit.id);
+      if (kind === "menu" && /^h\d+$/.test(entry)) return [{ kind: "hover", entry: Number(entry.slice(1)), heading: true }, { kind: "choose_heading" }];
       return kind === "menu" && /^\d+$/.test(entry) ? [{ kind: "choose", entry: Number(entry) }] : [];
     }
     if (isWheel(event)) return this.wheel(event, scene);

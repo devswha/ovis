@@ -21,7 +21,7 @@ import { HELP_PAGE_ROWS, helpLines, helpNotes, helpSize, helpWindow } from "./he
 import { switcherEntries, switcherStart } from "./switcher.ts";
 import { NARROW_COLUMNS } from "./screen-size.ts";
 import { MENU_ENTRIES } from "./menu.ts";
-import { type CheckoutRow, contextChoice, field, HELP_OPEN, menuChoice, switcherPick, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice, pickerList, worktreeChoice, worktreeList } from "./overlays.ts";
+import { type CheckoutRow, contextChoice, field, HELP_OPEN, menuChoice, switcherPick, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice, pickerList, worktreeChoice } from "./overlays.ts";
 import { pickerPlaces } from "./picker.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
@@ -90,7 +90,7 @@ export type ScreenEvent =
   /** the top overlay's entry `entry` was clicked: the menu, or the picker, chooses it as Enter on it would */
   | { readonly type: "choose"; readonly entry: number; readonly at: number }
   /** the pointer moved over the top right-click menu's entry `entry`: it is chosen */
-  | { readonly type: "hover"; readonly entry: number; readonly at: number }
+  | { readonly type: "hover"; readonly entry: number; readonly heading?: boolean; readonly at: number }
   /** a right press on a pane's box, a tab or a workspace's row: its menu opens at that cell (context.ts) */
   | { readonly type: "context"; readonly target: Target; readonly cell: { readonly x: number; readonly y: number }; readonly at: number }
   /** a repository's checkouts, read for Open worktree...: the dialog opens with them */
@@ -203,12 +203,14 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
     case "hover": {
       const top = acc.s.overlays.at(-1);
       const replace = (overlay: Overlay) => { acc.s = { ...acc.s, overlays: [...acc.s.overlays.slice(0, -1), overlay] }; };
-      if ((top?.kind === "context" && event.entry < top.entries.length) || (top?.kind === "switcher" && event.entry < top.entries.length) || (top?.kind === "menu" && event.entry < MENU_ENTRIES.length)) {
+      // as herdr's: the right-click menus, the menu and the picker follow the pointer; the switcher and Open worktree... do not
+      if ((top?.kind === "context" && event.entry < top.entries.length) || (top?.kind === "menu" && event.entry < MENU_ENTRIES.length)) {
         if (event.entry !== top.cursor) replace({ ...top, cursor: event.entry });
       } else if (top?.kind === "goto") {
         const place = pickerList(top)[event.entry];
-        if (place !== undefined && place.id !== top.chosen) replace({ ...top, chosen: place.id });
-      } else if (top?.kind === "worktrees" && event.entry < worktreeList(top).length && event.entry !== top.cursor) replace({ ...top, cursor: event.entry });
+        const chosen = place === undefined ? null : event.heading ? `heading:${place.workspace}` : place.id;
+        if (chosen !== null && chosen !== top.chosen) replace({ ...top, chosen });
+      }
       break;
     }
     case "context": {

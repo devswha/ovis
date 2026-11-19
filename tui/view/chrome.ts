@@ -20,7 +20,7 @@ import { HELP_KEY_COLUMNS, helpLines, helpNotes, helpSize, helpTop, helpWindow }
 import { type CopyLook, type ModeBar, modeBar } from "../model/hints.ts";
 import { MENU_ENTRIES } from "../model/menu.ts";
 import { type Field, type Overlay, pickerList, worktreeList } from "../model/overlays.ts";
-import { chosenAt } from "../model/picker.ts";
+import { chosenAt, chosenHeading } from "../model/picker.ts";
 import type { ModelState } from "../model/reduce.ts";
 import { STRINGS } from "../strings.ts";
 import { TUI_THEMES, type TuiColorRole, type TuiThemeMode } from "../theme.generated.ts";
@@ -1181,7 +1181,13 @@ function pickerPart(width: number, height: number, picker: Extract<Overlay, { ki
       rows.slice(start, start + listRows).forEach((row, at) => {
         const y = listTop + at;
         if (row.kind === "workspace") {
-          printFit(canvas, inner.x, y, ` ${row.name}`, inner.width, style(colors.text, STYLE_BOLD));
+          const first = rows.slice(start + at + 1).find((next): next is { kind: "pane"; index: number } => next.kind === "pane");
+          const heading = first ? matches[first.index]!.workspace : null;
+          const picked = heading !== null && chosenHeading(picker.chosen) === heading;
+          const look = picked ? canvas.style({ fg: colors.primaryText, bg: colors.accent, flags: STYLE_BOLD }) : style(colors.text, STYLE_BOLD);
+          if (picked) fillSpan(canvas, inner.x, y, inner.width, look);
+          printFit(canvas, inner.x, y, ` ${row.name}`, inner.width, look);
+          if (first) canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:h${first.index}`);
           return;
         }
         const place = matches[row.index]!;

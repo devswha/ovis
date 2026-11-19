@@ -586,8 +586,11 @@ export function startLoop(options: LoopOptions): Loop {
         act(`context:${step.target.kind}`);
         dispatch({ type: "context", target: step.target, cell: step.cell, at: clock.now() });
         return;
+      case "choose_heading":
+        dispatch({ type: "key", key: "ENTER", mods: {}, action: "press", at: clock.now() } as ModelEvent);
+        return;
       case "hover":
-        dispatch({ type: "hover", entry: step.entry, at: clock.now() });
+        dispatch({ type: "hover", entry: step.entry, ...(step.heading ? { heading: true } : {}), at: clock.now() });
         return;
       case "choose":
         dispatch({ type: "choose", entry: step.entry, at: clock.now() });

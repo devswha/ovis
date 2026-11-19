@@ -192,17 +192,50 @@ describe("the pointer chooses in every menu, from the host's own motion reports 
     expect(sent()).toBe("");
   }, TEST_MS);
 
-  it("on a narrow screen the switcher's choice follows the pointer", async () => {
+  it("on a narrow screen the switcher's choice does not follow the pointer (herdr's does not); the picker's pointer chooses a workspace heading, and Enter goes there", async () => {
     const run = await start();
     run.host.resize(45, 30);
     await run.advance(400);
     await run.keys("ctrl+b,w");
     await run.advance(20);
+    const opened = top(run);
     const docs = cellOf(run, "docs");
     run.type(`\x1b[<35;${docs.x + 2};${docs.y + 1}M`);
     await run.advance(20);
     const overlay = top(run);
-    expect(overlay?.kind === "switcher" && overlay.entries[overlay.cursor]).toEqual({ kind: "workspace", id: spaceId(run, "docs") });
+    expect(overlay?.kind === "switcher" && opened?.kind === "switcher" && overlay.cursor === opened.cursor).toBe(true);
+    await escape(run);
+    run.host.resize(120, 40);
+    await run.advance(400);
+    await run.keys("ctrl+b,g");
+    await run.advance(20);
+    const heading = cellOf(run, " docs");
+    run.type(`\x1b[<35;${heading.x + 3};${heading.y + 1}M`);
+    await run.advance(20);
+    expect(top(run)).toEqual(expect.objectContaining({ kind: "goto", chosen: `heading:${spaceId(run, "docs")}` }));
+    await run.keys("enter");
+    await run.advance(50);
+    expect(run.loop.model().focus.workspace).toBe(spaceId(run, "docs"));
+  }, TEST_MS);
+
+  it("a program that asked for any motion (1003) gets the pointer passing from the start, before any press; one in 1002 gets none", async () => {
+    const run = await start({ mouse: true });
+    const right = paneId(run, "RIGHT");
+    const text = cellOf(run, "RIGHT-READY");
+    await run.keys(`click@${text.x + 1}:${text.y}`);
+    await run.advance(50);
+    const sent = () => Buffer.from(run.core.program(right).receivedHex(), "hex").toString();
+    const before = sent();
+    run.type(`\x1b[<35;${text.x + 4};${text.y + 2}M`);
+    await run.advance(20);
+    // 1002: the click went (press and release), the motion did not
+    expect(sent()).toBe(before);
+    run.core.program(right).output("\x1b[?1003h");
+    await run.advance(50);
+    const afterMode = sent();
+    run.type(`\x1b[<35;${text.x + 4};${text.y + 2}M`);
+    await run.advance(20);
+    expect(sent().slice(afterMode.length)).toMatch(/^\x1b\[<35;\d+;\d+M$/);
   }, TEST_MS);
 });
 

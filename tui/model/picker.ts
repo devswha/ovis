@@ -34,8 +34,11 @@ export function pickerMatches(places: readonly Place[], query: string): Place[] 
 }
 
 /** The index of the chosen terminal among `matches`: the one kept by `chosen`, else the first; -1 when nothing matches. */
+/** A workspace's heading row chosen in the picker (herdr's pointer chooses headings too): its id, else null. */
+export const chosenHeading = (chosen: string | null): string | null => (chosen?.startsWith("heading:") ? chosen.slice("heading:".length) : null);
+
 export function chosenAt(matches: readonly Place[], chosen: string | null): number {
-  if (matches.length === 0) return -1;
+  if (matches.length === 0 || chosenHeading(chosen) !== null) return -1;
   const at = chosen === null ? -1 : matches.findIndex((place) => place.id === chosen);
   return at < 0 ? 0 : at;
 }

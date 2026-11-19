@@ -11,7 +11,7 @@ import { charChords, chordId, keyChords } from "./keymap.ts";
 import { type ContextAction, contextCursor } from "./context.ts";
 import { MENU_ENTRIES, movedCursor } from "./menu.ts";
 import { type SwitcherEntry, switcherChoice } from "./switcher.ts";
-import { chosenAt, type Place, pickerMatches, placeTarget, workspaceStep } from "./picker.ts";
+import { chosenAt, chosenHeading, type Place, pickerMatches, placeTarget, workspaceStep } from "./picker.ts";
 
 /** A one-line text field of graphemes, the cursor after the text it opened with; `original` that text. */
 export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly original: string }
@@ -185,6 +185,9 @@ function pickerInput(overlay: Picker, input: OverlayInput): OverlayAnswer {
     const next = editField(overlay.field, input);
     return { overlay: next === overlay.field ? overlay : { ...overlay, field: next, chosen: null }, effects: [] };
   }
+  const heading = chosenHeading(overlay.chosen);
+  // a heading the pointer chose: Enter goes to that workspace, a key moves on from its first terminal
+  if (heading !== null && isEnter(input)) return { overlay: null, effects: [], choice: { kind: "select", target: { kind: "workspace", id: heading } } };
   if (isEnter(input)) return pickerChoice(overlay, at);
   const chord = inputChords(input).find((one) => !one.ctrl && !one.alt && !one.meta);
   if (chord?.key === "/") {
@@ -194,6 +197,10 @@ function pickerInput(overlay: Picker, input: OverlayInput): OverlayAnswer {
   const key = input.kind === "key" && Object.keys(input.event.mods).length === 0 ? input.event.key : "";
   const row = key === "ARROW_DOWN" || chord?.key === "j" ? 1 : key === "ARROW_UP" || chord?.key === "k" ? -1 : 0;
   const side = key === "ARROW_RIGHT" ? 1 : key === "ARROW_LEFT" ? -1 : 0;
+  if (heading !== null && (row !== 0 || side !== 0)) {
+    const first = matches.findIndex((place) => place.workspace === heading);
+    return first < 0 ? { overlay, effects: [] } : { overlay: { ...overlay, chosen: matches[first]!.id }, effects: [] };
+  }
   if (at < 0 || (row === 0 && side === 0)) return { overlay, effects: [] };
   const next = row !== 0 ? (at + row + matches.length) % matches.length : workspaceStep(matches, at, side);
   return { overlay: { ...overlay, chosen: matches[next]!.id }, effects: [] };
