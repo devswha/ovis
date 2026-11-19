@@ -316,8 +316,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
 
 
   /** `pairing`: a web sign-in leaves the page, so the pairing it is for waits in its pending record (load hands it back) */
-  /** `wanted`: asked again right before the page leaves for the provider; false leaves the sign-in unstarted */
-  const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean): void => {
+  /** `wanted`: asked again right before the page leaves for the provider (after its pending record is written); false leaves the sign-in unstarted */
+  const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean | Promise<boolean>): void => {
     if (accountService === null) return;
     if (accountView?.kind === "signing-in") return;
     deletion = undefined;
@@ -327,10 +327,12 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     // in the phone app the system's sign-in sheet brings the return back to the page; elsewhere the page goes to the provider
     const leave = mount.openSignIn ?? ((url: string) => window.location.assign(url));
     const unwanted = async (): Promise<void> => { accountView = { kind: "signed-out", error: null }; await changed(); };
+    const native = (): Promise<void> => nativeSignIn(provider, { store: accountStore, service: accountService }).then(() => refresh(true));
+    // a press starts as before; a start that asks `wanted` waits on it (the link entry, shell.tsx)
     const started = nativeSignInAvailable()
-      ? (wanted?.() === false ? unwanted() : nativeSignIn(provider, { store: accountStore, service: accountService }).then(() => refresh(true)))
+      ? (wanted === undefined ? native() : Promise.resolve(wanted()).then((go) => go ? native() : unwanted()))
       : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...(pairing ? { pairing } : {}) })
-        .then((url) => wanted?.() === false ? unwanted() : leave(url));
+        .then(async (url) => wanted === undefined || await wanted() ? leave(url) : unwanted());
     started.catch(async (error: unknown) => {
       console.warn("Ovis: the sign-in did not start", error);
       accountView = { kind: "signed-out", error: signInFailure(error), provider };

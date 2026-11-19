@@ -59,12 +59,25 @@ export function showStart(container: ParentNode, load: () => Promise<Pick<typeof
     .catch((error: unknown) => { console.warn("Ovis: the mascot was not drawn", error); });
 }
 
+/**
+ * Whether this tab navigated since the call (a fragment, an offer pasted in, Back). Boot starts it as it reads the entry,
+ * before anything loads, so a navigation while the shell still loads counts too.
+ */
+export function watchNavigation(target: { addEventListener(type: string, listener: () => void): void }): () => boolean {
+  let navigated = false;
+  const note = (): void => { navigated = true; };
+  target.addEventListener("hashchange", note);
+  target.addEventListener("popstate", note);
+  return () => navigated;
+}
+
 export function bootRelayShell(container: HTMLElement, renderApp: () => Root, load: typeof loadRelayShell = loadRelayShell): void {
   const entryUrl = takeEntryUrl(window);
+  const navigatedSinceEntry = watchNavigation(window);
   void showStart(container);
   // an older entry of this tab's history may still hold its query: it moves as the load's did, before the app reads it
   window.addEventListener("popstate", () => { moveQueryToFragment(window); });
-  void load().then(({ mountRelayShell }) => mountRelayShell({ container, entryUrl, renderApp })).catch((error: unknown) => {
+  void load().then(({ mountRelayShell }) => mountRelayShell({ container, entryUrl, renderApp, navigatedSinceEntry })).catch((error: unknown) => {
     console.error("Ovis: the relay shell did not start", error);
     createRoot(container).render(createElement(AppCrash, { error }));
   });

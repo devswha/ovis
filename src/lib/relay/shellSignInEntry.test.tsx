@@ -8,7 +8,7 @@ import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../account/signin.ts";
 import { moveQueryToFragment } from "../pageQuery.ts";
 import { memoryAccountStore, type AccountStore } from "../account/store.ts";
-import { takeEntryUrl } from "./boot.ts";
+import { bootRelayShell, takeEntryUrl } from "./boot.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { mountRelayShell } from "./shell.tsx";
 import { createShellTestPage } from "./shell.test.tsx";
@@ -53,20 +53,24 @@ describe("a link that opens the hosted shell on a provider's sign-in (#sign-in=<
   }
 
   /** Loads the address in `bar` as the browser would: boot takes the entry URL, then the shell mounts on it. */
-  async function load(bar: ReturnType<typeof addressBar>, fake: FakeAccountService, accountStore: AccountStore, signIns: string[], accountFetch: typeof fetch = fake.fetch as typeof fetch) {
-    let props: RelayShellProps | undefined;
+  /** What a test page mounts with, less the entry: the fake service, this store, and its sign-ins recorded. */
+  function mountOptions(fake: FakeAccountService, accountStore: AccountStore, signIns: string[], accountFetch: typeof fetch = fake.fetch as typeof fetch) {
     const store: ShellDeviceStore = { get: async () => undefined, list: async () => [], remove: async () => {}, removeRow: async () => false, update: async (_id, change) => change(undefined) };
     const find = (node: ReactElement): RelayShellProps => node.type === RelayShell ? node.props as RelayShellProps : find((node.props as { children: ReactElement }).children);
-    await mountRelayShell({
-      container: {} as HTMLElement, entryUrl: takeEntryUrl(bar), shellVersion: "0.0.0-test", label: "Test phone", store, accountStore,
-      accountService: SERVICE, accountFetch, accountProviders: ["github"],
-      renderApp: () => { throw new Error("the app is not expected here"); },
-      createRoot: () => ({ render(element: ReactElement) { props = find(element); }, unmount() {} }),
+    return {
+      shellVersion: "0.0.0-test", label: "Test phone", store, accountStore, accountService: SERVICE, accountFetch, accountProviders: ["github" as const],
+      createRoot: () => ({ render(element: ReactElement) { find(element); }, unmount() {} }),
       open: async () => { throw new Error("no pairing is expected here"); },
-      openSignIn: (url) => { signIns.push(url); changed(); },
-      navigate: () => {}, checkPc: async () => ({ kind: "offline", reason: "relay" }), reload: async () => {},
+      openSignIn: (url: string) => { signIns.push(url); changed(); },
+      navigate: () => {}, checkPc: async () => ({ kind: "offline" as const, reason: "relay" as const }), reload: async () => {},
+    };
+  }
+
+  async function load(bar: ReturnType<typeof addressBar>, fake: FakeAccountService, accountStore: AccountStore, signIns: string[], accountFetch: typeof fetch = fake.fetch as typeof fetch) {
+    await mountRelayShell({
+      container: {} as HTMLElement, entryUrl: takeEntryUrl(bar), renderApp: () => { throw new Error("the app is not expected here"); },
+      ...mountOptions(fake, accountStore, signIns, accountFetch),
     });
-    return () => { if (!props) throw new TypeError("not rendered"); return props; };
   }
 
 
@@ -247,6 +251,50 @@ describe("a link that opens the hosted shell on a provider's sign-in (#sign-in=<
     const signIns: string[] = [];
     const none = (async (input: RequestInfo | URL, init?: RequestInit) => new URL(String(input instanceof Request ? input.url : input)).pathname === "/v1/providers" ? Response.json({ providers: [], device: [] }) : fake.fetch(input as string, init)) as typeof fetch;
     await load(addressBar(`${ORIGIN}/#sign-in=github`), fake, memoryAccountStore(), signIns, none);
+    await control(fake, signIns, 0);
+  });
+
+  it("starts nothing when a Back or an offer arrives while the shell is still loading", async () => {
+    const fake = service();
+    const signIns: string[] = [];
+    for (const arrival of [() => window.dispatchEvent(new Event("popstate")), () => arrive(scanned())]) {
+      const entry = new URL(`${ORIGIN}/#sign-in=github`);
+      Object.assign(window.location, { href: entry.href, pathname: "/", search: "", hash: entry.hash });
+      let release = (): void => {};
+      const loading = new Promise<void>((resolve) => { release = resolve; });
+      let mounted: Promise<void> | undefined;
+      const options = mountOptions(fake, memoryAccountStore(), signIns);
+      // a page with no start screen of its own: boot's start badge has nothing to replace
+      const container = { querySelector: () => null } as unknown as HTMLElement;
+      bootRelayShell(container, () => { throw new Error("the app is not expected here"); }, (async () => {
+        await loading;
+        return { mountRelayShell: (mount: Parameters<typeof mountRelayShell>[0]) => { mounted = mountRelayShell({ ...mount, ...options }); changed(); return mounted; } };
+      }) as unknown as Parameters<typeof bootRelayShell>[2]);
+      // the shell's code is still loading: nothing of it runs yet
+      arrival();
+      release();
+      await until(() => mounted !== undefined);
+      await mounted;
+    }
+    await control(fake, signIns, 0);
+  });
+
+  it("starts nothing when another tab signed in while the sign-in's pending record was written", async () => {
+    const fake = service();
+    const signIns: string[] = [];
+    const memory = memoryAccountStore();
+    let release = (): void => {};
+    let writing = false;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const store: AccountStore = { ...memory, update: async (key, change) => {
+      if (key === "pending" && !writing) { writing = true; changed(); await gate; }
+      return memory.update(key, change);
+    } } as AccountStore;
+    await load(addressBar(`${ORIGIN}/#sign-in=google`), fake, store, signIns);
+    await until(() => writing);
+    // the other tab shares the stored account, not this page's view of it
+    await signInElsewhere(fake, memory);
+    release();
     await control(fake, signIns, 0);
   });
 });

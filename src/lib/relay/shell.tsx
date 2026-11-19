@@ -14,7 +14,7 @@ import { alertPrefs, loadSettings, SettingsProvider } from "../settings.ts";
 import { readAlertFilters, withAlertFilters } from "../alertFilters.ts";
 import { onLazyChunkFailure } from "../lazyChunk.ts";
 import { setTransport } from "../transport.ts";
-import { takeEntryUrl } from "./boot.ts";
+import { takeEntryUrl, watchNavigation } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
 import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
@@ -37,6 +37,9 @@ export const ACCOUNT_STEPS_WAIT_MS = 15_000;
 
 
 export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
+  // any navigation in this tab since the entry was read, even one the page takes no step for (Back to another
+  // fragment): a `#sign-in=` entry starts only on a page nothing moved
+  const navigatedSinceEntry = mount.navigatedSinceEntry ?? watchNavigation(window);
   const store = mount.store ?? indexedDeviceStore;
   await loadObservedVersions(store);
   const open = mount.open ?? openRelayTransport;
@@ -46,11 +49,6 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // bumped by every link this page takes after it loaded, and by Cancel or Back: a step of the page's own load that
   // waited meanwhile is stale and does nothing
   let entries = 0;
-  // any navigation in this tab after the load, even one the page takes no step for (Back to another fragment): a
-  // `#sign-in=` entry starts only on a page nothing moved
-  let moved = false;
-  window.addEventListener("hashchange", () => { moved = true; });
-  window.addEventListener("popstate", () => { moved = true; });
   const scoped = entry.serverId !== null;
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
@@ -704,9 +702,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // did not name, on a page signed in (in any tab: the stored session is read right before), or once the page moved
   // since its load (a link, an offer, Back), which is asked again right before the page leaves for the provider
   const asked = account.enabled && returning === undefined ? signInEntry(new URL(mount.entryUrl).hash) : null;
-  const unmoved = (): boolean => !moved && entries === 0;
+  const unmoved = (): boolean => !navigatedSinceEntry() && entries === 0;
+  const stillWanted = async (): Promise<boolean> => unmoved() && await account.stored() === undefined && unmoved();
   if (asked !== null && unmoved() && account.state?.kind !== "signed-in") {
     const provider = (await account.listed()).find((id) => id === asked);
-    if (provider !== undefined && unmoved() && await account.stored() === undefined && unmoved()) account.signIn(provider, undefined, unmoved);
+    // asked before it starts, and again once its pending record is written, right before the page leaves for the provider
+    if (provider !== undefined && await stillWanted()) account.signIn(provider, undefined, stillWanted);
   }
 }

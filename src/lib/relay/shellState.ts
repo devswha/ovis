@@ -204,6 +204,8 @@ export function iosBrowserTab(env: { userAgent: string; maxTouchPoints: number; 
 export interface RelayShellMount {
   container: HTMLElement;
   entryUrl: string;
+  /** Whether the tab navigated since `entryUrl` was read (boot.ts watchNavigation); the shell watches from its own start without it */
+  navigatedSinceEntry?: () => boolean;
   renderApp: () => Root;
   createRoot?: (container: HTMLElement) => Root;
   store?: ShellDeviceStore;
