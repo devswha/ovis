@@ -1,4 +1,4 @@
-/** Probe results never imply account or version state. */
+/** Probe results never imply account or version state. A sweep a minute while the list is shown, at most CHECK_PCS PCs each. */
 import { checkPc, sweepOf } from "./pcStatus.ts";
 import type { PcStatus } from "./pcStatus.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
@@ -19,7 +19,7 @@ function localStorageSet(key: string, value: string): void {
   try { localStorage.setItem(key, value); } catch {}
 }
 
-interface QueuedCheck { readonly device: RelayDevice; readonly settled: ReturnType<typeof Promise.withResolvers<void>> }
+interface QueuedCheck { readonly device: RelayDevice; readonly before: PcStatus | undefined; readonly settled: ReturnType<typeof Promise.withResolvers<void>> }
 
 export function createPcSweep(store: RelayDeviceStore, view: { readonly active: () => boolean; readonly redraw: () => void }, options: { readonly probe?: typeof checkPc; readonly directSocket?: (url: string) => RelaySocket } = {}) {
   const pcStatus = new Map<string, PcStatus>();
@@ -31,11 +31,16 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
   let sweeping: Promise<void> | undefined;
   const queue: QueuedCheck[] = [];
   let workers = 0;
+  /** PCs whose last check the relay turned away (a 429, a dropped socket): the next sweep checks them first */
+  const refused = new Set<string>();
+  /** answers past OFFLINE_AFTER_MS, which a refused check must not put back */
+  const lapsed = new WeakSet<PcStatus>();
   const redraw = (): void => { if (view.active()) view.redraw(); };
   const cursorNow = (): number => Number(localStorageGet(CHECK_CURSOR_KEY) ?? "0");
 
   const enqueue = (device: RelayDevice, where: "front" | "back"): Promise<void> => {
-    const entry: QueuedCheck = { device, settled: Promise.withResolvers<void>() };
+    const entry: QueuedCheck = { device, before: pcStatus.get(device.server_id), settled: Promise.withResolvers<void>() };
+    pcStatus.set(device.server_id, { kind: "checking" });
     if (where === "front") queue.unshift(entry); else queue.push(entry);
     return entry.settled.promise;
   };
@@ -43,8 +48,15 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     for (let next = queue.shift(); next; next = queue.shift()) {
       const found = await probe(next.device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
       const serverId = next.device.server_id;
-      pcStatus.set(serverId, found);
-      if (found.kind === "answered") setTimeout(() => { if (pcStatus.get(serverId) === found) { pcStatus.delete(serverId); redraw(); } }, OFFLINE_AFTER_MS);
+      // a relay that turned this device away said nothing of the PC: the row keeps what it said until a second refusal in a row
+      if (found.kind === "offline" && found.reason === "relay" && !refused.has(serverId)) {
+        refused.add(serverId);
+        if (next.before === undefined || lapsed.has(next.before)) pcStatus.delete(serverId); else pcStatus.set(serverId, next.before);
+      } else {
+        refused.delete(serverId);
+        pcStatus.set(serverId, found);
+      }
+      if (found.kind === "answered") setTimeout(() => { lapsed.add(found); if (pcStatus.get(serverId) === found) { pcStatus.delete(serverId); redraw(); } }, OFFLINE_AFTER_MS);
       redraw();
       next.settled.resolve();
     }
@@ -56,27 +68,37 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     }
   };
 
+  const later = (wait: number): void => {
+    deferred ??= setTimeout(() => {
+      deferred = undefined;
+      if (view.active() && globalThis.document?.visibilityState !== "hidden") void checkPcs(); else later(CHECK_GAP_MS);
+    }, wait);
+  };
   const checkPcs = async (): Promise<void> => {
-    if (sweeping) return;
+    if (sweeping) { void sweeping.then(checkPcs); return; }
     const stored = Number(localStorageGet(CHECK_KEY) ?? "");
     const wait = CHECK_GAP_MS - (Date.now() - Math.max(lastCheck, Number.isFinite(stored) ? stored : -Infinity));
     if (wait > 0) {
-      deferred ??= setTimeout(() => { deferred = undefined; if (view.active()) void checkPcs(); }, wait);
+      later(wait);
       redraw();
       return;
     }
     lastCheck = Date.now();
     localStorageSet(CHECK_KEY, String(lastCheck));
+    later(CHECK_GAP_MS);
     sweeping = sweepPcs().finally(() => { sweeping = undefined; });
     await sweeping;
   };
   const sweepPcs = async (): Promise<void> => {
     const cursor = cursorNow();
-    const saved = sweepOf(await store.list(), cursor, CHECK_PCS).filter((device) => pcStatus.get(device.server_id)?.kind !== "checking");
-    localStorageSet(CHECK_CURSOR_KEY, String(cursor + CHECK_PCS));
-    for (const device of saved) pcStatus.set(device.server_id, { kind: "checking" });
-    redraw();
+    const devices = await store.list();
+    const again = sweepOf(devices, 0, devices.length).filter((device) => refused.has(device.server_id)).slice(0, CHECK_PCS);
+    const turn = CHECK_PCS - again.length;
+    const saved = [...again, ...sweepOf(devices, cursor, turn).filter((device) => !again.includes(device))]
+      .filter((device) => pcStatus.get(device.server_id)?.kind !== "checking");
+    localStorageSet(CHECK_CURSOR_KEY, String(cursor + turn));
     const settled = saved.map((device) => enqueue(device, "back"));
+    redraw();
     drain();
     await Promise.all(settled);
   };
@@ -89,9 +111,8 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     if (pcStatus.get(serverId)?.kind === "checking") return;
     const device = await store.get(serverId);
     if (device === undefined) return;
-    pcStatus.set(serverId, { kind: "checking" });
-    redraw();
     const settled = enqueue(device, "front");
+    redraw();
     drain();
     await settled;
   };

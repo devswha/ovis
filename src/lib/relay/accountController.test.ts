@@ -210,18 +210,18 @@ describe("the hosted shell's front page", () => {
     await drain();
 
     answer = down;
-    const before = rendered.length;
+    const before = last().state;
     jest.advanceTimersByTime(60_000);
-    await until(() => reads === 5 && rendered.length > before, "the failed read drawn");
+    await until(() => reads === 5 && last().state !== before, "the failed read drawn");
     expect(rows()).toBe(3);
     expect(account().pcs).toHaveLength(3);
     expect(account().error).toContain("could not be reached");
 
     for (let read = 6; read <= 14; read++) {
       await drain();
-      const drawnBefore = rendered.length;
+      const drawnBefore = last().state;
       jest.advanceTimersByTime(60_000);
-      await until(() => reads === read && rendered.length > drawnBefore, `failed read ${read} drawn`);
+      await until(() => reads === read && last().state !== drawnBefore, `failed read ${read} drawn`);
     }
     expect(account().pcs!.map((pc) => [pc.name, pc.state])).toEqual([["Desk PC", "offline"], ["Mac mini", "offline"], ["nuc", "offline"]]);
     answer = ok;
