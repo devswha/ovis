@@ -42,7 +42,15 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       await devices.applyBlock(block, "snapshot", () => { raised = true; });
       return raised;
     },
-    liftAuthority: (lift: DeviceLiftRecord) => devices.liftAuthority(lift),
+    async liftAuthority(lift: DeviceLiftRecord) {
+      const entry = safetyLog.state().freezes.find(({ record }) => record.account === lift.account &&
+        (record.kind === "block" ? record.id === lift.target : record.kind === "freeze" && record.id === `f:${lift.target}`));
+      const target = entry?.record.target;
+      if (!target || deps.order.late(lift.signer)) return false;
+      const signerNo = deps.order.no(lift.signer);
+      const targetNo = deps.order.no(target);
+      return signerNo !== null && targetNo !== null && signerNo < targetNo && devices.liftAuthority(lift);
+    },
     commit(stage: StagedRead) {
       const binding = pc.binding();
       if (binding === null) throw new Error("Snapshot commit requires a current binding");
