@@ -2,6 +2,7 @@
  * A relay client's side of a connection to a PC: Noise NK to its key, then Ovis Mux v1 admission with a device key
  * (docs/relay.md).
  */
+import { ACCOUNT_OPENS_ALL_MUX_FEATURE } from "./account-devices-api.ts";
 import { channelBinding, openClientSecureChannel } from "./relay-e2ee.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
@@ -130,6 +131,11 @@ export interface RelayChannelOptions {
    * "Direct on the same network") instead of through the relay: signing in only, never a pairing.
    */
   readonly direct?: string;
+  /**
+   * Offer ACCOUNT_OPENS_ALL_MUX_FEATURE in HELLO (device table T34, G5): a client signing in with its registered sign-in
+   * key, so a PC with the release on may answer held, not_listed or admission instead of a bare auth failure.
+   */
+  readonly accountOpensAll?: boolean;
   /** Offer DIRECT_CARRIER, so the PC names its direct carriers in AUTH_OK: only a client that can open them. */
   readonly offerDirect?: boolean;
   /** With offerDirect, also offer DIRECT_TAILNET: only a client that can open a carrier on a Tailscale address. */
@@ -192,7 +198,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     // an older PC selects none of these; a comparison names what it asks for, so the PC's prompt can say it
     const offered: readonly string[] = comparing
       ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : options.intent === "vouched" ? PAIR_INTENT_VOUCHED : PAIR_INTENT_PC]
-      : [ACCOUNT_FEATURE];
+      : [ACCOUNT_FEATURE, ...options.accountOpensAll === true ? [ACCOUNT_OPENS_ALL_MUX_FEATURE] : []];
     const hinted: readonly string[] = [RELAY_HINTS, ...options.offerDirect ? [DIRECT_CARRIER, ...options.offerTailnet ? [DIRECT_TAILNET] : []] : []];
     let phoneNonce: Uint8Array | undefined;
     let binding: Uint8Array | undefined;

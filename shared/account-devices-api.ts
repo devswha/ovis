@@ -13,6 +13,8 @@ import { PAIR_FINGERPRINT_PATTERN } from "./pair-fingerprint.ts";
 export const OVIS_ACCOUNT_OPENS_ALL = "OVIS_ACCOUNT_OPENS_ALL";
 /** The capability a PC advertises once the flag is on; an app shows nothing of step 2 to a PC without it. */
 export const ACCOUNT_OPENS_ALL_CAPABILITY = "account-opens-all/1";
+/** The same capability as a relay mux HELLO feature (mux feature names are [a-z0-9-]); the app offers it when signing in with its sign-in key. */
+export const ACCOUNT_OPENS_ALL_MUX_FEATURE = "account-opens-all-1";
 
 export function accountOpensAll(value = process.env[OVIS_ACCOUNT_OPENS_ALL]): boolean {
   return value === "1";
