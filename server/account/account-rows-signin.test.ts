@@ -32,7 +32,7 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
   if (!dirs.includes(dir)) dirs.push(dir);
   const safety = SafetyLog.open(dir);
   const binding = PcAccountState.open(dir);
-  const journal = DeviceJournal.open(dir);
+  const journal = DeviceJournal.open(dir, () => safety.ensureFile());
   const devices = new DeviceStore(dir, null, null, { safety, pc: binding, removals: RemovalEvidence.open(dir, safety), journal });
   const clock = { now: Date.now() };
   const rows = new AccountDeviceStore(dir, SERVER, {
