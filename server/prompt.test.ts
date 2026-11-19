@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering } from "./prompt.ts";
+import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering, waitingCard } from "./prompt.ts";
 import { rememberPaneCommands } from "./commands.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
@@ -5225,17 +5225,32 @@ ${omoRule}
     });
   });
 
-  test("tells its listeners as an answer begins, before any key, and again once it was delivered", async () => {
+  test("tells its listeners the card an answer goes to before any key, and again once it was delivered", async () => {
     await withPane("codex", "blocked", menu(RESUME), async (pane) => {
       moving(pane, RESUME);
+      const prompt = (await card())!;
+      // the card as a wait on it goes by (server/card-waits.ts)
+      const shown = { pane_id: "p_1", agent: "codex", agent_status: "blocked" } as HerdrPane;
+      const waited = await waitingCard(shown, [shown], { openCodeState: new OpenCodePromptState(), ompLookups: new Map() });
       const told: string[] = [];
-      const stop = onPromptAnswering((paneId) => {
-        told.push(`${paneId} begins after ${pane.sent.length} keys`);
-        return () => { told.push(`delivered after ${pane.sent.length} keys`); };
+      const stop = onPromptAnswering((paneId, answered) => {
+        told.push(`${paneId} ${answered === waited?.id ? "its card" : String(answered)} after ${pane.sent.length} keys`);
+        return (delivered) => { told.push(`${delivered ? "delivered" : "not delivered"} after ${pane.sent.length} keys`); };
       });
       try {
-        expect(await answer((await card())!.id, { option_index: 2 })).toEqual({ status: 200, code: undefined });
-        expect(told).toEqual(["p_1 begins after 0 keys", "delivered after 3 keys"]);
+        expect(await answer(prompt.id, { option_index: 2 })).toEqual({ status: 200, code: undefined });
+        expect(told).toEqual(["p_1 its card after 0 keys", "delivered after 3 keys"]);
+      } finally { stop(); }
+    });
+  });
+
+  test("tells no listener of an answer to a picker the user opened", async () => {
+    await withPane("claude", "idle", claudeModelList(1), async () => {
+      const told: string[] = [];
+      const stop = onPromptAnswering((paneId) => { told.push(paneId); return () => {}; });
+      try {
+        expect(await answer((await card())!.id, { option_index: 1 })).toEqual({ status: 200, code: undefined });
+        expect(told).toEqual([]);
       } finally { stop(); }
     });
   });

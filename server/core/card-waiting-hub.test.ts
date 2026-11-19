@@ -6,7 +6,7 @@ import { handlePromptRequest, OpenCodePromptState } from "../prompt.ts";
 import * as served from "../runtime/capabilities.ts";
 import { HERDR, HERDR_CORE } from "../runtime/capabilities.ts";
 import { handlers, hub } from "./status.fake.ts";
-import type { CardRead } from "../card-waits.ts";
+import type { CardRead, CardWaits } from "../card-waits.ts";
 import { shouldNotifyStatus } from "../../shared/notify-policy.ts";
 import type { AgentStatus, InteractivePrompt } from "../../shared/protocol.ts";
 
@@ -24,8 +24,8 @@ function screen(initial: CardRead) {
 const question = { kind: "question" as const, id: "q1" };
 const pane = (agent: string | null, agent_status: string, extra: Record<string, unknown> = {}) => ({ pane_id: "t1", workspace_id: "w1", tab_id: "w1:t1", agent, agent_status, cwd: "/tmp", ...extra });
 /** an answer from the card the pane waits on now was delivered */
-const answered = (h: { status: { cards: { answer(paneId: string, generation: number): void; generation(paneId: string): number | undefined } } }): void => {
-  h.status.cards.answer("t1", h.status.cards.generation("t1")!);
+const answered = ({ status: { cards } }: { status: { cards: CardWaits } }): void => {
+  cards.answer(cards.answering("t1", "shown"), true);
 };
 /** the waiting alerts web push would schedule: it takes a status equal to the last one as no change (push.ts onStatus) */
 const waitingAlerts = (alerts: string[]) => alerts.filter((status, at) => status === "blocked" && alerts[at - 1] !== "blocked").length;
@@ -214,10 +214,9 @@ describe("what ends a card's wait, and what it leaves", () => {
     const h = await started(pane("codex", "working"));
     screen(question);
     await h.status.cardTick();
+    // the agent is gone by the snapshot alone, no status event saying so: the next read finds none in front and ends the wait
     h.herdrSays(pane(null, "working"));
     await h.snapshot();
-    // the agent is known from the snapshot alone: the next read finds none in front and ends the wait
-    handlers.onStatus("t1", "working", null);
     await h.status.cardTick();
     expect(h.status.cards.waiting("t1")).toBe(false);
     expect((await h.snapshot()).panes[0]!.agent_status).not.toBe("blocked");
@@ -362,13 +361,14 @@ describe("what ends a card's wait, and what it leaves", () => {
     ["another agent and back, told by status events", [pane("codex", "working"), pane("claude", "working"), pane("codex", "working")], true],
     ["another agent and back, told by snapshots alone", [pane("codex", "working"), pane("claude", "working"), pane("codex", "working")], false],
     ["another session of its agent and back", [codexSession("one"), codexSession("two"), codexSession("one")], false],
-  ] as const)("starts no wait from a read begun before the pane changed hands and back: %s", async (_how, [began, between, again], events) => {
+    ["another session of its agent and back, each change told by a snapshot that names no session", [codexSession("one"), pane("codex", "working"), codexSession("two"), pane("codex", "working"), codexSession("one")], false],
+  ] as const)("starts no wait from a read begun before the pane changed hands and back: %s", async (_how, [began, ...after], events) => {
     serving(true);
     const h = await started(began);
     const read = heldRead();
     const tick = h.status.cardTick();
     await read.begun;
-    for (const now of [between, again]) {
+    for (const now of after) {
       h.herdrSays(now);
       if (events) handlers.onStatus("t1", "working", now.agent);
       await h.snapshot();
@@ -415,6 +415,19 @@ describe("what ends a card's wait, and what it leaves", () => {
     expect(shown.read.length).toBe(reads);
     expect(h.status.cards.waiting("t1")).toBe(false);
     expect(sent()).toBe(1);
+  });
+
+  it("starts no wait and alerts nobody from a read that returns after the hub stopped", async () => {
+    serving(true);
+    const h = await started(pane("codex", "working"));
+    const read = heldRead();
+    const tick = h.status.cardTick();
+    await read.begun;
+    h.status.collector.stop();
+    read.answer(question);
+    await tick;
+    expect(h.status.cards.waiting("t1")).toBe(false);
+    expect(h.alerts).not.toContain("blocked");
   });
 
   it("reads no pane closed after the snapshot that lists it was asked for", async () => {
@@ -503,6 +516,22 @@ describe("an answer from a card, and the wait it ends", () => {
     expect(await answerShown()).toBe(200);
     looks.resolve();
     await read;
+    expect(h.status.cards.waiting("t1")).toBe(false);
+  });
+
+  it("ends at its first read without the card a wait that began after its card was answered", async () => {
+    serving(true);
+    const h = await started(asking);
+    const held = Promise.withResolvers<void>();
+    const reply = openCodeAsks([field("only", "Yes")], held.promise);
+    // answered from the card the page showed before the server's own read found it
+    const answer = answerShown();
+    await reply.sent;
+    await h.status.cardTick();
+    expect(h.status.cards.waiting("t1")).toBe(true);
+    held.resolve();
+    expect(await answer).toBe(200);
+    await h.status.cardTick();
     expect(h.status.cards.waiting("t1")).toBe(false);
   });
 

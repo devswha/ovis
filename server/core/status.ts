@@ -186,6 +186,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    */
   const agentLifetime = new Map<string, number>();
   const handsChanged = (paneId: string): void => { agentLifetime.set(paneId, (agentLifetime.get(paneId) ?? 0) + 1); };
+  /** the session each pane's agent was last told to run, kept through a snapshot that names none: the next session is told against it */
+  const agentSession = new Map<string, NonNullable<HerdrPane["agent_session"]>>();
   const eventAgent = new Map<string, { agent: string | null; since: number }>();
   const statusNow = options.statusNow ?? Date.now;
   function newLifetime(paneId: string, keep: string | null): void {
@@ -409,7 +411,6 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const named = failedRests(letta.apply(gjc.apply(omo.apply(snapshot))));
     const newest = titleRead > titleApplied;
     if (newest) titleApplied = titleRead;
-    const told = lastPanes;
     const ids = new Set(named.panes.map((pane) => pane.pane_id));
     // the newest read also gives the card reads their panes, without a pane closed, or an agent whose exit was told,
     // after this read began
@@ -419,7 +420,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       for (const [paneId, closed] of paneClosed) {
         if (closed > read) continue;
         paneClosed.delete(paneId);
-        if (!ids.has(paneId)) agentLifetime.delete(paneId);
+        if (!ids.has(paneId)) { agentLifetime.delete(paneId); agentSession.delete(paneId); }
       }
     }
     if (newest) notePaneFolders(named.panes.flatMap((pane) => [pane.cwd, pane.foreground_cwd]));
@@ -434,12 +435,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       agentRead.delete(paneId);
       agentExited.delete(paneId);
       agentLifetime.delete(paneId);
+      agentSession.delete(paneId);
       eventAgent.delete(paneId);
       heard.delete(paneId);
     }
     for (const pane of named.panes) {
       if ((agentRead.get(pane.pane_id) ?? 0) > read) continue;
-      if (changedHands({ agent: agentNow.get(pane.pane_id), agent_session: told?.get(pane.pane_id)?.agent_session }, pane)) handsChanged(pane.pane_id);
+      if (changedHands({ agent: agentNow.get(pane.pane_id), agent_session: agentSession.get(pane.pane_id) }, pane)) handsChanged(pane.pane_id);
+      if (pane.agent_session) agentSession.set(pane.pane_id, pane.agent_session);
+      else if ((pane.agent ?? null) !== (agentNow.get(pane.pane_id) ?? null)) agentSession.delete(pane.pane_id);
       agentNow.set(pane.pane_id, pane.agent ?? null);
       agentRead.set(pane.pane_id, read);
       hearClaude(pane.pane_id, pane.agent, pane.agent_status, false);
@@ -589,6 +593,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     const ran = agentNow.get(paneId);
     agentNow.set(paneId, agent);
+    if (agent !== (ran ?? null)) agentSession.delete(paneId);
     // its agent is gone (it exited at its card): the wait goes with it, so does a read of its screen under way, and the
     // status reported now is what shows. The card reads take no agent for it from a snapshot read begun before this,
     // whether a snapshot or only its own status events had named that agent
@@ -654,6 +659,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   }
   /** never two reads at once: a slow read skips a tick rather than pile up */
   let cardReading: Promise<void> | null = null;
+  /** the hub stopped: no read starts, and one under way finds no pane, so it shows and alerts nothing */
+  let cardsStopped = false;
   const cardPane = (pane: HerdrPane): HerdrPane => ({
     ...pane,
     // a status event told before the program in front was known names no agent: the snapshot's then stands
@@ -663,7 +670,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /** each pane asked for anew around its own read (server/card-waits.ts): an agent that left, or was replaced, while a screen was read is not read as itself */
   const cardRoster: Roster = {
     all: () => [...(lastPanes?.values() ?? [])].map(cardPane),
-    pane: (paneId) => { const pane = lastPanes?.get(paneId); return pane && cardPane(pane); },
+    pane: (paneId) => { const pane = cardsStopped ? undefined : lastPanes?.get(paneId); return pane && cardPane(pane); },
     lifetime: (paneId) => agentLifetime.get(paneId) ?? 0,
   };
   /**
@@ -672,18 +679,21 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * agent and status as its own reports made them since, so no snapshot is taken for a read.
    */
   function cardTick(only?: ReadonlySet<string>): Promise<void> {
-    if (capabilities().agents !== "reported" || lastPanes === null) return Promise.resolve();
+    if (cardsStopped || capabilities().agents !== "reported" || lastPanes === null) return Promise.resolve();
     // OmO, GJC and Letta panes have trackers of their own, whose status stands: none is read, and a wait begun before
     // its tracker found the pane ends there
     cardReading ??= cards.tick(cardRoster, (pane) => pane.agent_status === "working" || pane.agent_status === "unknown", (paneId) => omo.runs(paneId) || gjc.tracks(paneId) || letta.tracks(paneId), only)
       .catch(() => undefined).finally(() => { cardReading = null; });
     return cardReading;
   }
-  // an answer from a card is its wait's, the one the pane is in as the answer begins: once it was delivered the pane is
-  // read, and where that wait is still on, its first read without a card ends it
-  const stopAnswered = onPromptAnswering((paneId) => {
-    const wait = cards.generation(paneId);
-    return () => { if (wait !== undefined) cards.answer(paneId, wait); void cardTick(new Set([paneId])); };
+  // an answer from a card is for the asking it answered (server/card-waits.ts `answering`): once it was delivered the pane
+  // is read, and where that wait is still on, its first read without a card ends it
+  const stopAnswered = onPromptAnswering((paneId, card) => {
+    const answer = cards.answering(paneId, card);
+    return (delivered) => {
+      cards.answer(answer, delivered);
+      if (delivered) void cardTick(new Set([paneId]));
+    };
   });
 
   /** `askedAt`: a status replayed from a snapshot asked for then, which the queue takes as that snapshot (`pending.baseline`) */
@@ -805,6 +815,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     agentNow.delete(paneId);
     agentRead.set(paneId, opencodeAgents.beginRead());
     agentExited.delete(paneId);
+    agentSession.delete(paneId);
     eventAgent.delete(paneId);
     forgetPaneTranscriptState(paneId);
     bridgeAgents?.ended(paneId);
@@ -946,7 +957,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   plans.start();
 
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId), () => collector.refresh());
-  const tracked = { ...collector, stop() { untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
+  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
 
   /**
    * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an answer up
