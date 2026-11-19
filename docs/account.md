@@ -963,15 +963,17 @@ puts the act on the screen; it is answered there, once, within 2 minutes, and th
 used up by that one act and no other (an approval of one key approves no other key). Nothing
 answers one but these two:
 
-- The desktop app that started the server, over a descriptor it passes as
-  `--desktop-owner-fd <n>`: the server reads one JSON line per answer (`{"approve":"<id>"}` or
-  `{"decline":"<id>"}`) and writes the open acts after every change. The argument is removed and
-  the descriptor made close-on-exec before anything is spawned, so no child holds it.
+- The desktop app that started the server, over a socket it passes as `--desktop-owner-fd <n>`
+  to a directly started `serve`: the server reads one JSON line per answer (`{"approve":"<id>"}`
+  or `{"decline":"<id>"}`) and writes the open acts after every change. The argument is removed
+  and the descriptor made close-on-exec before anything is spawned, so no child holds it. Linux
+  only for now; elsewhere the descriptor gives no channel. The supervisor removes the argument
+  and closes the descriptor without passing it on.
 - The local confirm page, on a listener of its own on `127.0.0.1` whose port is only in
   `local-confirm.json` in the state folder (readable by your user only). It is opened only on
   Linux, where the kernel names the user behind a connection, and answers only that user, with no
   proxy header, a Host of exactly its address and, for an answer, its own Origin and the one-time
-  value its page was given.
+  value its page was given. On Windows neither path exists yet.
 
 Every route of the server refuses these answers (`local_required`), through the relay, the access
 token, a paired device, a loopback window or the bridge credential alike. A restart ends every

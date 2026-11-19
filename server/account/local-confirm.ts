@@ -11,7 +11,7 @@
  */
 import { dlopen, FFIType } from "bun:ffi";
 import { randomBytes } from "node:crypto";
-import { chmodSync, fstatSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, fstatSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { machineForwardingHeaders } from "../access.ts";
 
@@ -147,10 +147,30 @@ function answerOnScreen(confirms: LocalConfirms, id: string, answer: "approved" 
  * The descriptor the desktop app named with `--desktop-owner-fd <n>` (or `=<n>`), taken once before anything is
  * spawned: the argument is removed, and the descriptor is made close-on-exec so no child (herdr, the PTY host, a
  * terminal, an updater) holds it. It is an argument and not a variable because a variable would reach every child
- * (Bun.spawn passes the environment the process started with, whatever process.env says since). Anything but a pipe
- * or a socket, or a descriptor that cannot be kept from children, is no channel.
+ * (Bun.spawn passes the environment the process started with, whatever process.env says since). Anything but a
+ * socket (the channel goes both ways on one descriptor), a descriptor that cannot be kept from children, or any system
+ * but Linux, is no channel.
  */
 export function takeDesktopOwnerFd(argv: string[]): number | null {
+  const fd = desktopOwnerArgument(argv);
+  if (fd === null) return null;
+  try {
+    if (!fstatSync(fd).isSocket()) return null;
+  } catch { return null; }
+  return closeOnExec(fd) ? fd : null;
+}
+
+/**
+ * For a process that is not the server (server/supervisor.ts): the argument is removed and the descriptor closed, so it
+ * is neither passed on nor held by a child. Only a directly started `serve` takes the channel.
+ */
+export function dropDesktopOwnerFd(argv: string[]): void {
+  const fd = desktopOwnerArgument(argv);
+  if (fd === null) return;
+  try { closeSync(fd); } catch {}
+}
+
+function desktopOwnerArgument(argv: string[]): number | null {
   let value: string | undefined;
   for (let index = argv.length - 1; index >= 0; index--) {
     const argument = argv[index]!;
@@ -164,20 +184,16 @@ export function takeDesktopOwnerFd(argv: string[]): number | null {
   }
   if (value === undefined || !/^\d{1,4}$/.test(value)) return null;
   const fd = Number(value);
-  if (fd < 3) return null;
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFIFO() && !stat.isSocket()) return null;
-  } catch { return null; }
-  return closeOnExec(fd) ? fd : null;
+  return fd < 3 ? null : fd;
 }
 
 function closeOnExec(fd: number): boolean {
-  if (process.platform !== "linux" && process.platform !== "darwin") return false;
+  // fcntl is variadic: a fixed-argument binding is sound on Linux's ABIs, not on macOS arm64
+  if (process.platform !== "linux") return false;
   try {
-    const libc = dlopen(process.platform === "darwin" ? "libc.dylib" : "libc.so.6", { fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.i32], returns: FFIType.i32 } });
+    const libc = dlopen("libc.so.6", { fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.i32], returns: FFIType.i32 } });
     try {
-      // F_SETFD = 2, F_GETFD = 1, FD_CLOEXEC = 1 on Linux and macOS
+      // F_SETFD = 2, F_GETFD = 1, FD_CLOEXEC = 1
       return libc.symbols.fcntl(fd, 2, 1) === 0 && (libc.symbols.fcntl(fd, 1, 0) & 1) === 1;
     } finally { libc.close(); }
   } catch { return false; }
@@ -200,13 +216,14 @@ export function desktopOwnerChannel(confirms: LocalConfirms, end: { input: Reada
   const tell = () => {
     if (stopped) return;
     try { end.write(`${JSON.stringify({ pending: confirms.pending().map(({ id, action, shown }) => ({ id, action, shown })) })}\n`); }
-    catch { stop(); }
+    catch (error) { stop(error instanceof Error ? error.message : String(error)); }
   };
   const unsubscribe = confirms.onChange(tell);
   const reader = end.input.getReader();
-  const stop = () => {
+  const stop = (reason?: string) => {
     if (stopped) return;
     stopped = true;
+    if (reason !== undefined) console.error(`The desktop app's confirm channel closed (${reason}); acts wait for the local confirm page`);
     unsubscribe();
     void reader.cancel().catch(() => {});
   };
@@ -214,8 +231,10 @@ export function desktopOwnerChannel(confirms: LocalConfirms, end: { input: Reada
     const decoder = new TextDecoder();
     let buffered = "";
     for (;;) {
-      const { done, value } = await reader.read().catch(() => ({ done: true, value: undefined }));
-      if (done || stopped) break;
+      const read = await reader.read().catch((error: unknown) => ({ done: true as const, value: undefined, error }));
+      if (stopped) break;
+      if (read.done) { stop("error" in read ? String(read.error) : "ended"); break; }
+      const value = read.value;
       buffered += decoder.decode(value, { stream: true });
       let newline: number;
       while ((newline = buffered.indexOf("\n")) >= 0) {
@@ -224,7 +243,6 @@ export function desktopOwnerChannel(confirms: LocalConfirms, end: { input: Reada
       }
       if (buffered.length > 4096) buffered = "";
     }
-    stop();
   })();
   tell();
   return { stop };

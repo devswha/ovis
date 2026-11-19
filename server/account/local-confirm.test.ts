@@ -4,12 +4,12 @@
  * moved by hand and every wait is for the answer its line names.
  */
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, openSync, closeSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, openSync, closeSync, fstatSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bounded } from "../relay/test-helpers.ts";
 import {
-  CONFIRM_MS, LOCAL_CONFIRM_FILE, LocalConfirms, desktopOwnerChannel, openConfirmListener, peerUidOnLinux, takeDesktopOwnerFd,
+  CONFIRM_MS, LOCAL_CONFIRM_FILE, LocalConfirms, desktopOwnerChannel, dropDesktopOwnerFd, openConfirmListener, peerUidOnLinux, takeDesktopOwnerFd,
   type ScreenAction,
 } from "./local-confirm.ts";
 
@@ -296,4 +296,38 @@ test("N6: a descriptor that is not a pipe or a socket gives no channel", () => {
     expect(takeDesktopOwnerFd(argv)).toBeNull();
     expect(argv).toEqual(["serve"]);
   }
+});
+
+test("N6: a process that is not the server drops the descriptor and its argument", () => {
+  const dir = stateDir();
+  const fd = openSync(join(dir, "plain"), "w");
+  const argv = ["supervisor", "--desktop-owner-fd", String(fd), "--other"];
+  dropDesktopOwnerFd(argv);
+  expect(argv).toEqual(["supervisor", "--other"]);
+  expect(() => fstatSync(fd)).toThrow();
+});
+
+test.if(linux)("Q20: a page's nonce is used up even by an answer that was refused", async () => {
+  const { confirms } = clocked();
+  const { origin } = listener(confirms);
+  const { id } = confirms.request(LOCK, { title: "Lock this PC", lines: [] });
+  const shown = await page(origin, id);
+  expect((await answer(origin, id, { nonce: shown.nonce!, answer: "maybe" })).status).toBe(403);
+  expect((await answer(origin, id, { nonce: shown.nonce!, answer: "approve" })).status).toBe(403);
+  expect(confirms.pending().map((open) => open.id)).toEqual([id]);
+});
+
+test("N6: a channel that fails ends loudly and answers nothing more", async () => {
+  const { confirms } = clocked();
+  const logged: string[] = [];
+  const original = console.error;
+  console.error = (...parts: unknown[]) => { logged.push(parts.join(" ")); };
+  try {
+    let fail = false;
+    const input = new ReadableStream<Uint8Array>({ start() {} });
+    desktopOwnerChannel(confirms, { input, write: () => { if (fail) throw new Error("EPIPE"); } });
+    fail = true;
+    confirms.request(LOCK, { title: "Lock this PC", lines: [] });
+    expect(logged.join("\n")).toContain("EPIPE");
+  } finally { console.error = original; }
 });
