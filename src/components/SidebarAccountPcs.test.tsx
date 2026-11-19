@@ -371,4 +371,27 @@ describe("the account's PCs in the sidebar", () => {
     await comeBack();
     expect(groups()).toEqual([]);
   });
+  it("asks a PC that did not answer nothing more when the roster changes: only a refresh or Check again asks it", async () => {
+    failAwayCheck = true;
+    await mount();
+    const checks = () => requests.filter((request) => request.path.endsWith("/check")).length;
+    const before = checks();
+    // the roster changes as panes and agents move: a new array each time
+    for (let round = 0; round < 3; round += 1) {
+      await act(async () => { renderer!.update(tree(() => {}, [{ ...local }, { ...lab }])); });
+      await settle();
+    }
+    expect(checks()).toBe(before);
+    expect(groups()[2]).toEqual(["PC Away", "offline", "Check again"]);
+  });
+
+  it("keeps a pairing under way when the roster changes", async () => {
+    await mount();
+    await act(async () => { button("Add Desk").props.onClick(); });
+    await settle();
+    await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
+    await act(async () => { renderer!.update(tree(() => {}, [{ ...local }, { ...lab }])); });
+    await settle();
+    expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toContain("123 456");
+  });
 });
