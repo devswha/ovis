@@ -86,6 +86,8 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(await devices.applyBlock(blocked, "handed")).toMatchObject({ outcome: "applied" });
     const stranger = (await key()).spki;
     expect(devices.admits(stranger)).toBe(false);
+    expect(await read(ports, page({ devices: [{ key: older.spki, no: 1, eligible: true, label: "Phone" },
+      { key: newer.spki, no: 3, eligible: true, label: "Tablet" }], removed: [{ key: target.spki, no: 2 }] }))).toMatchObject({ committed: true });
     expect(await read(ports, page({ lifts: [await lift(blocked.id, newer)] }))).toMatchObject({ committed: true, liftsRefused: 1 });
     expect(devices.admits(stranger)).toBe(false);
     expect(await read(ports, page({ lifts: [await lift(blocked.id, older)] }))).toMatchObject({ committed: true, liftsRefused: 0 });
@@ -186,6 +188,21 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
       expect(safetyLog.state().blocks.map(({ record }) => record.id)).toEqual([blocked.id]);
     } finally { refused.mockRestore(); }
   });
+
+  for (const missing of ["signer", "target", "both", "older target"] as const) {
+    test(`T52, P21, P23: a lift lacks pinned seniority with ${missing}`, async () => {
+      const { devices, safetyLog, ports } = pc();
+      const [older, target] = [await member(devices), await member(devices)];
+      const blocked = await block(target.spki, older);
+      expect((await devices.applyBlock(blocked, "handed")).outcome).toBe("applied");
+      const devicesOnList = missing === "target" || missing === "older target"
+        ? [{ key: older.spki, no: 3, eligible: false, label: "Phone" }] : [];
+      const removed = missing === "signer" || missing === "older target" ? [{ key: target.spki, no: 2 }] : [];
+      expect(await read(ports, page({ devices: devicesOnList, removed }))).toMatchObject({ committed: true });
+      expect(await read(ports, page({ lifts: [await lift(blocked.id, older)] }))).toMatchObject({ committed: true, liftsRefused: 1 });
+      expect(safetyLog.state().blocks.map(({ record }) => record.id)).toEqual([blocked.id]);
+    });
+  }
 
   test("P21, G1: renumbering a pinned key refuses and journals the read without moving its watermark", async () => {
     const { devices, ports, journal } = pc();
