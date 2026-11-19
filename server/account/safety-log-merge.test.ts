@@ -260,5 +260,14 @@ describe("merging and folding the PC safety log", () => {
     expect(notes.map((note) => note?.after)).toEqual([4, 4]);
     expect(notes.map((note) => note?.signer_removed)).toEqual([false, false]);
   });
+
+  test("P24: a block only the other folder holds is copied with the note that folder took", async () => {
+    const [own, other] = [stateDir(), stateDir()];
+    const x = await block(await key(), await signer());
+    const note = { ...asof(5), joined: 9, signer_removed: true };
+    SafetyLog.open(other).append({ record: x, got: "mailbox", asof: note });
+    expect(mergeSafetyLogs(own, other)).toBeNull();
+    expect(SafetyLog.open(own).entries().find((e) => e.record.id === x.id)?.asof).toEqual(note);
+  });
 });
 
