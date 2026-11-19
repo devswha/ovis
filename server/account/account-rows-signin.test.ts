@@ -287,10 +287,10 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     const [row] = rows.rows();
     const notice = journal.entries().find((entry) => entry.kind === "admit" && entry.row === row!.id)!;
     const newer = await member(devices);
-    expect(devices.itsMe(newer.id, notice.id)).toBe(false);
+    expect(devices.itsMe(newer.id, notice.id, newer.spki)).toBe(false);
     expect(devices.itsMe(older.id, notice.id, newer.spki)).toBe(false);
     expect(rows.access(row!.id)).toMatchObject({ refused: "join_hold" });
-    expect(devices.itsMe(older.id, notice.id)).toBe(true);
+    expect(devices.itsMe(older.id, notice.id, older.spki)).toBe(true);
     expect(rows.access(row!.id)).toEqual({ ok: true });
     expect(journal.openNotices().some((entry) => entry.id === notice.id)).toBe(false);
     expect(journal.openNotices().filter((entry) => entry.row === row!.id)).toEqual([]);
@@ -307,6 +307,6 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     if (!old) throw new Error("Missing first admission");
     rows.commitList(listed());
     rows.commitList(listed(phone));
-    expect(devices.itsMe(owner.id, old.id)).toBe(false);
+    expect(devices.itsMe(owner.id, old.id, owner.spki)).toBe(false);
   });
 });

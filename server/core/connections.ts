@@ -14,6 +14,7 @@ export interface SocketData {
   /** Only the connection server grants this document; remote terminal relays do not. */
   machineEvents?: MachineEventDocument;
   deviceId?: string;
+  provedKey?: string;
   readOnly?: boolean;
   /** let in by the open LAN alone, while nothing was paired (access.ts `via: "open"`): no device, token, sign-in or
    * bridge token stands behind it, so it ends when the pairing gate closes (admit) */
@@ -65,7 +66,7 @@ function stateOf(client: Client): ConnectionState {
 }
 
 /** The data for a connection's upgrade: it starts to interact unless its access is read-only. */
-export function connectionData(fields: { machineEvents?: MachineEventDocument; relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; open?: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number; untilLock?: (close: () => void) => () => void }): SocketData {
+export function connectionData(fields: { machineEvents?: MachineEventDocument; relay?: MachineRelay; deviceId: string | undefined; provedKey?: string; readOnly: boolean; open?: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number; untilLock?: (close: () => void) => () => void }): SocketData {
   const data: SocketData = { connectionId: crypto.randomUUID(), attached: new Map<string, { keepSize: boolean }>(), conversationInterests: new Set<string>(), conversationWatches: new Set<string>(), promptWatches: new Set<string>(), output: new Map(), ...fields };
   states.set(data, { closing: false, revoked: false, mode: fields.readOnly ? "observe" : "interact", roles: 0, watches: new Map<string, PaneView>(), waiting: new Map() });
   return data;

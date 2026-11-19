@@ -1843,16 +1843,16 @@ export class DeviceStore {
    * hold only when the sayer drives, is usable here, is older on this PC and was admitted here over an hour ago, and the
    * final admission check passes. A notice it ends is decided.
    */
-  itsMe(sayerId: string, noticeId: string): boolean {
+  itsMe(sayerId: string, noticeId: string, provedKey: string): boolean {
     const notice = this.journal?.openNotices().find((entry) => entry.id === noticeId);
     const held = notice?.row ? this.joinedRows?.row(notice.row) : null;
     if (!held || held.key !== notice?.key || held.origin.admit_no !== notice.no) return false;
     const sayer = this.anyRow(sayerId);
-    if (held === null || this.joinedRows === null || sayer === undefined || sayer.relay_public_key === undefined || sayer.origin === undefined) return false;
+    if (this.joinedRows === null || !provedKey || sayer?.relay_public_key !== provedKey || sayer.origin === undefined) return false;
     const joined = this.joinedRows.row(sayerId);
-    const state = joined !== null ? (joined.state === "hold" ? "hold" : "ok" in this.joinedRows.access(sayerId) ? "live" : "waiting")
+    const state = joined !== null ? (joined.state === "hold" ? "hold" : !this.accountRowStale(joined) && "ok" in this.joinedRows.access(sayerId) ? "live" : "waiting")
       : this.stale(sayer) ? "waiting" : "live";
-    return this.joinedRows.itsMe(held.id, { key: sayer.relay_public_key, drives: sayer.role === "drive", state, no: null, late: false, admitNo: sayer.origin.admit_no, admittedAt: Date.parse(sayer.origin.at) });
+    return this.joinedRows.itsMe(held.id, { key: sayer.relay_public_key, drives: sayer.role === "drive", state, no: this.accountOrder?.no(provedKey) ?? null, late: this.accountOrder?.late(provedKey) ?? false, admitNo: sayer.origin.admit_no, admittedAt: Date.parse(sayer.origin.at) });
   }
 
   /** The account rows' store ends the sessions of a row it dropped (P8 step 3 for a list drop, T35). */

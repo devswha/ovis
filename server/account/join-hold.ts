@@ -29,15 +29,15 @@ export interface HeldRow {
 }
 
 function older(sayer: Sayer, held: HeldRow): boolean {
-  if (sayer.no !== null) return held.no !== null && !sayer.late && sayer.no < held.no;
+  if (sayer.no !== null) return held.no !== null && sayer.no < held.no;
   return sayer.admitNo !== null && held.admitNo !== null && sayer.admitNo < held.admitNo;
 }
 
 export function mayEndHold(sayer: Sayer, held: HeldRow, now: number): boolean {
-  if (sayer.key === held.key || !sayer.drives || sayer.state !== "live") return false;
+  if (sayer.late || sayer.key === held.key || !sayer.drives || sayer.state !== "live") return false;
   // a time ahead of the clock counts as just now
   const admitted = Math.min(sayer.admittedAt, now);
-  return now - admitted >= ITS_ME_MIN_AGE_MS && older(sayer, held);
+  return now - admitted > ITS_ME_MIN_AGE_MS && older(sayer, held);
 }
 
 /** Seconds left of a join hold that ends at `holdUntil`; null while its notice is not published, so it has no end yet. */
