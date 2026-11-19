@@ -236,12 +236,12 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     expect(run.output()).toContain("live-pane");
     expect(run.output()).toContain("TERMINAL");
 
-    // Armed prefix -> mode bar shows PREFIX, then '?' opens Keyboard Shortcuts help overlay, 'q' closes it
+    // Armed prefix -> mode bar shows PREFIX, then '?' opens Keyboard Shortcuts help overlay, Enter closes it
     run.type("\x02");
     await run.until("PREFIX", "the armed prefix mode bar");
     run.type("?");
     await run.until("Keyboard Shortcuts", "the help overlay");
-    run.type("q");
+    run.type("\r");
     // Parity action prefix+s shows not_built notice
     run.type("\x02s");
     await run.until("not_built", "the parity action notice");

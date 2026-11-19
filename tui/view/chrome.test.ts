@@ -6,7 +6,6 @@ import type { PaneState, PaneView } from "../core/pane.ts";
 import { CoreWorld } from "../core/world.ts";
 import { STYLE_BOLD } from "../emulator/index.ts";
 import { focused } from "../model/focus.ts";
-import { helpRows } from "../model/hints.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "../model/reduce.ts";
 import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
@@ -84,7 +83,7 @@ function setup(options: Setup): { state: ModelState; shape: ScreenShape; input: 
   const panes = new Map(Object.entries(options.panes ?? Object.fromEntries(shape.spots.map((spot) => [spot.pane, pane(spot.pane)]))));
   return {
     state, shape,
-    input: { regions: shape.regions, spots: shape.spots, splits: shape.splits, state, world: view, panes, link: options.link ?? ONLINE, session: options.session ?? "work", ovis: "9.9.9", core: options.core === undefined ? "0.1.18" : options.core, theme: "dark", colors: "truecolor" },
+    input: { regions: shape.regions, spots: shape.spots, splits: shape.splits, state, world: view, panes, link: options.link ?? ONLINE, session: options.session ?? "work", theme: "dark", colors: "truecolor" },
   };
 }
 
@@ -384,9 +383,8 @@ describe("each part is drawn again exactly when what it shows changed", () => {
   });
 });
 
-describe("the about page and the help's keys", () => {
+describe("the LOCKED badge and the help", () => {
   const help = (cols: number, rows: number, extra: Partial<Setup> = {}) => draw({ cols, rows, events: [{ type: "action", action: "help", at: 1 }], ...extra });
-  const TERMS = ["Pane", "Tab", "Workspace", "PC", "Agent session"];
 
   it("the LOCKED badge is a tap target that unlocks; no other mode's badge is", () => {
     // the badge starts the bar over the panes' last row, right of the sidebar
@@ -395,35 +393,24 @@ describe("the about page and the help's keys", () => {
     expect(owner(draw({ cols: 120, rows: 40 }))).not.toBe("mode/lock");
   });
 
-  const about = (cols: number, rows: number, extra: Partial<Setup> = {}) => draw({ cols, rows, events: [{ type: "action", action: "about", at: 1 }], ...extra });
-
-  it("the about page lists the five terms, a blank row, then the about line with the session first", () => {
-    const shot = about(120, 40);
-    expect(TERMS.map((term, at) => shot.rows[16 + at]!.slice(23, 23 + term.length))).toEqual(TERMS);
-    expect(shot.rows[21]!.slice(23, 70).trim()).toBe("");
-    expect(shot.rows[22]!.slice(23, 23 + 40)).toBe("hc:work · Ovis 9.9.9 · herdr-core 0.1.18");
-    expect(about(120, 40, { core: null, session: "other" }).rows[22]!.slice(23, 23 + 48)).toBe("hc:other · Ovis 9.9.9 · herdr-core not connected");
-  });
-
-  it("at 45 columns the about line is cut at its end, so the session and Ovis's version stay", () => {
-    expect(about(45, 30).rows[17]!.slice(2, 2 + 31)).toBe("hc:work · Ovis 9.9.9 · herdr-co");
-  });
-
-  it("the help fills the screen less its margins, its title inside: every key row that fits, in two columns when wide, and the hint for the about page on its bottom edge", () => {
-    const shown = (shot: ReturnType<typeof draw>, rows: number[], column: number) => rows.map((y) => shot.rows[y]![column] ?? " ").filter((char) => char !== " ").length;
-    const all = helpRows(initialState(undefined).keymap).length;
-    const large = help(120, 40);
-    expect(large.rows[1]!.slice(2, 118)).toBe(`┌${"─".repeat(114)}┐`);
-    expect(large.rows[2]!.slice(3, 21)).toBe("Keyboard Shortcuts");
-    const lines = Array.from({ length: 35 }, (_, at) => 3 + at);
-    expect(shown(large, lines, 4) + shown(large, lines, 60)).toBe(Math.min(all, 70));
-    expect(large.rows[38]!.slice(4, 4 + 20)).toBe(" a: terms and about ");
-    const small = help(80, 24);
-    expect(small.rows[1]!.slice(2, 78)).toBe(`┌${"─".repeat(74)}┐`);
-    expect(shown(small, Array.from({ length: 19 }, (_, at) => 3 + at), 4)).toBe(Math.min(all, 19));
-    expect(small.rows[22]!.slice(4, 4 + 20)).toBe(" a: terms and about ");
+  it("the help is herdr's 76x22 dialog: its title and close button, the filter row, the first lines of its sections with a scrollbar, and its keys at the foot", () => {
+    const shot = help(80, 24);
+    expect(shot.rows[1]!.slice(2, 78)).toBe(`┌${"─".repeat(74)}┐`);
+    expect(shot.rows[2]!.slice(2, 78)).toBe(`│Keyboard Shortcuts${" ".repeat(43)}  esc close  │`);
+    expect(shot.rows[3]!.slice(3, 47)).toBe(" / press / to filter by command or shortcut ");
+    expect(shot.rows.slice(5, 9).map((row) => row.slice(3, 77))).toEqual([
+      ` global${" ".repeat(66)}▐`,
+      ` ctrl+b${" ".repeat(23)}prefix mode${" ".repeat(32)}▐`,
+      ` prefix+?${" ".repeat(21)}help${" ".repeat(39)}▐`,
+      ` prefix+s${" ".repeat(21)}settings${" ".repeat(35)}▐`,
+    ]);
+    expect(shot.rows[21]!.slice(3, 56)).toBe(" search / · scroll j/k/↑↓/pgup/pgdn · close esc/enter");
+    // the close button is a tap target that closes the help
+    const hit = shot.frame.hits.at(70, 2);
+    expect(hit && "part" in hit ? hit.id : null).toBe("close");
   });
 });
+
 
 describe("the help draws every keymap note code", () => {
   const help = (keys: unknown, cols = 120, rows = 40) => draw({ cols, rows, keys, events: [{ type: "action", action: "help", at: 1 }] });
@@ -556,9 +543,9 @@ describe("whole-screen proofs on the runner", () => {
       expect(bar().startsWith(" PREFIX  esc cancel  ctrl+b send prefix  w navigate  ? help")).toBe(true);
       await run.keys("?");
       await run.advance(20);
-      expect(run.grid()[1]!.slice(2, 118)).toBe(`┌${"─".repeat(114)}┐`);
-      expect(run.grid()[2]!.slice(3, 21)).toBe("Keyboard Shortcuts");
-      await run.keys("q");
+      expect(run.grid()[9]!.slice(22, 98)).toBe(`┌${"─".repeat(74)}┐`);
+      expect(run.grid()[10]!.slice(23, 41)).toBe("Keyboard Shortcuts");
+      await run.keys("enter");
       await run.advance(200);
       expect(run.grid()[2]!.slice(0, 26)).toBe(" · ovis                  │");
       for (const [keys, mode] of [["ctrl+b,w", " NAVIGATE "], ["ctrl+b,r", " RESIZE "], ["ctrl+b,[", " COPY "]] as const) {

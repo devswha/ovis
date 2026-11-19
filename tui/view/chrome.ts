@@ -16,8 +16,8 @@ import type { CoreView } from "../core/world.ts";
 import { STYLE_BOLD, type WrittenColor } from "../emulator/index.ts";
 import type { ColorDepth } from "../host/index.ts";
 import { focused } from "../model/focus.ts";
-import { type CopyLook, helpRows, type ModeBar, modeBar, shownRefusals } from "../model/hints.ts";
-import type { KeymapNote } from "../model/keymap.ts";
+import { HELP_KEY_COLUMNS, helpLines, helpNotes, helpSize, helpTop, helpWindow } from "../model/help.ts";
+import { type CopyLook, type ModeBar, modeBar } from "../model/hints.ts";
 import { MENU_ENTRIES } from "../model/menu.ts";
 import { type Field, type Overlay, OVERLAYS, pickerList } from "../model/overlays.ts";
 import { chosenAt, type Place } from "../model/picker.ts";
@@ -204,8 +204,6 @@ const STATE_LOOK: Readonly<Record<KnownStatus, { glyph: string; word: string; ro
   unknown: { glyph: STRINGS.glyphUnknown, word: "", role: "textDim" },
 };
 
-const actionLabel = (action: string): string => STRINGS.actions[action] ?? action.replaceAll("_", " ");
-
 /** How far a pane's history is scrolled: rows above the bottom, rows of history in all, rows on screen. */
 export interface PaneScroll { readonly offset: number; readonly max: number; readonly viewport: number }
 
@@ -223,9 +221,6 @@ interface ChromeInput {
   readonly scroll?: ReadonlyMap<string, PaneScroll>;
   readonly link: ShownLink;
   readonly session: string;
-  /** Ovis's version and the one herdr-core reported on the live line (null: none), for the about page */
-  readonly ovis: string;
-  readonly core: string | null;
   readonly theme?: TuiThemeMode;
   readonly colors?: ColorDepth;
 }
@@ -626,34 +621,6 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
   });
 }
 
-function noteText(note: KeymapNote): string {
-  switch (note.code) {
-    case "prefix_fallback":
-      return STRINGS.notePrefixFallback(note.binding, note.fallback);
-    case "prefix_unreachable":
-      return STRINGS.notePrefixUnreachable(note.binding, note.skipped);
-    case "detach_fallback":
-      return STRINGS.noteDetachFallback(note.fallback);
-    case "detach_unreachable":
-      return STRINGS.noteDetachUnreachable(note.skipped);
-    case "lock_taken":
-      return STRINGS.noteLockTaken(note.holder);
-    case "taken":
-      return STRINGS.noteTaken(note.action, note.binding, note.holder);
-    case "indexed_legacy":
-      return STRINGS.noteIndexedLegacy(note.entry);
-    case "blank_binding":
-      return STRINGS.noteBlankBinding(note.action);
-    case "no_such_modifier":
-    case "not_typable":
-    case "shift_in_text":
-    case "shifted_character":
-    case "cancel_key":
-    case "fixed_key":
-      return STRINGS.noteDropped(note.code, note.action, note.binding);
-  }
-}
-
 const MODE_LABELS = {
   prefix: STRINGS.modePrefix,
   locked: STRINGS.modeLocked,
@@ -822,82 +789,70 @@ function toastPart(width: number, height: number, notices: ModelState["notices"]
 }
 
 /**
- * The help, drawn as herdr's dialogs are (a panel with its title inside, the about hint on its bottom edge) and as large
- * as the screen's margins allow, so it keeps every key row the screen has room for: the notes on the key config, then
- * the key table's rows in its order, keys first, in two columns when the dialog is wide enough. It does not scroll:
- * herdr's scrolling help comes with its content (docs/tui/visual-parity.md O5).
+ * herdr's help (tui/model/help.ts): its dialog, the title and the close button on its first row, the filter row, a
+ * window of the lines (headings in the accent, a command's keys bold in mauve before its words), a scrollbar over that
+ * window while there is more than it shows, and the keys at its foot. The screen behind it is dimmed.
  */
-function helpPart(width: number, height: number, state: ModelState, world: CoreView, colors: Colors): Part | null {
-  const rect = dialogRect(width, height, width, height);
+function helpPart(width: number, height: number, state: ModelState, help: Extract<Overlay, { kind: "help" }>, colors: Colors): { overlay: Part; input: Scene["input"] } | null {
+  const size = helpSize(width, height);
+  const rect = dialogRect(width, height, size.width, size.height);
   if (!rect) return null;
-  const refusals = shownRefusals(state.keymap);
-  const notes = state.keymap.notes.map((note) => ({ text: noteText(note), unreachable: note.code === "prefix_unreachable" || note.code === "detach_unreachable" }));
-  const rows = helpRows(state.keymap).map((row) => ({
-    keys: row.keys.length > 0 ? row.keys.join(", ") : null,
-    text: `${actionLabel(row.action)}${row.status === "parity" ? ` (${STRINGS.helpParityPrefix})` : row.mode !== "terminal" ? ` [${row.mode}]` : ""}`,
-    parity: row.status === "parity",
-  }));
-  return {
+  const lines = helpLines(state.keymap, helpNotes(state.keymap), help.filter.graphemes.join(""), rect.width);
+  const view = helpWindow(height);
+  const top = helpTop(lines.length, view, help.scroll);
+  const filter = help.filtering || help.filter.graphemes.length > 0 ? fieldView(help.filter, Math.max(1, rect.width - 5)) : null;
+  const overlay: Part = {
     key: "overlay:help", rect, version: 0,
     draw(canvas) {
-      const frame = panel(canvas, rect, colors.accent, colors);
-      if (frame.width <= 0 || frame.height <= 0) return;
-      printFit(canvas, frame.x, frame.y, STRINGS.helpTitle, frame.width, canvas.style({ fg: colors.text, bg: colors.bgPanel, flags: STYLE_BOLD }));
-      const inner = { x: frame.x, y: frame.y + 1, width: frame.width, height: frame.height - 1 };
-      const bottom = inner.y + inner.height;
-      const room = Math.max(0, inner.width - 2);
-      const warn = canvas.style({ fg: colors.dangerText, bg: colors.bgPanel, flags: STYLE_BOLD });
-      const note = canvas.style({ fg: colors.notice, bg: colors.bgPanel });
-      const dim = canvas.style({ fg: colors.textDim, bg: colors.bgPanel });
-      const textStyle = canvas.style({ fg: colors.text, bg: colors.bgPanel });
-      let r = inner.y;
-      if (!world.ownsLayout && r < bottom) printFit(canvas, inner.x + 1, r++, STRINGS.appOwnedCore, room, note, true);
-      for (const line of notes) if (r < bottom) printFit(canvas, inner.x + 1, r++, line.text, room, line.unreachable ? warn : note, true);
-      if (refusals.shown.length > 0 && r < bottom) {
-        printFit(canvas, inner.x + 1, r++, STRINGS.helpRefusalsTitle, room, warn, true);
-        for (const refusal of refusals.shown) if (r < bottom) printFit(canvas, inner.x + 1, r++, STRINGS.refusalLine(refusal.code, refusal.action, refusal.binding, refusal.holder), room, note, true);
-        if (refusals.more > 0 && r < bottom) printFit(canvas, inner.x + 1, r++, STRINGS.helpMoreRefusals(refusals.more), room, dim, true);
-      }
-      printFit(canvas, rect.x + 2, rect.y + rect.height - 1, STRINGS.helpAboutHint, Math.max(0, rect.width - 4), canvas.style({ fg: colors.textDim, bg: colors.bgPanel }), true);
-      const space = bottom - r;
-      if (space <= 0) return;
-      const two = inner.width >= 76 && rows.length > space;
-      const columnWidth = two ? Math.floor((inner.width - 3) / 2) : Math.max(1, inner.width - 2);
-      const keyWidth = Math.min(18, Math.max(8, Math.floor(columnWidth * 0.42)));
-      const keyStyle = canvas.style({ fg: colors.accent, bg: colors.bgPanel, flags: STYLE_BOLD });
-      rows.forEach((row, at) => {
-        const column = two ? Math.floor(at / space) : 0;
-        const y = r + (two ? at % space : at);
-        if (column > 1 || y >= bottom) return;
-        const x = inner.x + 1 + column * (columnWidth + 1);
-        printFit(canvas, x, y, row.keys ?? STRINGS.helpUnset, keyWidth, row.keys === null ? dim : keyStyle, true);
-        printFit(canvas, x + keyWidth + 1, y, row.text, Math.max(0, x + columnWidth - (x + keyWidth + 1)), row.parity ? dim : textStyle, true);
-      });
-    },
-  };
-}
-
-
-/** The about page: the five terms, a blank row, then the about line. */
-function aboutPart(width: number, height: number, about: string, colors: Colors): Part {
-  const terms = STRINGS.glossary;
-  const rect = centred(width, height, 78, terms.length + 4);
-  return {
-    key: "overlay:about", rect, version: 0,
-    draw(canvas) {
-      const inner = titledFrame(canvas, rect, STRINGS.aboutTitle, OVERLAYS.about.closeKeys, colors);
+      const inner = panel(canvas, rect, colors.accent, colors);
       if (inner.width <= 0 || inner.height <= 0) return;
-      const termWidth = Math.max(...terms.map((entry) => widthOf(entry.term)));
-      const term = canvas.style({ fg: colors.accent, bg: colors.bgElevated, flags: STYLE_BOLD });
-      const text = canvas.style({ fg: colors.text, bg: colors.bgElevated });
-      terms.forEach((entry, at) => {
-        if (at >= inner.height) return;
-        printFit(canvas, inner.x + 1, inner.y + at, entry.term, termWidth, term);
-        printFit(canvas, inner.x + 2 + termWidth, inner.y + at, entry.meaning, Math.max(0, inner.width - 3 - termWidth), text, true);
+      const panelStyle = (fg: WrittenColor, flags = 0) => canvas.style({ fg, bg: colors.bgPanel, flags });
+      const dim = panelStyle(colors.textDim);
+      printFit(canvas, inner.x, inner.y, STRINGS.helpTitle, inner.width, panelStyle(colors.text, STYLE_BOLD));
+      const button = help.filtering ? STRINGS.helpBack : STRINGS.helpClose;
+      const close = Math.min(widthOf(button), inner.width);
+      const closeAt = inner.x + inner.width - close;
+      printFit(canvas, closeAt, inner.y, button, close, canvas.style({ fg: colors.primaryText, bg: colors.accent, flags: STYLE_BOLD }));
+      canvas.hit({ x: closeAt, y: inner.y, width: close, height: 1 }, "close");
+      if (inner.height > 1) {
+        if (filter === null) printFit(canvas, inner.x, inner.y + 1, STRINGS.helpFilterHint, inner.width, dim);
+        else {
+          printFit(canvas, inner.x, inner.y + 1, ` / ${filter.text}`, inner.width, panelStyle(colors.text));
+        }
+      }
+      const first = inner.y + 3;
+      const room = Math.max(0, inner.width - 1);
+      lines.slice(top, top + view).forEach((line, at) => {
+        const y = first + at;
+        if (y >= inner.y + inner.height - 2) return;
+        switch (line.kind) {
+          case "heading":
+            printFit(canvas, inner.x, y, ` ${line.text}`, room, panelStyle(colors.accent, STYLE_BOLD));
+            return;
+          case "command": {
+            // filtered, the words follow the keys after one blank; otherwise they stand in their own column
+            const keys = filter === null ? HELP_KEY_COLUMNS : Math.min(room, widthOf(` ${line.keys} `));
+            printFit(canvas, inner.x, y, ` ${line.keys} `, Math.min(room, keys), panelStyle(colors.statusWorking, STYLE_BOLD));
+            printFit(canvas, inner.x + keys, y, line.text, Math.max(0, room - keys), panelStyle(colors.text));
+            return;
+          }
+          case "more":
+            printFit(canvas, inner.x, y, line.text, room, panelStyle(colors.text));
+            return;
+          case "note":
+            printFit(canvas, inner.x, y, ` ${line.text}`, room, panelStyle(line.warn ? colors.dangerText : colors.notice, line.warn ? STYLE_BOLD : 0), true);
+            return;
+          case "blank":
+            return;
+        }
       });
-      if (terms.length + 1 < inner.height) printFit(canvas, inner.x + 1, inner.y + terms.length + 1, about, Math.max(0, inner.width - 2), canvas.style({ fg: colors.textDim, bg: colors.bgElevated }), true);
+      // the scrollbar while there is more than the window shows: herdr's thumb is a lighter grey than its track, and the
+      // theme has one dim text for both (C1), so the thumb shows no place of its own
+      if (lines.length > view) for (let at = 0; at < view && first + at < inner.y + inner.height - 2; at++) canvas.put(inner.x + inner.width - 1, first + at, "▐", 1, dim);
+      printFit(canvas, inner.x, inner.y + inner.height - 1, help.filtering ? STRINGS.helpFilterFooter : STRINGS.helpFooter, inner.width, dim);
     },
   };
+  return { overlay, input: help.filtering && filter !== null ? { col: rect.x + 4 + filter.cursor, row: rect.y + 2 } : "overlay" };
 }
 
 /**
@@ -940,11 +895,9 @@ function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; 
   if (!top) return { overlays, input: sceneInput, dim: false };
   switch (top.kind) {
     case "help": {
-      const help = helpPart(width, height, state, world, colors);
-      return { overlays: help ? [...overlays, help] : overlays, input: "overlay", dim: true };
+      const help = helpPart(width, height, state, top, colors);
+      return { overlays: help ? [...overlays, help.overlay] : overlays, input: help?.input ?? "overlay", dim: true };
     }
-    case "about":
-      return { overlays: [...overlays, aboutPart(width, height, STRINGS.aboutLine(input.ovis, input.core, input.session), colors)], input: "overlay", dim: true };
     case "text": {
       const title = top.purpose === "rename_workspace" ? STRINGS.textRenameWorkspace
         : top.purpose === "rename_tab" ? STRINGS.textRenameTab

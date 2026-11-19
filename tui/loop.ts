@@ -11,7 +11,6 @@
  * Time and the timer are the caller's (`LoopClock`), so a test runs it on an injected clock.
  */
 
-import { version } from "../package.json";
 import type { HcTransport, HelloInfo } from "../server/herdr-core/connection.ts";
 import { editLayout } from "../server/herdr-core/layout-ops.ts";
 import { SeenMarker } from "../server/herdr-core/seen-label.ts";
@@ -786,8 +785,6 @@ export function startLoop(options: LoopOptions): Loop {
       scroll,
       link: shown,
       session,
-      ovis: version,
-      core: shown.online ? hello?.version ?? null : null,
       theme,
       colors: host.colorDepth,
       copying,

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { version as OVIS_VERSION } from "../../package.json";
-import { FakeHcCore, FEATURES_0_1_17 } from "../../server/herdr-core/core.fake.ts";
+import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
 import { OVERLAYS } from "../model/overlays.ts";
 import { demo } from "../testing/fixtures/demo.ts";
 import { place } from "../testing/fixtures/fixture.ts";
@@ -30,15 +29,14 @@ async function start(core?: FakeHcCore, cols = 120, rows = 40): Promise<Run> {
  * has none either.
  */
 const KINDS = [
-  { kind: "help", action: "help", control: null, keys: ["esc", "q", "?"] },
-  { kind: "about", action: "about", control: "[close: esc / q]", keys: ["esc", "q"] },
+  { kind: "help", action: "help", control: "  esc close  ", keys: ["esc", "enter"] },
   { kind: "text", action: "rename_tab", control: " esc cancel ", keys: ["esc"] },
   { kind: "confirm", action: "close_workspace", control: " esc cancel ", keys: ["esc", "n"] },
   { kind: "goto", action: "goto", control: "[close: esc]", keys: ["esc"] },
   { kind: "menu", action: "menu", control: null, keys: ["esc"] },
 ] as const;
 
-describe("the overlays' close keys and the about page", () => {
+describe("the overlays' close keys", () => {
   it("every overlay registry entry shows its close control, and each of its close keys closes it", async () => {
     // a kind added to the registry without a row here fails this line
     expect(Object.keys(OVERLAYS).sort()).toEqual(KINDS.map(({ kind }) => kind).sort());
@@ -140,33 +138,4 @@ describe("the overlays' close keys and the about page", () => {
     expect(run.loop.model().locked).toBe(false);
   }, TEST_MS);
 
-  it("the about page carries the versions the link reported: Ovis's own, herdr-core's from hello, and the session", async () => {
-    for (const [core, reported] of [[new FakeHcCore(), "0.1.18"], [new FakeHcCore({ version: "0.1.17", features: FEATURES_0_1_17 }), "0.1.17"]] as const) {
-      const run = await start(core);
-      await run.keys("ctrl+b,?");
-      await run.advance(20);
-      expect(run.grid().some((line) => line.includes(" a: terms and about "))).toBe(true);
-      await run.keys("a");
-      await run.advance(20);
-      expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["help", "about"]);
-      expect(run.grid().some((line) => line.includes(`hc:default · Ovis ${OVIS_VERSION} · herdr-core ${reported}`))).toBe(true);
-      await run.keys("esc");
-      await run.advance(200);
-      expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["help"]);
-      await run.keys("esc");
-      await run.advance(200);
-      await run.cutLine();
-      await run.advance(1_000);
-      run.loop.dispatch({ type: "action", action: "about", at: run.clock.current });
-      await run.advance(20);
-      expect(run.grid().some((line) => line.includes(`hc:default · Ovis ${OVIS_VERSION} · herdr-core not connected`))).toBe(true);
-    }
-  }, TEST_MS);
-
-  it("at 45 columns the about line is cut at its end: the session and both programs' names stay", async () => {
-    const run = await start(undefined, 45, 30);
-    run.loop.dispatch({ type: "action", action: "about", at: run.clock.current });
-    await run.advance(20);
-    expect(run.grid().some((line) => line.includes(`hc:default · Ovis ${OVIS_VERSION} · herdr-core`))).toBe(true);
-  }, TEST_MS);
 });

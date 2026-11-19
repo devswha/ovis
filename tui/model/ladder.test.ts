@@ -237,23 +237,25 @@ describe("overlay close keys", () => {
       confirm: after(idle, prefix(), key("D")),
       goto: after(idle, prefix(), text("g")),
       menu: after(idle, prefix(), named("ENTER")),
-      about: reduce(idle, { type: "action", action: "about", at: AT }).state,
     };
     for (const [kind, entry] of Object.entries(OVERLAYS)) {
       const state = open[kind as keyof typeof OVERLAYS];
       expect(state.overlays.map((overlay): string => overlay.kind)).toEqual([kind]);
       for (const closeKey of entry.closeKeys) {
-        const event = closeKey === "esc" ? named("ESCAPE") : key(closeKey);
+        const event = closeKey === "esc" ? named("ESCAPE") : closeKey === "enter" ? named("ENTER") : key(closeKey);
         expect({ kind, closeKey, open: reduce(state, event).state.overlays.length }).toEqual({ kind, closeKey, open: 0 });
       }
     }
-    // a key that is not declared does not close help
+    // a key that is not declared does not close help; while its filter is typed, Escape and Enter are the filter's
     expect(reduce(open.help, key("x")).state.overlays.length).toBe(1);
+    const filtering = after(open.help, text("/"));
+    expect(reduce(filtering, named("ESCAPE")).state.overlays.length).toBe(1);
+    expect(reduce(filtering, named("ENTER")).state.overlays.length).toBe(1);
   });
 
   it("a click on an overlay's close control closes it as its first close key does; with none open it changes nothing", () => {
     const close: ModelEvent = { type: "close_overlay", at: AT };
-    for (const state of [after(idle, prefix(), text("?")), after(idle, prefix(), key("P")), after(idle, prefix(), key("D")), after(idle, prefix(), text("g")), after(idle, prefix(), named("ENTER")), reduce(idle, { type: "action", action: "about", at: AT }).state]) {
+    for (const state of [after(idle, prefix(), text("?")), after(idle, prefix(), key("P")), after(idle, prefix(), key("D")), after(idle, prefix(), text("g")), after(idle, prefix(), named("ENTER"))]) {
       const kind = state.overlays.at(-1)!.kind;
       const [clicked, escaped] = [reduce(state, close), reduce(state, named("ESCAPE"))];
       expect({ kind, state: clicked.state, effects: clicked.effects }).toEqual({ kind, state: escaped.state, effects: escaped.effects });

@@ -205,6 +205,8 @@ function withWords(grid: Cells, words: readonly Word[]): { cells: Cell[]; holes:
           const at = y * grid.cols + x;
           const was = herdrChars[x - herdrStart] ?? " ";
           if (x < 0 || x >= grid.cols || cells[at]!.ch !== was) continue;
+          // the same letter of an overlay drawn over the word (its own look) is the overlay's, not the word's
+          if (was !== " " && JSON.stringify(cells[at]!.look) !== JSON.stringify(look)) continue;
           const ch = ovisChars[x - start];
           cells[at] = ch === undefined ? { ch: " ", look: blankLook } : { ch, look: ch === " " ? cells[at]!.look : look };
         }
@@ -406,7 +408,8 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
   const narrow = cols <= NARROW;
   const collapsed = scene === "collapsed" || scene === "agents-collapsed";
   const agents = world === "agents";
-  const box = DIALOGS[scene];
+  // the help's scrolled and filtered scenes are the help's dialog too
+  const box = DIALOGS[scene.startsWith("help") ? "help" : scene];
   const rect = box ? dialog(cols, rows, box[0], box[1]) : null;
   let place: Decisions["place"];
   if (narrow) {
@@ -434,12 +437,18 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
     if (base) {
       for (let x = rect.x; x < rect.x + rect.width; x++) for (const y of [rect.y, rect.y + rect.height - 1]) if (base.herdr.cells[y * cols + x]!.look.flags & LOOK_BOLD) holes.push({ line: "O2", x, y, width: 1, height: 1, bold: true });
       for (let y = rect.y; y < rect.y + rect.height; y++) for (const x of [rect.x, rect.x + rect.width - 1]) if (base.herdr.cells[y * cols + x]!.look.flags & LOOK_BOLD) holes.push({ line: "O2", x, y, width: 1, height: 1, bold: true });
+      // the same toolkit keeps a whole cell's look where the dialog wrote only its character: such a cell inside the dialog
+      // has exactly the look of the cell it was drawn over (no panel background), so its look is not herdr's dialog's
+      for (let y = rect.y + 1; y < rect.y + rect.height - 1; y++) {
+        for (let x = rect.x + 1; x < rect.x + rect.width - 1; x++) {
+          const at = y * cols + x;
+          if (herdr.cells[at]!.ch !== base.herdr.cells[at]!.ch && JSON.stringify(herdr.cells[at]!.look) === JSON.stringify(base.herdr.cells[at]!.look)) holes.push({ line: "O2", x, y, width: 1, height: 1 });
+        }
+      }
     }
-    if (scene === "help") {
-      // O5 (part 2): the help's content and size; until then the screen's help is as large as fits, so it keeps its rows.
-      // What is compared is the screen dimmed around both dialogs (O1).
-      holes.push({ line: "O5", ...rect });
-      ovisHoles.push({ line: "O5", ...dialog(cols, rows, cols, rows) });
+    if (scene.startsWith("help")) {
+      // C2: the help's title, and its own row's words, are the screen's (herdr says `keybinds` for both)
+      words.push({ herdr: "keybinds", ovis: STRINGS.helpTitle, row: rect.y + 1 }, { herdr: "keybinds", ovis: STRINGS.helpWords.help.padEnd("keybinds".length) });
     }
     if (scene === "rename") words.push({ herdr: "rename tab", ovis: STRINGS.textRenameTab, row: rect.y + 1 });
     if (scene === "newtab") words.push({ herdr: "new tab", ovis: STRINGS.textNewTab, row: rect.y + 1 });

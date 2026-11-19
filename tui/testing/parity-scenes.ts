@@ -90,6 +90,8 @@ export const SCENES: Readonly<Record<WorldName, readonly Scene[]>> = {
     { id: "main" },
     { id: "prefix", ...both(type(PREFIX)) },
     { id: "help", ...both(type(`${PREFIX}?`)) },
+    { id: "help-scroll", ...both(type(`${PREFIX}?\x1b[6~`)) },
+    { id: "help-filter", ...both(type(`${PREFIX}?/zoom`)) },
     { id: "menu", herdr: { kind: "click", labels: ["menu", "switch"] }, ovis: type(`${PREFIX}\r`) },
     { id: "picker", ...both(type(`${PREFIX}g`)) },
     { id: "navigate", ...both(type(`${PREFIX}w`)) },

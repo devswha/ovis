@@ -16,7 +16,8 @@ import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KE
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
 import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, paneToward, shownZoom, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
-import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
+import { HELP_PAGE_ROWS, helpLines, helpNotes, helpSize, helpWindow } from "./help.ts";
+import { field, HELP_OPEN, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
 import { pickerPlaces, placeKey } from "./picker.ts";
 import { NARROW_COLUMNS } from "./screen-size.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
@@ -405,7 +406,19 @@ function answerOverlay(acc: Acc, answer: OverlayAnswer, at: number): void {
   acc.s = { ...acc.s, overlays: answer.overlay === null ? overlays.slice(0, -1) : [...overlays.slice(0, -1), answer.overlay] };
   acc.effects.push(...answer.effects);
   if (answer.open !== undefined) acc.s = { ...acc.s, overlays: [...acc.s.overlays, answer.open] };
+  settleHelp(acc);
   if (answer.choice !== undefined) choose(acc, answer.choice, at);
+}
+
+/** The help's page keys turned into rows (help.ts `HELP_PAGE_ROWS`), and its first line kept within what it has to show. */
+function settleHelp(acc: Acc): void {
+  const top = acc.s.overlays.at(-1);
+  if (top?.kind !== "help") return;
+  const { cols, rows } = acc.s.host;
+  const lines = helpLines(acc.s.keymap, helpNotes(acc.s.keymap), top.filter.graphemes.join(""), helpSize(cols, rows).width).length;
+  const view = helpWindow(rows);
+  const scroll = Math.max(0, Math.min(top.scroll + top.paged * HELP_PAGE_ROWS, lines - view));
+  if (scroll !== top.scroll || top.paged !== 0) acc.s = { ...acc.s, overlays: [...acc.s.overlays.slice(0, -1), { ...top, scroll, paged: 0 }] };
 }
 
 function choose(acc: Acc, choice: OverlayChoice, at: number): void {
@@ -626,9 +639,6 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction | CopyAction>
     case "menu":
       acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", cursor: 0 }] };
       return;
-    case "about":
-      acc.s = { ...s, overlays: [...s.overlays, { kind: "about" }] };
-      return;
     case "navigate_workspace_up":
     case "navigate_workspace_down": {
       if (s.mode.name !== "navigate") return;
@@ -718,7 +728,7 @@ function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: numbe
   };
   switch (action) {
     case "help":
-      pushOverlay({ kind: "help" });
+      pushOverlay(HELP_OPEN);
       return;
     case "goto":
       pushOverlay({ kind: "goto", field: field(""), places: pickerPlaces(s.world), chosen: null });

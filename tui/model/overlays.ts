@@ -17,9 +17,11 @@ export interface Field { readonly graphemes: readonly string[]; readonly cursor:
 export type TextPurpose = "rename_workspace" | "rename_tab" | "rename_pane" | "new_tab";
 
 export type Overlay =
-  | { readonly kind: "help" }
-  /** the five terms and the about line: opened from the help by `a`, or from the menu */
-  | { readonly kind: "about" }
+  /**
+   * the help (help.ts): the first line it shows, the page keys not yet turned into lines (the reducer knows the window's
+   * height and keeps `scroll` in range), its filter, and whether keys go to the filter now
+   */
+  | { readonly kind: "help"; readonly scroll: number; readonly paged: number; readonly filter: Field; readonly filtering: boolean }
   | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field }
   /** `seen`: the terminals the close ends, as the screen showed them when the dialog opened */
   | { readonly kind: "confirm"; readonly purpose: "close_workspace"; readonly target: Target; readonly seen: readonly Seen[] }
@@ -42,6 +44,8 @@ export interface OverlayAnswer {
 interface OverlayEntry<O extends Overlay> {
   /** the keys that close it, in herdr's syntax, shown in its frame; never empty */
   readonly closeKeys: readonly [string, ...string[]];
+  /** while true every key is the overlay's own, its close keys too (a field being typed in) */
+  readonly typing?: (overlay: O) => boolean;
   readonly target: (overlay: O) => Target | null;
   readonly input: (overlay: O, input: OverlayInput) => OverlayAnswer;
 }
@@ -175,6 +179,34 @@ function pickerInput(overlay: Picker, input: OverlayInput): OverlayAnswer {
   return { overlay: changed ? { ...typed, chosen: null } : typed, effects: [] };
 }
 
+type Help = Extract<Overlay, { kind: "help" }>;
+
+/** The help as it opens: its first line, no filter. */
+export const HELP_OPEN: Help = { kind: "help", scroll: 0, paged: 0, filter: { graphemes: [], cursor: 0, original: "" }, filtering: false };
+
+/**
+ * The help's keys: `/` starts its filter, which takes every key until Enter keeps it or Escape drops it; otherwise the
+ * arrows and j and k move it a row, page up and down a page each.
+ */
+function helpInput(overlay: Help, input: OverlayInput): OverlayAnswer {
+  if (overlay.filtering) {
+    if (isEnter(input)) return { overlay: { ...overlay, filtering: false }, effects: [] };
+    if (input.kind === "key" && input.event.key === "ESCAPE" && Object.keys(input.event.mods).length === 0) return { overlay: { ...HELP_OPEN }, effects: [] };
+    const filter = editField(overlay.filter, input);
+    return { overlay: filter === overlay.filter ? overlay : { ...overlay, filter, scroll: 0 }, effects: [] };
+  }
+  const chord = inputChords(input).find((one) => !one.ctrl && !one.alt && !one.meta);
+  if (chord?.key === "/") {
+    // text read with the slash in one go is the filter's
+    const rest = input.kind === "text" ? input.event.text.slice(1) : "";
+    return { overlay: { ...overlay, filtering: true, ...(rest === "" ? {} : { filter: editField(overlay.filter, { kind: "text", event: { ...input.event, text: rest } as TextInput }), scroll: 0 }) }, effects: [] };
+  }
+  const key = input.kind === "key" && Object.keys(input.event.mods).length === 0 ? input.event.key : "";
+  const step = key === "ARROW_DOWN" || chord?.key === "j" ? 1 : key === "ARROW_UP" || chord?.key === "k" ? -1 : 0;
+  const page = key === "PAGE_DOWN" ? 1 : key === "PAGE_UP" ? -1 : 0;
+  return { overlay: step === 0 && page === 0 ? overlay : { ...overlay, scroll: overlay.scroll + step, paged: overlay.paged + page }, effects: [] };
+}
+
 /** The menu's answer to choosing entry `at`: closed, with that entry's action to run. */
 export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, at: number): OverlayAnswer {
   const action = MENU_ENTRIES[at];
@@ -183,16 +215,10 @@ export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, at: numb
 
 export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<Overlay, { kind: K }>> } = {
   help: {
-    closeKeys: ["esc", "q", "?"],
+    closeKeys: ["esc", "enter"],
+    typing: (overlay) => overlay.filtering,
     target: () => null,
-    input: (overlay, input) => inputChords(input).some((chord) => chord.key === "a" && !chord.ctrl && !chord.alt && !chord.meta)
-      ? { overlay, effects: [], open: { kind: "about" } }
-      : { overlay, effects: [] },
-  },
-  about: {
-    closeKeys: ["esc", "q"],
-    target: () => null,
-    input: (overlay) => ({ overlay, effects: [] }),
+    input: helpInput,
   },
   text: {
     closeKeys: ["esc"],
@@ -235,6 +261,7 @@ export function overlayTarget(overlay: Overlay): Target | null {
 }
 
 export function overlayInput(overlay: Overlay, input: OverlayInput): OverlayAnswer {
-  if (closes(CLOSE_IDS.get(overlay.kind)!, input)) return { overlay: null, effects: [] };
+  const entry = OVERLAYS[overlay.kind] as OverlayEntry<Overlay>;
+  if (!entry.typing?.(overlay) && closes(CLOSE_IDS.get(overlay.kind)!, input)) return { overlay: null, effects: [] };
   return (OVERLAYS[overlay.kind] as OverlayEntry<Overlay>).input(overlay, input);
 }
