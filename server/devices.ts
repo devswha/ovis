@@ -918,7 +918,7 @@ export class DeviceStore {
       this.revocations.delete(device.id);
       for (const close of listeners ?? []) close();
     }
-    this.dropWaiting([record.target]);
+    this.dropWaiting([record.target], "block");
     try { this.drop(targets, "pc"); }
     catch (error) { console.error(`[devices] the registry write of a block failed after its deny; the next start finishes it: ${error instanceof Error ? error.message : String(error)}`); }
     return appended;
