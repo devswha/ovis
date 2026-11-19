@@ -115,6 +115,25 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(await pending).toBe(false);
   });
 
+  test("G12, P23, P24: an unapplied service block restricts newer admissions across restart until an older key lifts it", async () => {
+    const first = pc();
+    const signer = await member(first.devices);
+    const target = await key();
+    const newer = await key();
+    const record = await block(target.spki, signer, { signer_no: 1, target_no: 2 });
+    expect(await read(first.ports, page({ blocks: [record], freezes: [{ block: record.id, target: target.spki, after: 2 }],
+      devices: [{ key: signer.spki, no: 1, eligible: true, label: "Phone" }, { key: newer.spki, no: 3, eligible: false, label: "Tablet" }],
+      removed: [{ key: target.spki, no: 2 }] }))).toMatchObject({ committed: true });
+    expect(first.devices.admits(newer.spki)).toBe(false);
+    const again = pc(first.dir);
+    expect(again.devices.admits(signer.spki)).toBe(true);
+    expect(again.devices.isTombstoned(target.spki)).toBe(false);
+    expect(await read(again.ports, page({}))).toMatchObject({ committed: true });
+    expect(again.devices.admits(newer.spki)).toBe(false);
+    expect(await read(again.ports, page({ lifts: [await lift(record.id, signer)] }))).toMatchObject({ committed: true, liftsRefused: 0 });
+    expect(again.devices.admits(newer.spki)).toBe(true);
+  });
+
   test("T58: a committed methods version change is journalled once", async () => {
     const { devices, journal, ports } = pc();
     await member(devices);
