@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AccountOrder } from "./account-order.ts";
+import { ACCOUNT_ORDER_FILE, AccountOrder } from "./account-order.ts";
+import { legacyOrigin } from "./admission-order.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -26,5 +27,17 @@ describe("S2-24 the account's order as this PC's whole reads saw it (P21)", () =
     order.record(read("acct_1", ["k5", 5]), "binding");
     order.record(read("acct_2", ["k3", 3]), "binding");
     expect(order.late("k3")).toBe(false);
+  });
+
+  test("P21: a legacy first admission stays joined at zero across re-admission and restart", async () => {
+    const at = dir();
+    const order = AccountOrder.open(at);
+    order.recordJoins([{ relay_public_key: "k1", origin: legacyOrigin("2026-11-01T00:00:00.000Z") }]);
+    order.record(read("acct_1", ["k1", 2]), "binding");
+    order.recordJoins([{ relay_public_key: "k1", origin: { admit_no: 7 } }]);
+    const reopened = AccountOrder.open(at);
+    expect(reopened.problem).toBeNull();
+    expect(reopened.no("k1")).toBe(2);
+    expect((await Bun.file(join(at, ACCOUNT_ORDER_FILE)).json()).keys.k1.joined).toBe(0);
   });
 });
