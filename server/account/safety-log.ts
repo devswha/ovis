@@ -281,6 +281,21 @@ export class SafetyLog {
     return [...this.file.entries.filter((entry) => entry.record.kind === "block").map((entry) => entry.record.id), ...this.file.base.filter((line) => line.kind === "block").map((line) => line.id)];
   }
 
+  /**
+   * The lock (P11): written by the log itself, signed `pc`, under the account this PC is bound to; refused with no
+   * binding, since a PC in no account has no strict mode in this release.
+   */
+  appendLock(binding: { readonly account: string } | null): SafetyReceipt {
+    if (binding === null) return { outcome: "refused", id: "", code: "record_invalid" };
+    return this.append({ record: { v: 1, id: pcRecordId(), kind: "lock", account: binding.account, target: null, signer: "pc", signed_at: new Date().toISOString(), signature: "" }, got: "pc" });
+  }
+
+  /** Ends the lock `lockId` (P11, T47), written by the log itself like the lock. */
+  appendUnlock(lockId: string, binding: { readonly account: string } | null): SafetyReceipt {
+    if (binding === null) return { outcome: "refused", id: "", code: "record_invalid" };
+    return this.append({ record: { v: 1, id: pcRecordId(), kind: "unlock", account: binding.account, target: lockId, signer: "pc", signed_at: new Date().toISOString(), signature: "" }, got: "pc" });
+  }
+
   /** The receipt of a record this log holds (T51): the same `applied` as often as it is asked, until it is folded. */
   receipt(id: string): SafetyReceipt | null {
     const entry = this.file.entries.find((candidate) => candidate.record.id === id);

@@ -40,4 +40,28 @@ describe("what the lock asks of the rows (P11, T46)", () => {
     expect(devices.has(remote)).toBe(false);
     expect(devices.has(local)).toBe(true);
   });
+
+  test("P11: the lock and its unlock are written by the log itself, under the PC's binding, and never without one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-lock-seams-"));
+    dirs.push(dir);
+    const log = SafetyLog.open(dir);
+    expect(log.appendLock(null)).toMatchObject({ outcome: "refused", code: "record_invalid" });
+    const locked = log.appendLock({ account: "acct_1" });
+    expect(locked.outcome).toBe("applied");
+    expect(log.inForce.locked).toBe(true);
+    expect(log.appendUnlock(locked.id, { account: "acct_1" }).outcome).toBe("applied");
+    expect(log.inForce.locked).toBe(false);
+  });
+
+  test("T46: a lock on disk keeps every row not confirmed on this screen out, whether or not its teardown ran", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-lock-seams-"));
+    dirs.push(dir);
+    const log = SafetyLog.open(dir);
+    const devices = new DeviceStore(dir, null, null, { safety: log, pc: PcAccountState.open(dir), removals: RemovalEvidence.open(dir, log), journal: DeviceJournal.open(dir, () => log.ensureFile()) });
+    const remote = devices.pairRelay(devices.startPairing().code, "Phone", await key())!.device.id;
+    log.appendLock({ account: "acct_1" });
+    expect(devices.sessionRow(remote)).toBeNull();
+    expect(devices.pairRelay(devices.startPairing().code, "Tablet", await key())).toBeNull();
+  });
 });
+
