@@ -8,7 +8,6 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { DeviceStore } from "../devices.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
-import { OVIS_ACCOUNT_OPENS_ALL } from "../../shared/account-devices-api.ts";
 import { AccountMailbox } from "./mailbox.ts";
 import { readSnapshot, type SnapshotPorts, type StagedRead } from "./snapshot-read.ts";
 
@@ -21,7 +20,7 @@ async function spki(): Promise<string> {
   return await exportAccountKey(pair.publicKey);
 }
 
-async function setup(opensAll: boolean, devices: number) {
+async function setup(opensAll: boolean, devices: number, wired = true) {
   const stateDir = mkdtempSync(join(tmpdir(), "s2-24-fetch-"));
   dirs.push(stateDir);
   const identity = rotateRelayIdentity(stateDir);
@@ -45,7 +44,7 @@ async function setup(opensAll: boolean, devices: number) {
     journalMethod: () => {},
     requestRead: () => {},
   };
-  const mailbox = new AccountMailbox({ devices: new DeviceStore(stateDir), identity: () => identity, service: "https://account.test", fetch: service.fetch, snapshot: { account: () => ACCOUNT, ports: () => ports } });
+  const mailbox = new AccountMailbox({ devices: new DeviceStore(stateDir), identity: () => identity, service: "https://account.test", fetch: service.fetch, ...(wired ? { snapshot: { account: () => ACCOUNT, ports: () => ports } } : {}) });
   return { service, mailbox, ports, committed, identity };
 }
 
@@ -75,22 +74,12 @@ describe("S2-24 the PC reads the account's snapshot with a proof of its relay ke
     expect(pc.committed).toEqual([]);
   });
 
-  test("G1: the mailbox's own read runs the snapshot only while OVIS_ACCOUNT_OPENS_ALL is on", async () => {
-    const saved = process.env[OVIS_ACCOUNT_OPENS_ALL];
-    try {
-      delete process.env[OVIS_ACCOUNT_OPENS_ALL];
-      const off = await setup(true, 3);
-      expect(await off.mailbox.readSnapshot()).toBeNull();
-      expect(off.service.requests.some((request) => request.includes("/v1/pc/snapshot"))).toBe(false);
-      expect(off.committed).toEqual([]);
-
-      process.env[OVIS_ACCOUNT_OPENS_ALL] = "1";
-      const on = await setup(true, 3);
-      expect(await on.mailbox.readSnapshot()).toMatchObject({ committed: true });
-      expect(on.committed.map((stage) => stage.snapshot.devices.length)).toEqual([3]);
-    } finally {
-      if (saved === undefined) delete process.env[OVIS_ACCOUNT_OPENS_ALL];
-      else process.env[OVIS_ACCOUNT_OPENS_ALL] = saved;
-    }
+  test("G1: a mailbox the server gave no snapshot ports (release flag off) never reads a snapshot", async () => {
+    const off = await setup(true, 3, false);
+    expect(await off.mailbox.readSnapshot()).toBeNull();
+    expect(off.service.requests.some((request) => request.includes("/v1/pc/snapshot"))).toBe(false);
+    const on = await setup(true, 3);
+    expect(await on.mailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(on.committed.map((stage) => stage.snapshot.devices.length)).toEqual([3]);
   });
 });
