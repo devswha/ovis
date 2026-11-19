@@ -33,7 +33,7 @@ async function member(devices: DeviceStore): Promise<Key & { id: string }> {
 async function remote(f: ReturnType<typeof relayFixture>, caller: Key & { id: string }) {
   const link = await relayConnection(f);
   await link.auth({ keys: caller.keys, publicKey: caller.spki, id: caller.id });
-  return async (method: string, target: string) => {
+  return async (method: "GET" | "POST" | "DELETE", target: string) => {
     const response = await link.open(target, { method, headers: [["content-type", "application/json"], ["x-herdr-machine", "1"]] }).response;
     const text = await response.text();
     return { status: response.status, body: (text === "" ? {} : JSON.parse(text)) as { error?: { code: string; message: string }; devices?: { id: string; remote_revoke?: string }[]; revoke_all?: string } };
@@ -64,8 +64,10 @@ describe("remote Revokes reach the caller itself and the rows that joined after 
     // a newer row, and itself, pass
     expect((await ask("DELETE", `/api/devices/${newer.id}`)).status).toBe(204);
     expect(devices.has(newer.id)).toBe(false);
+    // its own row: the Revoke ends the very session that asked, so the answer may not arrive; the row is gone
     const own = await remote(f, self);
-    expect((await own("DELETE", `/api/devices/${self.id}`)).status).toBe(204);
+    await own("DELETE", `/api/devices/${self.id}`).catch(() => undefined);
+    expect(devices.has(self.id)).toBe(false);
 
     // a key with one row newer and one row older than the caller: the whole Revoke is refused
     const shared = await key();

@@ -97,6 +97,12 @@ export interface PairedDevice {
   readonly added_by?: string;
   /** how it reaches this PC right now, while one of its encrypted sessions is up; absent while none is */
   readonly connection?: DeviceConnection;
+  /**
+   * account-opens-all/1, to a remote caller only: whether it may Revoke this row from afar (device table T19 in 2d).
+   * `allowed`: itself, or a row that joined this PC after it; `older` and `unorderable` are done at that PC or from an
+   * older device
+   */
+  readonly remote_revoke?: "allowed" | "older" | "unorderable";
 }
 
 /**

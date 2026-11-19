@@ -8,7 +8,7 @@ import { AdmissionRefusedError, type DeviceStore, type LinkArrival } from "../de
 import type { PairedDevice } from "../../shared/protocol.ts";
 import type { Vouch } from "./mailbox.ts";
 
-export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable" | "enrolling" | "removal_pending";
+export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable" | "enrolling" | "removal_pending" | "older_device";
 
 /** What holds an `add` back on this PC (mailbox.ts `gates`, docs/account.md "Enrolling a PC"). */
 export interface AddGates {
@@ -42,6 +42,8 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   const leaving = record.kind === "remove" && record.signer === record.key;
   const signer = store.accountSigner(record.signer, record.account, leaving);
   if (!signer) return refused("signer_not_member");
+  // with the release flag on, another key's remove needs a signer older here than every row of that key (T36, rule B)
+  if (record.kind === "remove" && store.opensAll() && !store.removeAuthority(record.signer, record.key, record.account)) return refused("older_device");
   if (record.kind === "remove") return { id: record.id, outcome: store.removeAccountKey(record.key, record.account, { id: record.id, issuedAt: record.issued_at, by: { device_id: signer.id, label: signer.label }, signed: record }, now) ? "applied" : "unchanged" };
   // the signature covers the signer only: a key off the curve would leave a devices.json no store can read
   if (!store.acceptsRelayKey(record.key)) return refused("record_invalid");
