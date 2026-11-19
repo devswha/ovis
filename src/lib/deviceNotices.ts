@@ -1,0 +1,48 @@
+/**
+ * The journal notices one PC sends this device (device table P15, T57): replayed on each connect until
+ * acknowledged, in journal order. An acknowledgment only says what was shown; an `open` admission stays
+ * answerable here until the PC says it was decided, even once a later replay leaves it out or its row is gone.
+ */
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
+import type { DeviceNotice, NoticeReplay, NoticeSeen } from "../../shared/account-devices-api.ts";
+
+/** The notice kinds this release tells on screen (device table P10, T58). */
+export const TOLD_KINDS: ReadonlySet<DeviceNotice["kind"]> = new Set(["admit", "method"]);
+
+/** A key as people compare it: the first 16 hex digits of its SHA-256, in groups of four. */
+export function keyFingerprint(key: string): string {
+  return bytesToHex(sha256(utf8ToBytes(key))).slice(0, 16).match(/.{4}/g)!.join(" ");
+}
+
+export interface PcNotices {
+  readonly notices: readonly DeviceNotice[];
+  /** how many notices the PC trimmed before this device saw them */
+  readonly cut: number;
+  /** the newest `seq` this device acknowledged */
+  readonly acked: number;
+}
+
+export function withNoticeReplay(current: PcNotices | undefined, replay: NoticeReplay): PcNotices {
+  const known = new Set(current?.notices.map((item) => item.id));
+  const added = replay.notices.filter((item) => !known.has(item.id));
+  return {
+    notices: [...(current?.notices ?? []), ...added].sort((a, b) => a.seq - b.seq),
+    cut: replay.cut,
+    acked: current?.acked ?? 0,
+  };
+}
+
+export function noticeSeen(current: PcNotices): NoticeSeen | null {
+  const newest = Math.max(0, ...current.notices.map((item) => item.seq));
+  return newest > current.acked ? { type: "notice-seen", seq: newest } : null;
+}
+
+export function withNoticeAcked(current: PcNotices, seq: number): PcNotices {
+  return { ...current, acked: Math.max(current.acked, seq) };
+}
+
+/** The PC decided this admission (It's me, Not me, or on the PC itself): it leaves the list. */
+export function withNoticeDecided(current: PcNotices, id: string): PcNotices {
+  return { ...current, notices: current.notices.filter((item) => item.id !== id) };
+}

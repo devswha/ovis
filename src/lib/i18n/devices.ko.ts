@@ -269,4 +269,11 @@ export const DEVICES_KO: Record<string, string> = {
   "Open a PC from outside with Portal or Cloudflare (guide)": "Portal·Cloudflare로 밖에서 열기 (안내서)",
   "On another PC, sign in with the same account.": "다른 PC에서 같은 계정으로 로그인하세요.",
   "Sign in to Ovis": "Ovis에 로그인",
+  "A sign-in method was added to your account at {time}.": "{time}에 계정에 로그인 방법이 추가됐어요.",
+  "{time}: a new device was added on {pc}: {name}": "{time} {pc}에 새 기기가 추가됐어요: {name}",
+  "{time}: a new device joined {pc}: {name}": "{time} {pc}에 새 기기가 들어왔어요: {name}",
+  "{method} sign-in, two-step sign-in verified": "{method} 로그인, 2단계 인증 확인됨",
+  "{method} sign-in, two-step sign-in set on the account": "{method} 로그인, 계정에 2단계 인증 설정됨",
+  "{method} sign-in, two-step sign-in not confirmed": "{method} 로그인, 2단계 인증 확인 안 됨",
+  "Key {fingerprint}": "키 {fingerprint}",
 };

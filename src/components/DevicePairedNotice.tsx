@@ -1,9 +1,48 @@
+import type { ReactNode } from "react";
 import { Smartphone, SmartphoneNfc, X } from "lucide-react";
 
 import "./DevicePairedNotice.css";
 
 import type { DevicePairedEvent, DeviceRemovedEvent } from "../../shared/protocol.ts";
+import type { DeviceNotice } from "../../shared/account-devices-api.ts";
+import { keyFingerprint, TOLD_KINDS } from "../lib/deviceNotices.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
+
+const METHOD_NAMES = { github: "GitHub", google: "Google", apple: "Apple" } as const;
+
+/**
+ * One PC's journal notices (device table P10, T34, T57, T58): who joined, how they signed in, and their key.
+ * Two-step sign-in is said as the account record states it, never as used. An admission nobody decided has no
+ * dismiss: it stays, row or not, until its PC says it was decided; `actions` adds that PC's answers to it.
+ */
+export function DeviceNotices({ pc, notices, onDismiss, actions }: { pc: string; notices: readonly DeviceNotice[]; onDismiss: (notice: DeviceNotice) => void; actions?: (notice: DeviceNotice) => ReactNode }) {
+  const t = useT();
+  return <>{notices.filter((notice) => TOLD_KINDS.has(notice.kind)).map((notice) => {
+    const time = new Date(notice.at).toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" });
+    const method = notice.method === null ? null : METHOD_NAMES[notice.method];
+    const headline = notice.kind === "method" ? t("A sign-in method was added to your account at {time}.", { time })
+      : method === null ? t("{time}: a new device was added on {pc}: {name}", { time, pc, name: notice.label })
+      : t("{time}: a new device joined {pc}: {name}", { time, pc, name: notice.label });
+    const how = method === null ? null
+      : notice.two_step === "verified" ? t("{method} sign-in, two-step sign-in verified", { method })
+      : notice.two_step === "set" ? t("{method} sign-in, two-step sign-in set on the account", { method })
+      : t("{method} sign-in, two-step sign-in not confirmed", { method });
+    return (
+      <div key={notice.id} className="update-notice is-paired device-notice" role="status" data-testid="device-notice">
+        <Smartphone aria-hidden="true" />
+        <span className="device-notice-text">
+          <span>{headline}</span>
+          {how !== null && <span className="settings-hint">{how}</span>}
+          {notice.kind === "admit" && notice.key !== null && <span className="settings-hint">{t("Key {fingerprint}", { fingerprint: keyFingerprint(notice.key) })}</span>}
+        </span>
+        <div className="device-paired-actions">
+          {actions?.(notice)}
+          {!notice.open && <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => onDismiss(notice)}><X /></button>}
+        </div>
+      </div>
+    );
+  })}</>;
+}
 
 /**
  * The owner pairing their own phone is the usual case, and the line is calm for it; the words carry

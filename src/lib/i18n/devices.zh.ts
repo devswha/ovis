@@ -269,4 +269,11 @@ export const DEVICES_ZH: Record<string, string> = {
   "Open a PC from outside with Portal or Cloudflare (guide)": "通过 Portal 或 Cloudflare 从外部打开（指南）",
   "On another PC, sign in with the same account.": "在另一台 PC 上用同一账户登录。",
   "Sign in to Ovis": "登录 Ovis",
+  "A sign-in method was added to your account at {time}.": "{time} 你的账户新增了一种登录方式。",
+  "{time}: a new device was added on {pc}: {name}": "{time} {pc} 新增了一台设备：{name}",
+  "{time}: a new device joined {pc}: {name}": "{time} 有新设备加入了 {pc}：{name}",
+  "{method} sign-in, two-step sign-in verified": "{method} 登录，两步验证已确认",
+  "{method} sign-in, two-step sign-in set on the account": "{method} 登录，账户已设置两步验证",
+  "{method} sign-in, two-step sign-in not confirmed": "{method} 登录，两步验证未确认",
+  "Key {fingerprint}": "密钥 {fingerprint}",
 };

@@ -269,4 +269,11 @@ export const DEVICES_JA: Record<string, string> = {
   "Open a PC from outside with Portal or Cloudflare (guide)": "Portal や Cloudflare で外から開く (ガイド)",
   "On another PC, sign in with the same account.": "別の PC で同じアカウントにサインインしてください。",
   "Sign in to Ovis": "Ovis にサインイン",
+  "A sign-in method was added to your account at {time}.": "{time} にアカウントへサインイン方法が追加されました。",
+  "{time}: a new device was added on {pc}: {name}": "{time} {pc} に新しいデバイスが追加されました: {name}",
+  "{time}: a new device joined {pc}: {name}": "{time} {pc} に新しいデバイスが参加しました: {name}",
+  "{method} sign-in, two-step sign-in verified": "{method} でサインイン、2 段階認証を確認済み",
+  "{method} sign-in, two-step sign-in set on the account": "{method} でサインイン、アカウントに 2 段階認証を設定済み",
+  "{method} sign-in, two-step sign-in not confirmed": "{method} でサインイン、2 段階認証は未確認",
+  "Key {fingerprint}": "キー {fingerprint}",
 };

@@ -1,6 +1,6 @@
 import type { ClientMessage, ClientRole, PendingMessage, ServerFeature, ServerMessage } from "../../shared/protocol.ts";
 import { receiptResumeId } from "./receiptResume.ts";
-import { ACCOUNT_OPENS_ALL_CAPABILITY } from "../../shared/account-devices-api.ts";
+import { ACCOUNT_OPENS_ALL_CAPABILITY, type NoticeAnswer, type NoticeSeen } from "../../shared/account-devices-api.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { promptSet } from "../../shared/secret-prompt.ts";
 import { ConnectionTrace } from "./connectionTrace.ts";
@@ -944,6 +944,13 @@ export class HerdrSocket {
   /** Device table G5: this PC opens to the account's sign-in (ACCOUNT_OPENS_ALL_CAPABILITY), as its trusted features say; never offline. */
   accountOpensAll(): boolean {
     return this.connected && this.features.has(ACCOUNT_OPENS_ALL_CAPABILITY);
+  }
+
+  /** Device table T57: says what was seen, or answers one notice; only to a PC that offers it. True when sent. */
+  sendNotice(message: NoticeSeen | NoticeAnswer): boolean {
+    if (!this.accountOpensAll()) return false;
+    this.rawSend(message);
+    return true;
   }
 
   hasTerminalHistory(): boolean {
