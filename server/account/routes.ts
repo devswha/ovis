@@ -159,6 +159,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // only the member that linked this PC ends its wait, with the last part of its enrollment, once every remove was decided
       const undecided = results.some((result) => result.outcome === "refused" && result.code === "account_unavailable");
       if (last !== false && !undecided && linker) {
+        // the hand-over is journalled before the barrier ends: a journal that cannot be written keeps it (T14)
+        devices.journalEvent({ kind: "account", how: "enrolled", key: peer.key, no: null, row: peer.device.id, label: peer.device.label, by: null, account: body.account });
         holds.endEnrolling();
         await mailbox.settle();
       }

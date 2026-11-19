@@ -76,6 +76,9 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     expect(served.has(target.id)).toBe(false);
     expect(served.has(revoked.id)).toBe(false);
     expect(served.admits((await key()).spki)).toBe(false);
+    const log = f.app.context.services.safetyLog!;
+    expect(log.receipts(target.spki).map((receipt) => receipt.outcome)).toEqual(["applied"]);
+    expect(log.blockIds()).toHaveLength(1);
     // the registry on disk says so too, before any listener answered
     expect(rowIds(dir)).not.toContain(target.id);
     expect(rowIds(dir)).not.toContain(revoked.id);

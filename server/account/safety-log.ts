@@ -261,6 +261,18 @@ export class SafetyLog {
       .filter((record) => record.kind === "forget" && record.target === key && record.account === account).map((record) => record.id);
   }
 
+  /** The receipts of every block of `key` this log knows (T60): applied with its number while whole, already_applied once folded. */
+  receipts(key: string): SafetyReceipt[] {
+    const whole = this.file.entries.filter((entry) => entry.record.kind === "block" && entry.record.target === key).map((entry): SafetyReceipt => ({ outcome: "applied", id: entry.record.id, n: entry.n }));
+    const folded = this.file.base.filter((line) => line.kind === "block" && line.target === key).map((line): SafetyReceipt => ({ outcome: "already_applied", id: line.id }));
+    return [...whole, ...folded];
+  }
+
+  /** Every block id this log knows, whole or folded: a snapshot's blocks this PC already holds. */
+  blockIds(): string[] {
+    return [...this.file.entries.filter((entry) => entry.record.kind === "block").map((entry) => entry.record.id), ...this.file.base.filter((line) => line.kind === "block").map((line) => line.id)];
+  }
+
   /** The receipt of a record this log holds (T51): the same `applied` as often as it is asked, until it is folded. */
   receipt(id: string): SafetyReceipt | null {
     const entry = this.file.entries.find((candidate) => candidate.record.id === id);

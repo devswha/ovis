@@ -17,7 +17,7 @@ import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOr
 import { type ClearReason, PcAccountState } from "./account/pc-binding.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
-import type { DeviceJournal, JournalEntry } from "./account/device-journal.ts";
+import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device-journal.ts";
 import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceSafetyRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import type { BlockReceipt } from "../shared/account-devices-api.ts";
@@ -2100,6 +2100,12 @@ export class DeviceStore {
   }
 
   openNotices(): readonly JournalEntry[] { return this.journal?.openNotices() ?? []; }
+
+  /** A journal entry of this PC's own, on disk before the change it records; nothing with the release flag off (P15). */
+  journalEvent(input: JournalInput): void {
+    if (this.journal === null) return;
+    this.publish(this.journal.append(input));
+  }
 
   /** An admission notice was decided ("Not me" applied, T51): it leaves `open`. */
   decideNotice(id: string): void { this.journal?.decide(id); }
