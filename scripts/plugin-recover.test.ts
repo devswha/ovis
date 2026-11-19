@@ -45,7 +45,7 @@ test("T70: recover lists the rows that wait, how each came in, and whether it ca
 
 test("T70: release asks for each named row at a terminal and releases only the ones confirmed", async () => {
   const run = io({ answers: ["y"] });
-  expect(await runRecover(["--release", "a1", "b2", "zz"], run.value)).toBe(0);
+  expect(await runRecover(["--release", "a1", "b2", "zz"], run.value)).toBe(1);
   expect(run.sent).toEqual([{ act: "list" }, { act: "release", rows: ["a1"], by: "owner" }]);
   expect(run.text()).toContain("b2");
   expect(run.text()).toContain("zz");
