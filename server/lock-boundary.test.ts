@@ -59,3 +59,13 @@ test("T46: a refusal stays a refusal, whatever the lock", () => {
   const refused: Access = { level: "none", reason: "pairing_required" };
   for (const scope of [open, locked, strict]) expect(lockBoundary(refused, scope, { localProof: true, originOf })).toBe(refused);
 });
+
+test("N6: this PC's own programs (the bridge credential, the machine profile's owner socket) keep working while locked or strict", () => {
+  for (const scope of [locked, strict]) {
+    expect(lockBoundary(grant("local"), scope, { localProof: false, ownProgram: true, originOf })).toEqual(grant("local"));
+  }
+});
+
+test("N6: a request that only claims to be this PC's program is judged as any other", () => {
+  expect(lockBoundary(grant("token"), locked, { localProof: false, ownProgram: true, originOf })).toEqual({ level: "none", reason: "locked" });
+});
