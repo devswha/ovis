@@ -443,12 +443,16 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       return current;
     };
     const owned = async (): Promise<void> => { assertPairing(await store.get(serverId)); };
-    // the last check before a request to the account service goes: the sign-in the enrollment began with, then its pairing
+    // the last checks before a request to the account service goes: its pairing, then the sign-in the enrollment began
+    // with, whose token the request carries (a Forget meanwhile aborts `signal`, which the request checks last)
     const sending = async (): Promise<void> => {
+      await owned();
       const now = await account.session();
       if (now === undefined || !sameSignIn(now, session)) throw new SignedOutError();
-      await owned();
     };
+    // the account service gave this enrollment no answer: a token refresh whose answer was lost may have spent the
+    // stored refresh token, so nothing more of this enrollment reads from it (record)
+    let unanswered = false;
     // Every enrollment writer, including linking and introductions, loses ownership on Forget.
     const enrollmentStore: RelayDeviceStore = {
       ...store,
@@ -463,13 +467,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       },
     };
     /**
-     * `read`: false when the account service just gave no answer. The rows are drawn again from what was read before, and
-     * nothing goes to it: a token refresh whose answer was lost has spent the stored refresh token, and a read now would
-     * send it again, which ends the sign-in.
+     * Once the account service gave this enrollment no answer (`unanswered`), the rows are drawn again from what was read
+     * before, and nothing goes to it: a token refresh whose answer was lost has spent the stored refresh token, and a read
+     * now would send it again, which ends the sign-in.
      */
-    const record = async (state: EnrollmentState, read = true): Promise<void> => {
+    const record = async (state: EnrollmentState): Promise<void> => {
       await enrollmentStore.update(serverId, (current) => ({ ...assertPairing(current), account_enrollment: { account: session.account, state } } satisfies SavedDevice));
-      await (read ? refresh() : redraw());
+      await (unanswered ? redraw() : refresh());
     };
     signal?.throwIfAborted();
     if (fresh) await record("pending");
@@ -599,6 +603,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           // a read this enrollment stopped (a Forget, a cancel) ends it, rather than count as a PC not read
           const listed = await account.forSignIn(session).listPcs(signal, again).then((pcs) => pcs.filter((entry) => entry.server_id !== serverId).length, (error: unknown) => {
             if (signal?.aborted === true || (error instanceof DOMException && error.name === "AbortError")) throw error;
+            if (error instanceof AccountServiceUnreachableError) unanswered = true;
             return 1;
           });
           const enrollment = await enrollOnPc({
@@ -626,7 +631,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       return { state: "complete", ...(admitted === undefined ? {} : { admitted }) };
     } catch (error) {
       assertPairing(await store.get(serverId));
-      await record("failed", !(error instanceof AccountServiceUnreachableError));
+      if (error instanceof AccountServiceUnreachableError) unanswered = true;
+      await record("failed");
       throw error;
     } finally {
       own?.close();

@@ -128,12 +128,12 @@ export class AccountServiceUnreachableError extends TypeError {
 
 /**
  * How a request is sent again (relay/networkRetry.ts): `sends` HTTP sends in all, the first included; `before` runs
- * immediately before each, after any token refresh, and ends the request by throwing; `wait` runs after a send that got
- * no answer or a 429, and says whether the next goes.
+ * immediately before each (its number, from 1), after any token refresh, and ends the request by throwing; `wait` runs
+ * after a send that got no answer or a 429, and says whether the next goes.
  */
 export interface SendAgain {
   readonly sends: number;
-  readonly before: () => Promise<void>;
+  readonly before: (send: number) => Promise<void>;
   readonly wait: (error: AccountServiceError | AccountServiceUnreachableError, sent: number) => Promise<boolean>;
 }
 
@@ -545,7 +545,7 @@ export class AccountService {
     const sends = again?.sends ?? 2;
     for (let sent = 1; ; sent++) {
       const session = await this.fresh(stale, signal);
-      await again?.before();
+      await again?.before(sent);
       // nothing is awaited between this and the send
       signal?.throwIfAborted();
       let response: Response;

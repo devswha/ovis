@@ -22,7 +22,15 @@ export const RETRY_AFTER_MAX_MS = 60_000;
 export function sendAgainWhenBack(options: { readonly before: () => Promise<void>; readonly signal?: AbortSignal | undefined }): SendAgain {
   return {
     sends: ACCOUNT_SENDS,
-    before: options.before,
+    // a send again goes only from a page that is shown, checked last: a page hidden while the token refresh or the
+    // checks before it were out waits until it is shown, then checks again
+    before: async (send) => {
+      for (;;) {
+        await options.before();
+        if (send === 1 || document.visibilityState !== "hidden") return;
+        await shown(options.signal);
+      }
+    },
     wait: async (error, sent) => {
       const backoff = NETWORK_RETRY_MS[Math.min(sent, NETWORK_RETRY_MS.length) - 1] ?? NETWORK_RETRY_MS[0];
       const busy = error instanceof AccountServiceError ? Math.max(error.retryAfterMs ?? 0, backoff) : null;
@@ -32,6 +40,19 @@ export function sendAgainWhenBack(options: { readonly before: () => Promise<void
       return true;
     },
   };
+}
+
+/** Settles once the page is shown: at once when it is. `signal` ends it, throwing its reason. */
+function shown(signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    if (document.visibilityState !== "hidden") { resolve(); return; }
+    const end = (): void => { document.removeEventListener("visibilitychange", visible); signal?.removeEventListener("abort", aborted); };
+    const visible = (): void => { if (document.visibilityState !== "hidden") { end(); resolve(); } };
+    const aborted = (): void => { end(); reject(signal?.reason); };
+    document.addEventListener("visibilitychange", visible);
+    signal?.addEventListener("abort", aborted, { once: true });
+  });
 }
 
 /** `ms`, then until the page is shown; `online`: the browser's online event ends it sooner, once the page is shown. */

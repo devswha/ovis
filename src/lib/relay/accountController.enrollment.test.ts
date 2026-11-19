@@ -675,6 +675,63 @@ describe("account enrollment ownership", () => {
       expect(run.sent(putRoute(run))).toEqual([0]);
     });
 
+    it("sends nothing once the sign-in changed while its pairing was read before a send again", async () => {
+      const run = await fixture("unused", { accountAnswer: (route, sent) => route.startsWith("PUT ") && sent === 1 ? dropped() : undefined });
+      const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+      await settle(() => run.sent(putRoute(run)).length === 1 && jest.getTimerCount() > 0);
+      // the next read of the pairing is the check before the send again: the sign-in changes while it is out
+      const { later } = await laterSignIn(run);
+      const get = run.store.get;
+      let armed = true;
+      run.store.get = async (id) => {
+        if (armed) { armed = false; await run.accountStore.set("session", later); }
+        return get(id);
+      };
+      expect(await onFakeClock(pending)).toMatchObject({ name: "SignedOutError" });
+      expect(run.sent(putRoute(run))).toEqual([0]);
+    });
+
+    // a read of the account's PCs that got no answer counted as one PC not read, and the enrollment's own read at its end
+    // then sent the spent refresh token again
+    it("reads nothing more once a token refresh before the directory read lost its answer, so the sign-in shown stays", async () => {
+      const run = await fixture("unused", { viewActive: true, accountAnswer: async (route, sent) => {
+        // the listing goes through, and the token is due before the read that follows it
+        if (route.startsWith("PUT ")) { await expiring(run, 0); return undefined; }
+        if (route !== "POST /v1/token") return undefined;
+        if (sent === 1) { grant(run); return dropped(); }
+        return Response.json({ error: { code: "invalid_grant" } }, { status: 400 });
+      } });
+      await run.controller.load(null);
+      expect(run.controller.state?.kind).toBe("signed-in");
+      await run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+      expect([run.sent("POST /v1/token"), run.sent("GET /v1/pcs").length, await run.accountStore.get("session") === undefined, run.controller.state?.kind])
+        .toEqual([[0], 1, false, "signed-in"]);
+    });
+
+    it("sends nothing again from a page hidden while the token refresh before it was out, and sends once it is shown", async () => {
+      const refresh = Promise.withResolvers<Response>();
+      const run = await fixture("unused", { accountAnswer: (route, sent) => {
+        if (route === "POST /v1/token") return refresh.promise;
+        return route.startsWith("PUT ") && sent === 1 ? dropped() : undefined;
+      } });
+      // fresh for the first send, due for a refresh by the second
+      await expiring(run, 60_000 + NETWORK_RETRY_MS[0] / 2);
+      let over = false;
+      const pending = run.controller.enroll(await run.open(), run.original.server_id, false).finally(() => { over = true; });
+      await settle(() => run.sent(putRoute(run)).length === 1 && jest.getTimerCount() > 0);
+      jest.advanceTimersByTime(NETWORK_RETRY_MS[0]);
+      await settle(() => run.sent("POST /v1/token").length === 1);
+      browser.setVisibility("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+      refresh.resolve(grant(run));
+      for (let turn = 0; turn < 200; turn++) await crypto.subtle.digest("SHA-256", new Uint8Array(1));
+      expect([run.sent(putRoute(run)), over]).toEqual([[0], false]);
+      browser.setVisibility("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(await pending).toEqual({ state: "complete", admitted: 2 });
+      expect(run.sent(putRoute(run))).toEqual([0, NETWORK_RETRY_MS[0]]);
+    });
+
     it("sends nothing again for a pairing forgotten while it waited", async () => {
       const run = await fixture("unused", { accountAnswer: (route) => route.startsWith("PUT ") ? dropped() : undefined });
       const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
