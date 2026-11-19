@@ -22,6 +22,7 @@ import type { AccountOrder } from "./account/account-order.ts";
 import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceSafetyRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import type { BlockReceipt } from "../shared/account-devices-api.ts";
+import { verifyRelayProof } from "./relay/auth-proof.ts";
 import { type AccountPairing, type AccountPairingEnd, type AccountPairingState, type AccountPairingTurnedAway, type DevicePairedEvent, type DeviceRemovedEvent, type DevicePairToken, type DeviceRole, type DevicesRevokedAll, type PairedDevice, type DeviceConnection, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts";
 import type { MuxClock } from "../shared/relay-mux-engine.ts";
 import { ownerAccess, type Access } from "./access.ts";
@@ -2041,35 +2042,37 @@ export class DeviceStore {
     return { device: { id: device.id, label: device.label, role: device.role } };
   }
 
+  async refusedRelayReceipts(deviceId: string, proof: { nonce: Uint8Array; signature: string; serverId: string }): Promise<readonly BlockReceipt[]> {
+    const binding = this.pc?.binding();
+    const order = this.accountOrder;
+    if (!binding || !order || !this.safety || this.failsClosed || order.lastVersion(binding.bind_id, proof.serverId) === null) return [];
+    const key = this.relayKeyOf(deviceId) ?? order.relayKey(proof.serverId, deviceId);
+    if (!key || order.no(key) === null || !await verifyRelayProof(key, proof)) return [];
+    if (this.pc?.binding()?.bind_id !== binding.bind_id || order.lastVersion(binding.bind_id, proof.serverId) === null || this.failsClosed) return [];
+    return this.safety.entries().filter(({ record }) => record.kind === "block" && record.signer === key && record.account === binding.account)
+      .map(({ n, record }) => ({ outcome: "applied", id: record.id, n }));
+  }
+
   /** The transport owns a fresh 32-byte nonce per session and consumes AUTH only once. */
   async matchRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string, now = Date.now()): Promise<DeviceMatch | null> {
-    if (this.failsClosed || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
-    const signed = Buffer.from(signature, "base64url");
-    if (signed.length !== 64 || signed.toString("base64url") !== signature) return null;
+    if (this.failsClosed) return null;
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key !== undefined);
     // a row that waits to link signs in as any row does, by the key its PAIR named, while it stands; only that
     // sign-in proves the key
     const waiting = device === undefined ? this.provisional(deviceId) : undefined;
     const publicKey = device?.relay_public_key ?? waiting?.key;
     if (publicKey === undefined || (device !== undefined && this.stale(device))) return null;
-    const message = Buffer.concat([Buffer.from("ovis-relay-auth/1"), nonce, Buffer.from(serverId)]);
-    try {
-      const key = await crypto.subtle.importKey("spki", Buffer.from(publicKey, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-      const verified = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signed, message);
-      // a log that turned strict while the proof was checked refuses it too (S19)
-      if (this.failsClosed) return null;
-      // the row went, or linked, while its signature was checked: the proof was for a row that is no more
-      if (waiting !== undefined) return verified && this.provisional(deviceId) === waiting ? { id: waiting.id, label: waiting.label, role: "watch" } : null;
-      // Authorization changes during WebCrypto invalidate the proof; a rename does not.
-      const current = this.devices.find((d) => d.id === deviceId);
-      // a block, a freeze or a removal that came while the proof was checked ends it here, before any stream (T66)
-      if (!verified || !current || device === undefined || current.role !== device.role || current.relay_public_key !== device.relay_public_key || this.stale(current)) return null;
-      this.noteSeen(current, now);
-      return { id: current.id, label: current.label, role: current.role };
-    } catch (error) {
-      if (error instanceof DOMException) return null;
-      throw error;
-    }
+    const verified = await verifyRelayProof(publicKey, { nonce, signature, serverId });
+    // a log that turned strict while the proof was checked refuses it too (S19)
+    if (this.failsClosed) return null;
+    // the row went, or linked, while its signature was checked: the proof was for a row that is no more
+    if (waiting !== undefined) return verified && this.provisional(deviceId) === waiting ? { id: waiting.id, label: waiting.label, role: "watch" } : null;
+    // Authorization changes during WebCrypto invalidate the proof; a rename does not.
+    const current = this.devices.find((d) => d.id === deviceId);
+    // a block, a freeze or a removal that came while the proof was checked ends it here, before any stream (T66)
+    if (!verified || !current || device === undefined || current.role !== device.role || current.relay_public_key !== device.relay_public_key || this.stale(current)) return null;
+    this.noteSeen(current, now);
+    return { id: current.id, label: current.label, role: current.role };
   }
 
   match(token: string | undefined, now = Date.now()): DeviceMatch | null {

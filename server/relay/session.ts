@@ -4,8 +4,9 @@ import type { SecureChannel } from "../../shared/relay-e2ee.ts";
 import { commitmentHolds, fromBase64Url, PAIR_APPROVAL_MS, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { ACCOUNT_FEATURE, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
+import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import { PairingRateLimitedError, type DeviceMatch, type PairingPath } from "../devices.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { SIGN_IN_WAIT_MS } from "../account/mailbox.ts";
@@ -130,6 +131,7 @@ export class RelaySession {
   private keyProof = false;
   /** this session's pairing that waits for the proof, then for this PC's screen */
   private keyProofSession: string | undefined;
+  private authReceipts = false;
   private hinting = false;
   private directing = false;
   private tailnet = false;
@@ -252,7 +254,7 @@ export class RelaySession {
     if (bytes.byteLength >= 8) this.activity.get(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(4))?.();
   }
 
-  close(code: SessionError = "auth_revoked"): void {
+  close(code: SessionError = "auth_revoked", receipts?: readonly BlockReceipt[]): void {
     if (this.state === "closed") return;
     this.state = "closed";
     this.leaveKeyProof();
@@ -260,7 +262,7 @@ export class RelaySession {
     this.unwatch?.();
     this.unwatch = undefined;
     this.leaving?.();
-    if (code !== "auth_revoked" && code !== "auth_changed") { this.mux.fail(code, code); return; }
+    if (code !== "auth_revoked" && code !== "auth_changed") { this.mux.fail(code, code, receipts); return; }
     // Stop application work now, but let the known WS policy close reach the peer before
     // SESSION_ERROR tears down the carrier. WsStream bounds both draining and the close exchange.
     for (const stream of this.requests) stream.reset("cancelled");
@@ -336,6 +338,8 @@ export class RelaySession {
         if (intents.length > 1) { this.close("protocol_error"); return; }
         const selected = [...this.sasBinding ? [PAIR_SAS_FEATURE, ...intents] : [], ...frame.payload.features.includes(ACCOUNT_FEATURE) ? [ACCOUNT_FEATURE] : [],
           ...this.keyProof && this.options.services.keyProofPairings !== undefined && !this.options.signInOnly ? [KEY_PROOF_FEATURE] : []];
+        this.authReceipts = this.options.services.devices.opensAll() && frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE);
+        if (this.authReceipts) selected.push(ACCOUNT_OPENS_ALL_FEATURE);
         if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === DIRECT_CARRIER && this.directing) && !(feature === DIRECT_TAILNET && this.tailnet) && !(feature === LARGE_WS_MESSAGES && large))) { this.close("unsupported_extension"); return; }
         this.state = "auth";
         if (this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT) this.intent = "account";
@@ -359,6 +363,11 @@ export class RelaySession {
           : devices.pairRelay(frame.payload.code, frame.payload.label, frame.payload.public_key, undefined, this.admitNewDevice)?.device;
         // no auth_failed: the code held and was not spent, and the relay closes this client for the pass
         if (this.refused) return;
+        if (!device && this.authReceipts && frame.type === FrameType.AUTH) {
+          const receipts = await devices.refusedRelayReceipts(frame.payload.device_id, { nonce: this.nonce, signature: frame.payload.signature, serverId: this.options.serverId });
+          this.close("auth_failed", receipts.slice(-AUTH_RECEIPTS_MAX));
+          return;
+        }
         this.enter(device);
         return;
       }

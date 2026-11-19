@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writePrivateState } from "../private-state.ts";
+import { accountDeviceId } from "../../shared/account-records.ts";
 
 export const ACCOUNT_ORDER_FILE = "account-order.json";
 
@@ -65,6 +66,11 @@ export class AccountOrder {
   /** The key's number in the account's order as this PC saw it, null for a key no whole read listed. */
   no(key: string): number | null {
     return this.doc.keys[key]?.no ?? null;
+  }
+
+  /** A rowless AUTH names the deterministic account device id, not a public key supplied by its caller. */
+  relayKey(serverId: string, deviceId: string): string | undefined {
+    return Object.keys(this.doc.keys).find((key) => accountDeviceId(serverId, key) === deviceId);
   }
 
   lastVersion(bindId: string | undefined, serverId: string | null): number | null {
