@@ -131,7 +131,8 @@ export type RecoveryAction =
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX32 = /^[0-9a-f]{32}$/;
-const ROW_ID = /^[A-Za-z0-9_-]{1,64}$/;
+/** A row id of either device file: 16 lowercase hex (server/devices.ts, accountDeviceId). */
+const ROW_ID = /^[0-9a-f]{16}$/;
 const ids = (value: unknown, pattern: RegExp): value is string[] =>
   Array.isArray(value) && value.length >= 1 && value.length <= 64 && value.every((entry) => typeof entry === "string" && pattern.test(entry));
 

@@ -602,7 +602,8 @@ export class FakeAccountService {
       const entries = [...registry.devices].sort(([, a], [, b]) => a.no - b.no);
       state = {
         snapshot: randomHex(16), account, server_id: serverId, version: registry.version, methods_version: registry.methods_version,
-        devices: entries.filter(([, d]) => !d.removed).map(([key, { no, eligible, label }]) => ({ key, no, eligible, label })),
+        // P16, G12: a key above a standing freeze line is not list-eligible
+        devices: entries.filter(([, d]) => !d.removed).map(([key, { no, eligible, label }]) => ({ key, no, eligible: eligible && !this.frozen(registry, no), label })),
         removed: entries.filter(([, d]) => d.removed).map(([key, { no }]) => ({ key, no })),
         blocks: [...registry.blocks], lifts: [...registry.lifts], freezes: [...registry.freezes],
       };
@@ -629,6 +630,10 @@ export class FakeAccountService {
    * Device table P16, P21, T52 (service effect): a block commits whole (target removed, freeze line, record
    * kept); a lift ends that block's service line. Each signer must be a registered member older than the target.
    */
+  private frozen(registry: { freezes: readonly SnapshotFreezeLine[] }, no: number): boolean {
+    return registry.freezes.some((line) => no > line.after);
+  }
+
   private async safetyRecord(account: string, body: { record?: unknown }): Promise<Response> {
     let record: SafetyRecord;
     try {
@@ -642,6 +647,7 @@ export class FakeAccountService {
     if (record.account !== account) return problem(403, "account_mismatch", "The record is for another account");
     const registry = this.registry(account);
     const signer = registry.devices.get(record.signer);
+    if (signer && this.frozen(registry, signer.no)) return problem(403, "frozen", "A key a block freezes signs nothing");
     if (!signer || signer.removed || signer.no !== record.signer_no) return problem(403, "signer_not_member", "The signer is not a device of this account");
     if (record.kind === "block") {
       const target = registry.devices.get(record.target);

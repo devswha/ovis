@@ -215,6 +215,8 @@ export function parseAdmissionOrigin(value: unknown): AdmissionOrigin {
   check(FROM.includes(origin.from as string) && HOW.includes(origin.how as string), "Invalid origin path");
   // `pc` is a key confirm on this PC's screen: a code, digits or a QR redeemed there, a row confirmed there (T68), a replacement confirmed there (T72)
   check(origin.from !== "pc" || ["code", "digits", "qr", "confirmed", "link"].includes(origin.how as string), "Only a key confirm at this PC is from pc");
+  // T70: `ovis recover --admit` lets in a pending redemption, which a code, digits or a QR made
+  check(origin.from !== "recover" || ["code", "digits", "qr"].includes(origin.how as string), "Only a pending redemption is let in by recover");
   check((origin.from === "legacy") === (origin.how === "legacy"), "A legacy row is legacy both ways");
   check(origin.by === null || isAccountKeyEncoding(origin.by), "Invalid origin by");
   // T50: a row from before the upgrade is stamped admit_no 0 by this PC's own upgrade pass, and only such a row
