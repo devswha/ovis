@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection } from "../server/herdr-core/connection.ts";
@@ -981,6 +981,43 @@ describe("nothing in, nothing out, in every state the screen rests in", () => {
     expect(run.loop.report().due).toEqual(["link:reconnect"]);
     // a retry changes the link's state twice (Connecting, then Offline again): at most a pass each, writing nothing
     expect(run.loop.report().passes - passes).toBeLessThanOrEqual(2 * 10);
+  }, TEST_MS);
+});
+
+describe("the sidebar's branch row", () => {
+  it("a branch switched in a pane shows at the next key into it, or at a focus change, with no change in the core", async () => {
+    const root = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "branch-row-"));
+    try {
+      const repo = join(root, "repo");
+      mkdirSync(join(repo, ".git"), { recursive: true });
+      const checkout = (branch: string) => writeFileSync(join(repo, ".git", "HEAD"), `ref: refs/heads/${branch}\n`);
+      checkout("main");
+      const core = new FakeHcCore();
+      place(core, { space: "w-code", spaceName: "code", tab: "t-code", tabName: "code", pane: "CODE", cwd: repo }, "CODE-READY\r\n");
+      place(core, { space: "w-docs", spaceName: "docs", tab: "t-docs", tabName: "docs", pane: "DOCS" }, "DOCS-READY\r\n");
+      const run = await start({ core, cols: 120, rows: 40 });
+      await run.live();
+      const branchRow = () => run.grid()[3]!.slice(0, 25).trim();
+      expect(branchRow()).toBe("main");
+      // a first key: the screen marks the pane seen (a label, which the core echoes): that change is over before the checkout
+      run.type("a");
+      await run.advance(20);
+      // a checkout typed in the pane: the core hears nothing of it; the next key into the pane reads git's files again
+      checkout("other");
+      const before = core.calls().length;
+      run.type("x");
+      await run.advance(20);
+      expect(core.calls().slice(before).filter((call) => call.method.startsWith("terminal.")).map((call) => call.method)).toEqual([]);
+      expect(branchRow()).toBe("other");
+      // the same from a focus change: the other workspace comes to the front
+      checkout("third");
+      run.type("\x02w\x1b[B\r");
+      await run.advance(20);
+      expect(run.loop.model().focus.workspace).toBe("w-docs");
+      expect(branchRow()).toBe("third");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }, TEST_MS);
 });
 

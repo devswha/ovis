@@ -499,6 +499,7 @@ export function startLoop(options: LoopOptions): Loop {
       case "pane":
         for (const step of pointer.typed(effect.pane, lookOf(effect.pane))) performPointer(step);
         toPane(effect.pane, effect.input);
+        rereadBranches();
         return;
       case "run": {
         act(`run:${effect.action}`);
@@ -670,7 +671,15 @@ export function startLoop(options: LoopOptions): Loop {
       paneFocus = pane;
       pointer.focusChanged(pane);
       panes.focus(pane);
+      rereadBranches();
     }
+  }
+
+  /** A branch switched in a pane (a checkout typed there) shows at the next key or focus change: git's files read again. */
+  function rereadBranches(): void {
+    if (!world.rereadBranches()) return;
+    worldChanged();
+    owePass();
   }
 
   function owePass(): void {

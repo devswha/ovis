@@ -177,6 +177,9 @@ export class CoreWorld {
   private reading: CoreRead | null = null;
   private shown: CoreView = EMPTY;
   private stale = false;
+  /** each workspace's first pane's folder and the branch read there when the view was last built */
+  private readonly firstFolders = new Map<string, string>();
+  private readonly branches = new Map<string, string | null>();
   private version = "";
 
   /**
@@ -259,6 +262,21 @@ export class CoreWorld {
     this.version = version;
   }
 
+  /**
+   * Reads each workspace's branch again from git's files (git-head.ts: no process, a fraction of a millisecond each), so
+   * a branch switched in a pane shows at the next key or focus change instead of at the core's next change. True when
+   * one differs: the next `view` is built again.
+   */
+  rereadBranches(): boolean {
+    for (const [workspace, folder] of this.firstFolders) {
+      if (branchOf(folder) !== (this.branches.get(workspace) ?? null)) {
+        this.stale = true;
+        return true;
+      }
+    }
+    return false;
+  }
+
   view(): CoreView {
     if (!this.stale) return this.shown;
     this.stale = false;
@@ -284,12 +302,17 @@ export class CoreWorld {
       });
     }
     const order = new Map(snapshot.layouts.map((layout) => [layout.tab_id, layout.panes.map((pane) => pane.pane_id)]));
-    /** the branch of the checkout a workspace's first pane (its first tab's first) works in */
+    /** the branch of the checkout a workspace's first pane (its first tab's first) works in, kept for `rereadBranches` */
+    this.firstFolders.clear();
+    this.branches.clear();
     const branchOfWorkspace = (workspace: string): string | null => {
       const tab = snapshot.tabs.find((candidate) => candidate.workspace_id === workspace);
       const first = snapshot.panes.find((pane) => pane.pane_id === (order.get(tab?.tab_id ?? "") ?? [])[0]);
       const folder = first ? first.foreground_cwd ?? first.cwd : null;
-      return folder ? branchOf(folder) : null;
+      const branch = folder ? branchOf(folder) : null;
+      if (folder) this.firstFolders.set(workspace, folder);
+      this.branches.set(workspace, branch);
+      return branch;
     };
     const tabStatuses = new Map<string, KnownStatus>();
     for (const tab of snapshot.tabs) tabStatuses.set(tab.tab_id, rollupStatus((order.get(tab.tab_id) ?? []).map((id) => panes.get(id)?.status)));
