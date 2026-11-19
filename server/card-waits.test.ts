@@ -146,6 +146,16 @@ describe("a wait on a card", () => {
     expect(cards.waiting("t1")).toBe(true);
   });
 
+  it("takes an answer delivered for the card drawn in place of the one waited on before any read found it", async () => {
+    const { cards, told } = waits([card("question", "first"), card("question", "next"), null]);
+    await cards.tick(listed(() => [pane("codex")]), all);
+    // the first card was answered in the terminal, and the next one from its card, delivered before a read found it
+    cards.answer(cards.answering("t1", "next"), true);
+    await cards.tick(listed(() => [pane("codex")]), all);
+    await cards.tick(listed(() => [pane("codex")]), all);
+    expect(told).toEqual([["t1", true], ["t1", false], ["t1", true], ["t1", false]]);
+  });
+
   it("keeps a wait through reads that say nothing, and ends it after ten in a row rather than stay stuck", async () => {
     const { cards, told } = waits([card("question"), ...Array<CardRead>(9).fill(undefined), card("question"), ...Array<CardRead>(10).fill(undefined)]);
     for (let read = 0; read < 11; read++) await cards.tick(listed(() => [pane("codex")]), all);

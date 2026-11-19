@@ -112,12 +112,15 @@ export class CardWaits {
    */
   answer(answer: CardAnswer, delivered: boolean): void {
     if (!this.answers.has(answer)) return;
-    if (delivered && answer.wait === null) {
+    if (delivered && answer.wait !== null && this.waits.get(answer.paneId) === answer.wait) this.answered.add(answer.paneId);
+    // its card is not the one a read found for its wait (none yet, or the next one drawn in its place): a read may still
+    // catch that card, and the wait it begins is answered
+    if (delivered && answer.wait?.id !== answer.id) {
+      answer.wait = null;
       answer.delivered = true;
       return;
     }
     this.answers.delete(answer);
-    if (delivered && this.waits.get(answer.paneId) === answer.wait) this.answered.add(answer.paneId);
   }
 
   /** The pane is gone, or what is reported next tells its status: what it waited on goes, told to nobody. */
