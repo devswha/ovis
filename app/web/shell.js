@@ -8,7 +8,8 @@ export const ACCOUNT_PROVIDERS = ["github", "google", "apple"];
 
 /** The sign-ins a `/v1/providers` answer names, in the app's order, or null for an answer that names nothing readable. */
 export function listedProviders(body) {
-  if (typeof body !== "object" || body === null || !Array.isArray(body.providers)) return null;
+  // the hosted app's own reading (src/lib/account/store.ts): an answer without both lists names nothing
+  if (typeof body !== "object" || body === null || !Array.isArray(body.providers) || !Array.isArray(body.device)) return null;
   return ACCOUNT_PROVIDERS.filter((provider) => body.providers.includes(provider));
 }
 
@@ -32,7 +33,12 @@ export function shell(method, options = {}) {
   // a PC's page draws its own bars, on the app's dark start: they go back to light icons before it opens, and follow
   // this screen again when it did not open (refused, cancelled), as the screen stays
   barsFor(false);
-  return call.catch((err) => { if (LIGHT !== null) barsFor(LIGHT.matches); throw err; });
+  return call.catch((err) => { barsForScreen(); throw err; });
+}
+
+/** The bars back to this screen's colours: an open that did not happen (refused, or cancelled before it answered). */
+export function barsForScreen() {
+  if (LIGHT !== null) barsFor(LIGHT.matches);
 }
 
 const LIGHT = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : null;

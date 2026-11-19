@@ -1,7 +1,7 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_PROVIDERS, ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, t } from "./shell.js";
+import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, t } from "./shell.js";
 
 localize();
 followScheme();
@@ -32,6 +32,7 @@ function stopPending() {
   if (!pending) return;
   attempt++;
   showStatus("");
+  barsForScreen();
   if (android) void shell("cancelOpen");
 }
 /** PCs that loaded before (an origin, or a relay PC's scope), and the public http address the user was just warned about. */
@@ -163,14 +164,17 @@ else {
     if (listed !== null) showProviders(listed);
   }, () => undefined);
   // the sign-in itself runs on the hosted app, which this opens on that provider's sign-in (#sign-in=, boot.ts). One
-  // press at a time: a second open before the first lands would race it for the page the app keeps
+  // press at a time, and none after one that went (Android answers before the page is replaced): a second open would
+  // race the first for the page the app keeps
   const buttons = [...account.querySelectorAll("[data-provider]")];
   for (const button of buttons) button.addEventListener("click", async () => {
     error.textContent = "";
     for (const each of buttons) each.disabled = true;
     try { await shell("open", { url: `${APP_ORIGIN}/#sign-in=${button.dataset.provider}`, name: "Ovis" }); }
-    catch (err) { error.textContent = String(err?.message ?? err); }
-    finally { for (const each of buttons) each.disabled = false; }
+    catch (err) {
+      error.textContent = String(err?.message ?? err);
+      for (const each of buttons) each.disabled = false;
+    }
   });
 }
 

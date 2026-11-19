@@ -13,12 +13,12 @@ const link = (text: string, appOrigin?: string) => relayLink(parseAddress(text),
 describe("the sign-in buttons", () => {
   it("draws the sign-ins the account service names, in the app's order, and none it does not know", () => {
     expect(listedProviders({ providers: ["apple", "github"], device: ["github"] })).toEqual(["github", "apple"]);
-    expect(listedProviders({ providers: ["google", "gitlab"] })).toEqual(["google"]);
-    expect(listedProviders({ providers: [] })).toEqual([]);
+    expect(listedProviders({ providers: ["google", "gitlab"], device: [] })).toEqual(["google"]);
+    expect(listedProviders({ providers: [], device: [] })).toEqual([]);
   });
 
   it("reads nothing from an answer with no list, so the build's buttons stay", () => {
-    for (const body of [null, "github", {}, { providers: "github" }]) expect(listedProviders(body)).toBeNull();
+    for (const body of [null, "github", {}, { providers: "github" }, { providers: ["google"] }]) expect(listedProviders(body)).toBeNull();
   });
 });
 
