@@ -1,5 +1,5 @@
 import type { HerdrPane } from "../shared/protocol.ts";
-import { labelledAgent } from "./agent-identity.ts";
+import { labelledAgent } from "../shared/supported-agents.ts";
 import { storeAgentVersion, type VersionSource } from "./agent-version.ts";
 import { type NativeTranscript, paneProcessRoots } from "./conversation.ts";
 import { HerdrError, paneGet } from "./herdr/client.ts";

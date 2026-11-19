@@ -38,18 +38,6 @@ export function reportedAgent(app: string | null | undefined): string | null {
   return Object.hasOwn(REPORTED_NAMES, app) ? REPORTED_NAMES[app]! : app;
 }
 
-/**
- * herdr's custom agents that launch an agent Ovis reads under a name of their own: gentle-shell runs pi
- * with a home of its own and reports pi's lifecycle as `gentle-shell` (#4198). The reader still proves
- * the agent from the pane's own processes, as for a pane herdr labels `pi`.
- */
-const LAUNCHER_NAMES: Readonly<Record<string, string>> = { "gentle-shell": "pi" };
-
-/** The agent Ovis reads a pane as, from the name herdr labels it with. */
-export function labelledAgent<T extends string | null | undefined>(label: T): string | T {
-  return label && Object.hasOwn(LAUNCHER_NAMES, label) ? LAUNCHER_NAMES[label]! : label;
-}
-
 /** A path's last part as `platform` names files: on Windows at either slash and in any case, a program without its `.exe` or `.cmd`. */
 function fileName(word: string, platform: CatalogPlatform, program: boolean): string {
   // a backslash separates a path on Windows alone: elsewhere it is part of the file's name

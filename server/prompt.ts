@@ -1,11 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { HerdrPane, InteractivePrompt, PanePromptResponse, PromptAnswer, SessionSnapshot, SlashCommand } from "../shared/protocol.ts";
+import { labelledAgent } from "../shared/supported-agents.ts";
 import { builtinCommands, cachedPaneCommands } from "./commands.ts";
 import { piRecordText } from "./pi-delivery.ts";
 import { agentProcesses, ompTranscriptPath, paneRunsOmo, readCommandTranscript } from "./conversation.ts";
 import { ConversationNotStarted } from "./conversation-shared.ts";
 import { agentProcessInFront } from "./agent-process.ts";
-import { labelledAgent } from "./agent-identity.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { processAlive, processStartedAt, processStartUpperBoundAsync } from "./process-start.ts";
 import { commandInvocations, commandOutcome, CommandReservations, dialogSettlingScreen, ownsCommandDialog, WINDOW_MS as COMMAND_WINDOW_MS, type CommandSend } from "./outcome.ts";

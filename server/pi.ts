@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { PI_ASK_BRIDGE_DIRECTORY, type PiAskBridgeState, type PiBridgeCommands } from "../shared/pi-ask-bridge.ts";
 import type { SlashCommand } from "../shared/protocol.ts";
-import { labelledAgent } from "./agent-identity.ts";
+import { labelledAgent } from "../shared/supported-agents.ts";
 import { registerCatalogSource } from "./catalog-sources.ts";
 import { agentGet, paneProcessInfo } from "./herdr/client.ts";
 import { runsAgent } from "./gjc-runtime.ts";
@@ -36,7 +36,7 @@ export function piUnwrittenHeaderId(path: string): string | null {
 }
 
 const PI_EXECUTABLE = /(^|[\\/])pi(?:\.exe|\.[cm]?js)?$/i;
-const PI_NPM_ENTRY = /(^|[\\/])node_modules[\\/]@earendil-works[\\/]pi-coding-agent[\\/]dist[\\/]bundle[\\/]cli\.js$/i;
+export const PI_NPM_ENTRY = /(^|[\\/])node_modules[\\/]@earendil-works[\\/]pi-coding-agent[\\/]dist[\\/]bundle[\\/]cli\.js$/i;
 
 type PiProcess = { pid?: number; name?: string; argv?: readonly string[] | null; cwd?: string | null };
 type PiTranscriptOptions = {

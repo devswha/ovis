@@ -18,6 +18,7 @@ import "./Composer.css";
 
 import type { AgentStatus, ClientRole, ConversationMetadata, PlanSummary, SlashCommand } from "../../shared/protocol.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
+import { labelledAgent } from "../../shared/supported-agents.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { composerDraftKey, composerDrafts, underSendLock } from "../lib/composerDraft.ts";
 import { tally, usageCounters, useShownCount } from "../lib/usageCounters.ts";
@@ -278,7 +279,7 @@ export function Composer({
   attachmentsRef.current = attachments;
   textRef.current = text;
   caretRef.current = caret;
-  const syntax = skillSyntax(agent);
+  const syntax = skillSyntax(labelledAgent(agent));
   /** the pane's `@` skills (OpenCode v2), listed with the files; a pane without them keeps the file menu alone */
   const atSkills = useMemo(() => atSkillCommands(commands), [commands]);
   const trigger = useMemo(() => activeTrigger(text, caret, { skills: syntax.skillTriggers.includes("$"), namespaced: syntax.namespaced, atSkills: atSkills.length > 0 }), [atSkills, syntax, caret, text]);
@@ -618,7 +619,7 @@ export function Composer({
       const replacement = typeof choice === "string" ? `@${choice} `
         : currentTrigger.kind === "slash" ? slashCommandReplacement(choice, agent, currentTrigger) : atSkillReplacement(choice);
       const completed = applyCompletion(text, currentTrigger, replacement);
-      barePick.current = typeof choice !== "string" && currentTrigger.kind === "slash" && sendsBarePick(choice, agent) ? completed.text : null;
+      barePick.current = typeof choice !== "string" && currentTrigger.kind === "slash" && sendsBarePick(choice, labelledAgent(agent)) ? completed.text : null;
       setTextAndCaret(completed.text, completed.caret);
       setMenuDismissed(true);
       if (typeof choice !== "string") {
