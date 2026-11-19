@@ -265,7 +265,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   });
   // the lock and a log that cannot be read decide here, once, for every way in (server/lock-boundary.ts)
   const safety = ctx.services.safetyLog;
-  if (safety !== null && safety !== undefined) {
+  // this PC's own window may still read the lock and ask for an unlock: both only ask the screen, which grants
+  const askingTheScreen = access.level === "full" && access.via === "local"
+    && ((pathname === "/api/account/lock" && request.method === "GET") || (pathname === "/api/account/unlock" && request.method === "POST"));
+  if (safety !== null && safety !== undefined && !askingTheScreen) {
     access = lockBoundary(access, { locked: safety.state().locked, strict: safety.strict !== null }, {
       localProof: false, ownProgram: ctx.ownerSocket === true, originOf: (rowId) => devices.originOf(rowId),
     });
