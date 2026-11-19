@@ -66,6 +66,12 @@ describe("the strict-mode screen", () => {
     expect((await mount(unlocked, false)).buttons).toEqual([]);
   });
 
+  it("N4: while locked, says this PC is used through its desktop app or a terminal on it", async () => {
+    const { shown } = await mount(locked);
+    expect(shown).toContain("desktop app");
+    expect(shown).toContain("terminal");
+  });
+
   it("P11: a PC with no way to confirm on its screen offers no switch and says strict mode is Linux only for now", async () => {
     const { shown, buttons } = await mount({ ...unlocked, confirm: "unsupported" });
     expect(buttons).toEqual([]);
