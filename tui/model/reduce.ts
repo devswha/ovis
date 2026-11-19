@@ -17,7 +17,7 @@ import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput
 import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, paneToward, shownZoom, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
 import { keptCursor, menuEntries } from "./menu.ts";
-import { agentChoice, field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
+import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
 import { pickerPlaces, placeKey } from "./picker.ts";
 import { NARROW_COLUMNS } from "./screen-size.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
@@ -188,7 +188,6 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       const top = acc.s.overlays.at(-1);
       if (top?.kind === "menu") answerOverlay(acc, menuChoice(top, event.entry), event.at);
       else if (top?.kind === "goto") answerOverlay(acc, pickerChoice(top, event.entry), event.at);
-      else if (top?.kind === "agents") answerOverlay(acc, agentChoice(top, event.entry), event.at);
       break;
     }
     case "restore":
@@ -505,21 +504,16 @@ function applyWorld(acc: Acc, world: World, at: number): void {
   refreshMenus(acc);
 }
 
-/** An open menu, picker or agent list lists what exists now: the menu's cursor kept on its entry, the agent list's on its agent, the picker's choice while it exists. */
+/** An open menu or picker lists what exists now: the menu's cursor kept on its entry, the picker's choice while it exists. */
 function refreshMenus(acc: Acc): void {
   const { world, focus, overlays } = acc.s;
-  if (!overlays.some((overlay) => overlay.kind === "menu" || overlay.kind === "goto" || overlay.kind === "agents")) return;
+  if (!overlays.some((overlay) => overlay.kind === "menu" || overlay.kind === "goto")) return;
   acc.s = {
     ...acc.s,
     overlays: overlays.map((overlay) => {
       if (overlay.kind === "goto") {
         const places = pickerPlaces(world);
         return { ...overlay, places, chosen: places.some((place) => placeKey(place) === overlay.chosen) ? overlay.chosen : null };
-      }
-      if (overlay.kind === "agents") {
-        const agents = world.agents ?? [];
-        const same = agents.indexOf(overlay.agents[overlay.cursor] ?? "");
-        return { ...overlay, agents, cursor: same >= 0 ? same : Math.max(0, Math.min(overlay.cursor, agents.length - 1)) };
       }
       if (overlay.kind !== "menu") return overlay;
       const entries = menuEntries(world, focus, acc.s.mode.name);
@@ -636,9 +630,6 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction | CopyAction>
       return;
     case "menu":
       acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", entries: menuEntries(s.world, s.focus, s.mode.name), cursor: 0 }] };
-      return;
-    case "agents":
-      acc.s = { ...s, overlays: [...s.overlays, { kind: "agents", agents: s.world.agents ?? [], cursor: 0 }] };
       return;
     case "about":
       acc.s = { ...s, overlays: [...s.overlays, { kind: "about" }] };

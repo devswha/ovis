@@ -8,7 +8,6 @@ import { CoreWorld, jumpOrder, keepsPlace } from "../core/world.ts";
 import { focused } from "../model/focus.ts";
 import { pickerPlaces } from "../model/picker.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "../model/reduce.ts";
-import { agents } from "../testing/fixtures/agents.ts";
 import { Run } from "../testing/run.ts";
 import { agentLines } from "./agents.ts";
 
@@ -44,7 +43,7 @@ afterEach(async () => {
   for (const run of runs.splice(0)) await run.close();
 });
 
-describe("the agent list", () => {
+describe("the agents' order", () => {
   it("jump order", () => {
     // all four from the first snapshot: blocked t1, done t2; then t3 turns blocked, later t4 done
     const world = worldOf([term("t1", "one", "blocked"), term("t2", "two", "done"), term("t3", "three", "working"), term("t4", "four", "idle"), term("t5", "shell", null)]);
@@ -97,23 +96,10 @@ describe("the agent list", () => {
     expect(view.world.agents).toEqual(["t1", "t2", "t3", "t4"]);
   });
 
-  it("number keys, the agent keys and the list's own keys focus by the list's order", () => {
+  it("the agent keys focus by the agents' order", () => {
     const view = worldOf([term("t1", "one", "working"), term("t2", "two", "blocked"), term("t3", "three", "done", {}, "v"), term("t5", "shell", null)]).view();
     expect(view.world.agents).toEqual(["t2", "t1", "t3"]);
     const start = after(initialState(undefined), { type: "world", world: view.world, at: 0 }, { type: "select", target: { kind: "pane", id: "t5" }, at: 0 });
-    const text = (typed: string): ModelEvent => ({ type: "text", text: typed, at: 1 });
-    const open: ModelEvent = { type: "action", action: "agents", at: 1 };
-    // the list's digit 3 goes to the third row, in another workspace, and closes the list
-    const third = after(start, open, text("3"));
-    expect([shownPane(third), third.overlays]).toEqual(["t3", []]);
-    // a digit past the last row does nothing and keeps the list open
-    expect(after(start, open, text("9")).overlays.map((overlay) => overlay.kind)).toEqual(["agents"]);
-    // Enter on the row the arrows moved to
-    const down: ModelEvent = { type: "key", key: "ARROW_DOWN", mods: {}, action: "press", at: 1 };
-    const enter: ModelEvent = { type: "key", key: "ENTER", mods: {}, action: "press", at: 1 };
-    expect(shownPane(after(start, open, down, enter))).toBe("t1");
-    // a click on a row chooses it as Enter on it would
-    expect(shownPane(after(start, open, { type: "choose", entry: 2, at: 1 }))).toBe("t3");
     // herdr's focus_agent N, next_agent and previous_agent go by the same order; from a pane with no agent, the first or the last
     expect(shownPane(after(start, { type: "action", action: "focus_agent", index: 2, at: 1 }))).toBe("t1");
     expect(shownPane(after(start, { type: "action", action: "next_agent", at: 1 }))).toBe("t2");
@@ -121,40 +107,8 @@ describe("the agent list", () => {
     const onFirst = after(start, { type: "action", action: "next_agent", at: 1 });
     expect(shownPane(after(onFirst, { type: "action", action: "previous_agent", at: 1 }))).toBe("t3");
     expect(shownPane(after(onFirst, { type: "action", action: "next_agent", at: 1 }))).toBe("t1");
-    // u marks the row under the cursor unread and keeps the list open
-    const marked = reduce(after(start, open, down), text("u"));
-    expect([marked.effects, marked.state.overlays.map((overlay) => overlay.kind)]).toEqual([[{ type: "unread", pane: "t1" }], ["agents"]]);
   });
 
-  it("the full-screen list, drawn: sections, numbered rows, the workspace at the right, the cursor's row marked", async () => {
-    const run = await Run.start({ fixture: agents, cols: 120, rows: 40 });
-    runs.push(run);
-    await run.live();
-    await run.advance(1);
-    await run.keys("ctrl+b,a,down");
-    await run.advance(20);
-    const pad = (text: string, width: number) => text + " ".repeat(width - [...text].length);
-    const grid = run.grid();
-    // the hint under the title names the keys the list takes: the digits, Enter and u
-    expect([grid[1]!.startsWith("│ "), grid[1]!.endsWith("│"), ...["1-9", "Enter", "u:"].map((key) => grid[1]!.includes(key))]).toEqual([true, true, true, true, true]);
-    expect([grid[0]!, ...grid.slice(2, 11)]).toEqual([
-      `┌ Agents ${"─".repeat(92)} [close: esc / q] ┐`,
-      `│ ${pad("Needs you (1)", 117)}│`,
-      `│  1   ! ${pad("blocked / claude", 104)}agents│`,
-      `│ ${pad("Working (1)", 117)}│`,
-      `│> 2   ~ ${pad("working / claude", 104)}agents│`,
-      `│ ${pad("Done (1)", 117)}│`,
-      `│  3   * ${pad("done / claude", 104)}agents│`,
-      `│ ${pad("Ready (1)", 117)}│`,
-      `│  4   - ${pad("idle / claude", 104)}agents│`,
-      `│${" ".repeat(118)}│`,
-    ]);
-    expect(run.loop.report().mode.overlays).toEqual(["agents"]);
-    // the hit map: a click on the third row goes to that agent
-    await run.keys("press@20:7");
-    await run.advance(20);
-    expect([run.loop.report().mode.overlays, shownPane(run.loop.model())]).toEqual([[], "t3"]);
-  }, TEST_MS);
 });
 
 /** A small seeded generator, so the table below is the same on every run. */
@@ -261,38 +215,5 @@ describe("the longest in that state first, by the screen's own dates", () => {
     // a state that changed while the events were lost dates from the snapshot too: behind what kept its state
     world.notice({ type: "snapshot", epoch: 1, cause: "missed", seq: 12, terminals: [term("t4", "four", "blocked"), term("t1", "one", "blocked"), term("t2", "two", "blocked"), term("t3", "three", "blocked")] });
     expect(world.view().world.waiting).toEqual(["t2", "t1", "t4", "t3"]);
-  });
-});
-
-describe("the list's key and the menu", () => {
-  it("prefix+a yields to a binding of the config, and the menu still opens the list", () => {
-    const view = worldOf([term("t1", "one", "blocked"), term("t2", "two", "idle")]).view();
-    const held = after(initialState({ new_tab: "prefix+a" }), { type: "world", world: view.world, at: 0 });
-    expect(held.keymap.rows.find((row) => row.action === "agents")!.bindings).toEqual([]);
-    expect(held.keymap.notes).toEqual([]);
-    // ctrl+b then a runs the config's action
-    const typed = after(held, { type: "key", key: "B", mods: { ctrl: true }, action: "press", at: 1 }, { type: "text", text: "a", at: 1 });
-    expect(typed.overlays.map((overlay) => overlay.kind === "text" ? overlay.purpose : overlay.kind)).toEqual(["new_tab"]);
-    // the menu's entry for the list, by its letter: the list opens, and u reaches its row
-    const menu = after(held, { type: "action", action: "menu", at: 1 });
-    const entries = menu.overlays.at(-1)!.kind === "menu" ? (menu.overlays.at(-1) as { entries: readonly { kind: string; action?: string; label: string | null }[] }).entries : [];
-    const entry = entries.find((candidate) => candidate.kind === "action" && candidate.action === "agents")!;
-    const list = after(menu, { type: "text", text: entry.label!, at: 1 });
-    expect(list.overlays.map((overlay) => overlay.kind)).toEqual(["agents"]);
-    expect(reduce(list, { type: "text", text: "u", at: 1 }).effects).toEqual([{ type: "unread", pane: "t1" }]);
-    // without a binding of its own on it, prefix+a is the list's
-    expect(initialState(undefined).keymap.rows.find((row) => row.action === "agents")!.bindings.map((binding) => binding.text)).toEqual(["prefix+a"]);
-  });
-
-  it("an open list keeps its cursor on the agent it was on when the order changes", () => {
-    const world = worldOf([term("t1", "one", "working"), term("t2", "two", "idle"), term("t3", "three", "idle")]);
-    const start = after(initialState(undefined), { type: "world", world: world.view().world, at: 0 }, { type: "action", action: "agents", at: 1 });
-    const down: ModelEvent = { type: "key", key: "ARROW_DOWN", mods: {}, action: "press", at: 1 };
-    const onTwo = after(start, down);
-    expect(onTwo.overlays.at(-1)).toMatchObject({ agents: ["t1", "t2", "t3"], cursor: 1 });
-    // t3 turns blocked and comes first: the cursor stays on t2, one row lower
-    told(world, "t3", "blocked", 2);
-    const moved = after(onTwo, { type: "world", world: world.view().world, at: 2 });
-    expect(moved.overlays.at(-1)).toMatchObject({ agents: ["t3", "t1", "t2"], cursor: 2 });
   });
 });

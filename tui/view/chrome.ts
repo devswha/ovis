@@ -3,7 +3,7 @@
  * (workspaces above, agents below, a rule between, the new and menu buttons, the collapse mark) or its collapsed rail,
  * the tab bar or the narrow screen's header, pane borders in box-drawing lines with a title only, the mode bar
  * over the panes' last row outside terminal mode, and the overlays (the help from the one key table, the text field and the
- * confirm dialogs with their buttons, the copy toast, the menu, the picker and the agent list). Colours are the theme's
+ * confirm dialogs with their buttons, the copy toast, the menu and the picker). Colours are the theme's
  * roles (tui/theme.generated.ts), which take the place of herdr's palette.
  *
  * Each part is built in two steps: its builder works out everything the part shows as plain data, and `draw` paints
@@ -920,7 +920,7 @@ function aboutPart(width: number, height: number, about: string, colors: Colors)
 }
 
 /**
- * The frame of the menu, the picker, the agent list and the about page: its box, its title on the top border and its
+ * The frame of the menu, the picker and the about page: its box, its title on the top border and its
  * close keys at the top right, a tap on them closing it; answers the cells inside.
  */
 function titledFrame(canvas: Canvas, rect: Rect, title: string, closeKeys: readonly string[], colors: Colors): Rect {
@@ -999,8 +999,6 @@ function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; 
     }
     case "menu":
       return { overlays: [...overlays, menuPart(width, height, top, state, world, colors)], input: "overlay", dim: false };
-    case "agents":
-      return { overlays: [agentListPart(width, height, top, world, state.notices, colors)], input: "overlay", dim: false };
   }
 }
 
@@ -1057,62 +1055,6 @@ function pickerPart(width: number, height: number, picker: Extract<Overlay, { ki
   return { overlay, input: { col: rect.x + 2 + view.cursor, row: rect.y + 1 } };
 }
 
-/**
- * The full-screen agent list: every agent in its section, numbered as the digit keys go to them, the workspace each is
- * in at the right, a window of rows around the cursor. A row is a click target that goes to that agent.
- */
-function agentListPart(width: number, height: number, list: Extract<Overlay, { kind: "agents" }>, world: CoreView, notices: ModelState["notices"], colors: Colors): Part {
-  const rect: Rect = { x: 0, y: 0, width, height };
-  const lines = agentLines(world.agents);
-  const cursor = list.agents[list.cursor];
-  const alert = notices.filter((notice) => Object.hasOwn(ALERT_GLYPHS, notice.code)).at(-1);
-  return {
-    key: "overlay:agents", rect, version: 0,
-    draw(canvas) {
-      const inner = titledFrame(canvas, rect, STRINGS.agentListTitle, OVERLAYS.agents.closeKeys, colors);
-      if (inner.width <= 0 || inner.height <= 0) return;
-      // The full-screen list covers the toast and mode bar. Its bottom border can show the
-      // latest agent alert without taking a list row or covering the keyboard hints.
-      if (alert) {
-        const text = ` ${ALERT_GLYPHS[alert.code]} ${STRINGS.noticeText(alert.code, alert.data)} `;
-        printFit(canvas, inner.x + 1, inner.y + inner.height, text, Math.max(0, inner.width - 2),
-          canvas.style({ fg: colors.notice, bg: colors.bgElevated, flags: STYLE_BOLD }), true);
-      }
-      const dim = canvas.style({ fg: colors.textDim, bg: colors.bgElevated });
-      printFit(canvas, inner.x + 1, inner.y, STRINGS.agentListHint, Math.max(0, inner.width - 2), dim, true);
-      const rows = inner.height - 1;
-      if (lines.length === 0 && rows > 0) printFit(canvas, inner.x + 1, inner.y + 1, STRINGS.noAgents, Math.max(0, inner.width - 2), dim, true);
-      const start = windowStart(lines.length, rows, Math.max(0, lines.findIndex((line) => line.kind === "agent" && line.id === cursor)));
-      lines.slice(start, start + rows).forEach((line, at) => {
-        const y = inner.y + 1 + at;
-        const end = inner.x + inner.width;
-        if (line.kind === "section") {
-          const look = STATE_LOOK[line.group];
-          printFit(canvas, inner.x + 1, y, STRINGS.agentSection(look.word, line.count), Math.max(0, inner.width - 2), canvas.style({ fg: colors[look.role], bg: colors.bgElevated, flags: STYLE_BOLD }), true);
-          return;
-        }
-        const chosen = line.id === cursor;
-        const bg = chosen ? colors.bgHover : colors.bgElevated;
-        const text = canvas.style({ fg: chosen ? colors.textStrong : colors.text, bg, flags: chosen ? STYLE_BOLD : 0 });
-        fillSpan(canvas, inner.x, y, inner.width, text);
-        const look = STATE_LOOK[line.status];
-        let col = printFit(canvas, inner.x, y, chosen ? ">" : " ", 1, canvas.style({ fg: colors.accent, bg, flags: STYLE_BOLD }));
-        col = printFit(canvas, col, y, `${String(line.number).padStart(2)} `, end - col, canvas.style({ fg: colors.accent, bg, flags: STYLE_BOLD }));
-        col = printFit(canvas, col, y, line.helper ? `${STRINGS.helperMark} ` : "  ", end - col, canvas.style({ fg: colors.textDim, bg }));
-        col = printFit(canvas, col, y, `${look.glyph} `, end - col, canvas.style({ fg: colors[look.role], bg, flags: STYLE_BOLD }));
-        const place = line.workspace === "" ? "" : ` ${line.workspace}`;
-        const placeWidth = widthOf(place);
-        const room = end - col > placeWidth + 8 ? end - col - placeWidth : end - col;
-        col = printFit(canvas, col, y, line.text, room, text, true);
-        if (place && end - col >= placeWidth) printFit(canvas, end - placeWidth, y, place, placeWidth, canvas.style({ fg: colors.textDim, bg }));
-        // the pointer chooses an overlay's entry by `menu:<index>` (tui/view/mouse.ts); this list's entries are its rows
-        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${line.number - 1}`);
-      });
-    },
-  };
-}
-
-/** One menu entry as drawn: its key (blank for none), what it is, and its state mark for a place that has one. */
 function menuLine(entry: MenuEntry, state: ModelState, world: CoreView): { label: string; text: string; status: KnownStatus | null; keys: string } {
   const label = entry.label ?? " ";
   if (entry.kind === "action") return { label, text: actionLabel(entry.action), status: null, keys: keyText(state, entry.action) ?? "" };

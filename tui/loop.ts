@@ -525,10 +525,6 @@ export function startLoop(options: LoopOptions): Loop {
         // the rest of a text run, behind the action before it: it meets the focus and mode that action left
         userInput(effect.event);
         return;
-      case "unread":
-        act("unread");
-        seen.unread(effect.pane);
-        return;
       case "quit":
         act("quit");
         quit();

@@ -14,7 +14,7 @@ export type Mode = "terminal" | "navigate" | "resize" | "copy";
 /** Actions only the screen's modes and its lock know. */
 /** Navigate mode's moves (herdr has no key for them): the workspace pointed at one place up or down, the focused pane into it. */
 export type MoveAction = "navigate_move_up" | "navigate_move_down" | "navigate_move_pane";
-export type LocalAction = "lock" | "menu" | "agents" | "about" | "navigate_focus" | "navigate_cancel" | "navigate_index" | "navigate_cycle_next" | "navigate_cycle_previous" | "resize_leave" | CopyAction | MoveAction;
+export type LocalAction = "lock" | "menu" | "about" | "navigate_focus" | "navigate_cancel" | "navigate_index" | "navigate_cycle_next" | "navigate_cycle_previous" | "resize_leave" | CopyAction | MoveAction;
 export type KeyAction = HerdrAction | HerdrNavigateKey | LocalAction;
 
 export interface KeyRow {
@@ -110,12 +110,6 @@ const MENU_KEY = "prefix+enter";
 
 /** The screen's own keys after the prefix, claimed before the config's bindings. */
 const FIXED_AFTER_PREFIX = [{ action: "menu", key: MENU_KEY }] as const;
-
-/**
- * The screen's full-screen agent list (herdr has none). Unlike the menu's it never takes a key: it is claimed after the
- * config's bindings and only when none of them and no prefix holds it, with no note (the help then shows it unset).
- */
-const AGENTS_KEY = "prefix+a";
 
 /**
  * The prefix when none of the config's can be typed: herdr's default ctrl+b, then the next one no binding of the config
@@ -360,9 +354,6 @@ export function buildKeymap(keys: unknown): Keymap {
   else notes.push({ code: "lock_taken", holder: lockHolder });
   rows.push({ action: "lock", default: LOCK_KEY, mode: "terminal", source: "fixed", bindings: lockHolder === null ? [lockBinding] : [] });
   for (const { action, key, chord, held: claimed } of own) rows.push({ action, default: key, mode: "terminal", source: "fixed", bindings: claimed ? [{ text: key, prefixed: true, range: false, chords: [{ chord, index: null }] }] : [] });
-  const agentsChord = parseHerdrBinding(AGENTS_KEY)!.chord;
-  const agentsFree = prefixes.length > 0 && !commands.afterPrefix.has(matchId(agentsChord)) && claim(afterPrefix, "agents")(agentsChord, null);
-  rows.push({ action: "agents", default: AGENTS_KEY, mode: "terminal", source: "fixed", bindings: agentsFree ? [{ text: AGENTS_KEY, prefixed: true, range: false, chords: [{ chord: agentsChord, index: null }] }] : [] });
 
   const modeKeys = { navigate: {}, resize: {}, copy: {} } as Record<Exclude<Mode, "terminal">, Record<string, Bound>>;
   const fixedRows = new Map<string, HerdrKeptBinding[]>();

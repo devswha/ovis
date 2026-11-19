@@ -30,7 +30,6 @@ async function start(core?: FakeHcCore, cols = 120, rows = 40): Promise<Run> {
  */
 const KINDS = [
   { kind: "help", action: "help", control: null, keys: ["esc", "q", "?"] },
-  { kind: "agents", action: "agents", control: "[close: esc / q]", keys: ["esc", "q"] },
   { kind: "about", action: "about", control: "[close: esc / q]", keys: ["esc", "q"] },
   { kind: "text", action: "rename_tab", control: " esc cancel ", keys: ["esc"] },
   { kind: "confirm", action: "close_workspace", control: " esc cancel ", keys: ["esc", "n"] },

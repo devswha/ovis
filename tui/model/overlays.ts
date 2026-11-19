@@ -5,7 +5,7 @@
  */
 import { parseHerdrBinding } from "../../shared/herdr-keys.ts";
 import { TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
-import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput, UnreadEffect } from "./effects.ts";
+import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput } from "./effects.ts";
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
 import { chooseEntry, labelled, type MenuEntry, movedCursor } from "./menu.ts";
@@ -26,16 +26,14 @@ export type Overlay =
   /** the picker: the places it filters, and the chosen one's identity (`placeKey`; null: the best match) */
   | { readonly kind: "goto"; readonly field: Field; readonly places: readonly Place[]; readonly chosen: string | null }
   /** `cursor`: the index of the entry Enter chooses */
-  | { readonly kind: "menu"; readonly entries: readonly MenuEntry[]; readonly cursor: number }
-  /** the full-screen agent list: `agents` the panes in the list's order, `cursor` the row Enter goes to and `u` marks unread */
-  | { readonly kind: "agents"; readonly agents: readonly string[]; readonly cursor: number };
+  | { readonly kind: "menu"; readonly entries: readonly MenuEntry[]; readonly cursor: number };
 
 export type OverlayInput = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "text"; readonly event: TextInput } | { readonly kind: "paste"; readonly event: PasteInput };
 
 /** The overlay after the input (null: closed), what it asks of the caller, and what the reducer does once it closed. */
 export interface OverlayAnswer {
   readonly overlay: Overlay | null;
-  readonly effects: readonly (RunEffect | UnreadEffect)[];
+  readonly effects: readonly RunEffect[];
   readonly choice?: OverlayChoice;
   /** an overlay opened on top of this one */
   readonly open?: Overlay;
@@ -184,12 +182,6 @@ export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, at: numb
   return "cursor" in chosen ? { overlay: { ...overlay, cursor: chosen.cursor }, effects: [] } : { overlay: null, effects: [], choice: chosen.choice };
 }
 
-/** The agent list's answer to choosing row `at` (from 0): the list closes and focus goes to that agent's pane. */
-export function agentChoice(overlay: Extract<Overlay, { kind: "agents" }>, at: number): OverlayAnswer {
-  const pane = overlay.agents[at];
-  return pane === undefined ? { overlay, effects: [] } : { overlay: null, effects: [], choice: { kind: "select", target: { kind: "pane", id: pane } } };
-}
-
 /** One character typed as it is (not with alt or ctrl, not a paste): under an input method a letter arrives composed. */
 function typedChar(input: OverlayInput): string {
   const typed = input.kind === "paste" || (input.kind === "key" && (input.event.mods.alt || input.event.mods.ctrl)) ? "" : input.event.text ?? "";
@@ -242,23 +234,6 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
       }
       const at = labelled(overlay.entries, typedChar(input));
       return at < 0 ? { overlay, effects: [] } : menuChoice(overlay, at);
-    },
-  },
-  agents: {
-    closeKeys: ["esc", "q"],
-    target: () => null,
-    input: (overlay, input) => {
-      if (isEnter(input)) return agentChoice(overlay, overlay.cursor);
-      if (input.kind === "key") {
-        const cursor = movedCursor(overlay.agents, overlay.cursor, input.event);
-        if (cursor !== null) return { overlay: { ...overlay, cursor }, effects: [] };
-      }
-      const typed = typedChar(input);
-      // the number keys go to the row with that number; u marks the row under the cursor unread
-      if (/^[1-9]$/.test(typed)) return agentChoice(overlay, Number(typed) - 1);
-      const pane = overlay.agents[overlay.cursor];
-      if (typed === "u" && pane !== undefined) return { overlay, effects: [{ type: "unread", pane }] };
-      return { overlay, effects: [] };
     },
   },
 };

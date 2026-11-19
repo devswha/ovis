@@ -245,35 +245,6 @@ describe("read state through herdr.seen (UB Q7)", () => {
     expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }, { terminal: "t1", seen: "2" }]);
   }, TEST_MS);
 
-  it("mark unread", async () => {
-    const run = await started(twoAgents());
-    await hostFocus(run, FOCUS_IN);
-    await endTurn(run, "t1");
-    await select(run, "t2");
-    await run.keys("ctrl+b,a");
-    const list = run.loop.model().overlays.at(-1)!;
-    expect(list.kind).toBe("agents");
-    const rows = list.kind === "agents" ? list.agents : [];
-    expect([...rows].sort()).toEqual(["t1", "t2"]);
-    // t2 is at turn 0: nothing to mark unread
-    for (let at = 0; at < rows.indexOf("t2"); at++) await run.keys("down");
-    await run.keys("u");
-    await run.advance(20);
-    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
-    // t1 at turn 1: herdr.seen 0, which the list's close (a look on t2) leaves standing
-    await run.keys(rows.indexOf("t1") > rows.indexOf("t2") ? "down" : "up");
-    await run.keys("u");
-    await run.advance(20);
-    // once below the turn it is unread already: a second u writes nothing
-    await run.keys("u");
-    await run.advance(20);
-    await run.keys("esc");
-    await run.advance(20);
-    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }, { terminal: "t1", seen: "0" }]);
-    expect(run.core.terminal("t1").labels[SEEN]).toBe("0");
-    expect(run.loop.report().actions).toContain("unread");
-  }, TEST_MS);
-
   it("core only", async () => {
     // the launcher hands the screen no Ovis server token or address (scripts/plugin-tui.ts tuiEnv)
     expect(tuiEnv({ TERM: "xterm", OVIS_TOKEN: "exported", OVIS_URL: "http://127.0.0.1:9", HC_SOCKET: "/s/hc.sock" })).toEqual({ TERM: "xterm", HC_SOCKET: "/s/hc.sock" });
@@ -328,41 +299,6 @@ describe("read state through herdr.seen (UB Q7)", () => {
     expect(run.loop.link.state.kind).toBe("Online");
     expect(alertNotices(run)).toEqual([]);
   }, TEST_MS);
-
-  for (const [cols, rows] of [[120, 40], [45, 10]] as const) {
-    it(`an alert shows over the open agent list at ${cols} columns`, async () => {
-      const run = await Run.start({ core: twoAgents(), cols, rows });
-      runs.push(run);
-      await run.live();
-      await run.advance(1);
-      await run.keys("ctrl+b,a");
-      await run.advance(20);
-      const footer = () => run.grid()[rows - 1]!;
-      const line = (text: string) => `└─ ${text} ${"─".repeat(cols - text.length - 5)}┘`;
-      const selection = () => run.grid().find((row) => row.startsWith("│>"))?.slice(9, 12);
-      expect(footer()).toBe(`└${"─".repeat(cols - 2)}┘`);
-      expect(selection()).toBe("one");
-
-      run.core.reportStatus("t2", { state: "blocked", app: "claude" });
-      await run.advance(20);
-      expect(footer()).toBe(line("! Needs you: two"));
-      const hint = "1-9 or Enter: go to · u: mark unread";
-      expect(run.grid()[1]?.slice(2, 2 + hint.length)).toBe(hint);
-      expect(selection()).toBe("one");
-
-      await endTurn(run, "t2");
-      expect(footer()).toBe(line("* Done: two"));
-      expect(selection()).toBe("one");
-      run.loop.dispatch({ type: "notice", code: "nothing_waiting", calm: true, at: run.clock.current });
-      await run.advance(20);
-      expect(footer()).toBe(line("* Done: two"));
-      await run.advance(NOTICE_SHOW_MS + 1);
-      expect(footer()).toBe(`└${"─".repeat(cols - 2)}┘`);
-      expect(run.loop.report().mode.overlays).toEqual(["agents"]);
-      await run.keys("enter");
-      expect(focused(run.loop.model().world, run.loop.model().focus).pane?.id).toBe("t1");
-    }, TEST_MS);
-  }
 
   it("a host's own replies are not a person: on a host that never reports focus they write nothing, a key does", async () => {
     const run = await started(twoAgents());

@@ -40,8 +40,6 @@ export interface RunEffect {
   readonly zoomTab?: string;
 }
 
-export interface UnreadEffect { readonly type: "unread"; readonly pane: string }
-
 export type Effect =
   | { readonly type: "copy"; readonly pane: string; readonly command: CopyCommand }
   /** level 6: send this input to the pane through its gate (encodeKey, or encodePaste) */
@@ -55,8 +53,6 @@ export type Effect =
   | { readonly type: "clipboard"; readonly text: string }
   /** read herdr's config again and answer with a `keys` event */
   | { readonly type: "reload_keys" }
-  /** mark the pane's agent unread: its `herdr.seen` one below its turn (server/herdr-core/seen-label.ts `unread`) */
-  | UnreadEffect
   /** a mouse event for the caller's hit map: inside the top overlay, or over the screen's chrome and panes */
   | { readonly type: "mouse"; readonly over: "overlay" | "screen"; readonly event: MouseInput }
   /** a reply to the start probe (the host's colours, flags, cell size) */

@@ -920,29 +920,8 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     expect([run.loop.report().mode.overlays, run.loop.model().overlays.at(-1)]).toEqual([["menu"], expect.objectContaining({ cursor: 2 })]);
     return { run };
   }],
-  ["the full-screen agent list open", async () => {
-    const run = await start({ fixture: demo });
-    await run.live();
-    await run.advance(1);
-    await run.keys("ctrl+b,a");
-    expect(run.loop.report().mode.overlays).toEqual(["agents"]);
-    return { run };
-  }],
-  ["the agents list open with an alert", async () => {
-    const run = await start({ core: oneTab(2) });
-    await run.live();
-    await run.advance(1);
-    await run.keys("ctrl+b,a");
-    run.core.reportStatus("t2", { state: "blocked", app: "claude" });
-    await run.advance(20);
-    expect(run.loop.model().notices.map(({ code }) => code)).toEqual(["agent_blocked"]);
-    expect(run.grid().at(-1)).toContain("! Needs you: ");
-    const passes = run.loop.report().passes;
-    const written = run.host.bytes().length;
-    await run.advance(NOTICE_SHOW_MS - 100);
-    expect([run.loop.report().passes - passes, run.host.bytes().length - written]).toEqual([0, 0]);
-    return { run };
-  }],
+
+
   ["a pane looked at, its finished turn marked seen", async () => {
     const run = await start({ core: oneTab(2) });
     await run.live();

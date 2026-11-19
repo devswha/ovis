@@ -23,8 +23,8 @@ const PLACE_LABELS = [..."1234567890"];
 /** The keys of the actions, in the menu's order: letters, then shifted digits (no input method composes either). */
 const ACTION_LABELS = [..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()"];
 
-/** The screen's own actions a key reaches that herdr has none for (the agent list has no key of its own when the config holds `prefix+a`): the menu lists them after herdr's, so a phone keyboard or an input method reaches them too. */
-const LOCAL_ACTIONS = ["agents", "about", "lock"] as const satisfies readonly KeyAction[];
+/** The screen's own actions a key reaches that herdr has none for: the menu lists them after herdr's, so a phone keyboard or an input method reaches them too. */
+const LOCAL_ACTIONS = ["about", "lock"] as const satisfies readonly KeyAction[];
 
 /**
  * What a mode's keys do that no plain arrow, digit or Enter reaches, so a menu opened in that mode (a click on the header)

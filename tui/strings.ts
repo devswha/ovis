@@ -139,8 +139,6 @@ export const STRINGS = {
   gotoPromptHint: "Type to filter · Enter to jump",
   pickerNoMatch: "No matches",
   menuTitle: "Menu",
-  agentListTitle: "Agents",
-  agentListHint: "1-9 or Enter: go to · u: mark unread",
   /** at the right of the narrow screen's header, which opens the menu */
   menuMark: "[menu]",
   /** what kind of place a menu entry goes to */
@@ -222,7 +220,6 @@ export const STRINGS = {
     toggle_sidebar: "sidebar",
     lock: "lock",
     menu: "menu",
-    agents: "agents",
     about: "terms and about",
     navigate_workspace_up: "workspace ^",
     navigate_workspace_down: "workspace v",

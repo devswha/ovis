@@ -347,8 +347,6 @@ const DIALOGS: Readonly<Record<string, readonly [number, number]>> = { help: [76
  */
 export const LEFT_OUT: readonly { readonly scene: string; readonly line: string; readonly why: string; readonly narrow?: true }[] = [
   { scene: "settings", line: "O10", why: "herdr's settings screen; the screen has none yet" },
-  { scene: "agentlist", line: "O11", why: "the screen's agent list, which herdr has not" },
-  { scene: "agents-list", line: "O11", why: "the screen's agent list, which herdr has not" },
   { scene: "menu", line: "O6", why: "its overlay is O6's; every other cell is the main scene's" },
   { scene: "agents-menu", line: "O6", why: "its overlay is O6's; every other cell is the agents scene's" },
   { scene: "picker", line: "O7", why: "its overlay is O7's; every other cell is the main scene's" },
