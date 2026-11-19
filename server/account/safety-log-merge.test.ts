@@ -249,15 +249,16 @@ describe("merging and folding the PC safety log", () => {
     expect(readFileSync(join(other, SAFETY_LOG_FILE), "utf8")).toBe(otherBefore);
   });
 
-  test("P21: a merge keeps one arrival note per block in both folders, the stricter of the two", async () => {
+  test("P21: a merge keeps each folder's own joined, the lower freeze line, and the signer not removed if either saw it so", async () => {
     const [own, other] = [stateDir(), stateDir()];
     const x = await block(await key(), await signer());
-    SafetyLog.open(own).append({ record: x, got: "handed", asof: { ...asof(7), signer_removed: false } });
-    SafetyLog.open(other).append({ record: x, got: "mailbox", asof: { ...asof(4), signer_removed: true } });
+    SafetyLog.open(own).append({ record: x, got: "handed", asof: { ...asof(7), joined: 8, signer_removed: true } });
+    SafetyLog.open(other).append({ record: x, got: "mailbox", asof: { ...asof(4), joined: 2, signer_removed: false } });
     expect(mergeSafetyLogs(own, other)).toBeNull();
     const notes = [own, other].map((dir) => SafetyLog.open(dir).entries().find((e) => e.record.id === x.id)?.asof);
-    expect(notes[0]).toEqual(notes[1]);
-    expect(notes[0]).toMatchObject({ after: 4, signer_removed: true });
+    expect(notes.map((note) => note?.joined)).toEqual([8, 2]);
+    expect(notes.map((note) => note?.after)).toEqual([4, 4]);
+    expect(notes.map((note) => note?.signer_removed)).toEqual([false, false]);
   });
 });
 
