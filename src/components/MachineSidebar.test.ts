@@ -44,14 +44,20 @@ describe("a PC that does not answer", () => {
   const failing = (kind: Away["kind"], error: string, patch: Partial<Away> = {}): Away => ({ kind, enabled: true, state: "reconnecting", error, action_required: null, updating: undefined, herdr_profile_id: undefined, ...patch });
 
   it("is off when nothing answered for it, through the relay or over SSH", () => {
-    for (const error of ["The PC did not answer through the relay", "Relay connection to this PC was lost", "The PC did not finish the connection (welcome)"]) expect(machineAway(failing("relay", error))).toBe("off");
+    for (const error of ["The PC did not answer through the relay", "Relay connection to this PC was lost"]) expect(machineAway(failing("relay", error))).toBe("off");
     for (const error of ["ssh: connect to host pc port 22: Connection refused", "ssh: connect to host pc port 22: Operation timed out", "ssh: connect to host pc port 22: No route to host"]) expect(machineAway(failing("ssh", error))).toBe("off");
   });
 
   it("is out of reach when the relay itself did not answer, or turned this server away", () => {
     expect(machineAway(failing("relay", "The relay could not be reached"))).toBe("unreachable");
     expect(machineAway(failing("relay", "The relay connection failed (1006)"))).toBe("unreachable");
+    expect(machineAway(failing("relay", "Relay carrier lost during admission"))).toBe("unreachable");
     expect(machineAway(failing("relay", "The relay turned this device away (1013)"))).toBe("refused");
+  });
+
+  it("is not off when it answered: a relay PC that did not finish connecting, an SSH timeout after ssh connected", () => {
+    expect(machineAway(failing("relay", "The PC did not finish the connection (auth)"))).toBe("unresponsive");
+    expect(machineAway(failing("ssh", "SSH port forward timed out"))).toBeNull();
   });
 
   it("is not offered a re-check while connected, turned off here, refused for good, or waiting on a person", () => {

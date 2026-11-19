@@ -60,12 +60,12 @@ const mount = async (machines: Machine[], watching = false) => {
 const textOf = (element: ReactTestInstance): string => element.children.map((child) => typeof child === "string" ? child : textOf(child)).join("");
 const recheckButtons = () => renderer!.root.findAll((element) => element.type === "button" && typeof element.props.className === "string" && element.props.className.includes("machine-recheck"));
 
-it("reconnects an off PC on Check again, once per hold however often it is pressed", async () => {
+it("asks the server to try an off PC now on Check again, once per hold however often it is pressed or drawn again", async () => {
   jest.useFakeTimers();
-  const asked: { url: string; method: string | undefined; body: unknown }[] = [];
+  const asked: { url: string; method: string | undefined }[] = [];
   const fetched = spyOn(globalThis, "fetch").mockImplementation((async (input: RequestInfo | URL, init?: RequestInit) => {
-    asked.push({ url: String(input), method: init?.method, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
-    return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
+    asked.push({ url: String(input), method: init?.method });
+    return new Response(JSON.stringify({ error: { code: "machine_offline", message: "This PC is disconnected" } }), { status: 503, headers: { "content-type": "application/json" } });
   }) as typeof fetch);
   try {
     await mount([local, relayPc({})]);
@@ -76,8 +76,13 @@ it("reconnects an off PC on Check again, once per hold however often it is press
     expect(textOf(button!)).toBe("Check again");
     await act(async () => { button!.props.onClick(); });
     await act(async () => { recheckButtons()[0]!.props.onClick(); });
-    expect(asked).toEqual([{ url: expect.stringContaining("/api/machines/hh"), method: "PATCH", body: { enabled: true } }]);
+    expect(asked).toEqual([{ url: expect.stringContaining("/api/machines/hh/session"), method: undefined }]);
     expect([textOf(recheckButtons()[0]!), recheckButtons()[0]!.props["aria-disabled"]]).toEqual(["Checking…", true]);
+    expect(renderer!.root.findAll((element) => element.props.className === "machine-error")).toHaveLength(0);
+    await act(async () => renderer?.unmount());
+    await mount([local, relayPc({})]);
+    await act(async () => { recheckButtons()[0]!.props.onClick(); });
+    expect(asked).toHaveLength(1);
     await act(async () => { jest.advanceTimersByTime(RECHECK_HOLD_MS - 1); });
     expect(recheckButtons()[0]!.props["aria-disabled"]).toBe(true);
     await act(async () => { jest.advanceTimersByTime(1); });

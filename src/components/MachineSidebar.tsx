@@ -4,7 +4,7 @@ import { ArrowLeftRight, ChevronDown, ChevronRight, Download, EyeOff, Monitor, P
 import { OWN_UPDATE_OFFER, type Machine, type MachineState, type MachineUpdate, type RemoteOvis } from "../../shared/machines.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { AppLayoutContext, FULL_LAYOUT, MachineContext, type LayoutOffer } from "../lib/machineContext.tsx";
-import { answerMachineSetup, machineRequest } from "../lib/api.ts";
+import { answerMachineSetup, askMachineRetry, machineRequest } from "../lib/api.ts";
 import { describeProgress } from "../lib/bridgeProgress.ts";
 import { keepDismissed, noticeKey, readDismissed, waitingMachines, writeDismissed } from "../lib/machineNotice.ts";
 import type { AppActions } from "../lib/actions.ts";
@@ -259,23 +259,28 @@ function SidebarCount({ className, n, words, tooltip = true }: { className: stri
   return <span className={className} title={tooltip ? words : undefined}><span aria-hidden="true">{n}</span><span className="visually-hidden">{words}</span></span>;
 }
 
-const RELAY_UNREACHABLE = /^The relay (could not be reached|connection failed|closed the connection|did not answer)/;
-const RELAY_PC_SILENT = /^(The PC did not answer through the relay|Relay connection to this PC was lost|The PC did not finish the connection|Relay carrier lost during admission)/;
+// the server's words for a relay PC's failed connection (shared/relay-channel.ts, server/relay-pc.ts)
+const RELAY_UNREACHABLE = /^(The relay (could not be reached|connection failed|closed the connection|did not answer)|Relay carrier lost during admission)/;
+const RELAY_PC_SILENT = /^(The PC did not answer through the relay|Relay connection to this PC was lost)/;
+
+export type MachineAway = "off" | "unreachable" | "refused" | "unresponsive";
 
 /**
  * Whether a PC this server added keeps failing to connect for a reason a later try may clear (it retries on its
- * own: `reconnecting` with the last failure), and which: nothing answered for it (`off`), or the relay between
- * did not (`unreachable`, `refused` when the relay turned this server away). Null for anything a reconnect cannot
- * fix (a refusal for good, a sign-in, a setup) and for a PC Check again cannot reconnect: herdr's, herdr-core's.
+ * own: `reconnecting` with the last failure), and which: nothing answered for it (`off`: through the relay, or
+ * ssh could not reach it at all), the relay between did not answer (`unreachable`) or turned this server away
+ * (`refused`), or the PC answered and did not finish connecting (`unresponsive`). Null for anything a later try
+ * cannot clear (a refusal for good, a sign-in, a setup, an update) and for a PC herdr or herdr-core manages.
  */
-export function machineAway(machine: Pick<Machine, "kind" | "enabled" | "state" | "error" | "action_required" | "updating" | "herdr_profile_id">): "off" | "unreachable" | "refused" | null {
+export function machineAway(machine: Pick<Machine, "kind" | "enabled" | "state" | "error" | "action_required" | "updating" | "herdr_profile_id">): MachineAway | null {
   if (!machine.enabled || machine.state !== "reconnecting" || machine.error === null || machine.action_required || machine.updating || machine.herdr_profile_id) return null;
   if (machine.kind === "relay") {
     if (machine.error.startsWith("The relay turned this device away")) return "refused";
+    if (machine.error.startsWith("The PC did not finish the connection")) return "unresponsive";
     if (RELAY_UNREACHABLE.test(machine.error)) return "unreachable";
     return RELAY_PC_SILENT.test(machine.error) ? "off" : null;
   }
-  if (machine.kind !== "ssh") return null;
+  if (machine.kind !== "ssh" || !/connect to host/i.test(machine.error)) return null;
   const reason = sshFailure(machine.error)?.reason;
   return reason === "refused" || reason === "timeout" || reason === "unreachable" ? "off" : null;
 }
@@ -325,6 +330,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   const away = props.watching ? null : machineAway(machine);
   const awayReason = away === null ? null
     : machine.kind === "ssh" ? sshWords
+    : away === "unresponsive" ? t("{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.", { name: machine.name })
     : outOfReachReason({ displayState: away === "off" ? "offline" : "unreachable", last_seen_at: null, check: away === "refused" ? { kind: "offline", reason: "refused" } : null }, t);
   const nextStep = !noticed && machine.kind === "local" && machine.error !== null && saysHerdrAway(machine.error) ? t("Start herdr on this PC, or check HERDR_SOCKET.")
     : ssh !== null ? t("Reconnect or change its address from Manage PC, the sliders beside its name.") : null;
@@ -350,8 +356,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     }
     finally { inFlight.current = false; setBusy(false); }
   };
-  // turning on a PC that is on is the server's reconnect now (MachineManager.patch); only offered while it is away
-  const recheck = useRecheck(() => mutate("PATCH", { enabled: true }));
+  const recheck = useRecheck(machine.id, () => { askMachineRetry(machine.id).catch((e) => setError(e instanceof Error ? e.message : String(e))); });
   const closeMenu = useCallback(() => setMenu(null), []);
   const endRename = (save: boolean) => {
     setRenaming(false);

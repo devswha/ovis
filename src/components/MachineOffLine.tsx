@@ -1,29 +1,31 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n.ts";
 import { outOfReachWord } from "./relayPcState.tsx";
 import "./Machines.css";
 
-/** How long Check again stays held after a press, its own check included: a burst of presses is one reconnect. */
+/** How long Check again stays held after a press: a burst of presses is one check (the server's own floor is 5 s too). */
 export const RECHECK_HOLD_MS = 5_000;
 
+// per PC and per page, not per row: a row drawn again (the inbox and back, a filter) keeps its hold
+const heldUntil = new Map<string, number>();
+const held = (key: string): number => Math.max(0, (heldUntil.get(key) ?? 0) - performance.now());
+
 /**
- * One check at a time, held for RECHECK_HOLD_MS from its press however soon it ends. `run` reports its own
- * failure (the row's error line): a rejection still ends the hold.
+ * Check again for one PC, held RECHECK_HOLD_MS from its press by the monotonic clock. `run` only asks: what it
+ * finds arrives as the PC's next state, so its own answer is not waited for.
  */
-export function useRecheck(run: () => Promise<unknown>): { checking: boolean; check(): void } {
-  const [checking, setChecking] = useState(false);
-  const held = useRef(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(timer.current), []);
+export function useRecheck(key: string, run: () => void): { checking: boolean; check(): void } {
+  const [checking, setChecking] = useState(() => held(key) > 0);
+  useEffect(() => {
+    if (!checking) return;
+    const timer = setTimeout(() => setChecking(false), held(key));
+    return () => clearTimeout(timer);
+  }, [checking, key]);
   const check = () => {
-    if (held.current) return;
-    held.current = true;
+    if (held(key) > 0) return;
+    heldUntil.set(key, performance.now() + RECHECK_HOLD_MS);
     setChecking(true);
-    const pressed = Date.now();
-    const release = () => {
-      timer.current = setTimeout(() => { held.current = false; setChecking(false); }, Math.max(0, pressed + RECHECK_HOLD_MS - Date.now()));
-    };
-    run().then(release, release);
+    run();
   };
   return { checking, check };
 }
