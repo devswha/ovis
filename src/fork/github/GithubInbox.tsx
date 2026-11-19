@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleCheck, CircleDot, CircleX, Eye, FolderGit2, GitPullRequestDraft, ListFilter, RefreshCw, Search, X } from "lucide-react";
+import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowLeft, ChevronRight, ChevronUp, CircleDot, CircleX, FolderGit2, ListFilter, RefreshCw, Search, X } from "lucide-react";
 
 import { RowMenu } from "../../components/RowMenu.tsx";
 
@@ -8,10 +8,11 @@ import type { WorktreeOpened } from "../../../shared/protocol.ts";
 import { ApiError, getJson } from "../../lib/api.ts";
 import { useT } from "../../lib/i18n.ts";
 import { useSettings } from "../../lib/settings.ts";
-import { githubGroups, githubSearched, githubStatus, loadGithubRepo, saveGithubRepo, useKeptScroll } from "./github.ts";
+import { githubGroups, githubSearched, githubStacks, loadGithubRepo, saveGithubRepo, useKeptScroll } from "./github.ts";
 import { ago } from "./GithubConversation.tsx";
 import { GithubPullPage, keepGithubPage } from "./GithubPull.tsx";
 import { setPullLinkOpener } from "./pullLinks.ts";
+import { pullRequestWords } from "./pullRequestWords.ts";
 import { closePlace, onPlaceLeft, setPlace, usePlace } from "../inbox/place.ts";
 import "./GithubInbox.css";
 
@@ -66,6 +67,11 @@ async function linkedPull(repository: string, number: number, url: string): Prom
   return row;
 }
 
+/** Another pull request opened from a page (one of its stack's), in its place: Back still returns to the list. */
+export function openGithubSibling(repository: string, number: number, url: string): void {
+  void linkedPull(repository, number, url).then((row) => openPull(row, false), () => window.open(url, "_blank", "noopener,noreferrer"));
+}
+
 /** A chat's link opens its pull request: wide, in the inbox's Pull requests; on a phone, over the chat, Back returning to it. */
 function openLinked(enter: () => void, inMode: boolean) {
   return (repository: string, number: number, url: string): void => {
@@ -111,15 +117,21 @@ const useListingVersion = () => useSyncExternalStore(subscribe, () => listingVer
 
 /** The search, kept while the app is open, as the agent inbox keeps its own. */
 let searched = "";
-/** The sections folded on this device. */
-const FOLDED_KEY = "ovis:fork-github-folded";
-const loadFolded = (): ReadonlySet<string> => { try { return new Set(JSON.parse(window.localStorage.getItem(FOLDED_KEY) ?? "[]") as string[]); } catch { return new Set(); } };
+/** A set of ids kept on this device, and its toggle: the sections folded, the stacks and drafts shown whole. */
+function useKeptSet(key: string): [ReadonlySet<string>, (id: string) => void] {
+  const [kept, setKept] = useState<ReadonlySet<string>>(() => { try { return new Set(JSON.parse(window.localStorage.getItem(key) ?? "[]") as string[]); } catch { return new Set(); } });
+  const toggle = (id: string): void => setKept((before) => {
+    const next = new Set(before);
+    if (!next.delete(id)) next.add(id);
+    try { window.localStorage.setItem(key, JSON.stringify([...next])); } catch { /* storage may be disabled */ }
+    return next;
+  });
+  return [kept, toggle];
+}
 
-/** A row's state as one small mark; its words are its name. Problems first, as githubStatus orders them. */
-const statusMarks = {
-  "Checks failing": [CircleX, "failing"], "Changes requested": [CircleAlert, "failing"], "Review requested": [Eye, "dim"],
-  Draft: [GitPullRequestDraft, "dim"], "Checks running": [CircleDot, "pending"], Approved: [CircleCheck, "passing"], Ready: [Check, "passing"],
-} as const;
+/** A row says only what needs you: its CI's mark at its end while it fails or runs (passing is the rule, so it has
+    none), changes asked for under its title, and a draft's title dimmed. */
+const checkMarks = { failing: [CircleX, "failing"], pending: [CircleDot, "pending"] } as const;
 
 export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const t = useT();
@@ -136,13 +148,10 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const [searchAsked, setSearchAsked] = useState(false);
   const search = useRef<HTMLInputElement>(null);
   const searchToggle = useRef<HTMLButtonElement>(null);
-  const [folded, setFolded] = useState(loadFolded);
-  const fold = (id: string): void => setFolded((before) => {
-    const next = new Set(before);
-    if (!next.delete(id)) next.add(id);
-    try { window.localStorage.setItem(FOLDED_KEY, JSON.stringify([...next])); } catch { /* storage may be disabled */ }
-    return next;
-  });
+  // sections are open, stacks folded under their top and drafts under their section's ready ones, until tapped
+  const [folded, fold] = useKeptSet("ovis:fork-github-folded");
+  const [openStacks, toggleStack] = useKeptSet("ovis:fork-github-stacks-open");
+  const [openDrafts, toggleDrafts] = useKeptSet("ovis:fork-github-drafts-open");
   const scroll = useKeptScroll<HTMLDivElement>("pull-requests", listing !== null && (wide || open === null));
   const errors: Record<string, string> = {
     gh_missing: t("Install gh on this PC"), gh_signed_out: t("Sign in on this PC with gh auth login"),
@@ -168,24 +177,49 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const review = githubSearched(groups.review, query);
   const yours = githubSearched(groups.yours, query);
   const team = githubSearched(groups.team, query);
-  const statuses = { "Checks failing": t("Checks failing"), "Changes requested": t("Changes requested"), "Review requested": t("Review requested"), Draft: t("Draft"), "Checks running": t("Checks running"), Approved: t("Approved"), Ready: t("Ready") };
+  const words = pullRequestWords(t);
 
-  const group = (id: string, label: string, rows: GithubPull[], requested: boolean) => rows.length > 0 && <section className="fork-github-group" aria-label={label}>
+  const row = (pr: GithubPull, fold: ReactNode) => {
+    const checks = pr.checks === "failing" || pr.checks === "pending" ? checkMarks[pr.checks] : null;
+    const CheckMark = checks?.[0];
+    return <div className={`fork-github-row${open?.url === pr.url ? " is-current" : ""}${pr.draft ? " is-draft" : ""}`}>
+      <button type="button" className="fork-github-summary" aria-current={open?.url === pr.url ? "true" : undefined} title={pr.title} onClick={() => openPull(pr, !wide)}>
+        <span className="fork-github-row-title" dir="auto">{pr.draft && <span className="visually-hidden">{t("Draft")}: </span>}{pr.title}</span>
+        {checks !== null && CheckMark && <span className={`fork-github-row-mark is-${checks[1]}`} role="img" aria-label={words.checks[pr.checks] ?? ""} title={words.checks[pr.checks] ?? ""}><CheckMark aria-hidden="true" /></span>}
+        <span className="fork-github-row-sub">{pr.review === "changes_requested" && <><span className="fork-github-row-review is-failing">{words.reviews.changes_requested}</span> · </>}<span title={pr.repository}>{pr.repository.split("/").pop()} #{pr.number}</span>{pr.author && <> · {pr.author}</>} · {ago(pr.updated_at)}{pr.updated_since_review && <> · <span className="fork-github-row-updated" title={t("New commits since your review")}>{t("New commits")}</span></>}</span>
+      </button>
+      {fold}
+    </div>;
+  };
+  // a row with the rest of its stack, folded under it until tapped
+  const entry = ({ pr, below }: { pr: GithubPull; below: GithubPull[] }) => {
+    const whole = below.length > 0 && openStacks.has(pr.stack!.id);
+    const stackLabel = `${t("Stack")} +${below.length}`;
+    return <li key={pr.url}>
+      {row(pr, below.length > 0 && <button type="button" className="fork-github-stack-fold" aria-expanded={whole} aria-label={stackLabel} title={stackLabel} onClick={() => toggleStack(pr.stack!.id)}>
+        {whole ? <ChevronUp aria-hidden="true" /> : `+${below.length}`}
+      </button>)}
+      {whole && <ul className="fork-github-list fork-github-stack-below">{below.map((layer) => <li key={layer.url}>{row(layer, null)}</li>)}</ul>}
+    </li>;
+  };
+  const group = (id: string, label: string, rows: GithubPull[]) => rows.length > 0 && <section className="fork-github-group" aria-label={label}>
     <h3><button type="button" className="fork-github-group-head" aria-expanded={!folded.has(id)} onClick={() => fold(id)}>
       <ChevronRight aria-hidden="true" /><span>{label}</span><span className="fork-github-group-count">{rows.length}</span>
     </button></h3>
-    {!folded.has(id) && <ul className="fork-github-list">{rows.map((pr) => {
-      const status = githubStatus(pr, false);
-      // in its own section a review asked of you needs no mark saying so
-      const [Mark, tone] = requested && status === "Review requested" && !pr.updated_since_review ? [null, ""] : statusMarks[status];
-      return <li key={pr.url} className={`fork-github-row${open?.url === pr.url ? " is-current" : ""}`}>
-        <button type="button" className="fork-github-summary" aria-current={open?.url === pr.url ? "true" : undefined} title={pr.title} onClick={() => openPull(pr, !wide)}>
-          <span className="fork-github-row-title" dir="auto">{pr.title}</span>
-          {Mark !== null && <span className={`fork-github-row-mark is-${tone}`} role="img" aria-label={statuses[status]} title={statuses[status]}><Mark aria-hidden="true" /></span>}
-          <span className="fork-github-row-sub"><span title={pr.repository}>{pr.repository.split("/").pop()} #{pr.number}</span>{pr.author && <> · {pr.author}</>} · {ago(pr.updated_at)}{pr.updated_since_review && <> · <span className="fork-github-row-updated" title={t("New commits since your review")}>{t("New commits")}</span></>}</span>
-        </button>
-      </li>;
-    })}</ul>}
+    {!folded.has(id) && (() => {
+      const entries = githubStacks(rows);
+      const ready = entries.filter(({ pr }) => !pr.draft);
+      const drafts = entries.filter(({ pr }) => pr.draft);
+      // a search looks through the drafts too
+      const draftsShown = openDrafts.has(id) || query.trim() !== "";
+      return <>
+        <ul className="fork-github-list">{ready.map(entry)}</ul>
+        {drafts.length > 0 && <button type="button" className="fork-github-group-head fork-github-drafts-head" aria-expanded={draftsShown} onClick={() => toggleDrafts(id)}>
+          <ChevronRight aria-hidden="true" /><span>{t("Drafts")}</span><span className="fork-github-group-count">{drafts.length}</span>
+        </button>}
+        {drafts.length > 0 && draftsShown && <ul className="fork-github-list">{drafts.map(entry)}</ul>}
+      </>;
+    })()}
   </section>;
   if (!wide && open !== null) return <GithubPullPage key={open.url} pull={open} wide={false} watching={watching} onOpened={(opened) => { setPlace("inbox"); onOpened(opened); }} />;
 
@@ -228,7 +262,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
       {error === null && (listing?.failed?.length ?? 0) > 0 && <p className="fork-github-note" role="status">{t("Could not read {accounts}", { accounts: listing!.failed!.join(", ") })}</p>}
       {error !== null && listing !== null && <p className="fork-github-note" role="alert">{errors[error] ?? errors.gh_failed}</p>}
       {listing === null ? loading || error === null ? <p className="inbox-empty" role="status">{t("Reading pull requests…")}</p> : <p className="inbox-empty" role="alert">{errors[error] ?? errors.gh_failed}</p>
-        : shown > 0 ? <>{group("review", t("Review requested"), review, true)}{group("yours", t("Yours"), yours, false)}{group("team", t("Team"), team, false)}</>
+        : shown > 0 ? <>{group("review", t("Review requested"), review)}{group("yours", t("Yours"), yours)}{group("team", t("Team"), team)}</>
         : <p className="inbox-empty" role="status">{query.trim() !== "" ? t("No pull requests match") : t("Nothing needs you")}</p>}
     </div>
     {!wide && <div className="inbox-foot">

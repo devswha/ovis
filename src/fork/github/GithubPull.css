@@ -562,3 +562,35 @@
   width: 1em;
   height: 1em;
 }
+
+/* a stacked pull request's stack, top first down to the branch it lands on, as the reviews box is drawn */
+.fork-github-stack {
+  margin-top: var(--space-4);
+  padding: var(--space-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+
+.fork-github-stack ol { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.fork-github-stack li > * {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  text-align: start;
+}
+
+.fork-github-stack button { color: inherit; font: inherit; background: none; border: 0; cursor: pointer; }
+.fork-github-stack button:hover { background: var(--bg-hover); }
+.fork-github-stack [aria-current="page"] { font-weight: 600; background: var(--bg-hover); }
+.fork-github-stack svg { width: 14px; height: 14px; flex: none; }
+.fork-github-stack .is-open { color: var(--status-done); }
+.fork-github-stack .is-merged { color: var(--accent); }
+.fork-github-stack .is-closed { color: var(--status-blocked); }
+.fork-github-stack .is-draft { color: var(--text-dim); }
+.fork-github-stack-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fork-github-stack code { font-family: var(--font-mono); }

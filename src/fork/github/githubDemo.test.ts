@@ -10,7 +10,7 @@ test("demo GitHub feed has both groups across two repositories and resolves curr
   const listing = demoGithubPulls(workspaces);
   expect(listing.accounts).toEqual(["demo"]);
   expect(listing.review).toHaveLength(2);
-  expect(listing.yours).toHaveLength(2);
+  expect(listing.yours).toHaveLength(3);
   expect(new Set([...listing.review, ...listing.yours].map((pr) => pr.repository))).toEqual(new Set(["demo/checkout-api", "demo/cli-tools"]));
   for (const pr of [...listing.review, ...listing.yours]) {
     expect(pr.url).toBe(`https://github.com/${pr.repository}/pull/${pr.number}`);

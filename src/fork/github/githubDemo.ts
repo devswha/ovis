@@ -17,8 +17,9 @@ export function demoGithubPulls(workspaces: WorkspaceInfo[]): GithubPulls {
       row("cli-tools", { number: 88, title: "Validate the config file before starting", branch: "fix/config-validation", checks: "failing", review: "review_required", author: "sam" }),
     ],
     yours: [
-      row("checkout-api", { number: 142, title: "Retry the export when the connection drops", branch: "feat/export-guard", checks: "passing", review: "approved" }),
+      { ...row("checkout-api", { number: 142, title: "Retry the export when the connection drops", branch: "feat/export-guard", checks: "passing", review: "approved" }), stack: { id: "demo-export", position: 2, size: 2 } },
       row("cli-tools", { number: 139, title: "Add the retry flag to the CLI", branch: "feat/retry-flag", checks: "pending", review: "none", draft: true }),
+      { ...row("checkout-api", { number: 140, title: "Keep the export's progress between tries", branch: "feat/export-progress", checks: "passing", review: "none" }), stack: { id: "demo-export", position: 1, size: 2 } },
     ],
     team: [
       row("checkout-api", { number: 145, title: "Cache the tax tables per region", branch: "perf/tax-cache", checks: "passing", review: "review_required", author: "lee" }),
@@ -70,6 +71,11 @@ export function demoGithubPull(workspaces: WorkspaceInfo[], repository: string, 
         comments: [{ author: "mira", at, body: "Cap the wait: after eight tries this waits over a minute." }] }],
     }],
     files: [{ path: "src/retry.ts", additions: 4, deletions: 2, change: "modified" }],
+    // the demo's one stacked pull request: #142 sits on #140, which lands on main
+    ...(number === 142 ? { stack: { base: "main", pulls: [
+      { number: 140, title: "Split the export into chunks", url: "https://github.com/demo/checkout-api/pull/140", state: "open" as const, draft: false },
+      { number: 142, title: row.title, url: row.url, state: "open" as const, draft: false },
+    ] } } : {}),
   };
 }
 

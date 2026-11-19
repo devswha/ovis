@@ -1,4 +1,4 @@
-import type { GithubCheck, GithubEntry, GithubFilePatch, GithubPull, GithubPullDetail, GithubPulls, GithubThread } from "../../shared/github.ts";
+import type { GithubCheck, GithubEntry, GithubFilePatch, GithubPull, GithubPullDetail, GithubPulls, GithubStack, GithubThread } from "../../shared/github.ts";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import { conflictResponse, jsonResponse } from "../http.ts";
 import { ghAccounts, originRepository, parsePullRequests, PullRequestError, runGithub } from "./pull-requests.ts";
@@ -7,7 +7,7 @@ import { ghAccounts, originRepository, parsePullRequests, PullRequestError, runG
 // Service.qml / omarchy-github-fetch. No code copied. Every signed-in account is read, each with its own
 // token (`gh auth token --user`), never by switching gh's active account.
 const FIELDS = `number title url headRefName isDraft isCrossRepository updatedAt author { login }
-  repository { nameWithOwner } reviewDecision
+  repository { nameWithOwner } reviewDecision stackEntry { position stack { id size } }
   commits(last:1) { nodes { commit { statusCheckRollup { state } } } }`;
 const REVIEWED = `headRefOid viewerLatestReview { commit { oid } }`;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
@@ -51,14 +51,16 @@ export function parseGithubPulls(output: string): GithubPulls {
     if (!teamOnly || typeof data?.viewer?.login !== "string") throw unreadable();
     const viewer: string = data.viewer.login;
     const rowOf = (value: unknown): GithubPull => {
-      const row = value as { number: number; url: string; repository?: { nameWithOwner?: unknown }; commits?: { nodes?: { commit?: { statusCheckRollup?: { state?: string } | null } }[] } };
+      const row = value as { number: number; url: string; repository?: { nameWithOwner?: unknown }; stackEntry?: { position?: unknown; stack?: { id?: unknown; size?: unknown } } | null; commits?: { nodes?: { commit?: { statusCheckRollup?: { state?: string } | null } }[] } };
       const repository = row?.repository?.nameWithOwner;
       if (typeof repository !== "string" || !REPOSITORY.test(repository) || !Number.isSafeInteger(row.number) || row.number < 1 || row.url !== `https://github.com/${repository}/pull/${row.number}`) throw unreadable();
       // The aggregate covers every check, including contexts beyond GitHub's first page.
       const rollup = row.commits?.nodes?.[0]?.commit?.statusCheckRollup;
       const [entry] = parsePullRequests(JSON.stringify([{ ...row, statusCheckRollup: rollup ? [{ state: rollup.state }] : [] }]), []);
       if (!entry) throw unreadable();
-      return { ...entry, repository, account: viewer };
+      const { position, stack } = row.stackEntry ?? {};
+      const size = stack?.size;
+      return { ...entry, repository, account: viewer, ...(typeof stack?.id === "string" && Number.isSafeInteger(position) && Number.isSafeInteger(size) && (size as number) > 1 ? { stack: { id: stack.id, position: position as number, size: size as number } } : {}) };
     };
     const group = (nodes: unknown, keep: (value: Record<string, unknown>) => boolean = () => true, extra: Partial<GithubPull> = {}): GithubPull[] => {
       if (!Array.isArray(nodes)) throw unreadable();
@@ -236,6 +238,7 @@ const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) { viewer { 
   files(first:100) { nodes { path additions deletions changeType } }
   reviewThreads(last:100) { nodes { isResolved isOutdated path line originalLine diffSide
     comments(first:50) { nodes { author { login } createdAt body diffHunk pullRequestReview { id } } } } }
+  stack { baseRefName entries(first:50) { nodes { position pullRequest { number title url state isDraft } } } }
 } } }`;
 
 type Context = {
@@ -356,8 +359,21 @@ export function parseGithubPull(output: string, repository: string): GithubPullD
       })),
       conversation: parseConversation(pr.timelineItems?.nodes ?? [], pr.reviewThreads?.nodes ?? []),
       labels: (pr.labels?.nodes ?? []).filter((label: { name?: unknown }) => typeof label?.name === "string").map((label: { name: string; color?: string }) => ({ name: label.name, color: /^[0-9a-f]{6}$/i.test(label.color ?? "") ? label.color! : "888888" })),
+      ...stackOf(pr.stack),
     };
   } catch { throw unreadable(); }
+}
+
+type StackEntry = { position?: number; pullRequest?: { number?: number; title?: string; url?: string; state?: string; isDraft?: boolean } | null };
+/** The stack a pull request is part of, bottom first; nothing when it is not stacked. */
+function stackOf(stack: { baseRefName?: unknown; entries?: { nodes?: StackEntry[] } } | null | undefined): { stack?: GithubStack } {
+  if (typeof stack?.baseRefName !== "string") return {};
+  const pulls = (stack.entries?.nodes ?? [])
+    .filter((entry): entry is StackEntry & { position: number; pullRequest: { number: number; title: string; url: string } } =>
+      typeof entry?.position === "number" && Number.isSafeInteger(entry.pullRequest?.number) && typeof entry.pullRequest?.title === "string" && typeof entry.pullRequest?.url === "string")
+    .sort((a, b) => a.position - b.position)
+    .map(({ pullRequest: pr }) => ({ number: pr.number, title: pr.title, url: pr.url, state: pr.state === "MERGED" ? "merged" as const : pr.state === "CLOSED" ? "closed" as const : "open" as const, draft: pr.isDraft === true }));
+  return pulls.length > 1 ? { stack: { base: stack.baseRefName, pulls } } : {};
 }
 
 /** `gh` with one account's token, without switching the account gh itself uses; its output, or why there is none. */
@@ -488,15 +504,32 @@ export function githubActionArgs(repository: string, number: number, asked: unkn
   if (action?.action === "request_changes") return body.trim() ? [...api, "-X", "POST", `repos/${repository}/pulls/${number}/reviews`, "-f", "event=REQUEST_CHANGES", "-f", `body=${body}`] : null;
   if (action?.action === "close" || action?.action === "reopen") return [...api, "-X", "PATCH", `repos/${repository}/pulls/${number}`, "-f", `state=${action.action === "close" ? "closed" : "open"}`];
   if (action?.action === "merge") {
-    // the head the page showed: GitHub refuses the merge when commits came after it
+    // the head the page showed: GitHub refuses the merge when commits came after it. The asynchronous endpoint, the
+    // only one that merges a stacked pull request (with the open ones below it), answers with a request to follow.
     if (!["squash", "merge", "rebase"].includes(action.method as string) || typeof action.sha !== "string" || !/^[0-9a-f]{40}$/.test(action.sha)) return null;
-    return [...api, "-X", "PUT", `repos/${repository}/pulls/${number}/merge`, "-f", `merge_method=${action.method}`, "-f", `sha=${action.sha}`];
+    return ["api", "--hostname", "github.com", "-X", "PUT", `repos/${repository}/pulls/${number}/merge-async`, "-f", `merge_method=${action.method}`, "-f", `sha=${action.sha}`, "-f", "merge_action=default"];
   }
   return null;
 }
 
+type MergeRequest = { status?: string; details?: { message?: string; uuid?: string } };
+const MERGE_FOLLOWED_MS = 30_000;
+/** Follows an asynchronous merge until GitHub merged it or queued it; GitHub's own words when it failed. Still running
+    after half a minute (the route answers within 45 seconds), it is left to GitHub: the page read again shows how it ended. */
+async function followMerge(run: Run, account: string, repository: string, number: number, answer: string, wait: (ms: number) => Promise<void>): Promise<void> {
+  let request: MergeRequest;
+  try { request = JSON.parse(answer); } catch { throw new PullRequestError("gh_failed", "GitHub did not take it"); }
+  const uuid = request.details?.uuid;
+  for (let waited = 0; request.status === "pending" && typeof uuid === "string" && /^[\w-]+$/.test(uuid) && waited < MERGE_FOLLOWED_MS; waited += 2000) {
+    await wait(2000);
+    try { request = JSON.parse(await ghAs(run, account, ["api", "--hostname", "github.com", `repos/${repository}/pulls/${number}/merge-async/${uuid}`], "GitHub did not take it")); } catch (error) { if (error instanceof PullRequestError && error.code !== "gh_failed") throw error; }
+  }
+  if (request.status === "failed") throw new PullRequestError("gh_refused", request.details?.message || "GitHub did not take it");
+}
+
 /** POST /api/fork/github/pull/action: comments, reviews or merges with the account that listed the pull request. */
-export async function handleGithubAction(request: Request, readOnly: boolean, run: Run = runGithub): Promise<Response> {
+// fixed wait: the interval between reads of a merge GitHub is running, in a loop bounded by MERGE_FOLLOWED_MS
+export async function handleGithubAction(request: Request, readOnly: boolean, run: Run = runGithub, wait: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)): Promise<Response> {
   if (readOnly) return jsonResponse({ error: { code: "read_only", message: "This device only watches" } }, 403);
   if (request.method !== "POST") return jsonResponse({ error: { code: "method_not_allowed", message: "Use POST" } }, 405);
   let asked: { repo?: unknown; number?: unknown; account?: unknown };
@@ -507,7 +540,8 @@ export async function handleGithubAction(request: Request, readOnly: boolean, ru
   const args = /^[\w.-]+\/[\w.-]+$/.test(repository) && Number.isSafeInteger(number) && number > 0 && /^[\w-]+$/.test(account) ? githubActionArgs(repository, number, asked) : null;
   if (args === null) return jsonResponse({ error: { code: "bad_request", message: "Name a repository, a pull request, an account and an action with what it needs" } }, 400);
   try {
-    await ghAs(run, account, args, "GitHub did not take it");
+    const answer = await ghAs(run, account, args, "GitHub did not take it");
+    if ((asked as { action?: unknown }).action === "merge") await followMerge(run, account, repository, number, answer, wait);
   } catch (error) {
     return conflictResponse(error instanceof PullRequestError ? error.code : "gh_failed", error instanceof PullRequestError ? error.message : "GitHub did not take it");
   } finally {

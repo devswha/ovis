@@ -857,6 +857,30 @@ it("says a pane holds the pty's size only while it sized it last and has not let
   }
 });
 
+it("says a pane keeps the pty's size only while it is attached and does not size it", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  FakeSocket.last.open();
+  try {
+    expect(client.keepsSize("w1:p1")).toBe(false);
+    client.attach("w1:p1", 40, 20, true);
+    expect(client.keepsSize("w1:p1")).toBe(true);
+    client.resize("w1:p1", 53, 33, true);
+    expect(client.keepsSize("w1:p1")).toBe(false);
+    client.releaseSize("w1:p1");
+    expect(client.keepsSize("w1:p1")).toBe(true);
+    client.resize("w1:p1", 53, 33, true);
+    client.keepSize("w1:p1", false);
+    expect(client.keepsSize("w1:p1")).toBe(true);
+    client.detach("w1:p1");
+    expect(client.keepsSize("w1:p1")).toBe(false);
+    client.attach("w1:p2", 120, 40);
+    expect(client.keepsSize("w1:p2")).toBe(false);
+  } finally {
+    client.close();
+  }
+});
+
 it("keeps a visible unfocused grid while changing only its reconnect policy", () => {
   const client = new HerdrSocket("ws://test/ws");
   client.connect();
@@ -1189,6 +1213,40 @@ it("keeps a pane's scrollback on from a features frame it does not trust yet", (
     FakeSocket.last.open();
     FakeSocket.last.receive({ type: "features", features: ["submit", "terminal-history"], connection: "c1" });
     expect(client.hasTerminalHistory()).toBe(true);
+  } finally { client.close(); }
+});
+
+it("types a plain arrow as xterm encodes it only for a server whose attach carries the program's modes", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  let trusted = false;
+  client.trustFeatures(() => trusted);
+  try {
+    client.connect();
+    let socket = FakeSocket.last;
+    socket.open();
+    // nothing known yet: an arrow stays a named key, as on every bridge before this
+    expect(client.typesArrows()).toBe(false);
+    // it decides what is sent: a features frame not trusted yet does not say it, its snapshot does
+    socket.receive({ type: "features", features: ["submit", "terminal-history", "terminal-modes"], connection: "c1" });
+    expect(client.typesArrows()).toBe(false);
+    socket.receive(snapshot(["submit", "terminal-history", "terminal-modes"]));
+    expect(client.typesArrows()).toBe(true);
+    // a reconnect to a herdr server, whose attach never names the modes, forgets it
+    trusted = true;
+    socket.disconnect();
+    client.connect();
+    socket = FakeSocket.last;
+    socket.open();
+    expect(client.typesArrows()).toBe(false);
+    socket.receive({ type: "features", features: ["submit", "watch"], connection: "c2" });
+    expect(client.typesArrows()).toBe(false);
+    // a herdr-core server lists it in a trusted features frame, before the snapshot
+    socket.disconnect();
+    client.connect();
+    socket = FakeSocket.last;
+    socket.open();
+    socket.receive({ type: "features", features: ["submit", "terminal-history", "terminal-modes"], connection: "c3" });
+    expect(client.typesArrows()).toBe(true);
   } finally { client.close(); }
 });
 

@@ -77,6 +77,7 @@ run_script scripts/terminal-touch-burst-history-regression.ts
 run_script scripts/omo-question-wheel-regression.ts
 run_script scripts/mirror-scroll-demo-regression.ts
 run_script scripts/core-history-scroll-demo-regression.ts
+run_script scripts/core-kept-grid-demo-regression.ts
 run_script scripts/codex-drag-demo-regression.ts
 run_script scripts/terminal-images-demo-regression.ts
 run_script scripts/terminal-ghostty-demo-regression.ts
@@ -269,6 +270,7 @@ run_script scripts/machine-dialog-regression.ts
 run_script scripts/machine-conflict-regression.ts
 run_script scripts/relay-pairing-prompt-regression.ts
 run_script scripts/relay-account-pcs-regression.ts
+run_script scripts/relay-first-link-regression.ts
 run_script scripts/relay-second-device-join-regression.ts
 run_script scripts/machine-own-ovis-regression.ts
 run_script scripts/herdr-profiles-browser-qa.ts

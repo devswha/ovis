@@ -54,9 +54,9 @@
   column-gap: var(--space-1);
 }
 
-.sidebar-footer:has(> .fork-github-foot) > :not(.fork-github-foot, .sidebar-footer-row) { grid-column: 1 / -1; }
+.sidebar-footer:has(> .fork-github-foot) > .setup-row { grid-column: 1 / -1; }
 .sidebar-footer:has(> .fork-github-foot) > .sidebar-footer-row { display: contents; }
-.sidebar-footer:has(> .fork-github-foot) > .sidebar-footer-row > * { order: 2; grid-column: 2; min-width: 0; }
+.sidebar-footer:has(> .fork-github-foot) > .sidebar-footer-row > .usage { order: 2; grid-column: 2; min-width: 0; }
 .sidebar-footer:has(> .fork-github-foot) > .sidebar-footer-row > .sidebar-footer-settings { order: 1; grid-column: 1; }
 
 .fork-github-foot {
@@ -116,6 +116,12 @@
   font-weight: var(--fw-regular);
 }
 
+/* a section's drafts, folded under its ready pull requests: a quieter head of the same kind */
+.fork-github-drafts-head {
+  margin-top: var(--space-1);
+  font-weight: var(--fw-regular);
+}
+
 .fork-github-list {
   display: flex;
   flex-direction: column;
@@ -125,9 +131,19 @@
   list-style: none;
 }
 
-/* a row: the title, up to two lines, with its state's mark at the end; where and when under it */
+/* a row: the title up to two lines, with its CI's mark at the end while it fails or runs; where and when under it.
+   A stack's top row has the fold (+N) beside it. */
+.fork-github-row {
+  display: flex;
+  align-items: flex-start;
+}
+
 .fork-github-summary {
+  /* holds a draft's hidden "Draft:" words: placed against the page, they would make it scroll */
+  position: relative;
   display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
   column-gap: var(--space-3);
@@ -199,10 +215,36 @@
   height: var(--icon-size-sm);
 }
 
-.fork-github-row-mark.is-passing { color: var(--status-done); }
 .fork-github-row-mark.is-failing { color: var(--status-blocked); }
 .fork-github-row-mark.is-pending { color: var(--status-working); }
-.fork-github-row-mark.is-dim { color: var(--text-dim); }
+/* changes asked for, the one review word a row shows */
+.fork-github-row-review.is-failing { color: var(--status-blocked); }
+/* a draft: the whole row faded, as the agent inbox fades an offline one (InboxList.css) */
+.fork-github-row.is-draft .fork-github-summary { opacity: 0.55; }
+
+/* a stack's fold: the +N of a folded workspace (Sidebar.css), level with the title */
+.fork-github-stack-fold {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--control-h);
+  min-height: var(--control-h);
+  margin-top: var(--space-1);
+  padding: 0 var(--space-1-5);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.fork-github-stack-fold svg { width: var(--icon-size-sm); height: var(--icon-size-sm); }
+@media (hover: hover) { .fork-github-stack-fold:hover { background: var(--side-hover); color: var(--text); } }
+/* the rest of an open stack, top down, under its top row */
+.fork-github-stack-below { margin-inline-start: var(--space-4); margin-top: var(--space-half); }
 /* a PR reviewed by you that got new commits since */
 .fork-github-row-updated { color: var(--status-working); }
 
@@ -222,7 +264,7 @@
    sidebar's foot, where the rail stood beside it, and no rail's width taken from the top row's start */
 .app.is-inbox-wide:has(.inbox-column > .sidebar-footer) { --inbox-rail-w: 0px; }
 .app.is-inbox-wide .inbox-column:has(> .sidebar-footer) { flex-direction: column; }
-.inbox-column:has(> .sidebar-footer) > :not(.sidebar-footer, .sidebar-resizer) { flex: 1 1 auto; min-height: 0; }
+.inbox-column:has(> .sidebar-footer) > .mode-inbox { flex: 1 1 auto; min-height: 0; }
 .inbox-column > .sidebar-footer {
   order: 1;
   border-top: var(--hairline) solid var(--border);
@@ -250,3 +292,5 @@
 
 /* the status bar says who waits where it shows, as in the workspaces view: the foot then leaves it to the bar */
 .app:has(.status-bar) .fork-github-foot > .fork-foot-waiting { display: none; }
+
+/* a stacked pull request's place in its stack, 1 at the bottom: the sub line's one colored word */
