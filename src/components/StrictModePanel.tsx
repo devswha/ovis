@@ -31,6 +31,7 @@ export function StrictModePanel({ state, local, onTurnOn, onTurnOff }: { state: 
       <p className="settings-hint">{t("Only devices added on this PC's own screen or terminal can come in.")}</p>
       {state.strict && state.locked === null && <p className="settings-hint">{t("This PC could not read its safety log, so it stays locked.")}</p>}
       {state.locked !== null && <p>{t("On since {time}.", { time: new Date(state.locked.at).toLocaleString(currentLocale(), { dateStyle: "medium", timeStyle: "short" }) })}</p>}
+      {state.locked !== null && <p className="settings-hint">{t("While it is on, use this PC through the Ovis desktop app or a terminal on it.")}</p>}
       {state.locked === null && state.preview !== undefined && (state.preview.rows.length > 0 || state.preview.grants.length > 0) && (
         <>
           <p>{t("Turning it on ends:")}</p>

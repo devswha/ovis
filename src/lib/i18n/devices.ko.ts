@@ -312,4 +312,5 @@ export const DEVICES_KO: Record<string, string> = {
   "Turn on strict mode": "엄격 모드 켜기",
   "Turn off strict mode": "엄격 모드 끄기",
   "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "엄격 모드는 이 PC 화면에서 확인해야 하는데, 지금은 Linux에서만 돼요.",
+  "While it is on, use this PC through the Ovis desktop app or a terminal on it.": "켜져 있는 동안에는 이 PC의 Ovis 데스크톱 앱이나 터미널로 사용하세요.",
 };

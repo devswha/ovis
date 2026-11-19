@@ -312,4 +312,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "Turn on strict mode": "开启严格模式",
   "Turn off strict mode": "关闭严格模式",
   "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "严格模式需要在这台 PC 的屏幕上确认，目前只有 Linux 支持。",
+  "While it is on, use this PC through the Ovis desktop app or a terminal on it.": "开启期间，请通过这台 PC 上的 Ovis 桌面应用或终端使用它。",
 };

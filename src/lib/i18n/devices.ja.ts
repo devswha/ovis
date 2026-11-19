@@ -312,4 +312,5 @@ export const DEVICES_JA: Record<string, string> = {
   "Turn on strict mode": "厳格モードをオン",
   "Turn off strict mode": "厳格モードをオフ",
   "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "厳格モードにはこの PC の画面での確認が必要ですが、今のところ Linux だけが対応しています。",
+  "While it is on, use this PC through the Ovis desktop app or a terminal on it.": "オンの間は、この PC の Ovis デスクトップアプリかターミナルから使ってください。",
 };
