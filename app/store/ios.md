@@ -147,7 +147,8 @@ ID for the user (never the email, name or the provider's tokens); one-way hashes
 device's tokens and the push subscription it registered; for each PC added, its name, relay ID and
 public key; and, for a join or link-page request, the device's name and public key and the country
 and city Cloudflare saw it come from, deleted within about a day, so an approval can show roughly
-where it came from (`https://ovis.sh/privacy/#account` lists it all). Delete account (Devices >
+where it came from (`https://ovis.sh/privacy/#account` lists it all). The device and PC names the user types and the system a device reports (such as iOS or Linux) are
+labels for the approval card, not personal info or a device identifier, so they add no data type. Delete account (Devices >
 Account) erases it at once, as App Review asks of an app that lets people make an account.
 
 Get Started > *Do you or your third-party partners collect data from this app?* **Yes, we collect

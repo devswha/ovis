@@ -168,7 +168,9 @@ accesses" that data, and Ovis shows it, so it does not apply. Three routes leave
   (never the email, name or the provider's tokens); one-way hashes of each signed-in device's
   tokens and the push subscription it registered; for each PC added, its name, relay ID and public
   key; and, for a join or link-page request, the device's name and public key and the country and
-  city Cloudflare saw it come from, deleted within about a day. The app offers **Delete account** (Devices > Account), which erases them at
+  city Cloudflare saw it come from, deleted within about a day. The device and PC names the user
+  types and the system a device reports (such as iOS or Linux) are labels for the approval card,
+  not personal info or a device identifier, so they add no data type. The app offers **Delete account** (Devices > Account), which erases them at
   once; `https://ovis.sh/privacy/#account` says how.
 - **To the developer's push relay, from the phone**: once alerts are turned on, the app registers
   its FCM push token with `push.ovis.sh` (`push-relay/`), which keeps it to forward the PC's
@@ -205,7 +207,8 @@ The composer's attachment picker takes any file (`src/components/Composer.tsx`,
 `uploadPaneImage` in `src/lib/api.ts`), so every file-like type above is listed as optional and
 user-initiated: nothing is sent unless the user picks it. None of it is "shared": the PC is the
 user's own, the transcription provider is one the user chose and is sent to on the user's own
-action, and the developer's receiver, push relay, Ovis relay and `app.ovis.sh` run on
+action, and the developer's receiver, push relay, Ovis relay, account service (`account.ovis.sh`) and
+`app.ovis.sh` run on
 Cloudflare (the regional relay endpoint `relay-ap.ovis.sh` on a server rented from a hosting
 provider), and FCM carries the encrypted alerts, as service providers.
 
