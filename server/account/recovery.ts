@@ -22,9 +22,9 @@ export type RecoveryRefusal = "windows" | "state_dir_unsafe" | "recover_dir_unsa
 
 const ownUid = () => process.getuid?.() ?? -1;
 
-function stateDirSafe(stat: Stats): boolean {
+function stateDirSafe(stat: Stats, owner: number): boolean {
   const sticky = (stat.mode & 0o1000) !== 0;
-  return stat.isDirectory() && !stat.isSymbolicLink() && ((stat.mode & 0o022) === 0 || sticky);
+  return stat.isDirectory() && !stat.isSymbolicLink() && (owner === ownUid() || owner === 0) && ((stat.mode & 0o022) === 0 || sticky);
 }
 
 function recoverDirSafe(stat: Stats): boolean {
@@ -45,10 +45,12 @@ export function openRecoverySocket(options: {
   stateDir: string;
   handle(request: unknown): Promise<unknown>;
   platform?: NodeJS.Platform;
+  /** the state folder's owner, from its lstat unless a test says otherwise */
+  ownerOf?: (stat: Stats) => number;
 }): { path: string; stop(): void } | { refused: RecoveryRefusal } {
   if ((options.platform ?? process.platform) === "win32") return { refused: "windows" };
   const parent = lstatOrNull(options.stateDir);
-  if (parent === null || !stateDirSafe(parent)) return { refused: "state_dir_unsafe" };
+  if (parent === null || !stateDirSafe(parent, (options.ownerOf ?? ((stat) => stat.uid))(parent))) return { refused: "state_dir_unsafe" };
   const dir = join(options.stateDir, RECOVER_DIR);
   if (lstatOrNull(dir) === null) mkdirSync(dir, { mode: 0o700 });
   const dirStat = lstatOrNull(dir);
@@ -215,12 +217,14 @@ export class RecoveryReleases {
   }
 
   /**
-   * Ends the releases of `rowIds` (every release when omitted) and closes the sessions that signed in under them. A
+   * Ends the releases `rowIds` were let in by, whole (every release when omitted), and closes the sessions that signed in
+   * under them. A
    * narrowing: it takes effect whether or not its journal entry could be written, and a failed write is returned.
    */
   undo(rowIds: readonly string[] | undefined, by: string): { releases: string[]; journalError: Error | null } {
-    const rows = (rowIds ?? [...this.#byRow.keys()]).filter((id) => this.#byRow.has(id));
-    const releases = new Set(rows.map((id) => this.#byRow.get(id)!));
+    const named = (rowIds ?? [...this.#byRow.keys()]).filter((id) => this.#byRow.has(id));
+    const releases = new Set(named.map((id) => this.#byRow.get(id)!));
+    const rows = [...this.#byRow].filter(([, release]) => releases.has(release)).map(([id]) => id);
     for (const id of rows) this.#byRow.delete(id);
     for (const release of releases) {
       const watchers = this.#watchers.get(release);

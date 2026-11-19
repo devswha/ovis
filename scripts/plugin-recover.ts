@@ -40,7 +40,7 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
     if (flag === "--undo") {
       const answer = await io.send({ act: "undo", rows: ids.length > 0 ? ids : null }) as { releases?: string[]; error?: string };
       if (answer.error !== undefined) { io.out(`${answer.error}\n`); return 1; }
-      io.out(`Ended ${answer.releases?.length ?? 0} release(s); their sessions were closed and the rows wait again.\n`);
+      io.out(`Ended ${answer.releases?.length ?? 0} release(s), each whole with every row it let in; their sessions were closed and the rows wait again.\n`);
       return 0;
     }
     const listed = await io.send({ act: "list" }) as { rows?: WaitingRow[]; error?: string };
