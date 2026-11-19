@@ -44,7 +44,7 @@ import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { deriveServerId } from "../shared/relay-server-proof.ts";
 import { validateOffer } from "../shared/relay-offer.ts";
 import type { HcMachine, MachineBridge } from "./herdr-core/machine-bridge.ts";
-import { addressOrigin, AddressPcError, AddressPcRefused, checkAddressTarget, loadAddressPcToken, openAddressPcForward, pairAddressPc, removeAddressPcToken, saveAddressPcToken, type AddressPcForward } from "./address-pc.ts";
+import { addressBootId, addressOrigin, AddressPcError, AddressPcRefused, checkAddressTarget, loadAddressPcToken, openAddressPcForward, pairAddressPc, removeAddressPcToken, saveAddressPcToken, type AddressPcForward } from "./address-pc.ts";
 
 /** a PC keeps the six-digit code in its offer for 10 minutes at most (server/devices.ts) */
 const RELAY_FOUND_MS = 10 * 60_000;
@@ -2255,6 +2255,8 @@ export class MachineManager {
     const added = (): boolean => [...this.machines.values()].some(({ machine }) => machine.address === origin);
     if (added()) throw new AddressPcError("added");
     await checkAddressTarget(origin);
+    // a code this PC shows, typed with this PC's own address, would pair it with itself
+    if (this.bootId && await addressBootId(origin) === this.bootId) throw new AddressPcError("self");
     const deviceToken = await pairAddressPc(origin, code.trim(), relayPcLabel());
     if (this.stopped || added()) throw new Error(this.stopped ? "Server stopping" : `That PC is already added. It now also lists ${relayPcLabel()} once more under Phone & devices: revoke that one there.`);
     const id = randomUUID();

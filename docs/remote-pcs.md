@@ -147,10 +147,14 @@ log or an answer. That PC lists it under Devices as one more paired device that 
 PC itself is saved in `<stateDir>/address-pcs.json`, apart from `machines.json`.
 
 The address is an origin only: `https://`, or plain `http://` to this PC itself (`localhost`,
-`127.0.0.1`, `[::1]`), with no path, query, fragment or user name, and no redirect is followed. A
+`127.0.0.1`, `[::1]`, for a second Ovis on the same machine), with no path, query, fragment or user name,
+and no redirect is followed. An address that leads back to this server itself (its own boot id answers
+there) is refused rather than paired with itself. A
 name that leads to a link-local, unspecified, multicast or broadcast address is refused; a public,
 LAN or Tailscale address is the point and is taken. The name is looked up again before every
-connection, under the same rule.
+connection, under the same rule. A name that resolves differently between that look and the
+connection, or an address written in a NAT64 form, is not checked again; the https certificate check
+is what stands in front of it.
 
 A loopback forward on this PC (127.0.0.1, a bearer made fresh for each connection) carries that PC's
 status, API routes and terminals with `Authorization: Device <token>`, so it joins the sidebar as a

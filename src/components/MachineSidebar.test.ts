@@ -50,8 +50,9 @@ describe("Manage PC's menu", () => {
     expect(waiting(ssh())).toEqual([]);
   });
 
-  it("offers no SSH setup or bridge update for a PC reached through the relay", () => {
+  it("offers no SSH setup or bridge update for a PC reached through the relay or by its address", () => {
     expect(ids(ssh({ kind: "relay", target: undefined }))).toEqual(["rename", "toggle", "hide", "remove"]);
+    expect(ids(ssh({ kind: "address", target: undefined }))).toEqual(["rename", "toggle", "hide", "remove"]);
   });
 
   it("keeps herdr's limits for a PC herdr manages: no rename, disconnect or removal here", () => {

@@ -675,7 +675,7 @@ export function App() {
       },
       connectPc: (machine) => {
         setSettingsOpen(false);
-        if (machine.kind === "relay") {
+        if (machine.kind === "relay" || machine.kind === "address") {
           const at = picks.current;
           void load().finally(() => { if (picks.current === at) selectTarget(machine.id, null); });
           return;

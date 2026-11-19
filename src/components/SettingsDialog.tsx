@@ -1365,7 +1365,7 @@ function RelayControls({ relay, closesGate, onReset }: { relay: RelayState; clos
   );
 }
 
-const removablePc = (machine: Machine): boolean => machine.state !== "connected" && machine.herdr_profile_id === undefined && (machine.kind === "ssh" || machine.kind === "relay");
+const removablePc = (machine: Machine): boolean => machine.state !== "connected" && machine.herdr_profile_id === undefined && (machine.kind === "ssh" || machine.kind === "relay" || machine.kind === "address");
 
 function MyPcRows({ machines, account, accountPcs, onAccountChanged, relayKey, watching, selfAction, children }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null; relayKey: string;
   account: string | null;
@@ -1418,7 +1418,7 @@ function MyPcRows({ machines, account, accountPcs, onAccountChanged, relayKey, w
       {account !== null && <AccountPcRows pcs={fromAccount} watching={watching} onRemoved={onAccountChanged}
         remove={(serverId) => removePcFromAccount(new AccountService({ store: indexedAccountStore }), account, serverId)} />}
     </ul>
-    {removing !== null && <ConfirmDialog title={t("Remove PC {name}?", { name: removing.name })} body={t(removing.kind === "relay" ? "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC." : "Removes this registration. Remote sessions keep running.")} confirmLabel={t("Remove PC")}
+    {removing !== null && <ConfirmDialog title={t("Remove PC {name}?", { name: removing.name })} body={t(removing.kind === "relay" || removing.kind === "address" ? "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC." : "Removes this registration. Remote sessions keep running.")} confirmLabel={t("Remove PC")}
       onConfirm={async () => { await machineRequest(`/${encodeURIComponent(removing.id)}`, "DELETE"); setRemoving(null); }} onClose={() => setRemoving(null)} />}
     </>
   );

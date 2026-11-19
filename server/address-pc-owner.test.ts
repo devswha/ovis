@@ -32,24 +32,25 @@ const pairDevice = (label: string, role: "drive" | "watch"): string => {
 const driveDevice = pairDevice("Owner's laptop", "drive");
 const watchDevice = pairDevice("Wall screen", "watch");
 
-const OWNERS = ["this PC", "the token", "a paired device that drives"] as const;
+const OWNERS = ["this PC", "the token", "a Tailscale login", "a paired device that drives"] as const;
 const OTHERS = ["an open LAN visitor", "a Portal visitor that drives", "a paired device that watches", "a relay device that drives"] as const;
 type Kind = typeof OWNERS[number] | typeof OTHERS[number];
 const lan = { address: "192.168.0.20", family: "IPv4", port: 1 };
 const loopback = { address: "127.0.0.1", family: "IPv4", port: 1 };
 
 function contextFor(kind: Kind): ServerContext {
-  const app = kind === "this PC" || kind === "an open LAN visitor" ? open : secured;
+  const app = kind === "this PC" || kind === "a Tailscale login" || kind === "an open LAN visitor" ? open : secured;
   const base = { ...app.context, services: { ...app.context.services, core: { ...app.context.services.core, machines: manager } }, timeout: () => {} };
   if (kind === "a relay device that drives") {
     return { ...base, peer: { kind: "relay", device: { id: "0123456789abcdef", label: "Phone", role: "drive" }, sessionId: "s", serverId: "0123456789abcdef0123456789abcdef", key: "" }, requestIP: () => null };
   }
-  return { ...base, requestIP: () => kind === "this PC" ? loopback : lan };
+  return { ...base, requestIP: () => kind === "this PC" || kind === "a Tailscale login" ? loopback : lan };
 }
 function headersFor(kind: Kind): Record<string, string> {
   const origin = { origin: "http://127.0.0.1", host: "127.0.0.1", "x-herdr-machine": "1", "x-herdr-update": "1", "content-type": "application/json" };
   switch (kind) {
     case "the token": return { ...origin, authorization: `Bearer ${TOKEN}` };
+    case "a Tailscale login": return { ...origin, "tailscale-user-login": "owner@example.com", "x-forwarded-for": "100.64.0.1" };
     case "a paired device that drives": return { ...origin, cookie: `ovis_device=${driveDevice}` };
     case "a paired device that watches": return { ...origin, cookie: `ovis_device=${watchDevice}` };
     case "a Portal visitor that drives": return { ...origin, "x-portal-proof": "valid-proof", "x-portal-user": "visitor", "x-portal-auth": "credential" };

@@ -21,7 +21,7 @@ export interface SshTarget {
   start_new_herdr?: boolean;
 }
 /** Why POST /api/machines/address added no PC, answered as `address_pc_<failure>`: the app words each one. */
-export const ADDRESS_PC_FAILURES = ["address", "target", "code", "wrong_code", "waiting", "unreachable", "not_ovis", "added"] as const;
+export const ADDRESS_PC_FAILURES = ["address", "target", "code", "wrong_code", "waiting", "unreachable", "not_ovis", "added", "self"] as const;
 export type AddressPcFailure = typeof ADDRESS_PC_FAILURES[number];
 export interface Machine {
   /** Read-only identity inherited from the local herdr catalog. */

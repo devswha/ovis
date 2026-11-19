@@ -20,6 +20,7 @@ import { MAX_LARGE_WS_MESSAGE_BYTES, REQUEST_HEADERS, RESPONSE_HEADERS } from ".
 import { OUTPUT_STALLED_CLOSE_CODE } from "../shared/terminal-flow.ts";
 import { OUTPUT_HARD_BYTES } from "./output-window.ts";
 import { writePrivateState } from "./private-state.ts";
+import { readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
 
 /** Why no PC was added by its address (POST /api/machines/address answers `address_pc_<failure>`, the app words each one). */
 export class AddressPcError extends Error {
@@ -37,6 +38,7 @@ export const ADDRESS_PC_WORDS: Record<AddressPcFailure, [string, number]> = {
   unreachable: ["No PC answered at that address. Check it, and that Ovis runs there.", 502],
   not_ovis: ["No Ovis that pairs devices answered at that address. Update Ovis there, or check the address.", 502],
   added: ["That PC is already added.", 409],
+  self: ["That address is this PC's own Ovis.", 400],
 };
 
 /** That PC turned this one away for good (revoked it): trying again could only fail the same way. */
@@ -65,11 +67,10 @@ NEVER.addAddress("::", "ipv6");
 NEVER.addSubnet("fe80::", 10, "ipv6");
 NEVER.addSubnet("ff00::", 8, "ipv6");
 
+/** BlockList matches an IPv4-mapped IPv6 address (::ffff:a.b.c.d) against the IPv4 rules itself. */
 function refusedAddress(address: string): boolean {
   const family = isIP(address);
-  if (family === 0) return true;
-  const mapped = family === 6 ? /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address)?.[1] : undefined;
-  return mapped ? NEVER.check(mapped, "ipv4") : NEVER.check(address, family === 4 ? "ipv4" : "ipv6");
+  return family === 0 || NEVER.check(address, family === 4 ? "ipv4" : "ipv6");
 }
 
 /**
@@ -96,6 +97,15 @@ export async function checkAddressTarget(origin: string, resolve: typeof lookup 
   if (addresses.length === 0 || addresses.some(refusedAddress)) throw new AddressPcError("target");
 }
 
+/** The boot id of the Ovis at `origin` (its open health answer), or null: this server's own says the address is itself. */
+export async function addressBootId(origin: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${origin}/api/health?scope=bridge`, { redirect: "error", signal: AbortSignal.timeout(PAIR_MS) });
+    const health = await response.json() as { web_ui?: { boot_id?: unknown } } | null;
+    return typeof health?.web_ui?.boot_id === "string" ? health.web_ui.boot_id : null;
+  } catch { return null; }
+}
+
 /**
  * Pairs this server with the PC at `origin` with the code that PC shows, and answers the device token it gave. Only the
  * code and this server's label are sent; that PC's own words are not passed on, only what they mean.
@@ -110,7 +120,7 @@ export async function pairAddressPc(origin: string, code: string, label: string,
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(PAIR_MS)]) : AbortSignal.timeout(PAIR_MS),
     });
   } catch { throw new AddressPcError("unreachable"); }
-  const answer = await response.json().catch(() => null) as { token?: unknown; error?: { code?: unknown } } | null;
+  const answer = await readCappedJson<{ token?: unknown; error?: { code?: unknown } } | null>(response, REMOTE_LIMITS.bridgeError).catch(() => null);
   if (response.status === 401 && answer?.error?.code === "invalid_code") throw new AddressPcError("wrong_code");
   if (response.status === 429) throw new AddressPcError("waiting");
   if (response.ok && typeof answer?.token === "string" && /^[A-Za-z0-9_-]{16,256}$/.test(answer.token)) return answer.token;
@@ -119,12 +129,21 @@ export async function pairAddressPc(origin: string, code: string, label: string,
 
 export function saveAddressPcToken(path: string, token: string): void { writePrivateState(path, { v: 1, token }); }
 
+/**
+ * The saved device token. A file that is gone or holds no token is lost for good (AddressPcRefused); any other read
+ * failure (permissions, I/O) may pass, so it is thrown as it is and the PC is tried again, as a relay PC's key is.
+ */
 export function loadAddressPcToken(path: string): string {
-  let saved: unknown;
-  try { saved = JSON.parse(readFileSync(path, "utf8")); }
-  catch { throw new AddressPcRefused("This PC's pairing could not be read. Remove it here and add it again with a new code from that PC."); }
-  const token = (saved as { token?: unknown } | null)?.token;
-  if (typeof token !== "string") throw new AddressPcRefused("This PC's pairing could not be read. Remove it here and add it again with a new code from that PC.");
+  const lost = () => new AddressPcRefused("This PC's pairing could not be read. Remove it here and add it again with a new code from that PC.");
+  let text: string;
+  try { text = readFileSync(path, "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw lost();
+    throw error;
+  }
+  let token: unknown;
+  try { token = (JSON.parse(text) as { token?: unknown } | null)?.token; } catch { throw lost(); }
+  if (typeof token !== "string") throw lost();
   return token;
 }
 
@@ -173,12 +192,18 @@ export function openAddressPcForward(origin: string, deviceToken: string, onLost
     close(false);
     onLost(new AddressPcRefused());
   };
-  // a socket's handshake answers no status: one that never opened asks that PC once whether it still takes this one
-  const checkRefused = (): void => {
+  // a 401 from one of that PC's routes, or a socket that never opened, may be that route's own answer: that PC is
+  // asked once whether it still takes this one, and only a 401 there too is a revocation. It is answered before the
+  // 401 or the socket's close is passed on, so the manager hears the refusal before the failure
+  const checkRefused = async (): Promise<void> => {
     if (closed) return;
-    void fetch(`${origin}/api/session`, { headers: { authorization: `Device ${deviceToken}` }, redirect: "error", signal: AbortSignal.timeout(PAIR_MS) })
-      .then((response) => { void response.body?.cancel(); if (response.status === 401) refused(); }, () => {});
+    try {
+      const response = await fetch(`${origin}/api/session`, { headers: { authorization: `Device ${deviceToken}` }, redirect: "error", signal: AbortSignal.timeout(PAIR_MS) });
+      void response.body?.cancel();
+      if (response.status === 401) refused();
+    } catch { }
   };
+
   const sockets = new Set<Bun.ServerWebSocket<Forwarded>>();
   const server = Bun.serve<Forwarded>({
     // no idle cut of its own (Bun's default is 10 s): a slow answer from the PC is bounded by the one asking
@@ -198,7 +223,7 @@ export function openAddressPcForward(origin: string, deviceToken: string, onLost
           body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
         });
       } catch { return new Response(null, { status: 502 }); }
-      if (response.status === 401) { void response.body?.cancel(); refused(); return new Response(null, { status: 502 }); }
+      if (response.status === 401) await checkRefused();
       // the body arrives decoded, so its encoding and length are this server's to frame again
       const headers = new Headers();
       for (const name of RESPONSE_HEADERS) {
@@ -224,8 +249,8 @@ export function openAddressPcForward(origin: string, deviceToken: string, onLost
           const sent = local.send(typeof event.data === "string" ? event.data : new Uint8Array(event.data as ArrayBuffer));
           if (sent === 0 || local.getBufferedAmount() > OUTPUT_HARD_BYTES + MAX_LARGE_WS_MESSAGE_BYTES) local.close(OUTPUT_STALLED_CLOSE_CODE, "output delivery failed");
         };
-        upstream.onclose = (event) => {
-          if (!local.data.opened) checkRefused();
+        upstream.onclose = async (event) => {
+          if (!local.data.opened) await checkRefused();
           local.close(event.code >= 3000 && event.code <= 4999 || event.code === 1000 ? event.code : 1011, event.reason.slice(0, 100));
         };
       },

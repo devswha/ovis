@@ -330,7 +330,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     if (save && typed !== "" && typed !== machine.name) void mutate("PATCH", { name: typed });
   };
   const stateWords = machine.action_required === "setup" ? t("Setup needed") : asksWhatToConnect(machine) ? t("Choose what to connect to") : t(STATE_WORD[machine.state]);
-  const stateLine = machine.kind === "hc" ? stateWords : `${stateWords} · ${machine.kind === "relay" ? t("through the relay") : t("over SSH")}`;
+  const stateLine = machine.kind === "hc" ? stateWords : `${stateWords} · ${machine.kind === "relay" ? t("through the relay") : machine.kind === "address" ? t("by its address") : t("over SSH")}`;
   const manageNote = machine.kind === "hc" ? t("A machine of herdr-core. Add, rename or remove it with hc machine or in the Herdr app.") : machine.herdr_profile_id ? t("Managed by herdr. Rename, disable or remove it there.") : null;
   const manageItems = (): RowMenuItem[] => manageActions(machine, { busy, canHide }).map(({ id, disabled }): RowMenuItem => {
     switch (id) {
@@ -410,7 +410,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
       {machine.runtime && <span className="machine-menu-note">{t("Runtime: {runtime}", { runtime: machine.runtime })}</span>}
       {manageNote !== null && <span className="machine-menu-note">{manageNote}</span>}
     </span>} />}
-    {confirmRemove && <ConfirmDialog title={t("Remove PC {name}?", { name: machine.name })} body={t(machine.kind === "relay" ? "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC." : "Removes this registration. Remote sessions keep running.")} confirmLabel={t("Remove PC")}
+    {confirmRemove && <ConfirmDialog title={t("Remove PC {name}?", { name: machine.name })} body={t(machine.kind === "relay" || machine.kind === "address" ? "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC." : "Removes this registration. Remote sessions keep running.")} confirmLabel={t("Remove PC")}
       onConfirm={async () => { await mutate("DELETE", undefined, true); setConfirmRemove(false); }} onClose={() => setConfirmRemove(false)} />}
     {error && <p className="machine-error" role="alert">{error}</p>}
     {!folded && !online && !machine.snapshot && (machine.state === "disconnected" || machine.state === "error") && <p className="tree-state machine-empty" role="status">{t("No saved sessions")}</p>}
