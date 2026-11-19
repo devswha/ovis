@@ -37,17 +37,27 @@ describe("the picker overlay", () => {
   const open = after(reduce(initialState(undefined), { type: "world", world, at: AT }).state, key("B", { ctrl: true }), text("g"));
   const chosen = (state: ModelState) => (state.overlays.at(-1) as { chosen: string | null }).chosen;
 
-  it("opens on the terminal in front; j, k and the arrows move a row over headings and terminals and wrap; left and right go to the next workspace's first terminal", () => {
+  it("opens on the terminal in front; the keys move as herdr 0.9.5's measured (rows 79, attempt 3: its world work LEFT RIGHT SOLO, docs NOTES, here p1 p2 p3, p4)", () => {
     expect([open.overlays.map((overlay) => overlay.kind), chosen(open)]).toEqual([["goto"], "p1"]);
+    const down = (n: number) => Array.from({ length: n }, () => key("ARROW_DOWN"));
+    const up = (n: number) => Array.from({ length: n }, () => key("ARROW_UP"));
+    // up and down (and j, k) walk headings and terminals and stop at both ends: ↓x10 -> NOTES, ↑x10 -> the work heading
+    expect(chosen(after(open, ...down(10)))).toBe("p4");
+    expect(chosen(after(open, ...up(10)))).toBe("heading:w1");
+    expect(chosen(after(open, ...Array.from({ length: 10 }, () => text("j"))))).toBe("p4");
+    expect(chosen(after(open, ...Array.from({ length: 10 }, () => text("k"))))).toBe("heading:w1");
     expect(chosen(after(open, text("j"), key("ARROW_DOWN")))).toBe("p3");
-    // as herdr measured: Up from a workspace's first terminal goes to its heading, Up from a heading to the terminal above it
-    // (wrapping round to the last row), and Down from a workspace's last terminal to the next heading
-    expect(chosen(after(open, text("k")))).toBe("heading:w1");
-    expect(chosen(after(open, text("k"), text("k")))).toBe("p4");
-    expect(chosen(after(open, text("j"), text("j"), text("j")))).toBe("heading:w2");
-    expect(chosen(after(open, text("j"), text("j"), text("j"), key("ARROW_UP")))).toBe("p3");
-    expect(chosen(after(open, key("ARROW_RIGHT")))).toBe("p4");
-    expect(chosen(after(open, key("ARROW_RIGHT"), key("ARROW_RIGHT")))).toBe("p1");
+    expect(chosen(after(open, ...down(3)))).toBe("heading:w2");
+    expect(chosen(after(open, ...down(3), key("ARROW_UP")))).toBe("p3");
+    // left and right: the previous or next workspace's first terminal, from a heading as from a terminal; at the ends they stay
+    expect(chosen(after(open, ...down(3), key("ARROW_LEFT")))).toBe("p1");
+    expect(chosen(after(open, ...down(3), key("ARROW_RIGHT")))).toBe("heading:w2");
+    expect(chosen(after(open, ...up(1), key("ARROW_LEFT")))).toBe("heading:w1");
+    expect(chosen(after(open, ...up(1), key("ARROW_RIGHT")))).toBe("p4");
+    expect(chosen(after(open, ...down(2), key("ARROW_LEFT")))).toBe("p3");
+    expect(chosen(after(open, ...down(2), key("ARROW_RIGHT")))).toBe("p4");
+    expect(chosen(after(open, ...down(4), key("ARROW_LEFT")))).toBe("p1");
+    expect(chosen(after(open, ...down(4), key("ARROW_RIGHT")))).toBe("p4");
     const step = reduce(after(open, key("ARROW_DOWN")), key("ENTER"));
     expect([step.state.overlays, step.state.focus.tabs["w1"], step.state.focus.panes["t1"]]).toEqual([[], "t1", "p2"]);
   });

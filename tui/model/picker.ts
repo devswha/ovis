@@ -43,10 +43,10 @@ export function chosenAt(matches: readonly Place[], chosen: string | null): numb
   return at < 0 ? 0 : at;
 }
 
-/** The first terminal of the workspace `step` workspaces from the chosen one's among `matches` (wrapping round), or the chosen one. */
+/** The first terminal of the workspace `step` workspaces from the chosen one's among `matches`; -1 past the first or last workspace. */
 export function workspaceStep(matches: readonly Place[], at: number, step: number): number {
   const order = [...new Set(matches.map((place) => place.workspace))];
   if (at < 0 || order.length === 0) return at;
-  const next = order[((order.indexOf(matches[at]!.workspace) + step) % order.length + order.length) % order.length];
-  return matches.findIndex((place) => place.workspace === next);
+  const next = order[order.indexOf(matches[at]!.workspace) + step];
+  return next === undefined ? -1 : matches.findIndex((place) => place.workspace === next);
 }

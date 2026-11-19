@@ -201,16 +201,16 @@ function pickerInput(overlay: Picker, input: OverlayInput): OverlayAnswer {
     // as herdr's: the rows are each workspace's heading then its terminals, and the arrows visit every one of them
     const rows = matches.flatMap((place, index) => [...(index === 0 || matches[index - 1]!.workspace !== place.workspace ? [`heading:${place.workspace}`] : []), place.id]);
     const here = rows.indexOf(heading !== null ? `heading:${heading}` : matches[at]?.id ?? "");
-    if (here < 0) return { overlay, effects: [] };
-    return { overlay: { ...overlay, chosen: rows[(here + row + rows.length) % rows.length]! }, effects: [] };
+    // herdr's stop at both ends
+    const next = here + row;
+    if (here < 0 || next < 0 || next >= rows.length) return { overlay, effects: [] };
+    return { overlay: { ...overlay, chosen: rows[next]! }, effects: [] };
   }
-  if (heading !== null && side !== 0) {
-    const first = matches.findIndex((place) => place.workspace === heading);
-    return first < 0 ? { overlay, effects: [] } : { overlay: { ...overlay, chosen: matches[first]!.id }, effects: [] };
-  }
-  if (at < 0 || side === 0) return { overlay, effects: [] };
-  const next = workspaceStep(matches, at, side);
-  return { overlay: { ...overlay, chosen: matches[next]!.id }, effects: [] };
+  // left and right: the previous or next workspace's first terminal, from its heading as from its terminals; none past the ends
+  const from = heading !== null ? matches.findIndex((place) => place.workspace === heading) : at;
+  if (from < 0 || side === 0) return { overlay, effects: [] };
+  const next = workspaceStep(matches, from, side);
+  return next < 0 ? { overlay, effects: [] } : { overlay: { ...overlay, chosen: matches[next]!.id }, effects: [] };
 }
 
 /** The switcher's answer to choosing entry `at`: closed, going there or running it. */
