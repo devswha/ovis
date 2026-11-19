@@ -12,6 +12,8 @@ import type { SecureChannel, Transport } from "../../../shared/relay-e2ee.ts";
 import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { MuxFrame } from "../../../shared/relay-mux.ts";
 import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
+import type { RelayChannelOptions } from "../../../shared/relay-channel.ts";
+import { ACCOUNT_OPENS_ALL_MUX_FEATURE } from "../../../shared/account-devices-api.ts";
 import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
 import { probePc } from "../../../shared/relay-channel.ts";
 import { isFatalRelayError } from "./transport.ts";
@@ -54,7 +56,7 @@ class FakeSocket implements RelaySocket {
 }
 
 async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account", onClose?: (error: Error) => void,
-  pc: { relay?: string; hints?: readonly string[] } = {}) {
+  pc: { relay?: string; hints?: readonly string[] } = {}, channel: Partial<RelayChannelOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const registry = new DeviceStore(dir);
@@ -172,7 +174,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
     await server.flush();
     server.authenticate(deviceId);
   };
-  const opening = openRelayChannel(offer, { store, ...(onClose ? { onClose } : {}), socket: (url) => {
+  const opening = openRelayChannel(offer, { ...channel, store, ...(onClose ? { onClose } : {}), socket: (url) => {
     expect(url).toBe(`${offer.relay}/v1/ws?server_id=${offer.server_id}&role=client&v=1`);
     queueMicrotask(() => socket.deliver(JSON.stringify(attack === "assigned" ? { type: "wrong" } : { type: "assigned", connection_id: "ef".repeat(16) })));
     return socket;
@@ -446,6 +448,19 @@ it("stops at a PC of another relay protocol before any credential, as an update"
   expect(failureOf(error, { code: false, paired: true })).toBe("needs-update");
   expect(f.trace.filter((entry) => entry.startsWith("client:"))).toEqual(["client:HELLO"]);
   expect(f.socket.closed).toBe(true);
+});
+
+it("T34, G5: offers the account-opens-all mux feature in HELLO only when asked, so only a flag-on app hears an account refusal", async () => {
+  const plain = await fixture(false);
+  await plain.authSeen.promise;
+  expect(plain.offered).not.toContain(ACCOUNT_OPENS_ALL_MUX_FEATURE);
+  plain.allowAuth.resolve();
+  await plain.opening;
+  const asking = await fixture(false, undefined, undefined, {}, { accountOpensAll: true });
+  await asking.authSeen.promise;
+  expect(asking.offered).toContain(ACCOUNT_OPENS_ALL_MUX_FEATURE);
+  asking.allowAuth.resolve();
+  await asking.opening;
 });
 
 it("offers the account feature in HELLO and keeps what the PC selected, so an older PC can be told apart", async () => {
