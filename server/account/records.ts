@@ -8,12 +8,12 @@ import { AdmissionRefusedError, ReplacementNeedsAppError, type DeviceStore, type
 import type { PairedDevice } from "../../shared/protocol.ts";
 import type { Vouch } from "./mailbox.ts";
 
-export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable" | "enrolling" | "removal_pending" | "older_device";
+export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable" | "enrolling" | "removal_pending" | "closed" | "older_device";
 
 /** What holds an `add` back on this PC (mailbox.ts `gates`, docs/account.md "Enrolling a PC"). */
 export interface AddGates {
   /** A flag-on mailbox keeps signed adds pending until its whole snapshot commits. */
-  readonly deferAdds?: boolean;
+  readonly deferAdd?: (record: AccountRecord) => boolean;
   /** the PC waits for the member that linked it first to hand it the account's devices */
   enrolling(): boolean;
   /** T36: a self-leave is not held by a queued remove for its own key. */
@@ -40,6 +40,8 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   if (store.accountError !== null) return refused("account_unavailable");
   const account = store.account();
   if (account !== null && account !== record.account) return refused("account_mismatch");
+  // A lock can hide the signer as well. It is a final refusal, not a missing signer to retry.
+  if (record.kind === "add" && !store.admits(record.key)) return refused("closed");
   // a member of any role may sign the remove of its own key: that is how a device leaves (docs/account.md)
   const leaving = record.kind === "remove" && record.signer === record.key;
   const signer = store.accountSigner(record.signer, record.account, leaving);
@@ -59,8 +61,6 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   if (gates?.enrolling()) return refused("enrolling");
   // a key this PC holds back, or a signer it holds back (a remove for it waits here): the add waits for that to settle
   if (gates?.held(record.key) || gates?.removing?.(record.signer)) return refused("removal_pending");
-  // the final guard (G3): a lock, or a block or freeze this key is newer than, holds the add back, and it is not kept
-  if (!store.admits(record.key)) return refused("removal_pending");
   if (serverId === null) return refused("account_unavailable");
   const id = accountDeviceId(serverId, record.key);
   if (store.has(id)) return refused("record_invalid");
@@ -99,7 +99,10 @@ export async function applyAccountRecords(store: DeviceStore, values: readonly u
     // a denial while this record is verified means its add no longer stands on what was checked (P14)
     const noted = store.gen();
     const record = await read(value);
-    if (!("refused" in record) && record.kind === "add" && (gates?.deferAdds || store.gen() !== noted)) { outcomes.push({ id: record.id, outcome: "refused", code: "removal_pending" }); continue; }
+    if (!("refused" in record) && record.kind === "add" && (gates?.deferAdd || store.gen() !== noted)) {
+      outcomes.push({ id: record.id, outcome: "refused", code: gates?.deferAdd?.(record) === false ? "account_unavailable" : "removal_pending" });
+      continue;
+    }
     outcomes.push("refused" in record ? { id: record.id, outcome: "refused", code: record.refused } : waited(apply(store, record, serverId, now, batchGates), record, value, wait, undecided));
   }
   return outcomes;
