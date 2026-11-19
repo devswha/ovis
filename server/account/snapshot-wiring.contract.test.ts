@@ -6,6 +6,7 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { FrameType } from "../../shared/relay-mux.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
 import { bounded, deferred, relayAccountFixture, relayConnection, relayDevice } from "../relay/test-helpers.ts";
+import { ask, phone } from "./pairing.test-helpers.ts";
 
 const ACCOUNT = "acct_1";
 const closes: (() => void)[] = [];
@@ -52,6 +53,36 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
     expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     expect(services.devices.hasKey(key)).toBe(true);
   });
+
+  for (const delivery of ["mailed while locked", "handed before a read"] as const) {
+    test(`T15, P14, P23: ${delivery} add is decided only by the whole read`, async () => {
+      const { services, service, identity, token, member, fixture } = await server(true);
+      const { spki: key } = await phone();
+      const record = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key, signer: member.publicKey,
+        label: "Tablet", role: "drive", issued_at: "2026-11-01T00:00:00.000Z", id: newRecordId() }, member.keys.privateKey);
+      if (delivery === "mailed while locked") {
+        const log = services.safetyLog;
+        if (!log) throw new Error("Expected a safety log");
+        const lock = log.appendLock({ account: ACCOUNT });
+        expect(lock.outcome).toBe("applied");
+        expect((await service.fetch(new Request("https://account.test/v1/records", { method: "POST", headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ server_ids: [identity.server_id], record }) }))).ok).toBe(true);
+        await services.accountMailbox.pull();
+        expect(services.devices.hasKey(key)).toBe(false);
+        expect(log.appendUnlock(lock.id, { account: ACCOUNT }).outcome).toBe("applied");
+      } else {
+        service.opensAll = false;
+        const link = await relayConnection(fixture, { serverId: identity.server_id });
+        await link.auth(member);
+        expect((await ask(link, "/api/account/records", { method: "POST", body: { records: [record] } })).status).toBe(200);
+        await services.accountMailbox.settle();
+        expect(services.devices.hasKey(key)).toBe(false);
+        service.opensAll = true;
+      }
+      expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+      expect(services.devices.hasKey(key)).toBe(delivery === "handed before a read");
+    });
+  }
 
   test("T60: only a negotiated refusal with the signer's valid proof carries its PC receipts", async () => {
     const { services, service, member, identity, fixture } = await server(true);
