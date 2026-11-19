@@ -175,12 +175,19 @@ export class ReleaseJournalError extends Error {}
 /** The releases `ovis recover` made since this start. */
 export class RecoveryReleases {
   readonly #byRow = new Map<string, string>();
+  readonly #watchers = new Map<string, Set<() => void>>();
   readonly #journal: (entry: RecoveryJournalEntry) => void;
-  readonly #closeSessions: (releaseIds: ReadonlySet<string>) => void;
 
-  constructor(options: { journal(entry: RecoveryJournalEntry): void; closeSessions(releaseIds: ReadonlySet<string>): void }) {
+  constructor(options: { journal(entry: RecoveryJournalEntry): void }) {
     this.#journal = options.journal;
-    this.#closeSessions = options.closeSessions;
+  }
+
+  /** `end` runs when `release` is undone: a session that signed in under it closes then. */
+  watch(release: string, end: () => void): () => void {
+    let watchers = this.#watchers.get(release);
+    if (watchers === undefined) this.#watchers.set(release, watchers = new Set());
+    watchers.add(end);
+    return () => { watchers.delete(end); };
   }
 
   /** Releases `rows`, each already judged releasable; the journal entry is on disk first, or nobody is released. */
@@ -204,7 +211,13 @@ export class RecoveryReleases {
     const rows = (rowIds ?? [...this.#byRow.keys()]).filter((id) => this.#byRow.has(id));
     const releases = new Set(rows.map((id) => this.#byRow.get(id)!));
     for (const id of rows) this.#byRow.delete(id);
-    if (releases.size > 0) this.#closeSessions(releases);
+    for (const release of releases) {
+      const watchers = this.#watchers.get(release);
+      this.#watchers.delete(release);
+      for (const end of watchers ?? []) {
+        try { end(); } catch (error) { console.error(`A session under an undone release did not close: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+    }
     let journalError: Error | null = null;
     try { this.#journal({ kind: "undo", releases: [...releases], rows, by }); }
     catch (error) { journalError = error instanceof Error ? error : new Error(String(error)); }
@@ -214,5 +227,6 @@ export class RecoveryReleases {
   /** The first whole read judges every released row afresh: every release ends. */
   endAll(): void {
     this.#byRow.clear();
+    this.#watchers.clear();
   }
 }

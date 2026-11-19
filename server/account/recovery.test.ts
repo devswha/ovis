@@ -137,12 +137,12 @@ test("T70: only a row that waits for a whole read, with an origin written here a
 
 function releases(options: { failJournal?: () => boolean } = {}) {
   const journal: RecoveryJournalEntry[] = [];
-  const closed: string[][] = [];
+  const closed: string[] = [];
   const store = new RecoveryReleases({
     journal: (entry) => { if (options.failJournal?.()) throw new Error("disk full"); journal.push(entry); },
-    closeSessions: (releaseIds) => { closed.push([...releaseIds].sort()); },
   });
-  return { store, journal, closed };
+  const session = (row: string) => { const release = store.releaseOf(row)!; store.watch(release, () => closed.push(`${row}@${release}`)); };
+  return { store, journal, closed, session };
 }
 
 test("T70: a release is journalled before it takes effect, and a failed write releases nobody", () => {
@@ -170,17 +170,20 @@ test("T70: a release ends at the first whole read and at a restart", () => {
 
 test("T70: undo closes each session opened under the named release, also when its journal write fails", () => {
   let fail = false;
-  const { store, journal, closed } = releases({ failJournal: () => fail });
+  const { store, journal, closed, session } = releases({ failJournal: () => fail });
   const first = store.release([waiting("a")], "owner");
   const second = store.release([waiting("b")], "owner");
+  session("a");
+  session("a");
+  session("b");
   fail = true;
   const undone = store.undo(["a"], "owner");
   expect(undone.journalError).toBeInstanceOf(Error);
-  expect(closed).toEqual([[first]]);
+  expect(closed).toEqual([`a@${first}`, `a@${first}`]);
   expect(store.releaseOf("a")).toBeNull();
   expect(store.releaseOf("b")).toBe(second);
   fail = false;
   store.undo(undefined, "owner");
-  expect(closed).toEqual([[first], [second]]);
+  expect(closed).toEqual([`a@${first}`, `a@${first}`, `b@${second}`]);
   expect(journal.at(-1)).toEqual({ kind: "undo", releases: [second], rows: ["b"], by: "owner" });
 });
