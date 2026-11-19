@@ -104,6 +104,17 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(await read(pc(first.dir, rotated).ports, page({ version: 1, server_id: rotated }))).toMatchObject({ committed: true });
   });
 
+  test("P14: a refused block earns no credit for a concurrent independent revoke", async () => {
+    const { devices, ports } = pc();
+    const older = await member(devices);
+    const younger = await member(devices);
+    const other = await member(devices);
+    const refused = await block(older.spki, younger);
+    const pending = ports.deny(refused);
+    expect(devices.revoke(other.id)).toBe(true);
+    expect(await pending).toBe(false);
+  });
+
   test("T58: a committed methods version change is journalled once", async () => {
     const { devices, journal, ports } = pc();
     await member(devices);
