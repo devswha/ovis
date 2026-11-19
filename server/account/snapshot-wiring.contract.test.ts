@@ -3,6 +3,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { exportAccountKey } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { rotateRelayIdentity } from "../relay/identity.ts";
 import { relayAccountFixture } from "../relay/test-helpers.ts";
 
 const ACCOUNT = "acct_1";
@@ -15,7 +16,9 @@ async function server(accountOpensAll: boolean) {
   const { fixture } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll, accountService: { url: "https://account.test", fetch: service.fetch } });
   closes.push(() => fixture.close());
   const { services } = fixture.app.context;
+  rotateRelayIdentity(fixture.stateDir);
   const identity = services.relay.currentIdentity();
+  if (!identity) throw new Error("the fixture has no relay identity");
   const token = service.issueToken(ACCOUNT);
   await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
     body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));

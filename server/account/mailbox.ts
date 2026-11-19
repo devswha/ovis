@@ -14,7 +14,6 @@ import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { AccountHolds } from "./holds.ts";
-import { accountOpensAll } from "../../shared/account-devices-api.ts";
 import { readSnapshot, type PageAnswer, type ReadOutcome, type SnapshotPorts } from "./snapshot-read.ts";
 import { applyAccountRecords, type AddGates, type RecordOutcome } from "./records.ts";
 
@@ -127,8 +126,8 @@ export interface AccountMailboxOptions {
   readonly fetch?: (request: Request) => Promise<Response>;
   readonly holds?: AccountHolds;
   /**
-   * The account's whole snapshot read (Step 2, S2-24), run after each pull only while OVIS_ACCOUNT_OPENS_ALL is on:
-   * the account it reads and the ports that apply it, or null for none now.
+   * The account's whole snapshot read (Step 2, S2-24), run after each pull: the account it reads and the ports that
+   * apply it, or null for none now. The server gives it only while OVIS_ACCOUNT_OPENS_ALL is on.
    */
   readonly snapshot?: { account(): string | null; ports(): SnapshotPorts | null };
 }
@@ -226,14 +225,14 @@ export class AccountMailbox {
     return this.pulling;
   }
 
-  /** One whole snapshot read now, in turn with pulls; null when the release flag is off or there is nothing to read for. */
+  /** One whole snapshot read now, in turn with pulls; null when the server gave no snapshot ports or there is nothing to read for. */
   readSnapshot(): Promise<ReadOutcome | null> {
     return this.exclusively(() => this.readSnapshotNow());
   }
 
   private async readSnapshotNow(): Promise<ReadOutcome | null> {
     const snapshot = this.options.snapshot;
-    if (!accountOpensAll() || !snapshot) return null;
+    if (!snapshot) return null;
     const account = snapshot.account();
     const ports = snapshot.ports();
     if (account === null || ports === null) return null;
