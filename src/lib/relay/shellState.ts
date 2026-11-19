@@ -12,7 +12,7 @@ import { decodeOffer } from "../../../shared/relay-offer.ts";
 import type { UpdateStep } from "../../../shared/update.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { MyPc } from "../account/myPcs.ts";
-import type { AccountProvider, AccountSession } from "../account/store.ts";
+import { ACCOUNT_PROVIDERS, type AccountProvider, type AccountSession } from "../account/store.ts";
 import { inNativeApp } from "../nativeApp.ts";
 import { serverIdOfPath } from "../shellMode.ts";
 import { RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayRefusedError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
@@ -89,8 +89,11 @@ export type RelayShellState =
    * the device's own) stays on screen meanwhile.
    */
   | { kind: "confirm"; offer: RelayOffer; account?: "checking" | "unlisted" | "listed"; pressed?: "unlisted" | "listed" | "own"; /** a join a PC's own page offers: its one press, drawn alone */ alone?: true }
-  /** `approved`: the PC accepted the pairing, and the account steps go on behind this screen; absent before that */
-  | { kind: "connecting"; name: string | null; approved?: true }
+  /**
+   * `approved`: the PC accepted the pairing, and the account steps go on behind this screen; absent before that.
+   * `pairing`: a new pairing, not a saved PC opening again
+   */
+  | { kind: "connecting"; name: string | null; approved?: true; pairing?: true }
   | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion }
   | { kind: "code-entry"; failure: TypedCodeFailure | null }
   | { kind: "code-looking" }
@@ -106,7 +109,7 @@ export type RelayShellState =
    * `mismatch`: on identity-changed, the key that is not the PC's, when the phone can name it; `server_id`: the PC a connection attempt failed for;
    * `account`: on sign-in-first, the sign-in started from this screen (busy, or why it did not finish)
    */
-  | { kind: "failed"; failure: RelayFailure; name: string | null; detail: string | null; mismatch?: KeyMismatch | null; server_id?: string; account?: AccountView | null };
+  | { kind: "failed"; failure: RelayFailure; name: string | null; detail: string | null; mismatch?: KeyMismatch | null; server_id?: string; account?: AccountView | null; /** a new pairing failed, not a saved PC opening again */ pairing?: true };
 
 export interface ShellEntry {
   serverId: string | null;
@@ -279,10 +282,10 @@ export function keepTypedJoin(serverId: string | null): void {
  * A marked pairing's web sign-in comes back on the front page, the one address the account service sends a browser back
  * to; that PC's own page goes on with the pairing, as after a scan. This crosses that one load, in this tab: the PC's ID,
  * when the code was scanned (`at`), how the sign-in ended (`refused`: the reason it gave; null once signed in), and when
- * the front page handed it on (`sent`). No offer, key or token: the offer goes in the page's fragment, as a scanned link
+ * the front page handed it on (`sent`), with the provider it was for. No offer, key or token: the offer goes in the page's fragment, as a scanned link
  * does.
  */
-export interface PairingReturn { readonly server_id: string; readonly at: number; readonly refused: string | null; readonly sent: number }
+export interface PairingReturn { readonly server_id: string; readonly at: number; readonly refused: string | null; readonly provider: AccountProvider | null; readonly sent: number }
 /** How long a note waits for its PC's page: a navigation stopped on the way leaves one no later scan should read. */
 export const PAIRING_RETURN_MS = 60_000;
 export function keepPairingReturn(note: PairingReturn): void {
@@ -295,10 +298,10 @@ export function takePairingReturn(serverId: string | null, now = Date.now()): Pa
     const kept: unknown = JSON.parse(sessionStorage.getItem("ovis-pairing-return") ?? "null");
     sessionStorage.removeItem("ovis-pairing-return");
     if (kept === null || typeof kept !== "object") return null;
-    const { server_id, at, refused, sent } = kept as Record<string, unknown>;
+    const { server_id, at, refused, provider, sent } = kept as Record<string, unknown>;
     if (serverId === null || server_id !== serverId || typeof at !== "number" || !(refused === null || typeof refused === "string")) return null;
     if (typeof sent !== "number" || now < sent || now - sent > PAIRING_RETURN_MS) return null;
-    return { server_id, at, refused, sent };
+    return { server_id, at, refused, provider: ACCOUNT_PROVIDERS.includes(provider as AccountProvider) ? provider as AccountProvider : null, sent };
   } catch { return null; }
 }
 

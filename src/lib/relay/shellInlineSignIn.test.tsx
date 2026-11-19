@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import type { ReactElement } from "react";
-import { FakeAccountService } from "../../../shared/account-service-fake.ts";
+import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { decodeOffer, encodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
-import { SIGN_IN_MS } from "../account/signin.ts";
+import { beginSignIn, finishSignIn, SIGN_IN_MS, signInReturn } from "../account/signin.ts";
 import { memoryAccountStore, type AccountStore } from "../account/store.ts";
 import type { RelayDevice, ShellDeviceStore } from "./device.ts";
 import { mountRelayShell } from "./shell.tsx";
@@ -54,9 +54,10 @@ describe("signing in from a marked pairing's failure screen", () => {
     return auth;
   }
 
-  function page(entryUrl: string, accountStore: AccountStore, fake: FakeAccountService, opened: RelayOffer[], signIns: string[], navigated: string[] = []) {
+  function page(entryUrl: string, accountStore: AccountStore, fake: FakeAccountService, opened: RelayOffer[], signIns: string[], navigated: string[] = [], saved: RelayDevice[] = []) {
     let props: RelayShellProps | undefined;
-    const devices: RelayDevice[] = [];
+    const drawn: RelayShellProps["state"][] = [];
+    const devices: RelayDevice[] = [...saved];
     const store: ShellDeviceStore = {
       get: async (id) => devices.find((device) => device.server_id === id), list: async () => [...devices],
       remove: async () => {}, removeRow: async () => false, update: async (_id, change) => change(undefined),
@@ -65,7 +66,7 @@ describe("signing in from a marked pairing's failure screen", () => {
     const mounted = mountRelayShell({
       container: {} as HTMLElement, entryUrl, shellVersion: "0.0.0-test", label: "Test phone", store, accountStore, accountService: SERVICE, accountFetch: fake.fetch,
       renderApp: () => { throw new Error("the app is not expected here"); },
-      createRoot: () => ({ render(element: ReactElement) { props = find(element); changed(); }, unmount() {} }),
+      createRoot: () => ({ render(element: ReactElement) { props = find(element); drawn.push(props.state); changed(); }, unmount() {} }),
       open: async (offer) => { opened.push(offer); changed(); throw new Error("stopped after the pairing began"); },
       openSignIn: (url) => { signIns.push(url); changed(); },
       navigate: (path) => { navigated.push(path); changed(); },
@@ -73,7 +74,7 @@ describe("signing in from a marked pairing's failure screen", () => {
     });
     const current = (): RelayShellProps => { if (!props) throw new TypeError("not rendered"); return props; };
     const failure = (): string | null => { const { state } = current(); return state.kind === "failed" ? state.failure : null; };
-    return { mounted, current, failure, navigated };
+    return { mounted, current, failure, navigated, drawn };
   }
 
   async function stoppedForSignIn(options: { native?: boolean; refuse?: boolean; beforeSignIn?: () => void } = {}) {
@@ -251,6 +252,97 @@ describe("signing in from a marked pairing's failure screen", () => {
     const later = await scanAgain(offer);
     await until(() => later.current().state.kind === "confirm");
     expect(later.current().state).toMatchObject({ kind: "confirm", offer });
+  });
+
+  it("lets a note go when its PC's page loads without the offer, so a fresh scan of that PC shows the confirm", async () => {
+    const { offer, fake, accountStore, opened, state, handOnly, scanAgain } = await stoppedForSignIn();
+    await handOnly(`${ORIGIN}/#error=access_denied&state=${state}`);
+    const bare = page(`${ORIGIN}/s/${offer.server_id}/`, accountStore, fake, opened, []);
+    await bare.mounted;
+    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(false);
+    const fresh = await scanAgain(offer);
+    await until(() => fresh.current().state.kind === "confirm");
+    expect(fresh.failure()).toBeNull();
+  });
+
+  it("judges a web return by its own sign-in: refused stays refused when another tab signed in meanwhile", async () => {
+    const { fake, accountStore, opened, state, comeBack } = await stoppedForSignIn();
+    // another tab signs in, through the same store, while this sign-in is at the provider
+    const other = await beginSignIn("github", { store: accountStore, service: SERVICE, redirectUri: WEB_REDIRECT });
+    const otherBack = signInReturn(new URL((await fake.fetch(other)).headers.get("location") ?? "").hash);
+    await finishSignIn(otherBack!, { store: accountStore, fetch: fake.fetch });
+    expect(await accountStore.get("session")).toBeDefined();
+    const { pcPage } = await comeBack(`${ORIGIN}/#error=access_denied&state=${state}`);
+    await until(() => pcPage.failure() === "sign-in-first");
+    expect(pcPage.current().state).toMatchObject({ account: { kind: "signed-out", provider: "google" } });
+    expect(pcPage.drawn.some((drawn) => drawn.kind === "confirm")).toBe(false);
+    expect(opened).toEqual([]);
+  });
+
+  it("keeps the refused provider for its Try again", async () => {
+    const { state, comeBack } = await stoppedForSignIn();
+    const { pcPage } = await comeBack(`${ORIGIN}/#error=access_denied&state=${state}`);
+    await until(() => pcPage.failure() === "sign-in-first");
+    expect(pcPage.current().state).toMatchObject({ account: { kind: "signed-out", provider: "google" } });
+  });
+
+  it("asks for a new scan, and sends nothing, when Add and pair is pressed after the code's time", async () => {
+    const start = Date.now();
+    setSystemTime(new Date(start));
+    const { opened, first, native } = await stoppedForSignIn({ native: true });
+    native!.release();
+    await until(() => { const { state } = first.current(); return state.kind === "confirm" && state.account === "unlisted"; });
+    setSystemTime(new Date(start + SIGN_IN_MS + 1));
+    first.current().onPair();
+    await until(() => first.failure() === "scan-expired");
+    expect(opened).toEqual([]);
+  });
+
+  it("starts no sign-in for a code scanned longer ago than it is good for", async () => {
+    const start = Date.now();
+    setSystemTime(new Date(start));
+    const fake = new FakeAccountService();
+    fake.offerSignIns(["github", "google"], ["github", "google"]);
+    const accountStore = memoryAccountStore();
+    const identity = generateKeyPair();
+    const offer: RelayOffer = { v: 1, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.ovis.sh", name: "Desk", code: "123456", admission: 1 };
+    const signIns: string[] = [];
+    const scan = page(encodeOffer(offer, ORIGIN), accountStore, fake, [], signIns);
+    await scan.mounted;
+    await until(() => scan.current().state.kind === "confirm" && !("account" in scan.current().state));
+    scan.current().onPair();
+    await until(() => scan.failure() === "sign-in-first");
+    setSystemTime(new Date(start + SIGN_IN_MS + 1));
+    // a sign-in draws its PKCE verifier the moment it starts: none may be drawn for this press
+    const drawsRandom = spyOn(crypto, "getRandomValues");
+    try {
+      scan.current().onSignIn?.("google");
+      expect(drawsRandom).not.toHaveBeenCalled();
+    } finally { drawsRandom.mockRestore(); }
+    await until(() => scan.failure() === "scan-expired");
+    expect(signIns).toEqual([]);
+    expect(Object.keys((await accountStore.get("pending")) ?? {})).toEqual([]);
+  });
+
+  it("marks a new pairing's connecting and failure screens, and not a saved PC's that opens again", async () => {
+    const fake = new FakeAccountService();
+    const accountStore = memoryAccountStore();
+    const identity = generateKeyPair();
+    const fresh: RelayOffer = { v: 1, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.ovis.sh", name: "Desk", code: "123456" };
+    const scan = page(encodeOffer(fresh, ORIGIN), accountStore, fake, [], []);
+    await scan.mounted;
+    await until(() => scan.current().state.kind === "confirm" && !("account" in scan.current().state));
+    scan.current().onPair();
+    await until(() => scan.current().state.kind === "failed");
+    expect(scan.drawn.filter((state) => state.kind === "connecting" || state.kind === "failed").map((state) => "pairing" in state && state.pairing)).toEqual([true, true]);
+    const key = await accountStore.key();
+    const saved: RelayDevice = { server_id: fresh.server_id, device_id: "12".repeat(8), private_key: key.private_key, public_spki: key.public_spki, label: "Phone", server_public_key: fresh.server_public_key, relay: fresh.relay, name: "Desk" };
+    const reopen = page(`${ORIGIN}/s/${fresh.server_id}/`, accountStore, fake, [], [], [], [saved]);
+    await reopen.mounted;
+    await until(() => reopen.current().state.kind === "failed");
+    const shown = reopen.drawn.filter((state) => state.kind === "connecting" || state.kind === "failed");
+    expect(shown.length).toBeGreaterThan(0);
+    expect(shown.some((state) => "pairing" in state)).toBe(false);
   });
 
   it("asks about the same pairing in place once the app's sign-in sheet answers", async () => {

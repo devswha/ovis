@@ -333,17 +333,29 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       await changed();
     });
   };
-  /** `carried`: told of the pairing the returned sign-in was started for, once it is taken, before the code is traded and whatever the outcome */
-  const load = async (returned: SignInReturn | null, carried?: (pairing: PendingPairing) => void): Promise<void> => {
+  /**
+   * `carried`: told of the pairing the returned sign-in was started for, once it is taken, before the code is traded. The
+   * result says how that sign-in itself ended (`refused`: the reason shown; null once its code was traded), whatever
+   * session another tab may have stored meanwhile; undefined when the return carried no pairing.
+   */
+  const load = async (returned: SignInReturn | null, carried?: (pairing: PendingPairing) => void): Promise<{ readonly refused: string | null; readonly provider: AccountProvider } | undefined> => {
+    let outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined;
     if (returned !== null && accountService !== null) {
       const pending = await takePendingSignIn(accountStore, returned.state);
       accountView = { kind: "signing-in", ...(pending ? { provider: pending.provider } : {}) };
       if (pending?.pairing) carried?.(pending.pairing);
       await changed();
-      try { await redeemSignIn(pending, returned, { store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) }); }
-      catch (error) { accountView = { kind: "signed-out", error: signInFailure(error), ...(pending ? { provider: pending.provider } : {}) }; await changed(); }
+      try {
+        await redeemSignIn(pending, returned, { store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
+        if (pending?.pairing) outcome = { refused: null, provider: pending.provider };
+      } catch (error) {
+        accountView = { kind: "signed-out", error: signInFailure(error), ...(pending ? { provider: pending.provider } : {}) };
+        if (pending?.pairing) outcome = { refused: signInFailure(error), provider: pending.provider };
+        await changed();
+      }
     }
     await refresh(true);
+    return outcome;
   };
   /**
    * `consent` null: the person confirmed a pairing with a key of this device's own, so no sign-in is read for it.
