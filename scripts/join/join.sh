@@ -1139,16 +1139,22 @@ if [ "$j_fresh" = 1 ]; then
   made=$(j_missing_dirs "$(dirname "$J_HOME")")
   # the folders and the receipt that lists them are made with Ctrl+C, TERM and HUP held: an end in between would leave a
   # folder no receipt lists, which the roll back cannot see and a run again refuses. The commands that make them ignore
-  # the signal; the first one is noted here and acted on once the receipt lists them
+  # the signal; the first one is noted here and acted on once the receipt lists them. The lists are read from a here-
+  # document, not a pipe, so no process that feeds them can be ended by the signal
   j_held=""
   trap 'j_held=${j_held:-130}' INT
   trap 'j_held=${j_held:-143}' TERM
   trap 'j_held=${j_held:-129}' HUP
-  printf '%s\n' "$made" | { trap '' INT TERM HUP; while IFS= read -r p; do [ -n "$p" ] || continue; mkdir -m 700 "$p" || exit 1; done; } \
+  ( trap '' INT TERM HUP; while IFS= read -r p; do [ -n "$p" ] || continue; mkdir -m 700 "$p" || exit 1; done ) <<EOF \
     || refuse 14 "a parent of $J_HOME cannot be made; nothing was changed"
+$made
+EOF
   ( trap '' INT TERM HUP; mkdir -m 700 "$J_HOME" && : >"$J_HOME/receipt" ) || refuse 14 "$J_HOME cannot be made; nothing was changed"
   j_note home "$J_HOME"
-  printf '%s\n' "$made" | { trap '' INT TERM HUP; while IFS= read -r p; do [ -n "$p" ] && j_note dir "$p"; done; }
+  # in this shell: j_note is printf, so nothing here starts a process
+  while IFS= read -r p; do [ -n "$p" ] && j_note dir "$p"; done <<EOF
+$made
+EOF
   trap 'j_interrupted 130' INT
   trap 'j_interrupted 143' TERM
   trap 'j_interrupted 129' HUP
