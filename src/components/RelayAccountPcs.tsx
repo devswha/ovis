@@ -71,7 +71,7 @@ export interface AccountPcs {
  * is signed in to another account or none. Nothing is read until this PC's own server id is known, so it never lists
  * itself; `enabled` going false ends a pairing under way.
  */
-export function useAccountPcs({ machines, source, enabled = true, expect, onAdded }: { machines: readonly Machine[]; source?: AccountPcsSource; enabled?: boolean; expect?: string; onAdded: (machine: Machine) => void }): AccountPcs {
+export function useAccountPcs({ machines, source, enabled = true, expect, refresh = 0, onAdded }: { machines: readonly Machine[]; source?: AccountPcsSource; enabled?: boolean; expect?: string; /** bumped to read the list again (a window that came back), with a pairing under way kept */ refresh?: number; onAdded: (machine: Machine) => void }): AccountPcs {
   const t = useT();
   const account = useRef<AccountPcsSource | null>(null);
   account.current ??= source ?? signedInAccount();
@@ -97,17 +97,27 @@ export function useAccountPcs({ machines, source, enabled = true, expect, onAdde
       if (!live || read === null) return;
       if (expect !== undefined && read.account !== expect) { setPcs(null); return; }
       listed.current = { asked: new Set() };
+      // a new listing asks each PC again: an answer from the one before is not shown as this one's
+      setStates(new Map());
       setPcs(read.pcs.filter((pc) => pc.server_id !== own));
     }).catch((error: unknown) => {
       console.warn("Ovis: the account's PCs could not be read", error instanceof Error ? error.name : error);
       if (live) setPcs(null);
     });
     return () => { live = false; };
-  }, [own, enabled, expect]);
+  }, [own, enabled, expect, refresh]);
+  // the newest ask of each PC, its first check and every Check again alike: an older one answering late changes nothing
+  const asks = useRef(new Map<string, number>());
+  const nextAsk = (serverId: string): number => {
+    const ask = (asks.current.get(serverId) ?? 0) + 1;
+    asks.current.set(serverId, ask);
+    return ask;
+  };
   const check = (pc: AccountPcEntry, round: { asked: Set<string> }): void => {
     round.asked.add(pc.server_id);
+    const ask = nextAsk(pc.server_id);
     checkAccountPcs([pc]).then(({ pcs: [checked] }) => {
-      if (listed.current === round && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
+      if (listed.current === round && asks.current.get(pc.server_id) === ask && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
     }, (error: unknown) => {
       if (listed.current !== round) return;
       // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) leaves only its own row; anything
@@ -158,17 +168,14 @@ export function useAccountPcs({ machines, source, enabled = true, expect, onAdde
     pairing?.abort.abort();
     setPairing(null);
   };
-  // the newest Check again of each PC: an older one answering late changes nothing
-  const rechecks = useRef(new Map<string, number>());
   const recheck = async (pc: AccountPcEntry): Promise<void> => {
     setFailure((current) => current?.server_id === pc.server_id ? null : current);
     const round = listed.current;
-    const ask = (rechecks.current.get(pc.server_id) ?? 0) + 1;
-    rechecks.current.set(pc.server_id, ask);
+    const ask = nextAsk(pc.server_id);
     if (!await stillOurs()) throw new Error(t("Sign in again"));
     // the PC's last answer stays until the new one, and a failed ask leaves every row: it is told on this one
     const { pcs: [checked] } = await checkAccountPcs([pc]);
-    if (listed.current === round && rechecks.current.get(pc.server_id) === ask && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
+    if (listed.current === round && asks.current.get(pc.server_id) === ask && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
   };
   return { pcs, added, stateOf: (serverId) => states.get(serverId), pairing, failure, add, cancel, recheck };
 }

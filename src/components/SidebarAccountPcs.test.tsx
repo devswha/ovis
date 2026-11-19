@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest, mock, spyOn } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AccountPcEntry } from "../lib/api.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { AccountPcsSource } from "./RelayAccountPcs.tsx";
+import { RECHECK_HOLD_MS } from "./MachineOffLine.tsx";
 import { SidebarAccountPcs } from "./SidebarAccountPcs.tsx";
 
 const pc = (id: string, name: string): AccountPcEntry => ({ server_id: id.repeat(32).slice(0, 32), server_public_key: "key", relay: "wss://relay.ovis.example", name });
@@ -31,6 +32,7 @@ describe("the account's PCs in the sidebar", () => {
   let lists: number;
   let admitted: string[];
   let failAwayCheck: boolean;
+  let awayHold: Promise<void> | null;
   // Check again's hold is per PC for the page's life (MachineOffLine.tsx): each test starts a minute after the last
   let clock = 0;
   let events: EventTarget;
@@ -46,6 +48,7 @@ describe("the account's PCs in the sidebar", () => {
     lists = 0;
     admitted = [];
     failAwayCheck = false;
+    awayHold = null;
     clock += 60_000;
     const realNow = performance.now.bind(performance);
     spyOn(performance, "now").mockImplementation(() => realNow() + clock);
@@ -81,7 +84,13 @@ describe("the account's PCs in the sidebar", () => {
         const asked = (body as { pcs: AccountPcEntry[] }).pcs;
         if (failAwayCheck && asked[0]?.server_id === AWAY.server_id) return Response.json({ error: { code: "relay_unavailable", message: "The relay did not answer." } }, { status: 503 });
         const states: Record<string, string> = { [DESK.server_id]: "ready", [LAB.server_id]: "ready", [OLD.server_id]: "outdated" };
-        return Response.json({ pcs: asked.map((entry) => ({ server_id: entry.server_id, state: entry.server_id === AWAY.server_id ? awayAnswers.shift() : states[entry.server_id] })) });
+        if (asked[0]?.server_id === AWAY.server_id) {
+          const answer = awayAnswers.shift();
+          const hold = awayHold;
+          if (hold !== null) await hold;
+          return Response.json({ pcs: [{ server_id: AWAY.server_id, state: answer }] });
+        }
+        return Response.json({ pcs: asked.map((entry) => ({ server_id: entry.server_id, state: states[entry.server_id] })) });
       }
       if (path === "/api/machines/relay/account/start") return Response.json({ ticket: "ticket-1", key: "a-key", label: "Ovis on here" });
       if (path === "/api/machines/relay/account/pair") return new Response(new ReadableStream<Uint8Array>({ start: (controller) => { pairLines = controller; } }));
@@ -91,6 +100,7 @@ describe("the account's PCs in the sidebar", () => {
   });
 
   afterEach(async () => {
+    jest.useRealTimers();
     await act(async () => { renderer?.unmount(); });
     renderer = undefined;
     mock.restore();
@@ -237,4 +247,39 @@ describe("the account's PCs in the sidebar", () => {
     await settle();
     expect(reads()).toBe(4);
   });
+  it("reads the account's PCs again when the window comes back, and asks a newly listed PC", async () => {
+    await mount();
+    expect(lists).toBe(1);
+    await act(async () => { events.dispatchEvent(new Event("focus")); });
+    await settle();
+    expect(lists).toBe(2);
+    expect(groups().map(([name]) => name)).toEqual(["PC Desk", "PC Old box", "PC Away"]);
+  });
+
+  it("keeps a newer answer when an older Check again of the same PC comes back after it", async () => {
+    await mount();
+    const away = () => renderer!.root.find((node) => node.type === "section" && node.props["aria-label"] === "PC Away");
+    const press = async () => { await act(async () => { away().find((node) => node.type === "button" && /Check again|Checking/.test(text(node))).props.onClick(); }); };
+    let releaseOld = () => {};
+    jest.useFakeTimers();
+    // the first Check again is still out and will say offline; the next, after the hold, says ready at once
+    awayAnswers = ["offline"];
+    awayHold = new Promise<void>((resolve) => { releaseOld = resolve; });
+    await press();
+    awayHold = null;
+    // the hold of the first press runs out (MachineOffLine.tsx RECHECK_HOLD_MS)
+    clock += RECHECK_HOLD_MS;
+    await act(async () => { jest.advanceTimersByTime(RECHECK_HOLD_MS); });
+    awayAnswers = ["ready"];
+    await press();
+    await settle();
+    expect(away().props["data-pc-state"]).toBe("ready");
+    await act(async () => { releaseOld(); });
+    await settle();
+    expect(away().props["data-pc-state"]).toBe("ready");
+    jest.useRealTimers();
+  });
+
+
+
 });

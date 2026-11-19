@@ -59,7 +59,7 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, source, hidden }:
     }, () => { if (live) setJoined(false); });
     return () => { live = false; };
   }, [account, reads]);
-  const accountPcs = useAccountPcs({ machines, source, enabled: joined, expect: account, onAdded });
+  const accountPcs = useAccountPcs({ machines, source, enabled: joined, expect: account, refresh: reads, onAdded });
   const waiting = accountPcs.pcs?.filter((pc) => accountPcs.added(pc.server_id) === undefined) ?? [];
   if (waiting.length === 0) return null;
   return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} hidden={hidden} />)}</>;
