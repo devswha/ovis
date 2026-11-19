@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DeviceJournal } from "./device-journal.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
+import { keyOf } from "./account-devices.test-helpers.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
@@ -33,7 +34,7 @@ async function listedPc() {
   service.registerDevice(ACCOUNT, spki, "Laptop");
   expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   const device = { keys, publicKey: spki, id: accountDeviceId(identity.server_id, spki) };
-  return { fixture, member, device, serverId: identity.server_id };
+  return { fixture, member, device, service, serverId: identity.server_id };
 }
 
 async function refusal(pc: Awaited<ReturnType<typeof listedPc>>, features: readonly string[]) {
@@ -109,6 +110,28 @@ describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
       expect(services.devices.has(device.id)).toBe(false);
     });
   }
+
+  test("T34, G15: a list stops at 64 unanswered notices and resumes when one is answered", async () => {
+    const { fixture, device, service, serverId } = await listedPc();
+    const { accountMailbox, devices } = fixture.app.context.services;
+    const [original] = devices.openNotices();
+    if (!original) throw new Error("missing initial join notice");
+    const ids = Array.from({ length: 65 }, (_, index) => {
+      const key = keyOf(`k-${index}`);
+      service.registerDevice(ACCOUNT, key, `Phone ${index}`);
+      return accountDeviceId(serverId, key);
+    });
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(devices.openNotices()).toHaveLength(64);
+    expect(devices.openNotices()).toContainEqual(original);
+    expect(devices.has(device.id)).toBe(true);
+    expect(ids.filter(id => devices.has(id))).toHaveLength(63);
+
+    devices.decideNotice(original.id);
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(ids.filter(id => devices.has(id))).toHaveLength(64);
+    expect(devices.openNotices()).toHaveLength(64);
+  });
 
   test("S25: the whole read admits the listed device as an account row, held until its notice is out", async () => {
     const pc = await listedPc();
