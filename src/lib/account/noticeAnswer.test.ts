@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { NoticeAnswer } from "../../../shared/account-devices-api.ts";
 import type { ServerMessage } from "../../../shared/protocol.ts";
-import { answerOnPc, recordsOnPc, type AnswerSocket } from "./noticeAnswer.ts";
+import { answerOnPc, notMeTransports, recordsOnPc, type AnswerSocket } from "./noticeAnswer.ts";
 
 class FakeSocket implements AnswerSocket {
   readonly sent: NoticeAnswer[] = [];
@@ -43,5 +43,24 @@ describe("Not me on the account's other PCs", () => {
   it("G5, T65: a PC that answers without receipts (release off or older) or fails is not reached, and is retried", async () => {
     await expect(recordsOnPc(async () => Response.json({ results: [] }), [{ id: "b" } as never])).rejects.toThrow();
     await expect(recordsOnPc(async () => new Response("", { status: 502 }), [{ id: "b" } as never])).rejects.toThrow();
+  });
+});
+
+describe("where Not me goes", () => {
+  it("T60: the notice's own PC gets the answer on its socket, every other PC its records route, each under its own id", async () => {
+    const desk = new FakeSocket();
+    const posted: string[] = [];
+    const sends = notMeTransports({ id: "n1" } as never, "desk", ["desk", "home"], {
+      socket: (pc) => pc === "desk" ? desk : undefined,
+      post: (pc) => async (path) => { posted.push(`${pc} ${path}`); return Response.json({ results: [], receipts: [{ outcome: "applied", id: "b", n: 1 }] }); },
+      timeoutMs: 1000,
+    });
+    expect([...sends.keys()]).toEqual(["desk", "home"]);
+    const own = sends.get("desk")!([{ id: "b" } as never]);
+    desk.receive({ type: "notice-answer-result", id: "n1", receipts: [{ outcome: "applied", id: "b", n: 2 }] });
+    expect(await own).toEqual([{ outcome: "applied", id: "b", n: 2 }]);
+    expect(desk.sent[0]).toMatchObject({ type: "notice-answer", id: "n1", answer: "not_me", blocks: [{ id: "b" }] });
+    expect(await sends.get("home")!([{ id: "b" } as never])).toEqual([{ outcome: "applied", id: "b", n: 1 }]);
+    expect(posted).toEqual(["home /api/account/records"]);
   });
 });
