@@ -54,7 +54,7 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
     },
   });
   devices.attachAccountRows(rows);
-  return { devices, rows, clock, dir, evidence };
+  return { devices, rows, clock, dir, evidence, journal };
 }
 
 async function member(devices: DeviceStore): Promise<Key & { id: string }> {
@@ -236,5 +236,21 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     expect(await devices.applyBlock(record, "handed")).toMatchObject({ outcome: "applied" });
     expect(await signIn(devices, row!.id, phone)).toBeNull();
     expect(devices.sessionRow(row!.id)).toBeNull();
+  });
+
+  test("T53: It's me from a member admitted here over an hour ago ends the hold and decides the notice; a newer sayer cannot", async () => {
+    const { devices, rows, clock, journal } = pc();
+    const older = await member(devices);
+    const phone = await key();
+    clock.now += 2 * 60 * 60_000;
+    rows.commitList(listed(phone));
+    const [row] = rows.rows();
+    const notice = journal.entries().find((entry) => entry.kind === "admit" && entry.row === row!.id)!;
+    const newer = await member(devices);
+    expect(devices.itsMe(newer.id, notice.id)).toBe(false);
+    expect(rows.access(row!.id)).toMatchObject({ refused: "join_hold" });
+    expect(devices.itsMe(older.id, notice.id)).toBe(true);
+    expect(rows.access(row!.id)).toEqual({ ok: true });
+    expect(journal.openNotices().some((entry) => entry.id === notice.id)).toBe(false);
   });
 });
