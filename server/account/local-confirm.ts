@@ -26,7 +26,7 @@ export type ScreenAction =
   | { kind: "forget_removal"; key: string }
   | { kind: "forget_revoke"; revoke: string };
 
-/** What the screen shows for an act; `fingerprint` is the key's, for an act that admits one. */
+/** What the screen shows for an act; `fingerprint` is always the one the act itself names, for an act that admits a key. */
 export interface ConfirmShown { title: string; lines: readonly string[]; fingerprint?: string }
 export type ConfirmAnswer = "approved" | "declined" | "expired";
 export interface OpenConfirm { id: string; action: ScreenAction; shown: ConfirmShown; expiresAt: number }
@@ -59,6 +59,9 @@ export class LocalConfirms {
     if ([...this.#entries.values()].filter((entry) => entry.state === "open").length >= CONFIRMS_OPEN_MAX) {
       throw new ConfirmsFullError("Too many acts wait for this PC's screen");
     }
+    action = frozenCopy(action);
+    const fingerprint = "fingerprint" in action ? action.fingerprint : undefined;
+    shown = frozenCopy({ title: shown.title, lines: shown.lines, ...(fingerprint === undefined ? {} : { fingerprint }) });
     const id = randomBytes(16).toString("hex");
     const expiresAt = this.#now() + CONFIRM_MS;
     let settle!: (answer: ConfirmAnswer) => void;
@@ -131,6 +134,18 @@ export class LocalConfirms {
       try { listener(); } catch (error) { console.error(`A screen confirm listener failed: ${error instanceof Error ? error.message : String(error)}`); }
     }
   }
+}
+
+/** A copy the asker cannot change afterwards: the act shown is the act consumed. */
+function frozenCopy<T>(value: T): T {
+  const copy = structuredClone(value);
+  const freeze = (entry: unknown) => {
+    if (entry === null || typeof entry !== "object") return;
+    Object.freeze(entry);
+    for (const field of Object.values(entry)) freeze(field);
+  };
+  freeze(copy);
+  return copy;
 }
 
 function canonical(value: unknown): string {
