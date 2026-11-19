@@ -24,15 +24,9 @@ export interface SnapshotDeps {
   requestRead(): void;
 }
 
-/** A method entry's `how` carries the methods version it saw: the journal is where this PC remembers it (T58). */
-const METHOD_HOW = /^methods_version:(\d+)$/;
 
 export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
   const { devices, safetyLog, pc, journal } = deps;
-  const methodsVersion = (): number | null => {
-    const entry = [...journal.entries()].reverse().find((candidate) => candidate.kind === "method" && METHOD_HOW.test(candidate.how));
-    return entry === undefined ? null : Number(METHOD_HOW.exec(entry.how)![1]);
-  };
   return {
     scope() {
       const account = devices.account();
@@ -68,9 +62,10 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       if (lifted) pc.raiseGen();
       deps.order.record(stage.snapshot, binding.bind_id);
     },
-    methodsVersion,
+    methodsVersion: () => deps.order.methodsVersion(),
     journalMethod(version) {
       journal.append({ kind: "method", how: `methods_version:${version}`, key: null, no: null, row: null, label: "The account's sign-in methods changed", by: null, account: devices.account() });
+      deps.order.recordMethod(version);
     },
     requestRead: deps.requestRead,
   };
