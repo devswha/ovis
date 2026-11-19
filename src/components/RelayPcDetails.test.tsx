@@ -267,6 +267,18 @@ describe("RelayPcDetails", () => {
     const lately = { state: "paired", last_seen_at: "2026-11-08T11:55:00.000Z" } as const;
     expect(stateParts(makeRow(lately, { kind: "offline", reason: "pc" }))).toEqual({ state: ["Machine offline", `Last seen 5 min ago. ${cause}`], device: ["This device: no answer"] });
     expect(stateParts(makeRow(lately, { kind: "offline", reason: "relay" }))).toEqual({ state: ["Could not reach this machine", "This device could not reach the relay. Check this device's network."], device: ["This device: no answer"] });
+    // the account has not heard from it for two hours: State says so, and This device keeps its own check's cause when
+    // that check learned nothing of the PC
+    const accountOffline = { state: ["Machine offline", `Last seen 2 h ago. ${cause}`] };
+    expect([
+      stateParts(makeRow({}, { kind: "offline", reason: "pc" })),
+      stateParts(makeRow({}, { kind: "offline", reason: "relay" })),
+      stateParts(makeRow({}, { kind: "offline", reason: "refused" })),
+    ]).toEqual([
+      { ...accountOffline, device: ["This device: no answer"] },
+      { ...accountOffline, device: ["This device: no answer", "This device could not reach the relay. Check this device's network."] },
+      { ...accountOffline, device: ["This device: no answer", "The relay turned this device away. Wait a minute, then check again."] },
+    ]);
   });
 
   it("names the route this device reaches the PC by in its own labelled row: the way and the round trip, No answer, Not checked, or nothing for an unpaired PC", () => {

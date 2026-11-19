@@ -106,7 +106,11 @@ export function RelayPcDetails({
         : null;
 
   const probeLine = formatProbeLine(pc.check, t) ?? t("Not checked");
-  const probeCause = away === null ? checkCauseText(pc.check, t) : null;
+  // State already says why when this device's own last check is what it shows: a PC this device could not reach, or one
+  // the relay had nobody for. An account-offline PC whose check reached no relay, or was turned away, keeps that cause here
+  const settled = pc.check?.kind === "checking" ? pc.check.previous ?? null : pc.check;
+  const stateSaysCheck = pc.displayState === "unreachable" || (pc.displayState === "offline" && settled?.kind === "offline" && settled.reason === "pc");
+  const probeCause = away !== null && stateSaysCheck ? null : checkCauseText(pc.check, t);
 
   const lastSeenFull = pc.last_seen_at !== null
     ? formatAbsoluteTime(pc.last_seen_at) + " (" + lastSeen(pc.last_seen_at, now) + ")"
