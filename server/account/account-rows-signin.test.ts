@@ -350,8 +350,8 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     rows.commitList(listed(phone));
     const [row] = rows.rows();
     const notice = journal.entries().find((entry) => entry.kind === "admit" && entry.row === row!.id)!;
-    expect(devices.itsMe(older.id, notice.id)).toBe(false);
+    expect(devices.itsMe(older.id, notice.id, older.spki)).toBe(false);
     gate.wholeRead();
-    expect(devices.itsMe(older.id, notice.id)).toBe(true);
+    expect(devices.itsMe(older.id, notice.id, older.spki)).toBe(true);
   });
 });

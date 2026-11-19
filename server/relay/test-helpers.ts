@@ -138,6 +138,11 @@ export function caughtUp(fixture: ReturnType<typeof relayFixture>): void {
   fixture.app.context.services.catchUp?.wholeRead();
 }
 
+/** `ovis recover` released these account keys from the wait after a start (S2-27, T70). */
+export function releaseAccountRows(fixture: ReturnType<typeof relayFixture>, keys: readonly string[]): readonly string[] {
+  return fixture.app.context.services.accountRows?.store()?.release([...keys]) ?? [];
+}
+
 export async function relayAccountFixture(role: "drive" | "watch" = "drive", account = "acct_1", options: NonNullable<Parameters<typeof createServer>[0]> = {}) {
   const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
   const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
