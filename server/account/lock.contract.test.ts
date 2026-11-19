@@ -120,3 +120,12 @@ test("N4: no browser window drives a locked PC this release, whatever cookie it 
     expect((await made.local("/api/devices", { headers: { cookie } })).body.error?.code).toBe("locked");
   }
 });
+
+test("N4: on a locked PC, a direct loopback window gets 403 locked on everything but reading the lock and asking for an unlock", async () => {
+  const made = await lockedPc();
+  for (const [path, method] of [["/api/devices", "GET"], ["/api/session", "GET"], ["/api/account/status", "GET"], ["/api/account/lock", "POST"], ["/api/relay/offer", "POST"]] as const) {
+    const tried = await made.local(path, { method, headers: { "x-herdr-machine": "1", "x-herdr-update": "1" }, ...(method === "POST" ? { body: {} } : {}) });
+    expect([path, tried.status, tried.body.error?.code]).toEqual([path, 403, "locked"]);
+  }
+  expect((await made.local("/api/account/lock")).status).toBe(200);
+});
