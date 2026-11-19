@@ -165,7 +165,6 @@ function composer(socket: HerdrSocket, { status: agentStatus, card, autoSend = f
       answering: card !== null && !card.queued && !card.fallback ? card : null, heldByOpenQueue: card?.queued === "open",
       ended: false, answerPending: false, pendingAnswer: null, settings: { autoSendQueued: autoSend },
       knownOutcomes: () => [], inputRowNow: () => "ready", showSentCommand: () => {}, t: (key) => key,
-      cardWaits: () => socket.typesArrows(),
       submitComposerMessage: (text, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly, holdOnly) =>
         socket.submit("t1", composerMessage(text), composerPayload(text, true), false, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly, holdOnly),
     };
@@ -198,6 +197,38 @@ it("holds a normal Send to a Codex a herdr-core server shows blocked over its co
   const listed = await rows();
   expect(daemon.written(from)).toEqual([]);
   expect(listed).toMatchObject([{ text: "next step", state: "held" }]);
+}, 30_000);
+
+it("holds a normal Send made as a new connection opens, before it knows the server's features, and writes nothing to herdr", async () => {
+  const { daemon, port, tickCards } = await serve(true, "working", collapsed);
+  const card = collapsedCard();
+  const reader = spyOn(prompt, "waitingCard").mockImplementation(async () => ({ kind: prompt.waitingKindOf(card) ?? null, id: card.id }));
+  cleanups.push(() => reader.mockRestore());
+  const { socket: first, frame } = await page(port);
+  const waits = frame("the card's wait", (message): message is Extract<ServerMessage, { type: "pane-status" }> => message.type === "pane-status" && message.pane_id === "t1" && message.agent_status === "blocked");
+  await tickCards();
+  const shown = await waits;
+  const from = daemon.methods.length;
+
+  // the page reconnects: its newest status for the pane is still the card's wait, and Send is pressed as the socket opens
+  const again = new HerdrSocket(`ws://127.0.0.1:${port}/ws`);
+  cleanups.push(() => again.close());
+  const heard: ServerMessage[] = [];
+  again.on((message) => { heard.push(message); });
+  const sent = Promise.withResolvers<boolean | string | object>();
+  again.attach("t1", 100, 30);
+  again.connect();
+  (again as unknown as { socket: WebSocket }).socket.addEventListener("open", () => {
+    expect(again.featuresListed()).toBe(false);
+    void Promise.resolve(composer(again, { status: shown.agent_status, card }).composerSend("next step")).then(sent.resolve, sent.reject);
+  });
+  expect(await sent.promise).toBe(true);
+
+  await again.pendingAction("t1", "no-such-row", "discard");
+  const listed = heard.filter((message): message is Extract<ServerMessage, { type: "pending-messages" }> => message.type === "pending-messages" && message.pane_id === "t1").at(-1)?.messages ?? [];
+  expect(daemon.written(from)).toEqual([]);
+  expect(listed).toMatchObject([{ text: "next step", state: "held" }]);
+  first.close();
 }, 30_000);
 
 it.each([
