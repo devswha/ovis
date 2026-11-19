@@ -165,8 +165,10 @@ accesses" that data, and Ovis shows it, so it does not apply. Three routes leave
 - **To the developer's account service, from the phone**: only once the user signs in (signing
   in is optional), the app signs in with `account.ovis.sh` (`docs/account.md`), which keeps a random
   account ID and, for each sign-in method added, a one-way hash of that provider's ID for the user
-  (never the email, name or the provider's tokens), plus one-way hashes of each signed-in
-  device's tokens. The app offers **Delete account** (Devices > Account), which erases them at
+  (never the email, name or the provider's tokens); one-way hashes of each signed-in device's
+  tokens and the push subscription it registered; for each PC added, its name, relay ID and public
+  key; and, for a join or link-page request, the device's name and public key and the country and
+  city Cloudflare saw it come from, deleted within about a day. The app offers **Delete account** (Devices > Account), which erases them at
   once; `https://ovis.sh/privacy/#account` says how.
 - **To the developer's push relay, from the phone**: once alerts are turned on, the app registers
   its FCM push token with `push.ovis.sh` (`push-relay/`), which keeps it to forward the PC's
@@ -194,9 +196,9 @@ Answers:
 | Files and docs | files the user attaches in the composer, and files opened in the file viewer | optional, user-initiated | App functionality |
 | App activity > Other user-generated content | what is typed into terminals | required | App functionality |
 | App activity > App interactions | the app settings the user chose (theme, font sizes, language, alert and voice options and the like), the kinds of screen the app was opened on and how they reached the PC, how many prompt answers were sent and alerts delivered and tapped, and how often the app's buttons were used each day, whether by button, menu, shortcut or palette, and which of these controls were shown (counts as ranges and a list of control names, never what was typed), in the PC's usage counts to the developer | optional (can be turned off) | Analytics |
-| Device or other IDs | the sign-in cookie a PC gives the phone when it is paired, or for a PC paired through the Ovis relay the public half of the key the phone makes for it (to the PC); that PC's relay ID, in the requests to the developer's `relay.ovis.sh` (or `relay-ap.ovis.sh`) and `app.ovis.sh` that open it; the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on | required (cookie); optional (ID, push token) | App functionality (cookie, push token); Analytics (ID) |
+| Device or other IDs | the sign-in cookie a PC gives the phone when it is paired, or for a PC paired through the Ovis relay the public half of the key the phone makes for it (to the PC); that PC's relay ID, in the requests to the developer's `relay.ovis.sh` (or `relay-ap.ovis.sh`) and `app.ovis.sh` that open it; the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on; once signed in, the push subscription each device registers with the developer's account service and the relay ID and public key of each PC added | required (cookie); optional (ID, push token, account service) | App functionality (cookie, push token, account service); Account management (account service); Analytics (ID) |
 | Personal info > User IDs | the random account ID the developer's account service makes when the user signs in, and a one-way hash of the sign-in provider's ID for the user (GitHub, Google or Apple) | optional (only when signed in) | App functionality, Account management |
-| Location > Approximate location | the country (two letters) the developer's receiver reads from the address the usage counts come from; the address is not stored | optional (can be turned off) | Analytics |
+| Location > Approximate location | the country (two letters) the developer's receiver reads from the address the usage counts come from; once signed in, the country and city the developer's account service keeps with a join or link-page request for about a day, so an approval shows roughly where it came from; the address is never stored | optional (counts can be turned off; signing in is optional) | Analytics (counts); App functionality, Account management (account service) |
 | App info and performance > Diagnostics | connection traces the page reports to the PC for troubleshooting | required | Analytics |
 
 The composer's attachment picker takes any file (`src/components/Composer.tsx`,
@@ -207,8 +209,8 @@ action, and the developer's receiver, push relay, Ovis relay and `app.ovis.sh` r
 Cloudflare (the regional relay endpoint `relay-ap.ovis.sh` on a server rented from a hosting
 provider), and FCM carries the encrypted alerts, as service providers.
 
-**The usage counts, in full** (with the push token above, the only data that reaches the
-developer):
+**The usage counts, in full** (with the push token above and, once signed in, the account
+service's records, the only data that reaches the developer):
 
 - **When**: one event when the server is installed and one per new version, plus one message per
   UTC day it is in use and, once that day has ended, one with how often the app's buttons were

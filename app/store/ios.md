@@ -143,7 +143,11 @@ and the list of which of these controls were shown, never what was typed or whic
 A second route reaches the developer only once the user signs in (signing in is optional): the
 app signs in with the developer's account service, `account.ovis.sh` (`docs/account.md`), which
 keeps a random account ID and, for each sign-in method added, a one-way hash of that provider's
-ID for the user (never the email, name or the provider's tokens). Delete account (Devices >
+ID for the user (never the email, name or the provider's tokens); one-way hashes of each signed-in
+device's tokens and the push subscription it registered; for each PC added, its name, relay ID and
+public key; and, for a join or link-page request, the device's name and public key and the country
+and city Cloudflare saw it come from, deleted within about a day, so an approval can show roughly
+where it came from (`https://ovis.sh/privacy/#account` lists it all). Delete account (Devices >
 Account) erases it at once, as App Review asks of an app that lets people make an account.
 
 Get Started > *Do you or your third-party partners collect data from this app?* **Yes, we collect
@@ -152,16 +156,16 @@ data from this app.** Then declare:
 | Data type | Use | Linked to the user | Tracking |
 |---|---|---|---|
 | Usage Data > Product Interaction (the settings chosen in the app, daily use, how often its buttons are used, whether by button, menu, shortcut or palette, and which of them were shown) | Analytics | Yes | No |
-| Identifiers > Device ID (the random install ID the PC makes) | Analytics | Yes | No |
-| Location > Coarse Location (the country, two letters) | Analytics | Yes | No |
+| Identifiers > Device ID (the random install ID the PC makes; once signed in, the account service's device push subscriptions and PC relay IDs and keys) | Analytics, App Functionality | Yes | No |
+| Location > Coarse Location (the country, two letters, of the usage counts; once signed in, the country and city of a join or link-page request) | Analytics, App Functionality | Yes | No |
 | Identifiers > User ID (the random account ID, only when signed in) | App Functionality | Yes | No |
 
-The first three count as linked: Apple's definition covers data tied to a device-level identifier, and the
+The usage counts count as linked: Apple's definition covers data tied to a device-level identifier, and the
 receiver stores them with the PC's persistent install ID (random, with no account, name or contact
 behind it). None is used for tracking: nothing is combined with other companies' data or shared
-with data brokers or advertisers. The user ID is linked by
-what it is. The privacy manifest lists the same four types, and `https://ovis.sh/privacy/`
-describes both routes. Privacy policy URL:
+with data brokers or advertisers. What the account service keeps is
+linked to the account. The privacy manifest lists the same four types with the same purposes, and
+`https://ovis.sh/privacy/` describes both routes in full. Privacy policy URL:
 `https://ovis.sh/privacy/`.
 
 ## 6. Age rating (App Information > Age Rating > Edit)
