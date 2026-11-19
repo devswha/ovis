@@ -180,7 +180,8 @@ What is there:
   account service names at `/v1/providers`; a press opens the hosted app on that sign-in,
   `#sign-in=<provider>`), with Start without signing in below it. That and a build with
   `OVIS_APP_ACCOUNT=0` lead to Add a PC: Scan a QR code, Enter an address (Tailscale or Wi-Fi),
-  SSH, and the PCs opened before. `error.html` is shown when a PC cannot be
+  SSH, and the PCs opened before. The address `demo` opens the bundled demo, which has no button
+  of its own: the store review notes (app/store) send reviewers there. `error.html` is shown when a PC cannot be
   reached or answers with an HTTP error (a 502 from `tailscale serve` while Ovis is stopped), with the
   reason, Try again and Change PC. Both are in English and Korean: an element's
   `data-ko` attribute holds its Korean text, put in when the phone's first language is Korean

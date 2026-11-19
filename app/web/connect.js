@@ -56,6 +56,8 @@ const relayErrors = {
 
 async function open(text) {
   stopPending();
+  // the bundled demo (build-web.ts), for a store review without a PC: the address "demo" opens it, with no button for it
+  if (String(text).trim().toLowerCase() === "demo") { location.href = "demo/index.html"; return; }
   const url = parseAddress(text);
   if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); if (!addressScreen.hidden) input.focus(); return; }
   // the hosted app itself, saved once it loaded (a sign-in opens it): it opens again as it was opened
@@ -154,9 +156,8 @@ if (!ACCOUNT_SIGN_IN) {
 }
 else {
   show("sign-in", false);
-  // the service names its sign-ins (GET /v1/providers), as the hosted app reads them; until it answers, GitHub alone,
-  // the hosted app's own fallback, so no button opens a sign-in the hosted app would not start
-  showProviders(ACCOUNT_PROVIDERS.slice(0, 1));
+  // the service names its sign-ins (GET /v1/providers), as the hosted app reads them; until it answers, GitHub alone
+  // (the markup's), the hosted app's own fallback, so no button opens a sign-in the hosted app would not start
   fetch(new URL("/v1/providers", ACCOUNT_SERVICE)).then((response) => response.ok ? response.json() : null).then((body) => {
     const listed = listedProviders(body);
     if (listed !== null) showProviders(listed);
