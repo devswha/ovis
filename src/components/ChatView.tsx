@@ -1432,10 +1432,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const lastScrollGeometry = useRef<{ readonly node: HTMLDivElement; readonly height: number; readonly viewport: number } | null>(null);
   const scrollUpInputAt = useRef(-Infinity);
   const scrollDownInputAt = useRef(-Infinity);
+  const scrollbarInputAt = useRef(-Infinity);
   const markScrollInput = useCallback((direction: -1 | 1): void => {
     const now = performance.now();
     scrollUpInputAt.current = direction < 0 ? now : -Infinity;
     scrollDownInputAt.current = direction > 0 ? now : -Infinity;
+    scrollbarInputAt.current = -Infinity;
   }, []);
   const scrollGesture = useCallback((direction: -1 | 1): void => {
     markScrollInput(direction);
@@ -1924,8 +1926,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (atEnd) {
       if (!stickToBottom.current) manualLayout.current = false;
       pagingAway.current = false; stickToBottom.current = true;
-      if (Math.max(scrollUpInputAt.current, scrollDownInputAt.current, pointerDragAt.current) <= scrollInputRead.current) {
+      if (Math.max(scrollUpInputAt.current, scrollDownInputAt.current, pointerDragAt.current, scrollbarInputAt.current) <= scrollInputRead.current) {
         scrollUpInputAt.current = -Infinity; scrollDownInputAt.current = -Infinity; pointerDragAt.current = -Infinity;
+        scrollbarInputAt.current = -Infinity;
       }
       setAway(false); setNewMessages(false);
     }
@@ -1995,10 +1998,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (!visible) return;
     let pointer: { x: number; y: number } | null = null;
     let touchY: number | undefined;
-    // A wheel or a drag up the transcript moves the view before its scroll event comes: a follow the
-    // list queued before it (a long chat's first open) would land first and take the reader back to
-    // the end (#2594). A key may not scroll the transcript at all (focus on a button), so it drops
-    // nothing: its scroll event decides.
+    // Upward wheel and touch gestures cancel queued following before the scroll event (#2594).
+    // Paging keys record their direction; the scroll event confirms they moved the transcript.
     const mark = (event: Event): void => {
       const node = scroller.current;
       if (event instanceof KeyboardEvent) {
@@ -2010,6 +2011,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       }
       if (event instanceof PointerEvent && (event.type === "pointerup" || event.type === "pointercancel")) {
         const press = scrollbarPress.current;
+        if (event.type === "pointercancel") scrollbarInputAt.current = -Infinity;
         const dragged = press !== null && event.type === "pointerup" && event.clientY !== press.y;
         if (node !== null && node.scrollTop < lastScrollTop.current) {
           scrollUpInputAt.current = Math.max(scrollUpInputAt.current, dragged ? performance.now() : pointerDragAt.current);
@@ -2026,19 +2028,20 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       }
       // a press released where this page saw no pointerup has no button down by the next pointer
       // event, and a new press is a new gesture
-      if (event instanceof PointerEvent && (event.type === "pointerdown" || event.buttons === 0)) scrollbarPress.current = null;
+      if (event instanceof PointerEvent && (event.type === "pointerdown" || (event.buttons === 0 && scrollbarPress.current !== null))) {
+        scrollbarPress.current = null;
+        scrollbarInputAt.current = -Infinity;
+      }
       if (node === null || !(event.target instanceof Node) || !node.contains(event.target)) return;
       if (event instanceof WheelEvent && event.deltaY !== 0) scrollGesture(event.deltaY < 0 ? -1 : 1);
       if (event instanceof PointerEvent) {
         if (event.type === "pointerdown") {
           pointer = { x: event.clientX, y: event.clientY };
           pointerDragAt.current = -Infinity;
-          // A track or arrow press can scroll without a pointermove, even after pointerup.
-          if (event.target === node && event.clientX >= node.getBoundingClientRect().left + node.clientWidth) {
-            if (event.button === 0) {
-              markScrollInput(-1);
-              scrollbarPress.current = { y: event.clientY, movedUp: false };
-            }
+          // Track and arrow presses can scroll in either direction, even after pointerup.
+          if (event.button === 0 && event.target === node && event.clientX >= node.getBoundingClientRect().left + node.clientWidth) {
+            scrollbarInputAt.current = performance.now();
+            scrollbarPress.current = { y: event.clientY, movedUp: false };
           }
         }
         else if (pointer !== null && event.buttons !== 0 && (event.clientX !== pointer.x || event.clientY !== pointer.y)) pointerDragAt.current = performance.now();
@@ -2052,7 +2055,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const options = { capture: true, passive: true } as const;
     const types = ["wheel", "touchstart", "touchmove", "pointerdown", "pointermove", "pointerup", "pointercancel", "keydown"] as const;
     for (const type of types) document.addEventListener(type, mark, options);
-    const letGo = (): void => { scrollbarPress.current = null; };
+    const letGo = (): void => { scrollbarPress.current = null; scrollbarInputAt.current = -Infinity; };
     const hidden = (): void => { if (document.visibilityState === "hidden") letGo(); };
     window.addEventListener("blur", letGo);
     document.addEventListener("visibilitychange", hidden);
@@ -2067,22 +2070,28 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const node = scroller.current;
     if (node === null) return;
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
-    const scrollingDown = node.scrollTop > lastScrollTop.current;
-    const scrollingUp = node.scrollTop < lastScrollTop.current;
+    const movedBy = node.scrollTop - lastScrollTop.current;
+    const scrollingDown = movedBy > 0;
+    const scrollingUp = movedBy < 0;
     lastScrollTop.current = node.scrollTop;
     const geometry = lastScrollGeometry.current;
     lastScrollGeometry.current = { node, height: node.scrollHeight, viewport: node.clientHeight };
     const shrank = geometry?.node === node
       && (geometry.height - node.scrollHeight > READER_ALLOWANCE_PX || node.clientHeight < geometry.viewport);
-    if (scrollingUp) {
-      if (scrollbarPress.current !== null) scrollbarPress.current.movedUp = true;
-      scrollUpInputAt.current = Math.max(scrollUpInputAt.current, pointerDragAt.current);
+    if (scrollingUp && scrollbarPress.current !== null) scrollbarPress.current.movedUp = true;
+    const directionalInput = scrollingDown ? scrollDownInputAt : scrollUpInputAt;
+    if (scrollingUp || scrollingDown) {
+      directionalInput.current = Math.max(directionalInput.current, pointerDragAt.current, scrollbarInputAt.current);
+      scrollbarInputAt.current = -Infinity;
+      scrollInputRead.current = Math.max(scrollInputRead.current, directionalInput.current);
     }
-    const inputAt = scrollingDown ? Math.max(scrollDownInputAt.current, pointerDragAt.current) : scrollUpInputAt.current;
-    if (scrollingUp || scrollingDown) scrollInputRead.current = Math.max(scrollInputRead.current, inputAt);
-    const byReader = performance.now() - inputAt < SCROLL_INPUT_MS;
+    const byReader = performance.now() - directionalInput.current < SCROLL_INPUT_MS;
     const allowance = byReader ? READER_ALLOWANCE_PX : LAYOUT_ALLOWANCE_PX;
-    const layoutMoved = !byReader && (listCorrected || (scrollingUp && shrank));
+    // On first open the list can scroll down to the old end before the transcript grows.
+    const stoppedShort = scrollingDown && timeline.current !== null;
+    // A held selection can be trimmed by a pixel even when the rounded transcript height is unchanged.
+    const selectionTrimmed = selecting.current && -movedBy <= READER_ALLOWANCE_PX;
+    const layoutMoved = !byReader && (listCorrected || stoppedShort || (scrollingUp && (shrank || selectionTrimmed)));
     const readingUp = scrollingUp && (byReader || (!layoutMoved && distanceFromBottom > LAYOUT_ALLOWANCE_PX));
     if (readingUp) navigated();
     if ((!pagingAway.current || scrollingDown) && distanceFromBottom <= 1) pagingAway.current = false;

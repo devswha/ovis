@@ -137,7 +137,7 @@ try {
       {
         const { page, errors, release, close } = await open(null, 480);
         try {
-          await page.locator(".chat-view").evaluate((node) => { node.scrollTop = 0; });
+          await page.evaluate(() => { document.querySelector(".chat-view")!.scrollTop = 0; });
           await frames(page);
           const up = await viewOf(page);
           assert.ok(up.top === 0 && up.gap > 48, `the reader is away from the end (gap ${up.gap})`);

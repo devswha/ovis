@@ -132,6 +132,8 @@ async function settled(page: Page): Promise<number> {
 async function toFollowedEnd(page: Page, jump: Locator) {
   await jump.click();
   await jump.waitFor({ state: "detached" });
+  // the list's own scroll to its end can stop short by less than the layout allowance, which the chat
+  // follows from: the reader, following now, scrolls the rest of the way
   await page.locator(".chat-view").evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await settleBottom(page);
   await page.waitForFunction(() => (JSON.parse(sessionStorage.getItem("ovis:chat-positions") ?? "[]") as [string, { atEnd: boolean }][]).some(([id, place]) => id === "same-pane" && place.atEnd));

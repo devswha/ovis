@@ -95,8 +95,11 @@ try {
       await page.evaluate(() => { (window as unknown as { pressClicks: unknown[] }).pressClicks.length = 0; });
     };
 
-    // Jump to latest confirms that scrolling the link into view left the end. The next layout
-    // can then keep the link where the reader is about to press it.
+    // The chat follows its end while its pane is laid out again beside the docked file, and a scroll
+    // that no reader's input made is the layout's to it: it goes back to its end, and the link with
+    // it. A press aimed at where the link was scrolled to then lands on another row, or outside the
+    // window, where it selects no pane. Jump to latest says the chat follows its end no more: from
+    // then on the link stays where it is scrolled to.
     const inView = async ({ chatFrame }: Opened, link: Locator) => {
       const away = chatFrame.locator(".chat-virtual-jump");
       const deadline = Date.now() + 10_000;
