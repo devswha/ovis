@@ -7,8 +7,9 @@ import { accountLabel, accountOsOf, type AccountAsker, type AccountOs } from "..
 import type { AccountLimits } from "../../../shared/protocol.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
-import { newRecordId, type AccountRecord } from "../../../shared/account-records.ts";
+import { newRecordId, registerSigningBytes, type AccountRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
+import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
 import type { AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock } from "./store.ts";
@@ -362,6 +363,28 @@ export class AccountService {
         : { country: null, city: null };
       return [{ key: entry.key, label, server_id: entry.server_id, at: entry.at, os: accountOsOf(entry.os), ...place }];
     });
+  }
+
+  /**
+   * Registers `key` for this sign-in (device table T34, P18) by signing the service's single-use challenge, and
+   * answers its place in the account's order. Null when the service has no such route (release off, or older):
+   * the QR or digits path stays (G5). A sign-in registers one key; another key for it is refused (T40).
+   */
+  async registerDeviceKey(key: { readonly private_key: CryptoKey; readonly public_spki: string }): Promise<{ no: number; key: string } | null> {
+    let issued: unknown;
+    try { issued = await this.call("POST", "/v1/devices/challenge", {}); }
+    catch (error) {
+      if (error instanceof AccountServiceError && error.status === 404) return null;
+      throw error;
+    }
+    const session = await this.session();
+    if (session === undefined) return this.signedOut();
+    if (!isRecord(issued) || typeof issued.challenge_id !== "string" || typeof issued.challenge !== "string") throw new AccountServiceError(502, "invalid_answer", "The account service sent no challenge");
+    const bytes = registerSigningBytes(session.account, key.public_spki, issued.challenge_id, issued.challenge);
+    const signature = toBase64Url(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key.private_key, bytes)));
+    const body = await this.call("POST", "/v1/devices", { challenge_id: issued.challenge_id, key: key.public_spki, signature });
+    if (!isRecord(body) || !Number.isSafeInteger(body.no) || body.key !== key.public_spki) throw new AccountServiceError(502, "invalid_answer", "The account service answered for another key");
+    return { no: body.no as number, key: key.public_spki };
   }
 
   async limits(): Promise<AccountLimits | null> {
