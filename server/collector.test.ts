@@ -49,6 +49,7 @@ describe("parseStructureFrame", () => {
     expect(parseStructureFrame(createdFrame("w2:p1", "unknown"))).toEqual({ kind: "structure-changed", created: { paneId: "w2:p1", status: "unknown" } });
     expect(parseStructureFrame({ event: "pane.created", data: { type: "pane_created", pane_id: "t4" } })).toEqual({ kind: "structure-changed" });
     expect(parseStructureFrame({ data: { type: "pane_created" } })).toEqual({ kind: "structure-changed" });
+    for (const type of ["tab_closed", "workspace_closed", "worktree_removed"]) expect(parseStructureFrame({ data: { type, workspace_id: "w2" } })).toEqual({ kind: "structure-changed", scopedClose: true });
     expect(parseStructureFrame({ data: { type: "pane_closed", pane_id: "w1:p1" } })).toEqual({ kind: "structure-changed", closed: "w1:p1" });
     expect(parseStructureFrame({ data: { type: "pane_closed" } })).toEqual({ kind: "structure-changed" });
   });
@@ -277,7 +278,7 @@ describe("lifecycle invalidations", () => {
   ];
 
   it.each(types)("refreshes for %s", (type) => {
-    expect(parseStructureFrame({ event: type, data: { type } })).toEqual({ kind: "structure-changed" });
+    expect(parseStructureFrame({ event: type, data: { type } })).toMatchObject({ kind: "structure-changed" });
   });
 
   it("coalesces a lifecycle burst into one push and authoritative reconciliation", async () => {
@@ -641,6 +642,22 @@ describe("a pane created while the collector listens", () => {
     collector.refresh();
     await elapse(20);
     expect(log.created).toEqual(["w2:p1:unknown"]);
+    collector.stop();
+  });
+
+  it("tells none from a snapshot asked for before a workspace or tab closed, nor from a later one: the close's own snapshot may come after the alert's wait", async () => {
+    const { herdr, log, collector } = await listening();
+    herdr.lifecycle().emit(createdFrame("w2:p1", "unknown"));
+    herdr.hold();
+    await elapse(20);
+    herdr.lifecycle().emit({ event: "tab_closed", data: { type: "tab_closed", tab_id: "w3:t1", workspace_id: "w3" } });
+    herdr.setPanes([paneOf("w1:p1", "idle"), paneOf("w2:p1", "blocked")]);
+    herdr.answerAll();
+    await elapse(20);
+    herdr.answerAll();
+    await elapse(20);
+    expect(log.baselines).toBeGreaterThan(2);
+    expect(log.created).toEqual([]);
     collector.stop();
   });
 

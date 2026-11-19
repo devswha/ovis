@@ -661,7 +661,7 @@ describe("alert timing and each device's choice", () => {
     } finally { timers.restore(); }
   });
 
-  it("calls off a new pane's first question once a snapshot no longer lists it (its tab closed while the first was read)", async () => {
+  it("calls off a new pane's first question once a snapshot no longer lists it", async () => {
     const timers = holdAlertTimers();
     try {
       const { push } = timed();
