@@ -144,13 +144,29 @@ export class LayoutWrites {
     }
     let address: string;
     try {
-      address = (await this.store.createWorkspace(this.firstShell())).root_pane.pane_id;
+      address = await this.createFirst();
     } catch (error) {
       await write(false, claimed);
       throw error;
     }
     await write(false, claimed);
     this.follow(address, null);
+  }
+
+  /**
+   * Creates the first workspace (`firstShell`). A folder the core refuses (removed, or not usable: hc answers
+   * `spawn_failed`) gives way to the core's own folder, named `~` as herdr's, once and under the same claim, with a calm
+   * notice naming the folder; a line that ended or timed out may have made it, so nothing is tried again then.
+   */
+  private async createFirst(): Promise<string> {
+    const shell = this.firstShell();
+    try {
+      return (await this.store.createWorkspace(shell)).root_pane.pane_id;
+    } catch (error) {
+      if (shell.cwd === undefined || unknownWrite(error)) throw error;
+      this.notice("first_folder_unusable", { folder: shell.cwd }, true);
+      return (await this.store.createWorkspace({ name: HOME_NAME })).root_pane.pane_id;
+    }
   }
 
   /** The first workspace's shell: the screen's folder, and herdr's name for the home there (a new workspace's otherwise). */

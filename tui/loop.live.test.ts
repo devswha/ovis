@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
-import { constants } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { coreFolder, IsolatedCore, type StopReport, stoppedCleanly } from "../scripts/test-hc.ts";
 import { HcConnection } from "../server/herdr-core/connection.ts";
@@ -110,6 +110,54 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     expect((await again.ended).code).toBe(0);
     expect(readFileSync(ran, "utf8")).toBe("typed-42\n");
     expect((await hc.call("terminal.get", { terminal: address })).state).toBe("live");
+  }, TEST_MS);
+
+  it("a folder the core cannot use: two screens open one first workspace between them in the core's own folder, ~, each saying which folder failed", async () => {
+    const { core: isolated, hc, root } = await core();
+    const gone = join(root, "gone");
+    for (const name of ["a", "b"]) mkdirSync(join(root, name));
+    const both = ["a", "b"].map((name) => screen(isolated, join(root, name), gone));
+    await Promise.all(both.map((run, at) => run.until(/\x1b\[\?1049h[\s\S]*\x1b\[\?25h/, `screen ${at + 1}'s live first pane`)));
+    const { terminals } = await hc.call("terminal.list", {});
+    expect(terminals.map((terminal) => [terminal.cwd === gone, terminal.labels?.[WORKSPACE_NAME_LABEL]])).toEqual([[false, "~"]]);
+    // the screen whose create was refused says so, calmly; the other found the claim taken and made nothing
+    expect(both.filter((run) => run.output().includes("first_folder_unusable")).length).toBe(1);
+    for (const run of both) {
+      run.type(DETACH);
+      expect((await run.ended).code).toBe(0);
+    }
+  }, TEST_MS);
+
+  it("on a new line to a core emptied meanwhile, a folder removed since gives the first workspace to the core's own folder, ~", async () => {
+    const { core: isolated, hc } = await core();
+    // outside the core's folder, which its stop removes
+    const outside = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "screen-"));
+    const project = join(outside, "project");
+    mkdirSync(project);
+    const run = screen(isolated, outside, project);
+    await run.until(/\x1b\[\?1049h[\s\S]*\x1b\[\?25h/, "the live first pane in the project");
+    const [made] = (await hc.call("terminal.list", {})).terminals;
+    expect(made?.cwd).toBe(project);
+    await hc.call("terminal.kill", { terminal: made!.address });
+    await hc.call("terminal.rm", { terminal: made!.address });
+    expect(stoppedCleanly(await isolated.stop())).toBe(true);
+    await run.until("herdr-core is not answering", "the offline banner");
+    rmSync(project, { recursive: true });
+    for (const sub of ["home", "state", "config", "run"]) mkdirSync(join(isolated.root, sub), { recursive: true, mode: 0o700 });
+    const again = new IsolatedCore(bin!, { root: isolated.root, env: isolated.env });
+    cores.push(again);
+    const from = run.output().length;
+    await again.start();
+    await run.until(new RegExp(`^[\\s\\S]{${from}}[\\s\\S]*first_folder_unusable`), "the notice on the new line");
+    const transport = await connectCoreSocket(again.socket);
+    const line = new HcConnection(() => transport);
+    lines.push(line);
+    for (let tries = 0; tries < 50 && (await line.call("terminal.list", {})).terminals.length === 0; tries++) await run.until(new RegExp(`^[\\s\\S]{${run.output().length + 1}}`), "more output");
+    const { terminals } = await line.call("terminal.list", {});
+    expect(terminals.map((terminal) => [terminal.cwd === project, terminal.labels?.[WORKSPACE_NAME_LABEL]])).toEqual([[false, "~"]]);
+    run.type(DETACH);
+    expect((await run.ended).code).toBe(0);
+    rmSync(outside, { recursive: true, force: true });
   }, TEST_MS);
 
   it("two screens started together on an empty core open one first workspace between them", async () => {

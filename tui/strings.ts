@@ -230,6 +230,8 @@ export const STRINGS = {
         return "nothing_waiting: no agent needs you";
       case "view_moved":
         return "view_moved: the place this core was left at is gone; showing the nearest one";
+      case "first_folder_unusable":
+        return `first_folder_unusable: ${data["folder"] ?? "the folder"} could not be used; the first workspace opened in the home`;
       case "view_unread":
         return `view_unread: the view kept for this core could not be read (${data["reason"] ?? "unknown"})`;
       case "view_unsaved":

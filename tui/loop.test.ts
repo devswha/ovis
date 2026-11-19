@@ -1010,6 +1010,47 @@ describe("the screen's own layout, as herdr's", () => {
     }
   }, TEST_MS);
 
+  it("a folder the core refuses gives the first workspace to the core's own folder, named ~, once, with a calm notice naming it", async () => {
+    const core = new FakeHcCore();
+    core.refuseFolder("/work/gone");
+    const run = await start({ core, cwd: "/work/gone", home: "/home/user" });
+    await run.advance(250);
+    const made = core.calls().filter((call) => call.method === "terminal.run").map((call) => [call.params["cwd"], (call.params["labels"] as Record<string, string>)[WORKSPACE_NAME_LABEL]]);
+    expect(made).toEqual([["/work/gone", undefined], [undefined, "~"]]);
+    expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["~"]);
+    expect(run.loop.model().notices.map(({ code, data, calm }) => [code, data, calm])).toEqual([["first_folder_unusable", { folder: "/work/gone" }, true]]);
+    const claims = core.calls().filter((call) => call.method === "doc.set").map((call) => Object.keys((call.params["value"] ?? {}) as object).includes("first_workspace"));
+    expect([claims.includes(true), claims.at(-1)]).toEqual([true, false]);
+  }, TEST_MS);
+
+  it("on a new line to a core emptied meanwhile, a folder removed since gives way to the core's own folder the same way", async () => {
+    const core = new FakeHcCore();
+    const run = await start({ core, cwd: "/work/p", home: "/home/user" });
+    await run.advance(250);
+    expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["p"]);
+    core.remove("t1");
+    core.refuseFolder("/work/p");
+    core.restart();
+    for (let turn = 0; turn < 20 && run.loop.model().world.workspaces.map((workspace) => workspace.name).join() !== "~"; turn++) await run.advance(250);
+    const made = core.calls().filter((call) => call.method === "terminal.run").map((call) => [call.params["cwd"], (call.params["labels"] as Record<string, string>)[WORKSPACE_NAME_LABEL]]);
+    expect(made).toEqual([["/work/p", undefined], ["/work/p", undefined], [undefined, "~"]]);
+    expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["~"]);
+    expect(run.loop.model().notices.map(({ code, data }) => [code, data])).toContainEqual(["first_folder_unusable", { folder: "/work/p" }]);
+  }, TEST_MS);
+
+  it("two screens from a folder the core refuses still open one first workspace between them", async () => {
+    const core = new FakeHcCore();
+    core.refuseFolder("/work/gone");
+    const [a, b] = await Promise.all([start({ core, cwd: "/work/gone" }), start({ core, cwd: "/work/gone" })]);
+    for (let turn = 0; turn < 10; turn++) {
+      await a.advance(50);
+      await b.advance(50);
+    }
+    const made = core.calls().filter((call) => call.method === "terminal.run").map((call) => call.params["cwd"]);
+    expect(made).toEqual(["/work/gone", undefined]);
+    for (const run of [a, b]) expect(run.loop.model().world.workspaces.map((workspace) => workspace.name)).toEqual(["~"]);
+  }, TEST_MS);
+
   it("two screens that find the core empty at once open one first workspace between them: the layout document's claim decides which", async () => {
     const core = new FakeHcCore();
     const [a, b] = await Promise.all([start({ core, cwd: "/work/a" }), start({ core, cwd: "/work/b" })]);
