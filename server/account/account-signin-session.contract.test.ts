@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DeviceJournal } from "./device-journal.ts";
+import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
+import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { applyAccountRecords } from "./records.ts";
@@ -44,6 +46,29 @@ async function refusal(pc: Awaited<ReturnType<typeof listedPc>>, features: reado
 }
 
 describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
+  test("P8, T41: startup finishes an interrupted account revoke from its durable deny", async () => {
+    const { fixture, device, member } = await listedPc();
+    const { devices } = fixture.app.context.services;
+    const append = DeviceJournal.prototype.append;
+    const failure = spyOn(DeviceJournal.prototype, "append").mockImplementation(function (this: DeviceJournal, entry) {
+      if (entry.kind === "drop" && entry.how === "revoke") throw new Error("journal unavailable");
+      return append.call(this, entry);
+    });
+    try { expect(() => devices.revoke(device.id)).toThrow("journal unavailable"); } finally { failure.mockRestore(); }
+    const knownAfterFailure = devices.has(device.id);
+    expect(devices.isTombstoned(device.publicKey)).toBe(true);
+    fixture.app.stop();
+    const recovered = relayFixture(false, { stateDir: fixture.stateDir, accountOpensAll: true, accountService: { url: "off" } });
+    try {
+      const rows = parseAccountDevicesFile(JSON.parse(readFileSync(join(fixture.stateDir, ACCOUNT_DEVICES_FILE), "utf8"))).devices;
+      const restarted = recovered.app.context.services.devices;
+      expect({ knownAfterFailure, persisted: rows.map(row => row.id), knownAfterRestart: restarted.has(device.id) })
+        .toEqual({ knownAfterFailure: false, persisted: [], knownAfterRestart: false });
+      expect(restarted.isTombstoned(device.publicKey)).toBe(true);
+      expect(restarted.has(member.id)).toBe(true);
+    } finally { recovered.app.stop(); }
+  });
+
   test("T20, P8: revoke-all intent and all session closes survive a failed account drop journal", async () => {
     const { fixture, device, member } = await listedPc();
     const { devices } = fixture.app.context.services;
