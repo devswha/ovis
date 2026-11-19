@@ -21,7 +21,7 @@ export function RelayStepFrame({ step, back, note, children }: {
       <div className="relay-step-top">
         {back && <button type="button" className="relay-step-back" aria-label={back.label} onClick={back.onClick}><ChevronLeft aria-hidden="true" /></button>}
       </div>
-      {step !== null && <div className="relay-step-progress" role="progressbar" aria-valuemin={1} aria-valuemax={3} aria-valuenow={step} aria-valuetext={t("Step {n} of {total}", { n: String(step), total: "3" })} data-step={step}><span /></div>}
+      {step !== null && <div className="relay-step-progress" role="progressbar" aria-label={t("Pair")} aria-valuemin={1} aria-valuemax={3} aria-valuenow={step} aria-valuetext={t("Step {n} of {total}", { n: String(step), total: "3" })} data-step={step}><span /></div>}
       {children}
     </div>
   );

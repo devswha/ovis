@@ -396,6 +396,8 @@ describe("the dashboard", () => {
         const said = "Approved. Desk opens in a moment.";
         expect(renderer!.root.findAll((node) => node.type === "p" && node.props.className === "relay-shell-copy").map(textOf)).toEqual([said]);
         expect(textOf(renderer!.root.find((node) => node.props.role === "status" && node.props.className === "visually-hidden"))).toBe(said);
+        const bar = renderer!.root.find((node) => node.props.role === "progressbar");
+        expect([bar.props["aria-label"], bar.props["aria-valuetext"]]).toEqual(["Pair", "Step 3 of 3"]);
       });
 
       it("offers no Back once the PC is ready or the pairing failed, and draws the failure without a step", async () => {
