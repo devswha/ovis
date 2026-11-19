@@ -440,7 +440,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       heard.delete(paneId);
     }
     for (const pane of named.panes) {
-      if ((agentRead.get(pane.pane_id) ?? 0) > read) continue;
+      if ((agentRead.get(pane.pane_id) ?? 0) > read) {
+        // a newer status told its agent, but the session this read names is still the one a later read is told against
+        if (pane.agent_session) agentSession.set(pane.pane_id, pane.agent_session);
+        continue;
+      }
       if (changedHands({ agent: agentNow.get(pane.pane_id), agent_session: agentSession.get(pane.pane_id) }, pane)) handsChanged(pane.pane_id);
       if (pane.agent_session) agentSession.set(pane.pane_id, pane.agent_session);
       else if ((pane.agent ?? null) !== (agentNow.get(pane.pane_id) ?? null)) agentSession.delete(pane.pane_id);
@@ -686,8 +690,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       .catch(() => undefined).finally(() => { cardReading = null; });
     return cardReading;
   }
-  // an answer from a card the agent waits on is its wait's, the one the pane is in as the answer matched that card: once it
-  // was delivered the pane is read, and where that wait is still on, its first read without a card ends it
+  // an answer from a card is its wait's, the one the pane is in as the answer begins: once it was delivered to a card the
+  // agent waits on the pane is read, and where that wait is still on, its first read without a card ends it
   const stopAnswered = onPromptAnswering((paneId) => {
     const wait = cards.generation(paneId);
     return (delivered) => {
