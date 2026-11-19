@@ -273,7 +273,7 @@ describe("regular expressions", () => {
 describe("opening outside the app", () => {
   // src/lib/externalLink.ts is the one way out: the place that will decide which browser a link opens in
   const OWNER = "src/lib/externalLink.ts";
-  const RAW = /["'\x60]_blank["'\x60]|\bwindow\.open\(/g;
+  const RAW = /["'\x60]_blank["'\x60]|\bwindow\s*\.\s*open\s*(?:\?\.\s*)?\(/gi;
 
   it("goes through src/lib/externalLink.ts, never a raw new tab or window.open", () => {
     const offenders = scan("src/**/*.{ts,tsx}").filter((name) => name !== OWNER && !/\.test\./.test(name)).flatMap((file) => {
@@ -289,6 +289,8 @@ describe("opening outside the app", () => {
     expect(found('link.target = "_blank";')).toBe(1);
     expect(found('const tab = window.open("about:blank", "_blank");')).toBe(2);
     expect(found('// opens a tab (`target="_blank"`) with window.open(')).toBe(0);
+    expect(found('<a target="_BLANK" href={url}>')).toBe(1);
+    expect(found("window.open (url); window.open?.(url);")).toBe(2);
     expect(found("const blank = isBlank(window.opener);")).toBe(0);
   });
 });

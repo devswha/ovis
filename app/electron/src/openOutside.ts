@@ -10,5 +10,7 @@ export function opensOutside(url: string): boolean {
 }
 
 export function openOutside(url: string): void {
-  if (opensOutside(url)) void shell.openExternal(url);
+  try {
+    if (opensOutside(url)) void shell.openExternal(url);
+  } catch {}
 }
