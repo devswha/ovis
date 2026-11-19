@@ -3,6 +3,5 @@
   to go when the network went (the first keys for a new terminal, or for a pane coming back from
   idle) stay on screen as held input until you send or discard them. They are never sent by
   themselves when the network comes back, on the same connection or a new one, and no key queued
-  behind them, Enter included, goes ahead of them. Text from an input method, dictation or a paste
-  that may have started before the network went is held the same way. A server on the same device
+  behind them, Enter included, goes ahead of them. A server on the same device
   still takes typing while offline.

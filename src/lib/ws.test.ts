@@ -1,6 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, it, jest } from "bun:test";
 import { backoffDelay, HerdrSocket, markTyped } from "./ws.ts";
-import { inputMarks, type KeyStroke } from "./inputMarks.ts";
 import { sendInOrder } from "./sendInOrder.ts";
 import { nativeTransport, setTransport, type WebSocketLike } from "./transport.ts";
 import type { ClientConnectionTrace, PendingMessage } from "../../shared/protocol.ts";
@@ -2033,45 +2032,6 @@ it("holds keys caught for a new terminal when the network went and came back bef
     expect(submissions(socket)).toEqual([]);
     // a catch begun with the link up takes its keys at once
     expect(client.sendInput("w1:p1", "echo demo", false, false, false, markTyped())).toBe(true);
-  } finally {
-    client.close();
-    network.restore();
-    jest.useRealTimers();
-  }
-});
-
-const stroke = (key: string, keyCode = 0): KeyStroke => ({ key, keyCode, isComposing: false, ctrlKey: false, altKey: false, metaKey: false });
-
-it("holds text the field took offline without a key stroke of its own, though it comes out after the link is back", () => {
-  jest.useFakeTimers();
-  const network = networkSwitch();
-  const { client, socket } = liveClient(["submit", "ping"]);
-  // useTerminalMount's marks over xterm's field: a dictation replaced into it, no compositionstart, no key of its own
-  const field = { value: "" };
-  const marks = inputMarks(() => field.value === "");
-  try {
-    outage(client, socket, network, () => { field.value = "dictation"; });
-    // the keyboard's Enter, after the recovery pong: xterm lets the field's text out first, inside the Enter's stroke
-    marks.keyDown(stroke("Enter"));
-    const dictation = marks.take("dictation", false);
-    field.value = "";
-    expect(client.sendInput("w1:p1", "dictation", false, false, false, dictation)).toBe(false);
-    marks.keyEnd();
-    // a key reported as 229 whose edit xterm lets out later, offline then after recovery: held the same way
-    outage(client, socket, network, () => { marks.keyDown(stroke("Unidentified", 229)); field.value = "é"; });
-    const accented = marks.take("é", false);
-    field.value = "";
-    marks.keyEnd();
-    expect(client.sendInput("w1:p1", "é", false, false, false, accented)).toBe(false);
-    // with the field empty since the link came back, a plain key and an input method's commit go at once
-    marks.keyDown(stroke("a"));
-    expect(client.sendInput("w1:p1", "a", false, false, false, marks.take("a", false))).toBe(true);
-    marks.keyEnd();
-    field.value = "한";
-    const composed = marks.take("한", false);
-    field.value = "";
-    expect(client.sendInput("w1:p1", "한", false, false, false, composed)).toBe(true);
-    expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "a" }, { type: "input", pane_id: "w1:p1", text: "한" }]);
   } finally {
     client.close();
     network.restore();

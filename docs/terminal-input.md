@@ -60,12 +60,12 @@ sent by themselves. It knows when the terminal's connection has ended, or when t
 its network gone (on any path but a server on this device), until the connection answers again
 with the network back (`HerdrSocket.takesKey` in `src/lib/ws.ts`). A key typed then, or queued
 before then and not yet sent (an idle pane's attach, a new terminal's first keys), stays in the
-draft; keys queued behind a held one stay with it, Enter included. Text that does not come from a
-plain key stroke (an input method's commit or replacement, dictation, a key reported as 229, a
-paste) counts as typed when the terminal's field was last seen empty (`src/lib/inputMarks.ts`), so
-after the link was lost, the first such text goes to the draft even when it comes out after the
-connection answered. A file's path counts as typed at the pick, drop or paste that started its
-upload. A connection that stalls while the browser still reports a network and the
+draft; keys queued behind a held one stay with it, Enter included. A file's path counts as typed at
+the pick, drop or paste that started its upload. Known limit: text an input method, dictation or a
+paste lets out of the terminal's field (a composition's commit, a replacement, a key reported as
+229) counts as typed when it comes out, so text begun while the link was down and let out after the
+connection answered is sent as usual. Keys the terminal takes as they are typed, Enter included,
+are always held. A connection that stalls while the browser still reports a network and the
 socket stays open is known to be down only when its liveness probe goes unanswered (after 20 s of
 silence, two pings 3 s apart): keys typed before that are sent as usual, and reach the pane if the
 same connection recovers.

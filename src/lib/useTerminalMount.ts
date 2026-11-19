@@ -3,7 +3,6 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { HerdrSocket, markTyped } from "./ws.ts";
-import { inputMarks } from "./inputMarks.ts";
 import { sendInOrder } from "./sendInOrder.ts";
 import { MachineSession, type MachineSessionRegistry } from "./machineSession.ts";
 import { disposeAfterPendingFrame } from "./terminalDispose.ts";
@@ -1615,15 +1614,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const onTyped = (): void => cancelTouchRef.current();
       host.addEventListener("keydown", onTyped, true);
       host.addEventListener("input", onTyped, true);
-      // what a plain key stroke types counts as typed now; any other text as typed when the field was last empty,
-      // so text entered across an outage is held even when it comes out after (lib/inputMarks.ts)
-      const marks = inputMarks(() => (term.textarea?.value ?? "") === "");
-      const onStroke = (event: KeyboardEvent): void => marks.keyDown(event);
-      const onStrokeEnd = (): void => marks.keyEnd();
-      const onFieldTakes = (): void => marks.observe();
-      host.addEventListener("keydown", onStroke, true);
-      for (const type of ["keyup", "input", "compositionstart"]) host.addEventListener(type, onStrokeEnd, true);
-      for (const type of ["beforeinput", "compositionstart", "paste"]) host.addEventListener(type, onFieldTakes, true);
       host.addEventListener("paste", onTyped, true);
       // File paths and dropped text use xterm's programmatic paste without a DOM paste event. `typedAt`: the mark
       // (markTyped) of the pick, drop or paste it came from, so a path whose upload ends after an outage is held
@@ -1771,8 +1761,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const arrow = chord === null && !pasting && !composingRef.current && !compositionCommitPendingRef.current && key?.startsWith("Arrow")
           ? terminalChord(key, NO_STICKY_MODIFIERS) : null;
         const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey && input === "\u001b", secret,
-          // a key-bar key, the composer's Stop and xterm's own replies are not text that could wait in the field
-          typedAt: pasteMark ?? (automatic || barKey !== null || stopKey ? markTyped() : marks.take(input, pasting)),
+          typedAt: pasteMark ?? markTyped(),
           ...(arrow !== null ? { arrowModeEpoch: arrowModeWitness === arrowModeEpoch ? arrowModeEpoch : null } : {}), ...(automatic ? { automatic } : {}) };
         adoptTypeAhead(current);
         // typed into a tab taking its pane back from idleness: it waits for the new attach (never a password)
@@ -2563,9 +2552,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         host.removeEventListener("paste", onPaste, true);
         host.removeEventListener("keydown", onTyped, true);
         host.removeEventListener("input", onTyped, true);
-        host.removeEventListener("keydown", onStroke, true);
-        for (const type of ["keyup", "input", "compositionstart"]) host.removeEventListener(type, onStrokeEnd, true);
-        for (const type of ["beforeinput", "compositionstart", "paste"]) host.removeEventListener(type, onFieldTakes, true);
         host.removeEventListener("paste", onTyped, true);
         host.removeEventListener("paste", onFilePaste, { capture: true });
         host.removeEventListener("dragover", onDragOver);

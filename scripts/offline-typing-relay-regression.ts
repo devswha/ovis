@@ -4,9 +4,12 @@
  * only through a Bun relay (relay/bun.ts). The network goes as a phone's does: the browser says offline
  * (Playwright's setOffline) while the relay socket stays open and holds every frame both ways, then delivers
  * them in order once the network is back, as TCP does after a short outage. What was typed meanwhile stays a
- * held draft through the recovery: at 390 px the same connection recovers and the draft is discarded; at 1440 px
- * the outage lasts until the connection is dropped, a new one attaches, and the draft is sent. The pane sees it only after
- * Send. Run after `bun run build:shell`; UI_EVIDENCE_DIR=<dir> keeps the screenshots and the report.
+ * held draft through the recovery: at 390 px once over the same connection, where it is discarded, and once
+ * over a new one after the old was dropped, where it is sent; at 1440 px over a new one, where it is sent. The pane
+ * sees it only after Send. Then the link goes and comes back once more over a half-typed line (which xterm keeps
+ * in its field), with nothing typed meanwhile: Korean typed after that goes to the pane at once, at 390 px as Gboard
+ * types it (every key a 229 key event and a composition), at 1440 px as a desktop input method composes it. Run after `bun run build:shell`; UI_EVIDENCE_DIR=<dir> keeps the
+ * screenshots and the report.
  */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
@@ -89,11 +92,15 @@ async function frames(page: Page, check: () => Promise<boolean>, limitMs: number
   return true;
 }
 
+/** Korean syllables as an input method builds them: the jamo steps of each, the last one committed. */
+const HANGUL = [["ㅎ", "하", "한"], ["ㄱ", "그", "글"]] as const;
+
 /**
- * One device width; `act` is what the person does with the held input once the network is back, and `replaced`
- * keeps the network down until the socket is dropped, so the terminal comes back on a new one.
+ * One device width; `act` is what the person does with the held input once the network is back, `replaced` keeps
+ * the network down until the socket is dropped, so the terminal comes back on a new one, and `ime` is how Korean is
+ * typed after the recovery.
  */
-async function width(px: number, pane: string, act: "Send" | "Discard", replaced: boolean): Promise<string[]> {
+async function width(px: number, pane: string, act: "Send" | "Discard", replaced: boolean, ime: "gboard" | "desktop"): Promise<string[]> {
   assert.ok(browser);
   const phone = px < 769;
   const context = await browser.newContext({ viewport: { width: px, height: phone ? 844 : 900 }, deviceScaleFactor: 1, isMobile: phone, hasTouch: phone, colorScheme: "dark", locale: "en-US" });
@@ -193,8 +200,49 @@ async function width(px: number, pane: string, act: "Send" | "Discard", replaced
       if (!(await frames(page, line(`after-${id}`), 20_000))) faults.push(`${px}: the command typed after Discard did not run on its own`);
       if ((await paneRead({ paneId: pane })).text.includes(marker)) faults.push(`${px}: the discarded "${marker}" reached the pane`);
     }
+
+    // Korean typed after a recovery, on a line half-typed before the link went: xterm keeps that line in its field,
+    // and nothing is typed while the link is down, so the Korean goes to the pane at once
+    const paneShows = (pattern: RegExp) => async (): Promise<boolean> => pattern.test((await paneRead({ paneId: pane })).text);
+    await typeHere("echo ");
+    if (!(await frames(page, paneShows(/echo\s*$/m), 20_000))) faults.push(`${px}: the half-typed "echo " never reached the pane`);
+    const again = { ...sockets };
+    network.down = true;
+    await context.setOffline(true);
+    if (replaced) {
+      if (!(await frames(page, async () => await reconnecting.count() > 0, 30_000))) faults.push(`${px}: the connection was never dropped the second time`);
+    } else await shown.clock.runFor(500);
+    await context.setOffline(false);
+    network.down = false;
+    for (const deliver of network.waiting.splice(0)) deliver();
+    const backAgain = async (): Promise<boolean> => (!replaced || (sockets.closed > again.closed && sockets.opened > again.opened)) && await live();
+    if (!(await frames(page, backAgain, 20_000))) faults.push(`${px}: the terminal never took input again after the second outage`);
+    const cdp = await context.newCDPSession(shown);
+    const key229 = async (type: "rawKeyDown" | "keyUp"): Promise<void> => {
+      if (ime === "gboard") await cdp.send("Input.dispatchKeyEvent", { type, key: "Unidentified", code: "", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
+    };
+    const insert = async (text: string): Promise<void> => {
+      await key229("rawKeyDown");
+      await cdp.send("Input.insertText", { text });
+      await key229("keyUp");
+      await shown.clock.runFor(16);
+    };
+    for (const steps of HANGUL) {
+      for (const step of steps) {
+        await key229("rawKeyDown");
+        await cdp.send("Input.imeSetComposition", { text: step, selectionStart: step.length, selectionEnd: step.length });
+        await key229("keyUp");
+      }
+      await insert(steps[steps.length - 1]!);
+    }
+    for (const char of `-${id}`) await insert(char);
+    await shown.keyboard.press("Enter");
+    if (!(await frames(page, paneShows(new RegExp(`^한글-${id}\\s*$`, "m")), 20_000))) {
+      faults.push(`${px}: Korean typed after the recovery (${ime}) on a half-typed line did not run at once`);
+    }
+    await cdp.detach();
     await shot("after");
-    note(`${px}: online "on-${id}" reached the pane; offline "${marker}" ${said ? "held on screen" : "NOT held"}; back on ${replaced ? "a new" : "the same"} connection; ${act} ${faults.length === 0 ? "did what it says" : "FAILED"}`);
+    note(`${px}: online "on-${id}" reached the pane; offline "${marker}" ${said ? "held on screen" : "NOT held"}; back on ${replaced ? "a new" : "the same"} connection; ${act} and Korean (${ime}) ${faults.length === 0 ? "did what they say" : `FAILED: ${faults.join("; ")}`}`);
   } catch (error) {
     if (evidence) await page?.screenshot({ path: join(evidence, `offline-typing-failure-${px}.png`) }).catch(() => undefined);
     throw error;
@@ -214,12 +262,13 @@ try {
   workspaceId = created.workspace.workspace_id;
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   const faults = [
-    ...await width(390, created.root_pane.pane_id, "Discard", false),
-    ...await width(1440, created.root_pane.pane_id, "Send", true),
+    ...await width(390, created.root_pane.pane_id, "Discard", false, "gboard"),
+    ...await width(390, created.root_pane.pane_id, "Send", true, "gboard"),
+    ...await width(1440, created.root_pane.pane_id, "Send", true, "desktop"),
   ];
   if (evidence) writeFileSync(join(evidence, "offline-typing-report.txt"), `${[...report, ...faults].join("\n")}\n`);
   assert.deepEqual(faults, [], "nothing typed while the network was gone is sent until the person sends it");
-  console.log("PASS keys typed while offline are held through a recovery on the same socket and on a new one, and reach the pane only on Send");
+  console.log("PASS keys typed while offline are held through a recovery on the same socket and on a new one, and reach the pane only on Send; Korean typed after the recovery goes at once");
 } finally {
   await browser?.close();
   site.stop(true);
