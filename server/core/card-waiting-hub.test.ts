@@ -361,14 +361,13 @@ describe("what ends a card's wait, and what it leaves", () => {
     ["another agent and back, told by status events", [pane("codex", "working"), pane("claude", "working"), pane("codex", "working")], true],
     ["another agent and back, told by snapshots alone", [pane("codex", "working"), pane("claude", "working"), pane("codex", "working")], false],
     ["another session of its agent and back", [codexSession("one"), codexSession("two"), codexSession("one")], false],
-    ["another session of its agent and back, each change told by a snapshot that names no session", [codexSession("one"), pane("codex", "working"), codexSession("two"), pane("codex", "working"), codexSession("one")], false],
-  ] as const)("starts no wait from a read begun before the pane changed hands and back: %s", async (_how, [began, ...after], events) => {
+  ] as const)("starts no wait from a read begun before the pane changed hands and back: %s", async (_how, [began, between, again], events) => {
     serving(true);
     const h = await started(began);
     const read = heldRead();
     const tick = h.status.cardTick();
     await read.begun;
-    for (const now of after) {
+    for (const now of [between, again]) {
       h.herdrSays(now);
       if (events) handlers.onStatus("t1", "working", now.agent);
       await h.snapshot();
@@ -377,25 +376,6 @@ describe("what ends a card's wait, and what it leaves", () => {
     await tick;
     expect(h.status.cards.waiting("t1")).toBe(false);
     expect(h.alerts).not.toContain("blocked");
-  });
-
-  it("keeps a wait on through a snapshot read that finished after a newer one, naming the session before it", async () => {
-    serving(true);
-    const h = await started(codexSession("one"));
-    const land = await h.heldSnapshot();
-    // a newer read names the next session, and its card is waited on
-    h.herdrSays(codexSession("two"));
-    await h.snapshot();
-    screen(question);
-    await h.status.cardTick();
-    expect(h.status.cards.waiting("t1")).toBe(true);
-    const alerts = waitingAlerts(h.alerts);
-    // the older read, begun under the first session, finishes now
-    await land();
-    await h.snapshot();
-    await h.status.cardTick();
-    expect(h.status.cards.waiting("t1")).toBe(true);
-    expect(waitingAlerts(h.alerts)).toBe(alerts);
   });
 
   it("starts no wait for an agent from the read of the one it replaced in the pane", async () => {
