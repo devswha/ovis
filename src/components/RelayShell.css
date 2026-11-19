@@ -112,8 +112,7 @@
 }
 
 /* every way in weighs the same: one height, one radius, the card colour and a hairline; the mark at the start edge */
-.relay-shell-plain .account-provider,
-.relay-shell-plain .relay-shell-actions .btn-primary {
+.relay-shell-plain .account-provider {
   height: calc(var(--touch-target) + var(--space-1));
   min-height: calc(var(--touch-target) + var(--space-1));
   background: var(--bg-panel);
@@ -124,8 +123,7 @@
 }
 
 @media (hover: hover) {
-  .relay-shell-plain .account-provider:hover:not(:disabled),
-  .relay-shell-plain .relay-shell-actions .btn-primary:hover:not(:disabled) {
+  .relay-shell-plain .account-provider:hover:not(:disabled) {
     background: var(--bg-hover);
     border-color: var(--border-strong);
     color: var(--text-strong);
@@ -162,53 +160,9 @@
   border-color: transparent;
 }
 
-.relay-shell-confirm-rows {
-  display: grid;
-  grid-template-columns: auto auto;
-  justify-content: center;
-  gap: var(--space-2) var(--space-4);
-  margin: var(--space-5) 0 0;
-  font-size: var(--fs-md);
-  text-align: start;
-}
-
-.relay-shell-confirm-rows dt {
-  color: var(--text-dim);
-}
-
-.relay-shell-confirm-rows dd {
-  margin: 0;
-  color: var(--text-strong);
-  font-weight: var(--fw-medium);
-  overflow-wrap: anywhere;
-}
-
-.relay-shell-key-details > .relay-shell-copy {
+.relay-shell-copy {
   margin-top: var(--space-2);
   font-size: var(--fs-sm);
-}
-
-.relay-shell-key-details {
-  margin-top: var(--space-4);
-  font-size: var(--fs-sm);
-  color: var(--text-dim);
-}
-
-.relay-shell-key-details summary {
-  display: list-item;
-  min-height: var(--pointer-target);
-  cursor: pointer;
-  color: var(--text);
-}
-
-.relay-shell-key-details > .relay-shell-code-id {
-  margin-top: var(--space-2);
-}
-
-@media (pointer: coarse) {
-  .relay-shell-key-details summary {
-    min-height: var(--touch-target);
-  }
 }
 
 .relay-shell-copy {

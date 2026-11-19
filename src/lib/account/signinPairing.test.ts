@@ -49,7 +49,7 @@ describe("a pairing that waits on a sign-in", () => {
     expect((await store.get("pending"))?.[state]).toBeUndefined();
   });
 
-  it("goes with a sign-in that never came back, when the next one starts", async () => {
+  it("goes with a sign-in that never came back at the next sign-in, once more than 10 minutes old", async () => {
     let now = 5_000;
     const { store, state } = await started(() => now);
     now += SIGN_IN_MS + 1;

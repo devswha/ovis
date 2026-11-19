@@ -21,6 +21,7 @@ export const MY_MACHINES_KO: Record<string, string> = {
   "Details of {name}": "{name} 자세히 보기",
   "Ovis does not start or restart the engine: start herdr or herdr-core on the machine.": "Ovis는 엔진을 시작하거나 다시 시작하지 않습니다. 머신에서 herdr 또는 herdr-core를 직접 시작하세요.",
   "Kind": "종류",
+  "PC": "PC",
   "Machine: a server or VM with no screen": "머신: 화면이 없는 서버 또는 VM",
   "Came in": "들어온 경로",
   "Added {when} by {device}, which was already paired with it.": "이미 페어링되어 있던 {device}에서 {when} 추가했습니다.",

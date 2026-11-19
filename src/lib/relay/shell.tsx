@@ -17,8 +17,8 @@ import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
-import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn } from "./shellState.ts";
-import type { Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
+import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn } from "./shellState.ts";
+import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { ADMISSION_WAIT_MS, ConsentChangedError, createAccountController } from "./accountController.ts";
@@ -95,21 +95,28 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let signInFor: PendingPairing | null = null;
   // the providers that screen offers: the account service's own list, once read
   let offered: readonly AccountProvider[] | null = null;
+  // the offer on screen and when this device got it: a code is good for so long from its scan
+  let scanned: PendingPairing | null = null;
+  // the confirm the inline sign-in came back to (resumed), and the reason a web sign-in gave when it came back refused
+  let resumedOffer: RelayOffer | null = null;
+  let refusal: string | null = null;
   // the sign-in each confirm that names an account was drawn for (kept off the rendered state: it holds the tokens)
   const drawnFor = new WeakMap<RelayShellState, AccountSession>();
   const accountChanged = async (): Promise<void> => {
     const read = account.state?.kind !== "signing-in";
     if (read) accountRead = true;
     if (read && (account.state?.kind !== "signed-in" || account.state.pcs !== null)) unanswered = false;
-    if (app === null && signInFor !== null && shown?.kind === "failed" && shown.failure === "sign-in-first") {
+    if (signInFor !== null && shown?.kind === "failed" && shown.failure === "sign-in-first") {
       const kept = signInFor;
       if (account.state?.kind === "signed-in" || Date.now() - kept.at > SIGN_IN_MS) resumePairing(kept);
-      else show({ ...shown, account: account.state });
+      else show({ ...shown, account: withRefusal(account.state) });
       return;
     }
     if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
     else if (frontUp()) { if (sheetJoin && shown) show(shown); else await showFront(); }
   };
+  /** The account as the sign-in screen draws it: a refusal a web return brought along shows until the next try. */
+  const withRefusal = (view: AccountView | null): AccountView | null => view?.kind === "signed-out" && view.error === null && refusal !== null ? { ...view, error: refusal } : view;
   const account = createAccountController(mount, { active: frontUp, changed: accountChanged, outdated: () => new Set([...observedVersions()].filter(([, value]) => value.outdated).map(([id]) => id)) });
   accountRead = !account.enabled;
   /**
@@ -125,7 +132,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       : view?.kind !== "signed-in" ? undefined
       : signIn === undefined || (view.pcs === null && !unanswered) ? "checking" as const
       : !unanswered && view.error === null && account.directory.some((pc) => pc.server_id === offer.server_id) ? "listed" as const : "unlisted" as const;
-    const state: Extract<RelayShellState, { kind: "confirm" }> = { kind: "confirm", offer, ...(said === undefined ? {} : { account: said }), ...(confirming && pressed !== undefined ? { pressed } : {}), ...(sheetJoin?.alone ? { alone: true as const } : {}) };
+    const state: Extract<RelayShellState, { kind: "confirm" }> = { kind: "confirm", offer, ...(said === undefined ? {} : { account: said }), ...(confirming && pressed !== undefined ? { pressed } : {}), ...(sheetJoin?.alone ? { alone: true as const } : {}), ...(offer === resumedOffer ? { resumed: true as const } : {}) };
     if (signIn !== undefined && (said === "listed" || said === "unlisted")) drawnFor.set(state, signIn);
     return state;
   };
@@ -497,13 +504,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const consentOf = (attempt: Attempt): AccountSession | null | undefined => attempt.accountless ? null : attempt.signIn;
   /**
    * A provider on the failure screen of a marked pairing that stopped for a sign-in: the sign-in starts with the offer (a web
-   * sign-in leaves the page, and its pending record carries the offer back). A second try keeps the first one's start, so
-   * the code's time is counted from then.
+   * sign-in leaves the page, and its pending record carries the offer back), timed from the scan: every try counts from it.
    */
   const signInToPair = (provider: AccountProvider): void => {
     const offer = entry.offer;
-    if (offer === null || shown?.kind !== "failed" || shown.failure !== "sign-in-first") return;
-    signInFor = { offer, at: signInFor?.offer === offer ? signInFor.at : Date.now() };
+    if (offer === null) return;
+    refusal = null;
+    signInFor = { offer, at: scanned?.offer === offer ? scanned.at : Date.now() };
     account.signIn(provider, signInFor);
   };
   /**
@@ -513,6 +520,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const resumePairing = (kept: PendingPairing): void => {
     signInFor = null;
     if (Date.now() - kept.at > SIGN_IN_MS) { show({ kind: "failed", failure: "scan-expired", name: kept.offer.name ?? null, detail: null, server_id: kept.offer.server_id }); return; }
+    resumedOffer = kept.offer;
     entry = { ...entry, offer: kept.offer, damaged: false };
     arrived();
   };
@@ -586,6 +594,16 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       return true;
     }
     if (entry.offer !== null) {
+      // the PC's page a web sign-in's return went on to: the pairing goes on as the sign-in left it
+      const back = takePairingReturn(entry.offer.server_id);
+      scanned = back !== null ? { offer: entry.offer, at: back.at } : scanned?.offer === entry.offer ? scanned : { offer: entry.offer, at: Date.now() };
+      if (back !== null && Date.now() - back.at > SIGN_IN_MS) { show({ kind: "failed", failure: "scan-expired", name: entry.offer.name ?? null, detail: null, server_id: entry.offer.server_id }); return true; }
+      if (back?.refused != null) {
+        refusal = back.refused;
+        show({ kind: "failed", failure: "sign-in-first", name: entry.offer.name ?? null, detail: null, server_id: entry.offer.server_id, account: withRefusal(account.state) });
+        return true;
+      }
+      if (back !== null) resumedOffer = entry.offer;
       sheetJoin = sheetContext(entry.offer.server_id);
       if (sheetJoin?.returnHash) window.history.replaceState(null, "", new URL(mount.entryUrl).pathname + sheetJoin.returnHash);
       if (sheetJoin || !accountRead) void account.load(null).finally(() => { if (!accountRead) void accountChanged(); });
@@ -645,11 +663,19 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   }
 
   await showFront();
-  // the return of a sign-in that a marked pairing's failure screen started: that screen comes back until the sign-in is read
+  // the return of a sign-in that a marked pairing's failure screen started: that screen stays while the sign-in is read
+  const returning: { pairing?: PendingPairing } = {};
   await account.load(account.enabled ? signInReturn(new URL(mount.entryUrl).hash) : null, (kept) => {
-    if (forgedOffer(kept.offer)) return;
-    signInFor = kept;
-    entry = { ...entry, offer: kept.offer };
+    returning.pairing = kept;
     show({ kind: "failed", failure: "sign-in-first", name: kept.offer.name ?? null, detail: null, server_id: kept.offer.server_id, account: account.state });
   });
+  // then the PC's own page goes on with it, as after a scan, never this front page: a PC opens on its page (its worker, its
+  // reloads, its Back), and the account service sends a browser back here alone
+  if (returning.pairing !== undefined) {
+    const { offer, at } = returning.pairing;
+    const view = account.state;
+    keepPairingReturn({ server_id: offer.server_id, at, refused: view?.kind === "signed-out" ? view.error : null });
+    const link = new URL(encodeOffer(offer, window.location.origin));
+    navigate(link.pathname + link.hash);
+  }
 }

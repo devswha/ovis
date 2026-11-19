@@ -123,31 +123,17 @@ function PairConfirm({ state, pc, onPair, onCancel }: { state: Extract<RelayShel
   const said = checking ? state.pressed : state.account ?? "own";
   return (
     <>
-      <h1 className="relay-shell-hero">{said === "unlisted"
-        ? <><span>{t("Add {name}|first line of a two-line title", { name: pc })}</span>{" "}<span className="relay-shell-hero-quiet">{t("to your account?")}</span></>
-        : t("Pair with {name}?", { name: pc })}</h1>
-      {said === "unlisted" && (
-        <dl className="relay-shell-confirm-rows">
-          <dt>{t("PC")}</dt><dd>{pc}</dd>
-          <dt>{t("Account")}</dt><dd>{t("Your Ovis account")}</dd>
-        </dl>
-      )}
+      <h1 className="relay-shell-title">{said === "unlisted" ? t("Add {name} to your account?", { name: pc }) : t("Pair with {name}?", { name: pc })}</h1>
+      {said === "unlisted" && <p className="relay-shell-copy">{t("Pairing adds this PC to your Ovis account, so every device of your account can open it. Pair only with a PC you are setting up yourself.")}</p>}
       {said === "listed" && <p className="relay-shell-copy">{t("This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
       {said === "own" && <p className="relay-shell-copy">{t("This device gets a key of its own for {name}. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
+      {said === "unlisted" && <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this link names")} /></p>}
       {/* a device whose confirm spoke of no account is told of none */}
       {checking && said !== "own" && <p className="relay-shell-detail" role="status">{t("Checking your account…")}</p>}
       <div className="relay-shell-actions">
         <button type="button" className="btn btn-primary" disabled={checking} aria-busy={checking || undefined} onClick={onPair}>{said === "unlisted" ? t("Add and pair") : t("Pair")}</button>
+        <button type="button" className="btn" onClick={onCancel}>{t("Not now")}</button>
       </div>
-      {/* the account vouches for the PC already: what the pairing does and the PC's ID are there for whoever wants them, not in the way */}
-      {said === "unlisted" && (
-        <details className="relay-shell-key-details">
-          <summary>{t("Details")}</summary>
-          <p className="relay-shell-copy">{t("Pairing adds this PC to your Ovis account, so every device of your account can open it. Pair only with a PC you are setting up yourself.")}</p>
-          <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this link names")} /></p>
-        </details>
-      )}
-      <div className="relay-shell-actions relay-shell-quiet"><button type="button" className="btn btn-ghost" onClick={onCancel}>{t("Not now")}</button></div>
     </>
   );
 }

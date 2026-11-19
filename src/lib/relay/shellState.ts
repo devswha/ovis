@@ -88,7 +88,7 @@ export type RelayShellState =
    * `pressed`: the button was pressed and the press is being checked; what the confirm said then ("own": a key of
    * the device's own) stays on screen meanwhile.
    */
-  | { kind: "confirm"; offer: RelayOffer; account?: "checking" | "unlisted" | "listed"; pressed?: "unlisted" | "listed" | "own"; /** a join a PC's own page offers: its one press, drawn alone */ alone?: true }
+  | { kind: "confirm"; offer: RelayOffer; account?: "checking" | "unlisted" | "listed"; pressed?: "unlisted" | "listed" | "own"; /** a join a PC's own page offers: its one press, drawn alone */ alone?: true; /** the confirm a marked pairing's sign-in came back to */ resumed?: true }
   /** `approved`: the PC accepted the pairing, and the account steps go on behind this screen; absent before that */
   | { kind: "connecting"; name: string | null; approved?: true }
   | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion }
@@ -273,6 +273,29 @@ export function typedJoin(serverId: string): boolean {
 export function keepTypedJoin(serverId: string | null): void {
   try { if (serverId === null) sessionStorage.removeItem("ovis-typed-join"); else sessionStorage.setItem("ovis-typed-join", serverId); }
   catch {}
+}
+
+/**
+ * A marked pairing's web sign-in comes back on the front page, the one address the account service sends a browser back
+ * to; that PC's own page goes on with the pairing, as after a scan. This crosses that one load, in this tab: the PC's ID,
+ * when the code was scanned (`at`), and how the sign-in ended (`refused`: the reason it gave; null once signed in). No
+ * offer, key or token: the offer goes in the page's fragment, as a scanned link does.
+ */
+export interface PairingReturn { readonly server_id: string; readonly at: number; readonly refused: string | null }
+export function keepPairingReturn(note: PairingReturn): void {
+  try { sessionStorage.setItem("ovis-pairing-return", JSON.stringify(note)); }
+  catch { /* the note cannot cross the load: the PC's page asks about the pairing as after a scan */ }
+}
+/** The note for `serverId`'s page, taken once; any other page's note is dropped. */
+export function takePairingReturn(serverId: string): PairingReturn | null {
+  try {
+    const kept: unknown = JSON.parse(sessionStorage.getItem("ovis-pairing-return") ?? "null");
+    sessionStorage.removeItem("ovis-pairing-return");
+    if (kept === null || typeof kept !== "object") return null;
+    const { server_id, at, refused } = kept as Record<string, unknown>;
+    if (server_id !== serverId || typeof at !== "number" || !(refused === null || typeof refused === "string")) return null;
+    return { server_id, at, refused };
+  } catch { return null; }
 }
 
 /** One navigation's consent: only the PC ID, consumed even if the next load has no offer. */

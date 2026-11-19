@@ -177,8 +177,8 @@ export function RelayShell(props: RelayShellProps) {
   const stateName = state.kind === "failed" ? state.failure : state.kind === "outdated" ? "pc-outdated" : state.kind === "forged" ? "identity-changed" : state.kind;
   const devices = state.kind === "list" ? state.devices : [];
   const local = view === "saved" && state.kind === "list";
-  // a question that comes before a pairing (its sign-in, its confirm) reads on the plain page, top-left, with nothing around it
-  const plain = state.kind === "confirm" || (state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined);
+  // a marked pairing's sign-in reads on the plain page with nothing around it
+  const plain = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined;
 
   if (account && (account.kind === "signed-in" || local)) {
     const signedIn = account.kind === "signed-in" ? account : null;
