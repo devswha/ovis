@@ -54,9 +54,9 @@
   column-gap: var(--space-1);
 }
 
-.sidebar-footer:has(> .fork-github-foot) > :not(.fork-github-foot, .sidebar-footer-row) { grid-column: 1 / -1; }
+.sidebar-footer:has(> .fork-github-foot) > .setup-row { grid-column: 1 / -1; }
 .sidebar-footer:has(> .fork-github-foot) > .sidebar-footer-row { display: contents; }
-.sidebar-footer:has(> .fork-github-foot) > .sidebar-footer-row > * { order: 2; grid-column: 2; min-width: 0; }
+.sidebar-footer:has(> .fork-github-foot) > .sidebar-footer-row > .usage { order: 2; grid-column: 2; min-width: 0; }
 .sidebar-footer:has(> .fork-github-foot) > .sidebar-footer-row > .sidebar-footer-settings { order: 1; grid-column: 1; }
 
 .fork-github-foot {
@@ -264,7 +264,7 @@
    sidebar's foot, where the rail stood beside it, and no rail's width taken from the top row's start */
 .app.is-inbox-wide:has(.inbox-column > .sidebar-footer) { --inbox-rail-w: 0px; }
 .app.is-inbox-wide .inbox-column:has(> .sidebar-footer) { flex-direction: column; }
-.inbox-column:has(> .sidebar-footer) > :not(.sidebar-footer, .sidebar-resizer) { flex: 1 1 auto; min-height: 0; }
+.inbox-column:has(> .sidebar-footer) > .mode-inbox { flex: 1 1 auto; min-height: 0; }
 .inbox-column > .sidebar-footer {
   order: 1;
   border-top: var(--hairline) solid var(--border);
