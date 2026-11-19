@@ -39,7 +39,7 @@ describe("the safety log's endings and its failed writes (P24, S19)", () => {
     expect(log.state().locked).toBe(false);
   });
 
-  test("S19: an append that cannot be written fails the PC closed until one is, and every way in is refused meanwhile", async () => {
+  test("S19: an append that cannot be written fails the PC closed until a reload finds the log whole, and every way in is refused meanwhile", async () => {
     const at = dir();
     const log = SafetyLog.open(at);
     const devices = new DeviceStore(at, null, null, log);
@@ -55,7 +55,9 @@ describe("the safety log's endings and its failed writes (P24, S19)", () => {
     expect(devices.pairRelay(devices.startPairing().code, "Tablet", (await signer()).spki)).toBeNull();
     expect(devices.pairRelayApproved("Tablet", (await signer()).spki, { path: "account", addedBy: id })).toBeNull();
     chmodSync(at, 0o700);
-    expect(log.append({ record: pc("lock", "acct_1", null), got: "pc" }).outcome).toBe("applied");
-    expect(log.strict).toBeNull();
+    // strict stays on this handle until a reload finds the log whole (S19)
+    expect(log.append({ record: pc("lock", "acct_1", null), got: "pc" }).outcome).toBe("refused");
+    expect(log.strict).not.toBeNull();
+    expect(SafetyLog.open(at).strict).toBeNull();
   });
 });
