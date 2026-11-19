@@ -217,7 +217,8 @@ export function parseAdmissionOrigin(value: unknown): AdmissionOrigin {
   check(origin.from !== "pc" || ["code", "digits", "qr", "confirmed", "link"].includes(origin.how as string), "Only a key confirm at this PC is from pc");
   check((origin.from === "legacy") === (origin.how === "legacy"), "A legacy row is legacy both ways");
   check(origin.by === null || isAccountKeyEncoding(origin.by), "Invalid origin by");
-  check(isOrder(origin.admit_no) && isIso(origin.at), "Invalid origin order");
+  // T50: a row from before the upgrade is stamped admit_no 0 by this PC's own upgrade pass, and only such a row
+  check((origin.from === "legacy" ? origin.admit_no === 0 : isOrder(origin.admit_no)) && isIso(origin.at), "Invalid origin order");
   return origin as unknown as AdmissionOrigin;
 }
 
