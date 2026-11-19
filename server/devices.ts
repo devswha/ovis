@@ -20,6 +20,7 @@ import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device-journal.ts";
 import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
+import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
 import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceSafetyRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import type { BlockReceipt } from "../shared/account-devices-api.ts";
@@ -531,6 +532,7 @@ export class DeviceStore {
   private readonly safety: SafetyLog | null;
   private accountOrder: AccountOrder | null = null;
   readonly handedLifts: HandedLifts;
+  private joinedRows: AccountRowSource | null = null;
   private readonly pc: PcAccountState | null;
   private readonly evidence: RemovalEvidence | null;
   private readonly accountHeld: ((key: string) => boolean) | undefined;
@@ -1272,7 +1274,7 @@ export class DeviceStore {
    */
   onRevoke(id: string, close: (waiting?: true) => void): () => void {
     // a row that waits to link has sessions too: they end when it goes, as a device's do when it is revoked
-    if (!this.devices.some((device) => device.id === id) && this.pending?.waiting?.rows.has(id) !== true) { close(); return () => {}; }
+    if (!this.devices.some((device) => device.id === id) && this.pending?.waiting?.rows.has(id) !== true && (this.joinedRows?.row(id) ?? null) === null) { close(); return () => {}; }
     const listeners = this.revocations.get(id) ?? new Set<(waiting?: true) => void>();
     listeners.add(close);
     this.revocations.set(id, listeners);
@@ -1698,7 +1700,59 @@ export class DeviceStore {
     if (this.evidence !== null && (this.failsClosed || (device !== undefined && this.stale(device)))) return null;
     if (device) return { role: device.role, key: device.relay_public_key, provisional: false };
     const waiting = this.pending?.waiting?.rows.get(id);
-    return waiting ? { role: "watch", key: waiting.key, provisional: true } : null;
+    if (waiting) return { role: "watch", key: waiting.key, provisional: true };
+    // an account-joined row serves while it is usable here: out of its hold and its waits, and not covered or frozen
+    const row = this.joinedRows?.row(id) ?? null;
+    if (row === null || this.accountRowStale(row) || !("ok" in this.joinedRows!.access(id))) return null;
+    return { role: "drive", key: row.key, provisional: false };
+  }
+
+  /**
+   * Step 2 (S2-25): the account-joined rows (server/account/account-devices.ts), set only with OVIS_ACCOUNT_OPENS_ALL=1.
+   * They never enter devices.json (P1); they sign in by relay AUTH with their registered key and are drive principals
+   * once usable, judged by the same evidence and freezes as a devices.json row.
+   */
+  attachAccountRows(source: AccountRowSource | null): void { this.joinedRows = source; }
+
+  /** An account row as the evidence and freeze checks see a row: its key, this PC's account, its admission order. */
+  private accountRowStale(row: AccountRow): boolean {
+    if (this.evidence === null) return false;
+    const stored: StoredDevice = { id: row.id, label: row.label, role: "drive", token_hash: "", relay_public_key: row.key, created_at: row.confirmed_at, last_seen_at: null, account: this.account() ?? undefined, origin: row.origin };
+    return this.coveredByEvidence(stored) || this.frozen(stored);
+  }
+
+  /**
+   * A relay AUTH for an account-joined row: null when no such row stands here or the signature is not its key's, so a
+   * caller without the key learns nothing; else the row's own verdict, read after the proof (T66).
+   */
+  async matchAccountRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string): Promise<{ match: DeviceMatch } | { refused: Exclude<AccessAnswer, { ok: true }> } | null> {
+    if (this.joinedRows === null || this.failsClosed() || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
+    if (this.devices.some((d) => d.id === deviceId)) return null;
+    const row = this.joinedRows.row(deviceId);
+    if (row === null || this.accountRowStale(row)) return null;
+    const signed = Buffer.from(signature, "base64url");
+    if (signed.length !== 64 || signed.toString("base64url") !== signature) return null;
+    const message = Buffer.concat([Buffer.from("ovis-relay-auth/1"), nonce, Buffer.from(serverId)]);
+    let verified: boolean;
+    try {
+      const key = await crypto.subtle.importKey("spki", Buffer.from(row.key, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+      verified = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signed, message);
+    } catch (error) {
+      if (error instanceof DOMException) return null;
+      throw error;
+    }
+    // the row went, changed key or was covered while its signature was checked: the proof was for a row that is no more
+    const current = this.joinedRows.row(deviceId);
+    if (!verified || current === null || current.key !== row.key || this.accountRowStale(current)) return null;
+    const answer = this.joinedRows.access(deviceId);
+    return "ok" in answer ? { match: { id: current.id, label: current.label, role: "drive" } } : { refused: answer };
+  }
+
+  /** The account rows' store ends the sessions of a row it dropped (P8 step 3 for a list drop, T35). */
+  closeAccountSessions(id: string): void {
+    const listeners = this.revocations.get(id);
+    this.revocations.delete(id);
+    for (const close of listeners ?? []) close();
   }
 
   /** Whether the row `id` still waits to link: its code is the one pending, and its PAIRING_LINK_MS are not over by the clock read now. */
@@ -2348,7 +2402,7 @@ export class DeviceStore {
     return revoked;
   }
 
-  has(id: string): boolean { return this.devices.some((device) => device.id === id); }
+  has(id: string): boolean { return this.devices.some((device) => device.id === id) || (this.joinedRows?.row(id) ?? null) !== null; }
 
   /** Whether the device may answer a pane's prompt: paired to drive, not to watch. */
   canDrive(id: string): boolean { return this.devices.some((device) => device.id === id && device.role === "drive"); }

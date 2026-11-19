@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
+import { exportAccountKey } from "../../shared/account-records.ts";
 import { DeviceStore } from "../devices.ts";
 import { AccountDeviceStore } from "./account-devices.ts";
 import { DeviceJournal } from "./device-journal.ts";
