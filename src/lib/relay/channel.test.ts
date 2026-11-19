@@ -58,7 +58,7 @@ class FakeSocket implements RelaySocket {
   }
 }
 
-async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account" | "key-proof", onClose?: (error: Error) => void,
+async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account" | "key-proof" | "key-proof-twice", onClose?: (error: Error) => void,
   pc: { relay?: string; hints?: readonly string[]; features?: readonly string[]; provisional?: boolean; wrap?: (store: MemoryDeviceStore, device: RelayDevice) => RelayDeviceStore } = {}, channel: Partial<RelayChannelOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -141,10 +141,15 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
     return bytes;
   };
   let keyProofSent: MuxFrame | undefined;
-  const keyProof = { challenge: base64url(new Uint8Array(32).fill(7)), proved: Promise.withResolvers<string>() };
+  const keyProof = { challenge: base64url(new Uint8Array(32).fill(7)), proved: Promise.withResolvers<string>(), proofs: 0 };
   const handle = async (frame: MuxFrame): Promise<void> => {
     if (frame.type === FrameType.KEY_PROVE) {
+      keyProof.proofs++;
       keyProof.proved.resolve(frame.payload.signature);
+      if (attack === "key-proof-twice") {
+        await secure.send(raw(FrameType.KEY_CHALLENGE, { challenge: base64url(new Uint8Array(32).fill(8)) }).slice().buffer);
+        return;
+      }
       // a waiting frame that tries to name a fingerprint: the device must never show it
       await secure.send(raw(FrameType.KEY_PENDING, { fingerprint: "ZZZZ-ZZZZ" }).slice().buffer);
       return;
@@ -175,7 +180,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
       return;
     }
     let deviceId: string;
-    if (frame.type === FrameType.PAIR && attack === "key-proof" && offered.includes("key-proof-1") && !keyProofSent) {
+    if (frame.type === FrameType.PAIR && (attack === "key-proof" || attack === "key-proof-twice") && offered.includes("key-proof-1") && !keyProofSent) {
       keyProofSent = frame;
       await secure.send(raw(FrameType.KEY_CHALLENGE, { challenge: keyProof.challenge, fingerprint: "ZZZZ-ZZZZ" }).slice().buffer);
       await keyProof.proved.promise;
@@ -739,4 +744,12 @@ it("G5: without asking for key proof, HELLO does not offer it", async () => {
   expect(f.offered).not.toContain("key-proof-1");
   f.allowAuth.resolve();
   await f.opening;
+});
+
+it("T72: a second challenge in the same pairing is never signed, and the attempt ends", async () => {
+  const f = await fixture(true, "key-proof-twice", undefined, {}, { keyProof: () => {} });
+  await f.keyProof.proved.promise;
+  const error = await f.opening.catch((caught: unknown) => caught);
+  expect(error).toMatchObject({ code: "protocol_error" });
+  expect(f.keyProof.proofs).toBe(1);
 });
