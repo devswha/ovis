@@ -138,4 +138,22 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     expect(() => broken.commitList(list(["k-1"]))).toThrow();
     expect(readFileSync(join(bad, ACCOUNT_DEVICES_FILE), "utf8")).toBe("{not json");
   });
+
+  test("T34: the store answers Track A's deny path for its rows: by id, by key, and a removal that only persists and journals", () => {
+    const dir = stateDir();
+    const { events, ports: p } = ports(dir);
+    const store = new AccountDeviceStore(dir, SERVER, p);
+    store.commitList(list(["k-1", "k-2"]));
+    events.length = 0;
+    const [one, two] = store.rows();
+    expect(store.row(one!.id)).toEqual(one!);
+    expect(store.row("0".repeat(16))).toBeNull();
+    expect(store.rowsByKey(keyOf("k-2"))).toEqual([two!]);
+    expect(store.rowsByKey(keyOf("k-none"))).toEqual([]);
+    store.removeRows([two!.id], "block");
+    // the deny turn already closed the sessions: the store journals and writes, and closes nothing
+    expect(events).toEqual(["journal drop k-2 file=[k-1,k-2]"]);
+    expect(fileKeys(dir)).toEqual(["k-1"]);
+    expect(store.row(two!.id)).toBeNull();
+  });
 });
