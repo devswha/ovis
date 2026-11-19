@@ -176,10 +176,21 @@ export class ReleaseJournalError extends Error {}
 export class RecoveryReleases {
   readonly #byRow = new Map<string, string>();
   readonly #watchers = new Map<string, Set<() => void>>();
+  readonly #sources = new Set<() => readonly RecoveryCandidate[]>();
   readonly #journal: (entry: RecoveryJournalEntry) => void;
 
   constructor(options: { journal(entry: RecoveryJournalEntry): void }) {
     this.#journal = options.journal;
+  }
+
+  /** A store of rows (devices.json, the account rows) names the rows it holds back, with what stands against each. */
+  registerRecoverySource(list: () => readonly RecoveryCandidate[]): () => void {
+    this.#sources.add(list);
+    return () => { this.#sources.delete(list); };
+  }
+
+  candidates(): RecoveryCandidate[] {
+    return [...this.#sources].flatMap((list) => list());
   }
 
   /** `end` runs when `release` is undone: a session that signed in under it closes then. */
