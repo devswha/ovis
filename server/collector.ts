@@ -64,8 +64,6 @@ export interface StatusCollectorHandlers {
   /**
    * `newer`: panes with an event or an exit since the snapshot was asked for, whose reading here is older than that.
    * `askedAt`: when it was asked for (`Date.now()`).
-   */
-  /**
    * `created`: the status each pane this snapshot reads first began with, from its creation frame, for web push alone
    * (the panes' baseline is this snapshot's, as for any pane)
    */
@@ -131,7 +129,7 @@ export function parseStatusFrame(frame: EventFrame): { paneId: string; status: A
 
 export type StructureEvent =
   | { kind: "pane-ended"; paneId: string }
-  | { kind: "structure-changed"; closed?: string; moved?: { previousPaneId: string; paneId: string; status: AgentStatus; agent: string | null }; created?: { paneId: string; status: AgentStatus }; scopedClose?: true };
+  | { kind: "structure-changed"; closed?: string; moved?: { previousPaneId: string; paneId: string; status: AgentStatus; agent: string | null }; created?: { paneId: string; status: AgentStatus } };
 
 export function parseFocusFrame(frame: EventFrame): string | null {
   const data = frame.data as { type?: unknown; pane_id?: unknown } | undefined;
@@ -161,17 +159,16 @@ export function parseStructureFrame(frame: EventFrame): StructureEvent | null {
     case "workspace_renamed":
     case "workspace_moved":
     case "workspace_reordered":
+    case "workspace_closed":
     case "worktree_created":
     case "worktree_opened":
+    case "worktree_removed":
     case "tab_created":
+    case "tab_closed":
     case "tab_renamed":
     case "tab_moved":
     case "layout_updated":
       return { kind: "structure-changed" };
-    case "workspace_closed":
-    case "worktree_removed":
-    case "tab_closed":
-      return { kind: "structure-changed", scopedClose: true };
     default:
       return null;
   }
@@ -265,8 +262,6 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
   const focusedAt = new Map<string, number>();
   /** what each pane created while this listens began as, and when its frame was read, until a snapshot reads it */
   const born = new Map<string, { status: AgentStatus; seq: number }>();
-  /** when a workspace, worktree or tab last closed: such a close names none of its panes */
-  let scopedCloseAt = 0;
   let gap = false;
   let replayFor: number | null = null;
   let statusStarted = false;
@@ -380,10 +375,10 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
       // ended during a loss is still to be settled, or it would read as going on for good
       const newer = new Set([...lastEventOf, ...actedOn].filter(([, seq]) => seq > askedAt).map(([paneId]) => paneId));
       const paneIds = snapshot.panes.map((pane) => pane.pane_id);
-      // a snapshot asked for before a workspace or tab closed may still show a new pane that went with it: the snapshot
-      // that close asks for tells its first change
+      // a pane that went with a workspace or tab closed since this was asked for is still listed: the snapshot that close
+      // asks for calls off what web push makes of it (push.gone)
       const created = new Map<string, AgentStatus>();
-      for (const paneId of scopedCloseAt <= askedAt ? paneIds : []) {
+      for (const paneId of paneIds) {
         const began = born.get(paneId);
         if (began === undefined || newer.has(paneId)) continue;
         created.set(paneId, began.status);
@@ -527,7 +522,6 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
         if (parsed.created !== undefined && !heard.has(parsed.created.paneId) && !subscribedPaneIds.has(parsed.created.paneId)) {
           born.set(parsed.created.paneId, { status: parsed.created.status, seq: ++statusEvents });
         }
-        if (parsed.scopedClose) scopedCloseAt = ++statusEvents;
       }
       scheduleStructureChange();
     },

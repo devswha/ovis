@@ -661,6 +661,19 @@ describe("alert timing and each device's choice", () => {
     } finally { timers.restore(); }
   });
 
+  it("calls off a new pane's first question once a snapshot no longer lists it (its tab closed while the first was read)", async () => {
+    const timers = holdAlertTimers();
+    try {
+      const { push } = timed();
+      await push.firstStatus("w2:p1", "unknown", "blocked");
+      expect(timers.pending()).toBe(1);
+      push.gone([pane("w1:p1", "idle", "claude")], new Set());
+      expect(timers.pending()).toBe(0);
+      await push.settled();
+      expect(fake.received).toHaveLength(0);
+    } finally { timers.restore(); }
+  });
+
   it("does not time a turn from a new pane's first reading: it began before anyone read it", async () => {
     const timers = holdAlertTimers();
     try {
