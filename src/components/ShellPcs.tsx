@@ -79,7 +79,7 @@ function shownOf(status: PcStatus | undefined): PcStatus | undefined {
   return status?.kind === "checking" ? status.previous ?? status : status;
 }
 
-/** The rows: each opens its PC; one the relay found with nobody there reads Off, with Check again. */
+/** The rows: each opens its PC; one the relay found with nobody there reads Off, with Check again, and one no check settled offers Check again alone. */
 export function ShellPcs({ pcs, status, recheck }: ReturnType<typeof useShellPcs>) {
   const t = useT();
   if (pcs.length === 0) return null;
@@ -87,19 +87,22 @@ export function ShellPcs({ pcs, status, recheck }: ReturnType<typeof useShellPcs
     <ul className="shell-pcs" aria-label={t("Other PCs")}>
       {pcs.map((pc) => {
         const now = status.get(pc.server_id), shown = shownOf(now);
-        const off = shown?.kind === "offline";
+        const off = shown?.kind === "offline" && shown.reason === "pc";
+        // a check that settled nothing (the relay could not be reached or turned this device away, which the sweep keeps
+        // no finding for) or none yet: Check again, without calling the PC off
+        const retry = shown === undefined || shown.kind === "offline";
         const name = pc.name ?? t("Unnamed PC");
         return (
-          <li key={pc.server_id} className="shell-pc" data-pc-state={shown === undefined ? "unknown" : shown.kind === "checking" ? "checking" : off ? "off" : "on"}>
+          <li key={pc.server_id} className="shell-pc" data-pc-state={shown?.kind === "answered" ? "on" : off ? "off" : shown?.kind === "checking" ? "checking" : "unknown"}>
             <a className="shell-pc-open" href={serverScopePath(pc.server_id)}>
               <Monitor aria-hidden="true" />
               <span className="shell-pc-name">{name}</span>
               {shown?.kind === "answered" && <StatusDot state="ready" size="inline" />}
               {shown?.kind === "checking" && <StatusDot state="checking" size="inline" />}
             </a>
-            {off && (
+            {retry && (
               <span className="shell-pc-off">
-                {shown.reason === "pc" && <><span>{t("Off|pc state")}</span><span aria-hidden="true">·</span></>}
+                {off && <><span>{t("Off|pc state")}</span><span aria-hidden="true">·</span></>}
                 <button type="button" className="btn shell-pc-check" aria-busy={now?.kind === "checking" || undefined} onClick={() => recheck(pc.server_id)}>{t("Check again")}</button>
               </span>
             )}

@@ -46,7 +46,7 @@ describe("the hosted app's other PCs in the sidebar", () => {
 
   it("opens each on its own page; one that does not answer reads Off with Check again, which checks that PC alone", async () => {
     const checked: string[] = [];
-    const pcs = [{ server_id: "b".repeat(32), name: "Work PC" }, { server_id: "c".repeat(32), name: "HostHatch" }, { server_id: "d".repeat(32), name: null }, { server_id: "e".repeat(32), name: "Laptop" }];
+    const pcs = [{ server_id: "b".repeat(32), name: "Work PC" }, { server_id: "c".repeat(32), name: "HostHatch" }, { server_id: "d".repeat(32), name: null }, { server_id: "e".repeat(32), name: "Laptop" }, { server_id: "f".repeat(32), name: "NAS" }];
     // a re-check of an off PC keeps it off on screen, so Check again stays where the focus is; a relay that turned this device away says nothing of the PC
     const status = new Map<string, PcStatus>([
       ["b".repeat(32), { kind: "answered", route: "relay", rttMs: 40 }],
@@ -57,12 +57,15 @@ describe("the hosted app's other PCs in the sidebar", () => {
     let root: ReturnType<typeof create> | undefined;
     await act(async () => { root = create(createElement(SettingsProvider, { children: createElement(ShellPcs, { pcs, status, recheck: (id: string) => { checked.push(id); } }) })); });
     const rows = root!.root.findAll((node) => node.type === "li");
-    expect(rows.map((row) => row.props["data-pc-state"])).toEqual(["on", "off", "checking", "off"]);
-    expect(rows.map((row) => row.find((node) => node.type === "a").props.href)).toEqual([`/s/${"b".repeat(32)}/`, `/s/${"c".repeat(32)}/`, `/s/${"d".repeat(32)}/`, `/s/${"e".repeat(32)}/`]);
+    expect(rows.map((row) => row.props["data-pc-state"])).toEqual(["on", "off", "checking", "unknown", "unknown"]);
+    expect(rows.map((row) => row.find((node) => node.type === "a").props.href)).toEqual([`/s/${"b".repeat(32)}/`, `/s/${"c".repeat(32)}/`, `/s/${"d".repeat(32)}/`, `/s/${"e".repeat(32)}/`, `/s/${"f".repeat(32)}/`]);
     expect(textOf(rows[1]!)).toBe("HostHatchOff·Check again");
     expect(rows[1]!.find((node) => node.type === "button").props["aria-busy"]).toBe(true);
     expect(textOf(rows[2]!)).toBe("Unnamed PC");
     expect(textOf(rows[3]!)).toBe("LaptopCheck again");
+    expect(rows[2]!.findAll((node) => node.type === "button")).toHaveLength(0);
+    // a PC no check has settled yet (the sweep keeps no finding after a first relay failure) still offers Check again
+    expect(textOf(rows[4]!)).toBe("NASCheck again");
     expect(rows[0]!.findAll((node) => node.type === "button")).toHaveLength(0);
     await act(async () => { rows[1]!.find((node) => node.type === "button").props.onClick(); });
     expect(checked).toEqual(["c".repeat(32)]);
