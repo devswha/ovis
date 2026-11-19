@@ -252,5 +252,20 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     expect(devices.itsMe(older.id, notice.id)).toBe(true);
     expect(rows.access(row!.id)).toEqual({ ok: true });
     expect(journal.openNotices().some((entry) => entry.id === notice.id)).toBe(false);
+    expect(journal.openNotices().filter((entry) => entry.row === row!.id)).toEqual([]);
+    expect(journal.entries().at(-1)).toMatchObject({ kind: "confirm", how: "its_me", by: older.spki, row: row!.id });
+  });
+
+  test("T53/P15: a notice for an earlier admission cannot decide a readmitted row", async () => {
+    const { devices, rows, clock, journal } = pc();
+    const owner = await member(devices);
+    const phone = await key();
+    clock.now += 2 * 60 * 60_000;
+    rows.commitList(listed(phone));
+    const old = journal.openNotices().find((entry) => entry.key === phone.spki);
+    if (!old) throw new Error("Missing first admission");
+    rows.commitList(listed());
+    rows.commitList(listed(phone));
+    expect(devices.itsMe(owner.id, old.id)).toBe(false);
   });
 });
