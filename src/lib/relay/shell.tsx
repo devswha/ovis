@@ -43,7 +43,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const navigate = mount.navigate ?? ((path: string) => window.location.assign(path));
   const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
   let entry = shellEntry(mount.entryUrl);
-  // bumped by every link this page takes after it loaded: a step of the page's own load that waited meanwhile is stale
+  // bumped by every link this page takes after it loaded, and by Cancel or Back: a step of the page's own load that
+  // waited meanwhile is stale and does nothing
   let entries = 0;
   const scoped = entry.serverId !== null;
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
@@ -149,6 +150,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const sweep = createPcSweep(store, { active: frontUp, redraw: () => { if (shown) show(shown); } }, { ...(mount.checkPc ? { probe: mount.checkPc } : {}), ...(directSocket ? { directSocket } : {}) });
   const toFront = (): void => {
+    entries++;
     if (shown?.kind === "ready") {
       const returnHash = sheetJoin?.returnHash ?? "";
       cancelAttempt(); sheetJoin = null; entry = { serverId: null, offer: null, damaged: false };
@@ -524,6 +526,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const codeMatch = (): void => { const offer = codeOffer; codeOffer = null; if (offer) { keepConfirmedPc(offer.server_id); navigate(encodeOffer(offer, window.location.origin)); } };
   const cancel = (): void => {
+    // whatever this page's own load is still waiting for (its saved pairing, the account) is no longer wanted
+    entries++;
     if (shown?.kind === "ready") { toFront(); return; }
     cancelAttempt(); keepTypedJoin(null); codeOffer = null;
     if (scoped) toFront(); else void showFront();
@@ -596,6 +600,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       // page holds and joins no account, as after a confirm that said "a key of its own"
       const named = namedSignIn?.server_id === saved.server_id ? namedSignIn : null;
       const now = named === null || named.sign_in_id === null ? undefined : await account.stored();
+      if (entries !== loaded) return;
       const signIn = now !== undefined && now.sign_in_id === named?.sign_in_id ? now : undefined;
       const accountless = deviceOnly === saved.server_id || (named !== null && signIn === undefined);
       await connect({ offer: offerOf(saved), code: false, paired: saved.device_id !== null, retryEnrollment: enrollmentOf(saved) === "failed", ...(accountless ? { accountless: true } : signIn ? { signIn } : {}) });

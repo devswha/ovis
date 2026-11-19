@@ -388,6 +388,12 @@ public class PCStoreTest {
         String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
         assertEquals("/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", PCStore.startPath(scope + "#offer=eyJ2IjoxfQ", scope));
         assertEquals("/s/0123456789abcdef0123456789abcdef/", PCStore.startPath(null, scope));
+        // a link with the default port written out keeps its offer: the app saved its PC under the scope without the port
+        String explicit = "https://app.ovis.sh:443/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ";
+        assertEquals(scope, PCStore.appScope(explicit));
+        assertEquals("/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", PCStore.startPath(explicit, PCStore.appScope(explicit)));
+        assertEquals("/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", PCStore.startPath("https://APP.ovis.sh/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", scope));
+        assertEquals("/s/0123456789abcdef0123456789abcdef/", PCStore.startPath("https://app.ovis.sh:8443/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", scope));
         assertEquals("/", PCStore.startPath(null, "https://pc.tail1234.ts.net"));
         assertEquals("/?pair=123456", PCStore.startPath("https://pc.tail1234.ts.net/?pair=123456", "https://pc.tail1234.ts.net"));
         assertEquals("/", PCStore.startPath("https://other.example/?pair=123456", "https://pc.tail1234.ts.net"));

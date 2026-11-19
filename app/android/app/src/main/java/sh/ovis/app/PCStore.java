@@ -393,8 +393,9 @@ final class PCStore {
     }
 
     static String startPath(String start, String key) {
-        String origin = origin(key);
-        if (start == null || origin == null || !origin.equals(origin(start))) {
+        // the default port written out (https://app.ovis.sh:443/...) is the same origin as the key saved without it
+        String origin = normalizedOrigin(key);
+        if (start == null || origin == null || !origin.equals(normalizedOrigin(start))) {
             String scope = rawPath(key);
             return scope.isEmpty() ? "/" : scope;
         }
