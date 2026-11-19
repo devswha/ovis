@@ -11,7 +11,6 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.": "请在你账户中已连接到 {name} 的设备上批准此设备；如果 {name} 显示了此请求，也可以在那里批准。",
   "Get approved on a device you already use": "在已在使用的设备上获得批准",
   "Open {name} on a device you already use and keep it open. Then choose Ask to join and approve there.": "在你已在使用的设备上打开 {name} 并保持打开，然后选择“请求加入”，在那台设备上批准。",
-  "No other device? Pair with the QR code on {name} instead.": "没有其他设备？改用 {name} 上的二维码配对。",
   "If {name} is waiting on its own screen to be added, type its number here instead.": "如果 {name} 正在自己屏幕上等待添加，请改为在这里输入它的数字。",
   "Type the number": "输入数字",
   "{name} shows no number? Ask to join instead.": "{name} 没有显示数字？请改为请求加入。",

@@ -303,13 +303,6 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
           )}
         </div>
         {actions !== null && <footer className="modal-footer add-pc-footer">{actions}</footer>}
-        {/* after the main way, and after it in the focus order too: the sheet still opens on the footer */}
-        {mode === "join" && phase === "start" && (
-          <div className="add-pc-other add-pc-no-device">
-            <p className="relay-shell-detail">{t("No other device? Pair with the QR code on {name} instead.", { name })}</p>
-            <button type="button" className="btn btn-ghost" data-action="pair-qr" onClick={onPairByQr}>{t("Pair with a QR or code")}</button>
-          </div>
-        )}
       </div>
     </div>,
     document.body,

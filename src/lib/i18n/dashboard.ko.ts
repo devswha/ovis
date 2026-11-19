@@ -11,7 +11,6 @@ export const DASHBOARD_KO: Record<string, string> = {
   "Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.": "{name}에 연결된 내 계정의 기기에서 승인하거나, 이 요청이 {name}에 나오면 거기서 승인하세요.",
   "Get approved on a device you already use": "쓰던 기기에서 승인받기",
   "Open {name} on a device you already use and keep it open. Then choose Ask to join and approve there.": "쓰던 기기에서 {name} 화면을 열어 두세요. 그런 다음 ‘참여 요청’을 고르고 그 기기에서 승인하세요.",
-  "No other device? Pair with the QR code on {name} instead.": "다른 기기가 없나요? 대신 {name}의 QR 코드로 페어링하세요.",
   "If {name} is waiting on its own screen to be added, type its number here instead.": "{name} 화면에서 추가를 기다리는 중이면 대신 여기에 그 숫자를 입력하세요.",
   "Type the number": "숫자 입력",
   "{name} shows no number? Ask to join instead.": "{name} 화면에 숫자가 없나요? 대신 참여를 요청하세요.",

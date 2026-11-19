@@ -255,20 +255,6 @@
   white-space: nowrap;
 }
 
-/* the join start's second way, under the footer, for a device with no other device to approve it */
-.add-pc-no-device {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 0 var(--space-2);
-  padding-top: var(--space-2);
-}
-
-.add-pc-no-device > .relay-shell-detail {
-  margin: 0;
-}
-
 .add-pc-other {
   padding: 0 var(--space-4) var(--space-4);
   font-size: var(--fs-sm);

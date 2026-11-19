@@ -412,29 +412,22 @@ describe("the Add-a-PC sheet", () => {
     expect(typed).toBe(1);
   });
 
-  it("makes approval on a device already in use a join's main way, and a PC's QR code the second, at the start only", async () => {
+  it("makes approval on a device already in use a join's one way at the start, with no QR choice: a PC in an account shows no QR code", async () => {
     const pc = pcOf();
-    const qr = () => renderer!.root.findAll((n) => n.type === "button" && n.props["data-action"] === "pair-qr");
     const primary = () => renderer!.root.findAll((n) => n.type === "button" && n.props["data-sheet-primary"] === true);
     for (const typeNumber of [undefined, () => {}]) {
       calls = { ...calls, joins: [], qr: 0 };
       await mount({ ...props("join", pc, LIST), ...(typeNumber ? { onTypeNumber: typeNumber } : {}) });
-      // the one primary asks to join through the account; the QR code is a quiet choice after it, never in the footer
+      // the one primary asks to join through the account
       expect(primary()).toHaveLength(1);
-      const order = renderer!.root.findAll((n) => n.type === "button").map((n) => n.props["data-sheet-primary"] === true ? "primary" : n.props["data-action"] === "pair-qr" ? "qr" : null).filter((kind) => kind !== null);
-      expect(order).toEqual(["primary", "qr"]);
       await act(async () => { primary()[0]!.props.onClick(); });
       expect([calls.joins, calls.qr]).toEqual([[[pc]], 0]);
-      expect(qr().map((n) => [n.props.className, renderer!.root.findByType("footer").findAll((f) => f === n).length])).toEqual([["btn btn-ghost", 0]]);
-      await act(async () => { qr()[0]!.props.onClick(); });
-      expect([calls.joins.length, calls.qr]).toEqual([1, 1]);
+      // no way to the PC's QR code, and nothing after the footer
+      expect(renderer!.root.findAll((n) => n.type === "button" && n.props["data-action"] === "pair-qr")).toHaveLength(0);
+      const footer = renderer!.root.findByType("footer");
+      expect(footer.parent!.children.at(-1)).toBe(footer);
       await act(async () => { renderer!.unmount(); });
     }
-    // past the start, and on a new PC's sheet, the join's way is already chosen: no QR choice
-    await mount(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false }));
-    expect(qr()).toHaveLength(0);
-    await update(props("new", pc, LIST));
-    expect(qr()).toHaveLength(0);
   });
 
   it("offers Ask to join under a typed comparison, for a PC that shows no number, and only where the shell can turn the request into a join", async () => {

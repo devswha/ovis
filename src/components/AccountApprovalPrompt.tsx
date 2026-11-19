@@ -86,10 +86,10 @@ export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide 
 
   return (
     <div className="modal-scrim">
-      <div ref={surface} className="modal account-approval" role="alertdialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1} data-testid="account-approval">
+      <div ref={surface} className="modal account-approval" role="alertdialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-lead ${id}-ask`} tabIndex={-1} data-testid="account-approval">
         <div className="account-approval-mark" aria-hidden="true"><MonitorSmartphone /></div>
         <h2 className="account-approval-title" id={`${id}-title`}>{t("Add a new device?")}</h2>
-        <p className="account-approval-lead">{t("Check the number, then approve")}</p>
+        <p className="account-approval-lead" id={`${id}-lead`}>{t("Check the number, then approve")}</p>
         <p className="account-approval-via">{request.intent === "account" ? t("Through {pc} · joins your {n} PCs", { pc: pcName, n: pcCount }) : t("Only for {pc}", { pc: pcName })}</p>
         {asker != null && <AccountAsker asker={asker} language={resolvedLanguage} />}
         {/* the name and the system are the device's own word, the place only its network's: said, so neither reads as checked */}

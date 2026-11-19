@@ -86,14 +86,14 @@ describe("approving a device that asks to join the account", () => {
   it("keeps the number pick: three numbers, none picked, Approve held until one is, and the picked one sent", async () => {
     const decided: Decision[] = [];
     const seen = await onCard({ os: null, country: null, city: null }, decided, async (root) => {
-      const before = { labels: radios(root).map((node) => node.props["aria-label"]), checked: radios(root).map((node) => node.props["aria-checked"]), approveHeld: approveOf(root).props.disabled === true };
+      const before = { labels: radios(root).map((node) => node.props["aria-label"]), shown: radios(root).map((node) => node.children.join("")), checked: radios(root).map((node) => node.props["aria-checked"]), approveHeld: approveOf(root).props.disabled === true };
       await act(async () => { radios(root)[1]!.props.onClick(); });
       const after = { checked: radios(root).map((node) => node.props["aria-checked"]), approveHeld: approveOf(root).props.disabled === true };
       await act(async () => { approveOf(root).props.onClick(); });
       return { before, after };
     });
     expect(seen).toEqual({
-      before: { labels: request.choices.map((choice) => choice.split("").join(" ")), checked: [false, false, false], approveHeld: true },
+      before: { labels: request.choices.map((choice) => choice.split("").join(" ")), shown: ["111 111", "222 222", "333 333"], checked: [false, false, false], approveHeld: true },
       after: { checked: [false, true, false], approveHeld: false },
     });
     expect(decided).toEqual([["approve", "222222"]]);

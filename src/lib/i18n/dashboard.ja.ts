@@ -11,7 +11,6 @@ export const DASHBOARD_JA: Record<string, string> = {
   "Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.": "{name} に接続しているアカウントのデバイスか、このリクエストが表示されていれば {name} 自体で、このデバイスを承認してください。",
   "Get approved on a device you already use": "使っているデバイスで承認を受ける",
   "Open {name} on a device you already use and keep it open. Then choose Ask to join and approve there.": "使っているデバイスで {name} を開いたままにします。それから「参加を申請」を選び、そのデバイスで承認します。",
-  "No other device? Pair with the QR code on {name} instead.": "ほかのデバイスがない場合は、代わりに {name} の QR コードでペアリングします。",
   "If {name} is waiting on its own screen to be added, type its number here instead.": "{name} が自身の画面で追加を待っている場合は、代わりにここでその番号を入力してください。",
   "Type the number": "番号を入力",
   "{name} shows no number? Ask to join instead.": "{name} に番号が表示されていませんか？ 代わりに参加を申請してください。",
