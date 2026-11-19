@@ -323,7 +323,7 @@ function addressFailureText(t: ReturnType<typeof useT>, error: unknown): string 
     case "not_ovis": return t("No Ovis that pairs devices answered at that address. Update Ovis there, or check the address.");
     case "added": return t("That PC is already added.");
     case "self": return t("That address is this PC's own Ovis.");
-    default: return error instanceof ApiError ? error.detail : t("That PC could not be added. Try again.");
+    default: return t("That PC could not be added. Try again.");
   }
 }
 
@@ -341,6 +341,10 @@ export function DirectTab({ found: { found, failed, withheld, stateOf, retry }, 
   const [adding, setAdding] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const codeRef = useRef<HTMLInputElement>(null);
+  // a second press before the first one's render would spend the same code twice
+  const pairing = useRef(false);
+  // the code admits whoever holds it: it is typed only where it cannot cross the network in clear (as an SSH password)
+  const secretAllowed = window.isSecureContext;
   const address = typed.trim();
   const ovis = OVIS_ADDRESS.test(address);
   const saved = machines.filter((machine) => machine.herdr_profile_id !== undefined && machine.action_required === "connect");
@@ -351,27 +355,33 @@ export function DirectTab({ found: { found, failed, withheld, stateOf, retry }, 
     if (address === "") return;
     if (!ovis) { onAddPc({ destination: address }); return; }
     const code = codeRef.current;
-    if (code === null || adding) return;
+    if (code === null || pairing.current || !secretAllowed) return;
+    pairing.current = true;
     setAdding(true);
     setFailure(null);
-    void addAddressPc(address, code.value.trim()).then(({ machine }) => { code.value = ""; onConnectMachine(machine); },
+    void addAddressPc(address, code.value.replace(/\s/g, "")).then(({ machine }) => { code.value = ""; onConnectMachine(machine); },
       (error: unknown) => setFailure(addressFailureText(t, error)))
-      .finally(() => setAdding(false));
+      .finally(() => { pairing.current = false; setAdding(false); });
   };
   return (
     <>
       <form className="connect-ssh-form" onSubmit={add}>
         <label className="settings-label" htmlFor={`${id}-address`}>{t("Address or SSH")}</label>
         <div className="connect-ssh-field">
-          <input id={`${id}-address`} className="input" type="text" value={typed} placeholder="user@host, desk.tailnet.ts.net, https://…" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-describedby={address === "" ? undefined : `${id}-kind`} onChange={(event) => setTyped(event.target.value)} />
-          <button type="submit" className="btn" disabled={address === "" || adding}>{t("Connect")}</button>
+          <input id={`${id}-address`} className="input" type="text" value={typed} placeholder="user@host, desk.tailnet.ts.net, https://…" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-describedby={address === "" ? undefined : `${id}-kind`} onChange={(event) => {
+            // a code typed for one PC is never sent to another
+            if (codeRef.current) codeRef.current.value = "";
+            setTyped(event.target.value);
+          }} />
+          <button type="submit" className="btn" disabled={address === "" || adding || (ovis && !secretAllowed)}>{t("Connect")}</button>
         </div>
         {address !== "" && <p className="settings-hint" id={`${id}-kind`} role="status" data-address-kind={ovis ? "ovis" : "ssh"}>{ovis
           ? t("Opens that PC's Ovis here. On that PC, open Settings → Devices and PCs → Add a connection → Phones and devices, and type the six-digit pairing code it shows. This PC can then drive that PC.")
           : t("An SSH address: Connect checks that PC's fingerprint first.")}</p>}
         {ovis && <>
           <label className="settings-label" htmlFor={`${id}-code`}>{t("Pairing code")}</label>
-          <input ref={codeRef} id={`${id}-code`} className="input connect-address-code" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="000000" required pattern="\d{6}" spellCheck={false} disabled={adding} />
+          <input ref={codeRef} id={`${id}-code`} className="input connect-address-code" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={7} placeholder="000000" required pattern="\d{3} ?\d{3}" spellCheck={false} disabled={adding || !secretAllowed} />
+          {!secretAllowed && <p className="settings-hint">{t("Needs HTTPS or localhost.")}</p>}
         </>}
         {failure !== null && <p className="settings-hint" role="alert">{failure}</p>}
       </form>

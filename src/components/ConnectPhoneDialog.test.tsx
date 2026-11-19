@@ -41,7 +41,9 @@ describe("Connect a phone on a phone", () => {
   let candidatesRefused: string | null;
   /** the bodies of POST /api/machines/address, and whether the next one is refused as a wrong code */
   let addressAsked: unknown[];
-  let addressWrong: boolean;
+  let addressRefusal: string | null;
+  /** holds the next answer of POST /api/machines/address until it resolves */
+  let addressGate: Promise<void> | null;
   let pending: string;
   let pairStarts: { code: string; gate: Promise<void> }[];
   /** what each POST /api/relay/offer said it is for (x-ovis-no-account-only), in the order the PC got them */
@@ -71,13 +73,15 @@ describe("Connect a phone on a phone", () => {
     extraCandidates = [];
     candidatesRefused = null;
     addressAsked = [];
-    addressWrong = false;
+    addressRefusal = null;
+    addressGate = null;
     for (const key of ["window", "document", "navigator", "getComputedStyle", "Capacitor", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Version/17.4 Mobile/15E148 Safari/604.1", maxTouchPoints: 5 } });
     const events = new EventTarget();
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      isSecureContext: true,
       location: { href: "https://workstation.example.ts.net/", assign: (url: string) => { assigned.push(url); } },
       addEventListener: events.addEventListener.bind(events),
       removeEventListener: events.removeEventListener.bind(events),
@@ -124,7 +128,8 @@ describe("Connect a phone on a phone", () => {
       ] });
       if (path === "/api/machines/address") {
         addressAsked.push(JSON.parse(String(init?.body)));
-        if (addressWrong) return Response.json({ error: { code: "address_pc_wrong_code", message: "the server's own words" } }, { status: 400 });
+        if (addressGate) await addressGate;
+        if (addressRefusal !== null) return Response.json({ error: { code: addressRefusal, message: "the server's own words" } }, { status: 400 });
         return Response.json({ machine: { id: "desk", name: "desk.tail.ts.net", kind: "address", address: "https://desk.tail.ts.net:7317", enabled: true, state: "connecting", error: null, snapshot: null } }, { status: 201 });
       }
       if (path === "/api/relay/code") { pending = "777111"; pendingOwn = false; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID }); }
@@ -517,14 +522,14 @@ describe("Connect a phone on a phone", () => {
     await type("https://desk.tail.ts.net:7317");
     expect(kind()).toEqual(["ovis"]);
     expect(renderer!.root.findAllByType("input")[1]!.props.autoComplete).toBe("one-time-code");
-    addressWrong = true;
+    addressRefusal = "address_pc_wrong_code";
     code.value = "123450 ";
     await submit();
     expect(addressAsked).toEqual([{ address: "https://desk.tail.ts.net:7317", code: "123450" }]);
     expect(renderer!.root.findByProps({ role: "alert" }).children.join("")).toBe("That code is wrong, spent or expired. Show a new code on that PC and type it.");
     expect(code.value).toBe("123450 ");
     expect(connected).toEqual([]);
-    addressWrong = false;
+    addressRefusal = null;
     code.value = "123456";
     await submit();
     expect(addressAsked.at(-1)).toEqual({ address: "https://desk.tail.ts.net:7317", code: "123456" });
@@ -541,6 +546,77 @@ describe("Connect a phone on a phone", () => {
     expect(kind()).toEqual(["ssh"]);
     await submit();
     expect(added).toEqual([{ destination: "dev@10.0.0.5" }]);
+  });
+
+  it("words every refusal of an address in the app's language, and pairs once however often Connect is pressed", async () => {
+    const code = { value: "123456" };
+    await act(async () => {
+      renderer = create(<SettingsProvider><Direct machines={[]} onAddPc={() => undefined} onConnectMachine={() => undefined} /></SettingsProvider>,
+        { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
+    });
+    await flushReads();
+    await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value: "https://desk.tail.ts.net" } }); });
+    const submit = async () => { await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); }); };
+    const words: Record<string, string> = {
+      address_pc_address: "Enter only that PC's Ovis address, starting with https://",
+      address_pc_target: "That address cannot be another PC's Ovis.",
+      address_pc_code: "Type the six-digit code that PC shows.",
+      address_pc_wrong_code: "That code is wrong, spent or expired. Show a new code on that PC and type it.",
+      address_pc_waiting: "That PC refuses codes for a while after wrong ones. Wait a minute, then try again.",
+      address_pc_unreachable: "No PC answered at that address. Check it, and that Ovis runs there.",
+      address_pc_not_ovis: "No Ovis that pairs devices answered at that address. Update Ovis there, or check the address.",
+      address_pc_added: "That PC is already added.",
+      address_pc_self: "That address is this PC's own Ovis.",
+      invalid_body: "That PC could not be added. Try again.",
+    };
+    for (const [refusal, said] of Object.entries(words)) {
+      addressRefusal = refusal;
+      await submit();
+      expect([refusal, renderer!.root.findByProps({ role: "alert" }).children.join("")]).toEqual([refusal, said]);
+    }
+    addressAsked = [];
+    let open = () => undefined as void;
+    addressGate = new Promise((resolve) => { open = resolve; });
+    await act(async () => {
+      const form = renderer!.root.findByType("form");
+      form.props.onSubmit({ preventDefault() {} });
+      form.props.onSubmit({ preventDefault() {} });
+    });
+    await act(async () => { open(); });
+    await flushReads();
+    expect(addressAsked).toHaveLength(1);
+  });
+
+  it("sends a pairing code only from a secure page, never one typed for another address, and takes it as that PC shows it", async () => {
+    const code = { value: "" };
+    const mountDirect = async () => {
+      await act(async () => {
+        renderer = create(<SettingsProvider><Direct machines={[]} onAddPc={() => undefined} onConnectMachine={() => undefined} /></SettingsProvider>,
+          { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
+      });
+      await flushReads();
+    };
+    const type = async (value: string) => { await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value } }); }); };
+    const submit = async () => { await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); }); };
+    (window as { isSecureContext: boolean }).isSecureContext = false;
+    await mountDirect();
+    await type("https://desk.tail.ts.net");
+    expect(renderer!.root.findAllByType("input")[1]!.props.disabled).toBe(true);
+    expect(renderer!.root.findByProps({ type: "submit" }).props.disabled).toBe(true);
+    expect(text(renderer!.root)).toContain("Needs HTTPS or localhost.");
+    code.value = "123456";
+    await submit();
+    expect(addressAsked).toEqual([]);
+    await act(async () => { renderer!.unmount(); });
+    (window as { isSecureContext: boolean }).isSecureContext = true;
+    await mountDirect();
+    await type("https://desk.tail.ts.net");
+    code.value = "012 345";
+    await type("https://other.tail.ts.net");
+    expect(code.value).toBe("");
+    code.value = "012 345";
+    await submit();
+    expect(addressAsked).toEqual([{ address: "https://other.tail.ts.net", code: "012345" }]);
   });
 
   it("offers the ssh config hosts and the PCs saved in herdr one press each, and the guide for opening a PC from outside", async () => {
