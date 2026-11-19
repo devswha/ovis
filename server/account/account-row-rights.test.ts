@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { accountRowMay, type AccountCaller, type RowAction } from "./account-row-rights.ts";
+import { accountRouteAction, accountRowMay, type AccountCaller, type RowAction } from "./account-row-rights.ts";
 
 const self: AccountCaller = { rowId: "row-self", key: "k-self", state: "live" };
 const held: AccountCaller = { ...self, state: "hold" };
@@ -61,5 +61,26 @@ describe("S2-26 what an account-joined row may do (T36, T37, T40, R3 to R10)", (
   test("R9: push ends with the row and webhook is refused", () => {
     expect(accountRowMay(self, { action: "push_subscribe" })).toEqual({ ok: true });
     expect(accountRowMay(self, { action: "webhook" })).toEqual({ refused: "member_required" });
+  });
+});
+
+describe("S2-26 every route an account-joined caller reaches maps to one rights check (R1 to R10)", () => {
+  test("R1 to R10: the routes map to their actions; any other route needs no extra check", () => {
+    const cases: [string, string, RowAction | null][] = [
+      ["PATCH", "/api/devices/aaaaaaaaaaaaaaaa", { action: "label", rowId: "aaaaaaaaaaaaaaaa" }],
+      ["DELETE", "/api/devices/aaaaaaaaaaaaaaaa", { action: "revoke", rowId: "aaaaaaaaaaaaaaaa" }],
+      ["POST", "/api/devices/revoke-all", { action: "revoke_all" }],
+      ["POST", "/api/devices/pair/start", { action: "pair_start" }],
+      ["POST", "/api/devices/pair/cancel", { action: "pair_cancel" }],
+      ["POST", "/api/account/link", { action: "link" }],
+      ["POST", "/api/account/enroll", { action: "enroll" }],
+      ["POST", "/api/account/relay-account", { action: "relay_account" }],
+      ["POST", "/api/alerts/webhook", { action: "webhook" }],
+      ["GET", "/api/machines/other-pc/api/sessions", { action: "route", machine: "other-pc" }],
+      ["GET", "/api/machines/local/api/sessions", { action: "route", machine: "local" }],
+      ["POST", "/api/push/subscribe", { action: "push_subscribe" }],
+      ["GET", "/api/sessions", null],
+    ];
+    for (const [method, path, action] of cases) expect({ method, path, action: accountRouteAction(method, path) }).toEqual({ method, path, action });
   });
 });
