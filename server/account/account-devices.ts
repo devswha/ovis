@@ -16,6 +16,8 @@ export { accountRowsFor } from "./account-row-source.ts";
 export const ACCOUNT_DEVICES_FILE = "account-devices.json";
 export const ACCOUNT_DEVICES_MAX = 100;
 /** Section 5: a row this PC saw no sign-in of for this many days expires here, whatever the service says. */
+/** T56: with no whole read for this long, every account-joined row waits for one again. */
+export const STALE_READ_MS = 60 * 60_000;
 export { EXPIRY_DAYS } from "./row-expiry.ts";
 
 const iso = (at: number): string => new Date(at).toISOString();
@@ -26,6 +28,11 @@ export class AccountDeviceStore implements AccountRowSource {
   private readonly path: string;
   private file: DevicesFile;
   private readonly pendingDrops: JournalEntry[] = [];
+  /**
+   * Rows waiting for a whole read (S22), in memory only: after a start every row waits, since a block may have been
+   * signed while the PC was off (T41), and no time ends the wait. A whole read or `release` ends it.
+   */
+  private readonly waiting = new Set<string>();
 
   constructor(stateDir: string, private readonly serverId: string, private readonly ports: AccountRowPorts,
     private readonly rowsChanged?: (rows: readonly AccountRow[]) => void) {
@@ -43,6 +50,7 @@ export class AccountDeviceStore implements AccountRowSource {
       this.write(CLEARED);
     }
     // Finish a promotion interrupted between the member write and the list-row removal.
+    for (const row of this.rows()) if (row.state !== "expired") this.waiting.add(row.id);
     if (!foreign && this.file.devices.length !== file.devices.length) this.write(this.file);
     else if (this.error === null && !this.missing()) ports.settleNotices?.(this.file.devices);
   }
@@ -110,6 +118,7 @@ export class AccountDeviceStore implements AccountRowSource {
     const row = this.rows().find((candidate) => candidate.id === id);
     if (!row) return { refused: "not_listed" };
     if (row.state === "expired") return { refused: "expired" };
+    if (this.waiting.has(id)) return { refused: "catching_up" };
     if (row.state === "live") return { ok: true };
     const seconds = holdSecondsLeft(row.hold_until === null ? null : Date.parse(row.hold_until), this.ports.now());
     if (seconds === null || seconds > 0) return { refused: "join_hold", seconds };
@@ -176,6 +185,22 @@ export class AccountDeviceStore implements AccountRowSource {
       && row.key === proved.key && row.origin.admit_no === proved.origin.admit_no;
   }
 
+  /** T56: the last whole read is STALE_READ_MS old: every row waits for the next one, its sessions closed. */
+  staleness(lastWholeReadAt: number): void {
+    if (this.ports.now() - lastWholeReadAt < STALE_READ_MS) return;
+    for (const row of this.rows()) this.wait(row);
+  }
+
+  /**
+   * T70: `ovis recover` names rows the PC already holds; each is let out of the wait until the next whole read, which
+   * judges it again, or the next start. Returns the keys released.
+   */
+  release(keys: readonly string[]): string[] {
+    const named = this.rows().filter((row) => keys.includes(row.key) && this.waiting.has(row.id));
+    for (const row of named) this.waiting.delete(row.id);
+    return named.map((row) => row.key);
+  }
+
   /** Publishes again every notice that could not be published: until it is, its row stays held. */
   republish(): void {
     for (const row of this.rows()) {
@@ -195,6 +220,15 @@ export class AccountDeviceStore implements AccountRowSource {
     const forgotten = new Set(leaving.filter((row) => row.state === "expired").map((row) => row.id));
     if (forgotten.size > 0) this.write({ ...this.file, devices: this.file.devices.filter((row) => !forgotten.has(row.id)) });
     const dropped = this.drop(leaving.filter((row) => !forgotten.has(row.id)), "list", this.ports.closeSessions);
+
+    // T42: every row the read still names is judged again; ending a wait is an admission and asks the guard
+    for (const row of this.file.devices) {
+      if (row.state === "expired") continue;
+      if (!this.ports.admits(row.key, list.account)) { this.wait(row); continue; }
+      if (!this.waiting.delete(row.id) || row.state !== "hold") continue;
+      const until = iso(this.ports.now() + JOIN_HOLD_MS);
+      this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate.id === row.id ? { ...candidate, hold_until: candidate.hold_until === null ? null : until } : candidate) });
+    }
 
     // rows admitted from here on belong to this read's account and snapshot
     this.write({ ...this.file, account: list.account, snapshot: list.snapshot, version: list.version });
@@ -227,6 +261,12 @@ export class AccountDeviceStore implements AccountRowSource {
     this.usable();
     this.drop(this.file.devices, reason, this.ports.closeSessions);
     this.write({ ...this.file, account: null, snapshot: null });
+  }
+
+  private wait(row: AccountRow): void {
+    if (row.state === "expired" || this.waiting.has(row.id)) return;
+    this.waiting.add(row.id);
+    this.ports.closeSessions(row.id, "catching_up");
   }
 
   private admit(entry: SnapshotDevice, bypass: boolean): boolean {
@@ -266,6 +306,7 @@ export class AccountDeviceStore implements AccountRowSource {
       try { this.ports.journal(entry); }
       catch (error) { failure ??= error instanceof Error ? error : new Error(String(error)); }
     }
+    for (const id of ids) this.waiting.delete(id);
     this.write(this.file);
     if (failure) throw failure;
     return rows.map((row) => row.key);

@@ -5,7 +5,7 @@ import type { RowDrop } from "./row-drop-evidence.ts";
 import type { Sayer } from "./join-hold.ts";
 import type { Readmission } from "./readmission.ts";
 
-export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke" | "expired";
+export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke" | "expired" | "catching_up";
 
 /**
  * What Track A's deny path (DeviceStore.attachAccountRows, set only with OVIS_ACCOUNT_OPENS_ALL=1) asks of the
@@ -49,7 +49,7 @@ export interface JournalEntry extends Pick<SnapshotDevice, "provider" | "two_ste
   readonly by?: string;
 }
 
-export type AccessAnswer = { readonly ok: true } | { readonly refused: "join_hold"; readonly seconds: number | null } | { readonly refused: "admission" | "not_listed" | "expired" };
+export type AccessAnswer = { readonly ok: true } | { readonly refused: "join_hold"; readonly seconds: number | null } | { readonly refused: "admission" | "not_listed" | "expired" | "catching_up" };
 
 export interface AccountRowPorts {
   admitListedRows(write: () => readonly string[]): string[];

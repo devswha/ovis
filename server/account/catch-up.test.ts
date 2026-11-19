@@ -16,6 +16,8 @@ function machine() {
   const events: string[] = [];
   const frozen = new Set<string>();
   const ports: AccountRowPorts = {
+    admitListedRows: write => [...write()],
+    hasNoticeSlot: () => true,
     journal: (entry) => { events.push(`journal ${entry.kind} ${nameOf(entry.key)}`); },
     closeSessions: (rowId, reason) => { events.push(`close ${rowId} ${reason}`); },
     heldByDevicesJson: () => false,
