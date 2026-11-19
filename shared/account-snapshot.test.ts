@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { exportAccountKey, newRecordId, signSafetyRecord } from "./account-records.ts";
-import { AccountSnapshotError, assembleSnapshot, parseAccountDevicesFile, parseSnapshotPage, type AccountSnapshotPage } from "./account-snapshot.ts";
+import { ACCOUNT_ROWS_MAX, AccountSnapshotError, SNAPSHOT_PAGE_MAX, assembleSnapshot, parseAccountDevicesFile, parseSnapshotPage, type AccountSnapshotPage } from "./account-snapshot.ts";
 
 async function key() {
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
@@ -69,6 +69,25 @@ describe("account snapshot pages (device table P6, G1)", () => {
     ];
     for (const value of bad) expect(() => parseSnapshotPage(value)).toThrow();
   });
+
+  test("a page holds one account's records only, and a bad nested record is a bad page (P6)", async () => {
+    const elsewhere = await signSafetyRecord({ v: 1, kind: "block", account: "acct_2", target: newer.spki, target_no: 2, signer: older.spki, signer_no: 1, signed_at: at, nonce: newRecordId() }, older.pair.privateKey);
+    const liftElsewhere = await signSafetyRecord({ v: 1, kind: "lift", account: "acct_2", target: elsewhere.id, signer: older.spki, signer_no: 1, signed_at: at }, older.pair.privateKey);
+    for (const value of [page({ blocks: [elsewhere] }), page({ lifts: [liftElsewhere] }), { ...page(), blocks: [null] }, { ...page(), lifts: [{ ...lift, id: "c".repeat(64) }] }]) {
+      expect(() => parseSnapshotPage(value)).toThrow(AccountSnapshotError);
+    }
+  });
+
+  test("every list of a page is bounded; the service pages longer ones", () => {
+    const many = <T>(entry: T) => Array.from({ length: SNAPSHOT_PAGE_MAX + 1 }, () => entry);
+    const full = page({ devices: Array.from({ length: SNAPSHOT_PAGE_MAX }, () => page().devices[0]!) });
+    expect(parseSnapshotPage(full).devices.length).toBe(SNAPSHOT_PAGE_MAX);
+    const over = [
+      page({ devices: many(page().devices[0]!) }), page({ removed: many(page().removed[0]!) }), page({ blocks: many(block) }),
+      page({ lifts: many(lift) }), page({ freezes: many(page().freezes[0]!) }),
+    ];
+    for (const value of over) expect(() => parseSnapshotPage(value)).toThrow(AccountSnapshotError);
+  });
 });
 
 describe("account-devices.json (device table S21, S25, P22)", () => {
@@ -106,6 +125,11 @@ describe("account-devices.json (device table S21, S25, P22)", () => {
       { ...file, devices: [{ ...row, state: "live" }] }, { ...file, devices: [{ ...row, hold_until: "soon" }] },
       { ...file, devices: [{ ...row, origin: { ...row.origin, from: "list" } }] }, { ...file, devices: [{ ...row, origin: { ...row.origin, admit_no: 0 } }] },
       { ...file, devices: [{ ...row, origin: { ...row.origin, by: "someone" } }] }, { ...file, devices: [{ ...row, last_signin_day: "5 Nov" }] },
+      { ...file, devices: [{ ...row, last_signin_day: "2026-02-31" }] },
+      // P22: `pc` is only a key confirmed on this PC's screen, by a code, digits or a QR; `legacy` goes with `legacy`
+      { ...file, devices: [{ ...row, origin: { ...row.origin, from: "pc", how: "list" } }] }, { ...file, devices: [{ ...row, origin: { ...row.origin, from: "pc", how: "link" } }] },
+      { ...file, devices: [{ ...row, origin: { ...row.origin, from: "legacy", how: "list" } }] }, { ...file, devices: [{ ...row, origin: { ...row.origin, from: "remote", how: "legacy" } }] },
+      { ...file, devices: Array.from({ length: ACCOUNT_ROWS_MAX + 1 }, (_, i) => ({ ...row, id: i.toString(16).padStart(16, "0") })) },
     ];
     for (const value of bad) expect(() => parseAccountDevicesFile(value)).toThrow(AccountSnapshotError);
   });

@@ -156,6 +156,13 @@ describe("safety records (device table P24, P16)", () => {
     }
   });
 
+  test("a block's numbers are claims the PC judges, so a signer later in the account's order still parses (P21 b)", async () => {
+    const later = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: other.spki, target_no: 2, signer: signer.spki, signer_no: 5, signed_at: issued, nonce: newRecordId() }, signer.pair.privateKey);
+    expect(parseSafetyRecord(JSON.parse(JSON.stringify(later)))).toEqual(later);
+    await expect(signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: signer.spki, target_no: 5, signer: signer.spki, signer_no: 2, signed_at: issued, nonce: newRecordId() }, signer.pair.privateKey))
+      .rejects.toThrow(AccountRecordError);
+  });
+
   test("records the PC writes parse with a random id and no signature", () => {
     const blockId = "a".repeat(64);
     const written = [

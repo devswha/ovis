@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { exportAccountKey, newRecordId, signSafetyRecord } from "./account-records.ts";
 import {
-  AccountDevicesApiError, accountOpensAll, parseBlockReceipt, parseNoticeAnswer, parseRecoveryAction,
+  AccountDevicesApiError, accountOpensAll, blockOutcome, parseBlockReceipt, parseNoticeAnswer, parseRecoveryAction, type HoldState, type PcBlockOutcome,
 } from "./account-devices-api.ts";
 
 async function key() {
@@ -64,6 +64,20 @@ describe("block receipts (device table T51, T60)", () => {
     ];
     for (const value of bad) expect(() => parseBlockReceipt(value)).toThrow(AccountDevicesApiError);
   });
+
+  test("what the app shows for a PC is the PC's own receipt, so a refusal is never done (T60)", () => {
+    const serverId = "0123456789abcdef0123456789abcdef";
+    const receipts = [{ outcome: "applied", id: block.id, n: 3 }, { outcome: "already_applied", id: block.id }, { outcome: "refused", id: block.id, reason: "frozen" }] as const;
+    expect(receipts.map((receipt) => blockOutcome(serverId, receipt).state)).toEqual(["applied", "already_applied", "refused"]);
+    // @ts-expect-error an applied state never carries a refused receipt
+    const wrong: PcBlockOutcome = { server_id: serverId, state: "applied", receipt: receipts[2] };
+    expect(wrong.state).toBe("applied");
+  });
+});
+
+test("a join hold has no deadline until its notice is durably published (P17, T34)", () => {
+  const holds: HoldState[] = [{ reason: "join_hold", until: null }, { reason: "join_hold", until: at }];
+  expect(holds.map((hold) => hold.reason === "join_hold" && hold.until)).toEqual([null, at]);
 });
 
 describe("recovery actions (device table R11)", () => {
