@@ -13,13 +13,13 @@ export function recordConfirmation(endpoint: string, sent: boolean, storage: Con
   try { storage?.setItem(PUSH_CONFIRM_KEY, JSON.stringify({ endpoint, sent })); } catch {}
 }
 
-/** what the PC answers `/api/push/test` with when it could not push (server/push.ts): the push service refused or retired the subscription, the PC does not hold it, or the PC failed making the push */
-const COULD_NOT_PUSH = new Set(["push_failed", "subscription_gone", "subscription_not_found", "internal_error"]);
+/** what `/api/push/test` itself answers when it could not push (server/push.ts): the push service refused or retired the subscription, or the PC does not hold it */
+const COULD_NOT_PUSH = new Set(["push_failed", "subscription_gone", "subscription_not_found"]);
 
 /**
- * A Send test that failed is kept only when the PC answered that it could not push. Anything else (the network, a
- * restart or a proxy in between, a lapsed sign-in, a watching device) says nothing of delivery, and an earlier result
- * stays.
+ * A Send test that failed is kept only when the push route answered that it could not push. Anything else (the
+ * network, a restart or a proxy in between, a lapsed sign-in, a watching device, the PC's catch-all 500, which any
+ * route can answer before the push is tried) says nothing of delivery, and an earlier result stays.
  */
 export function recordTestFailure(endpoint: string, error: unknown, storage: ConfirmStorage | null = browserStorage()): void {
   if (error instanceof ApiError && error.code !== null && COULD_NOT_PUSH.has(error.code)) recordConfirmation(endpoint, false, storage);

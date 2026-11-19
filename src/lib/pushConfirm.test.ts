@@ -23,11 +23,11 @@ describe("the confirmation push's outcome", () => {
   it("keeps a Send test's failure only when the PC answered that it could not push", () => {
     const storage = memory();
     recordConfirmation("https://push.example/1", true, storage);
-    for (const unanswered of [new TypeError("Failed to fetch"), new ApiError("/api/push/test", 503, "restarting", "unavailable"), new ApiError("/api/push/test", 502, "Bad Gateway", null), new ApiError("/api/push/test", 401, "signed out", "unauthorized"), new ApiError("/api/push/test", 403, "read only", "read_only")]) {
+    for (const unanswered of [new TypeError("Failed to fetch"), new ApiError("/api/push/test", 503, "restarting", "unavailable"), new ApiError("/api/push/test", 502, "Bad Gateway", null), new ApiError("/api/push/test", 401, "signed out", "unauthorized"), new ApiError("/api/push/test", 500, "internal error", "internal_error"), new ApiError("/api/push/test", 403, "read only", "read_only")]) {
       recordTestFailure("https://push.example/1", unanswered, storage);
       expect(confirmation("https://push.example/1", storage)).toBe(true);
     }
-    for (const [status, code] of [[502, "push_failed"], [410, "subscription_gone"], [404, "subscription_not_found"], [500, "internal_error"]] as const) {
+    for (const [status, code] of [[502, "push_failed"], [410, "subscription_gone"], [404, "subscription_not_found"]] as const) {
       recordConfirmation("https://push.example/1", true, storage);
       recordTestFailure("https://push.example/1", new ApiError("/api/push/test", status, "failed", code), storage);
       expect(confirmation("https://push.example/1", storage)).toBe(false);
