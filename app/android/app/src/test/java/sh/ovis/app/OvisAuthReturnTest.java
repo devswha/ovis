@@ -38,6 +38,42 @@ public class OvisAuthReturnTest {
     }
 
     @Test
+    public void theFragmentIsReadBeforeTheQuery() {
+        assertTrue(OvisAuthPlugin.isOwnReturn("ovis://account/callback?code=c0de&state=other#code=c0de&state=" + STATE, STATE));
+        assertFalse(OvisAuthPlugin.isOwnReturn("ovis://account/callback?code=c0de&state=" + STATE + "#code=c0de&state=other", STATE));
+    }
+
+    @Test
+    public void anEmptyFragmentFallsBackToTheQuery() {
+        assertTrue(OvisAuthPlugin.isOwnReturn("ovis://account/callback?code=c0de&state=" + STATE + "#", STATE));
+    }
+
+    @Test
+    public void anAddressWithNoFieldsIsIgnored() {
+        assertFalse(OvisAuthPlugin.isOwnReturn("ovis://account/callback", STATE));
+        assertFalse(OvisAuthPlugin.isOwnReturn("ovis://account/callback#", STATE));
+        assertFalse(OvisAuthPlugin.isOwnReturn("ovis://account/callback?", STATE));
+    }
+
+    @Test
+    public void theFirstStateNamedWins() {
+        assertTrue(OvisAuthPlugin.isOwnReturn("ovis://account/callback#state=" + STATE + "&state=other&code=c0de", STATE));
+        assertFalse(OvisAuthPlugin.isOwnReturn("ovis://account/callback#state=other&state=" + STATE + "&code=c0de", STATE));
+    }
+
+    @Test
+    public void namesAndValuesArePercentDecoded() {
+        assertTrue(OvisAuthPlugin.isOwnReturn("ovis://account/callback#co%64e=c0de&state=s%2Bq%3D", "s+q="));
+        assertFalse(OvisAuthPlugin.isOwnReturn("ovis://account/callback#code=c0de&state=s%2Bq%3D", "s%2Bq%3D"));
+    }
+
+    @Test
+    public void aMalformedEscapeIsIgnored() {
+        assertFalse(OvisAuthPlugin.isOwnReturn("ovis://account/callback#code=a%zzb&state=" + STATE, STATE));
+        assertFalse(OvisAuthPlugin.isOwnReturn("ovis://account/callback#code=c0de&state=" + STATE + "%", STATE));
+    }
+
+    @Test
     public void aReturnWithNeitherCodeNorErrorIsIgnored() {
         assertFalse(OvisAuthPlugin.isOwnReturn("ovis://account/callback#state=" + STATE, STATE));
         assertFalse(OvisAuthPlugin.isOwnReturn("ovis://account/callback#code=c0de&state=" + STATE, null));
