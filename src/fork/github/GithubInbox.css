@@ -139,6 +139,8 @@
 }
 
 .fork-github-summary {
+  /* holds a draft's hidden "Draft:" words: placed against the page, they would make it scroll */
+  position: relative;
   display: grid;
   flex: 1 1 auto;
   min-width: 0;
