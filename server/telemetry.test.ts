@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1220,6 +1221,122 @@ describe("daily usage", () => {
 });
 
 describe("another server on the same state directory", () => {
+  test.each(["active", "install", "update"] as const)("an off first seen on the final re-read stops the %s POST", async (event) => {
+    const { telemetry, sent, actives, clock, stateDir, fireTimer } = setup({
+      grace: 60_000, previous: event === "update" ? "0.4.0" : null,
+    });
+    const other = setup({ stateDir, grace: 60_000 });
+    seen(telemetry);
+    if (event === "active") await telemetry.active(["claude"]);
+    clock.now += 60_000;
+
+    const accessSync = fs.accessSync;
+    let readsBeforeMark = event === "active" ? 1 : 2;
+    const access = spyOn(fs, "accessSync").mockImplementation((path, mode) => {
+      accessSync(path, mode);
+      if (path === stateDir && !existsSync(join(stateDir, "telemetry.lock")) && --readsBeforeMark === 0) {
+        // The other server has marked off and is paused before updating telemetry.json.
+        writeFileSync(join(stateDir, "telemetry-off"), "");
+      }
+    });
+    try {
+      if (event === "active") fireTimer();
+      else await telemetry.report();
+      await settled();
+    } finally { access.mockRestore(); telemetry.stop(); }
+    expect(other.telemetry.status().enabled).toBe(false);
+    expect(event === "active" ? actives : sent).toEqual([]);
+  });
+
+  test("an on cannot erase an off marked after its last observation of the old mark", () => {
+    const { telemetry, stateDir } = setup();
+    const other = setup({ stateDir });
+    telemetry.change({ enabled: false });
+    const off = join(stateDir, "telemetry-off");
+    const file = join(stateDir, "telemetry.json");
+    const statSync = fs.statSync;
+    const lstatSync = fs.lstatSync;
+    const renameSync = fs.renameSync;
+    let persisted = false;
+    let marked = false;
+    const rename = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      renameSync(from, to);
+      if (to === file) persisted = true;
+    });
+    const interleave: ProxyHandler<fs.StatSyncFn> = {
+      apply(target, receiver, args) {
+        const result = Reflect.apply(target, receiver, args);
+        if (args[0] === off && persisted && !marked) {
+          marked = true;
+          // The other server has written a fresh off mark and has not taken the state lock yet.
+          writeFileSync(off, "a newer off");
+        }
+        return result;
+      },
+    };
+    const stat = spyOn(fs, "statSync").mockImplementation(new Proxy(statSync, interleave));
+    const lstat = spyOn(fs, "lstatSync").mockImplementation(new Proxy(lstatSync, interleave));
+    try { telemetry.change({ enabled: true }); }
+    finally { lstat.mockRestore(); stat.mockRestore(); rename.mockRestore(); }
+    expect(marked).toBe(true);
+    expect(other.telemetry.status().enabled).toBe(false);
+  });
+
+  test("each active POST uses the usage re-read under the lock for that day", async () => {
+    const held = Promise.withResolvers<Response>();
+    const started = Promise.withResolvers<void>();
+    const actives: TelemetryActive[] = [];
+    const first = setup({
+      grace: 2 * 86_400_000,
+      fetch: Object.assign(async (url: string | URL | Request, init?: RequestInit) => {
+        if (String(url) === TEST_ACTIVE_URL) {
+          actives.push(JSON.parse(String(init?.body)));
+          if (actives.length === 1) { started.resolve(); return held.promise; }
+        }
+        return new Response(null, { status: 204 });
+      }, { preconnect: fetch.preconnect }),
+    });
+    const other = setup({ stateDir: first.stateDir, now: "2026-10-09T12:00:00Z" });
+    seen(first.telemetry);
+    await first.telemetry.active(["claude"]);
+    first.clock.now += 86_400_000;
+    await first.telemetry.active(["claude"]);
+    first.clock.now += 86_400_000;
+
+    first.fireTimer();
+    await started.promise;
+    other.telemetry.tally("prompt_answers");
+    held.resolve(new Response(null, { status: 204 }));
+    await settled();
+    expect(actives.map(({ day, usage }) => [day, usage.prompt_answers])).toEqual([
+      ["2026-10-08", 0], ["2026-10-09", 1],
+    ]);
+  });
+
+  test("another server waits for an active POST and can retry the sample after refusal", async () => {
+    const held = Promise.withResolvers<Response>();
+    const started = Promise.withResolvers<void>();
+    const first = setup({
+      fetch: Object.assign(async (url: string | URL | Request) => {
+        if (String(url) === TEST_ACTIVE_URL) { started.resolve(); return held.promise; }
+        return new Response(null, { status: 204 });
+      }, { preconnect: fetch.preconnect }),
+    });
+    seen(first.telemetry);
+    const other = setup({ stateDir: first.stateDir });
+    const sending = first.telemetry.active(["claude"]);
+    await started.promise;
+    try {
+      await other.telemetry.active(["claude"]);
+      expect(other.actives).toEqual([]);
+    } finally {
+      held.resolve(new Response(null, { status: 503 }));
+      await sending;
+    }
+    await other.telemetry.active(["claude"]);
+    expect(other.actives).toHaveLength(1);
+  });
+
   /** Its lines are written synchronously: a buffered write might never leave before the blocking read. */
   async function pausedWriter(stateDir: string, call: string) {
     const script = `
@@ -1421,6 +1538,31 @@ describe("another server on the same state directory", () => {
 });
 
 describe("/api/telemetry", () => {
+  test("POST reports 503 if another server takes over the lock before the change is saved", async () => {
+    const { telemetry, stateDir } = setup();
+    const other = setup({ stateDir });
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => handleTelemetryRequest(request, telemetry) });
+    const lock = join(stateDir, "telemetry.lock");
+    const temp = join(stateDir, `telemetry.json.${process.pid}.tmp`);
+    const writeFileSync = fs.writeFileSync;
+    const write = spyOn(fs, "writeFileSync").mockImplementation((path, data, options) => {
+      writeFileSync(path, data, options);
+      if (path === temp) {
+        write.mockRestore();
+        const stale = new Date(Date.now() - 10 * 60_000);
+        utimesSync(lock, stale, stale);
+        other.telemetry.change({ enabled: false });
+      }
+    });
+    try {
+      const request = telemetryPost({ notice_seen: true, notice_version: NOTICE_VERSION });
+      const response = await fetch(new URL("/api/telemetry", server.url), request);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ error: { code: "file_busy" } });
+      expect(other.telemetry.status()).toMatchObject({ enabled: false, notice_seen: false });
+    } finally { write.mockRestore(); server.stop(true); }
+  });
+
   const post = (body: unknown, headers: Record<string, string> = { "x-herdr-update": "1" }) =>
     new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
 
@@ -1478,6 +1620,61 @@ describe("/api/telemetry", () => {
 });
 
 describe("telemetry counts", () => {
+  test("a counts POST completed after an off and on leaves the new generation's batch for the same day", async () => {
+    const held = Promise.withResolvers<Response>();
+    const started = Promise.withResolvers<void>();
+    const first = setup({
+      countsOn: true,
+      fetch: Object.assign(async (url: string | URL | Request) => {
+        if (String(url) === TEST_COUNTS_URL) { started.resolve(); return held.promise; }
+        return new Response(null, { status: 204 });
+      }, { preconnect: fetch.preconnect }),
+    });
+    const other = setup({ stateDir: first.stateDir, countsOn: true });
+    seen(first.telemetry);
+    first.telemetry.tallyCounts({ width: "wide", add: { chat_send: 1 }, shown: [], generation: 0 });
+    first.clock.now += 86_400_000;
+    await first.telemetry.active([]);
+    await started.promise;
+
+    other.telemetry.change({ enabled: false });
+    const { counts_generation: generation } = other.telemetry.change({ enabled: true });
+    other.telemetry.tallyCounts({ width: "wide", add: { chat_send: 5 }, shown: [], generation });
+    held.resolve(new Response(null, { status: 204 }));
+    await settled();
+    other.clock.now += 86_400_000;
+    await other.telemetry.active([]);
+    expect(other.counts.map(({ day, wide }) => [day, wide?.counts])).toEqual([["2026-10-08", { chat_send: 2 }]]);
+  });
+
+  test("another server does not send a counts day while its POST is in flight", async () => {
+    const held = Promise.withResolvers<Response>();
+    const started = Promise.withResolvers<void>();
+    const first = setup({
+      countsOn: true,
+      fetch: Object.assign(async (url: string | URL | Request) => {
+        if (String(url) === TEST_COUNTS_URL) { started.resolve(); return held.promise; }
+        return new Response(null, { status: 204 });
+      }, { preconnect: fetch.preconnect }),
+    });
+    const other = setup({ stateDir: first.stateDir, countsOn: true });
+    seen(first.telemetry);
+    first.telemetry.tallyCounts({ width: "wide", add: { chat_send: 1 }, shown: [], generation: 0 });
+    first.clock.now += 86_400_000;
+    other.clock.now = first.clock.now;
+    await first.telemetry.active([]);
+    await started.promise;
+    try {
+      await other.telemetry.active([]);
+      expect(other.counts).toEqual([]);
+    } finally {
+      held.resolve(new Response(null, { status: 503 }));
+      await settled();
+    }
+    await other.telemetry.active([]);
+    expect(other.counts).toHaveLength(1);
+  });
+
   test("a day still waiting is not sent once another server on the same state turned the counts off and on again", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
     dirs.push(stateDir);
