@@ -379,6 +379,25 @@ describe("what ends a card's wait, and what it leaves", () => {
     expect(h.alerts).not.toContain("blocked");
   });
 
+  it("keeps a wait on through a snapshot read that finished after a newer one, naming the session before it", async () => {
+    serving(true);
+    const h = await started(codexSession("one"));
+    const land = await h.heldSnapshot();
+    // a newer read names the next session, and its card is waited on
+    h.herdrSays(codexSession("two"));
+    await h.snapshot();
+    screen(question);
+    await h.status.cardTick();
+    expect(h.status.cards.waiting("t1")).toBe(true);
+    const alerts = waitingAlerts(h.alerts);
+    // the older read, begun under the first session, finishes now
+    await land();
+    await h.snapshot();
+    await h.status.cardTick();
+    expect(h.status.cards.waiting("t1")).toBe(true);
+    expect(waitingAlerts(h.alerts)).toBe(alerts);
+  });
+
   it("starts no wait for an agent from the read of the one it replaced in the pane", async () => {
     serving(true);
     const h = await started(pane("codex", "working"));

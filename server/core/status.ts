@@ -186,8 +186,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    */
   const agentLifetime = new Map<string, number>();
   const handsChanged = (paneId: string): void => { agentLifetime.set(paneId, (agentLifetime.get(paneId) ?? 0) + 1); };
-  /** the session each pane's agent was last told to run, kept through a snapshot that names none: the next session is told against it */
-  const agentSession = new Map<string, NonNullable<HerdrPane["agent_session"]>>();
+  /**
+   * The session each pane's agent was last told to run, and the snapshot read that told it, kept through a snapshot that
+   * names none: the next session is told against it. Reads overlap, so one that finishes after a newer one never replaces it.
+   */
+  const agentSession = new Map<string, { session: NonNullable<HerdrPane["agent_session"]>; read: number }>();
   const eventAgent = new Map<string, { agent: string | null; since: number }>();
   const statusNow = options.statusNow ?? Date.now;
   function newLifetime(paneId: string, keep: string | null): void {
@@ -441,12 +444,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     for (const pane of named.panes) {
       if ((agentRead.get(pane.pane_id) ?? 0) > read) {
-        // a newer status told its agent, but the session this read names is still the one a later read is told against
-        if (pane.agent_session) agentSession.set(pane.pane_id, pane.agent_session);
+        // a newer status told its agent, but the session this read names, where no newer read named one, is still the one a
+        // later read is told against
+        if (pane.agent_session && read > (agentSession.get(pane.pane_id)?.read ?? -Infinity)) agentSession.set(pane.pane_id, { session: pane.agent_session, read });
         continue;
       }
-      if (changedHands({ agent: agentNow.get(pane.pane_id), agent_session: agentSession.get(pane.pane_id) }, pane)) handsChanged(pane.pane_id);
-      if (pane.agent_session) agentSession.set(pane.pane_id, pane.agent_session);
+      if (changedHands({ agent: agentNow.get(pane.pane_id), agent_session: agentSession.get(pane.pane_id)?.session }, pane)) handsChanged(pane.pane_id);
+      if (pane.agent_session) agentSession.set(pane.pane_id, { session: pane.agent_session, read });
       else if ((pane.agent ?? null) !== (agentNow.get(pane.pane_id) ?? null)) agentSession.delete(pane.pane_id);
       agentNow.set(pane.pane_id, pane.agent ?? null);
       agentRead.set(pane.pane_id, read);
