@@ -44,6 +44,13 @@ export interface PointerScene {
   readonly tab: { readonly id: string; readonly root: LayoutNode } | null;
   readonly splits: readonly SplitCells[];
   look(pane: string): PaneLook | null;
+  /** the shown pane whose box (its border and title too) holds the cell */
+  boxAt(col: number, row: number): string | null;
+  /** the pane takes right presses for its program (its passthrough setting) */
+  passthrough(pane: string): boolean;
+  readonly sidebarCollapsed: boolean;
+  /** the kind of the overlay on top, if any */
+  readonly overlay: string | null;
 }
 
 export type PointerAct =
@@ -62,8 +69,12 @@ export type PointerAct =
   | { readonly kind: "divider"; readonly grab: number; readonly tab: string; readonly name: DividerName; readonly ratio: number; readonly done: boolean }
   /** the selection changed: the next frame draws it */
   | { readonly kind: "redraw" }
-  /** the top overlay's close control was clicked */
-  | { readonly kind: "close_overlay" };
+  /** the top overlay's close control was clicked, or a press outside a right-click menu closed it */
+  | { readonly kind: "close_overlay" }
+  /** a right press on a pane's box, a tab or a workspace's row: its menu, at the pressed cell */
+  | { readonly kind: "context"; readonly target: Target; readonly cell: { readonly x: number; readonly y: number } }
+  /** the pointer over the open right-click menu's entry */
+  | { readonly kind: "hover"; readonly entry: number };
 
 type Grab =
   | { readonly kind: "none" }
@@ -103,9 +114,17 @@ export class Pointer {
         const look = grab.kind === "forward" && grab.pane === scene.focus ? scene.look(grab.pane) : null;
         return grab.kind === "forward" && look ? [{ kind: "forward", pane: grab.pane, event: inGrid(event, look) }] : [];
       }
+      if (event.action === "motion" && scene.overlay === "context") {
+        // herdr's right-click menu chooses the entry under the pointer
+        const hit = scene.hits?.at(event.col, event.row);
+        const [kind, entry] = hit && "part" in hit && hit.part === "overlay:context" ? splitId(hit.id) : ["", ""];
+        return kind === "menu" && /^\d+$/.test(entry) ? [{ kind: "hover", entry: Number(entry) }] : [];
+      }
       if (event.action !== "press") return [];
       this.grab = NONE;
       const hit = event.button === "left" ? scene.hits?.at(event.col, event.row) : null;
+      // a left press outside a right-click menu closes it and goes no further; a right press does nothing
+      if (scene.overlay === "context" && event.button === "left" && !(hit && "part" in hit && hit.part === "overlay:context")) return [{ kind: "close_overlay" }];
       if (!hit || !("part" in hit) || !hit.part.startsWith("overlay:")) return [];
       if (hit.id === "close") return [{ kind: "close_overlay" }];
       if (hit.id === "accept" || hit.id === "clear") return [{ kind: "button", button: hit.id }];
@@ -167,6 +186,7 @@ export class Pointer {
     const dropped: PointerAct[] = this.selection ? [{ kind: "redraw" }] : [];
     this.selection = null;
     const hit = scene.hits?.at(event.col, event.row) ?? null;
+    if (event.button === "right") return [...dropped, ...this.rightPress(event, scene, hit)];
     if (hit === null) return dropped;
     if ("pane" in hit) {
       if (hit.pane !== scene.focus) return [...dropped, { kind: "select", target: { kind: "pane", id: hit.pane } }];
@@ -196,6 +216,30 @@ export class Pointer {
       this.grab = { kind: "divider", id: ++this.grabs, tab: scene.tab.id, name, rect: split.rect, direction: split.direction, offset: first - at, moved: null };
     }
     return dropped;
+  }
+
+  /**
+   * herdr's right press (R1, R8): a menu on a pane's box (any of its cells), a tab or a workspace's row of the expanded
+   * sidebar, opened where it was pressed, with no focus change; nothing anywhere else. A pane set to pass right presses
+   * on hands one in its text to a program that asked for the mouse, unless shift is held, and is focused.
+   */
+  private rightPress(event: MouseInput, scene: PointerScene, hit: ReturnType<HitMap["at"]> | null): PointerAct[] {
+    const cell = { x: event.col, y: event.row };
+    const inText = hit !== null && "pane" in hit ? hit.pane : null;
+    if (inText !== null && scene.passthrough(inText) && !event.mods.shift) {
+      const look = scene.look(inText);
+      if (look?.programMouse) {
+        this.grab = { kind: "forward", pane: inText };
+        return [...(inText !== scene.focus ? [{ kind: "select", target: { kind: "pane", id: inText } } as const] : []), { kind: "forward", pane: inText, event: inGrid(event, look) }];
+      }
+    }
+    const pane = inText ?? scene.boxAt(event.col, event.row);
+    if (pane !== null) return [{ kind: "context", target: { kind: "pane", id: pane }, cell }];
+    if (hit === null || "pane" in hit) return [];
+    const [kind, id] = splitId(hit.id);
+    if (kind === "tab") return [{ kind: "context", target: { kind: "tab", id }, cell }];
+    if (kind === "workspace" && !scene.sidebarCollapsed) return [{ kind: "context", target: { kind: "workspace", id }, cell }];
+    return [];
   }
 
   private wheel(event: MouseInput, scene: PointerScene): PointerAct[] {

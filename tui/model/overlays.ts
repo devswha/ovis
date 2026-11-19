@@ -8,6 +8,7 @@ import { TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
 import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput } from "./effects.ts";
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
+import { type ContextAction, contextCursor } from "./context.ts";
 import { MENU_ENTRIES, movedCursor } from "./menu.ts";
 import { type SwitcherEntry, switcherChoice } from "./switcher.ts";
 import { chosenAt, type Place, pickerMatches, placeTarget, workspaceStep } from "./picker.ts";
@@ -24,14 +25,24 @@ export type Overlay =
    */
   | { readonly kind: "help"; readonly scroll: number; readonly paged: number; readonly filter: Field; readonly filtering: boolean }
   | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field }
-  /** `seen`: the terminals the close ends, as the screen showed them when the dialog opened */
-  | { readonly kind: "confirm"; readonly purpose: "close_workspace"; readonly target: Target; readonly seen: readonly Seen[] }
+  /**
+   * `seen`: the terminals the close ends, as the screen showed them when the dialog opened; `close_group` closes a
+   * repository's workspace and the worktree workspaces under it (`spaces`: how many)
+   */
+  | { readonly kind: "confirm"; readonly purpose: "close_workspace" | "close_group"; readonly target: Target; readonly seen: readonly Seen[]; readonly spaces?: number }
+  /** a right-click menu (context.ts): what it is for, its entries, the chosen one, and the cell it was opened at */
+  | { readonly kind: "context"; readonly target: Target; readonly entries: readonly ContextAction[]; readonly cursor: number; readonly at: { readonly x: number; readonly y: number } }
+  /** herdr's Open worktree...: a repository's checkouts (its workspace is `target`), a filter, the chosen one */
+  | { readonly kind: "worktrees"; readonly target: Target; readonly checkouts: readonly CheckoutRow[]; readonly field: Field; readonly searching: boolean; readonly cursor: number }
   /** the picker: the terminals it lists, its search, whether keys go to the search now, and the chosen one's pane (null: the first) */
   | { readonly kind: "goto"; readonly field: Field; readonly searching: boolean; readonly places: readonly Place[]; readonly chosen: string | null }
   /** herdr's menu (menu.ts `MENU_ENTRIES`); `cursor`: the index of the entry Enter chooses */
   | { readonly kind: "menu"; readonly cursor: number }
   /** herdr's switcher on a narrow screen (switcher.ts): the cursor over its entries, the world's places when it was last given them */
   | { readonly kind: "switcher"; readonly cursor: number; readonly entries: readonly SwitcherEntry[] };
+
+/** A checkout of a repository as Open worktree... lists it: its folder, its name (the branch's) and the workspace showing it. */
+export interface CheckoutRow { readonly path: string; readonly label: string; readonly open: string | null }
 
 export type OverlayInput = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "text"; readonly event: TextInput } | { readonly kind: "paste"; readonly event: PasteInput };
 
@@ -222,6 +233,42 @@ function helpInput(overlay: Help, input: OverlayInput): OverlayAnswer {
   return { overlay: step === 0 && page === 0 ? overlay : { ...overlay, scroll: overlay.scroll + step, paged: overlay.paged + page }, effects: [] };
 }
 
+/** A right-click menu's answer to choosing entry `at`: closed, with that entry to do on its target. */
+export function contextChoice(overlay: Extract<Overlay, { kind: "context" }>, at: number): OverlayAnswer {
+  const action = overlay.entries[at];
+  return action === undefined ? { overlay, effects: [] } : { overlay: null, effects: [], choice: { kind: "context", action, target: overlay.target } };
+}
+
+type Worktrees = Extract<Overlay, { kind: "worktrees" }>;
+
+/** Open worktree...'s checkouts matching its filter (by name or folder, any case), in their order. */
+export function worktreeList(overlay: Worktrees): CheckoutRow[] {
+  const filter = overlay.field.graphemes.join("").toLowerCase();
+  return filter === "" ? [...overlay.checkouts] : overlay.checkouts.filter((row) => row.label.toLowerCase().includes(filter) || row.path.toLowerCase().includes(filter));
+}
+
+/** Open worktree...'s answer to choosing its row `at`: closed, opening that checkout (or going to the workspace showing it). */
+export function worktreeChoice(overlay: Worktrees, at: number): OverlayAnswer {
+  const row = worktreeList(overlay)[at];
+  return row === undefined ? { overlay, effects: [] } : { overlay: null, effects: [], choice: { kind: "checkout", target: overlay.target, path: row.path, open: row.open } };
+}
+
+/** Open worktree...'s keys: the arrows move the choice, Enter opens it, `/` starts the filter (Enter keeps it, Escape drops it). */
+function worktreesInput(overlay: Worktrees, input: OverlayInput): OverlayAnswer {
+  if (overlay.searching) {
+    if (isEnter(input)) return { overlay: { ...overlay, searching: false }, effects: [] };
+    if (input.kind === "key" && input.event.key === "ESCAPE" && Object.keys(input.event.mods).length === 0) return { overlay: { ...overlay, searching: false, field: field(""), cursor: 0 }, effects: [] };
+    const next = editField(overlay.field, input);
+    return { overlay: next === overlay.field ? overlay : { ...overlay, field: next, cursor: 0 }, effects: [] };
+  }
+  if (isEnter(input)) return worktreeChoice(overlay, overlay.cursor);
+  const chord = inputChords(input).find((one) => !one.ctrl && !one.alt && !one.meta);
+  if (chord?.key === "/") return { overlay: { ...overlay, searching: true }, effects: [] };
+  const key = input.kind === "key" && Object.keys(input.event.mods).length === 0 ? input.event.key : "";
+  const cursor = contextCursor(worktreeList(overlay).length, overlay.cursor, key);
+  return { overlay: cursor === null || cursor < 0 ? overlay : { ...overlay, cursor }, effects: [] };
+}
+
 /** The menu's answer to choosing entry `at`: closed, with that entry's action to run. */
 export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, at: number): OverlayAnswer {
   const action = MENU_ENTRIES[at];
@@ -251,6 +298,21 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
       const yes = isEnter(input) || inputChords(input).some((chord) => chord.key === "y" && !chord.ctrl && !chord.alt && !chord.meta);
       return yes ? { overlay: null, effects: [{ ...run(overlay.purpose, overlay.target, null), seen: overlay.seen }] } : { overlay, effects: [] };
     },
+  },
+  context: {
+    closeKeys: ["esc"],
+    target: (overlay) => overlay.target,
+    input: (overlay, input) => {
+      if (isEnter(input)) return contextChoice(overlay, overlay.cursor);
+      const cursor = input.kind === "key" && Object.keys(input.event.mods).length === 0 ? contextCursor(overlay.entries.length, overlay.cursor, input.event.key) : null;
+      return { overlay: cursor === null ? overlay : { ...overlay, cursor }, effects: [] };
+    },
+  },
+  worktrees: {
+    closeKeys: ["esc"],
+    typing: (overlay) => overlay.searching,
+    target: (overlay) => overlay.target,
+    input: worktreesInput,
   },
   goto: {
     closeKeys: ["esc"],

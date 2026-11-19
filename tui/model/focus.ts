@@ -10,8 +10,20 @@ import { type LayoutNode, neighbour, type PaneDirection } from "../../server/her
  */
 export interface PaneNode { readonly id: string; readonly name: string; readonly created?: number; readonly agent?: string }
 /** `zoomed`: the pane the tab's zoom shows alone (the layout document's, shared with the browser); none when not zoomed */
-export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[]; readonly root?: LayoutNode; readonly zoomed?: string }
-export interface WorkspaceNode { readonly id: string; readonly name: string; readonly tabs: readonly TabNode[] }
+/** `passthrough`: the panes whose right press goes to the program that asked for the mouse (the layout document's) */
+export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[]; readonly root?: LayoutNode; readonly zoomed?: string; readonly passthrough?: readonly string[] }
+/**
+ * `branch`: the workspace works in a git checkout (its branch row); `parent`: a linked worktree's workspace grouped under its
+ * repository's workspace; `group`: a repository's workspace with worktree workspaces under it, and whether it is folded
+ */
+export interface WorkspaceNode {
+  readonly id: string;
+  readonly name: string;
+  readonly tabs: readonly TabNode[];
+  readonly branch?: string;
+  readonly parent?: string;
+  readonly group?: { readonly collapsed: boolean };
+}
 /**
  * `agents`: the panes that run an agent, in the sidebar's order (shared/attention.ts); `waiting`: those that need the
  * user, in the order the jump to the next one takes them (tui/core/world.ts `jumpOrder`). None when not told.
@@ -62,6 +74,15 @@ function pathOf(world: World, target: Target): Path | null {
     }
   }
   return null;
+}
+
+/** Where a target is, with the tab and pane this focus shows there: the place an action chosen on it works on. */
+export function placeOf(world: World, focus: Focus, target: Target): (Focused & { readonly workspace: WorkspaceNode }) | null {
+  const path = pathOf(world, target);
+  if (path === null) return null;
+  const tab = path.tab ?? find(path.workspace.tabs, own(focus.tabs, path.workspace.id)) ?? path.workspace.tabs[0] ?? null;
+  const pane = path.pane ?? (tab === null ? null : find(tab.panes, own(focus.panes, tab.id)) ?? tab.panes[0] ?? null);
+  return { workspace: path.workspace, tab, pane };
 }
 
 export function exists(world: World, target: Target): boolean {

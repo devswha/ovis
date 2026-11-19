@@ -14,8 +14,11 @@ import type { HcConnection } from "../../server/herdr-core/connection.ts";
 import { HcError } from "../../server/herdr-core/connection.ts";
 import { AdapterError } from "../../server/herdr-core/errors.ts";
 import { foreignLayout, leaves, OVIS_LAYOUT_DOC, OVIS_LAYOUT_SCHEMA, type PaneDirection, type SplitDirection } from "../../server/herdr-core/layout-doc.ts";
-import { type CloseTarget, layoutCalls, LayoutStore, type LayoutView, newLayoutId, ownsLayout, readCore, RESIZE_STEP, resizeEdit, swapEdit, TERMINAL_COLOUR, zoomEdit } from "../../server/herdr-core/layout-ops.ts";
+import { type CloseTarget, collapseEdit, layoutCalls, LayoutStore, type LayoutView, newLayoutId, ownsLayout, passthroughEdit, readCore, RESIZE_STEP, resizeEdit, swapEdit, TERMINAL_COLOUR, zoomEdit } from "../../server/herdr-core/layout-ops.ts";
 import { type CoreHost, type FirstTurn, LAYOUT_DOC, OTHER_WORKSPACE_ID } from "../../server/herdr-core/snapshot.ts";
+import { checkoutHolding, factsOf, type Repository, WORKTREE_LABEL, worktreeFolder, worktreeLabel } from "../../server/herdr-core/worktrees.ts";
+import type { CheckoutRow } from "../model/overlays.ts";
+import { repositoryFiles } from "./git-head.ts";
 import { errorCode } from "../crash.ts";
 import type { RunEffect, Seen } from "../model/effects.ts";
 import type { Target } from "../model/focus.ts";
@@ -24,7 +27,9 @@ import type { Target } from "../model/focus.ts";
 export type LayoutAnswer =
   | { readonly type: "notice"; readonly code: string; readonly data: Readonly<Record<string, string>>; readonly calm?: true }
   | { readonly type: "follow"; readonly target: Target; readonly away: string | null }
-  | { readonly type: "zoom_settled"; readonly current: boolean };
+  | { readonly type: "zoom_settled"; readonly current: boolean }
+  /** a repository's checkouts, read for Open worktree... */
+  | { readonly type: "worktrees"; readonly target: Target; readonly checkouts: readonly CheckoutRow[] };
 
 interface LayoutWritesOptions {
   /** the core's line (the screen's link) */
@@ -219,9 +224,26 @@ export class LayoutWrites {
     if (id === undefined) return null;
     if (action === "new_tab") return async () => this.follow((await store.createTab(id, effect.name ? { name: effect.name } : {})).root_pane.pane_id, null);
     if (Object.hasOwn(SPLITS, action)) return async () => this.follow((await store.split(id, SPLITS[action]!)).pane_id, null);
-    if (action === "close_pane" || action === "close_tab" || action === "close_workspace") {
-      const close: CloseTarget = action === "close_pane" ? { pane: id } : action === "close_tab" ? { tab: id } : { workspace: id, group: false };
+    if (action === "close_pane" || action === "close_tab" || action === "close_workspace" || action === "close_group") {
+      const close: CloseTarget = action === "close_pane" ? { pane: id } : action === "close_tab" ? { tab: id } : { workspace: id, group: action === "close_group" };
       return () => this.close(action, close, effect.seen ?? []);
+    }
+    if (action === "swap_with" && effect.to !== undefined) {
+      const to = effect.to;
+      return async () => this.unchanged(action, await store.edit(swapEdit(id, to, null)));
+    }
+    if (action === "passthrough" && effect.setting !== undefined) {
+      const on = effect.setting;
+      return async () => this.unchanged(action, await store.edit(passthroughEdit(id, on)));
+    }
+    if (action === "collapse_group" && effect.setting !== undefined) {
+      const on = effect.setting;
+      return async () => this.unchanged(action, await store.edit(collapseEdit(id, on)));
+    }
+    if (action === "list_worktrees") return () => this.listWorktrees(id);
+    if (action === "open_checkout" && effect.path !== undefined) {
+      const path = effect.path;
+      return () => this.openCheckout(path);
     }
     if (action === "rename_workspace") return () => store.rename({ workspace: id, name: effect.name ?? "" });
     if (action === "rename_tab") return () => store.rename({ tab: id, name: effect.name ?? "" });
@@ -262,6 +284,79 @@ export class LayoutWrites {
       return async () => this.follow(id, (await store.moveToNewTab(id, to, effect.name ?? "")).tab_id);
     }
     return null;
+  }
+
+  /**
+   * Open worktree...: the repository the workspace's first pane works in, read from git's files (git-head.ts: no process),
+   * and its checkouts, each with the workspace showing it, for the dialog.
+   */
+  private async listWorktrees(workspace: string): Promise<void> {
+    const { shown } = (await this.fresh()).view;
+    const repository = this.repositoryOfWorkspace(shown, workspace);
+    if (repository === null) {
+      this.notice("not_git_worktree", { action: "open_worktree" });
+      return;
+    }
+    const open = this.openWorkspaces(shown, repository);
+    const checkouts = repository.checkouts.map((checkout): CheckoutRow => ({
+      path: checkout.path,
+      label: checkout.branch ? worktreeFolder(checkout.branch) : checkout.path.split("/").at(-1) ?? checkout.path,
+      open: open.get(checkout.path) ?? null,
+    }));
+    this.options.answer({ type: "worktrees", target: { kind: "workspace", id: workspace }, checkouts });
+  }
+
+  /**
+   * Opens a checkout as herdr's Open worktree... does: the workspace showing it comes to the front (the reducer did that),
+   * else a new workspace with a shell in it; either way it is grouped under the repository's workspace by the facts the
+   * server's adapter writes (worktrees.ts `worktreeLabel`), the repository's workspace given its own facts too.
+   */
+  private async openCheckout(path: string): Promise<void> {
+    const { shown } = (await this.fresh()).view;
+    const repository = repositoryFiles(path);
+    if (repository === null) {
+      this.notice("not_git_worktree", { action: "open_worktree" });
+      return;
+    }
+    const open = this.openWorkspaces(shown, repository);
+    const labelled = async (workspace: string, checkout: string, gitDir: string) => {
+      if ((await this.store.worktreeLabelOf(shown, workspace))[WORKTREE_LABEL]) return;
+      await this.store.label(shown.panes.filter((pane) => pane.workspace_id === workspace).map((pane) => pane.pane_id), { [WORKTREE_LABEL]: worktreeLabel(factsOf(repository, checkout), gitDir) });
+    };
+    const head = open.get(repository.repo_root);
+    if (head !== undefined) await labelled(head, repository.repo_root, repository.repo_key);
+    const own = path === repository.repo_root ? repository.repo_key : repository.git_dir;
+    const showing = open.get(path);
+    if (showing !== undefined) {
+      await labelled(showing, path, own);
+      return;
+    }
+    const branch = repository.checkouts.find((checkout) => checkout.path === path)?.branch ?? null;
+    const name = branch ? worktreeFolder(branch) : path.split("/").at(-1) ?? path;
+    const made = await this.store.createWorkspace({ name, cwd: path, labels: { [WORKTREE_LABEL]: worktreeLabel(factsOf(repository, path), own) } });
+    this.follow(made.root_pane.pane_id, null);
+  }
+
+  /** The repository the workspace's first pane works in, from git's files; null outside one. */
+  private repositoryOfWorkspace(shown: LayoutView["shown"], workspace: string): Repository | null {
+    const pane = shown.panes.find((candidate) => candidate.workspace_id === workspace);
+    const folder = pane ? pane.foreground_cwd ?? pane.cwd : null;
+    return folder ? repositoryFiles(folder) : null;
+  }
+
+  /** Which workspace shows each checkout of the repository: the one its facts name, else the one whose first pane works in it. */
+  private openWorkspaces(shown: LayoutView["shown"], repository: Repository): Map<string, string> {
+    const open = new Map<string, string>();
+    for (const workspace of shown.workspaces) {
+      if (workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
+      const facts = workspace.worktree;
+      const pane = shown.panes.find((candidate) => candidate.workspace_id === workspace.workspace_id);
+      const folder = facts ? (facts.repo_key === repository.repo_key ? facts.checkout_path : null) : pane ? pane.foreground_cwd ?? pane.cwd : null;
+      if (!folder) continue;
+      const checkout = checkoutHolding(repository.checkouts, folder);
+      if (checkout !== null && !open.has(checkout)) open.set(checkout, workspace.workspace_id);
+    }
+    return open;
   }
 
   /** The core as the screen shows it, read now (the same terminals its world shows: no finished one), with each terminal's created_ms. */

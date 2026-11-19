@@ -162,6 +162,38 @@ export const STRINGS = {
   menuTitle: "menu",
   /** herdr's menu entries; the keys' help keeps the screen's word for it (C2: herdr says `keybinds`) */
   menuEntries: { settings: "settings", help: "help", reload_config: "reload config", detach: "detach" } as const,
+  /** the right-click menus' entries (tui/model/context.ts), as herdr writes them */
+  contextEntries: {
+    rename_pane: "Rename pane",
+    clear_pane_name: "Clear pane name",
+    swap_with_focused: "Swap with focused pane",
+    split_vertical: "Split right",
+    split_horizontal: "Split down",
+    zoom: "Zoom",
+    passthrough_on: "Send right-clicks to pane",
+    passthrough_off: "Use Herdr right-click menu",
+    close_pane: "Close pane",
+    new_tab: "New tab",
+    rename_tab: "Rename",
+    close_tab: "Close",
+    rename_workspace: "Rename",
+    close_workspace: "Close",
+    open_worktree: "Open worktree...",
+    close_group: "Close group",
+    collapse_group: "Collapse",
+    expand_group: "Expand",
+  } as const,
+  /** Open worktree... */
+  worktreesTitle: "open worktree",
+  worktreesFilterHint: " / filter worktrees",
+  worktreesCount: (count: number): string => `${count} ${count === 1 ? "checkout" : "checkouts"}`,
+  worktreesOpen: "open",
+  worktreesOpenButton: "  ↵ open  ",
+  /** a repository's workspace with its worktree workspaces: folded, unfolded */
+  groupCollapsed: "▸",
+  groupExpanded: "▾",
+  confirmCloseGroupTitle: "Close worktree group?",
+  confirmCloseGroupDetail: (name: string, spaces: number, panes: number): string => `${name} — ${spaces} ${spaces === 1 ? "workspace" : "workspaces"}, ${panes} ${panes === 1 ? "pane" : "panes"}`,
   /** at the right of the narrow screen's header, which opens the menu */
   /** herdr's narrow header and switcher */
   narrowTab: (name: string, of: string | null): string => `tab ${name}${of === null ? "" : ` · ${of}`}`,

@@ -13,13 +13,14 @@ import { CATALOGUE_BY_ID } from "./catalogue.ts";
 import type { CopyAction } from "./copy-keys.ts";
 import { copyAction, copyInput, type CopyMode, isCopyAction } from "./copy.ts";
 import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KEPT, setDeadline } from "./deadlines.ts";
-import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
-import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, paneToward, shownZoom, type Target, type World } from "./focus.ts";
+import { type ContextAction, contextEntries } from "./context.ts";
+import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, RunEffect, Seen, TextInput } from "./effects.ts";
+import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, type Focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, paneToward, placeOf, shownZoom, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
 import { HELP_PAGE_ROWS, helpLines, helpNotes, helpSize, helpWindow } from "./help.ts";
 import { switcherEntries, switcherStart } from "./switcher.ts";
 import { NARROW_COLUMNS } from "./screen-size.ts";
-import { field, HELP_OPEN, menuChoice, switcherPick, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
+import { type CheckoutRow, contextChoice, field, HELP_OPEN, menuChoice, switcherPick, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice, worktreeChoice } from "./overlays.ts";
 import { pickerPlaces } from "./picker.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
@@ -87,6 +88,12 @@ export type ScreenEvent =
   | { readonly type: "zoom_settled"; readonly current: boolean; readonly at: number }
   /** the top overlay's entry `entry` was clicked: the menu, or the picker, chooses it as Enter on it would */
   | { readonly type: "choose"; readonly entry: number; readonly at: number }
+  /** the pointer moved over the top right-click menu's entry `entry`: it is chosen */
+  | { readonly type: "hover"; readonly entry: number; readonly at: number }
+  /** a right press on a pane's box, a tab or a workspace's row: its menu opens at that cell (context.ts) */
+  | { readonly type: "context"; readonly target: Target; readonly cell: { readonly x: number; readonly y: number }; readonly at: number }
+  /** a repository's checkouts, read for Open worktree...: the dialog opens with them */
+  | { readonly type: "worktrees"; readonly target: Target; readonly checkouts: readonly CheckoutRow[]; readonly at: number }
   /** the view an earlier run kept for this core (null: none), or why its file was not read */
   | { readonly type: "restore"; readonly view: SavedView | null; readonly problem: ViewProblem | null; readonly at: number };
 
@@ -188,8 +195,25 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       if (top?.kind === "menu") answerOverlay(acc, menuChoice(top, event.entry), event.at);
       else if (top?.kind === "goto") answerOverlay(acc, pickerChoice(top, event.entry), event.at);
       else if (top?.kind === "switcher") answerOverlay(acc, switcherPick(top, event.entry), event.at);
+      else if (top?.kind === "context") answerOverlay(acc, contextChoice(top, event.entry), event.at);
+      else if (top?.kind === "worktrees") answerOverlay(acc, worktreeChoice(top, event.entry), event.at);
       break;
     }
+    case "hover": {
+      const top = acc.s.overlays.at(-1);
+      if (top?.kind === "context" && event.entry < top.entries.length && event.entry !== top.cursor) acc.s = { ...acc.s, overlays: [...acc.s.overlays.slice(0, -1), { ...top, cursor: event.entry }] };
+      break;
+    }
+    case "context": {
+      // herdr opens a menu only with nothing else open, and changes no focus for it
+      if (acc.s.overlays.length > 0) break;
+      const entries = contextEntries(acc.s.world, event.target, focused(acc.s.world, acc.s.focus).pane?.id ?? null);
+      if (entries.length > 0) acc.s = { ...acc.s, overlays: [{ kind: "context", target: event.target, entries, cursor: 0, at: event.cell }] };
+      break;
+    }
+    case "worktrees":
+      acc.s = { ...acc.s, overlays: [...acc.s.overlays, { kind: "worktrees", target: event.target, checkouts: event.checkouts, field: field(""), searching: false, cursor: 0 }] };
+      break;
     case "restore":
       if (event.problem !== null) notice(acc, "view_unread", { reason: event.problem }, event.at, true);
       if (event.view !== null) {
@@ -423,7 +447,75 @@ function settleHelp(acc: Acc): void {
 
 function choose(acc: Acc, choice: OverlayChoice, at: number): void {
   if (choice.kind === "select") select(acc, choice.target, at);
-  else runAction(acc, choice.action, null, at);
+  else if (choice.kind === "action") runAction(acc, choice.action, null, at);
+  else if (choice.kind === "context") runContext(acc, choice.action, choice.target, at);
+  else {
+    // a checkout a workspace shows already: that workspace comes to the front, and the caller groups it under its repository
+    if (choice.open !== null) select(acc, { kind: "workspace", id: choice.open }, at);
+    acc.effects.push({ type: "run", action: "open_checkout", target: choice.target, index: null, name: null, path: choice.path });
+  }
+}
+
+/** A right-click menu's entry (context.ts), done on what was right-clicked: herdr's action on that place, not the focused one. */
+function runContext(acc: Acc, action: ContextAction, on: Target, at: number): void {
+  const s = acc.s;
+  const place = placeOf(s.world, s.focus, on);
+  if (place === null) {
+    notice(acc, "target_gone", { [on.kind]: on.id }, at);
+    return;
+  }
+  const effect = (run: RunEffect["action"], extra: Partial<RunEffect> = {}) => acc.effects.push({ type: "run", action: run, target: on, index: null, name: null, ...extra });
+  switch (action) {
+    case "rename_pane":
+    case "split_vertical":
+    case "split_horizontal":
+    case "close_pane":
+    case "rename_workspace":
+    case "close_workspace":
+      runHerdr(acc, action, null, at, place);
+      return;
+    case "zoom":
+      // herdr zooms the pane and focuses it
+      moveFocus(acc, on);
+      runHerdr(acc, "zoom", null, at, place);
+      return;
+    case "clear_pane_name":
+      effect("rename_pane", { name: "" });
+      return;
+    case "swap_with_focused": {
+      const shown = focused(s.world, s.focus).pane;
+      if (shown !== null && shown.id !== on.id) effect("swap_with", { to: shown.id });
+      return;
+    }
+    case "passthrough_on":
+    case "passthrough_off":
+      effect("passthrough", { setting: action === "passthrough_on" });
+      return;
+    case "new_tab":
+    case "rename_tab":
+    case "close_tab":
+      // any entry of a tab's menu first brings that tab to the front
+      moveFocus(acc, on);
+      runHerdr(acc, action, null, at, place);
+      return;
+    case "open_worktree":
+      effect("list_worktrees");
+      return;
+    case "close_group": {
+      const children = s.world.workspaces.filter((workspace) => workspace.parent === place.workspace.id);
+      const panes = [place.workspace, ...children].flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes));
+      acc.s = { ...acc.s, overlays: [...acc.s.overlays, { kind: "confirm", purpose: "close_group", target: { kind: "workspace", id: place.workspace.id }, seen: seenOf(panes), spaces: 1 + children.length }] };
+      return;
+    }
+    case "collapse_group":
+    case "expand_group":
+      effect("collapse_group", { setting: action === "collapse_group" });
+      return;
+    default: {
+      const never: never = action;
+      return never;
+    }
+  }
 }
 
 /** The kept view applied once the world has something in it; a saved place that is gone is said so. */
@@ -726,14 +818,15 @@ function runAction(acc: Acc, action: KeyAction, index: number | null, at: number
 }
 
 /** One of herdr's actions: a parity one shows a notice naming it; a built one gives its effect. */
-function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: number): void {
+function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: number, place?: Focused): void {
   const entry = CATALOGUE_BY_ID[action];
   if (entry.status === "parity") {
     notice(acc, "not_built", { action }, at);
     return;
   }
   const s = acc.s;
-  const shown = focused(s.world, s.focus);
+  // where it works: what a right-click menu was opened on, else what is focused
+  const shown = place ?? focused(s.world, s.focus);
   const pushOverlay = (overlay: Overlay) => { acc.s = { ...acc.s, overlays: [...acc.s.overlays, overlay] }; };
   const runOn = (on: Target | undefined | null, name: string | null = null) => {
     if (on === undefined || on === null) notice(acc, "nothing_focused", { action }, at);

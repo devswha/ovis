@@ -41,6 +41,10 @@ function sceneOf(focus: string, look: PaneLook | null): PointerScene {
     tab: { id: "T1", root: { split: "right", ratio: 0.5, first: { leaf: "a" }, second: { leaf: "b" } } },
     splits: [{ id: "split_0_root", direction: "right", rect: { x: 0, y: 1, width: 20, height: 5 }, divider: { x: 9, y: 1, width: 2, height: 5 } }],
     look: (pane) => (pane === "a" ? look : null),
+    boxAt: () => null,
+    passthrough: () => false,
+    sidebarCollapsed: false,
+    overlay: null,
   };
 }
 
@@ -97,7 +101,7 @@ const RULES: [name: string, focus: string, programMouse: boolean, events: Ev[], 
   ["a click on an agent row selects its pane", "a", false, [["press", "left", 12, 0]], [[{ kind: "select", target: { kind: "pane", id: "b" } }]]],
   ["a click on the sidebar toggle runs it", "a", false, [["press", "left", 4, 0]], [[{ kind: "action", action: "toggle_sidebar" }]]],
   ["a click on the chrome's empty cells does nothing", "a", true, [["press", "left", 16, 0]], [[]]],
-  ["a right click on a tab does nothing", "a", false, [["press", "right", 1, 0]], [[]]],
+  ["a right click on a tab opens its menu at the pressed cell (herdr's, R1)", "a", false, [["press", "right", 1, 0]], [[{ kind: "context", target: { kind: "tab", id: "T2" }, cell: { x: 1, y: 0 } }]]],
   ["a divider follows the pointer from where it was grabbed, and the release writes the last ratio", "a", false,
     [["press", "left", 10, 3], ["motion", "left", 4, 3], ["motion", "left", 6, 3], ["release", "left", 6, 3]], [
       [],

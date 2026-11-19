@@ -50,12 +50,25 @@ export async function ovisPicture(world: WorldName, scene: Scene, cols: number, 
   // the world's checkouts as git leaves them on disk, as far as the screen reads them: a `.git` folder with its HEAD
   const home = WORLDS[world].checkouts ? mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "parity-")) : null;
   for (const checkout of WORLDS[world].checkouts ?? []) {
+    if (checkout.linkedTo) {
+      // a linked worktree: its `.git` file names its git folder in the repository's, which names it back (git worktree add)
+      const own = join(home!, checkout.linkedTo, ".git", "worktrees", checkout.folder);
+      mkdirSync(own, { recursive: true });
+      mkdirSync(join(home!, checkout.folder), { recursive: true });
+      writeFileSync(join(home!, checkout.folder, ".git"), `gitdir: ${own}\n`);
+      writeFileSync(join(own, "HEAD"), `ref: refs/heads/${checkout.branch}\n`);
+      writeFileSync(join(own, "gitdir"), `${join(home!, checkout.folder, ".git")}\n`);
+      writeFileSync(join(own, "commondir"), "../..\n");
+      continue;
+    }
     mkdirSync(join(home!, checkout.folder, ".git"), { recursive: true });
     writeFileSync(join(home!, checkout.folder, ".git", "HEAD"), `ref: refs/heads/${checkout.branch}\n`);
   }
   for (const pane of WORLDS[world].panes) {
     const cwd = home && pane.folder ? join(home, pane.folder) : undefined;
-    const address = place(core, { space: pane.workspace, spaceName: pane.workspace, tab: `${pane.workspace}-${pane.tab}`, tabName: pane.tab, pane: pane.name, ...(cwd ? { cwd } : {}) }, paintOf(pane.name));
+    // the capture's mouse program: its name, then the mouse modes it asks for
+    const paint = pane.mouse ? `${pane.name}-READY\r\n\x1b[?1000h\x1b[?1002h\x1b[?1006h` : paintOf(pane.name);
+    const address = place(core, { space: pane.workspace, spaceName: pane.workspace, tab: `${pane.workspace}-${pane.tab}`, tabName: pane.tab, pane: pane.name, ...(cwd ? { cwd } : {}) }, paint);
     addresses.set(pane.name, address);
     if (pane.agent && pane.state) core.reportStatus(address, { state: pane.state, app: pane.agent });
   }
@@ -73,6 +86,11 @@ export async function ovisPicture(world: WorldName, scene: Scene, cols: number, 
       await run.advance(200);
     }
     if (scene.ovis) await apply(run, scene.ovis, addresses, WORLDS[world].panes);
+    // the mouse program prints what it read as the capture's does: `GOT`, then od's characters
+    for (const pane of WORLDS[world].panes.filter((one) => one.mouse)) {
+      const read = Buffer.from(core.program(addresses.get(pane.name)!).receivedHex(), "hex").toString("latin1");
+      if (read !== "") core.program(addresses.get(pane.name)!).output(`GOT ${[...read].map((ch) => (ch === "\x1b" ? "033" : ch)).join(" ")} \r\n`);
+    }
     await run.advance(300);
     const screen = new Screen(cols, rows);
     try {
@@ -119,7 +137,30 @@ async function apply(run: Run, keys: SceneKeys, addresses: ReadonlyMap<string, s
     case "viewer":
       // P6 (forced): no case draws a second viewer (LEFT_OUT)
       throw new Error("the viewers scene is not drawn on the screen's side: it is left out of the comparison (P6)");
+    case "rclick":
+    case "rclickAt": {
+      const rows = run.grid();
+      const found = keys.kind === "rclick" ? findOn(rows, keys.label, keys.row) : null;
+      if (keys.kind === "rclick" && !found) throw new Error(`no ${keys.label} to right-click on the screen:\n${rows.join("\n")}`);
+      const [col, row] = keys.kind === "rclick" ? [found!.col + (keys.dx ?? 0), found!.row] : keys.at(run.host.size().cols, run.host.size().rows);
+      run.type(SGR(col, row, 2, "M"));
+      await run.settle();
+      run.type(SGR(col, row, 2, "m"));
+      await run.settle();
+      return;
+    }
+    case "steps":
+      for (const step of keys.steps) {
+        await apply(run, step, addresses, panes);
+        await run.advance(50);
+      }
+      return;
   }
+}
+
+/** The first `needle` on row `only` (any row when absent). */
+function findOn(rows: readonly string[], needle: string, only?: number): { col: number; row: number } | null {
+  return only === undefined ? find(rows, needle) : rows[only]?.includes(needle) ? { col: rows[only]!.indexOf(needle), row: only } : null;
 }
 
 /**
@@ -335,6 +376,31 @@ export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisio
   return { differences: out, compared };
 }
 
+/**
+ * The scenes whose herdr menu holds entries the screen leaves out (R7): from the first of them (`from`) to the menu's
+ * bottom both pictures differ, or the whole box when the screen's is narrower without them (`whole`).
+ */
+const LEFT_OUT_ENTRIES: Readonly<Record<string, { readonly from: string; readonly whole: boolean }>> = {
+  "rc-workspace-git": { from: "New worktree", whole: false },
+  "rc-workspace-group": { from: "New worktree", whole: false },
+  "rc-workspace-worktree": { from: "Delete worktree checkout...", whole: true },
+};
+
+/** herdr's right-click menu box and the rows of it from the entry `from` on (all of it with `whole`), with the row under it. */
+function leftOutRows(herdr: Cells, from: string, whole: boolean): Hole | null {
+  const text = gridText(herdr);
+  const y = text.findIndex((line) => line.includes(`│${from}`));
+  if (y < 0) return null;
+  const x = text[y]!.indexOf(`│${from}`);
+  let top = y;
+  while (top > 0 && text[top]![x] !== "┌") top--;
+  let bottom = y;
+  while (bottom < text.length - 1 && text[bottom]![x] !== "└") bottom++;
+  const width = text[top]!.indexOf("┐", x) - x + 1;
+  const first = whole ? top : y;
+  return { line: "R7", x, y: first, width, height: bottom - first + 2 };
+}
+
 const SIDEBAR = 26;
 /** The backgrounds herdr's sidebar writes: none, the row in front and the row a navigate points at. */
 const SIDEBAR_BACKGROUNDS = new Set([null, "#1e1e2e", "#313244"]);
@@ -363,7 +429,10 @@ function dialog(cols: number, rows: number, width: number, height: number): Omit
 
 const BAR_SCENES = new Set(["prefix", "navigate", "copy", "resize", "empty-prefix"]);
 /** herdr's dialog size per scene (the picker: the screen less its margins); the screen draws the same */
-const DIALOGS: Readonly<Record<string, readonly [number, number]>> = { help: [76, 22], rename: [56, 7], newtab: [56, 7], confirm: [64, 6], picker: [999, 999], "agents-picker": [999, 999] };
+const DIALOGS: Readonly<Record<string, readonly [number, number]>> = {
+  help: [76, 22], rename: [56, 7], newtab: [56, 7], confirm: [64, 6], picker: [999, 999], "agents-picker": [999, 999],
+  "rc-rename-pane": [56, 7], "rc-rename-workspace": [56, 7], "rc-close-workspace": [64, 6], "rc-close-group": [64, 6], "rc-open-worktree": [96, 12],
+};
 
 /**
  * The scenes no case compares, by the line that covers them: every cell of them, or every cell another case compares
@@ -467,6 +536,27 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
     if (ovisSpan) ovisHoles.push(ovisSpan);
   }
   if (scene === "picker" || scene === "agents-picker") holes.push(...pickerHoles(herdr, ovisHoles, cols, rows));
+  // R4: herdr's name dialogs say `rename pane` and `rename workspace`; the screen keeps its words (C2)
+  if (scene === "rc-rename-pane") words.push({ herdr: "rename pane", ovis: STRINGS.textRenamePane });
+  if (scene === "rc-rename-workspace") words.push({ herdr: "rename workspace", ovis: STRINGS.textRenameWorkspace });
+  // R7: herdr's worktree entries that run git are left out of the screen's menus (docs/tui/parity.md)
+  const leftOut = LEFT_OUT_ENTRIES[scene];
+  if (leftOut) {
+    const hole = leftOutRows(herdr, leftOut.from, leftOut.whole);
+    if (hole) {
+      holes.push(hole);
+      ovisHoles.push(hole);
+    }
+  }
+  // R7: each checkout's folder in Open worktree... is the scratch folder of the run that made it
+  if (scene === "rc-open-worktree") {
+    for (const grid of [herdr, ovis]) {
+      gridText(grid).forEach((text, y) => {
+        const at = text.indexOf("│ /");
+        if (at >= 0) (grid === herdr ? holes : ovisHoles).push({ line: "R7", x: at + 1, y, width: text.lastIndexOf("│") - at - 1, height: 1 });
+      });
+    }
+  }
   if (scene === "menu" || scene === "agents-menu") words.push({ herdr: "keybinds", ovis: STRINGS.menuEntries.help.padEnd("keybinds".length) });
   if (scene === "toast-agent") {
     // N2: the agent scenes were captured with herdr's toasts switched on (`ui.toast.delivery = "herdr"`); the screen

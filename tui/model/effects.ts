@@ -5,6 +5,7 @@ import type { HerdrAction } from "../../shared/herdr-keys.ts";
 import type { InputEvent } from "../input/decode.ts";
 import type { CopyCommand } from "./copy.ts";
 import type { Target } from "./focus.ts";
+import type { ContextAction } from "./context.ts";
 import type { KeyAction, MoveAction } from "./keymap.ts";
 
 export type KeyInput = Extract<InputEvent, { type: "key" }>;
@@ -14,8 +15,15 @@ export type MouseInput = Extract<InputEvent, { type: "mouse" }>;
 /** What reaches a pane: the key, the text run (or what is left of it) or the paste, as read. */
 export type PaneInput = KeyInput | TextInput | PasteInput;
 
-/** What an overlay chose for the reducer to do once it closed: run an action, or focus a place. */
-export type OverlayChoice = { readonly kind: "action"; readonly action: KeyAction } | { readonly kind: "select"; readonly target: Target };
+/**
+ * What an overlay chose for the reducer to do once it closed: run an action, focus a place, do a right-click menu's entry
+ * on its target, or open a repository's checkout (`open`: the workspace showing it already).
+ */
+export type OverlayChoice =
+  | { readonly kind: "action"; readonly action: KeyAction }
+  | { readonly kind: "select"; readonly target: Target }
+  | { readonly kind: "context"; readonly action: ContextAction; readonly target: Target }
+  | { readonly kind: "checkout"; readonly target: Target; readonly path: string; readonly open: string | null };
 
 /** A terminal as the screen showed it when an action was chosen: its address and when the core made it (null: not known). */
 export interface Seen { readonly id: string; readonly created: number | null }
@@ -27,7 +35,7 @@ export interface Seen { readonly id: string; readonly created: number | null }
  */
 export interface RunEffect {
   readonly type: "run";
-  readonly action: HerdrAction | MoveAction | "zoom_follow";
+  readonly action: HerdrAction | MoveAction | "zoom_follow" | ContextRun;
   readonly target: Target | null;
   readonly index: number | null;
   /** a name typed into a field (rename, new tab) */
@@ -38,7 +46,18 @@ export interface RunEffect {
   readonly to?: string;
   /** For zoom_follow, the tab whose existing shared zoom must follow the target pane. */
   readonly zoomTab?: string;
+  /** passthrough and collapse_group: the setting's new value */
+  readonly setting?: boolean;
+  /** open_checkout: the checkout's folder */
+  readonly path?: string;
 }
+
+/**
+ * What the right-click menus add for the caller: swap the target pane with the pane in `to`, set a pane's passthrough or
+ * a group's fold, close a repository's workspace with its worktree workspaces, list a repository's checkouts (opening
+ * Open worktree... with them), open one.
+ */
+export type ContextRun = "swap_with" | "passthrough" | "collapse_group" | "close_group" | "list_worktrees" | "open_checkout";
 
 export type Effect =
   | { readonly type: "copy"; readonly pane: string; readonly command: CopyCommand }

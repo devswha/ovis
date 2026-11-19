@@ -7,7 +7,7 @@
  */
 
 import type { CoreChange } from "../../server/herdr-core/core-model.ts";
-import { type LayoutNode, OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
+import { type LayoutNode, OVIS_LAYOUT_DOC, parseOvisLayout } from "../../server/herdr-core/layout-doc.ts";
 import { buildSnapshot, coreHost, type FirstTurn, type HcTerminal, isRecord, LAYOUT_DOC } from "../../server/herdr-core/snapshot.ts";
 import { nestHelpers, sidebarAgents } from "../../shared/agent-roster.ts";
 import { type AgentGroup, groupAgentRows, knownStatus, type KnownStatus, rollupStatus } from "../../shared/attention.ts";
@@ -56,7 +56,8 @@ interface WorkspaceRowView {
 }
 
 /** A top-level workspace in the sidebar and the linked worktree workspaces grouped under it (shared/worktree-groups.ts). */
-interface WorkspaceGroupView extends WorkspaceRowView { readonly children: readonly WorkspaceRowView[] }
+/** `collapsed`: its worktree workspaces are folded in the sidebar (the layout document's) */
+interface WorkspaceGroupView extends WorkspaceRowView { readonly children: readonly WorkspaceRowView[]; readonly collapsed: boolean }
 
 export interface CoreView {
   readonly world: World;
@@ -336,17 +337,28 @@ export class CoreWorld {
     if (panes.size > 0) this.dated = true;
     const since = new Map([...this.since].map(([address, { at }]) => [address, at]));
     const agents = buildAgents(snapshot, panes, since);
+    // what only the terminal screen keeps in Ovis's layout document: the panes that take right presses, the folded groups
+    const kept = parseOvisLayout(ovisDoc);
+    const keptTabs = new Map((kept?.workspaces ?? []).flatMap((workspace) => workspace.tabs).map((tab) => [tab.id, tab]));
+    const folded = new Set((kept?.workspaces ?? []).filter((workspace) => workspace.collapsed).map((workspace) => workspace.id));
+    const groups = worktreeGroups(snapshot.workspaces);
+    const parents = new Map(groups.flatMap(({ workspace, children }) => children.map((child) => [child.workspace_id, workspace.workspace_id] as const)));
+    const withChildren = new Set(groups.filter(({ children }) => children.length > 0).map(({ workspace }) => workspace.workspace_id));
+    const rows = new Map(snapshot.workspaces.map((workspace) => [workspace.workspace_id, workspaceRow(workspace)]));
     this.shown = {
       tabs,
       panes,
       tabStatuses,
-      workspaceGroups: worktreeGroups(snapshot.workspaces).map(({ workspace, children }) => ({ ...workspaceRow(workspace), children: children.map(workspaceRow) })),
+      workspaceGroups: groups.map(({ workspace, children }) => ({ ...rows.get(workspace.workspace_id)!, children: children.map((child) => rows.get(child.workspace_id)!), collapsed: folded.has(workspace.workspace_id) })),
       agents,
       ownsLayout: appDoc === null,
       world: {
         workspaces: snapshot.workspaces.map((workspace) => ({
           id: workspace.workspace_id,
           name: workspace.label,
+          ...(rows.get(workspace.workspace_id)!.branch !== null ? { branch: rows.get(workspace.workspace_id)!.branch! } : {}),
+          ...(parents.has(workspace.workspace_id) ? { parent: parents.get(workspace.workspace_id)! } : {}),
+          ...(withChildren.has(workspace.workspace_id) ? { group: { collapsed: folded.has(workspace.workspace_id) } } : {}),
           tabs: snapshot.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id).map((tab) => {
             const shape = tabs.get(tab.tab_id);
             return {
@@ -358,6 +370,7 @@ export class CoreWorld {
                 return { id, name: panes.get(id)?.label ?? "", ...(typeof created === "number" ? { created } : {}), ...(agent ? { agent } : {}) };
               }),
               ...(shape ? { root: shape.root, ...(shape.zoomed === null ? {} : { zoomed: shape.zoomed }) } : {}),
+              ...(keptTabs.get(tab.tab_id)?.passthrough ? { passthrough: keptTabs.get(tab.tab_id)!.passthrough! } : {}),
             };
           }),
         })),

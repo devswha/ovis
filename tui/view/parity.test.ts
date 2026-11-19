@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { Cells, PaletteName } from "../testing/herdr-grid.ts";
 import { compare, comparedScene, copyToastShape, decisionsFor, herdrPicture, ovisPicture, report } from "../testing/parity.ts";
-import { PARITY_SIZES, SCENES, type WorldName } from "../testing/parity-scenes.ts";
+import { SCENES, sizesOf, type WorldName } from "../testing/parity-scenes.ts";
 
 /**
  * The screen draws each scene of docs/tui/visual-parity.md as herdr's TUI does: its styled cell grid (text, attributes,
@@ -28,7 +28,7 @@ function basePicture(world: WorldName, cols: number, rows: number, palette: Pale
 for (const world of Object.keys(SCENES) as WorldName[]) {
   describe(`parity with herdr: ${world}`, () => {
     for (const scene of SCENES[world]) {
-      for (const [cols, rows] of PARITY_SIZES) {
+      for (const [cols, rows] of sizesOf(world)) {
         if (!comparedScene(scene.id, cols)) continue;
         for (const palette of PALETTES) {
           it(`${scene.id} ${cols}x${rows} ${palette}`, async () => {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { branchOf } from "./git-head.ts";
+import { branchOf, repositoryFiles } from "./git-head.ts";
 
 const folders: string[] = [];
 afterEach(() => {
@@ -46,6 +46,31 @@ describe("the branch a folder's checkout is on, from git's files", () => {
     expect(branchOf(join(root, "plain"))).toBeNull();
     expect(branchOf("repo")).toBeNull();
     for (const folder of ["odd", "nohead", "badlink"]) expect({ folder, branch: branchOf(join(root, folder)) }).toEqual({ folder, branch: null });
+  });
+
+  it("lists a repository and its linked worktrees from git's files, from either checkout, leaving out one whose folder is gone", () => {
+    const root = tree({ "repo/.git/HEAD": "ref: refs/heads/main\n", "repo/src/keep": "" });
+    const linked = (name: string, branch: string) => {
+      const own = join(root, "repo", ".git", "worktrees", name);
+      mkdirSync(join(root, name), { recursive: true });
+      writeFileSync(join(root, name, ".git"), `gitdir: ${own}\n`);
+      mkdirSync(own, { recursive: true });
+      writeFileSync(join(own, "HEAD"), `ref: refs/heads/${branch}\n`);
+      writeFileSync(join(own, "gitdir"), `${join(root, name, ".git")}\n`);
+      writeFileSync(join(own, "commondir"), "../..\n");
+    };
+    linked("wt", "feature");
+    linked("gone", "old");
+    rmSync(join(root, "gone"), { recursive: true });
+    const fromMain = repositoryFiles(join(root, "repo", "src"));
+    expect(fromMain && { ...fromMain, checkouts: fromMain.checkouts.map(({ path, branch }) => [path, branch]) }).toEqual({
+      repo_key: join(root, "repo", ".git"), repo_name: "repo", repo_root: join(root, "repo"), checkout: join(root, "repo"), git_dir: join(root, "repo", ".git"),
+      checkouts: [[join(root, "repo"), "main"], [join(root, "wt"), "feature"]],
+    });
+    const fromLinked = repositoryFiles(join(root, "wt"));
+    expect([fromLinked?.repo_key, fromLinked?.checkout, fromLinked?.git_dir]).toEqual([join(root, "repo", ".git"), join(root, "wt"), join(root, "repo", ".git", "worktrees", "wt")]);
+    // a bare repository has no checkout of its own to list first
+    expect(repositoryFiles(join(tree({ "bare.git/HEAD": "ref: refs/heads/main\n", "bare.git/worktrees/x/commondir": "../..\n", "x/.git": "gitdir: ../bare.git/worktrees/x\n", "bare.git/worktrees/x/HEAD": "ref: refs/heads/x\n" }), "x"))).toBeNull();
   });
 
   it("reads no HEAD that is not a regular file, so a FIFO in its place cannot hold the screen", async () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { type InputEvent, type Mods, typedKey } from "../input/decode.ts";
 import { Framer } from "../input/framer.ts";
 import type { Effect } from "./effects.ts";
-import type { World } from "./focus.ts";
+import { focused, type World } from "./focus.ts";
 import { modeBar } from "./hints.ts";
 import { OVERLAYS } from "./overlays.ts";
 import { initialState, type Level, type ModelEvent, type ModelState, reduce, type Step } from "./reduce.ts";
@@ -238,6 +238,8 @@ describe("overlay close keys", () => {
       goto: after(idle, prefix(), text("g")),
       menu: after(idle, prefix(), named("ENTER")),
       switcher: after(reduce(idle, { type: "resize", cols: 45, rows: 30, at: AT } as ModelEvent).state, prefix(), text("w")),
+      context: reduce(idle, { type: "context", target: { kind: "pane", id: focused(idle.world, idle.focus).pane!.id }, cell: { x: 30, y: 4 }, at: AT }).state,
+      worktrees: reduce(idle, { type: "worktrees", target: { kind: "workspace", id: idle.world.workspaces[0]!.id }, checkouts: [], at: AT }).state,
     };
     for (const [kind, entry] of Object.entries(OVERLAYS)) {
       const state = open[kind as keyof typeof OVERLAYS];

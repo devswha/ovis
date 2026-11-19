@@ -35,7 +35,19 @@ const KINDS = [
   { kind: "menu", action: "menu", control: null, keys: ["esc"] },
   // herdr's switcher: what the menu's key opens on a narrow screen
   { kind: "switcher", action: "menu", control: "close", keys: ["esc"], narrow: true },
+  // herdr's right-click menu, and Open worktree... with the checkouts the loop read: no close control, as herdr's
+  { kind: "context", event: "context", control: null, keys: ["esc"] },
+  { kind: "worktrees", event: "worktrees", control: " esc cancel ", keys: ["esc"] },
 ] as const;
+
+/** Opens a row's overlay: by its action, or by the event that opens it (a right press, the checkouts read). */
+function open(run: Run, row: (typeof KINDS)[number]): void {
+  const at = run.clock.current;
+  const target = { kind: "workspace" as const, id: run.loop.model().world.workspaces[0]!.id };
+  if (!("event" in row)) run.loop.dispatch({ type: "action", action: row.action, at });
+  else if (row.event === "context") run.loop.dispatch({ type: "context", target, cell: { x: 2, y: 2 }, at });
+  else run.loop.dispatch({ type: "worktrees", target, checkouts: [{ path: "/repo", label: "main", open: null }], at });
+}
 
 describe("the overlays' close keys", () => {
   it("every overlay registry entry shows its close control, and each of its close keys closes it", async () => {
@@ -44,10 +56,10 @@ describe("the overlays' close keys", () => {
     const wide = await start();
     const narrow = await start(undefined, 45, 30);
     for (const row of KINDS) {
-      const { kind, action, control, keys } = row;
+      const { kind, control, keys } = row;
       const run = "narrow" in row ? narrow : wide;
       for (const key of keys) {
-        run.loop.dispatch({ type: "action", action, at: run.clock.current });
+        open(run, row);
         await run.advance(20);
         expect({ kind, open: run.loop.model().overlays.map((overlay) => overlay.kind) }).toEqual({ kind, open: [kind] });
         if (control !== null) expect({ kind, drawn: run.grid().some((line) => line.includes(control)) }).toEqual({ kind, drawn: true });
@@ -65,9 +77,10 @@ describe("the overlays' close keys", () => {
     await run.keys("x");
     await run.advance(200);
     const focus = JSON.stringify(run.loop.model().focus);
-    for (const { kind, action, control } of KINDS) {
+    for (const kindRow of KINDS) {
+      const { kind, control } = kindRow;
       if (control === null) continue;
-      run.loop.dispatch({ type: "action", action, at: run.clock.current });
+      open(run, kindRow);
       await run.advance(20);
       const before = calls();
       const row = run.grid().findIndex((line) => line.includes(control));

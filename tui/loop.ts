@@ -582,6 +582,13 @@ export function startLoop(options: LoopOptions): Loop {
       case "close_overlay":
         dispatch({ type: "close_overlay", at: clock.now() });
         return;
+      case "context":
+        act(`context:${step.target.kind}`);
+        dispatch({ type: "context", target: step.target, cell: step.cell, at: clock.now() });
+        return;
+      case "hover":
+        dispatch({ type: "hover", entry: step.entry, at: clock.now() });
+        return;
       case "choose":
         dispatch({ type: "choose", entry: step.entry, at: clock.now() });
         return;
@@ -627,7 +634,13 @@ export function startLoop(options: LoopOptions): Loop {
   function pointerScene(): PointerScene {
     const tab = focused(state.world, state.focus).tab;
     const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
-    return { hits, focus: paneFocus, tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: shape?.splits ?? [], look: (pane) => lookOf(pane) };
+    return {
+      hits, focus: paneFocus, tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: shape?.splits ?? [], look: (pane) => lookOf(pane),
+      boxAt: (col, row) => shape?.spots.find(({ cells, covered }) => !covered && col >= cells.outer.x && col < cells.outer.x + cells.outer.width && row >= cells.outer.y && row < cells.outer.y + cells.outer.height)?.pane ?? null,
+      passthrough: (pane) => focused(state.world, state.focus).tab?.passthrough?.includes(pane) ?? false,
+      sidebarCollapsed: state.sidebarCollapsed,
+      overlay: state.overlays.at(-1)?.kind ?? null,
+    };
   }
 
   /**

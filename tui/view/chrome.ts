@@ -19,7 +19,7 @@ import { focused } from "../model/focus.ts";
 import { HELP_KEY_COLUMNS, helpLines, helpNotes, helpSize, helpTop, helpWindow } from "../model/help.ts";
 import { type CopyLook, type ModeBar, modeBar } from "../model/hints.ts";
 import { MENU_ENTRIES } from "../model/menu.ts";
-import { type Field, type Overlay, pickerList } from "../model/overlays.ts";
+import { type Field, type Overlay, pickerList, worktreeList } from "../model/overlays.ts";
 import { chosenAt } from "../model/picker.ts";
 import type { ModelState } from "../model/reduce.ts";
 import { STRINGS } from "../strings.ts";
@@ -246,7 +246,8 @@ const WORKSPACE_HEADER_ROWS = 2;
 /** The agents' half: the rule, its header and the blank row under it. */
 const AGENT_HEADER_ROWS = 3;
 
-interface WorkspaceLine { readonly id: string; readonly status: KnownStatus; readonly name: string; readonly branch: string | null; readonly child: "" | "middle" | "last"; readonly front: boolean; readonly chosen: boolean }
+/** `fold`: a repository's workspace with worktree workspaces under it, unfolded or folded (`▾`, `▸` at its row's end) */
+interface WorkspaceLine { readonly id: string; readonly status: KnownStatus; readonly name: string; readonly branch: string | null; readonly child: "" | "middle" | "last"; readonly front: boolean; readonly chosen: boolean; readonly fold?: "open" | "folded" }
 /** A row of the sidebar's workspaces: a workspace, or the branch row under one that is a git checkout (S4). */
 type WorkspaceRow = { readonly kind: "workspace" | "branch"; readonly line: WorkspaceLine };
 
@@ -255,10 +256,16 @@ function workspaceLines(state: ModelState, world: CoreView): WorkspaceLine[] {
   const shown = focused(state.world, state.focus);
   const front = shown.workspace?.id ?? null;
   const chosen = state.mode.name === "navigate" ? state.mode.preview ?? front : null;
-  return world.workspaceGroups.flatMap((group) => [
-    { id: group.id, status: group.status, name: group.name, branch: group.branch, child: "" as const },
-    ...group.children.map((child, at) => ({ id: child.id, status: child.status, name: child.name, branch: child.branch, child: at === group.children.length - 1 ? "last" as const : "middle" as const })),
-  ]).map((row) => ({ ...row, front: row.id === front, chosen: row.id === chosen }));
+  return world.workspaceGroups.flatMap((group) => {
+    // a folded group still lists the worktree workspace in front, as herdr's does
+    const children = group.collapsed ? group.children.filter((child) => child.id === front || child.id === chosen) : group.children;
+    const fold = group.children.length === 0 ? {} : { fold: group.collapsed ? "folded" as const : "open" as const };
+    return [
+      { id: group.id, status: group.status, name: group.name, branch: group.branch, child: "" as const, ...fold },
+      // a worktree workspace has no branch row of its own under its repository's
+      ...children.map((child, at) => ({ id: child.id, status: child.status, name: child.name, branch: null, child: at === children.length - 1 ? "last" as const : "middle" as const })),
+    ];
+  }).map((row) => ({ ...row, front: row.id === front, chosen: row.id === chosen }));
 }
 
 /**
@@ -288,6 +295,8 @@ const HERDR_SIDEBAR = {
   idle: [166, 227, 161],
   /** the branch of the workspace in front */
   branch: [203, 166, 247],
+  /** a group's fold mark */
+  accent: [137, 180, 250],
 } as const satisfies Readonly<Record<string, readonly [number, number, number]>>;
 type SidebarColors = Readonly<Record<keyof typeof HERDR_SIDEBAR, WrittenColor>>;
 
@@ -387,6 +396,7 @@ function sidebarPart(input: ChromeInput, colors: SidebarColors, look: string): P
         col = printFit(canvas, col, row, dot.glyph, end - col, canvas.style({ fg: colors[dot.role], bg }));
         col = printFit(canvas, col, row, " ", end - col, canvas.style({ fg: colors.label, bg }));
         printFit(canvas, col, row, truncateEnd(line.name, end - col), end - col, canvas.style({ fg: line.front || line.chosen ? colors.name : colors.nameDim, bg, flags: line.front ? STYLE_BOLD : 0 }));
+        if (line.fold) canvas.put(rect.x + width - 1, row, line.fold === "folded" ? STRINGS.groupCollapsed : STRINGS.groupExpanded, 1, canvas.style({ fg: colors.accent, bg }));
       }
       canvas.hit({ x: rect.x, y: row, width, height: 1 }, `workspace:${line.id}`);
       row++;
@@ -997,14 +1007,16 @@ function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; 
       if (!rect) return { overlays, input: "overlay", dim: true };
       const workspace = state.world.workspaces.find((one) => one.id === top.target.id);
       const name = workspace?.name || top.target.id;
-      const panes = workspace?.tabs.reduce((sum, tab) => sum + tab.panes.length, 0) ?? 0;
+      const panes = top.purpose === "close_group" ? top.seen.length : workspace?.tabs.reduce((sum, tab) => sum + tab.panes.length, 0) ?? 0;
+      const title = top.purpose === "close_group" ? STRINGS.confirmCloseGroupTitle : STRINGS.confirmCloseTitle;
+      const detail = top.purpose === "close_group" ? STRINGS.confirmCloseGroupDetail(name, top.spaces ?? 1, panes) : STRINGS.confirmCloseDetail(name, panes);
       const confirm: Part = {
         key: "overlay:confirm", rect, version: 0,
         draw(canvas) {
           const inner = panel(canvas, rect, colors.statusBlocked, colors);
           if (inner.width <= 0 || inner.height <= 0) return;
-          printFit(canvas, inner.x, inner.y, ` ${STRINGS.confirmCloseTitle}`, inner.width, canvas.style({ fg: colors.statusBlocked, bg: colors.bgPanel, flags: STYLE_BOLD }));
-          if (inner.height > 1) printFit(canvas, inner.x, inner.y + 1, ` ${STRINGS.confirmCloseDetail(name, panes)}`, inner.width, canvas.style({ fg: colors.text, bg: colors.bgPanel }));
+          printFit(canvas, inner.x, inner.y, ` ${title}`, inner.width, canvas.style({ fg: colors.statusBlocked, bg: colors.bgPanel, flags: STYLE_BOLD }));
+          if (inner.height > 1) printFit(canvas, inner.x, inner.y + 1, ` ${detail}`, inner.width, canvas.style({ fg: colors.text, bg: colors.bgPanel }));
           drawButtons(canvas, inner, [
             { text: STRINGS.confirmButton, width: 13, main: "danger", hit: "accept" },
             { text: STRINGS.cancelButton, width: 12, main: null, hit: "close" },
@@ -1021,7 +1033,96 @@ function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; 
       return { overlays: [...overlays, menuPart(regions, top, colors)], input: "overlay", dim: false };
     case "switcher":
       return { overlays: [...overlays, switcherPart(regions, top, state, world, colors)], input: "overlay", dim: false };
+    case "context":
+      // herdr dims nothing under its right-click menus
+      return { overlays: [...overlays, contextPart(width, height, top, colors)], input: "overlay", dim: false };
+    case "worktrees": {
+      const dialog = worktreesPart(width, height, top, colors);
+      return { overlays: dialog ? [...overlays, dialog] : overlays, input: "overlay", dim: true };
+    }
   }
+}
+
+/** A right-click menu is at least this wide; else its longest entry and four columns. */
+const CONTEXT_LEAST = 14;
+
+/**
+ * A right-click menu (docs/tui/visual-parity.md R2): a box whose top left corner is the pressed cell, moved left and up
+ * just enough to fit the screen; an accent frame on the panel, each entry in the first inner column, the chosen one in
+ * bold on the accent across the box. Each entry is a click target.
+ */
+function contextPart(width: number, height: number, menu: Extract<Overlay, { kind: "context" }>, colors: Colors): Part {
+  const labels = menu.entries.map((entry) => STRINGS.contextEntries[entry]);
+  const boxWidth = Math.min(width, Math.max(CONTEXT_LEAST, ...labels.map((label) => widthOf(label) + 4)));
+  const boxHeight = Math.min(height, labels.length + 2);
+  const rect = { x: Math.max(0, Math.min(menu.at.x, width - boxWidth)), y: Math.max(0, Math.min(menu.at.y, height - boxHeight)), width: boxWidth, height: boxHeight };
+  return {
+    key: "overlay:context", rect, version: JSON.stringify([menu.entries, menu.cursor]),
+    draw(canvas) {
+      const inner = panel(canvas, rect, colors.accent, colors);
+      labels.slice(0, inner.height).forEach((label, at) => {
+        const y = inner.y + at;
+        const chosen = at === menu.cursor;
+        const style = chosen ? canvas.style({ fg: colors.primaryText, bg: colors.accent, flags: STYLE_BOLD }) : canvas.style({ fg: colors.text, bg: colors.bgPanel });
+        fillSpan(canvas, inner.x, y, inner.width, style);
+        printFit(canvas, inner.x, y, label, inner.width, style);
+        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${at}`);
+      });
+    },
+  };
+}
+
+/** Open worktree... is this wide at most, and the screen less two columns at each side below that; this tall. */
+const WORKTREES_WIDTH = 96;
+const WORKTREES_HEIGHT = 12;
+
+/**
+ * herdr's Open worktree... (R7): its title, the filter row with the count of checkouts at its right, a rule, then each
+ * checkout in two rows, its name (and `open` at the right when a workspace shows it) and its folder, the chosen one on the
+ * accent; its keys at the foot. Each checkout is a click target.
+ */
+function worktreesPart(width: number, height: number, dialog: Extract<Overlay, { kind: "worktrees" }>, colors: Colors): Part | null {
+  const rect = dialogRect(width, height, Math.min(WORKTREES_WIDTH, width - 2 * DIALOG_MARGIN.cols), WORKTREES_HEIGHT);
+  if (!rect) return null;
+  const rows = worktreeList(dialog);
+  const field = dialog.searching || dialog.field.graphemes.length > 0 ? fieldView(dialog.field, Math.max(1, rect.width - 5)) : null;
+  return {
+    key: "overlay:worktrees", rect, version: 0,
+    draw(canvas) {
+      const inner = panel(canvas, rect, colors.accent, colors);
+      if (inner.width <= 0 || inner.height < 4) return;
+      const style = (fg: WrittenColor, flags = 0, bg: WrittenColor = colors.bgPanel) => canvas.style({ fg, bg, flags });
+      printFit(canvas, inner.x, inner.y, STRINGS.worktreesTitle, inner.width, style(colors.text, STYLE_BOLD));
+      const count = STRINGS.worktreesCount(rows.length);
+      const filterRoom = Math.max(0, inner.width - widthOf(count) - 1);
+      if (field === null) printFit(canvas, inner.x, inner.y + 1, STRINGS.worktreesFilterHint, filterRoom, style(colors.textDim));
+      else printFit(canvas, inner.x, inner.y + 1, ` / ${field.text}`, filterRoom, style(colors.text));
+      printRight(canvas, inner, inner.y + 1, count, style(colors.textDim));
+      for (let x = inner.x; x < inner.x + inner.width; x++) canvas.put(x, inner.y + 2, "─", 1, style(colors.border));
+      const listTop = inner.y + 3;
+      const slots = Math.floor(Math.max(0, inner.height - 4) / 2);
+      const start = windowStart(rows.length, slots, Math.max(0, dialog.cursor));
+      rows.slice(start, start + slots).forEach((row, at) => {
+        const index = start + at;
+        const chosen = index === dialog.cursor;
+        const bg = chosen ? colors.accent : colors.bgPanel;
+        const y = listTop + at * 2;
+        fillSpan(canvas, inner.x, y, inner.width, style(colors.text, 0, bg));
+        fillSpan(canvas, inner.x, y + 1, inner.width, style(colors.text, 0, bg));
+        const name = style(chosen ? colors.primaryText : colors.text, STYLE_BOLD, bg);
+        const plain = style(chosen ? colors.primaryText : colors.text, 0, bg);
+        const openRoom = row.open !== null ? widthOf(STRINGS.worktreesOpen) : 0;
+        printFit(canvas, inner.x, y, ` ${row.label}`, Math.max(0, inner.width - openRoom - 1), name);
+        if (row.open !== null) printRight(canvas, inner, y, STRINGS.worktreesOpen, plain);
+        printFit(canvas, inner.x, y + 1, ` ${row.path}`, inner.width, style(chosen ? colors.primaryText : colors.textDim, 0, bg));
+        canvas.hit({ x: inner.x, y, width: inner.width, height: 2 }, `menu:${index}`);
+      });
+      drawButtons(canvas, inner, [
+        { text: STRINGS.worktreesOpenButton, width: widthOf(STRINGS.worktreesOpenButton), main: "accent", hit: "accept" },
+        { text: STRINGS.cancelButton, width: 12, main: null, hit: "close" },
+      ], inner.height - 1, colors);
+    },
+  };
 }
 
 /** A place's state, as the sidebar marks it: a workspace's and a tab's roll-up, an agent's own. */

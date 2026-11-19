@@ -1,0 +1,262 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
+import { leaves, OVIS_LAYOUT_DOC, parseOvisLayout } from "../../server/herdr-core/layout-doc.ts";
+import { PANE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
+import { WORKTREE_LABEL } from "../../server/herdr-core/worktrees.ts";
+import type { ContextAction } from "../model/context.ts";
+import { focused, type Target } from "../model/focus.ts";
+import { place } from "../testing/fixtures/fixture.ts";
+import { Run } from "../testing/run.ts";
+
+const TEST_MS = 60_000;
+const runs: Run[] = [];
+const folders: string[] = [];
+afterEach(async () => {
+  for (const run of runs.splice(0)) await run.close();
+  for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
+});
+
+/**
+ * herdr's right-click world (docs/tui/visual-parity.md R1-R8): a tab split in LEFT and RIGHT and a second tab, a second
+ * workspace; with `git`, a repository and a linked worktree of it on disk, each shown by a workspace of its own.
+ */
+async function start(options: { git?: boolean; mouse?: boolean } = {}): Promise<Run> {
+  const core = new FakeHcCore();
+  const where = (space: string, tab: string, pane: string, cwd?: string) => ({ space: `w-${space}`, spaceName: space, tab: `t-${space}-${tab}`, tabName: tab, pane, ...(cwd ? { cwd } : {}) });
+  place(core, where("work", "one", "LEFT"), "LEFT-READY\r\n");
+  place(core, where("work", "one", "RIGHT"), options.mouse ? "RIGHT-READY\r\n\x1b[?1000h\x1b[?1006h" : "RIGHT-READY\r\n");
+  place(core, where("work", "two", "SOLO"), "SOLO-READY\r\n");
+  place(core, where("docs", "notes", "NOTES"), "NOTES-READY\r\n");
+  if (options.git) {
+    const home = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "context-"));
+    folders.push(home);
+    const own = join(home, "repo", ".git", "worktrees", "repo-wt");
+    mkdirSync(own, { recursive: true });
+    mkdirSync(join(home, "repo-wt"));
+    writeFileSync(join(home, "repo", ".git", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(home, "repo-wt", ".git"), `gitdir: ${own}\n`);
+    writeFileSync(join(own, "HEAD"), "ref: refs/heads/feature\n");
+    writeFileSync(join(own, "gitdir"), `${join(home, "repo-wt", ".git")}\n`);
+    writeFileSync(join(own, "commondir"), "../..\n");
+    place(core, where("repo", "main", "CODE", join(home, "repo")), "CODE-READY\r\n");
+    place(core, where("feat", "wt", "WT", join(home, "repo-wt")), "WT-READY\r\n");
+  }
+  const run = await Run.start({ core, cols: 120, rows: 40 });
+  runs.push(run);
+  await run.live();
+  await run.advance(10);
+  return run;
+}
+
+/** The first cell of `text` on the screen (on row `row` only, when given). */
+function cellOf(run: Run, text: string, row?: number): { x: number; y: number } {
+  const rows = run.grid();
+  const y = row ?? rows.findIndex((line) => line.includes(text));
+  const x = rows[y]?.indexOf(text) ?? -1;
+  if (y < 0 || x < 0) throw new Error(`no ${text} on the screen:\n${rows.join("\n")}`);
+  return { x, y };
+}
+
+const top = (run: Run) => run.loop.model().overlays.at(-1);
+const menu = (run: Run) => {
+  const overlay = top(run);
+  return overlay?.kind === "context" ? { target: overlay.target, entries: overlay.entries, cursor: overlay.cursor, at: overlay.at } : null;
+};
+const focusOf = (run: Run) => JSON.stringify(run.loop.model().focus);
+const paneId = (run: Run, name: string) => run.loop.model().world.workspaces.flatMap((w) => w.tabs.flatMap((t) => t.panes)).find((pane) => pane.name === name)!.id;
+const tabId = (run: Run, name: string) => run.loop.model().world.workspaces.flatMap((w) => w.tabs).find((tab) => tab.name === name)!.id;
+const spaceId = (run: Run, name: string) => run.loop.model().world.workspaces.find((workspace) => workspace.name === name)!.id;
+const layoutDoc = (run: Run) => parseOvisLayout(run.core.docs.get(OVIS_LAYOUT_DOC)?.value);
+
+/** Escape: a lone one is told from a key's first byte after the screen's wait (about 300 ms with no reply). */
+async function escape(run: Run): Promise<void> {
+  await run.keys("esc");
+  await run.advance(400);
+}
+
+async function rclick(run: Run, at: { x: number; y: number }, shift = false): Promise<void> {
+  // a focus change before it repaints and attaches first: the press is read once that has settled
+  await run.advance(400);
+  await run.keys(`${shift ? "shift+" : ""}rclick@${at.x}:${at.y}`);
+  await run.advance(20);
+}
+
+/** Opens `target`'s menu with a right press at `at`, then takes its entry `label`. */
+async function choose(run: Run, at: { x: number; y: number }, label: string): Promise<void> {
+  await rclick(run, at);
+  const item = cellOf(run, label);
+  await run.keys(`click@${item.x + 1}:${item.y}`);
+  // what the entry writes comes back from the core before the screen shows it
+  await run.advance(300);
+}
+
+describe("herdr's right-click menus: where they open (R1)", () => {
+  it("on any cell of a pane's box, a tab and a workspace's row, at the pressed cell and with no focus change; nowhere else", async () => {
+    const run = await start();
+    const before = focusOf(run);
+    const right = paneId(run, "RIGHT");
+    const text = cellOf(run, "RIGHT-READY");
+    const opened: [string, { x: number; y: number }, Target, readonly ContextAction[]][] = [
+      ["a pane's text, not focused", { x: text.x + 3, y: text.y }, { kind: "pane", id: right }, ["rename_pane", "clear_pane_name", "swap_with_focused", "split_vertical", "split_horizontal", "zoom", "passthrough_on", "close_pane"]],
+      ["its title", { x: cellOf(run, "┌ RIGHT").x + 3, y: 1 }, { kind: "pane", id: right }, ["rename_pane", "clear_pane_name", "swap_with_focused", "split_vertical", "split_horizontal", "zoom", "passthrough_on", "close_pane"]],
+      ["the focused pane's bottom border", { x: 50, y: 39 }, { kind: "pane", id: paneId(run, "LEFT") }, ["rename_pane", "clear_pane_name", "split_vertical", "split_horizontal", "zoom", "passthrough_on", "close_pane"]],
+      ["a tab", cellOf(run, "two", 0), { kind: "tab", id: tabId(run, "two") }, ["new_tab", "rename_tab", "close_tab"]],
+      ["a workspace's row", cellOf(run, "docs"), { kind: "workspace", id: spaceId(run, "docs") }, ["rename_workspace", "close_workspace"]],
+    ];
+    for (const [where, at, target, entries] of opened) {
+      await rclick(run, at);
+      expect({ where, menu: menu(run), focus: focusOf(run) }).toEqual({ where, menu: { target, entries, cursor: 0, at: { x: at.x, y: at.y } }, focus: before });
+      await escape(run);
+    }
+    for (const [where, at] of [["the sidebar's header", { x: 2, y: 0 }], ["its new button", cellOf(run, " new")], ["the tab bar's +", cellOf(run, "+", 0)], ["the agents' header", cellOf(run, "agents")]] as const) {
+      await rclick(run, at);
+      expect({ where, open: run.loop.model().overlays.length, focus: focusOf(run) }).toEqual({ where, open: 0, focus: before });
+    }
+    // the collapsed sidebar's rail is no workspace row for it
+    await run.keys("ctrl+b,b");
+    await run.advance(20);
+    await rclick(run, { x: 1, y: 1 });
+    expect(run.loop.model().overlays).toEqual([]);
+  }, TEST_MS);
+});
+
+describe("the menu's keys and pointer (R3)", () => {
+  it("up and down stop at the ends, the pointer chooses, a left press elsewhere only closes it, a right press does nothing", async () => {
+    const run = await start();
+    const before = focusOf(run);
+    const text = cellOf(run, "RIGHT-READY");
+    await rclick(run, { x: text.x + 3, y: text.y });
+    await run.keys("up");
+    expect(menu(run)?.cursor).toBe(0);
+    await run.keys("down,down,down,down,down,down,down,down,down,down");
+    expect(menu(run)?.cursor).toBe(7);
+    // other keys do nothing
+    await run.keys("x");
+    expect(menu(run)?.cursor).toBe(7);
+    const zoom = cellOf(run, "│Zoom");
+    await run.keys(`move@${zoom.x + 3}:${zoom.y}`);
+    await run.advance(20);
+    expect(menu(run)?.cursor).toBe(5);
+    // a right press anywhere, another target too, leaves it as it is
+    await rclick(run, cellOf(run, "two", 0));
+    expect(menu(run)?.target).toEqual({ kind: "pane", id: paneId(run, "RIGHT") });
+    // a left press outside it closes it and goes no further: the pane under it is not focused
+    const left = cellOf(run, "LEFT-READY");
+    await run.keys(`click@${left.x + 2}:${left.y + 3}`);
+    await run.advance(20);
+    expect([run.loop.model().overlays.length, focusOf(run)]).toEqual([0, before]);
+  }, TEST_MS);
+});
+
+describe("a pane's entries (R4)", () => {
+  it("clear its name, swap it with the focused pane (the focus stays), zoom it (and focus it), split it, close it at once", async () => {
+    const run = await start();
+    const left = paneId(run, "LEFT");
+    const right = paneId(run, "RIGHT");
+    const at = () => ({ x: cellOf(run, "RIGHT-READY").x + 3, y: cellOf(run, "RIGHT-READY").y });
+    await choose(run, at(), "Clear pane name");
+    expect(run.core.calls().filter((call) => call.method === "terminal.label").map((call) => call.params)).toContainEqual({ terminal: right, labels: { [PANE_NAME_LABEL]: "" } });
+    await choose(run, at(), "Swap with focused pane");
+    const tab = () => layoutDoc(run)!.workspaces.flatMap((workspace) => workspace.tabs).find((one) => leaves(one.root).includes(left))!;
+    expect([leaves(tab().root), focused(run.loop.model().world, run.loop.model().focus).pane?.id]).toEqual([[right, left], left]);
+    await choose(run, at(), "Zoom");
+    expect([tab().zoomed, focused(run.loop.model().world, run.loop.model().focus).pane?.id]).toEqual([right, right]);
+    await run.keys("ctrl+b,z");
+    await run.advance(50);
+    const made = run.core.calls().filter((call) => call.method === "terminal.run").length;
+    await choose(run, at(), "Split down");
+    expect(run.core.calls().filter((call) => call.method === "terminal.run").length).toBe(made + 1);
+    await run.advance(100);
+    const focusedNow = focused(run.loop.model().world, run.loop.model().focus).pane;
+    expect([focusedNow?.id === left || focusedNow?.id === right, focusedNow?.name]).toEqual([false, ""]);
+    await choose(run, at(), "Close pane");
+    expect(run.loop.model().overlays).toEqual([]);
+    expect(run.core.calls().filter((call) => call.method === "terminal.kill").map((call) => call.params["terminal"])).toEqual([right]);
+  }, TEST_MS);
+
+  it("Send right-clicks to pane: kept in the layout document beside zoom; a right press in its text then goes to its program and focuses it, shift still opens the menu", async () => {
+    const run = await start({ mouse: true });
+    const right = paneId(run, "RIGHT");
+    const text = cellOf(run, "RIGHT-READY");
+    // by default a right press opens herdr's menu even over a program that asked for the mouse
+    await choose(run, { x: text.x + 3, y: text.y }, "Send right-clicks to pane");
+    const passthrough = () => layoutDoc(run)!.workspaces.flatMap((workspace) => workspace.tabs).flatMap((tab) => tab.passthrough ?? []);
+    expect(passthrough()).toEqual([right]);
+    await rclick(run, { x: text.x + 3, y: text.y });
+    expect(run.loop.model().overlays).toEqual([]);
+    expect(Buffer.from(run.core.program(right).receivedHex(), "hex").toString()).toBe("\x1b[<2;4;1M\x1b[<2;4;1m");
+    expect(focused(run.loop.model().world, run.loop.model().focus).pane?.id).toBe(right);
+    // shift keeps it for the screen: the menu, whose entry now turns it back
+    await rclick(run, { x: text.x + 3, y: text.y }, true);
+    expect(menu(run)?.entries).toContain("passthrough_off");
+    const back = cellOf(run, "Use Herdr right-click menu");
+    await run.keys(`click@${back.x + 1}:${back.y}`);
+    await run.advance(50);
+    expect(passthrough()).toEqual([]);
+  }, TEST_MS);
+});
+
+describe("a tab's and a workspace's entries (R5, R6)", () => {
+  it("a tab's entry first brings that tab to the front: New tab with the next number, Rename with its name, Close at once", async () => {
+    const run = await start();
+    await choose(run, cellOf(run, "two", 0), "New tab");
+    expect([focused(run.loop.model().world, run.loop.model().focus).tab?.name, top(run)?.kind === "text" && top(run)]).toEqual(["two", expect.objectContaining({ purpose: "new_tab", field: expect.objectContaining({ original: "3" }) })]);
+    await escape(run);
+    await run.keys("ctrl+b,1");
+    await run.advance(20);
+    const solo = paneId(run, "SOLO");
+    await choose(run, cellOf(run, "two", 0), "Close");
+    expect(run.core.calls().filter((call) => call.method === "terminal.kill").map((call) => call.params["terminal"])).toEqual([solo]);
+  }, TEST_MS);
+
+  it("a workspace's Rename opens the name dialog with its name, its Close asks first; the workspace in front stays", async () => {
+    const run = await start();
+    const before = run.loop.model().focus.workspace;
+    await choose(run, cellOf(run, "docs"), "Rename");
+    expect([run.loop.model().focus.workspace, top(run)]).toEqual([before, expect.objectContaining({ kind: "text", purpose: "rename_workspace", field: expect.objectContaining({ original: "docs" }) })]);
+    await escape(run);
+    await choose(run, cellOf(run, "docs"), "Close");
+    expect(top(run)).toEqual(expect.objectContaining({ kind: "confirm", purpose: "close_workspace", target: { kind: "workspace", id: spaceId(run, "docs") } }));
+  }, TEST_MS);
+});
+
+describe("a git workspace's entries (R7)", () => {
+  it("Open worktree... lists the checkouts from git's files; Enter on one a workspace shows goes there and groups it, which folds and closes as one", async () => {
+    const run = await start({ git: true });
+    const repo = spaceId(run, "repo");
+    const feat = spaceId(run, "feat");
+    // herdr's New worktree runs git: the screen leaves it out
+    await rclick(run, cellOf(run, "repo"));
+    expect(menu(run)?.entries).toEqual(["rename_workspace", "close_workspace", "open_worktree"]);
+    await escape(run);
+    await choose(run, cellOf(run, "repo"), "Open worktree...");
+    const dialog = top(run);
+    expect(dialog?.kind === "worktrees" && dialog.checkouts.map(({ label, open }) => [label, open])).toEqual([["main", repo], ["feature", feat]]);
+    await run.keys("down,enter");
+    await run.advance(100);
+    expect(run.loop.model().focus.workspace).toBe(feat);
+    const labelled = run.core.calls().filter((call) => call.method === "terminal.label" && WORKTREE_LABEL in (call.params["labels"] as object));
+    expect(labelled.length).toBe(2);
+    const world = run.loop.model().world;
+    expect([world.workspaces.find((one) => one.id === repo)?.group, world.workspaces.find((one) => one.id === feat)?.parent]).toEqual([{ collapsed: false }, repo]);
+    expect(run.grid()[cellOf(run, "repo").y]!.slice(0, 26)).toBe(" · repo                 ▾│");
+    // a grouped worktree's own menu: herdr's Delete worktree checkout... runs git, and is left out
+    await rclick(run, cellOf(run, "└─"));
+    expect(menu(run)?.entries).toEqual(["rename_workspace", "close_workspace"]);
+    await escape(run);
+    await run.keys(`click@${cellOf(run, "work").x + 1}:${cellOf(run, "work").y}`);
+    await run.advance(50);
+    await choose(run, cellOf(run, "repo"), "Collapse");
+    expect(layoutDoc(run)!.workspaces.find((one) => one.id === repo)?.collapsed).toBe(true);
+    expect(run.grid().some((line) => line.slice(0, 26).includes("└─"))).toBe(false);
+    const ends = [paneId(run, "CODE"), paneId(run, "WT")].sort();
+    await choose(run, cellOf(run, "repo"), "Close group");
+    expect(top(run)).toEqual(expect.objectContaining({ kind: "confirm", purpose: "close_group", spaces: 2 }));
+    await run.keys("enter");
+    await run.advance(100);
+    expect(run.core.calls().filter((call) => call.method === "terminal.kill").map((call) => call.params["terminal"]).sort()).toEqual(ends);
+  }, TEST_MS);
+});
