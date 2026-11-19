@@ -273,7 +273,7 @@ describe("every control's cells resolve to it in the hit map, and the cells besi
     ["the new-tab button", { cols: 120, rows: 40 }, "tabs/new_tab", { x: 44, y: 0, width: 3, height: 1 }],
     ["the rail's mark that brings the sidebar back", { cols: 120, rows: 40, events: [{ type: "action", action: "toggle_sidebar", at: 1 }] }, "sidebar/toggle_sidebar", { x: 1, y: 39, width: 1, height: 1 }],
     ["a split's divider", { cols: 120, rows: 40 }, "borders/split_0_root", { x: 72, y: 1, width: 2, height: 39 }],
-    ["an overlay's close keys", { cols: 120, rows: 40, events: [{ type: "action", action: "goto", at: 1 }] }, "overlay:goto/close", { x: 77, y: 13, width: 14, height: 1 }],
+    ["the help's close button", { cols: 120, rows: 40, events: [{ type: "action", action: "help", at: 1 }] }, "overlay:help/close", { x: 84, y: 10, width: 13, height: 1 }],
     ["a dialog's save button", { cols: 120, rows: 40, events: [{ type: "action", action: "rename_tab", at: 1 }] }, "overlay:text/accept", { x: 43, y: 20, width: 8, height: 1 }],
     ["a dialog's clear button", { cols: 120, rows: 40, events: [{ type: "action", action: "rename_tab", at: 1 }] }, "overlay:text/clear", { x: 53, y: 20, width: 10, height: 1 }],
     ["a dialog's cancel button", { cols: 120, rows: 40, events: [{ type: "action", action: "rename_tab", at: 1 }] }, "overlay:text/close", { x: 65, y: 20, width: 12, height: 1 }],

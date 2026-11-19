@@ -18,7 +18,7 @@ import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, focusOn, NO_F
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
 import { HELP_PAGE_ROWS, helpLines, helpNotes, helpSize, helpWindow } from "./help.ts";
 import { field, HELP_OPEN, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
-import { pickerPlaces, placeKey } from "./picker.ts";
+import { pickerPlaces } from "./picker.ts";
 import { NARROW_COLUMNS } from "./screen-size.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
@@ -525,7 +525,7 @@ function refreshPicker(acc: Acc): void {
     overlays: overlays.map((overlay) => {
       if (overlay.kind !== "goto") return overlay;
       const places = pickerPlaces(world);
-      return { ...overlay, places, chosen: places.some((place) => placeKey(place) === overlay.chosen) ? overlay.chosen : null };
+      return { ...overlay, places, chosen: places.some((place) => place.id === overlay.chosen) ? overlay.chosen : null };
     }),
   };
 }
@@ -731,7 +731,8 @@ function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: numbe
       pushOverlay(HELP_OPEN);
       return;
     case "goto":
-      pushOverlay({ kind: "goto", field: field(""), places: pickerPlaces(s.world), chosen: null });
+      // the picker opens on the terminal in front, as herdr's does
+      pushOverlay({ kind: "goto", field: field(""), searching: false, places: pickerPlaces(s.world), chosen: focused(s.world, s.focus).pane?.id ?? null });
       return;
     case "workspace_picker":
       setMode(acc, { name: "navigate", preview: shown.workspace?.id ?? null });

@@ -678,15 +678,15 @@ describe("mouse on the whole screen", () => {
 
   it("a click on an overlay's close control closes it; a click elsewhere in it does nothing", async () => {
     const run = await demo120();
-    await run.keys("ctrl+b,g");
+    await run.keys("ctrl+b,?");
     await run.advance(20);
-    expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["goto"]);
-    // the close keys sit at the top right of the picker's frame
-    const row = run.grid().findIndex((line) => line.includes("[close: esc]"));
-    // its top border, between the title and the close keys
-    await run.keys(`click@60:${row}`);
-    expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["goto"]);
-    await run.keys(`click@${run.grid()[row]!.indexOf("[close: esc]") + 2}:${row}`);
+    expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["help"]);
+    // the close button sits at the top right of the help, on its title's row
+    const row = run.grid().findIndex((line) => line.includes("  esc close  "));
+    // the title row left of it
+    await run.keys(`click@40:${row}`);
+    expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["help"]);
+    await run.keys(`click@${run.grid()[row]!.indexOf("  esc close  ") + 2}:${row}`);
     expect(run.loop.model().overlays).toEqual([]);
   }, TEST_MS);
 

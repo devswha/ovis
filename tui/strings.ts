@@ -133,7 +133,6 @@ export const STRINGS = {
     focus_pane_down: "focus pane down", focus_pane_up: "focus pane up", focus_pane_right: "focus pane right",
     cycle_pane_next: "cycle pane next", cycle_pane_previous: "cycle pane previous", last_pane: "last pane",
   },
-  helpCloseLabel: (keys: readonly string[]): string => `close: ${keys.join(" / ")}`,
   /** a dialog's buttons, each naming its key */
   saveButton: " ↵ save ",
   clearButton: " ^c clear ",
@@ -150,15 +149,21 @@ export const STRINGS = {
   confirmCloseTitle: "Close workspace?",
   confirmCloseDetail: (name: string, panes: number): string => `${name} — ${panes} ${panes === 1 ? "pane" : "panes"}`,
   gotoTitle: "Go to",
-  gotoPromptHint: "Type to filter · Enter to jump",
-  pickerNoMatch: "No matches",
+  /** herdr's picker: its search hint, the count at its right, the mark of the terminal in front, the words of a plain terminal, and its foot */
+  pickerSearchHint: " / search agents and terminals",
+  pickerCount: (count: number): string => `${count} ${count === 1 ? "terminal" : "terminals"}`,
+  pickerFront: "◆",
+  pickerTerminal: "terminal",
+  pickerShell: "shell",
+  /** herdr's foot but its state filters (a/b/w/i/d), which the screen has not */
+  pickerFooter: " ↑↓/j/k rows · ←→ workspace · / search · enter open · esc close",
+  pickerSearchFooter: " edit ←→/home/end · kill ^u/^k · yank ^y · scroll ↑↓ · back esc",
   menuTitle: "Menu",
   /** herdr's menu entries; the keys' help keeps the screen's word for it (C2: herdr says `keybinds`) */
   menuEntries: { settings: "settings", help: "help", reload_config: "reload config", detach: "detach" } as const,
   /** at the right of the narrow screen's header, which opens the menu */
   menuMark: "[menu]",
   /** what kind of place a menu entry goes to */
-  menuPlaces: { workspace: "workspace", tab: "tab", pane: "pane", agent: "agent" } as const,
 
   // Keymap notes in help & mode bar
   notePrefixFallback: (binding: string, fallback: string): string =>

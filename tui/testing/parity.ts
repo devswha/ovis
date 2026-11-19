@@ -341,7 +341,7 @@ const inside = (rect: Omit<Hole, "line">, x: number, y: number): boolean => x >=
 
 const BAR_SCENES = new Set(["prefix", "navigate", "copy", "resize", "empty-prefix"]);
 /** herdr's dialog size per scene; the screen draws the same, except its help (as large as fits until O5) */
-const DIALOGS: Readonly<Record<string, readonly [number, number]>> = { help: [76, 22], rename: [56, 7], newtab: [56, 7], confirm: [64, 6] };
+const DIALOGS: Readonly<Record<string, readonly [number, number]>> = { help: [76, 22], rename: [56, 7], newtab: [56, 7], confirm: [64, 6], picker: [999, 999], "agents-picker": [999, 999] };
 
 /**
  * The scenes no case compares, by the line that covers them: every cell of them, or every cell another case compares
@@ -351,8 +351,6 @@ export const LEFT_OUT: readonly { readonly scene: string; readonly line: string;
   { scene: "settings", line: "O10", why: "herdr's settings screen; the screen has none yet" },
   { scene: "menu", line: "L8", why: "herdr's narrow switcher (a click on switch) covers the screen", narrow: true },
   { scene: "agents-menu", line: "L8", why: "herdr's narrow switcher (a click on switch) covers the screen", narrow: true },
-  { scene: "picker", line: "O7", why: "its overlay is O7's; every other cell is the main scene's" },
-  { scene: "agents-picker", line: "O7", why: "its overlay is O7's; every other cell is the agents scene's" },
   { scene: "viewers", line: "P6", why: "forced; this harness draws no second viewer, so the screen's side is the main scene" },
   { scene: "navigate", line: "L8", why: "herdr's narrow switcher covers the screen", narrow: true },
   { scene: "collapsed", line: "L6", why: "no sidebar at 64 columns or fewer on either side: the main scene again", narrow: true },
@@ -431,12 +429,11 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
     words.push({ herdr: "workspace nav", ovis: STRINGS.modeHints.workspaceNav, shift: true, row: rows - 1 }, { herdr: "keybinds", ovis: STRINGS.modeHints.keybinds, shift: true, row: rows - 1 });
   }
   if (rect) {
-    // herdr's dialog frame keeps the bold of the cell it was drawn over (its panel sets a colour on the old cell's style,
-    // as its toolkit merges styles): that is how herdr's toolkit paints, not a look of herdr's, so a frame cell's bold
-    // does not count where the picture under the dialog was bold there
+    // herdr's dialogs keep the bold of the cell they were drawn over (a panel sets colours on the old cell's style, as its
+    // toolkit merges styles): that is how herdr's toolkit paints, not a look of herdr's, so a dialog cell's bold does not
+    // count where the picture under the dialog was bold there
     if (base) {
-      for (let x = rect.x; x < rect.x + rect.width; x++) for (const y of [rect.y, rect.y + rect.height - 1]) if (base.herdr.cells[y * cols + x]!.look.flags & LOOK_BOLD) holes.push({ line: "O2", x, y, width: 1, height: 1, bold: true });
-      for (let y = rect.y; y < rect.y + rect.height; y++) for (const x of [rect.x, rect.x + rect.width - 1]) if (base.herdr.cells[y * cols + x]!.look.flags & LOOK_BOLD) holes.push({ line: "O2", x, y, width: 1, height: 1, bold: true });
+      for (let y = rect.y; y < rect.y + rect.height; y++) for (let x = rect.x; x < rect.x + rect.width; x++) if (base.herdr.cells[y * cols + x]!.look.flags & LOOK_BOLD) holes.push({ line: "O2", x, y, width: 1, height: 1, bold: true });
       // the same toolkit keeps a whole cell's look where the dialog wrote only its character: such a cell inside the dialog
       // has exactly the look of the cell it was drawn over (no panel background), so its look is not herdr's dialog's
       for (let y = rect.y + 1; y < rect.y + rect.height - 1; y++) {
@@ -468,6 +465,7 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
     if (herdrSpan) holes.push(herdrSpan);
     if (ovisSpan) ovisHoles.push(ovisSpan);
   }
+  if (scene === "picker" || scene === "agents-picker") holes.push(...pickerHoles(herdr, ovisHoles, cols, rows));
   if (scene === "menu" || scene === "agents-menu") words.push({ herdr: "keybinds", ovis: STRINGS.menuEntries.help.padEnd("keybinds".length) });
   if (scene === "toast-agent") {
     // N2: the agent scenes were captured with herdr's toasts switched on (`ui.toast.delivery = "herdr"`); the screen
@@ -482,6 +480,35 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
     }
   }
   return { words, holes, ovisHoles, ...(place ? { place } : {}) };
+}
+
+/**
+ * The picker's cells left out: S8's state marks (the screen keeps its own), the state column (C2: each side its own word
+ * for a state), the foot's path and folder (herdr's pane ids and its scratch folder are not the screen's), and its keys
+ * row from where herdr lists its state filters (a/b/w/i/d), which the screen has not.
+ */
+function pickerHoles(herdr: Cells, ovisHoles: Hole[], cols: number, rows: number): Hole[] {
+  const box = dialog(cols, rows, cols, rows);
+  const holes: Hole[] = [];
+  const text = gridText(herdr);
+  for (let y = box.y + 1; y < box.y + box.height - 1; y++) {
+    for (let x = box.x + 3; x < box.x + box.width - 1; x++) if ("●○·".includes(text[y]![x]!) && /─ |◆ /.test(text[y]!.slice(x - 2, x))) holes.push({ line: "S8", x, y, width: 1, height: 1, glyph: true });
+  }
+  if (box.width - 2 >= 70) {
+    const state = { line: "C2", x: box.x + box.width - 1 - 11, y: box.y + 3, width: 11, height: Math.max(0, box.height - 7) };
+    holes.push(state);
+    ovisHoles.push(state);
+  }
+  const foot = box.y + box.height - 4;
+  holes.push({ line: "O7", x: box.x + 1, y: foot, width: box.width - 2, height: 2 });
+  ovisHoles.push({ line: "O7", x: box.x + 1, y: foot, width: box.width - 2, height: 2 });
+  const keys = (text[foot + 2] ?? "").indexOf(" · a/b/w/i/d");
+  if (keys >= 0) {
+    const cut = { line: "O7", x: keys, y: foot + 2, width: box.x + box.width - 1 - keys, height: 1 };
+    holes.push(cut);
+    ovisHoles.push(cut);
+  }
+  return holes;
 }
 
 /**

@@ -19,8 +19,8 @@ import { focused } from "../model/focus.ts";
 import { HELP_KEY_COLUMNS, helpLines, helpNotes, helpSize, helpTop, helpWindow } from "../model/help.ts";
 import { type CopyLook, type ModeBar, modeBar } from "../model/hints.ts";
 import { MENU_ENTRIES } from "../model/menu.ts";
-import { type Field, type Overlay, OVERLAYS, pickerList } from "../model/overlays.ts";
-import { chosenAt, type Place } from "../model/picker.ts";
+import { type Field, type Overlay, pickerList } from "../model/overlays.ts";
+import { chosenAt } from "../model/picker.ts";
 import type { ModelState } from "../model/reduce.ts";
 import { STRINGS } from "../strings.ts";
 import { TUI_THEMES, type TuiColorRole, type TuiThemeMode } from "../theme.generated.ts";
@@ -162,13 +162,6 @@ function dialogRect(screenWidth: number, screenHeight: number, width: number, he
   const fitted = { width: Math.min(width, screenWidth - 2 * DIALOG_MARGIN.cols), height: Math.min(height, screenHeight - 2 * DIALOG_MARGIN.rows) };
   if (fitted.width < DIALOG_LEAST || fitted.height < DIALOG_LEAST) return null;
   return { x: Math.floor((screenWidth - fitted.width) / 2), y: Math.floor((screenHeight - fitted.height) / 2), ...fitted };
-}
-
-/** A dialog of `width` x `height` in the middle of the screen, never larger than it. */
-function centred(screenWidth: number, screenHeight: number, width: number, height: number): Rect {
-  const w = Math.max(1, Math.min(screenWidth, width));
-  const h = Math.max(1, Math.min(screenHeight, height));
-  return { x: Math.floor((screenWidth - w) / 2), y: Math.floor((screenHeight - h) / 2), width: w, height: h };
 }
 
 /**
@@ -855,24 +848,6 @@ function helpPart(width: number, height: number, state: ModelState, help: Extrac
   return { overlay, input: help.filtering && filter !== null ? { col: rect.x + 4 + filter.cursor, row: rect.y + 2 } : "overlay" };
 }
 
-/**
- * The frame of the menu, the picker and the about page: its box, its title on the top border and its
- * close keys at the top right, a tap on them closing it; answers the cells inside.
- */
-function titledFrame(canvas: Canvas, rect: Rect, title: string, closeKeys: readonly string[], colors: Colors): Rect {
-  canvas.fill(canvas.style({ fg: colors.text, bg: colors.bgElevated }));
-  if (rect.width < 2 || rect.height < 2) return rect;
-  box(canvas, rect, canvas.style({ fg: colors.accent, bg: colors.bgElevated, flags: STYLE_BOLD }));
-  const close = ` [${STRINGS.helpCloseLabel(closeKeys)}] `;
-  const closeWidth = widthOf(close);
-  const right = rect.x + rect.width - 1;
-  printFit(canvas, rect.x + 1, rect.y, ` ${title} `, Math.max(0, rect.width - 2 - closeWidth), canvas.style({ fg: colors.textStrong, bg: colors.bgElevated, flags: STYLE_BOLD }), true);
-  const at = Math.max(rect.x + 1, right - closeWidth);
-  printFit(canvas, at, rect.y, close, right - at, canvas.style({ fg: colors.accent, bg: colors.bgElevated }));
-  canvas.hit({ x: at, y: rect.y, width: right - at, height: 1 }, "close");
-  return { x: rect.x + 1, y: rect.y + 1, width: Math.max(0, rect.width - 2), height: Math.max(0, rect.height - 2) };
-}
-
 /** The overlays of one frame: the notices, the mode bar, and the overlay on top of the stack. */
 function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; input: Scene["input"]; dim: boolean } {
   const { state, world, regions } = input;
@@ -928,8 +903,8 @@ function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; 
       return { overlays: [...overlays, confirm], input: "overlay", dim: true };
     }
     case "goto": {
-      const picker = pickerPart(width, height, top, world, colors);
-      return { overlays: [...overlays, picker.overlay], input: picker.input, dim: false };
+      const picker = pickerPart(width, height, top, state, world, colors);
+      return { overlays: picker ? [...overlays, picker.overlay] : overlays, input: picker?.input ?? "overlay", dim: false };
     }
     case "menu":
       return { overlays: [...overlays, menuPart(regions, top, colors)], input: "overlay", dim: false };
@@ -937,56 +912,94 @@ function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; 
 }
 
 /** A place's state, as the sidebar marks it: a workspace's and a tab's roll-up, an agent's own. */
-function placeStatus(place: Place, world: CoreView): KnownStatus {
-  if (place.kind === "workspace") return knownStatus(world.workspaceGroups.flatMap((group) => [group, ...group.children]).find((row) => row.id === place.id)?.status);
-  if (place.kind === "tab") return knownStatus(world.tabStatuses.get(place.id));
-  return knownStatus(world.panes.get(place.id)?.status);
-}
+/** The agent and state columns of a picker row, counted from its right end: herdr's widths. */
+const PICKER_STATE_COLUMNS = 11;
+const PICKER_AGENT_COLUMNS = 12;
+/** The picker shows its state column from this inner width (herdr's did at 74 columns, not at 58). */
+const PICKER_STATE_FROM = 70;
+/** The picker's foot: the chosen terminal's path, its folder, and the keys. */
+const PICKER_FOOT_ROWS = 3;
 
 /**
- * The picker: the text field on its first row, then the matches best first, a window of them around the chosen one; each
- * row its state mark, what it is and its text, and a click target that chooses it (`menu:<index>`, as the menu's rows).
+ * herdr's picker: the screen less its margins, ` Go to ` on its top border; the search row (its hint, or what is
+ * searched) with the count of terminals at its right, a rule, then each workspace's name and its terminals beneath it,
+ * `├─` and `└─`, `◆` on the one in front, its state mark and its name (its tab's name and its number in the tab when
+ * the tab holds several), and two columns at the right: its agent or `terminal`, and when the box is wide its state or
+ * `shell`. The chosen row
+ * is the accent across the box; the foot shows its path, its folder and the keys. Each row is a click target.
  */
-function pickerPart(width: number, height: number, picker: Extract<Overlay, { kind: "goto" }>, world: CoreView, colors: Colors): { overlay: Part; input: Scene["input"] } {
-  const rect = centred(width, height, 64, 14);
-  const view = fieldView(picker.field, Math.max(1, rect.width - 4));
+function pickerPart(width: number, height: number, picker: Extract<Overlay, { kind: "goto" }>, state: ModelState, world: CoreView, colors: Colors): { overlay: Part; input: Scene["input"] } | null {
+  const rect = dialogRect(width, height, width, height);
+  if (!rect) return null;
   const matches = pickerList(picker);
   const chosen = chosenAt(matches, picker.chosen);
-  const lines = matches.map((place) => ({ kind: STRINGS.menuPlaces[place.kind], text: place.text, status: placeStatus(place, world) }));
+  const front = focused(state.world, state.focus).pane?.id ?? null;
+  const panes = new Map(state.world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes.map((pane, at) => [pane.id, { workspace, tab, pane, at }] as const))));
+  const field = picker.searching || picker.field.graphemes.length > 0 ? fieldView(picker.field, Math.max(1, rect.width - 5)) : null;
   const overlay: Part = {
     key: "overlay:goto", rect, version: 0,
     draw(canvas) {
-      const frame = titledFrame(canvas, rect, STRINGS.gotoTitle, OVERLAYS.goto.closeKeys, colors);
-      if (frame.width <= 0 || frame.height <= 0) return;
-      const fieldStyle = canvas.style({ fg: colors.textStrong, bg: colors.bgInput });
-      fillSpan(canvas, frame.x + 1, frame.y, Math.max(0, frame.width - 2), fieldStyle);
-      printFit(canvas, frame.x + 1, frame.y, view.text, Math.max(0, frame.width - 2), fieldStyle);
-      if (frame.height >= 2) printFit(canvas, frame.x + 1, frame.y + 1, STRINGS.gotoPromptHint, Math.max(0, frame.width - 2), canvas.style({ fg: colors.textDim, bg: colors.bgElevated }), true);
-      const inner = { x: frame.x, y: frame.y + 2, width: frame.width, height: Math.max(0, frame.height - 2) };
+      const inner = panel(canvas, rect, colors.accent, colors);
       if (inner.width <= 0 || inner.height <= 0) return;
-      const end = inner.x + inner.width;
-      if (lines.length === 0) {
-        printFit(canvas, inner.x + 1, inner.y, STRINGS.pickerNoMatch, Math.max(0, inner.width - 2), canvas.style({ fg: colors.textDim, bg: colors.bgElevated }), true);
-        return;
-      }
-      const start = windowStart(lines.length, inner.height, chosen);
-      lines.slice(start, start + inner.height).forEach((line, at) => {
-        const index = start + at;
-        const y = inner.y + at;
-        const picked = index === chosen;
-        const bg = picked ? colors.bgHover : colors.bgElevated;
-        const text = canvas.style({ fg: picked ? colors.textStrong : colors.text, bg, flags: picked ? STYLE_BOLD : 0 });
-        fillSpan(canvas, inner.x, y, inner.width, text);
-        let col = printFit(canvas, inner.x, y, picked ? ">" : " ", 1, canvas.style({ fg: colors.accent, bg, flags: STYLE_BOLD }));
-        const look = STATE_LOOK[line.status];
-        col = printFit(canvas, col, y, `${look.glyph} `, end - col, canvas.style({ fg: colors[look.role], bg, flags: STYLE_BOLD }));
-        col = printFit(canvas, col, y, `${line.kind} `, end - col, canvas.style({ fg: colors.textDim, bg }));
-        printFit(canvas, col, y, line.text, end - col, text, true);
-        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${index}`);
+      const style = (fg: WrittenColor, flags = 0) => canvas.style({ fg, bg: colors.bgPanel, flags });
+      printFit(canvas, rect.x + 1, rect.y, `─ ${STRINGS.gotoTitle} `, Math.max(0, rect.width - 2), style(colors.accent));
+      const count = STRINGS.pickerCount(matches.length);
+      // the count stands whole at the right; the search row is cut a column before it
+      const searchRoom = Math.max(0, inner.width - widthOf(count) - 1);
+      if (field === null) printFit(canvas, inner.x, inner.y, STRINGS.pickerSearchHint, searchRoom, style(colors.textDim));
+      else printFit(canvas, inner.x, inner.y, ` / ${field.text}`, searchRoom, style(colors.text));
+      printRight(canvas, inner, inner.y, count, style(colors.textDim));
+      if (inner.height < 2) return;
+      for (let x = inner.x; x < inner.x + inner.width; x++) canvas.put(x, inner.y + 1, "─", 1, style(colors.border));
+      const listTop = inner.y + 2;
+      const listRows = Math.max(0, inner.height - 2 - PICKER_FOOT_ROWS);
+      const rows: ({ kind: "workspace"; name: string } | { kind: "pane"; index: number })[] = [];
+      matches.forEach((place, index) => {
+        if (index === 0 || matches[index - 1]!.workspace !== place.workspace) rows.push({ kind: "workspace", name: panes.get(place.id)?.workspace.name ?? place.workspace });
+        rows.push({ kind: "pane", index });
       });
+      const chosenRow = rows.findIndex((row) => row.kind === "pane" && row.index === chosen);
+      const start = windowStart(rows.length, listRows, Math.max(0, chosenRow));
+      const end = inner.x + inner.width;
+      // with no state column, the agent column takes the last eleven columns
+      const stateAt = inner.width >= PICKER_STATE_FROM ? end - PICKER_STATE_COLUMNS : end;
+      const agentAt = stateAt < end ? stateAt - PICKER_AGENT_COLUMNS : end - PICKER_STATE_COLUMNS;
+      rows.slice(start, start + listRows).forEach((row, at) => {
+        const y = listTop + at;
+        if (row.kind === "workspace") {
+          printFit(canvas, inner.x, y, ` ${row.name}`, inner.width, style(colors.text, STYLE_BOLD));
+          return;
+        }
+        const place = matches[row.index]!;
+        const found = panes.get(place.id);
+        const summary = world.panes.get(place.id);
+        const last = row.index === matches.length - 1 || matches[row.index + 1]!.workspace !== place.workspace;
+        const picked = row.index === chosen;
+        const look = STATE_LOOK[knownStatus(summary?.status)];
+        const name = found ? (found.tab.panes.length > 1 ? `${found.tab.name} · ${found.pane.name || place.id} · ${found.at + 1}` : found.pane.name || found.tab.name || place.id) : place.id;
+        const pick = canvas.style({ fg: colors.primaryText, bg: colors.accent, flags: STYLE_BOLD });
+        const cell = (fg: WrittenColor) => picked ? pick : style(fg);
+        if (picked) fillSpan(canvas, inner.x, y, inner.width, pick);
+        let col = printFit(canvas, inner.x, y, " ", 1, cell(colors.text));
+        col = printFit(canvas, col, y, last ? "└─" : "├─", end - col, cell(colors.textDim));
+        col = printFit(canvas, col, y, " ", end - col, cell(colors.text));
+        if (place.id === front) col = printFit(canvas, col, y, `${STRINGS.pickerFront} `, end - col, cell(colors.text));
+        col = printFit(canvas, col, y, look.glyph, end - col, cell(colors[look.role]));
+        printFit(canvas, col, y, ` ${name}`, Math.max(0, agentAt - col), cell(colors.text), true);
+        printFit(canvas, agentAt, y, summary?.agent ?? STRINGS.pickerTerminal, PICKER_AGENT_COLUMNS, cell(colors.textDim));
+        if (stateAt < end) printFit(canvas, stateAt, y, summary?.agent ? look.word : STRINGS.pickerShell, PICKER_STATE_COLUMNS, cell(colors.textDim));
+        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${row.index}`);
+      });
+      const foot = inner.y + inner.height - PICKER_FOOT_ROWS;
+      const picked = chosen >= 0 ? panes.get(matches[chosen]!.id) : undefined;
+      if (picked) {
+        printFit(canvas, inner.x, foot, ` ${picked.workspace.name} / ${picked.tab.name} / ${picked.pane.id}`, inner.width, style(colors.textDim));
+        printFit(canvas, inner.x, foot + 1, ` ${world.panes.get(picked.pane.id)?.folder ?? ""}`, inner.width, style(colors.textDim));
+      }
+      printFit(canvas, inner.x, foot + 2, picker.searching ? STRINGS.pickerSearchFooter : STRINGS.pickerFooter, inner.width, style(colors.textDim));
     },
   };
-  return { overlay, input: { col: rect.x + 2 + view.cursor, row: rect.y + 1 } };
+  return { overlay, input: picker.searching && field !== null ? { col: rect.x + 4 + field.cursor, row: rect.y + 1 } : "overlay" };
 }
 
 /**

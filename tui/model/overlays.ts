@@ -9,7 +9,7 @@ import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput } 
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
 import { MENU_ENTRIES, movedCursor } from "./menu.ts";
-import { chosenAt, type Place, placeKey, pickerMatches, placeTarget } from "./picker.ts";
+import { chosenAt, type Place, pickerMatches, placeTarget, workspaceStep } from "./picker.ts";
 
 /** A one-line text field of graphemes, the cursor after the text it opened with; `original` that text. */
 export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly original: string }
@@ -25,8 +25,8 @@ export type Overlay =
   | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field }
   /** `seen`: the terminals the close ends, as the screen showed them when the dialog opened */
   | { readonly kind: "confirm"; readonly purpose: "close_workspace"; readonly target: Target; readonly seen: readonly Seen[] }
-  /** the picker: the places it filters, and the chosen one's identity (`placeKey`; null: the best match) */
-  | { readonly kind: "goto"; readonly field: Field; readonly places: readonly Place[]; readonly chosen: string | null }
+  /** the picker: the terminals it lists, its search, whether keys go to the search now, and the chosen one's pane (null: the first) */
+  | { readonly kind: "goto"; readonly field: Field; readonly searching: boolean; readonly places: readonly Place[]; readonly chosen: string | null }
   /** herdr's menu (menu.ts `MENU_ENTRIES`); `cursor`: the index of the entry Enter chooses */
   | { readonly kind: "menu"; readonly cursor: number };
 
@@ -146,7 +146,7 @@ const run = (action: RunEffect["action"], target: Target | null, name: string | 
 
 type Picker = Extract<Overlay, { kind: "goto" }>;
 
-/** The picker's matches for what is typed now, best first. */
+/** The picker's matches for what is searched now, in their order. */
 export function pickerList(overlay: Picker): Place[] {
   return pickerMatches(overlay.places, overlay.field.graphemes.join(""));
 }
@@ -157,26 +157,32 @@ export function pickerChoice(overlay: Picker, at: number): OverlayAnswer {
   return place === undefined ? { overlay, effects: [] } : { overlay: null, effects: [], choice: { kind: "select", target: placeTarget(place) } };
 }
 
-/** How far up or down the picker's arrows (and ctrl+p, ctrl+n) move its choice; 0 for any other key. */
-function pickerStep(event: KeyInput): number {
-  const plain = Object.keys(event.mods).length === 0;
-  const ctrl = Boolean(event.mods.ctrl) && !event.mods.alt && !event.mods.super && !event.mods.shift;
-  if ((plain && event.key === "ARROW_DOWN") || (ctrl && event.key === "N")) return 1;
-  if ((plain && event.key === "ARROW_UP") || (ctrl && event.key === "P")) return -1;
-  return 0;
-}
-
-/** The picker's answer to one input: Enter jumps to the chosen match; the arrows move the choice; typing filters anew. */
+/**
+ * The picker's answer to one input: Enter opens the chosen terminal; the arrows, j and k move the choice a row, left and
+ * right to the next workspace's first terminal; `/` starts the search, which takes the typing until Enter keeps it or
+ * Escape drops it.
+ */
 function pickerInput(overlay: Picker, input: OverlayInput): OverlayAnswer {
   const matches = pickerList(overlay);
   const at = chosenAt(matches, overlay.chosen);
+  if (overlay.searching) {
+    if (isEnter(input)) return { overlay: { ...overlay, searching: false }, effects: [] };
+    if (input.kind === "key" && input.event.key === "ESCAPE" && Object.keys(input.event.mods).length === 0) return { overlay: { ...overlay, searching: false, field: field(""), chosen: null }, effects: [] };
+    const next = editField(overlay.field, input);
+    return { overlay: next === overlay.field ? overlay : { ...overlay, field: next, chosen: null }, effects: [] };
+  }
   if (isEnter(input)) return pickerChoice(overlay, at);
-  const step = input.kind === "key" ? pickerStep(input.event) : 0;
-  if (step !== 0) return at < 0 ? { overlay, effects: [] } : { overlay: { ...overlay, chosen: placeKey(matches[(at + step + matches.length) % matches.length]!) }, effects: [] };
-  const answer = fieldInput(overlay, input, () => ({ overlay, effects: [] }));
-  const typed = answer.overlay !== null && answer.overlay.kind === "goto" ? answer.overlay : overlay;
-  const changed = typed.field.graphemes.join("") !== overlay.field.graphemes.join("");
-  return { overlay: changed ? { ...typed, chosen: null } : typed, effects: [] };
+  const chord = inputChords(input).find((one) => !one.ctrl && !one.alt && !one.meta);
+  if (chord?.key === "/") {
+    const rest = input.kind === "text" ? input.event.text.slice(1) : "";
+    return { overlay: { ...overlay, searching: true, ...(rest === "" ? {} : { field: editField(overlay.field, { kind: "text", event: { ...input.event, text: rest } as TextInput }), chosen: null }) }, effects: [] };
+  }
+  const key = input.kind === "key" && Object.keys(input.event.mods).length === 0 ? input.event.key : "";
+  const row = key === "ARROW_DOWN" || chord?.key === "j" ? 1 : key === "ARROW_UP" || chord?.key === "k" ? -1 : 0;
+  const side = key === "ARROW_RIGHT" ? 1 : key === "ARROW_LEFT" ? -1 : 0;
+  if (at < 0 || (row === 0 && side === 0)) return { overlay, effects: [] };
+  const next = row !== 0 ? (at + row + matches.length) % matches.length : workspaceStep(matches, at, side);
+  return { overlay: { ...overlay, chosen: matches[next]!.id }, effects: [] };
 }
 
 type Help = Extract<Overlay, { kind: "help" }>;
@@ -239,6 +245,7 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
   },
   goto: {
     closeKeys: ["esc"],
+    typing: (overlay) => overlay.searching,
     target: () => null,
     input: pickerInput,
   },

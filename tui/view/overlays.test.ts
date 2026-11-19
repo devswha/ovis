@@ -24,15 +24,14 @@ async function start(core?: FakeHcCore, cols = 120, rows = 40): Promise<Run> {
 
 /**
  * Each overlay kind, the action that opens it, the control a tap closes it with and the keys that close it: written out
- * here. A dialog drawn as herdr's (the text field, the confirm) closes by its cancel button; the help has no close
- * control until its own content changes with herdr's (docs/tui/visual-parity.md O5) and closes by its keys; herdr's menu
- * has none either.
+ * here. A dialog drawn as herdr's (the text field, the confirm) closes by its cancel button, the help by its close
+ * button; herdr's menu and picker have no close control.
  */
 const KINDS = [
   { kind: "help", action: "help", control: "  esc close  ", keys: ["esc", "enter"] },
   { kind: "text", action: "rename_tab", control: " esc cancel ", keys: ["esc"] },
   { kind: "confirm", action: "close_workspace", control: " esc cancel ", keys: ["esc", "n"] },
-  { kind: "goto", action: "goto", control: "[close: esc]", keys: ["esc"] },
+  { kind: "goto", action: "goto", control: null, keys: ["esc"] },
   { kind: "menu", action: "menu", control: null, keys: ["esc"] },
 ] as const;
 
