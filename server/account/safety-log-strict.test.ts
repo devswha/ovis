@@ -104,5 +104,19 @@ describe("the safety log's endings and its failed writes (P24, S19)", () => {
     log.fold();
     expect(SafetyLog.open(at).state().markers).toHaveLength(1);
   });
+
+  test("S19: a Revoke while the log is strict writes the main tombstone file", async () => {
+    const at = dir();
+    writeFileSync(join(at, "account-log.json"), "not json", { mode: 0o600 });
+    const devices = new DeviceStore(at, null, null, SafetyLog.open(at));
+    const phone = await signer();
+    const row = devices.pairRelay(devices.startPairing().code, "Phone", phone.spki);
+    expect(row).toBeNull();
+    writeFileSync(join(at, "devices.json"), JSON.stringify({ gate_closed_at: AT, devices: [{ id: "0123456789abcdef", label: "Phone", role: "drive", token_hash: "x".repeat(64), relay_public_key: phone.spki, created_at: AT, last_seen_at: null, account: "acct_1" }] }), { mode: 0o600 });
+    const reopened = new DeviceStore(at, null, null, SafetyLog.open(at));
+    expect(reopened.revoke("0123456789abcdef")).toBe(true);
+    expect(existsSync(join(at, "account-tombstones.pending.json"))).toBe(false);
+    expect((JSON.parse(readFileSync(join(at, "account-tombstones.json"), "utf8")) as { tombstones: { key: string }[] }).tombstones.map((t) => t.key)).toEqual([phone.spki]);
+  });
 });
 
