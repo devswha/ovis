@@ -487,7 +487,8 @@ export class DeviceStore {
       this.error = blocked;
       console.error(this.error);
     }
-    if (this.error === null && this.accountError === null) {
+    // the tombstone files' own repair asks only whether they could be read: a strict safety log is a separate refusal
+    if (this.error === null && this.accountProblem === null) {
       if (pending.length) {
         this.writeTombstones(this.tombstones);
         rmSync(this.pendingTombstonePath, { force: true });
@@ -1659,7 +1660,7 @@ export class DeviceStore {
       ...keys.map((key) => ({ key, account: rows.find((d) => d.relay_public_key === key)?.account ?? "", record_id: "local", removed_at: removedAt }))];
     if (keys.length) {
       // with the main file unreadable the revoke still wins: its tombstone waits beside it
-      if (this.accountError !== null) {
+      if (this.accountProblem !== null) {
         writePrivateState(this.pendingTombstonePath, { v: 1, tombstones: next });
         this.tombstones = next;
       } else this.writeTombstones(next);
