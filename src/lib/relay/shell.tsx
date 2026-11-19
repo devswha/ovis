@@ -46,6 +46,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // bumped by every link this page takes after it loaded, and by Cancel or Back: a step of the page's own load that
   // waited meanwhile is stale and does nothing
   let entries = 0;
+  // any navigation in this tab after the load, even one the page takes no step for (Back to another fragment): a
+  // `#sign-in=` entry starts only on a page nothing moved
+  let moved = false;
+  window.addEventListener("hashchange", () => { moved = true; });
+  window.addEventListener("popstate", () => { moved = true; });
   const scoped = entry.serverId !== null;
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
@@ -695,13 +700,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     navigate(link.pathname + link.hash);
   });
   // `#sign-in=<provider>` (boot took it off the address, so a reload or Back starts nothing): that provider's sign-in
-  // starts once, exactly as a press of its button on this page would. A provider the account service does not offer, a
-  // page already signed in, or a newer navigation meanwhile does nothing
+  // starts once, exactly as a press of its button on this page would. Nothing starts for a provider the account service
+  // did not name, on a page signed in (in any tab: the stored session is read right before), or once the page moved
+  // since its load (a link, an offer, Back), which is asked again right before the page leaves for the provider
   const asked = account.enabled && returning === undefined ? signInEntry(new URL(mount.entryUrl).hash) : null;
-  const signedIn = (): boolean => account.state?.kind === "signed-in";
-  if (asked !== null && !signedIn()) {
-    const provider = (await account.offered()).find((id) => id === asked);
-    // read again after the wait: the list may have come after another navigation or a sign-in
-    if (provider !== undefined && entries === loaded && !signedIn()) account.signIn(provider);
+  const unmoved = (): boolean => !moved && entries === 0;
+  if (asked !== null && unmoved() && account.state?.kind !== "signed-in") {
+    const provider = (await account.listed()).find((id) => id === asked);
+    if (provider !== undefined && unmoved() && await account.stored() === undefined && unmoved()) account.signIn(provider, undefined, unmoved);
   }
 }

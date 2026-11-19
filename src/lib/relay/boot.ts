@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { AppCrash } from "../../components/AppCrash.tsx";
-import { moveQueryToFragment } from "../pageQuery.ts";
+import { moveQueryToFragment, queryWithoutSignIn } from "../pageQuery.ts";
 import { loadRelayShell } from "../relay.ts";
 import { SHEEP_FOR } from "./sheepBadges.ts";
 
@@ -24,7 +24,9 @@ export function takeEntryUrl(page: Page): string {
   const { href, pathname, search, hash } = page.location;
   // a sign-in's return (`#code=…&state=…`, account/signin.ts) leaves with the offer: its code is a credential too. So
   // does a link that starts a sign-in (`#sign-in=<provider>`), so a reload or Back does not start it again
-  const kept = search.length > 1 ? `#${search.slice(1)}` : hash.startsWith("#offer=") || hash.startsWith("#sign-in=") || signInFragment(hash) ? "" : hash;
+  // A query naming one is dropped, never moved into the fragment (pageQuery.ts)
+  const query = search.length > 1 ? queryWithoutSignIn(search) : "";
+  const kept = query !== "" ? `#${query}` : hash.startsWith("#offer=") || hash.startsWith("#sign-in=") || signInFragment(hash) ? "" : hash;
   if (`${search}${hash}` !== kept) page.history.replaceState(null, "", pathname + kept);
   return href;
 }
