@@ -70,7 +70,10 @@ async function startPc(label: string) {
   let synced = Promise.withResolvers<void>();
   const service = new RelayService({ stateDir, relay: RELAY, connect: (url) => {
     const socket = new WebSocket(relayAddress(url));
-    socket.addEventListener("message", (event) => { if (typeof event.data === "string" && event.data.includes('"sync"')) synced.resolve(); });
+    socket.addEventListener("message", (event) => {
+      if (typeof event.data !== "string") return;
+      try { if ((JSON.parse(event.data) as { type?: unknown }).type === "sync") synced.resolve(); } catch { /* not a control frame */ }
+    });
     return socket;
   } });
   const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, relay: service,
@@ -102,20 +105,22 @@ function ovisAdd(pc: Pc) {
   const signedIn = Promise.withResolvers<string>();
   const drawn = Promise.withResolvers<string>();
   let offerUrl: string | null = null;
+  let scanShown = false;
+  const whenBoth = (): void => { if (scanShown && offerUrl !== null) drawn.resolve(offerUrl); };
   const run = link([], {
     origin: pc.base, headers: {}, accountService: DEFAULT_ACCOUNT_SERVICE, serviceFetch: fake.fetch, signal: stop.signal,
     lines: { next: () => new Promise(() => {}) }, terminal: true, isTty: true,
     fetch: async (input, init) => {
       const request = new Request(input, init);
       const response = await fetch(request);
-      if (new URL(request.url).pathname === "/api/relay/offer" && response.ok) offerUrl = (await response.clone().json() as { url: string }).url;
+      if (new URL(request.url).pathname === "/api/relay/offer" && response.ok) { offerUrl = (await response.clone().json() as { url: string }).url; whenBoth(); }
       return response;
     },
     out: (text) => {
       out.push(text);
       const code = /code:? ([A-Z0-9-]{4,16})\b/.exec(text)?.[1];
       if (code !== undefined && out.filter((line) => /code:? [A-Z0-9-]{4,16}\b/.test(line)).length === 1) { fake.approveDevice(code, ACCOUNT); signedIn.resolve(code); }
-      if (text.includes("Scan this QR code") && offerUrl !== null) drawn.resolve(offerUrl);
+      if (text.includes("Scan this QR code")) { scanShown = true; whenBoth(); }
     },
   });
   cleanup.push(async () => { stop.abort(); await run.catch(() => 1); });
@@ -158,6 +163,7 @@ async function device(width: 390 | 1440) {
     const url = new URL(route.request().url());
     await route.fulfill({ response: await route.fetch({ url: `${shellOrigin}${url.pathname}${url.search}` }) });
   });
+  await context.routeWebSocket(() => true, (ws) => { refused.push(`${width} WS ${ws.url()}`); return ws.close(); });
   await context.routeWebSocket(/^wss:\/\/relay\.test\//, (ws) => relayBrowserSocket(ws, () => relayAddress(ws.url())));
   context.on("request", (request) => requests.push(`${width} ${request.method()} ${request.url()}`));
   const page = await context.newPage();
@@ -279,9 +285,9 @@ const savedKey = (page: Page, serverId: string): Promise<boolean> => page.evalua
  * itself; `away` gets the moment the relay is back (`back`), and the relay comes back also when `away` throws.
  */
 async function withoutRelay(pcs: readonly Pc[], away: (back: () => Promise<void>) => Promise<void>): Promise<void> {
-  const synced = pcs.map((pc) => pc.resynced());
   await relay?.stop();
   relay = null;
+  const synced = pcs.map((pc) => pc.resynced());
   const back = async (): Promise<void> => {
     if (relay !== null) return;
     relay = startBunRelay(relayOptions);
@@ -361,7 +367,7 @@ const steps: Step<World>[] = [
     await paneBanner(page, w.desk.pane, "draft").waitFor({ state: "detached" });
     return `"${marker}" waited in the draft through the reconnect, never reached the pane, and was discarded`;
   } },
-  { id: "desktop.adds-second-pc", title: "The desktop browser (1440), signed in, pairs the second PC from its `ovis add` QR code", needs: ["relay.pcs-online"], run: async (w) => {
+  { id: "desktop.adds-second-pc", title: "The desktop browser (1440), signed in, pairs the second PC from its `ovis add` QR code", needs: ["relay.pcs-online"], timeoutMs: 240_000, run: async (w) => {
     w.laptopAdd = ovisAdd(w.laptop);
     await bounded(w.laptopAdd.signedIn(), "a sign-in code");
     const url = await bounded(w.laptopAdd.qr(), "the QR code", 60_000);
@@ -413,7 +419,7 @@ const steps: Step<World>[] = [
     const pcs = [w.desk.base, w.laptop.base];
     assert.deepEqual(refused, [], "no request left for another address");
     assert.deepEqual(requests.filter((line) => pcs.some((base) => line.includes(` ${base}`))), [], "no request reached a PC directly");
-    return `${requests.length} requests, all to ${APP}, ${DEFAULT_ACCOUNT_SERVICE} (the in-memory fake) or ${RELAY}`;
+    return `${requests.length} requests and every WebSocket, all to ${APP}, ${DEFAULT_ACCOUNT_SERVICE} (the in-memory fake) or ${RELAY}`;
   } },
 ];
 

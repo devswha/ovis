@@ -30,9 +30,9 @@ test("a step not built yet is not run, blocks what needs it, and keeps the exit 
   expect(exitCode(results)).toBe(1);
 });
 
-test("a step that does not finish in its time fails with how long it had", async () => {
-  const results = await runSteps<null>([{ id: "slow", title: "slow", timeoutMs: 1, run: () => new Promise<string>(() => {}) }], null);
-  expect(results[0]).toMatchObject({ verdict: "FAIL", detail: "not finished within 1 ms" });
+test("a step that does not finish in its time fails with how long it had, and every later step is blocked by it", async () => {
+  const results = await runSteps<null>([{ id: "slow", title: "slow", timeoutMs: 1, run: () => new Promise<string>(() => {}) }, pass("after")], null);
+  expect(results.map((result) => [result.verdict, result.detail])).toEqual([["FAIL", "not finished within 1 ms"], ["BLOCKED", "slow ran out of time and may still be running"]]);
 });
 
 test("a step may need only an earlier step", async () => {

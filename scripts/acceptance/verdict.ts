@@ -4,7 +4,8 @@
  *
  * - PASS: the step ran and its check held; its detail says what it saw.
  * - FAIL: the step threw, or did not finish within its time.
- * - BLOCKED: a step it needs did not pass; it is not run, and it names that step.
+ * - BLOCKED: a step it needs did not pass, or an earlier step ran out of time and may still be changing what the
+ *   steps share; it is not run, and it names that step.
  * - NOT BUILT YET: the step is written but waits for a change that is not on this checkout yet; it is not run.
  *
  * The run exits 0 only when every step passed: a step that is not built yet is not a pass.
@@ -39,6 +40,7 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 export async function runSteps<C>(steps: readonly Step<C>[], ctx: C, decided: (result: StepResult) => void | Promise<void> = () => {}): Promise<StepResult[]> {
   const results: StepResult[] = [];
   const passed = new Set<string>();
+  let timedOut: string | null = null;
   for (const step of steps) {
     const started = Date.now();
     const keep = async (verdict: Verdict, detail: string): Promise<void> => {
@@ -49,6 +51,7 @@ export async function runSteps<C>(steps: readonly Step<C>[], ctx: C, decided: (r
     };
     const unknown = (step.needs ?? []).find((id) => !steps.some((other) => other.id === id) || results.every((done) => done.id !== id));
     if (unknown !== undefined) throw new Error(`${step.id} needs ${unknown}, which is not an earlier step`);
+    if (timedOut !== null) { await keep("BLOCKED", `${timedOut} ran out of time and may still be running`); continue; }
     const blocker = (step.needs ?? []).find((id) => !passed.has(id));
     if (blocker !== undefined) { await keep("BLOCKED", `${blocker} did not pass (${results.find((done) => done.id === blocker)?.verdict})`); continue; }
     if (step.notBuilt !== undefined) { await keep("NOT BUILT YET", `waits for ${step.notBuilt}`); continue; }
@@ -56,7 +59,7 @@ export async function runSteps<C>(steps: readonly Step<C>[], ctx: C, decided: (r
     let timer: ReturnType<typeof setTimeout> | undefined;
     let outcome: [Verdict, string];
     try {
-      const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`not finished within ${ms} ms`)), ms); });
+      const late = new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = step.id; reject(new Error(`not finished within ${ms} ms`)); }, ms); });
       outcome = ["PASS", await Promise.race([step.run(ctx), late])];
     } catch (error) {
       outcome = ["FAIL", message(error)];
