@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord, type DeviceLiftRecord } from "../../shared/account-records.ts";
 import type { AccountSnapshotPage } from "../../shared/account-snapshot.ts";
 import { DeviceStore } from "../devices.ts";
-import { AccountOrder } from "./account-order.ts";
+import { ACCOUNT_ORDER_FILE, AccountOrder } from "./account-order.ts";
 import { DeviceJournal, JOURNAL_MAX } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
@@ -213,6 +213,27 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(ports.lastVersion()).toBe(10);
     expect(journal.entries().at(-1)).toMatchObject({ key: row.key, how: "order_conflict" });
   });
+
+  for (const when of ["in this read", "before restart"] as const) {
+    test(`T52, P21, P23: a signer removed ${when} cannot lift`, async () => {
+      const first = pc();
+      const signer = await member(first.devices);
+      const target = await member(first.devices);
+      const blocked = await block(target.spki, signer);
+      expect((await first.devices.applyBlock(blocked, "handed")).outcome).toBe("applied");
+      const row = { key: signer.spki, no: 1, eligible: false, label: "Phone" };
+      expect(await read(first.ports, page({ devices: [row], removed: [{ key: target.spki, no: 2 }] }))).toMatchObject({ committed: true });
+      const removed = [{ key: signer.spki, no: 1 }];
+      if (when === "before restart") expect(await read(first.ports, page({ removed }))).toMatchObject({ committed: true });
+      const current = when === "before restart" ? pc(first.dir) : first;
+      const result = await read(current.ports, page({ removed: when === "in this read" ? removed : [], lifts: [await lift(blocked.id, signer)] }));
+      expect(result).toMatchObject({ committed: true, liftsRefused: 1 });
+      expect(current.safetyLog.state().blocks.map(({ record }) => record.id)).toEqual([blocked.id]);
+      const table = await Bun.file(join(first.dir, ACCOUNT_ORDER_FILE)).json();
+      expect(table.keys[target.spki]).toEqual({ no: 2, removed: true, late: false, joined: 2 });
+      expect(table.keys[signer.spki]).toEqual({ no: 1, removed: true, late: false, joined: 1 });
+    });
+  }
 
   test("T52, P21: a lift signed by a key the account's order marks late is refused, though it is older here", async () => {
     const { devices, ports } = pc();
