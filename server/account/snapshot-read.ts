@@ -106,6 +106,8 @@ export async function readSnapshot(
   const now = ports.scope();
   if (now === null || now.account !== noted.account || now.serverId !== noted.serverId || now.lock !== noted.lock) return refused("scope_changed");
   if (now.gen !== noted.gen + raised) return refused("generation_changed");
+  const last = ports.lastVersion();
+  if (last !== null && snapshot.version < last) return refused("stale");
   ports.commit({ snapshot, lifts: authorized });
   if (ports.methodsVersion() !== snapshot.methods_version) ports.journalMethod(snapshot.methods_version);
   return { committed: true, snapshot: snapshot.snapshot, denials, liftsRefused: snapshot.lifts.length - authorized.length };

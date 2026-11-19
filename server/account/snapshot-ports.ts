@@ -29,7 +29,6 @@ const METHOD_HOW = /^methods_version:(\d+)$/;
 
 export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
   const { devices, safetyLog, pc, journal } = deps;
-  let lastVersion: number | null = null;
   const methodsVersion = (): number | null => {
     const entry = [...journal.entries()].reverse().find((candidate) => candidate.kind === "method" && METHOD_HOW.test(candidate.how));
     return entry === undefined ? null : Number(METHOD_HOW.exec(entry.how)![1]);
@@ -38,11 +37,11 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
     scope() {
       const account = devices.account();
       const serverId = deps.serverId();
-      if (account === null || serverId === null) return null;
+      if (account === null || serverId === null || deps.order.problem !== null) return null;
       const state = safetyLog.state();
       return { account, serverId, gen: devices.gen(), lock: state.locked ? state.locks.map((entry) => entry.record.id).join(",") : null };
     },
-    lastVersion: () => lastVersion,
+    lastVersion: () => deps.order.lastVersion(pc.binding()?.bind_id, deps.serverId()),
     knownBlocks: () => new Set(safetyLog.blockIds()),
     async deny(block: BlockRecord) {
       const before = devices.gen();
@@ -51,11 +50,12 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
     },
     liftAuthority: (lift: DeviceLiftRecord) => devices.liftAuthority(lift),
     commit(stage: StagedRead) {
+      const binding = pc.binding();
+      if (binding === null) throw new Error("Snapshot commit requires a current binding");
       let lifted = false;
       for (const lift of stage.lifts) if (safetyLog.append({ record: lift, got: "snapshot" }).outcome === "applied") lifted = true;
       if (lifted) pc.raiseGen();
-      deps.order.record(stage.snapshot);
-      lastVersion = stage.snapshot.version;
+      deps.order.record(stage.snapshot, binding.bind_id);
     },
     methodsVersion,
     journalMethod(version) {

@@ -15,12 +15,17 @@ interface OrderEntry { readonly no: number; readonly late: boolean }
 interface OrderDoc {
   readonly v: 1;
   readonly account: string | null;
+  readonly bind_id?: string;
+  readonly server_id?: string;
+  readonly last_version?: number;
   readonly max_no: number;
   readonly keys: Readonly<Record<string, OrderEntry>>;
 }
 
 /** What a whole read lists, as the order needs it. */
 export interface OrderedRead {
+  readonly server_id: string;
+  readonly version: number;
   readonly account: string;
   readonly devices: readonly { readonly key: string; readonly no: number }[];
   readonly removed: readonly { readonly key: string; readonly no: number }[];
@@ -32,6 +37,9 @@ function parse(value: unknown): OrderDoc | null {
   if (typeof value !== "object" || value === null) return null;
   const doc = value as Partial<OrderDoc>;
   if (doc.v !== 1 || !(doc.account === null || typeof doc.account === "string") || !Number.isSafeInteger(doc.max_no) || typeof doc.keys !== "object" || doc.keys === null) return null;
+  if (doc.last_version !== undefined || doc.bind_id !== undefined || doc.server_id !== undefined) {
+    if (typeof doc.bind_id !== "string" || typeof doc.server_id !== "string" || typeof doc.last_version !== "number" || !Number.isSafeInteger(doc.last_version) || doc.last_version < 1) return null;
+  }
   const valid = Object.values(doc.keys).every((entry) => Number.isSafeInteger(entry?.no) && typeof entry?.late === "boolean");
   return valid ? doc as OrderDoc : null;
 }
@@ -59,8 +67,12 @@ export class AccountOrder {
     return this.doc.keys[key]?.no ?? null;
   }
 
+  lastVersion(bindId: string | undefined, serverId: string | null): number | null {
+    return this.doc.bind_id === bindId && this.doc.server_id === serverId ? this.doc.last_version ?? null : null;
+  }
+
   /** The commit turn of a whole read: new keys enter, marked late when their number is not above the highest seen. */
-  record(read: OrderedRead): void {
+  record(read: OrderedRead, bindId: string): void {
     if (this.problem !== null) return;
     const base = this.doc.account === read.account ? this.doc : { ...EMPTY, account: read.account };
     const known = Object.keys(base.keys).length > 0;
@@ -69,7 +81,7 @@ export class AccountOrder {
     const listed = [...read.devices, ...read.removed].sort((a, b) => a.no - b.no);
     for (const { key, no } of listed) if (keys[key] === undefined) keys[key] = { no, late: known && no <= base.max_no };
     for (const { no } of listed) max = Math.max(max, no);
-    const next: OrderDoc = { v: 1, account: read.account, max_no: max, keys };
+    const next: OrderDoc = { v: 1, account: read.account, bind_id: bindId, server_id: read.server_id, last_version: read.version, max_no: max, keys };
     writePrivateState(this.path, next);
     this.doc = next;
   }
