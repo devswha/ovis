@@ -36,9 +36,7 @@ export class RelayUnreachableError extends Error {
 
 /**
  * The relay's closes that turn a client away (relay/core.ts CLOSE): TRY_AGAIN (busy: too many clients for the PC) and
- * POLICY. Before the relay assigns a socket they say nothing of the PC. After it the relay closes with them for the PC's
- * sake (too many waiting on a PC that has not answered, its deadlines for one that never came), so a probe reads them
- * then as the PC not answering, as Open does.
+ * POLICY. Only before the relay assigns a socket are they read as its refusal; a close after it is read as any other.
  */
 const RELAY_REFUSALS: ReadonlySet<number> = new Set([1008, 1013]);
 

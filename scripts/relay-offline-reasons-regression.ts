@@ -255,10 +255,13 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
   };
   /** Checks this PC from its details and waits for a check of it that began after the press to finish. */
   const checkOnce = async (entry: Entry): Promise<void> => {
+    const settled = () => page.waitForFunction((id) => document.querySelector(`[data-pc-details="${id}"] .relay-pc-details-location .status-dot[data-state="checking"]`) === null, entry.server_id);
+    // a check of it already running (the list's minute) would take the press without a socket of its own
+    await settled();
     const opened = nextSocket(entry.server_id);
     await details(entry).locator('[data-action="check-pc"]').click();
-    await opened;
-    await page.waitForFunction((id) => document.querySelector(`[data-pc-details="${id}"] .relay-pc-details-location .status-dot[data-state="checking"]`) === null, entry.server_id);
+    await bounded(opened, 20_000);
+    await settled();
   };
   /**
    * This PC's own check, from its details (no sweep's timing), until their glyph says `state` (relayPcState.tsx pcDotState;
@@ -351,7 +354,7 @@ async function walkOne(browser: Browser, site: string, run: Run, arriveHere: () 
   doing = "relay back: Check again";
   const checkedAgain = nextSocket(box.server_id);
   await page.locator(`[data-pc-id="${box.server_id}"]:visible [data-pc-action="check"]`).first().click();
-  await checkedAgain;
+  await bounded(checkedAgain, 20_000);
   const back = await rowIn(box, "paired");
   doing = "asserting";
   await shot("back-row");
