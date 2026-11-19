@@ -4,6 +4,8 @@
  * refused, while this PC's own programs keep working. A PC in no account offers no lock.
  */
 import { afterEach, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { pairingPc, memberRow, signIn, ask, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
@@ -78,4 +80,14 @@ test("P11: a lock holds whatever account it names, the PC's binding or another",
   pcs.push(made);
   expect(made.app.context.services.safetyLog!.appendLock({ account: "acct_other" }).outcome).toBe("applied");
   expect((await made.local("/api/devices")).body.error?.code).toBe("locked");
+});
+
+test("S19: a log that cannot be read is stricter than locked: no window without screen proof gets in, yet it can read why", async () => {
+  const member = await memberRow("acct_1");
+  const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true, bridgeToken: BRIDGE_TOKEN },
+    startRelay: false, prepare: (dir) => { writeFileSync(join(dir, "account-log.json"), "not json", { mode: 0o600 }); } });
+  pcs.push(made);
+  expect((await made.local("/api/devices")).body.error?.code).toBe("strict");
+  expect((await made.local("/api/account/lock")).body.strict).toBe(true);
+  expect((await made.local("/api/session", { headers: { authorization: `Bearer ${BRIDGE_TOKEN}` } })).status).not.toBe(403);
 });
