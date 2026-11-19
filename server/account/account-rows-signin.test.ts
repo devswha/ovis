@@ -357,4 +357,35 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     gate.wholeRead();
     expect(devices.itsMe(older.id, notice.id, older.spki)).toBe(true);
   });
+
+  test("T39: a screen-approved admission of the same key replaces its account row, with no second row", async () => {
+    const { devices, rows } = pc();
+    await member(devices);
+    const phone = await key();
+    rows.commitList(listed(phone));
+    const [row] = rows.rows();
+    const closed: string[] = [];
+    devices.onRevoke(row!.id, () => { closed.push(row!.id); });
+    const redeemed = devices.redeemCode(devices.startPairing().code, "code", phone.spki);
+    expect(redeemed).toMatchObject({ ok: true });
+    const admitted = devices.admitConfirmed({ codeId: (redeemed as { codeId: string }).codeId, key: phone.spki, label: "Phone", source: "screen" });
+    expect(admitted).not.toBeNull();
+    expect(rows.rowsByKey(phone.spki)).toEqual([]);
+    expect(closed).toEqual([row!.id]);
+    expect(devices.sessionRow(admitted!.id)).toMatchObject({ key: phone.spki });
+  });
+
+  test("T38: a promotion that is not a screen approval keeps the account row's hold, and the row leaves its store", async () => {
+    const { devices, rows } = pc();
+    await member(devices);
+    const phone = await key();
+    rows.commitList(listed(phone));
+    const [row] = rows.rows();
+    const promoted = devices.pairRelay(devices.startPairing().code, "Phone", phone.spki);
+    expect(promoted).not.toBeNull();
+    expect(rows.rowsByKey(phone.spki)).toEqual([]);
+    expect(devices.has(row!.id)).toBe(false);
+    // held: no stream until the hold the account row had ends
+    expect(devices.sessionRow(promoted!.device.id)).toBeNull();
+  });
 });
