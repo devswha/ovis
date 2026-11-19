@@ -171,6 +171,16 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(await read(ports, older)).toEqual({ committed: false, reason: "stale", denials: 0 });
   });
 
+  test("P21, G1: renumbering a pinned key refuses and journals the read without moving its watermark", async () => {
+    const { devices, ports, journal } = pc();
+    const signer = await member(devices);
+    const row = { key: signer.spki, no: 2, eligible: false, label: "Phone" };
+    expect(await read(ports, page({ version: 10, devices: [row] }))).toMatchObject({ committed: true });
+    expect(await read(ports, page({ version: 11, removed: [{ key: row.key, no: 3 }] }))).toMatchObject({ committed: false });
+    expect(ports.lastVersion()).toBe(10);
+    expect(journal.entries().at(-1)).toMatchObject({ key: row.key, how: "order_conflict" });
+  });
+
   test("T52, P21: a lift signed by a key the account's order marks late is refused, though it is older here", async () => {
     const { devices, ports } = pc();
     const [older, target] = [await member(devices), await member(devices)];
