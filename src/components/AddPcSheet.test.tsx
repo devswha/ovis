@@ -201,13 +201,10 @@ describe("the Add-a-PC sheet", () => {
     const pc = pcOf({ added_at: new Date(Date.now() - 15 * 60_000).toISOString() });
     const stateWithPcs: RelayShellState = { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [unrelated, pc] } };
     await mount(props("join", pc, stateWithPcs));
-    expect(all()).toContain("Add this device to desk2");
-    // the approvers it names are a device connected to desk2 and desk2 itself, never the unrelated paired PC
-    const sub = text(renderer!.root.findByProps({ className: "add-pc-sub" }));
-    expect(sub).toBe(translate("en", "Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.", { name: "desk2" }));
-    expect(sub).not.toContain("Work MacBook");
+    const sub = () => text(renderer!.root.findByProps({ className: "add-pc-sub" }));
     // the start says what must be open before the press: only a device with the PC open hears the request
-    expect(all()).toContain("First open desk2 in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.");
+    expect(text(renderer!.root.findByProps({ className: "modal-title" }))).toBe(translate("en", "Get approved on a device you already use"));
+    expect(sub()).toBe(translate("en", "Open {name} on a device you already use and keep it open. Then choose Ask to join and approve there.", { name: "desk2" }));
     expect(all()).not.toContain("Add window closed");
     expect(all()).toContain("Check the number on a device connected to desk2");
     expect(all()).not.toContain("Work MacBook");
@@ -215,6 +212,10 @@ describe("the Add-a-PC sheet", () => {
     await click("Ask to join");
     expect(calls.joins).toEqual([[pc]]);
     await update(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false }));
+    // the approvers it names are a device connected to desk2 and desk2 itself, never the unrelated paired PC
+    expect(text(renderer!.root.findByProps({ className: "modal-title" }))).toBe(translate("en", "Add this device to {name}", { name: "desk2" }));
+    expect(sub()).toBe(translate("en", "Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.", { name: "desk2" }));
+    expect(sub()).not.toContain("Work MacBook");
     expect(all()).toContain("Check that this number matches where you approve, then approve.");
     const digits = renderer!.root.findByProps({ className: "relay-shell-digits" });
     expect(text(digits)).toBe("123 456");
@@ -409,6 +410,31 @@ describe("the Add-a-PC sheet", () => {
     expect(renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text)).toEqual(["Cancel", "Type the number", "Ask to join"]);
     await click("Type the number");
     expect(typed).toBe(1);
+  });
+
+  it("makes approval on a device already in use a join's main way, and a PC's QR code the second, at the start only", async () => {
+    const pc = pcOf();
+    const qr = () => renderer!.root.findAll((n) => n.type === "button" && n.props["data-action"] === "pair-qr");
+    const primary = () => renderer!.root.findAll((n) => n.type === "button" && n.props["data-sheet-primary"] === true);
+    for (const typeNumber of [undefined, () => {}]) {
+      calls = { ...calls, joins: [], qr: 0 };
+      await mount({ ...props("join", pc, LIST), ...(typeNumber ? { onTypeNumber: typeNumber } : {}) });
+      // the one primary asks to join through the account; the QR code is a quiet choice after it, never in the footer
+      expect(primary()).toHaveLength(1);
+      const order = renderer!.root.findAll((n) => n.type === "button").map((n) => n.props["data-sheet-primary"] === true ? "primary" : n.props["data-action"] === "pair-qr" ? "qr" : null).filter((kind) => kind !== null);
+      expect(order).toEqual(["primary", "qr"]);
+      await act(async () => { primary()[0]!.props.onClick(); });
+      expect([calls.joins, calls.qr]).toEqual([[[pc]], 0]);
+      expect(qr().map((n) => [n.props.className, renderer!.root.findByType("footer").findAll((f) => f === n).length])).toEqual([["btn btn-ghost", 0]]);
+      await act(async () => { qr()[0]!.props.onClick(); });
+      expect([calls.joins.length, calls.qr]).toEqual([1, 1]);
+      await act(async () => { renderer!.unmount(); });
+    }
+    // past the start, and on a new PC's sheet, the join's way is already chosen: no QR choice
+    await mount(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false }));
+    expect(qr()).toHaveLength(0);
+    await update(props("new", pc, LIST));
+    expect(qr()).toHaveLength(0);
   });
 
   it("offers Ask to join under a typed comparison, for a PC that shows no number, and only where the shell can turn the request into a join", async () => {

@@ -129,8 +129,10 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
     body = <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here.")}</p>;
     actions = pairActions(<button key="close" type="button" className="btn" onClick={onClose}>{t("Close")}</button>, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={onPairByQr}>{t("Pair with a QR or code")}</button>);
   } else {
-    title = mode === "new" ? t("Add {name} to your account", { name }) : t("Add this device to {name}", { name });
-    sub = mode === "new"
+    // a new device's way in: approval on a device it already uses comes first, a PC's own QR code is for when there is none
+    const joinStart = mode !== "new" && phase === "start";
+    title = mode === "new" ? t("Add {name} to your account", { name }) : joinStart ? t("Get approved on a device you already use") : t("Add this device to {name}", { name });
+    sub = joinStart ? t("Open {name} on a device you already use and keep it open. Then choose Ask to join and approve there.", { name }) : mode === "new"
       ? phase === "start" && onAskToJoin
         ? t("Type the number {name} shows on its own screen after you start Add, then approve there. If {name} is already in your account, ask to join instead.", { name })
         : t("Type the number {name} shows on its own screen, then approve there.", { name })
@@ -139,9 +141,9 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
       : t("Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.", { name });
     switch (phase) {
       case "start":
-        // a join is heard only by a device with the PC open, so that comes before the press
-        if (mode !== "new") body = <><p className="relay-shell-copy">{t("First open {name} in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.", { name })}</p>{onTypeNumber && <p className="relay-shell-copy">{t("If {name} is waiting on its own screen to be added, type its number here instead.", { name })}</p>}</>;
+        // a join is heard only by a device with the PC open: the sub says so before the press
         if (mode !== "new" && onTypeNumber) {
+          body = <p className="relay-shell-copy">{t("If {name} is waiting on its own screen to be added, type its number here instead.", { name })}</p>;
           const type = <button key="type" type="button" className="btn" data-action="type-number" onClick={onTypeNumber}>{t("Type the number")}</button>;
           actions = pairActions(phone ? [type, cancel] : [cancel, type], <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onJoin(pc)}>{t("Ask to join")}</button>);
           break;
@@ -301,6 +303,13 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
           )}
         </div>
         {actions !== null && <footer className="modal-footer add-pc-footer">{actions}</footer>}
+        {/* after the main way, and after it in the focus order too: the sheet still opens on the footer */}
+        {mode === "join" && phase === "start" && (
+          <div className="add-pc-other add-pc-no-device">
+            <p className="relay-shell-detail">{t("No other device? Pair with the QR code on {name} instead.", { name })}</p>
+            <button type="button" className="btn btn-ghost" data-action="pair-qr" onClick={onPairByQr}>{t("Pair with a QR or code")}</button>
+          </div>
+        )}
       </div>
     </div>,
     document.body,

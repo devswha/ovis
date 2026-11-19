@@ -556,7 +556,7 @@ describe("the dashboard", () => {
       await act(async () => { buttons("Join")[0]!.props.onClick({ stopPropagation() {} }); });
       expect(dialog().props["data-add-pc-mode"]).toBe("join");
       expect(renderer!.root.findAll((n) => n.props.inert === true)).toHaveLength(1);
-      expect(textOf(dialog())).toContain("Add this device to nuc");
+      expect(textOf(dialog())).toContain("Open nuc on a device you already use");
       await act(async () => { button("Ask to join").props.onClick(); });
       expect(joined[1]).toEqual(["nuc", { sheet: "join" }]);
     });
