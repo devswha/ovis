@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SafetyRecord } from "../../shared/account-records.ts";
-import { DeviceStore } from "../devices.ts";
+import { DeviceStore, readDeviceRegistry } from "../devices.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
 import { DEVICE_JOURNAL_FILE, pcRecordId, SAFETY_LOG_FILE, SafetyLog } from "./safety-log.ts";
 
@@ -122,6 +122,16 @@ describe("the safety log holds what it acknowledged (P24, T28, T41, S19)", () =>
     const devices = new DeviceStore(at, null, null, SafetyLog.open(at));
     expect(devices.list(null)).toEqual([]);
     expect(devices.gated).toBe(true);
+  });
+
+  test("S19: a machine-profile start on a strict PC still closes the gate on disk", () => {
+    const at = dir();
+    writeFileSync(join(at, SAFETY_LOG_FILE), "not json", { mode: 0o600 });
+    const fixture = relayFixture(false, { stateDir: at, accountOpensAll: true, profile: "machine" });
+    fixtures.push(fixture);
+    dirs.splice(dirs.indexOf(at), 1);
+    const registry = readDeviceRegistry(join(at, "devices.json"));
+    expect(registry.kind === "ok" && registry.gateClosedAt !== null).toBe(true);
   });
 });
 
