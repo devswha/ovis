@@ -4,10 +4,10 @@
  * herdr's stored capture of that scene, size and host palette (tui/testing/herdr-captures/, written only by
  * tui/testing/herdr-capture.ts).
  *
- * herdr's picture is first carried through the decisions docs/tui/visual-parity.md records (`no, recorded`) and the
- * forced one, each by name: C1 maps herdr's palette onto the screen's theme roles, C2 puts the screen's own words where
- * herdr has its words, and the others leave out the cells their difference covers. Every other cell must then be the
- * same: its text, its attributes, its background, and its foreground where a glyph shows it.
+ * herdr's picture is first carried through the lines the owner keeps or settles later and the forced one, each by name
+ * (`decisionsFor`): C1 maps herdr's palette onto the screen's theme roles, C2 puts the screen's own words where herdr
+ * has its words, and the others leave out the cells their difference covers. Every other cell must then be the same:
+ * its text, its attributes, its background, its foreground where a glyph shows it; and the host cursor (`compare`).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -108,8 +108,8 @@ async function apply(run: Run, keys: SceneKeys, addresses: ReadonlyMap<string, s
       return;
     }
     case "viewer":
-      // P6 (forced): the screen's answer to a second viewer is left out of the comparison whole
-      return;
+      // P6 (forced): no case draws a second viewer (LEFT_OUT)
+      throw new Error("the viewers scene is not drawn on the screen's side: it is left out of the comparison (P6)");
   }
 }
 
@@ -160,13 +160,24 @@ const sameColor = (a: Written, b: Written): boolean => JSON.stringify(a) === JSO
 export interface Word { readonly herdr: string; readonly ovis: string; readonly align?: "right"; readonly shift?: true; readonly row?: number; readonly col?: number }
 
 /**
- * A rectangle of cells a kept, owner's, part-2 or forced line covers, with that line's id. `glyph`: only the text and
- * the foreground are left out (a state's own glyph and colour, S8); the background and attributes still count. `bold`:
- * only the bold attribute is left out.
+ * A rectangle of cells a kept, owner's, part-2 or forced line covers, with that line's id, in the coordinates of the
+ * picture it names. `glyph`: only the text and the foreground are left out (a state's own glyph and colour, S8); the
+ * background and attributes still count. `bold`: only the bold attribute is left out.
  */
 export interface Hole { readonly line: string; readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly glyph?: true; readonly bold?: true }
 
-export interface Decisions { readonly words: readonly Word[]; readonly holes: readonly Hole[] }
+/**
+ * How herdr's picture is carried over before its cells are compared: C2's words; holes in herdr's picture and in the
+ * screen's; and `place`, where a cell of herdr's picture stands on the screen (none: at the same place; null: nowhere,
+ * so it is not compared), for a part the screen draws at another place (the narrow screen's panes under its one-row
+ * header).
+ */
+export interface Decisions {
+  readonly words: readonly Word[];
+  readonly holes: readonly Hole[];
+  readonly ovisHoles?: readonly Hole[];
+  readonly place?: (x: number, y: number) => readonly [number, number] | null;
+}
 
 export interface Difference { readonly x: number; readonly y: number; readonly what: string; readonly herdr: string; readonly ovis: string }
 
@@ -238,34 +249,58 @@ function withWords(grid: Cells, words: readonly Word[]): { cells: Cell[]; holes:
   return { cells, holes };
 }
 
-/** Every cell where the screen's picture differs from herdr's carried through the decisions; empty: the same. */
-export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisions: Decisions): Difference[] {
+/** The cells of `holes` in a picture `cols` wide, with how much of each cell is left out. */
+function held(holes: readonly Hole[], cols: number, rows: number): Map<number, "all" | "glyph" | "bold"> {
+  const out = new Map<number, "all" | "glyph" | "bold">();
+  for (const hole of holes) {
+    for (let y = Math.max(0, hole.y); y < Math.min(rows, hole.y + hole.height); y++) {
+      for (let x = Math.max(0, hole.x); x < Math.min(cols, hole.x + hole.width); x++) {
+        const at = y * cols + x;
+        const how = hole.glyph ? "glyph" : hole.bold ? "bold" : "all";
+        const was = out.get(at);
+        if (was !== "all" && !(was === "glyph" && how === "bold")) out.set(at, how);
+      }
+    }
+  }
+  return out;
+}
+
+/** What a comparison found: every cell (and the host cursor) that differs, and how many cells it compared. */
+export interface Comparison { readonly differences: Difference[]; readonly compared: number }
+
+/**
+ * Every cell where the screen's picture differs from herdr's carried through the decisions, and the host cursor:
+ * shown or hidden always, and where when herdr's cursor stands on a compared cell.
+ */
+export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisions: Decisions): Comparison {
   const theme = TUI_THEMES[palette];
   const { cells: expected, holes: shifted } = withWords(herdr, decisions.words);
-  const held = new Map<number, "all" | "glyph">();
-  const unbold = new Set<number>();
-  const cover = (hole: Omit<Hole, "line">, how: (i: number) => void) => {
-    for (let y = Math.max(0, hole.y); y < Math.min(herdr.rows, hole.y + hole.height); y++) {
-      for (let x = Math.max(0, hole.x); x < Math.min(herdr.cols, hole.x + hole.width); x++) how(y * herdr.cols + x);
-    }
+  const herdrHeld = held([...decisions.holes, ...shifted], herdr.cols, herdr.rows);
+  const ovisHeld = held(decisions.ovisHoles ?? [], ovis.cols, ovis.rows);
+  const placeOf = (x: number, y: number): readonly [number, number] | null => {
+    const hold = herdrHeld.get(y * herdr.cols + x);
+    if (hold === "all") return null;
+    const at = decisions.place ? decisions.place(x, y) : [x, y] as const;
+    if (!at || at[0] < 0 || at[1] < 0 || at[0] >= ovis.cols || at[1] >= ovis.rows || ovisHeld.get(at[1] * ovis.cols + at[0]) === "all") return null;
+    return at;
   };
-  for (const hole of [...decisions.holes, ...shifted]) cover(hole, (i) => {
-    if (hole.bold) unbold.add(i);
-    else if (held.get(i) !== "all") held.set(i, hole.glyph ? "glyph" : "all");
-  });
   const out: Difference[] = [];
+  let compared = 0;
   for (let i = 0; i < expected.length; i++) {
-    const hold = held.get(i);
-    if (hold === "all") continue;
-    const want = expected[i]!;
-    const got = ovis.cells[i]!;
     const x = i % herdr.cols;
     const y = Math.floor(i / herdr.cols);
-    const differ = (what: string) => out.push({ x, y, what, herdr: describe(want), ovis: describe(got) });
+    const at = placeOf(x, y);
+    if (!at) continue;
+    compared++;
+    const j = at[1] * ovis.cols + at[0];
+    const hold = herdrHeld.get(i) ?? ovisHeld.get(j);
+    const want = expected[i]!;
+    const got = ovis.cells[j]!;
+    const differ = (what: string) => out.push({ x, y, what, herdr: describe(want), ovis: `(${at[0]},${at[1]}) ${describe(got)}` });
     if (hold !== "glyph" && want.ch !== got.ch) { differ("text"); continue; }
     const blank = (want.ch === " " || want.ch === "") && (want.look.flags & (LOOK_UNDERLINE | LOOK_REVERSE | LOOK_STRIKE)) === 0;
     // on a blank cell only underline, reverse and strikethrough show: bold, dim and italic change nothing there
-    const seen = (flags: number) => (blank ? flags & (LOOK_UNDERLINE | LOOK_REVERSE | LOOK_STRIKE) : flags) & (unbold.has(i) ? ~LOOK_BOLD : ~0);
+    const seen = (flags: number) => (blank ? flags & (LOOK_UNDERLINE | LOOK_REVERSE | LOOK_STRIKE) : flags) & (hold === "bold" ? ~LOOK_BOLD : ~0);
     if (seen(want.look.flags) !== seen(got.look.flags)) { differ("attributes"); continue; }
     const wantBg = hexOf(want.look.bg);
     if (want.look.bg === null) {
@@ -278,48 +313,92 @@ export function compare(herdr: Cells, ovis: Cells, palette: PaletteName, decisio
       if (got.look.fg !== null) differ("foreground");
     } else if (!(wantFg && HERDR_FG[wantFg] && sameColor(got.look.fg, theme[HERDR_FG[wantFg]!]))) differ("foreground");
   }
-  return out;
+  const cursor = herdr.cursor;
+  const where = cursor.visible ? placeOf(cursor.x, cursor.y) : null;
+  if (cursor.visible !== ovis.cursor.visible || (where && (ovis.cursor.x !== where[0] || ovis.cursor.y !== where[1]))) {
+    out.push({ x: cursor.x, y: cursor.y, what: "cursor", herdr: JSON.stringify(cursor), ovis: JSON.stringify(ovis.cursor) });
+  }
+  return { differences: out, compared };
 }
 
 const SIDEBAR = 26;
 const NARROW = 64;
+/** herdr's narrow header: two rows; the screen's: one (L6) */
+const HERDR_HEADER_ROWS = 2;
 
-/** The sidebar's workspace half on a screen `rows` tall (herdr's rule: half the height, at least 3 rows each from 6 rows on). */
-function workspaceRows(rows: number): number {
-  return rows < 6 ? Math.ceil(rows / 2) : Math.min(Math.max(Math.round(rows * 0.5), 3), rows - 3);
-}
+/** Rows of the sidebar's upper half, the workspaces': the upper half of the screen and its odd row. */
+const workspaceRows = (rows: number): number => Math.ceil(rows / 2);
 
-/** A dialog's cells: `width` x `height` centred, at most the screen less 4 columns and 2 rows. */
+/** A dialog's cells: the size it asks for, centred, with two columns at each side and one row above and below kept free. */
 function dialog(cols: number, rows: number, width: number, height: number): Omit<Hole, "line"> {
-  const w = Math.min(width, cols - 4);
-  const h = Math.min(height, rows - 2);
-  return { x: Math.floor((cols - w) / 2), y: Math.floor((rows - h) / 2), width: w, height: h };
+  const fitted = { width: Math.min(width, cols - 4), height: Math.min(height, rows - 2) };
+  return { x: Math.floor((cols - fitted.width) / 2), y: Math.floor((rows - fitted.height) / 2), ...fitted };
 }
 
-/** Every cell where a scene's picture differs from its world's first picture: what the scene's own overlay drew. */
-function changed(scene: Cells, base: Cells, line: string): Hole[] {
-  const holes: Hole[] = [];
-  scene.cells.forEach((cell, i) => {
-    const before = base.cells[i]!;
-    if (cell.ch !== before.ch || JSON.stringify(cell.look) !== JSON.stringify(before.look)) holes.push({ line, x: i % scene.cols, y: Math.floor(i / scene.cols), width: 1, height: 1 });
-  });
-  return holes;
-}
+const inside = (rect: Omit<Hole, "line">, x: number, y: number): boolean => x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
 
-/** The scenes whose own overlay is an owner's line of part 2 (O6, O7, N2): its cells on either side are left out. */
-const OVERLAY_LINES: Readonly<Record<string, string>> = { menu: "O6", "agents-menu": "O6", picker: "O7", "agents-picker": "O7", "toast-agent": "N2" };
-/** The scenes left out whole: the agent list herdr has not (O11), the settings herdr has and the screen has not (O10). */
-const WHOLE_LINES: Readonly<Record<string, string>> = { agentlist: "O11", "agents-list": "O11", settings: "O10" };
 const BAR_SCENES = new Set(["prefix", "navigate", "copy", "resize", "empty-prefix"]);
+/** herdr's dialog size per scene; the screen draws the same, except its help (as large as fits until O5) */
 const DIALOGS: Readonly<Record<string, readonly [number, number]>> = { help: [76, 22], rename: [56, 7], newtab: [56, 7], confirm: [64, 6] };
 
 /**
+ * The scenes no case compares, by the line that covers them: every cell of them, or every cell another case compares
+ * already. `narrow`: only at 64 columns or fewer.
+ */
+export const LEFT_OUT: readonly { readonly scene: string; readonly line: string; readonly why: string; readonly narrow?: true }[] = [
+  { scene: "settings", line: "O10", why: "herdr's settings screen; the screen has none yet" },
+  { scene: "agentlist", line: "O11", why: "the screen's agent list, which herdr has not" },
+  { scene: "agents-list", line: "O11", why: "the screen's agent list, which herdr has not" },
+  { scene: "menu", line: "O6", why: "its overlay is O6's; every other cell is the main scene's" },
+  { scene: "agents-menu", line: "O6", why: "its overlay is O6's; every other cell is the agents scene's" },
+  { scene: "picker", line: "O7", why: "its overlay is O7's; every other cell is the main scene's" },
+  { scene: "agents-picker", line: "O7", why: "its overlay is O7's; every other cell is the agents scene's" },
+  { scene: "toast-agent", line: "N2", why: "its toast is N2's; every other cell is the agents scene's" },
+  { scene: "viewers", line: "P6", why: "forced; this harness draws no second viewer, so the screen's side is the main scene" },
+  { scene: "navigate", line: "L8", why: "herdr's narrow switcher covers the screen", narrow: true },
+  { scene: "collapsed", line: "L6", why: "no sidebar at 64 columns or fewer on either side: the main scene again", narrow: true },
+  { scene: "agents-collapsed", line: "L6", why: "no sidebar at 64 columns or fewer on either side: the agents scene again", narrow: true },
+  { scene: "ended", line: "P5", why: "P5 covers its panes and L6 its header", narrow: true },
+];
+
+/** Whether a case compares a scene at a width. */
+export function comparedScene(scene: string, cols: number): boolean {
+  return !LEFT_OUT.some((one) => one.scene === scene && (!one.narrow || cols <= NARROW));
+}
+
+/**
+ * At 64 columns or fewer herdr's header has two rows and the screen's one (L6, part 2), and herdr shows every pane of
+ * the tab where the screen shows the focused one alone (L7, part 2). The focused pane is compared all the same, one row
+ * higher on the screen: its top border, its rows and its bottom border, as far as herdr's box of it reaches (its right
+ * border and the panes beside it are L7's). The mode bar and a dialog stand at the same place on both.
+ */
+function narrowPlace(herdr: Cells, cols: number, rows: number, bar: boolean, direct: Omit<Hole, "line"> | null): { place: Decisions["place"]; holes: Hole[]; ovisHoles: Hole[] } {
+  const text = gridText(herdr);
+  const top = text[HERDR_HEADER_ROWS] ?? "";
+  const bordered = top.startsWith("┌");
+  // the box's right edge (L7's, as the screen's pane is wider): its corner on its top border or, when the mode bar
+  // does not cover it, its bottom one (a dialog may hide the first and show a corner of the pane beside it)
+  const corners = [top.indexOf("┐"), bar ? -1 : (text[rows - 1] ?? "").indexOf("┘")].filter((at) => at >= 0);
+  const reach = bordered && corners.length > 0 ? Math.min(...corners) : cols;
+  const holes: Hole[] = [{ line: "L6", x: 0, y: 0, width: cols, height: HERDR_HEADER_ROWS }];
+  if (reach < cols) holes.push({ line: "L7", x: reach, y: HERDR_HEADER_ROWS, width: cols - reach, height: rows - HERDR_HEADER_ROWS });
+  const place = (x: number, y: number): readonly [number, number] | null => {
+    if ((bar && y === rows - 1) || (direct && inside(direct, x, y))) return [x, y];
+    if (y < HERDR_HEADER_ROWS || x >= reach) return null;
+    if (bordered && y === rows - 1) return [x, y];
+    // a row of the pane that the screen's dialog covers once the pane moves up is not seen there
+    return direct && inside(direct, x, y - 1) ? null : [x, y - 1];
+  };
+  return { place, holes, ovisHoles: [{ line: "L6", x: 0, y: 0, width: cols, height: 1 }] };
+}
+
+/**
  * What a scene's comparison leaves out or carries over, each by its line in docs/tui/visual-parity.md: C2's words (the
- * screen keeps its own: `Workspaces`, `Agents`, `Menu`, `Keyboard Shortcuts`, `Rename tab`, `New tab name`,
- * `Copied`, and on the mode bar `navigate` and `help`), S8's state glyphs, S7's agent rows, P4's pane id, the
- * owner's part-2 lines (L6 and L7 on a narrow screen, O5's help content, O6, O7, N2 and O11's overlays, P5's ended
- * pane), O10 and P6. C1's colours are carried by `compare` itself, which also takes the theme's background where herdr
- * writes none (C1 wins over S9 and P2 there). `base`: the world's first picture on each side, for an overlay's cells.
+ * screen keeps its own: `Workspaces`, `Agents`, `Menu`, `Rename tab`, `New tab name`, `Copied`, and on the mode bar
+ * `navigate` and `help`), S8's state glyphs, S7's agent rows, P4's pane id, the help's content and size (O5, part 2),
+ * and at 64 columns or fewer L6 and L7 (`narrowPlace`). C1's colours are carried by `compare` itself, which also takes
+ * the theme's background where herdr writes none (C1 wins over S9 and P2 there). `base`: the world's first picture
+ * on each side.
  */
 export function decisionsFor(world: WorldName, scene: string, cols: number, rows: number, herdr: Cells, ovis: Cells, base: { herdr: Cells; ovis: Cells } | null): Decisions {
   const words: Word[] = [
@@ -327,15 +406,18 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
     { herdr: "copied to clipboard", ovis: STRINGS.noticeText("copied", {}) },
   ];
   const holes: Hole[] = [];
-  const whole = (line: string) => holes.push({ line, x: 0, y: 0, width: cols, height: rows });
+  const ovisHoles: Hole[] = [];
   const narrow = cols <= NARROW;
   const collapsed = scene === "collapsed" || scene === "agents-collapsed";
   const agents = world === "agents";
+  const box = DIALOGS[scene];
+  const rect = box ? dialog(cols, rows, box[0], box[1]) : null;
+  let place: Decisions["place"];
   if (narrow) {
-    // the narrow header (L6) and the narrow screen's panes (L7) are part 2: a dialog over them and the mode bar are kept
-    holes.push({ line: "L6", x: 0, y: 0, width: cols, height: 2 }, { line: "L7", x: 0, y: 2, width: cols, height: rows - 2 });
-    // the mode bar over the last row is part 1 (L2, M1-M3)
-    if (BAR_SCENES.has(scene)) holes.splice(1, 1, { line: "L7", x: 0, y: 2, width: cols, height: rows - 3 });
+    const narrowed = narrowPlace(herdr, cols, rows, BAR_SCENES.has(scene), rect);
+    place = narrowed.place;
+    holes.push(...narrowed.holes);
+    ovisHoles.push(...narrowed.ovisHoles);
   } else if (collapsed) {
     const top = rows >= 7 ? Math.ceil(rows / 2) : rows;
     holes.push({ line: "S8", x: 2, y: 0, width: 1, height: top, glyph: true });
@@ -349,9 +431,7 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
   if (BAR_SCENES.has(scene)) {
     words.push({ herdr: "workspace nav", ovis: STRINGS.modeHints.workspaceNav, shift: true, row: rows - 1 }, { herdr: "keybinds", ovis: STRINGS.modeHints.keybinds, shift: true, row: rows - 1 });
   }
-  const box = DIALOGS[scene];
-  if (box) {
-    const rect = dialog(cols, rows, box[0], box[1]);
+  if (rect) {
     // herdr's dialog frame keeps the bold of the cell it was drawn over (its panel sets a colour on the old cell's style,
     // as its toolkit merges styles): that is how herdr's toolkit paints, not a look of herdr's, so a frame cell's bold
     // does not count where the picture under the dialog was bold there
@@ -359,16 +439,11 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
       for (let x = rect.x; x < rect.x + rect.width; x++) for (const y of [rect.y, rect.y + rect.height - 1]) if (base.herdr.cells[y * cols + x]!.look.flags & LOOK_BOLD) holes.push({ line: "O2", x, y, width: 1, height: 1, bold: true });
       for (let y = rect.y; y < rect.y + rect.height; y++) for (const x of [rect.x, rect.x + rect.width - 1]) if (base.herdr.cells[y * cols + x]!.look.flags & LOOK_BOLD) holes.push({ line: "O2", x, y, width: 1, height: 1, bold: true });
     }
-    if (narrow) {
-      // a dialog over the narrow screen is part 1 (O1-O4, O8, O9): its cells come back out of the L6 and L7 holes
-      for (const hole of holes.splice(0, holes.length).flatMap((one) => one.line === "L6" || one.line === "L7" ? minus(one, rect) : [one])) holes.push(hole);
-    }
     if (scene === "help") {
-      words.push({ herdr: "keybinds", ovis: STRINGS.helpTitle, row: rect.y + 1 });
-      // O5 (part 2): the help's content, its close button and the about hint on its bottom border
-      holes.push({ line: "O5", x: rect.x + 1, y: rect.y + 2, width: rect.width - 2, height: rect.height - 3 });
-      holes.push({ line: "O5", x: rect.x + 1 + STRINGS.helpTitle.length, y: rect.y + 1, width: Math.max(0, rect.width - 2 - STRINGS.helpTitle.length), height: 1 });
-      holes.push({ line: "O5", x: rect.x + 2, y: rect.y + rect.height - 1, width: STRINGS.helpAboutHint.length, height: 1 });
+      // O5 (part 2): the help's content and size; until then the screen's help is as large as fits, so it keeps its rows.
+      // What is compared is the screen dimmed around both dialogs (O1).
+      holes.push({ line: "O5", ...rect });
+      ovisHoles.push({ line: "O5", ...dialog(cols, rows, cols, rows) });
     }
     if (scene === "rename") words.push({ herdr: "rename tab", ovis: STRINGS.textRenameTab, row: rect.y + 1 });
     if (scene === "newtab") words.push({ herdr: "new tab", ovis: STRINGS.textNewTab, row: rect.y + 1 });
@@ -376,43 +451,26 @@ export function decisionsFor(world: WorldName, scene: string, cols: number, rows
   // P4: the focused pane's id on its bottom border stays (owner, part 2)
   for (const picture of base ? [ovis, base.ovis] : [ovis]) {
     gridText(picture).forEach((text, y) => {
-      for (const match of text.matchAll(/ id \S+(?: \([^)]*\))? (?=─)/g)) holes.push({ line: "P4", x: match.index, y, width: match[0].length, height: 1 });
+      for (const match of text.matchAll(/ id \S+(?: \([^)]*\))? (?=─)/g)) ovisHoles.push({ line: "P4", x: match.index, y, width: match[0].length, height: 1 });
     });
   }
   if (scene === "toast") {
-    // C2: the copy toast says the screen's `Copied`, so its box is narrower than herdr's: both boxes' cells are left out
-    // here and the toast's place, shape and colour roles are checked on their own (copyToastShape)
-    const spans = [herdr, ovis].map((grid) => {
+    // C2: the copy toast says the screen's `Copied`, so its box is narrower than herdr's: each box's cells are left out
+    // in its own picture, and the toast's place, shape and colour roles are checked on their own (copyToastShape)
+    const span = (grid: Cells): Hole | null => {
       const row = gridText(grid).findIndex((text) => text.includes("●"));
       if (row < 0) return null;
       const text = gridText(grid)[row]!;
       const at = text.indexOf("●") - 1;
-      return { x: at, width: text.indexOf("│", at + 1) - at + 1, y: row - 1 };
-    }).filter((span) => span !== null);
-    for (const span of spans) holes.push({ line: "C2", x: span.x, y: span.y, width: span.width, height: 3 });
+      return { line: "C2", x: at, width: text.indexOf("│", at + 1) - at + 1, y: row - 1, height: 3 };
+    };
+    const herdrSpan = span(herdr);
+    const ovisSpan = span(ovis);
+    if (herdrSpan) holes.push(herdrSpan);
+    if (ovisSpan) ovisHoles.push(ovisSpan);
   }
-  if (WHOLE_LINES[scene]) whole(WHOLE_LINES[scene]!);
-  // on a narrow screen herdr's prefix+w opens its full-screen switcher (L8, the owner's, part 2)
-  if (narrow && scene === "navigate") whole("L8");
-  if (OVERLAY_LINES[scene] && base) holes.push(...changed(herdr, base.herdr, OVERLAY_LINES[scene]!), ...changed(ovis, base.ovis, OVERLAY_LINES[scene]!));
-  if (scene === "ended") holes.push({ line: "P5", x: narrow ? 0 : SIDEBAR, y: 1, width: cols, height: rows - 1 });
-  if (scene === "viewers") holes.push({ line: "P6", x: narrow ? 0 : SIDEBAR, y: 1, width: cols, height: rows - 1 });
-  return { words, holes };
-}
-
-/** `hole` less the cells of `cut`: at most four rectangles around it. */
-function minus(hole: Hole, cut: Omit<Hole, "line">): Hole[] {
-  const right = hole.x + hole.width;
-  const bottom = hole.y + hole.height;
-  const x0 = Math.max(hole.x, cut.x), x1 = Math.min(right, cut.x + cut.width);
-  const y0 = Math.max(hole.y, cut.y), y1 = Math.min(bottom, cut.y + cut.height);
-  if (x0 >= x1 || y0 >= y1) return [hole];
-  return [
-    { ...hole, height: y0 - hole.y },
-    { ...hole, y: y1, height: bottom - y1 },
-    { ...hole, y: y0, height: y1 - y0, width: x0 - hole.x },
-    { ...hole, x: x1, y: y0, height: y1 - y0, width: right - x1 },
-  ].filter((one) => one.width > 0 && one.height > 0);
+  if (scene === "ended") holes.push({ line: "P5", x: SIDEBAR, y: 1, width: cols, height: rows - 1 });
+  return { words, holes, ovisHoles, ...(place ? { place } : {}) };
 }
 
 /**

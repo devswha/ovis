@@ -1,13 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import type { Cells, PaletteName } from "../testing/herdr-grid.ts";
-import { compare, copyToastShape, decisionsFor, herdrPicture, ovisPicture, report } from "../testing/parity.ts";
+import { compare, comparedScene, copyToastShape, decisionsFor, herdrPicture, ovisPicture, report } from "../testing/parity.ts";
 import { PARITY_SIZES, SCENES, type WorldName } from "../testing/parity-scenes.ts";
 
 /**
  * The screen draws each scene of docs/tui/visual-parity.md as herdr's TUI does: its styled cell grid (text, attributes,
- * colour roles, the host cursor) equals herdr's stored capture (tui/testing/herdr-captures/, written only by
+ * colour roles) and its host cursor equal herdr's stored capture (tui/testing/herdr-captures/, written only by
  * tui/testing/herdr-capture.ts) once that capture is carried through the lines the owner keeps or settles later
- * (tui/testing/parity.ts `decisionsFor` names each).
+ * (tui/testing/parity.ts `decisionsFor` names each). A scene whose every cell those lines cover, or another case
+ * compares already, has no case (`LEFT_OUT`); every case compares at least one cell.
  */
 
 const PALETTES: readonly PaletteName[] = ["dark", "light"];
@@ -28,6 +29,7 @@ for (const world of Object.keys(SCENES) as WorldName[]) {
   describe(`parity with herdr: ${world}`, () => {
     for (const scene of SCENES[world]) {
       for (const [cols, rows] of PARITY_SIZES) {
+        if (!comparedScene(scene.id, cols)) continue;
         for (const palette of PALETTES) {
           it(`${scene.id} ${cols}x${rows} ${palette}`, async () => {
             const herdr = herdrPicture(scene.id, cols, rows, palette);
@@ -35,7 +37,8 @@ for (const world of Object.keys(SCENES) as WorldName[]) {
             const first = SCENES[world][0]!;
             const ovis = scene === first ? await basePicture(world, cols, rows, palette) : await ovisPicture(world, scene, cols, rows, palette);
             const base = scene === first ? null : { herdr: herdrPicture(first.id, cols, rows, palette)!, ovis: await basePicture(world, cols, rows, palette) };
-            const differences = compare(herdr, ovis, palette, decisionsFor(world, scene.id, cols, rows, herdr, ovis, base));
+            const { differences, compared } = compare(herdr, ovis, palette, decisionsFor(world, scene.id, cols, rows, herdr, ovis, base));
+            expect(compared).toBeGreaterThan(0);
             if (differences.length > 0) throw new Error(report(herdr, ovis, differences));
             if (scene.id === "toast") {
               // the toast's cells are left out of the comparison (C2 makes its text shorter): its place, shape and colours here
