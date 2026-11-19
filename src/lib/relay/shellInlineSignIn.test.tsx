@@ -100,16 +100,31 @@ describe("signing in from a marked pairing's failure screen", () => {
     const state = new URL(started).searchParams.get("state") ?? "";
     const returnUrl = async () => (await fake.fetch(started)).headers.get("location") ?? "";
     /** The front page the account service sends the browser back to, and the PC's page it goes on to. */
-    const comeBack = async (url: string) => {
+    const comeBack = async (url: string, beforePcPage?: () => void) => {
       const front = page(url, accountStore, fake, opened, []);
       await front.mounted;
       await until(() => front.navigated.length === 1);
+      beforePcPage?.();
       const pcSignIns: string[] = [];
       const pcPage = page(new URL(front.navigated[0]!, ORIGIN).href, accountStore, fake, opened, pcSignIns);
       await pcPage.mounted;
       return { front, pcPage, pcSignIns };
     };
-    return { offer: scannedOffer, scannedAt, fake, accountStore, opened, first, native, state, returnUrl, comeBack };
+    /** The front page alone: it hands the pairing on, and its PC's page is not loaded (a navigation stopped on the way). */
+    const handOnly = async (url: string) => {
+      const front = page(url, accountStore, fake, opened, []);
+      await front.mounted;
+      await until(() => front.navigated.length === 1);
+      return front;
+    };
+    /** A later, ordinary scan of `scanned` in the same tab. */
+    const scanAgain = async (scanned: RelayOffer) => {
+      const later = page(encodeOffer(scanned, ORIGIN), accountStore, fake, opened, []);
+      await later.mounted;
+      await until(() => later.current().state.kind !== "connecting");
+      return later;
+    };
+    return { offer: scannedOffer, scannedAt, fake, accountStore, opened, first, native, state, returnUrl, comeBack, handOnly, scanAgain };
   }
 
   it("goes on with the pairing on the PC's own page after a web sign-in, and pairs only on Add and pair", async () => {
@@ -125,7 +140,7 @@ describe("signing in from a marked pairing's failure screen", () => {
     expect(decodeOffer(link.href)).toEqual(offer);
     await until(() => { const { state: now } = pcPage.current(); return now.kind === "confirm" && now.account === "unlisted"; });
     expect(pcPage.current().scoped).toBe(true);
-    expect(pcPage.current().state).toMatchObject({ kind: "confirm", offer, resumed: true });
+    expect(pcPage.current().state).toMatchObject({ kind: "confirm", offer });
     expect(await accountStore.get("pending")).toEqual({});
     expect(opened).toEqual([]);
     pcPage.current().onPair();
@@ -134,10 +149,13 @@ describe("signing in from a marked pairing's failure screen", () => {
   });
 
   it("brings a refused web sign-in to the PC's own page with its reason and a way back, and a second try keeps the scan's time", async () => {
-    const { accountStore, opened, state, comeBack, scannedAt } = await stoppedForSignIn();
+    const scanTime = Date.now();
+    setSystemTime(new Date(scanTime));
+    const { accountStore, opened, state, comeBack } = await stoppedForSignIn();
     const at = (await accountStore.get("pending"))?.[state]?.pairing?.at;
-    expect(at).toBeGreaterThanOrEqual(scannedAt);
-    const { pcPage, pcSignIns } = await comeBack(`${ORIGIN}/#error=access_denied&state=${state}`);
+    expect(at).toBe(scanTime);
+    // the PC's page loads half a minute later: its clock must not start again from there
+    const { pcPage, pcSignIns } = await comeBack(`${ORIGIN}/#error=access_denied&state=${state}`, () => { setSystemTime(new Date(scanTime + 30_000)); });
     await until(() => { const { state: now } = pcPage.current(); return now.kind === "failed" && now.account?.kind === "signed-out" && now.account.error !== null; });
     expect(pcPage.current().state).toMatchObject({ failure: "sign-in-first" });
     expect(pcPage.current().scoped).toBe(true);
@@ -145,7 +163,7 @@ describe("signing in from a marked pairing's failure screen", () => {
     pcPage.current().onSignIn?.("github");
     await until(() => pcSignIns.length === 1);
     const again = new URL(pcSignIns[0]!).searchParams.get("state") ?? "";
-    expect((await accountStore.get("pending"))?.[again]?.pairing?.at).toBe(at!);
+    expect((await accountStore.get("pending"))?.[again]?.pairing?.at).toBe(scanTime);
     expect(opened).toEqual([]);
   });
 
@@ -182,12 +200,65 @@ describe("signing in from a marked pairing's failure screen", () => {
     expect(at).toBeLessThan(pressedAt);
   });
 
+  it("reads the note on its own PC's page only, once, and a later scan of that PC is an ordinary one", async () => {
+    const { offer, state, comeBack, scanAgain } = await stoppedForSignIn();
+    const { pcPage } = await comeBack(`${ORIGIN}/#error=access_denied&state=${state}`);
+    await until(() => pcPage.failure() === "sign-in-first");
+    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(false);
+    const later = await scanAgain(offer);
+    await until(() => later.current().state.kind === "confirm");
+    expect(later.current().state).toMatchObject({ kind: "confirm", offer });
+  });
+
+  it("leaves another PC's scan alone, drops the note there, and asks about the first PC afresh", async () => {
+    const { offer, state, handOnly, scanAgain } = await stoppedForSignIn();
+    await handOnly(`${ORIGIN}/#error=access_denied&state=${state}`);
+    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(true);
+    const otherKey = generateKeyPair().publicKey;
+    const other: RelayOffer = { v: 1, server_id: deriveServerId(otherKey), server_public_key: exportPublicKey(otherKey), relay: "wss://relay.ovis.sh", name: "Lab", code: "654321", admission: 1 };
+    const otherPage = await scanAgain(other);
+    await until(() => otherPage.current().state.kind === "confirm");
+    expect(otherPage.current().state).toMatchObject({ kind: "confirm", offer: other });
+    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(false);
+    const first = await scanAgain(offer);
+    await until(() => first.current().state.kind === "confirm");
+    expect(first.current().state).toMatchObject({ kind: "confirm", offer });
+  });
+
+  it("drops a note its PC's page cannot use, so a later scan of that PC shows the confirm", async () => {
+    const { offer, accountStore, state, returnUrl, comeBack, scanAgain } = await stoppedForSignIn();
+    const other = exportPublicKey(generateKeyPair().publicKey);
+    // a record whose offer is not its PC's, and old enough that a note left behind would say "scan again"
+    await accountStore.update("pending", (current) => {
+      const pending = current![state]!;
+      return { ...current, [state]: { ...pending, pairing: { offer: { ...pending.pairing!.offer, server_public_key: other }, at: pending.pairing!.at - SIGN_IN_MS - 1 } } };
+    });
+    const { pcPage } = await comeBack(await returnUrl());
+    await until(() => pcPage.current().state.kind === "forged");
+    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(false);
+    const later = await scanAgain(offer);
+    await until(() => later.current().state.kind === "confirm");
+    expect(later.failure()).toBeNull();
+  });
+
+  it("lets a note whose navigation never finished lapse, so a later scan of that PC shows the confirm", async () => {
+    const start = Date.now();
+    setSystemTime(new Date(start));
+    const { offer, state, handOnly, scanAgain } = await stoppedForSignIn();
+    await handOnly(`${ORIGIN}/#error=access_denied&state=${state}`);
+    expect(browser.sessionStore.has("ovis-pairing-return")).toBe(true);
+    setSystemTime(new Date(start + 2 * 60_000));
+    const later = await scanAgain(offer);
+    await until(() => later.current().state.kind === "confirm");
+    expect(later.current().state).toMatchObject({ kind: "confirm", offer });
+  });
+
   it("asks about the same pairing in place once the app's sign-in sheet answers", async () => {
     const { offer, accountStore, opened, first, native } = await stoppedForSignIn({ native: true });
     expect(first.current().state).toMatchObject({ failure: "sign-in-first", account: { kind: "signing-in", provider: "google" } });
     native!.release();
     await until(() => { const { state } = first.current(); return state.kind === "confirm" && state.account === "unlisted"; });
-    expect(first.current().state).toMatchObject({ offer, resumed: true });
+    expect(first.current().state).toMatchObject({ offer });
     expect(first.current().scoped).toBe(true);
     expect(await accountStore.get("pending")).toEqual({});
     expect(opened).toEqual([]);

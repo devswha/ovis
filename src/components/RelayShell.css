@@ -161,11 +161,6 @@
 }
 
 .relay-shell-copy {
-  margin-top: var(--space-2);
-  font-size: var(--fs-sm);
-}
-
-.relay-shell-copy {
   margin: 0;
   font-size: var(--fs-md);
   line-height: var(--lh-base);

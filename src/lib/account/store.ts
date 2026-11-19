@@ -42,7 +42,7 @@ export interface PendingSignIn {
   readonly pairing?: PendingPairing;
 }
 
-/** A scanned offer waiting on a sign-in; `at`: when the first sign-in for it started, which bounds how long the code is tried. */
+/** A scanned offer waiting on a sign-in; `at`: when the code was scanned, which bounds how long it is tried. */
 export interface PendingPairing {
   readonly offer: RelayOffer;
   readonly at: number;
