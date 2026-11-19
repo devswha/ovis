@@ -311,4 +311,5 @@ export const DEVICES_KO: Record<string, string> = {
   "It does not cover anyone signed in to this computer as you, and cannot stop an older Ovis installed by hand.": "이 컴퓨터에 내 계정으로 로그인한 사람은 막지 못하고, 손으로 설치한 이전 Ovis도 막지 못해요.",
   "Turn on strict mode": "엄격 모드 켜기",
   "Turn off strict mode": "엄격 모드 끄기",
+  "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "엄격 모드는 이 PC 화면에서 확인해야 하는데, 지금은 Linux에서만 돼요.",
 };

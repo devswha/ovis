@@ -3,6 +3,8 @@ import { currentLocale, useT } from "../lib/i18n.ts";
 /** Track B's GET /api/account/lock (S2-18): `preview` is what turning it on ends (T46), only while unlocked and bound. */
 export interface LockState {
   readonly bound: boolean;
+  /** whether this PC can confirm on its own screen; fixed by platform (Linux only this release) */
+  readonly confirm: "available" | "unsupported";
   readonly locked: { readonly id: string; readonly at: string; readonly by: "pc" } | null;
   readonly strict: boolean;
   readonly preview?: {
@@ -19,6 +21,7 @@ export interface LockState {
 export function StrictModePanel({ state, local, onTurnOn, onTurnOff }: { state: LockState; local: boolean; onTurnOn: () => void; onTurnOff: (lock: string) => void }) {
   const t = useT();
   if (!state.bound) return <p className="settings-hint">{t("Strict mode needs this PC signed in to an Ovis account.")}</p>;
+  if (state.confirm === "unsupported" && state.locked === null) return <p className="settings-hint">{t("Strict mode needs a confirmation on this PC's screen, which only Linux has for now.")}</p>;
   const grantName = { token: t("access token"), portal: "Portal", tailscale: "Tailscale", open_lan: t("open local network"), loopback: t("this PC's browser without proof") } as const;
   return (
     <div className="strict-mode">

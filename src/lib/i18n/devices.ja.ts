@@ -311,4 +311,5 @@ export const DEVICES_JA: Record<string, string> = {
   "It does not cover anyone signed in to this computer as you, and cannot stop an older Ovis installed by hand.": "このコンピューターにあなたとしてサインインしている人は対象外で、手動で入れた古い Ovis も止められません。",
   "Turn on strict mode": "厳格モードをオン",
   "Turn off strict mode": "厳格モードをオフ",
+  "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "厳格モードにはこの PC の画面での確認が必要ですが、今のところ Linux だけが対応しています。",
 };

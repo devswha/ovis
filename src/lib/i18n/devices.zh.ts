@@ -311,4 +311,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "It does not cover anyone signed in to this computer as you, and cannot stop an older Ovis installed by hand.": "它不涵盖以你的身份登录这台电脑的人，也无法阻止手动安装的旧版 Ovis。",
   "Turn on strict mode": "开启严格模式",
   "Turn off strict mode": "关闭严格模式",
+  "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "严格模式需要在这台 PC 的屏幕上确认，目前只有 Linux 支持。",
 };
