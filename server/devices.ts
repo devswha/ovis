@@ -2324,16 +2324,20 @@ export class DeviceStore {
 
   revoke(id: string, by: DeviceRemovedEvent["by"] = "pc"): boolean {
     this.assertWritable();
-    const target = this.devices.find((d) => d.id === id);
+    const target = this.anyRow(id);
     if (!target) return false;
     if (this.evidence !== null) {
       const key = target.relay_public_key;
       const rows = this.devices.filter((d) => d === target || (key !== undefined && d.relay_public_key === key));
       const denied = this.deny(key === undefined ? [] : [key], () => this.tombstone([target], Date.now()));
       if (key !== undefined) this.dropWaiting([key]);
-      // a deny not on disk writes nothing else: the row stays where a restart still shows the Revoke failed (P8)
-      if (denied !== null) { this.keepOut(rows); throw denied; }
-      this.dropBeforeWrite(rows, by, undefined, undefined, undefined, { key });
+      const joined = key === undefined ? [] : this.joinedRows?.rowsByKey(key) ?? [];
+      if (denied !== null) {
+        this.keepOut(rows);
+        for (const row of joined) this.closeAccountSessions(row.id);
+        throw denied;
+      }
+      this.dropBeforeWrite(rows, by, undefined, { ids: joined.map(row => row.id), reason: "revoke" }, undefined, { key });
       return true;
     }
     // a revoke on this PC wins over the account: its key cannot come back by a record (docs/account.md, rule 1)
