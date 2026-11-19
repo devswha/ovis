@@ -537,6 +537,12 @@ export class DeviceStore {
   }
 
   get gated(): boolean {
+    // what access reads: a PC that fails closed is closed to strangers, paired or not (S19)
+    return this.failsClosed() || this.rawGated;
+  }
+
+  /** The gate as the registry holds it, for what is persisted and announced (closeGate, save); access reads gated. */
+  private get rawGated(): boolean {
     return this.error !== null || this.gateClosedAt !== null || this.devices.length > 0;
   }
 
@@ -553,14 +559,14 @@ export class DeviceStore {
 
   /** The end of what the open LAN alone let in: `close` when the gate closes, at once when it is closed already. */
   endWithGate(close: () => void): () => void {
-    if (this.gated) { close(); return () => {}; }
+    if (this.rawGated) { close(); return () => {}; }
     return this.onGateClosed(close);
   }
 
   /** Relay opt-in closes open LAN access before any outbound connection is made. */
   closeGate(): void {
     this.assertWritable();
-    if (this.gated) return;
+    if (this.rawGated) return;
     const gate = new Date().toISOString();
     this.save(this.devices, gate);
     this.gateClosedAt = gate;
@@ -1461,7 +1467,7 @@ export class DeviceStore {
   }
 
   private save(devices = this.devices, gateClosedAt = this.gateClosedAt): void {
-    const closes = !this.gated && (gateClosedAt !== null || devices.length > 0);
+    const closes = !this.rawGated && (gateClosedAt !== null || devices.length > 0);
     writePrivateState(this.path, { gate_closed_at: gateClosedAt, devices });
     // The write that closes the gate: onGateClosed. Told once the caller has set the store's own fields, which each
     // does right after this returns, and before anything else of this process runs (no frame of a connection is

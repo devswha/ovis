@@ -229,6 +229,7 @@ export class SafetyLog {
     const next: LogFile = { ...this.file, next: this.file.next + 1, entries: [...this.file.entries, entry] };
     try { writePrivateState(this.path, next); } catch (error) {
       this.writeError = `Cannot write ${this.path} (${error instanceof Error ? error.message : String(error)})`;
+      this.inForce = STRICT_STATE;
       return { outcome: "refused", id, code: "log_unavailable" };
     }
     this.file = next;
