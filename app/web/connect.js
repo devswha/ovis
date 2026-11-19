@@ -8,6 +8,9 @@ localize();
 // only iOS opens a plain http PC slower (docs/native-app.md, The app); Android shows no such delay
 if (window.Capacitor?.getPlatform?.() !== "ios") document.querySelector(".hint")?.remove();
 
+const home = document.getElementById("home");
+const directScreen = document.getElementById("direct-screen");
+const feedback = document.getElementById("feedback");
 const form = document.getElementById("connect");
 const input = document.getElementById("address");
 const error = document.getElementById("error");
@@ -58,10 +61,10 @@ const relayErrors = {
 async function open(text) {
   stopPending();
   const url = parseAddress(text);
-  if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); input.focus(); return; }
+  if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); if (!directScreen.hidden) input.focus(); return; }
   // a PC paired over the Ovis relay opens at its scope on the app's origin, saved under that scope
   const relay = relayLink(url);
-  if (relay?.error) { error.textContent = relayErrors[relay.error](); input.focus(); return; }
+  if (relay?.error) { error.textContent = relayErrors[relay.error](); if (!directScreen.hidden) input.focus(); return; }
   if (relay) {
     error.textContent = "";
     try { await shell("open", { url: relay.url, scope: relay.scope, ...(relay.name ? { name: relay.name } : {}) }); }
@@ -86,16 +89,38 @@ async function open(text) {
   finally { if (mine === attempt) showStatus(""); }
 }
 
+/**
+ * The first screen offers the account; a PC on the same Wi-Fi or tailnet opens from the direct screen, by its QR code or
+ * address. What an open says goes with the screen that is up.
+ */
+function showScreen(direct) {
+  stopPending();
+  error.textContent = "";
+  home.hidden = direct;
+  directScreen.hidden = !direct;
+  (direct ? document.getElementById("open") : home.querySelector(".foot")).before(feedback);
+  (direct ? document.getElementById("direct-back") : document.getElementById("direct")).focus();
+}
+
+document.getElementById("direct").addEventListener("click", () => showScreen(true));
+document.getElementById("direct-back").addEventListener("click", () => showScreen(false));
+
 cancel.addEventListener("click", () => {
   stopPending();
-  input.focus();
+  if (!directScreen.hidden) input.focus();
 });
 
 form.addEventListener("submit", (event) => { event.preventDefault(); void open(input.value); });
 
 const account = document.getElementById("account");
-if (ACCOUNT_SIGN_IN) {
-  account.hidden = false;
+// a build without the account (OVIS_APP_ACCOUNT unset, build-web.ts) opens the direct screen first
+if (!ACCOUNT_SIGN_IN) {
+  home.hidden = true;
+  directScreen.hidden = false;
+  document.getElementById("direct-back").hidden = true;
+  document.getElementById("open").before(feedback);
+}
+else {
   account.addEventListener("click", async () => {
     error.textContent = "";
     try { await shell("open", { url: `${APP_ORIGIN}/`, name: t("Your PCs", "내 PC") }); }
@@ -151,6 +176,7 @@ async function openAppLink() {
   if (window.Capacitor?.getPlatform?.() !== "android") return;
   const { url } = await shell("takeLink");
   if (!url) return;
+  showScreen(true);
   input.value = url;
   await open(url);
 }

@@ -13,6 +13,7 @@ export function localize() {
   if (!korean) return;
   document.documentElement.lang = "ko";
   for (const element of document.querySelectorAll("[data-ko]")) element.textContent = element.dataset.ko;
+  for (const element of document.querySelectorAll("[data-ko-label]")) element.setAttribute("aria-label", element.dataset.koLabel);
 }
 
 export function shell(method, options = {}) {

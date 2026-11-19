@@ -4,39 +4,47 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Ovis</title>
-  <meta name="theme-color" content="#12100e">
+  <meta name="theme-color" content="#eeeae2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#12100e" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="shell.css">
 </head>
 <body>
   <!-- data-ko: the Korean text of the element, put in as text by localize() (shell.js) on a Korean
        phone, so markup inside a sentence gets its own element -->
-  <main>
-    <h1><img class="logo" src="ovis-logo.png" alt="Ovis" width="152" height="54"></h1>
-    <p data-ko="PC에서 실행 중인 Ovis를 엽니다. 주소는 PC에서 연 Ovis의 설정 → 폰 및 기기에 있습니다.">Open Ovis on your PC. Its address is under Settings → Phone &amp; devices in Ovis on the PC.</p>
-    <form id="connect" novalidate>
-      <label for="address" data-ko="PC 주소">PC address</label>
-      <input id="address" name="address" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://my-pc.tailnet.ts.net" autocomplete="url">
-      <p class="hint"><span data-ko="https 주소(PC에서 ">An https address (</span><code>tailscale serve</code><span data-ko=")가 일반 http 주소보다 앱에서 더 빨리 열립니다."> on the PC) opens faster in the app than a plain http one.</span></p>
-      <p class="error" id="error" role="alert"></p>
-      <!-- the status text stays in the page, empty until an open starts: a live region that appears
-           with its text is not announced (connect.js showStatus) -->
+  <main id="home" class="first">
+    <img class="sheep" src="ovis-sheep.svg" alt="Ovis" width="112" height="112">
+    <h1><span data-ko="내 PC를 어디서나.">Your PCs, anywhere.</span> <span class="quiet" data-ko="Ovis 계정으로 시작하세요">Start with your Ovis account</span></h1>
+    <section id="saved-section" hidden>
+      <h2 data-ko="내 PC">Your PCs</h2>
+      <ul id="saved"></ul>
+    </section>
+    <!-- what an open does, on whichever screen is up (connect.js showScreen moves it): the status text stays in the page,
+         empty until an open starts, since a live region that appears with its text is not announced (connect.js showStatus) -->
+    <div id="feedback">
       <div class="status">
         <span class="spinner" id="spinner" aria-hidden="true" hidden></span>
         <span id="status-text" role="status"></span>
         <button type="button" id="cancel" data-ko="취소" hidden>Cancel</button>
       </div>
-      <div class="row">
-        <button type="submit" class="primary" id="open" data-ko="열기">Open</button>
-        <button type="button" id="scan" data-ko="QR 코드 스캔">Scan QR code</button>
-        <button type="button" id="account" data-ko="계정으로 로그인" hidden>Sign in to your account</button>
-      </div>
+      <p class="error" id="error" role="alert"></p>
+    </div>
+    <div class="foot">
+      <button type="button" class="primary" id="account" data-ko="로그인">Sign in</button>
+      <button type="button" class="link" id="direct" data-ko="같은 Wi-Fi·Tailscale로 직접 연결">Connect directly on the same Wi-Fi or Tailscale</button>
+      <a class="link" href="demo/index.html" id="demo" data-ko="데모 보기">Try the demo</a>
+    </div>
+  </main>
+  <main id="direct-screen" class="first" hidden>
+    <button type="button" class="back" id="direct-back" aria-label="Back" data-ko-label="뒤로"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    <h1 class="step" data-ko="직접 연결">Connect directly</h1>
+    <p data-ko="같은 Wi-Fi나 Tailscale에 있는 PC를 계정 없이 엽니다. 주소와 QR 코드는 PC에서 연 Ovis의 설정 → 폰 및 기기에 있습니다.">Opens a PC on the same Wi-Fi or Tailscale, with no account. Its address and QR code are under Settings → Phone &amp; devices in Ovis on the PC.</p>
+    <form id="connect" novalidate>
+      <button type="button" class="primary" id="scan" data-ko="QR 코드 스캔">Scan QR code</button>
+      <label for="address" data-ko="또는 PC 주소">Or the PC's address</label>
+      <input id="address" name="address" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://my-pc.tailnet.ts.net" autocomplete="url">
+      <p class="hint"><span data-ko="https 주소(PC에서 ">An https address (</span><code>tailscale serve</code><span data-ko=")가 일반 http 주소보다 앱에서 더 빨리 열립니다."> on the PC) opens faster in the app than a plain http one.</span></p>
+      <button type="submit" id="open" data-ko="열기">Open</button>
     </form>
-    <section id="saved-section" hidden>
-      <h2 data-ko="내 PC">Your PCs</h2>
-      <ul id="saved"></ul>
-    </section>
-    <h2 data-ko="아직 PC가 없나요?">No PC yet?</h2>
-    <p><span data-ko="가상의 에이전트와 터미널로 둘러보세요. 이 휴대폰 밖으로는 아무것도 나가지 않습니다.">Look around with made-up agents and terminals: nothing leaves this phone.</span> <a href="demo/index.html" id="demo" data-ko="데모 보기">Try the demo</a></p>
   </main>
   <script type="module" src="connect.js"></script>
 </body>
