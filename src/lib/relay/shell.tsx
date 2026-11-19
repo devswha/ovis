@@ -279,6 +279,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         compare: (digits) => new Promise<void>((resolve) => {
           if (controller.signal.aborted) return;
           attempt.compared = true;
+          // a join a PC's own page started for itself: the PC (or a device of the account) takes this number there, and that
+          // is the comparison, so the join goes on at once and the screen only shows the number
+          if (sheetJoin?.alone && attempt.typed !== true) {
+            show({ kind: "compare", name: attempt.offer.name ?? null, digits, confirmed: true, challenge: ++challenge, alone: true });
+            resolve();
+            return;
+          }
           comparison = { name: attempt.offer.name ?? null, digits, matched: resolve, typed: attempt.typed === true };
           show({ kind: "compare", name: comparison.name, digits: comparison.typed ? "" : digits, confirmed: false, challenge: ++challenge, ...(comparison.typed ? { typed: true } : {}) });
         }),

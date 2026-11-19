@@ -185,7 +185,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
           body = (
             <>
               <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>
-              <p className="relay-shell-copy">{withCommand(t("Approve this number on {name}'s Ovis page, or with ovis add --approve.", { name }), APPROVE_COMMAND)}</p>
+              <p className="relay-shell-copy">{t("Check that this number matches where you approve, then approve.")}</p>
             </>
           );
           actions = pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onMatch()}>{t("The numbers match")}</button>);
@@ -229,6 +229,27 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
         break;
       }
     }
+  }
+
+  // a join a PC's own page started for itself: the PC takes this number, so the screen is the number and the way to enter it
+  if (state.kind === "compare" && state.alone === true && pc !== null) {
+    return createPortal(
+      <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+        <div ref={surface} className="modal add-pc-sheet add-pc-alone" lang={locale} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1} data-add-pc-mode={mode} data-add-pc-phase="compare">
+          <header className="modal-header add-pc-head"><h2 className="modal-title" id={`${id}-title`}>{t("Approve it on {name}", { name })}</h2></header>
+          <div className="modal-body add-pc-body">
+            <p className="relay-shell-digits" aria-label={state.digits.split("").join(" ")}>{`${state.digits.slice(0, 3)} ${state.digits.slice(3)}`}</p>
+            <p className="relay-shell-copy">{withCommand(t("Enter this number on the PC's Ovis screen or in ovis add --approve."), APPROVE_COMMAND)}</p>
+          </div>
+          <footer className="modal-footer add-pc-footer">{cancel}</footer>
+          <details className="add-pc-other">
+            <summary>{t("Another way")}</summary>
+            <p className="relay-shell-detail">{t("Or approve it on another device of your account that has this PC open.")}</p>
+          </details>
+        </div>
+      </div>,
+      document.body,
+    );
   }
 
   const failureKind = state.kind === "failed" ? state.failure : null;

@@ -47,7 +47,7 @@ describe("a PC's own page on a device that has no pairing for it", () => {
       navigate: (path) => { paths.push(path); },
       open: async (_offer, options) => {
         if (!options?.compare) throw new TypeError("A join must compare a number");
-        void options.compare("123456");
+        await options.compare("123456");
         compared.resolve();
         return await new Promise<never>(() => {});
       },
@@ -76,7 +76,7 @@ describe("a PC's own page on a device that has no pairing for it", () => {
     }, unmount() {} }) });
     await compared;
     const last = joined.at(-1)!;
-    expect(last.state.kind).toBe("compare");
+    expect(last.state).toMatchObject({ kind: "compare", digits: "123456", confirmed: true, alone: true });
     expect(last.sheetJoin).toMatchObject({ mode: "join", server_id: serverId, alone: true });
     expect("continuedAccount" in last).toBe(false);
   });
