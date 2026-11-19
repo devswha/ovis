@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { NoticeAnswer } from "../../../shared/account-devices-api.ts";
 import type { ServerMessage } from "../../../shared/protocol.ts";
-import { answerOnPc, type AnswerSocket } from "./noticeAnswer.ts";
+import { answerOnPc, recordsOnPc, type AnswerSocket } from "./noticeAnswer.ts";
 
 class FakeSocket implements AnswerSocket {
   readonly sent: NoticeAnswer[] = [];
@@ -29,5 +29,19 @@ describe("Not me on the notice's own PC", () => {
     off.offers = false;
     await expect(answerOnPc(off, answer, 1000)).rejects.toThrow();
     await expect(answerOnPc(new FakeSocket(), answer, 1)).rejects.toThrow();
+  });
+});
+
+describe("Not me on the account's other PCs", () => {
+  it("T60: hands the blocks to the PC's records route and takes the receipts it answers", async () => {
+    const asked: { path: string; body: unknown }[] = [];
+    const post = async (path: string, body: unknown) => { asked.push({ path, body }); return Response.json({ results: [], receipts: [{ outcome: "already_applied", id: "b" }] }); };
+    expect(await recordsOnPc(post, [{ id: "b" } as never])).toEqual([{ outcome: "already_applied", id: "b" }]);
+    expect(asked).toEqual([{ path: "/api/account/records", body: { records: [{ id: "b" }] } }]);
+  });
+
+  it("G5, T65: a PC that answers without receipts (release off or older) or fails is not reached, and is retried", async () => {
+    await expect(recordsOnPc(async () => Response.json({ results: [] }), [{ id: "b" } as never])).rejects.toThrow();
+    await expect(recordsOnPc(async () => new Response("", { status: 502 }), [{ id: "b" } as never])).rejects.toThrow();
   });
 });
