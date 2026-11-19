@@ -12,8 +12,10 @@ import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
+import { ExternalLink } from "../lib/externalLink.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { ConnectionLine } from "./ConnectionLine.tsx";
+import { outOfReachReason, outOfReachWord } from "./relayPcState.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
 export const PROVIDER_NAMES: Record<AccountProvider, string> = { github: "GitHub", google: "Google", apple: "Apple" };
@@ -223,7 +225,7 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now
       {pcs.length > 0 && (
         <li className="devices-row account-pcs-open">
           <span className="settings-description">{t("To open a PC of your account in a browser, sign in to this account at app.ovis.sh.")}</span>
-          <a className="btn" href={HOSTED_APP_URL} target="_blank" rel="noreferrer">{t("Open app.ovis.sh")}</a>
+          <ExternalLink kind="ovis" className="btn" href={HOSTED_APP_URL}>{t("Open app.ovis.sh")}</ExternalLink>
         </li>
       )}
       {removing !== null && (
@@ -265,8 +267,8 @@ export function PcStatusLine({ status, lastSeenAt = null }: { readonly status: P
   const t = useT();
   if (status.kind === "answered") return <ConnectionLine state={{ kind: "answered", route: status.route, ...(status.relay === undefined ? {} : { relay: status.relay }), rttMs: status.rttMs }} />;
   if (status.kind === "checking") return <ConnectionLine state={{ kind: "checking" }} />;
-  return <ConnectionLine state={{ kind: "offline", text: lastSeenAt === null ? t("Offline") : t("Offline · {when}", { when: lastSeen(lastSeenAt) }) }}
-    reason={status.reason === "pc" ? t("The PC is off, or Ovis is not running on it.") : t("The relay did not answer. Check this device's network.")} />;
+  const away = status.reason === "pc" ? "offline" : "unreachable";
+  return <ConnectionLine state={{ kind: "offline", text: outOfReachWord(away, t) }} reason={outOfReachReason({ displayState: away, last_seen_at: lastSeenAt, check: status }, t)} />;
 }
 
 export function CheckPcsButton({ status, onCheck }: { readonly status: ReadonlyMap<string, PcStatus>; readonly onCheck: () => void }) {
