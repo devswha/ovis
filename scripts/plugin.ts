@@ -161,7 +161,11 @@ const env = mergeEnvLayers([process.env, ...fileVars]);
  * to the release Settings installed (handOn) is told it apart: its own environment is the merged one.
  */
 const GIVEN_STATE_DIR_VARIABLE = "OVIS_PLUGIN_GIVEN_STATE_DIR";
-const GIVEN_STATE_DIR = process.env[GIVEN_STATE_DIR_VARIABLE] ?? mergeEnvLayers([process.env])["OVIS_STATE_DIR"] ?? "";
+const givenStateDir = process.env[GIVEN_STATE_DIR_VARIABLE] ?? mergeEnvLayers([process.env])["OVIS_STATE_DIR"] ?? "";
+// resolved where the command was run: a handed-on release runs in the plugin's root. And told this process alone: a server
+// or command it starts reads its own
+const GIVEN_STATE_DIR = givenStateDir === "" ? "" : resolve(givenStateDir);
+delete env[GIVEN_STATE_DIR_VARIABLE];
 const configuredSocket = fileVars.some((vars) => (vars["HERDR_SOCKET"] ?? "") !== "");
 const PATH_KEY = platform() === "win32" ? Object.keys(env).sort().find(key => key.toLowerCase() === "path") ?? "PATH" : "PATH";
 const APP_STATE_DIR = defaultStateDir(env);
