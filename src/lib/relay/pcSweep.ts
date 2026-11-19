@@ -47,8 +47,10 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     if (where === "front") queue.unshift(entry); else queue.push(entry);
     return entry.settled.promise;
   };
+  let stopped = false;
   const probeNext = async (): Promise<void> => {
-    for (let next = queue.shift(); next; next = queue.shift()) {
+    // a view out of sight starts no new check: what is queued waits for the next time it is shown
+    for (let next = view.active() && !stopped ? queue.shift() : undefined; next; next = view.active() && !stopped ? queue.shift() : undefined) {
       const found = await probe(next.device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
       const serverId = next.device.server_id;
       // a relay that turned this device away, or that it could not reach, said nothing of the PC: the row keeps what it said
@@ -80,6 +82,7 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
   };
 
   const later = (wait: number): void => {
+    if (stopped) return;
     deferred ??= setTimeout(() => {
       deferred = undefined;
       if (view.active() && globalThis.document?.visibilityState !== "hidden") void checkPcs(); else later(CHECK_GAP_MS);
@@ -130,5 +133,13 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     await settled;
   };
 
-  return { status: pcStatus, check: checkPcs, checkOne };
+  /** The view that used this sweep is gone: nothing more is scheduled or started, and what waited is let go. */
+  const stop = (): void => {
+    stopped = true;
+    clearTimeout(deferred);
+    deferred = undefined;
+    for (const entry of queue.splice(0)) entry.settled.resolve();
+  };
+
+  return { status: pcStatus, check: checkPcs, checkOne, stop };
 }

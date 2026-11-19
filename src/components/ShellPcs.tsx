@@ -9,7 +9,7 @@ import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { StatusDot } from "./StatusDot.tsx";
 
 interface ShellPc { readonly server_id: string; readonly name: string | null }
-interface Sweep { readonly status: ReadonlyMap<string, PcStatus>; readonly check: () => Promise<void>; readonly checkOne: (serverId: string) => Promise<void> }
+interface Sweep { readonly status: ReadonlyMap<string, PcStatus>; readonly check: () => Promise<void>; readonly checkOne: (serverId: string) => Promise<void>; readonly stop: () => void }
 
 /**
  * The other PCs this device is paired with, for the hosted app's sidebar: each opens on its own page, which connects
@@ -46,7 +46,7 @@ export function useShellPcs(on: boolean, shown: boolean): { readonly pcs: readon
       };
       if (visible.current) void sweep.current.check();
     }).catch((error: unknown) => { console.warn("Ovis: this device's other PCs could not be read", error); });
-    return () => { gone = true; sweep.current = null; };
+    return () => { gone = true; sweep.current?.stop(); sweep.current = null; };
   }, [on]);
   useEffect(() => { if (shown) void sweep.current?.check(); }, [shown]);
   return {

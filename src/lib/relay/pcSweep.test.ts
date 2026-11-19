@@ -341,3 +341,40 @@ it("starts no sweep of its own while its page is hidden, and the first minute af
     expect(checked).toHaveLength(2);
   } finally { Reflect.deleteProperty(globalThis, "document"); }
 });
+
+it("starts no new check while its view is out of sight, and goes on once it is shown again", async () => {
+  const { store } = await savedPcs(4);
+  const { pending, checked, arrived, probe } = heldProbe();
+  let shown = true;
+  const sweep = createPcSweep(store, { active: () => shown, redraw() {} }, { probe });
+  const swept = sweep.check();
+  await arrived(2);
+  shown = false;
+  pending[0]!.resolve({ kind: "offline", reason: "pc" });
+  pending[1]!.resolve({ kind: "offline", reason: "pc" });
+  for (let turn = 0; turn < 50; turn++) await Promise.resolve();
+  expect(checked).toHaveLength(2);
+  shown = true;
+  const again = sweep.checkOne(checked[0]!);
+  await arrived(3);
+  expect(checked.length).toBeGreaterThanOrEqual(3);
+  pending[2]!.resolve({ kind: "offline", reason: "pc" });
+  await again;
+  sweep.stop();
+  for (const held of pending.slice(3)) held.resolve({ kind: "offline", reason: "pc" });
+  await swept;
+});
+
+it("schedules and starts nothing once stopped", async () => {
+  jest.useFakeTimers();
+  const { store } = await savedPcs(4);
+  const { pending, checked, arrived, probe } = heldProbe();
+  const sweep = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  const swept = sweep.check();
+  await arrived(2);
+  sweep.stop();
+  for (const held of pending) held.resolve({ kind: "offline", reason: "pc" });
+  await swept;
+  expect(checked).toHaveLength(2);
+  expect(jest.getTimerCount()).toBe(0);
+});
