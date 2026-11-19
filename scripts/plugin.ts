@@ -890,7 +890,9 @@ async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<n
     ({ code } = (await started.json()) as { code: string; expires_at: string });
   } catch (error) {
     if (!timedOut(error)) throw error;
-    process.stderr.write(`Ovis at ${origin} did not answer in time; try again\n`);
+    // the start may have reached the PC, which then made a code this never got. No route reads it back, and a cancel
+    // cannot tell it from a code made elsewhere since; a new start replaces whichever is pending, as every start does
+    process.stderr.write(`Ovis at ${origin} did not answer in time. It may have made a pairing code that was not shown: run ${env["OVIS_CLI_NAME"] || "ovis"} pair again to replace it.\n`);
     return 1;
   }
   let url: string | null = null;

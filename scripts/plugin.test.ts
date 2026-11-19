@@ -22,7 +22,7 @@ async function status(): Promise<{ out: string; err: string; exitCode: number }>
   return run("status");
 }
 
-async function run(command: string, extra: Record<string, string | undefined> = {}, more: { args?: string[]; stdin?: string; timeout?: number } = {}): Promise<{ out: string; err: string; exitCode: number }> {
+async function run(command: string, extra: Record<string, string | undefined> = {}, more: { args?: string[]; stdin?: string; timeout?: number; preload?: string } = {}): Promise<{ out: string; err: string; exitCode: number }> {
   const child = launch(command, extra, more);
   const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { out, err, exitCode };
@@ -37,8 +37,8 @@ function launchEnv(extra: Record<string, string | undefined> = {}): Record<strin
   return env;
 }
 
-function launch(command: string, extra: Record<string, string | undefined> = {}, more: { args?: string[]; stdin?: string; timeout?: number } = {}) {
-  return Bun.spawn(["bun", "scripts/plugin.ts", command, ...more.args ?? []], { cwd: ROOT, env: launchEnv(extra), stdout: "pipe", stderr: "pipe", ...more.stdin === undefined ? {} : { stdin: new Blob([more.stdin]) }, ...more.timeout === undefined ? {} : { timeout: more.timeout, killSignal: "SIGKILL" } });
+function launch(command: string, extra: Record<string, string | undefined> = {}, more: { args?: string[]; stdin?: string; timeout?: number; preload?: string } = {}) {
+  return Bun.spawn(["bun", ...more.preload === undefined ? [] : ["--preload", more.preload], "scripts/plugin.ts", command, ...more.args ?? []], { cwd: ROOT, env: launchEnv(extra), stdout: "pipe", stderr: "pipe", ...more.stdin === undefined ? {} : { stdin: new Blob([more.stdin]) }, ...more.timeout === undefined ? {} : { timeout: more.timeout, killSignal: "SIGKILL" } });
 }
 
 beforeEach(() => {
@@ -1421,48 +1421,80 @@ describe("pair --approve", () => {
   });
 });
 
-/** A server that answers health, then holds `stalled` unanswered until the test ends. */
-function stallingPc(stalled: string, answer: (path: string) => Response | undefined = () => undefined) {
-  let release = (): void => undefined;
-  const held = new Promise<void>((resolve) => { release = resolve; });
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
+/**
+ * A fake clock for the command's time limits, loaded before it runs: `AbortSignal.timeout(ms)` arms a limit instead of
+ * timing one, each request names the limit it carries (`x-test-limit`), and an answer marked `x-test-past-limit` moves
+ * the clock past that request's limit as it comes in, so its body is never read in time.
+ */
+const FAKE_CLOCK = `
+const armed = new WeakMap();
+AbortSignal.timeout = (ms) => { const controller = new AbortController(); armed.set(controller.signal, { ms, controller }); return controller.signal; };
+const realFetch = globalThis.fetch;
+globalThis.fetch = async (input, init = {}) => {
+  const limit = init.signal ? armed.get(init.signal) : undefined;
+  const headers = new Headers(init.headers);
+  if (limit) headers.set("x-test-limit", String(limit.ms));
+  const response = await realFetch(input, { ...init, headers });
+  if (limit && response.headers.get("x-test-past-limit") === "1") limit.controller.abort(new DOMException("The operation timed out.", "TimeoutError"));
+  return response;
+};
+`;
+
+/**
+ * A server that answers health, and `late` past the limit its request carries: `late` is reached (its `reached` runs)
+ * and answered, but its body would come only after the clock passed the limit. `limits`: the limit each request carried.
+ */
+function lateAnswerPc(late: string, answer: (path: string) => Response | undefined = () => undefined, reached = (): void => undefined) {
+  const limits: Record<string, string | null> = {};
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const path = new URL(request.url).pathname;
+    limits[path] = request.headers.get("x-test-limit");
     if (path === "/api/health") return Response.json(APP_HEALTH);
-    if (path === stalled) { await held; return new Response(null, { status: 503 }); }
+    if (path === late) {
+      reached();
+      return new Response(new ReadableStream({ start(body) { body.enqueue(new TextEncoder().encode("{")); } }), { headers: { "content-type": "application/json", "x-test-past-limit": "1" } });
+    }
     return answer(path) ?? new Response(null, { status: 404 });
   } });
-  return { server, stop: async () => { release(); await server.stop(true); } };
+  return { server, limits };
 }
 
 describe("pair's first requests to a server that answered health", () => {
-  // time is the behaviour here: each waits out the limit pair already gives its later requests
-  it("pair --approve gives up on the waiting pairings after 15 s, and says so", async () => {
-    const pc = stallingPc("/api/relay/pairings");
-    try {
-      const result = await run("pair", { PORT: String(pc.server.port) }, { args: ["--approve"], stdin: "", timeout: 30_000 });
-      expect([result.exitCode, result.out], result.err).toEqual([1, ""]);
-      expect(result.err).toBe(`Ovis at http://127.0.0.1:${pc.server.port} did not answer in time; try again\n`);
-    } finally { await pc.stop(); }
-  }, 40_000);
+  const clocked = () => { const file = join(scratch, "fake-clock.ts"); writeFileSync(file, FAKE_CLOCK); return file; };
 
-  it("pair gives up on starting a pairing after 5 s, and says so", async () => {
-    const pc = stallingPc("/api/devices/pair/start");
+  it("pair --approve gives up on the waiting pairings at the 15 s its later reads have, and says so", async () => {
+    const pc = lateAnswerPc("/api/relay/pairings");
     try {
-      const result = await run("pair", { PORT: String(pc.server.port) }, { timeout: 20_000 });
+      const result = await run("pair", { PORT: String(pc.server.port) }, { args: ["--approve"], stdin: "", timeout: 10_000, preload: clocked() });
       expect([result.exitCode, result.out], result.err).toEqual([1, ""]);
+      expect(pc.limits["/api/relay/pairings"]).toBe("15000");
       expect(result.err).toBe(`Ovis at http://127.0.0.1:${pc.server.port} did not answer in time; try again\n`);
-    } finally { await pc.stop(); }
-  }, 30_000);
+    } finally { await pc.server.stop(true); }
+  }, 20_000);
+
+  it("pair gives up on starting a pairing at the 5 s its relay requests have, and says a code it never got may be live", async () => {
+    let made = 0;
+    const pc = lateAnswerPc("/api/devices/pair/start", undefined, () => { made++; });
+    try {
+      const result = await run("pair", { PORT: String(pc.server.port), OVIS_CLI_NAME: undefined }, { timeout: 10_000, preload: clocked() });
+      expect([result.exitCode, result.out], result.err).toEqual([1, ""]);
+      expect(pc.limits["/api/devices/pair/start"]).toBe("5000");
+      // the PC made a code this never showed: the command says so, and names the run that replaces it
+      expect(made).toBe(1);
+      expect(result.err).toContain("run ovis pair again");
+    } finally { await pc.server.stop(true); }
+  }, 20_000);
 
   it("pair shows its code without an address when the address does not come within 5 s", async () => {
-    const pc = stallingPc("/api/access", (path) => path === "/api/devices/pair/start" ? Response.json({ code: "123456", expires_at: "2030-01-01T00:00:00.000Z" }) : undefined);
+    const pc = lateAnswerPc("/api/access", (path) => path === "/api/devices/pair/start" ? Response.json({ code: "123456", expires_at: "2030-01-01T00:00:00.000Z" }) : undefined);
     try {
-      const result = await run("pair", { PORT: String(pc.server.port) }, { timeout: 20_000 });
+      const result = await run("pair", { PORT: String(pc.server.port) }, { timeout: 10_000, preload: clocked() });
       expect(result.exitCode, result.err).toBe(0);
+      expect(pc.limits["/api/access"]).toBe("5000");
       expect(result.out).toContain("Pairing code: 123 456");
       expect(result.out).toContain("open the app's address");
-    } finally { await pc.stop(); }
-  }, 30_000);
+    } finally { await pc.server.stop(true); }
+  }, 20_000);
 });
 
 describe("pair relay offer", () => {
