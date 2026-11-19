@@ -219,6 +219,11 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await sheet.locator(".connect-other, .connect-way, .connect-way-body, .connect-phone-relay, .tailnet-pcs").count(), 0, "no other ways fold, no ways list, no relay pairing QR code and no tailnet PCs");
     assert.equal(await sheet.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true }).count(), 0, "the sheet offers no relay pairing QR code");
     assert.equal((await relayState()).phase, "off", "opening the sheet turns nothing on");
+    assert.equal(await sheet.locator('.connect-tabs [data-tab="devices"]').count(), 0, "Phones and devices sits beside the tabs, not among them");
+    await ui.openTab("tailscale");
+    assert.equal(await sheet.locator('[data-tab-panel="relay"]').isHidden(), true, "Tailscale takes the relay tab's place");
+    await ui.openTab("direct");
+    await sheet.getByLabel("Address or SSH", { exact: true }).waitFor();
 
     await ui.openTab("relay");
     const signInButton = relayTab.getByTestId("connect-signin").getByRole("button", { name: "Sign in to Ovis", exact: true });
