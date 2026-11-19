@@ -469,6 +469,26 @@ describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
     expect(whole.removed.length).toBe(SNAPSHOT_PAGE + 1);
   });
 
+  test("only a list-eligible older device lifts a block; otherwise the freeze stays (T52)", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const token = service.issueToken("acct_1");
+    const [eligibleOld, unready, blocked] = [await client(), await client(), await client()];
+    const eligibleNo = service.registerDevice("acct_1", eligibleOld.spki, "Phone");
+    const unreadyNo = service.registerDevice("acct_1", unready.spki, "Old tablet", false);
+    const blockedNo = service.registerDevice("acct_1", blocked.spki, "Laptop");
+    const signed = { v: 1 as const, account: "acct_1", signed_at: new Date().toISOString() };
+    const block = await signSafetyRecord({ ...signed, kind: "block", target: blocked.spki, target_no: blockedNo, signer: eligibleOld.spki, signer_no: eligibleNo, nonce: newRecordId() }, eligibleOld.pair.privateKey);
+    expect((await service.fetch(post("/v1/safety-records", { record: block }, token))).status).toBe(200);
+    const early = await signSafetyRecord({ ...signed, kind: "lift", target: block.id, signer: unready.spki, signer_no: unreadyNo }, unready.pair.privateKey);
+    const response = await service.fetch(post("/v1/safety-records", { record: early }, token));
+    expect({ status: response.status, code: ((await response.json()) as { error?: { code: string } }).error?.code }).toEqual({ status: 403, code: "not_eligible" });
+    const machine = pc();
+    const body = JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.ovis.sh" });
+    await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "PUT", body, headers: { authorization: `Bearer ${token}` } }));
+    expect(parseSnapshotPage((await read(service, machine, {})).body).freezes.map((line) => line.block)).toEqual([block.id]);
+  });
+
   test("a block from an older device commits whole and a lift ends its freeze line", async () => {
     const service = new FakeAccountService();
     service.opensAll = true;
