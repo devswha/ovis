@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { SettingsProvider } from "../lib/settings.ts";
-import { StrictModePanel, type LockState } from "./StrictModePanel.tsx";
+import { mock, spyOn } from "bun:test";
+import { StrictModePanel, StrictModeSection, type LockState } from "./StrictModePanel.tsx";
 
 const unlocked: LockState = {
   bound: true, confirm: "available", locked: null, strict: false,
@@ -75,5 +76,50 @@ describe("the strict-mode screen", () => {
     const { shown, buttons } = await mount({ bound: false, confirm: "available", locked: null, strict: false });
     expect(buttons).toEqual([]);
     expect(shown).toContain("account");
+  });
+});
+
+describe("the strict-mode section in Settings", () => {
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  let renderer: ReactTestRenderer | undefined;
+  let requests: string[];
+
+  beforeEach(() => {
+    requests = [];
+    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"] } });
+    const events = new EventTarget();
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { origin: "http://127.0.0.1:7318", href: "http://127.0.0.1:7318/" }, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
+    const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      requests.push(`${init?.method ?? "GET"} ${new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7318").pathname}`);
+      return init?.method === "POST" ? Response.json({ confirm: "c1" }, { status: 202 }) : Response.json(unlocked);
+    };
+    spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
+  });
+
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    mock.restore();
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  });
+
+  it("G5: on a PC that does not offer it, shows nothing and asks the PC nothing", async () => {
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered={false} local /></SettingsProvider>); });
+    expect(renderer!.toJSON()).toBeNull();
+    expect(requests).toEqual([]);
+  });
+
+  it("T46, R10: reads the PC's state, and the switch only asks the PC's screen", async () => {
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered local /></SettingsProvider>); });
+    const button = renderer!.root.find((node) => node.type === "button");
+    await act(async () => { button.props.onClick(); });
+    expect(requests).toEqual(["GET /api/account/lock", "POST /api/account/lock", "GET /api/account/lock"]);
   });
 });
