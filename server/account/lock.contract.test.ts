@@ -113,3 +113,10 @@ test("S19: while the log cannot be read, the PC's screen still confirms acts", a
   push(`${JSON.stringify({ approve: id })}\n`);
   expect(await bounded(confirms.answer(id))).toBe("approved");
 });
+
+test("N4: no browser window drives a locked PC this release, whatever cookie it brings", async () => {
+  const made = await lockedPc();
+  for (const cookie of ["ovis_screen=1", "herdr_web_token=x", `ovis_device=${"a".repeat(64)}`]) {
+    expect((await made.local("/api/devices", { headers: { cookie } })).body.error?.code).toBe("locked");
+  }
+});
