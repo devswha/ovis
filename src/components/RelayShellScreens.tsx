@@ -246,12 +246,19 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
       )}
       {state.kind === "confirm" && <PairConfirm state={state} pc={pc} onPair={onPair} />}
       {/* the frame's Back cancels a connecting pairing */}
-      {state.kind === "connecting" && (
+      {state.kind === "connecting" && state.pairing && (
         <>
           <SheepMascot screen="connecting" size={56} badge />
           <h1 className="relay-shell-title">{t("Connecting to {name}…", { name: pc })}</h1>
           {state.approved && <p className="relay-shell-copy">{t("Approved. {name} opens in a moment.", { name: pc })}</p>}
           <PcCard name={pc} />
+        </>
+      )}
+      {state.kind === "connecting" && !state.pairing && (
+        <>
+          <h1 className="relay-shell-title">{t("Connecting to {name}…", { name: pc })}</h1>
+          <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /></div>
+          <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
         </>
       )}
       {state.kind === "compare" && state.typed && !state.confirmed && (
@@ -292,7 +299,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
       )}
       {state.kind === "failed" && failure !== null && pairSignIn === undefined && (
         <>
-          <SheepMascot screen="refused" size={56} badge />
+          {state.pairing && <SheepMascot screen="refused" size={56} badge />}
           <h1 className="relay-shell-title">{failure.title}</h1>
           <p className="relay-shell-copy">{failure.copy}</p>
           {failure.detail !== null && <p className="relay-shell-detail"><code>{failure.detail}</code></p>}

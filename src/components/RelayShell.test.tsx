@@ -366,8 +366,8 @@ describe("the dashboard", () => {
           [{ kind: "confirm", offer, account: "unlisted" }, "Back", 1],
           [{ kind: "compare", name: "Desk", digits: "123456", confirmed: false }, "Back", 2],
           [{ kind: "compare", name: "Desk", digits: "123456", confirmed: true }, "Back", 2],
-          [{ kind: "connecting", name: "Desk" }, "Cancel", 2],
-          [{ kind: "connecting", name: "Desk", approved: true }, "Cancel", 3],
+          [{ kind: "connecting", name: "Desk", pairing: true }, "Cancel", 2],
+          [{ kind: "connecting", name: "Desk", approved: true, pairing: true }, "Cancel", 3],
         ];
         for (const [state, label, step] of steps) {
           let cancelled = 0;
@@ -386,9 +386,22 @@ describe("the dashboard", () => {
         expect(backOf()).toEqual([]);
         expect(stepOf()).toBe(3);
         await act(async () => { renderer!.unmount(); });
-        await mount(props({ kind: "failed", failure: "pair-declined", name: "Desk", detail: null, server_id: EXPECTED }));
+        await mount(props({ kind: "failed", failure: "pair-declined", name: "Desk", detail: null, server_id: EXPECTED, pairing: true }));
         expect(backOf()).toEqual([]);
         expect(stepOf()).toBeNull();
+      });
+
+      it("keeps a saved PC opening again on the card: no steps, no sheep, its own Cancel", async () => {
+        let cancelled = 0;
+        await mount({ ...props({ kind: "connecting", name: "Desk" }), onCancel: () => { cancelled++; } });
+        expect(renderer!.root.findAll((node) => node.props.className === "relay-step")).toEqual([]);
+        expect(renderer!.root.findAll((node) => node.type === "span" && String(node.props.className).startsWith("sheep-"))).toEqual([]);
+        await act(async () => { button("Cancel").props.onClick(); });
+        expect(cancelled).toBe(1);
+        await act(async () => { renderer!.unmount(); });
+        await mount(props({ kind: "failed", failure: "pc-offline", name: "Desk", detail: null, server_id: EXPECTED }));
+        expect(renderer!.root.findAll((node) => node.props.className === "relay-step")).toEqual([]);
+        expect(renderer!.root.findAll((node) => node.type === "span" && String(node.props.className).startsWith("sheep-"))).toEqual([]);
       });
     });
 

@@ -284,9 +284,10 @@ function pairingStep(state: RelayShellState): 1 | 2 | 3 | null | undefined {
   switch (state.kind) {
     case "confirm": return 1;
     case "compare": return 2;
-    case "connecting": return state.approved ? 3 : 2;
+    // a saved PC opening again connects, and fails, on the card: only a new pairing has steps
+    case "connecting": return state.pairing ? (state.approved ? 3 : 2) : undefined;
     case "ready": return 3;
-    case "failed": return null;
+    case "failed": return state.pairing ? null : undefined;
     default: return undefined;
   }
 }
