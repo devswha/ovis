@@ -25,11 +25,6 @@ export async function handleAccountRequest(request: Request, pathname: string, c
   // a device that waits to link (it paired with a code made for a PC in no account; docs/account.md, "Who may admit
   // a device") makes two calls here: it reads its own status, and sends its link
   const waiting = peer.kind === "relay" && peer.device.provisional === true ? peer.device.id : null;
-  // an act waiting for this PC's screen is answered there alone (server/account/local-confirm.ts), never by a request
-  if (context.services.localConfirms !== undefined && /^\/api\/account\/local-confirm(?:\/|$)/.test(pathname)) {
-    setRequestRoute("/api/account/local-confirm");
-    return fail("local_required", "Confirm this on this PC's own screen.", 403);
-  }
   // the one route a watching device may use: its own introduction, over its own session
   if (pathname === "/api/account/introduction" && request.method === "GET") {
     setRequestRoute(pathname);

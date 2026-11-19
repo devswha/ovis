@@ -11,7 +11,8 @@ const dir = mkdtempSync(join(tmpdir(), "ovis-confirm-child-"));
 const listing = join(dir, "fds");
 // system(3) forks and execs with every descriptor that is not close-on-exec, as a plain spawn of any child does
 const libc = dlopen("libc.so.6", { system: { args: [FFIType.cstring], returns: FFIType.i32 } });
-libc.symbols.system(Buffer.from(`for fd in /proc/self/fd/*; do readlink "$fd"; done > ${listing}\0`));
+process.env["OVIS_FD_LISTING"] = listing;
+if (libc.symbols.system(Buffer.from(`for fd in /proc/self/fd/*; do readlink "$fd"; done > "$OVIS_FD_LISTING"\0`)) !== 0) throw new Error("The descriptor probe failed");
 const inherited = readFileSync(listing, "utf8").split("\n").includes(channel);
 rmSync(dir, { recursive: true, force: true });
 process.stdout.write(JSON.stringify({ channel, taken, argv, inherited }));

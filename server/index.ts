@@ -450,9 +450,15 @@ export function createServer(
 
   const requestLog = new RequestLog(stateDir);
   // a port file an earlier run left names a port anyone may have taken since
-  rmSync(join(stateDir, LOCAL_CONFIRM_FILE), { force: true });
+  try { rmSync(join(stateDir, LOCAL_CONFIRM_FILE), { force: true }); }
+  catch (error) { console.error(`${LOCAL_CONFIRM_FILE} could not be removed: ${error instanceof Error ? error.message : String(error)}`); }
   const localConfirms = (options.accountOpensAll ?? process.env["OVIS_ACCOUNT_OPENS_ALL"] === "1") ? new LocalConfirms() : undefined;
-  const confirmListener = localConfirms ? openConfirmListener(localConfirms, { stateDir }) : null;
+  // a page that cannot open leaves acts waiting for the desktop app's channel; it never fails the start
+  const confirmListener = (() => {
+    if (!localConfirms) return null;
+    try { return openConfirmListener(localConfirms, { stateDir }); }
+    catch (error) { console.error(`The local confirm page did not open: ${error instanceof Error ? error.message : String(error)}`); return null; }
+  })();
   const desktopOwner = localConfirms && options.desktopOwner ? desktopOwnerChannel(localConfirms, options.desktopOwner) : null;
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
   const accountMailbox = new AccountMailbox({

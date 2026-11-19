@@ -165,6 +165,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const relayPeer = ctx.peer.kind === "relay" ? ctx.peer.device : undefined;
   // the machine profile on TCP: its liveness for every caller; no credential or header of the request is read
   if (options.profile === "machine" && relayPeer === undefined && ctx.ownerSocket !== true) return machineTcpAnswer(request, pathname);
+  // an act waiting for this PC's screen is answered there alone (server/account/local-confirm.ts): every caller of a
+  // route gets the same refusal, before anything about it is decided
+  if (ctx.services.localConfirms !== undefined && /^\/api\/account\/local-confirm(?:\/|$)/.test(pathname)) {
+    setRequestRoute("/api/account/local-confirm");
+    return jsonResponse({ error: { code: "local_required", message: "Confirm this on this PC's own screen." } }, 403);
+  }
   const bridgeAuthorized = options.profile !== "machine" && relayPeer === undefined && ctx.lanHttps !== true && isAuthenticated(request, bridgeToken);
   // the connection server that reaches this one as its PC reads its update status and asks for the
   // update on offer: an Ovis run on this PC by itself is updated through its own updater, never

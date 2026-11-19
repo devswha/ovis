@@ -172,7 +172,10 @@ export function takeDesktopOwnerFd(argv: string[]): number | null {
   try {
     if (!fstatSync(fd).isSocket()) return null;
   } catch { return null; }
-  return closeOnExec(fd) ? fd : null;
+  if (closeOnExec(fd)) return fd;
+  // a socket that cannot be kept from children is closed, so no child holds it either
+  try { closeSync(fd); } catch {}
+  return null;
 }
 
 /**
@@ -193,8 +196,10 @@ function desktopOwnerArgument(argv: string[]): number | null {
   for (let index = argv.length - 1; index >= 0; index--) {
     const argument = argv[index]!;
     if (argument === DESKTOP_OWNER_ARGUMENT) {
-      value ??= argv[index + 1] ?? "";
-      argv.splice(index, 2);
+      const next = argv[index + 1];
+      const numeric = next !== undefined && /^\d+$/.test(next);
+      value ??= numeric ? next : "";
+      argv.splice(index, numeric ? 2 : 1);
     } else if (argument.startsWith(`${DESKTOP_OWNER_ARGUMENT}=`)) {
       value ??= argument.slice(DESKTOP_OWNER_ARGUMENT.length + 1);
       argv.splice(index, 1);
@@ -280,27 +285,30 @@ function heard(confirms: LocalConfirms, line: string): void {
  * local port is the peer's and whose remote port is the listener's. Null when no such row is found.
  */
 export function peerUidOnLinux(listenerPort: number, peerPort: number): number | null {
-  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
-    let text: string;
-    try { text = readFileSync(table, "utf8"); } catch { continue; }
-    for (const row of text.split("\n").slice(1)) {
-      const fields = row.trim().split(/\s+/);
-      if (fields.length < 8) continue;
-      const local = fields[1]!.split(":");
-      const remote = fields[2]!.split(":");
-      if (Number.parseInt(local[1]!, 16) !== peerPort || Number.parseInt(remote[1]!, 16) !== listenerPort) continue;
-      if (!loopbackHex(local[0]!) || !loopbackHex(remote[0]!)) continue;
-      const uid = Number(fields[7]);
-      return Number.isSafeInteger(uid) ? uid : null;
-    }
-  }
-  return null;
+  let text: string;
+  try { text = readFileSync("/proc/net/tcp", "utf8"); } catch { return null; }
+  return peerUidInTable(text, listenerPort, peerPort);
 }
 
-/** 127.0.0.1 as /proc/net/tcp writes it (little-endian 0100007F), or the IPv4-mapped form in tcp6. */
-function loopbackHex(address: string): boolean {
-  if (address.length === 8) return address.endsWith("7F");
-  return address.length === 32 && address.startsWith("0000000000000000FFFF0000") && address.endsWith("7F");
+/** 127.0.0.1 as /proc/net/tcp writes it, in host (little-endian) order. */
+const LOOPBACK_HEX = "0100007F";
+
+/**
+ * The uid of the one row whose local end is the peer's own 127.0.0.1:port and whose remote end is this listener's
+ * 127.0.0.1:port; the listener takes only 127.0.0.1 peers, so another address on the same ports is someone else.
+ */
+export function peerUidInTable(table: string, listenerPort: number, peerPort: number): number | null {
+  for (const row of table.split("\n").slice(1)) {
+    const fields = row.trim().split(/\s+/);
+    if (fields.length < 8) continue;
+    const [localAddress, localPort] = fields[1]!.split(":");
+    const [remoteAddress, remotePort] = fields[2]!.split(":");
+    if (localAddress !== LOOPBACK_HEX || remoteAddress !== LOOPBACK_HEX) continue;
+    if (Number.parseInt(localPort!, 16) !== peerPort || Number.parseInt(remotePort!, 16) !== listenerPort) continue;
+    const uid = Number(fields[7]);
+    return Number.isSafeInteger(uid) ? uid : null;
+  }
+  return null;
 }
 
 const PAGE_HEADERS = {
@@ -308,7 +316,7 @@ const PAGE_HEADERS = {
   "cache-control": "no-store",
   "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   "x-frame-options": "DENY",
-  "referrer-policy": "no-referrer",
+  "referrer-policy": "same-origin",
   "x-content-type-options": "nosniff",
 };
 
@@ -377,7 +385,8 @@ export function openConfirmListener(confirms: LocalConfirms, options: {
     port: server.port!,
     stop() {
       server.stop(true);
-      rmSync(file, { force: true });
+      try { rmSync(file, { force: true }); }
+      catch (error) { console.error(`${file} was not removed: ${error instanceof Error ? error.message : String(error)}`); }
     },
   };
 }
