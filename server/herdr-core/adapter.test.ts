@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, jest } from "bun:test";
+import { afterEach, describe, expect, it, jest, setSystemTime } from "bun:test";
 import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -920,8 +920,9 @@ describe("herdr-core adapter, new and closed terminals", () => {
     });
     return release;
   }
-  async function labeling(start: HcTerminal[]) {
+  async function labeling(start: HcTerminal[], extra: Record<string, Handler> = {}) {
     const ready = await living(start, {
+      ...extra,
       ...NO_DOC,
       "terminal.label": (params) => {
         const found = start.find((entry) => entry.address === params["terminal"])!;
@@ -1088,6 +1089,42 @@ describe("herdr-core adapter, new and closed terminals", () => {
     await expect(worktreeRemove("A", true, socket)).rejects.toMatchObject({ code: "worktree_in_use", message: expect.stringContaining("reviewer") });
     expect(existsSync(join(linked, "README.md"))).toBeTrue();
     expect(ends).toEqual([]);
+    // nor one where another workspace, drawn elsewhere, has a terminal that went into it
+    mkdirSync(join(dir, "plain"));
+    const elsewhere = await labeling([
+      terminal("t1", { cwd: linked, labels: { "herdr.space": "A", "herdr.tab": "T" } }),
+      terminal("t2", { cwd: join(dir, "plain"), labels: { "herdr.space": "P", "herdr.tab": "U", "ovis.workspace": "notes" } }),
+      terminal("t3", { cwd: join(dir, "plain"), foreground: { pid: 13, name: "bash", cwd: join(linked, "src") }, labels: { "herdr.space": "P", "herdr.tab": "U" } }),
+    ]);
+    expect((await sessionSnapshot(elsewhere.socket)).workspaces.map((workspace) => workspace.worktree?.checkout_path ?? null)).toEqual([linked, null]);
+    await expect(worktreeRemove("A", true, elsewhere.socket)).rejects.toMatchObject({ code: "worktree_in_use", message: expect.stringContaining("notes") });
+    expect(existsSync(join(linked, "README.md"))).toBeTrue();
+    expect(elsewhere.ends).toEqual([]);
+  });
+
+  it("deletes no checkout added again at the path after git was asked again (#3890)", async () => {
+    const { dir, repo, git } = repository();
+    const linked = join(dir, "linked");
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "first", linked).exitCode).toBe(0);
+    const { socket, cores } = await labeling([
+      terminal("t1", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "T" } }),
+      terminal("t2", { cwd: linked, labels: { "herdr.space": "W", "herdr.tab": "U" } }),
+    ], { "events.subscribe": () => ({ channel: cores.at(-1)!.channel(), seq: 1, terminals: [] }) });
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => workspace.worktree?.checkout_path)).toEqual([repo, linked]);
+    expect(git("-C", repo, "worktree", "remove", linked).exitCode).toBe(0);
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "second", linked).exitCode).toBe(0);
+    const started = Promise.withResolvers<void>();
+    const asked = Promise.withResolvers<void>();
+    const subscription = subscribeEvents([{ type: "layout.updated" }], { onEvent: (frame) => { if (frame.event === "layout.updated") asked.resolve(); }, onStarted: () => started.resolve(), onClose() {} }, socket);
+    cleanups.push(() => subscription.close());
+    await started.promise;
+    // past the time git's facts are kept: the next snapshot asks git again, and its new answer is told
+    setSystemTime(new Date(Date.now() + 60_000));
+    cleanups.push(() => setSystemTime());
+    await sessionSnapshot(socket);
+    await asked.promise;
+    await expect(worktreeRemove("W", true, socket)).rejects.toMatchObject({ code: "worktree_not_found" });
+    expect(existsSync(join(linked, "README.md"))).toBeTrue();
   });
 
   it("waits on a slow git once per folder, and asks for a fresh snapshot when it answers (#3890)", async () => {

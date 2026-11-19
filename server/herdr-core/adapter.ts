@@ -1,6 +1,6 @@
 import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename } from "node:path";
+import { basename, isAbsolute, relative, sep } from "node:path";
 import { createConnection } from "node:net";
 import type { Socket } from "bun";
 import { AGENT_LABELS } from "../agents-routes.ts";
@@ -474,18 +474,17 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
    * or null outside git. Kept a few seconds; past that the last answer still serves while git is asked
    * again, so a snapshot waits on git only for a folder it never answered for, once and at most a
    * moment: a slow git (a network folder, a huge repository) leaves that row flat rather than hold
-   * every snapshot, and its answer, when it comes, asks the clients for a fresh one.
+   * every snapshot. Its late answer, and an answer that differs from the last one, asks the clients
+   * for a fresh snapshot.
    */
   type GitAnswer = { facts: WorkspaceWorktreeInfo; gitId: string | null } | null;
   type GitEntry = { until: number; answer: GitAnswer; asking: Promise<GitAnswer> | null; first: Promise<GitAnswer> | null; waitedOut: boolean };
   const checkoutFacts = new Map<string, GitEntry>();
   const askGit = (folder: string, entry: GitEntry): Promise<GitAnswer> => {
     entry.asking = repositoryOf(folder).then((repository) => ({ facts: factsOf(repository, repository.checkout), gitId: gitDirIdentity(repository.git_dir) }), () => null).then((answer) => {
-      Object.assign(entry, { until: Date.now() + CHECKOUT_FACTS_MS, answer, asking: null });
-      if (entry.waitedOut) {
-        entry.waitedOut = false;
-        if (answer) layoutChanged();
-      }
+      const changed = entry.waitedOut ? answer !== null : entry.until !== 0 && JSON.stringify(answer) !== JSON.stringify(entry.answer);
+      Object.assign(entry, { until: Date.now() + CHECKOUT_FACTS_MS, answer, asking: null, waitedOut: false });
+      if (changed) layoutChanged();
       return answer;
     });
     return entry.asking;
@@ -505,10 +504,17 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     return Promise.resolve(entry.answer);
   };
   /**
+   * The git folder identity each workspace's checkout had when first seen from a fresh answer, for
+   * the folder its first terminal started in: a checkout removed and added again at that path since
+   * is not the one drawn, however often git is asked again.
+   */
+  const firstIdentities = new Map<string, { folder: string; gitId: string | null; at: number }>();
+  /**
    * herdr's snapshot of the core, whether Ovis keeps its layout (ownsLayout), from one read of the
    * app's document, and the git folder identity behind each workspace's facts that git gave.
    */
-  const read = async (): Promise<{ shown: SessionSnapshot; own: boolean; gitIds: Map<string, string | null> }> => {
+  const read = async (): Promise<{ shown: SessionSnapshot; own: boolean; gitIds: Map<string, string | null>; started: Map<string, string> }> => {
+    const began = Date.now();
     const [list, doc, ovis, hello] = await Promise.all([
       hc.call("terminal.list", {}),
       hc.call("doc.get", { name: LAYOUT_DOC }),
@@ -518,6 +524,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     forgetTurns(new Set(list.terminals.map((terminal) => terminal.address)));
     const shown = buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value, sessionOf, coreHost(options.otherMachine, platform));
     const gitIds = new Map<string, string | null>();
+    const started = new Map(list.terminals.map((terminal) => [terminal.address, terminal.cwd]));
     // herdr reports every workspace's checkout from git; hc has none, so a workspace no label claims (one
     // the app arranges, or a checkout Ovis did not open) gets git's facts for the folder its first
     // terminal started in: as herdr's stays with a workspace, a shell there going elsewhere (a `cd`, an
@@ -525,7 +532,6 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     // act on these as on herdr's: removing a checkout asks git again first. No label is written.
     // Another machine's folders are not on this disk.
     if (!options.otherMachine) {
-      const started = new Map(list.terminals.map((terminal) => [terminal.address, terminal.cwd]));
       const asked = new Map<SessionSnapshot["workspaces"][number], string>();
       for (const workspace of shown.workspaces) {
         if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
@@ -535,14 +541,20 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       }
       const folders = new Set(asked.values());
       for (const [folder, entry] of checkoutFacts) if (!folders.has(folder) && !entry.asking) checkoutFacts.delete(folder);
+      // a read begun before a workspace was first seen does not forget it
+      const ids = new Set(shown.workspaces.map((workspace) => workspace.workspace_id));
+      for (const [id, first] of firstIdentities) if (!ids.has(id) && first.at < began) firstIdentities.delete(id);
       await Promise.all([...asked].map(async ([workspace, folder]) => {
         const answer = await answerFor(folder);
         if (!answer) return;
         workspace.worktree = { ...answer.facts };
-        gitIds.set(workspace.workspace_id, answer.gitId);
+        let first = firstIdentities.get(workspace.workspace_id);
+        // a cached answer git has not confirmed since may be of a checkout no longer there
+        if (first?.folder !== folder && (checkoutFacts.get(folder)?.until ?? 0) > Date.now()) firstIdentities.set(workspace.workspace_id, first = { folder, gitId: answer.gitId, at: Date.now() });
+        gitIds.set(workspace.workspace_id, first?.folder === folder ? first.gitId : answer.gitId);
       }));
     }
-    return { shown, own: ownsLayout(doc.value), gitIds };
+    return { shown, own: ownsLayout(doc.value), gitIds, started };
   };
   const snapshot = async (): Promise<SessionSnapshot> => (await read()).shown;
   /** The read, for a call that changes the layout Ovis keeps in labels: refused where the Herdr app arranges this core. */
@@ -1306,13 +1318,20 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   });
   methods["worktree.remove"] = (params) => oneAtATime(async () => {
     const workspaceId = paneIdOf(params, "workspace_id");
-    const { shown, gitIds } = await ownRead();
+    const { shown, gitIds, started } = await ownRead();
     const workspace = shown.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
     if (!workspace) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
     const facts = workspace.worktree;
     if (!facts?.is_linked_worktree) throw new AdapterError("not_linked_worktree", `workspace ${workspaceId} is not a linked worktree`);
-    // only this workspace closes with the checkout: another one open on it would be left in a deleted folder
-    const sharing = shown.workspaces.filter((candidate) => candidate.workspace_id !== workspaceId && candidate.worktree?.checkout_path === facts.checkout_path);
+    // only this workspace closes with the checkout: another one open on it, or with a terminal in it
+    // (started there or gone there since), would be left in a deleted folder
+    const inCheckout = (folder: string | null | undefined): boolean => {
+      if (!folder) return false;
+      const below = relative(facts.checkout_path, folder);
+      return below === "" || (below !== ".." && !below.startsWith(`..${sep}`) && !isAbsolute(below));
+    };
+    const sharing = shown.workspaces.filter((candidate) => candidate.workspace_id !== workspaceId && (candidate.worktree?.checkout_path === facts.checkout_path
+      || shown.panes.some((pane) => pane.workspace_id === candidate.workspace_id && (inCheckout(pane.cwd) || inCheckout(started.get(pane.pane_id))))));
     if (sharing.length > 0) throw new AdapterError("worktree_in_use", `${facts.checkout_path} is also open in ${sharing.map((candidate) => JSON.stringify(candidate.label)).join(", ")}: close ${sharing.length === 1 ? "that workspace" : "those workspaces"} first`);
     // the folder the label names must still be a linked checkout of that repository, not one moved away or replaced by another
     const now = await repositoryOf(facts.checkout_path).catch(() => null);
