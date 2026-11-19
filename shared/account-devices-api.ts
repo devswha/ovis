@@ -13,6 +13,11 @@ import { PAIR_FINGERPRINT_PATTERN } from "./pair-fingerprint.ts";
 export const OVIS_ACCOUNT_OPENS_ALL = "OVIS_ACCOUNT_OPENS_ALL";
 /** The capability a PC advertises once the flag is on; an app shows nothing of step 2 to a PC without it. */
 export const ACCOUNT_OPENS_ALL_CAPABILITY = "account-opens-all/1";
+/**
+ * The relay mux feature an app offers in HELLO when its account store is on. A PC with OVIS_ACCOUNT_OPENS_ALL=1 selects
+ * it, and only then answers that app's refused account sign-in with held, not_listed or admission (Step 2, S25).
+ */
+export const ACCOUNT_OPENS_ALL_MUX_FEATURE = "account-opens-all-1";
 
 export function accountOpensAll(value = process.env[OVIS_ACCOUNT_OPENS_ALL]): boolean {
   return value === "1";

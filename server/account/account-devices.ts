@@ -16,7 +16,19 @@ export const ACCOUNT_DEVICES_MAX = 100;
 
 const iso = (at: number): string => new Date(at).toISOString();
 
-export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset";
+export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke";
+
+/**
+ * What Track A's deny path (DeviceStore.attachAccountRows, set only with OVIS_ACCOUNT_OPENS_ALL=1) asks of the
+ * account-joined rows: they are target and signer candidates of blocks, removes and Revokes like devices.json rows.
+ * On a deny the device store closes the sessions itself (P8 step 3); removeRows only journals and writes.
+ */
+export interface AccountRowSource {
+  row(id: string): AccountRow | null;
+  rowsByKey(key: string): readonly AccountRow[];
+  access(id: string): AccessAnswer;
+  removeRows(ids: readonly string[], reason: "remove" | "block" | "revoke" | "revoke_all"): void;
+}
 
 export type AccountRow = AccountJoinedRow;
 
@@ -77,7 +89,7 @@ function load(path: string, serverId: string): { file: DevicesFile; error: strin
   }
 }
 
-export class AccountDeviceStore {
+export class AccountDeviceStore implements AccountRowSource {
   readonly error: string | null;
   private readonly path: string;
   private file: DevicesFile;
@@ -90,6 +102,21 @@ export class AccountDeviceStore {
   }
 
   rows(): readonly AccountRow[] { return this.error === null ? this.file.devices : []; }
+
+  row(id: string): AccountRow | null {
+    return this.rows().find((row) => row.id === id) ?? null;
+  }
+
+  rowsByKey(key: string): readonly AccountRow[] {
+    return this.rows().filter((row) => row.key === key);
+  }
+
+  removeRows(ids: readonly string[], reason: "remove" | "block" | "revoke" | "revoke_all"): void {
+    this.usable();
+    const gone = this.file.devices.filter((row) => ids.includes(row.id));
+    for (const row of gone) this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason });
+    if (gone.length > 0) this.write({ ...this.file, devices: this.file.devices.filter((row) => !ids.includes(row.id)) });
+  }
 
   live(id: string): boolean {
     return this.rows().some((row) => row.id === id && row.state === "live");
