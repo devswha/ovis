@@ -1,10 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { ACCOUNT_OPENS_ALL_MUX_FEATURE } from "../../shared/account-devices-api.ts";
 import { accountDeviceId, exportAccountKey } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
-import { FrameType, type MuxFrame } from "../../shared/relay-mux.ts";
+import { FrameType, type MuxFrame, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
 import { bounded, relayAccountFixture, relayConnection } from "../relay/test-helpers.ts";
 
@@ -48,7 +47,7 @@ describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
 
   test("S25: an app that offered the account feature is refused held, with its hold state", async () => {
     const pc = await listedPc();
-    expect(await refusal(pc, [ACCOUNT_OPENS_ALL_MUX_FEATURE])).toEqual({ code: "held", message: "This device waits for its join hold on this PC", hold: { reason: "join_hold", until: null } });
+    expect(await refusal(pc, [ACCOUNT_OPENS_ALL_FEATURE])).toEqual({ code: "held", message: "This device waits for its join hold on this PC", hold: { reason: "join_hold", until: null } });
   });
 
   test("S25: an old-app hello gets today's code for the same refusal", async () => {

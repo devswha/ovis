@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { ACCOUNT_OPENS_ALL_MUX_FEATURE, OVIS_ACCOUNT_OPENS_ALL } from "../../shared/account-devices-api.ts";
-import { ACCOUNT_FEATURE, FrameType } from "../../shared/relay-mux.ts";
+import { OVIS_ACCOUNT_OPENS_ALL } from "../../shared/account-devices-api.ts";
+import { ACCOUNT_FEATURE, FrameType, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { relayConnection, relayFixture } from "../relay/test-helpers.ts";
 
 type Fixture = ReturnType<typeof relayFixture>;
@@ -25,11 +25,11 @@ async function welcomeFeatures(flag: string | undefined, offered: readonly strin
 
 describe("S2-25 the account-opens-all mux feature (S25)", () => {
   test("S25: a PC with OVIS_ACCOUNT_OPENS_ALL=1 selects the feature for an app that offers it", async () => {
-    expect(await welcomeFeatures("1", [ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_MUX_FEATURE])).toEqual([ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_MUX_FEATURE]);
+    expect(await welcomeFeatures("1", [ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE])).toEqual([ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE]);
   });
 
   test("S25: an old app's hello, or a PC with the flag off, selects only today's features", async () => {
     expect(await welcomeFeatures("1", [ACCOUNT_FEATURE])).toEqual([ACCOUNT_FEATURE]);
-    expect(await welcomeFeatures(undefined, [ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_MUX_FEATURE])).toEqual([ACCOUNT_FEATURE]);
+    expect(await welcomeFeatures(undefined, [ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE])).toEqual([ACCOUNT_FEATURE]);
   });
 });
