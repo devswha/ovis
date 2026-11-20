@@ -1,12 +1,13 @@
-import type { HerdrFailureView } from "../herdr/client.ts";
+import { checkedHerdrSocket, type HerdrFailureView } from "../herdr/client.ts";
 import type { ClientMessage, ServerMessage } from "../../shared/protocol.ts";
 import { RECEIPT_RESUME_ID } from "../../shared/receipt-resume.ts";
 import { ConversationMonitor } from "../conversation-monitor.ts";
 import { CoreAttachSession } from "../herdr-core/attach-session.ts";
 import { type SightingFacts, sightingFacts } from "../input-guard.ts";
-import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_STALL_MS, OutputWindow, wireBytes } from "../output-window.ts";
+import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_STALL_MS, OutputWindow, ReplayBuffer, wireBytes } from "../output-window.ts";
 import { backlog, type Client, connectionOf, send } from "./connections.ts";
-import { ATTACH_HELD_MESSAGE, createSpawnAttachment, type PaneAttachment, type PtyAttachment } from "./terminal-process.ts";
+import { ATTACH_HELD_MESSAGE, createSpawnAttachment, type MirrorAttachment, type PaneAttachment, type PtyAttachment } from "./terminal-process.ts";
+import { WindowsControl } from "../windows-control.ts";
 
 const DETACHED_CONVERSATION_WATCHES = 32;
 
@@ -34,7 +35,8 @@ export function validGeometry(cols: unknown, rows: unknown): { cols: number; row
   return { cols, rows };
 }
 
-export function createTerminalRegistry({ options, clients, stopped, terminalAttach, holdFor, heldRetry, retryFor, relookupFor, holdPending, holdPendingPane, attached, transcriptChanged, inputReady, end }: {
+export function createTerminalRegistry({ options, clients, stopped, terminalAttach, nativeControl, holdFor, heldRetry, retryFor, relookupFor, holdPending, holdPendingPane, attached, transcriptChanged, inputReady, end }: {
+  nativeControl?: (socket: string) => Promise<string | null>;
   options: { codexHome?: string; devinDbPath?: string; opencodeDb?: string; hermesHome?: string; grokHome?: string; museData?: string;
     herdrFailure?: HerdrFailureView };
   clients: Set<Client>;
@@ -103,8 +105,9 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       }
     }
     if (attachments.get(paneId) !== attachment) return;
-    if (paused) attachment.process.pause();
-    else attachment.process.resume();
+    const stream = attachment.kind === "mirror" ? attachment.fit?.lease?.session : undefined;
+    if (paused) { attachment.process.pause(); stream?.pause(); }
+    else { attachment.process.resume(); stream?.resume(); }
   }
 
   function sendOutput(client: Client, paneId: string, data: string, replay = false): void {
@@ -127,7 +130,146 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     for (const client of attachment.clients) send(client, message);
   }
 
-  const { spawnAttachment } = createSpawnAttachment({ herdrFailure: options.herdrFailure, attachments, retiringAttachments, terminalAttach, isStopped: stopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor });
+  const { spawnAttachment } = createSpawnAttachment({ herdrFailure: options.herdrFailure, attachments, retiringAttachments, terminalAttach, nativeControl, isStopped: stopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor });
+
+  function retireFit(pane: string, a: MirrorAttachment, owner?: Client, afterFailure?: () => void): void {
+    const fit = a.fit, lease = fit?.lease;
+    if (!fit || !lease || (owner && owner !== lease.owner)) return;
+    delete fit.lease;
+    fit.epoch++;
+    fit.passiveMirrors.clear();
+    a.process.suspendScreen(true);
+    holdPending(lease.owner, pane);
+    const resumeMirror = () => {
+      if (attachments.get(pane) !== a || fit.lease || fit.retiring) return;
+      a.process.suspendScreen(false);
+      if (afterFailure) afterFailure();
+      else resumeWaiting(pane, a);
+      if (fit.lease) return;
+      for (const member of a.clients) {
+        if (!fit.slot && !fit.blocked.has(member) && connectionOf(member).mode === "interact")
+          send(member, { type: "input-ready", pane_id: pane });
+      }
+    };
+    if (lease.session) {
+      const retired = lease.session.exited.finally(() => {
+        if (fit.retiring === retired) delete fit.retiring;
+        resumeMirror();
+      });
+      fit.retiring = retired;
+      lease.session.kill();
+    } else queueMicrotask(resumeMirror);
+  }
+
+  function fitHeld(a: MirrorAttachment, client: Client, pane: string, holder: "local" | "external"): void {
+    a.fit!.blocked.set(client, holder);
+    holdPending(client, pane);
+    send(client, { type: "error", code: "attach_held", message: ATTACH_HELD_MESSAGE, pane_id: pane });
+  }
+
+  function resumeWaiting(pane: string, a: MirrorAttachment): void {
+    for (const [waiting, holder] of a.fit!.blocked) {
+      if (holder === "retrying") continue;
+      fitPane(pane, a, waiting);
+      if (a.fit!.lease) break;
+    }
+  }
+
+  function fitPane(pane: string, a: MirrorAttachment, owner: Client, takeover = false, retryFailure = true): void {
+    const fit = a.fit, claim = owner.data.attached.get(pane);
+    if (!fit || !claim?.fitGrid?.drives || claim.keepSize || !a.clients.has(owner) || owner.data.readOnly
+      || connectionOf(owner).closing || connectionOf(owner).mode !== "interact") return;
+    if (takeover && !fit.blocked.has(owner)) return;
+    if (!takeover && fit.lease && fit.lease.owner !== owner) {
+      fitHeld(a, owner, pane, "local");
+      return;
+    }
+    if (fit.lease?.owner === owner) {
+      const { cols, rows } = claim.fitGrid;
+      if (fit.lease.cols !== cols || fit.lease.rows !== rows) {
+        fit.lease.cols = cols; fit.lease.rows = rows;
+        fit.lease.session?.resize(cols, rows);
+      }
+      return;
+    }
+    // Taking our own slot needs no --takeover after release. If a third party gets it
+    // in the gap, that is a different holder, not the one the user asked to displace.
+    const takeExternal = takeover && !fit.lease && fit.slot === "held" && fit.blocked.get(owner) === "external";
+    if (fit.blocked.has(owner)) fit.blocked.set(owner, "retrying");
+    if (fit.lease) {
+      fitHeld(a, fit.lease.owner, pane, "local");
+      retireFit(pane, a);
+    }
+    const lease: NonNullable<typeof fit.lease> = { owner, granted: false, cols: claim.fitGrid.cols, rows: claim.fitGrid.rows };
+    fit.lease = lease;
+    fit.epoch++;
+    const valid = () => attachments.get(pane) === a && fit.lease === lease && a.clients.has(owner)
+      && owner.data.attached.get(pane) === claim && !claim.keepSize && !connectionOf(owner).closing && connectionOf(owner).mode === "interact";
+    for (const member of a.clients) {
+      holdPending(member, pane);
+      send(member, { type: "input-ready", pane_id: pane, ready: false });
+    }
+    const failed = (held: boolean) => {
+      if (!valid()) return;
+      fit.slot = held ? "held" : "uncertain";
+      if (held) fitHeld(a, owner, pane, "external");
+      else if (!retryFailure && !lease.granted) {
+        send(owner, { type: "error", code: "attach_failed", pane_id: pane, message: "The Windows terminal control session ended." });
+      }
+      retireFit(pane, a, owner, () => {
+        // A lost stream doesn't prove contention or a free slot. Probe once with
+        // the still-current claim, never replay a takeover or bypass it with RPC.
+        if (held) return;
+        if ((retryFailure || lease.granted) && owner.data.attached.get(pane) === claim)
+          fitPane(pane, a, owner, false, false);
+        if (!fit.lease) resumeWaiting(pane, a);
+      });
+    };
+    const start = () => {
+      if (!valid()) return;
+      try {
+        a.process.suspendScreen(true);
+        const initial = { cols: lease.cols, rows: lease.rows };
+        lease.session = new WindowsControl({ command: fit.command, socket: checkedHerdrSocket(fit.socket), target: fit.terminal, takeover: takeExternal, ...initial,
+          onFrame: (data, grid, full) => {
+            if (!valid()) return;
+            const first = !lease.granted;
+            lease.granted = true;
+            delete fit.slot;
+            if (first || a.cols !== grid.cols || a.rows !== grid.rows) {
+              a.cols = grid.cols; a.rows = grid.rows;
+              for (const member of a.clients) send(member, { type: "pane-geometry", pane_id: pane, ...grid, fixed: member !== owner, windows_fit: true });
+            }
+            if (full) {
+              a.replay = new ReplayBuffer(128 * 1024);
+              fit.passiveMirrors.clear();
+              a.process.suspendScreen(true);
+            }
+            a.replay.append(data);
+            for (const member of a.clients) {
+              if (!fit.passiveMirrors.has(member)) sendOutput(member, pane, data, a.unscreened.delete(member));
+            }
+            reconcileOutput(pane);
+            if (first && valid()) {
+              if (fit.blocked.delete(owner)) send(owner, { type: "attach-resumed", pane_id: pane });
+              send(owner, { type: "input-ready", pane_id: pane });
+              inputReady(pane);
+              if (lease.cols !== initial.cols || lease.rows !== initial.rows) lease.session?.resize(lease.cols, lease.rows);
+            }
+          }, onEnd: failed });
+      } catch { failed(false); }
+    };
+    if (fit.retiring) void fit.retiring.then(start); else start();
+  }
+
+  function releaseFit(client: Client): void {
+    for (const pane of client.data.attached.keys()) {
+      const a = attachments.get(pane);
+      const grid = client.data.attached.get(pane)?.fitGrid;
+      if (grid) grid.drives = false;
+      if (a?.kind === "mirror") retireFit(pane, a, client);
+    }
+  }
 
   /**
    * `leftBy`: its last viewer left on its own. What that viewer typed and was answered for may still be on its way
@@ -157,10 +299,11 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     for (const member of attachment.clients) member.data.conversationInterests.delete(paneId);
     for (const member of attachment.clients) member.data.output.delete(paneId);
     releaseConversation(paneId);
+    if (attachment.kind === "mirror") retireFit(paneId, attachment);
     // Only a ready attach this bridge holds took any typing.
     const draining = leftBy && attachment.kind === "pty" && attachment.ready && !attachment.held
       ? { owner: leftBy, process: attachment.process } : undefined;
-    const retired = attachment.process.exited.finally(() => {
+    const retired = Promise.all([attachment.process.exited, attachment.kind === "mirror" ? attachment.fit?.retiring : undefined]).then(() => {}).finally(() => {
       if (retiringAttachments.get(paneId) === retired) retiringAttachments.delete(paneId);
       if (draining && drainingAttachments.get(paneId) === draining) drainingAttachments.delete(paneId);
     });
@@ -270,7 +413,13 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     const wasAttached = attachment.clients.delete(client);
     attachment.stalled.delete(client);
     attachment.grids.delete(client);
-    if (attachment.kind === "mirror") attachment.unscreened.delete(client);
+    if (attachment.kind === "mirror") {
+      attachment.unscreened.delete(client);
+      attachment.fit?.blocked.delete(client);
+      if (attachment.fit?.passiveMirrors.delete(client) && !attachment.fit.passiveMirrors.size && attachment.fit.lease?.granted)
+        attachment.process.suspendScreen(true);
+      retireFit(paneId, attachment, client);
+    }
     if (attachment.driver === client) attachment.driver = undefined;
     if (attachment.clients.size === 0) closeAttachment(paneId, own && wasAttached ? client : undefined);
     else reconcileOutput(paneId);
@@ -301,15 +450,35 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   function sight(client: Client, paneId: string): TerminalSighting {
     const attachment = attachments.get(paneId);
     const member = attachment?.clients.has(client) === true;
+    const fit = attachment?.kind === "mirror" ? attachment.fit : undefined;
+    const lease = fit?.lease, epoch = fit?.epoch;
     const process = attachment?.process;
     const claim = client.data.attached.get(paneId);
     const seen = { attachment, process, claim, member };
     return {
       origin: member ? attachment : undefined,
-      pty: member ? process : undefined,
+      pty: member ? lease?.session ?? process : undefined,
       claim,
-      facts: () => sightingFacts(seen, { attachment: attachments.get(paneId), claim: client.data.attached.get(paneId) }, client),
-      write: (data, automatic) => process instanceof CoreAttachSession ? process.write(data, automatic) : process!.write(data),
+      facts: () => {
+        const now = attachments.get(paneId);
+        const facts = sightingFacts(seen, { attachment: now, claim: client.data.attached.get(paneId) }, client);
+        const active = now?.kind === "mirror" ? now.fit : undefined;
+        if (active && (active.lease || active.retiring || active.slot || active.blocked.has(client) || active.epoch !== epoch)) {
+          const own = active.lease?.owner === client && active.lease.granted;
+          facts.samePty &&= active === fit && active.epoch === epoch;
+          facts.sameClaim &&= facts.samePty;
+          facts.ready &&= own;
+          facts.member &&= own;
+          facts.held = facts.currentHeld = !own;
+          facts.mirror = false;
+        }
+        return facts;
+      },
+      write: (data, automatic) => {
+        if (fit && (fit.epoch !== epoch || fit.retiring || fit.slot || fit.blocked.has(client))) return false;
+        if (lease) return fit?.lease === lease && lease.owner === client && lease.session?.write(data) === true;
+        return process instanceof CoreAttachSession ? process.write(data, automatic) : process!.write(data);
+      },
     };
   }
 
@@ -338,6 +507,8 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       // neither can see a client that only joins the attachment afterwards
       const claim = client.data.attached.get(message.pane_id) ?? { keepSize: false };
       claim.keepSize = message.keep_size === true;
+      if (message.windows_fit === true) claim.fitGrid = { ...geometry, drives: !claim.keepSize && connectionOf(client).mode === "interact" };
+      else delete claim.fitGrid;
       // An opaque, bounded presentation correlator only: never used by input guards.
       if (typeof message.receipt_resume_id === "string" && RECEIPT_RESUME_ID.test(message.receipt_resume_id)) claim.receiptResumeId = message.receipt_resume_id;
       if (!client.data.attached.has(message.pane_id)) client.data.attached.set(message.pane_id, claim);
@@ -366,13 +537,30 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       const alreadyAttached = attachment.clients.has(client);
       attachment.clients.add(client);
       if (!alreadyAttached && message.flow_control === "ack") client.data.output.set(message.pane_id, new OutputWindow());
+      if (attachment.kind === "mirror" && attachment.fit) {
+        if (!claim.fitGrid?.drives || claim.keepSize) retireFit(message.pane_id, attachment, client);
+        else fitPane(message.pane_id, attachment, client);
+      }
       // a mirrored screen is drawn for the pane's own grid: the client takes that size
       // before the screen, or the rows would wrap in a grid of another width
-      if (attachment.kind === "mirror") send(client, { type: "pane-geometry", pane_id: message.pane_id, cols: attachment.cols, rows: attachment.rows, fixed: true });
+      const fitting = attachment.kind === "mirror" ? attachment.fit?.lease : undefined;
+      if (attachment.kind === "mirror" && (fitting?.owner !== client || fitting.granted)) {
+        const offered = !!attachment.fit && !!claim.fitGrid;
+        send(client, { type: "pane-geometry", pane_id: message.pane_id, cols: attachment.cols, rows: attachment.rows,
+          fixed: fitting?.owner !== client, ...(offered ? { windows_fit: true } : {}) });
+      }
+      // A late viewer cannot reconstruct an ANSI diff without its initial screen. Until
+      // the controller sends a full paint, keep that viewer on its own fixed mirror;
+      // an observer must never request a resize just to provoke a repaint.
+      if (!alreadyAttached && fitting?.granted && fitting.owner !== client && attachment.kind === "mirror" && attachment.replay.truncated) {
+        attachment.fit!.passiveMirrors.add(client);
+        attachment.process.suspendScreen(false);
+      }
+      const tail = attachment.kind === "mirror" && (!fitting?.granted || attachment.fit?.passiveMirrors.has(client))
+        ? attachment.process.current ?? "" : attachment.replay.text();
       // so is a herdr-core pty's screen, for a client that does not size it: its replay is the program's bytes for this grid
       const drives = connectionOf(client).mode === "interact" && !claim.keepSize;
       if (attachment.kind !== "mirror" && !drives) send(client, { type: "pane-geometry", pane_id: message.pane_id, cols: attachment.cols, rows: attachment.rows });
-      const tail = attachment.kind === "mirror" ? attachment.process.current ?? "" : attachment.replay.text();
       // a herdr-core joiner keeps the history it already holds: a tail that lost the attach's clear would double
       // it. A tail on the alternate screen gets the clear where it leaves that screen (leaving it first would blank
       // what the tail restores there), so the main-screen lines after it land once
@@ -394,7 +582,9 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       if (!alreadyAttached && attachment.held) send(client, { type: "error", code: "attach_held", message: ATTACH_HELD_MESSAGE, pane_id: message.pane_id });
       reconcileOutput(message.pane_id);
       if (connectionOf(client).closing) return;
-      if (attachment.ready && !attachment.held) send(client, { type: "input-ready", pane_id: message.pane_id });
+      if (attachment.ready && !attachment.held && (!fitting || (fitting.owner === client && fitting.granted))
+        && !(attachment.kind === "mirror" && (attachment.fit?.retiring || attachment.fit?.slot || attachment.fit?.blocked.has(client))))
+        send(client, { type: "input-ready", pane_id: message.pane_id });
       if (!alreadyAttached) attached(client, message.pane_id);
       if (attachment.kind === "mirror") return;
       if (drives) drivePty(message.pane_id, client, geometry.cols, geometry.rows);
@@ -408,6 +598,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       }
       const attachment = attachments.get(message.pane_id);
       if (attachment?.kind === "pty" && attachment.clients.has(client)) attachment.takeOver?.(client);
+      if (attachment?.kind === "mirror") fitPane(message.pane_id, attachment, client, true);
       return;
     },
     detach(client: Client, message: Frame<"detach">): void {
@@ -473,11 +664,28 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       // terminal lens before the terminal was looked up): the resize waits for it. Dropped,
       // it would leave the pty at the pane's own grid under a terminal fitted to another.
       const claim = client.data.attached.get(message.pane_id);
+      const fitAttachment = attachments.get(message.pane_id);
+      if (fitAttachment?.kind === "mirror" && fitAttachment.fit) {
+        if (claim?.fitGrid?.drives && !claim.keepSize && fitAttachment.fit.lease?.owner === client) {
+          Object.assign(claim.fitGrid, geometry);
+          fitPane(message.pane_id, fitAttachment, client);
+        }
+        return;
+      }
       if (claim) claim.keepSize = false;
       const creating = attachments.has(message.pane_id) ? undefined : pendingAttachments.get(message.pane_id);
       if (creating && client.data.attached.has(message.pane_id)) {
+        const grid = claim?.fitGrid;
         try { await creating; } catch { return; }
         if (connectionOf(client).closing || connectionOf(client).mode !== "interact" || client.data.attached.get(message.pane_id) !== claim || claim?.keepSize) return;
+        const made = attachments.get(message.pane_id);
+        if (made?.kind === "mirror" && made.fit) {
+          if (grid?.drives && claim?.fitGrid === grid && made.fit.lease?.owner === client) {
+            Object.assign(grid, geometry);
+            fitPane(message.pane_id, made, client);
+          }
+          return;
+        }
       }
       drivePty(message.pane_id, client, geometry.cols, geometry.rows);
       return;
@@ -489,7 +697,9 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       // Remember the release before looking up the attachment: its initial creation can
       // still be awaiting herdr, and must not revive this hidden grid when it completes.
       claim.keepSize = true;
+      if (claim.fitGrid) claim.fitGrid.drives = false;
       const attachment = typeof message.pane_id === "string" ? attachments.get(message.pane_id) : undefined;
+      if (attachment?.kind === "mirror") retireFit(message.pane_id, attachment, client);
       if (!attachment || attachment.kind === "mirror") return;
       attachment.grids.delete(client);
       if (attachment.driver !== client) return;
@@ -502,5 +712,5 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   };
 
   const views: ReadonlyMap<string, AttachmentView> = attachments;
-  return { attachments: views, conversations, reconcileOutput, closeAttachment, closeAttachments, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames };
+  return { attachments: views, conversations, reconcileOutput, closeAttachment, closeAttachments, paneMoved, detachClaimed, dropClaims, releaseFit, sight, poke, drainOutput, terminalFrames };
 }

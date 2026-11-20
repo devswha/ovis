@@ -26,7 +26,7 @@ export interface SocketData {
   recheckMs?: number;
   connectionId: string;
   /** A fresh claim per attach lifetime; deleting it invalidates queued terminal keys. */
-  attached: Map<string, { keepSize: boolean; receiptResumeId?: string }>;
+  attached: Map<string, { keepSize: boolean; receiptResumeId?: string; fitGrid?: { cols: number; rows: number; drives: boolean } }>;
   conversationInterests: Set<string>;
   conversationWatches: Set<string>;
   promptWatches: Set<string>;

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mirrorFrame } from "../mirror.ts";
@@ -59,8 +59,9 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function recorder() {
+function recorder(onMessage?: (frame: Frame) => void) {
   const frames: Frame[] = [];
+  const grids: Frame[] = [];
   const waiters: { count: number; done: () => void }[] = [];
   const client = {
     data: connectionData({ deviceId: undefined, readOnly: false }),
@@ -68,6 +69,8 @@ function recorder() {
     getBufferedAmount: () => 0,
     send(raw: string) {
       const frame = JSON.parse(raw) as Frame;
+      onMessage?.(frame);
+      if (frame.type === "pane-geometry") grids.push(frame);
       if (frame.type === "pty-data") frames.push(frame);
       for (const waiter of waiters.filter((entry) => frames.length >= entry.count)) waiter.done();
       return raw.length;
@@ -81,19 +84,135 @@ function recorder() {
     waiters.push({ count, done: () => { clearTimeout(timer); arrived.resolve(frames); } });
     return arrived.promise;
   };
-  return { client, frames, until };
+  return { client, frames, grids, until };
 }
 
-function registryFor(clients: Client[]) {
+function registryFor(clients: Client[], nativeControl?: (socket: string) => Promise<string | null>, holdPending = (_client: Client, _pane?: string) => {}) {
   return createTerminalRegistry({
     options: {}, clients: new Set(clients), stopped: () => false,
-    terminalAttach: async () => false,
+    terminalAttach: async () => false, nativeControl,
     holdFor: 0, heldRetry: 0, retryFor: 0, relookupFor: 0,
-    holdPending() {}, holdPendingPane() {}, attached() {}, inputReady() {}, end() {},
+    holdPending, holdPendingPane() {}, attached() {}, inputReady() {}, end() {},
   });
 }
 
 const attach = { type: "attach", pane_id: "p", cols: 80, rows: 24, flow_control: "ack" } as const;
+
+it.skipIf(process.platform === "win32")("gives a late passive viewer a full fixed mirror when the controller's replay lost the screen", async () => {
+  const command = join(root, "large-control");
+  writeFileSync(command, `#!${process.execPath}
+console.log(JSON.stringify({type:"terminal.frame",full:true,width:80,height:24,encoding:"ansi",bytes:Buffer.from("A".repeat(160000)).toString("base64")}));
+for await (const _ of console) {}
+`, { mode: 0o700 });
+  const owner = recorder(), watcher = recorder();
+  const registry = registryFor([owner.client, watcher.client], async () => command);
+  try {
+    await registry.terminalFrames.attach(owner.client, { ...attach, windows_fit: true });
+    await owner.until(1);
+    // Discard the mirror read the controller's initial grant superseded.
+    (await nextRead())("retired screen");
+    await registry.terminalFrames.attach(watcher.client, { ...attach, keep_size: true });
+    expect(watcher.frames).toEqual([]);
+    (await nextRead())("complete passive screen");
+    const passive = await watcher.until(1);
+    expect(passive[0]?.data).toContain("complete passive screen");
+    expect(owner.frames).toHaveLength(1);
+  } finally { registry.closeAttachment("p"); }
+});
+
+it.skipIf(process.platform === "win32")("invalidates deferred input across a Windows fit grant, release and new owner; resize alone cannot obtain a grant", async () => {
+  const command = join(root, "control");
+  writeFileSync(command, `#!${process.execPath}
+if (process.argv.includes("--takeover")) process.exit(1);
+console.log(JSON.stringify({type:"terminal.frame",full:true,width:80,height:24,encoding:"ansi",bytes:"QQ=="}));
+for await (const _ of console) {}
+`, { mode: 0o700 });
+  const resumedMirror = Promise.withResolvers<void>();
+  const a = recorder(), b = recorder(frame => {
+    if (frame.type === "input-ready" && frame.ready !== false && registry.sight(b.client, "p").facts().mirror) resumedMirror.resolve();
+  });
+  const registry = registryFor([a.client, b.client], async () => command);
+  const f = registry.terminalFrames;
+  const claim = { ...attach, windows_fit: true };
+  try {
+    await f.attach(a.client, { ...claim, keep_size: true });
+    const idle = registry.sight(a.client, "p");
+    await f.resize(a.client, { type: "resize", pane_id: "p", cols: 42, rows: 14 });
+    expect(registry.sight(a.client, "p").facts().mirror).toBe(true);
+    await f.attach(a.client, claim);
+    await a.until(1);
+    const owned = registry.sight(a.client, "p");
+    expect(owned.facts().ready).toBe(true);
+    a.grids.length = 0;
+    await f.attach(a.client, claim);
+    expect(a.grids).toContainEqual({ type: "pane-geometry", pane_id: "p", cols: 80, rows: 24, fixed: false, windows_fit: true });
+    expect(idle.facts().samePty).toBe(false);
+    expect(idle.write("stale mirror")).toBe(false);
+    await f.attach(b.client, claim);
+    expect(registry.sight(b.client, "p").facts().currentHeld).toBe(true);
+    f["take-over"](b.client, { type: "take-over", pane_id: "p" });
+    await b.until(2);
+    expect(owned.facts().samePty).toBe(false);
+    expect(owned.write("retired")).toBe(false);
+    const second = registry.sight(b.client, "p");
+    expect(second.facts().ready).toBe(true);
+    f.detach(a.client, { type: "detach", pane_id: "p" });
+    registry.releaseFit(b.client);
+    expect(second.write("demoted")).toBe(false);
+    await resumedMirror.promise;
+    await f.resize(b.client, { type: "resize", pane_id: "p", cols: 42, rows: 14 });
+    expect(registry.sight(b.client, "p").facts()).toMatchObject({ mirror: true, ready: true });
+  } finally { registry.closeAttachment("p"); }
+});
+
+it.skipIf(process.platform === "win32")("retries an unconfirmed failure and hands a released lease to a waiting viewer without takeover", async () => {
+  const command = join(root, "flaky-control");
+  writeFileSync(command, `#!${process.execPath}
+import { appendFileSync, existsSync } from "node:fs";
+const log = import.meta.path + ".attempts", first = !existsSync(log);
+appendFileSync(log, process.argv.includes("--takeover") ? "takeover\\n" : "ordinary\\n");
+if (first) process.exit(1);
+if (process.argv.includes("51")) {
+  console.log(JSON.stringify({type:"terminal.closed",reason:"already has an attached client"}));
+  process.exit(0);
+}
+console.log(JSON.stringify({type:"terminal.frame",full:true,width:80,height:24,encoding:"ansi",bytes:"QQ=="}));
+for await (const _ of console) process.exit(1);
+`, { mode: 0o700 });
+  const resumed = Promise.withResolvers<void>();
+  const a = recorder(), b = recorder(frame => { if (frame.type === "attach-resumed") resumed.resolve(); });
+  let refusals = 0;
+  const externalHeld = Promise.withResolvers<void>();
+  const c = recorder(frame => {
+    if (frame.code === "attach_held" && ++refusals === 2) externalHeld.resolve();
+  });
+  let leaveDuringRetirement = false;
+  const registry = registryFor([a.client, b.client, c.client], async () => command, client => {
+    if (client === a.client && leaveDuringRetirement) {
+      leaveDuringRetirement = false;
+      queueMicrotask(() => registry.terminalFrames.detach(a.client, { type: "detach", pane_id: "p" }));
+    }
+  });
+  const claim = { ...attach, windows_fit: true };
+  try {
+    await registry.terminalFrames.attach(a.client, claim);
+    await a.until(1);
+    expect(registry.sight(a.client, "p").facts().ready).toBe(true);
+    expect(registry.sight(a.client, "p").write("end recovered session")).toBe(true);
+    await a.until(2);
+    await registry.terminalFrames.attach(b.client, claim);
+    expect(registry.sight(b.client, "p").write("held")).toBe(false);
+    leaveDuringRetirement = true;
+    expect(registry.sight(a.client, "p").write("end before owner leaves")).toBe(true);
+    await resumed.promise;
+    expect(registry.sight(b.client, "p").facts()).toMatchObject({ ready: true, currentHeld: false, mirror: false });
+    await registry.terminalFrames.attach(c.client, { ...claim, cols: 51 });
+    registry.terminalFrames.detach(b.client, { type: "detach", pane_id: "p" });
+    await externalHeld.promise;
+    expect(registry.sight(c.client, "p").write("external holder")).toBe(false);
+    expect(readFileSync(`${command}.attempts`, "utf8").trim().split("\n")).toEqual(Array(5).fill("ordinary"));
+  } finally { registry.closeAttachment("p"); }
+});
 
 it("marks a mirror's first screen as replay for a client that attached before it was read", async () => {
   const first = recorder(), joiner = recorder();

@@ -1,13 +1,14 @@
 import type { HerdrPane, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
 import { AttachOutputTail, AttachStartupProbes, isTakeoverExit } from "../attach-output.ts";
 import { checkedHerdrSocket, faultOf, HerdrError, type HerdrFailureView, herdrSocketPath, paneRead, paneSendText, sessionSnapshot } from "../herdr/client.ts";
+import type { WindowsControl } from "../windows-control.ts";
 import { CoreAttachSession } from "../herdr-core/attach-session.ts";
 import { coreConnection, HC_MOVED, hcBin } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import { MirrorSession } from "../mirror.ts";
 import { ReplayBuffer } from "../output-window.ts";
 import { PtySession, type PtySessionOptions } from "../pty/session.ts";
-import { type Client, connectionOf } from "./connections.ts";
+import { type Client, connectionOf, send } from "./connections.ts";
 
 const MAX_REPLAY_BYTES = 128 * 1024;
 
@@ -176,6 +177,15 @@ export interface MirrorAttachment extends AttachmentState {
   readonly kind: "mirror";
   process: MirrorSession;
   unscreened: Set<Client>;
+  fit?: {
+    command: string; terminal: string; socket: string;
+    lease?: { owner: Client; session?: WindowsControl; granted: boolean; cols: number; rows: number };
+    retiring?: Promise<void>;
+    epoch: number;
+    slot?: "held" | "uncertain";
+    blocked: Map<Client, "local" | "external" | "retrying">;
+    passiveMirrors: Set<Client>;
+  };
 }
 
 export type PaneAttachment = PtyAttachment | MirrorAttachment;
@@ -190,7 +200,8 @@ export function paneGrid(snapshot: Pick<SessionSnapshot, "layouts">, pane: Pick<
   return rect ? { width: rect.width, height: rect.height } : null;
 }
 
-export function createSpawnAttachment({ attachments, retiringAttachments, terminalAttach, isStopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor, herdrFailure }: {
+export function createSpawnAttachment({ attachments, retiringAttachments, terminalAttach, nativeControl, isStopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor, herdrFailure }: {
+  nativeControl?: (socket: string) => Promise<string | null>;
   herdrFailure?: HerdrFailureView;
   attachments: Map<string, PaneAttachment>;
   retiringAttachments: Map<string, Promise<void>>;
@@ -242,26 +253,36 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
     };
 
     if (mirrored) {
+      const socket = checkedHerdrSocket(herdrSocketPath());
+      const command = nativeControl ? await nativeControl(socket) : null;
+      if (isStopped()) throw new HerdrError("server_stopped", "the web bridge stopped during attachment creation");
       const attachment: MirrorAttachment = { kind: "mirror", ready: true, process: undefined as unknown as MirrorSession, unscreened: new Set(), ...state };
+      if (command) attachment.fit = { command, terminal: terminalId, socket, epoch: 0, blocked: new Map(), passiveMirrors: new Set() };
       attachments.set(paneId, attachment);
       const mirror = new MirrorSession({
         cols: spawnCols,
         rows: spawnRows,
         size: async () => {
+          if (attachment.fit?.lease?.granted) return { cols: attachment.cols, rows: attachment.rows };
           const now = (await terminalInfoFor(paneId)).rect;
           return now ? { cols: now.width, rows: now.height } : null;
         },
         onResize: (cols, rows) => {
-          if (attachments.get(paneId) !== attachment) return;
+          if (attachments.get(paneId) !== attachment || attachment.fit?.lease?.granted) return;
           attachment.cols = cols;
           attachment.rows = rows;
-          broadcast(paneId, { type: "pane-geometry", pane_id: paneId, cols, rows, fixed: true });
+          for (const client of attachment.clients) {
+            const offered = !!attachment.fit && !!client.data.attached.get(paneId)?.fitGrid;
+            send(client, { type: "pane-geometry", pane_id: paneId, cols, rows, fixed: true, ...(offered ? { windows_fit: true } : {}) });
+          }
         },
         read: async () => (await paneRead({ paneId, source: "visible", format: "ansi" })).text,
+        retryRead: () => !!attachment.fit?.lease?.granted,
         write: (data) => paneSendText(paneId, data),
         onData: (frame) => {
           if (attachments.get(paneId) !== attachment) return;
-          for (const client of attachment.clients) sendOutput(client, paneId, frame, attachment.unscreened.delete(client));
+          const recipients = attachment.fit?.lease?.granted ? attachment.fit.passiveMirrors : attachment.clients;
+          for (const client of recipients) sendOutput(client, paneId, frame, attachment.unscreened.delete(client));
           reconcileOutput(paneId);
         },
         onExit: (code) => {

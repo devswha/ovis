@@ -1277,6 +1277,22 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
   a Windows PC: `bun install --frozen-lockfile`, `bun run build`, then
   `bun scripts/windows-terminal-browser-qa.ts` with herdr on PATH and Chromium installed.
 
+  `scripts/windows-pane-fit-qa.ts` checks the native control transport separately from that fixed
+  mirror fixture. Use a disposable named daemon (`HERDR_TEST_SESSION=ovis-fit-<unique name>`)
+  inside a fresh `XDG_CONFIG_HOME`. Configure the fixture to open PowerShell in new panes;
+  the dimension checks execute PowerShell expressions. Set `OVIS_HERDR_BIN` to the matching CLI.
+  In a separate PowerShell with the same private environment and no inherited socket overrides,
+  start the daemon with `& $env:OVIS_HERDR_BIN --session $env:HERDR_TEST_SESSION server`.
+  In the QA shell set `HERDR_SOCKET` to `herdr/sessions/<name>/herdr.sock` under that config home
+  and `CHROME_PATH` to installed Chromium. Build the client, then run
+  `bun scripts/windows-pane-fit-qa.ts`. It creates and closes its own workspace, checks
+  `[Console]::WindowWidth` and `WindowHeight` from PowerShell after claims and resizes, and checks
+  that resizing the production browser changes those dimensions. On **Open here** it checks that
+  the smaller browser has resized xterm before its first owned frame and that its typed command
+  reaches PowerShell. Set `UI_EVIDENCE_DIR` to retain before/after screenshots of the disposable
+  terminal. Stop only that test daemon with `& $env:OVIS_HERDR_BIN session stop $env:HERDR_TEST_SESSION` and
+  remove its private state afterwards.
+
 `bun run check browser` and `bun run check full` still run the serial lane, `scripts/ci-browser.sh`
 (`BROWSER_PARALLEL=1` hands it to the parallel runner).
 The serial lane prints each script's wall seconds and exit code, including the shared demo

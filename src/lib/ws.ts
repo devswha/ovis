@@ -120,6 +120,9 @@ interface AttachState {
   rows: number;
   keepSize: boolean;
   releaseSizeOwed: boolean;
+  windowsFit: boolean;
+  fitOffered?: boolean;
+  pendingKeptFit?: boolean;
 }
 
 function defaultUrl(): string {
@@ -397,7 +400,10 @@ export class HerdrSocket {
       for (const handler of this.beforeReplayHandlers) handler();
       for (const [paneId, state] of this.attached) {
         state.releaseSizeOwed = !state.keepSize;
-        this.rawSend({ type: "attach", pane_id: paneId, cols: state.cols, rows: state.rows, flow_control: "ack", receipt_resume_id: receiptResumeId(), ...(state.keepSize ? { keep_size: true } : {}) });
+        delete state.fitOffered;
+        this.rawSend({ type: "attach", pane_id: paneId, cols: state.cols, rows: state.rows, flow_control: "ack", ...(state.windowsFit ? { windows_fit: true } : {}), receipt_resume_id: receiptResumeId(), ...(state.keepSize || state.pendingKeptFit ? { keep_size: true } : {}) });
+        if (state.pendingKeptFit && !state.keepSize && this.mode === "interact")
+          this.rawSend({ type: "resize", pane_id: paneId, cols: state.cols, rows: state.rows });
       }
     });
 
@@ -424,7 +430,21 @@ export class HerdrSocket {
       }
       // The server can force this connection to observe. Apply its authority before
       // waking pending submits or notifying UI handlers about the acknowledged role.
-      if (message.type === "role-ack") { this.mode = message.mode; this.roleChanges += 1; }
+      if (message.type === "pane-geometry" && message.windows_fit) {
+        const state = this.attached.get(message.pane_id);
+        if (state) {
+          if (state.pendingKeptFit && message.fixed) {
+            state.keepSize = true;
+            state.releaseSizeOwed = false;
+          }
+          delete state.pendingKeptFit;
+          state.fitOffered = true;
+        }
+      }
+      if (message.type === "role-ack") {
+        this.mode = message.mode; this.roleChanges += 1;
+        if (message.mode === "observe") for (const state of this.attached.values()) if (state.fitOffered) state.keepSize = true;
+      }
       const readyPane = "pane_id" in message && typeof message.pane_id === "string" ? message.pane_id : null;
       const wasReady = readyPane !== null && this.inputReady.has(readyPane);
       let unwatched: string[] = [];
@@ -861,12 +881,12 @@ export class HerdrSocket {
     this.featuresTrusted = check;
   }
 
-  attach(paneId: string, cols: number, rows: number, keepSize = false): void {
+  attach(paneId: string, cols: number, rows: number, keepSize = false, windowsFit = false): void {
     this.outputSeen.delete(paneId);
     this.inputReady.delete(paneId);
     this.changeLease(paneId);
-    this.attached.set(paneId, { cols, rows, keepSize, releaseSizeOwed: !keepSize });
-    this.send({ type: "attach", pane_id: paneId, cols, rows, flow_control: "ack", receipt_resume_id: receiptResumeId(), ...(keepSize ? { keep_size: true } : {}) });
+    this.attached.set(paneId, { cols, rows, keepSize, releaseSizeOwed: !keepSize, windowsFit });
+    this.send({ type: "attach", pane_id: paneId, cols, rows, flow_control: "ack", ...(windowsFit ? { windows_fit: true } : {}), receipt_resume_id: receiptResumeId(), ...(keepSize ? { keep_size: true } : {}) });
     if (this.conversationWanted.has(paneId) && this.features.has("conversation-watch")) {
       this.send({ type: "conversation-watch", pane_id: paneId, enabled: true });
     }
@@ -972,12 +992,19 @@ export class HerdrSocket {
     const state = this.attached.get(paneId);
     // a pane this tab let go of (PaneTerminal's release) is sized by whoever holds it: the server
     // would apply the resize to their attach
-    if (!state) return;
+    if (!state || (state.fitOffered && this.mode !== "interact")) return;
     // skip only redundant resizes of OUR OWN geometry: a force resize re-asserts
     // it after another client resized the shared pty (see PaneTerminal refit)
     if (!force && !state.keepSize && state.cols === cols && state.rows === rows) return;
+    if (state.fitOffered && state.keepSize && this.mode === "interact") {
+      this.attach(paneId, cols, rows, false, true);
+      return;
+    }
     state.cols = cols;
     state.rows = rows;
+    // An ordinary PTY takes this resize; a kept Windows mirror ignores it.
+    // Remember the latter's claim until its capability frame arrives.
+    if (state.windowsFit && !state.fitOffered && state.keepSize) state.pendingKeptFit = true;
     state.keepSize = false;
     state.releaseSizeOwed = true;
     this.send({ type: "resize", pane_id: paneId, cols, rows });
@@ -1019,6 +1046,12 @@ export class HerdrSocket {
   holdsSize(paneId: string): boolean {
     const state = this.attached.get(paneId);
     return state !== undefined && !state.keepSize;
+  }
+
+  offersWindowsFit(paneId: string): boolean { return this.attached.get(paneId)?.fitOffered === true; }
+  canRequestWindowsFit(paneId: string): boolean {
+    const state = this.attached.get(paneId);
+    return this.connected && this.mode === "interact" && state?.fitOffered === true && state.keepSize;
   }
 
   /** Attached without sizing the pty: its grid is another device's, or the pane's own. */

@@ -37,6 +37,13 @@ export function writeLine(sink: import("bun").FileSink, line: string): boolean {
   }
 }
 
+export function terminalEnv(overrides?: Record<string, string>, inherit = true): NodeJS.ProcessEnv {
+  const env = { ...(inherit ? process.env : {}), ...overrides };
+  delete env["OVIS_TOKEN"];
+  delete env["HERDR_WEB_TOKEN"];
+  return env;
+}
+
 /**
  * A command running on a real PTY, hosted by the Rust host or, as the fallback, the Node sidecar (see pty-host.mjs for
  * why output flow control currently needs node-pty, and why it is the prebuilt
@@ -54,9 +61,7 @@ export class PtySession {
 
   constructor(private readonly options: PtySessionOptions) {
     // The bridge's bearer token is for browsers; neither the sidecar nor the attach needs it.
-    const env = { ...(options.inheritEnv === false ? {} : process.env), ...options.env };
-    delete env["OVIS_TOKEN"];
-    delete env["HERDR_WEB_TOKEN"];
+    const env = terminalEnv(options.env, options.inheritEnv !== false);
     const args = [String(options.cols), String(options.rows), options.command, ...options.args];
     const spawnOptions = { stdin: "pipe", stdout: "pipe", stderr: "inherit", env } as const;
     // only a real Node runs pty-host.mjs: `bun run` puts a `node` that is Bun on a PC without one

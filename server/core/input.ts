@@ -8,6 +8,7 @@ import { HerdrError, paneRead, paneSendKeys, paneSendText } from "../herdr/clien
 import { secretPrompt, validSecret } from "../../shared/secret-prompt.ts";
 import { insertTextProblem } from "../../shared/terminal-insert.ts";
 import { mirrorInput } from "../mirror-input.ts";
+import { WindowsControl } from "../windows-control.ts";
 import { CoreAttachSession, CURSOR_KEY, CURSOR_KEY_NAMES } from "../herdr-core/attach-session.ts";
 
 /** Keys that may wait to join one `pane.send_keys` while herdr answers the one before (a held arrow repeats ~30/s). */
@@ -80,7 +81,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
       // Stop and arrows go through herdr itself, each in its turn behind a message in flight.
       // The turn is taken before herdr is asked what it can do: a message sent while
       // that answer is on its way must not overtake the typing.
-      if (terminalAttachKnown() === false || (!seen.attached && terminalAttachKnown() === null)) {
+      if ((!seen.attached || seen.mirror) && (terminalAttachKnown() === false || (!seen.attached && terminalAttachKnown() === null))) {
         // an attach this client is not a member of owns this pane's screen, and typing
         // here would reach past it — the same refusal the pty branch below makes. A
         // pane with no attachment at all is left as it was: that is the key bar, and
@@ -142,7 +143,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
         // only what the browser's terminal made itself, so a paste of the same bytes is still typed
         // A lone cursor key typed into a herdr-core attach goes there too, which sends it in the form the program reads
         // when its turn comes, not the one the viewer's terminal believed in when it was pressed
-        const viaAttach = cursorKey !== null || isMouseReport(text) || (message.automatic === true && isTerminalReply(text));
+        const viaAttach = sighting.pty instanceof WindowsControl || cursorKey !== null || isMouseReport(text) || (message.automatic === true && isTerminalReply(text));
         // typed into the attach it saw: one that ended meanwhile (and was attached again) takes none of it
         const roles = connectionOf(client).roles;
         const allowed = () => mayType(client) && connectionOf(client).roles === roles && typingGuards.queuedTyping(sighting.facts());
