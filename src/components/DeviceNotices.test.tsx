@@ -36,9 +36,9 @@ describe("device notices", () => {
   });
 
   const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
-  const mount = async (notices: readonly DeviceNotice[], dismissed: DeviceNotice[] = []) => {
+  const mount = async (notices: readonly DeviceNotice[], dismissed: DeviceNotice[] = [], cut = 0) => {
     await act(async () => {
-      renderer = create(<SettingsProvider><DeviceNotices pc="Desk" notices={notices} onDismiss={(item) => dismissed.push(item)} /></SettingsProvider>);
+      renderer = create(<SettingsProvider><DeviceNotices pc="Desk" notices={notices} cut={cut} onDismiss={(item) => dismissed.push(item)} /></SettingsProvider>);
     });
     return renderer!.root.findAll((node) => node.props["data-testid"] === "device-notice");
   };
@@ -70,6 +70,15 @@ describe("device notices", () => {
 
   it("G5: shows nothing for journal kinds this release does not tell here", async () => {
     expect(await mount([notice({ kind: "merge", open: false })])).toEqual([]);
+  });
+
+  it("P15: when the PC trimmed older notices, one line says so, even with no card left", async () => {
+    await mount([], [], 3);
+    const shown = text(renderer!.root);
+    expect(shown).toContain("Desk");
+    expect(shown.toLowerCase()).toContain("older");
+    await mount([], [], 0);
+    expect(text(renderer!.root)).toBe("");
   });
 });
 
