@@ -5,6 +5,8 @@ import { createListedPc } from "./listed-pc.test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { STALE_READ_MS } from "./account-devices.ts";
 import { ask } from "./pairing.test-helpers.ts";
+import { DeviceJournal } from "./device-journal.ts";
+import { parseSnapshotPage } from "../../shared/account-snapshot.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
@@ -70,4 +72,28 @@ test("T56: a request at the monotonic hour is refused before timer delivery", as
   closes.push(() => elapsed.mockRestore());
   await expect(ask(session, "/api/health")).rejects.toThrow();
   expect(await bounded(session.serverError)).toBe("auth_changed");
+});
+
+test("T56: a failed method journal leaves the previous read deadline in force", async () => {
+  const pc = await createListedPc(close => closes.push(close));
+  const { devices, accountMailbox } = pc.fixture.app.context.services;
+  const clock = new TestClock();
+  devices.useClock(clock);
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const closedAt: number[] = [];
+  devices.onRevoke(pc.device.id, () => closedAt.push(clock.now()));
+  clock.advance(STALE_READ_MS - 1);
+  const page = accountMailbox.snapshotPage.bind(accountMailbox);
+  spyOn(accountMailbox, "snapshotPage").mockImplementation(async (...args) => {
+    const result = await page(...args);
+    if (!("page" in result)) return result;
+    const parsed = parseSnapshotPage(result.page);
+    return { page: { ...parsed, methods_version: parsed.methods_version + 1 } };
+  });
+  const fault = spyOn(DeviceJournal.prototype, "append").mockImplementationOnce(() => { throw new Error("journal unavailable"); });
+  closes.push(() => fault.mockRestore());
+  expect(await accountMailbox.readSnapshot()).toBeNull();
+  expect(fault.mock.calls[0]?.[0].kind).toBe("method");
+  clock.advance(1);
+  expect(closedAt).toEqual([STALE_READ_MS]);
 });
