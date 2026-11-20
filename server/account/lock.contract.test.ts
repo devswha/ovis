@@ -7,6 +7,7 @@ import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PcAccountState } from "./pc-binding.ts";
+import { LockSignal, untilLockFrom } from "../lock-boundary.ts";
 import { pairingPc, memberRow, signIn, ask, type Pc } from "./pairing.test-helpers.ts";
 import { bounded, deferred } from "../relay/test-helpers.ts";
 
@@ -198,4 +199,13 @@ test("T47/N4: on a PC with an access token, the owner's own window (loopback, th
   expect((await made.local("/api/devices", { headers: auth })).body.error?.code).toBe("locked");
   const forwarded = await made.local("/api/account/lock", { headers: { ...auth, "x-forwarded-for": "100.64.0.9" } });
   expect(forwarded.status).toBeGreaterThanOrEqual(400);
+});
+
+test("T46/S24: a connection whose upgrade was admitted before a lock's approval and opens after it ends as it opens", () => {
+  const signal = new LockSignal();
+  const lifetime = untilLockFrom(signal);
+  signal.fire();
+  let closed = 0;
+  lifetime(() => { closed++; });
+  expect(closed).toBe(1);
 });
