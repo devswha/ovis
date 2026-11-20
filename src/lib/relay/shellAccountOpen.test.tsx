@@ -172,7 +172,7 @@ it.each([
   });
 });
 
-it("T34: a join hold waits in Connecting and retries at the PC's deadline", async () => {
+it("T34, T53, P17: the held device shows the PC's deadline and retries when it expires", async () => {
   const delay = 4_321;
   const expired = Promise.withResolvers<boolean | undefined>();
   let attempts = 0;
@@ -186,6 +186,9 @@ it("T34: a join hold waits in Connecting and retries at the PC's deadline", asyn
   until = new Date(Date.now() + delay).toISOString();
   await run.openPage();
   expect(run.current().state.kind).toBe("connecting");
+  const screen = renderToStaticMarkup(createElement(SettingsProvider, null, createElement(RelayShell, run.current())));
+  expect(screen).toContain('class="join-wait"');
+  expect(screen).toContain("opens in 5 s");
   jest.advanceTimersByTime(delay - 1);
   expect(attempts).toBe(1);
   jest.advanceTimersByTime(1);

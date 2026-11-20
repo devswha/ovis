@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest, mock } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { SettingsProvider } from "../lib/settings.ts";
@@ -22,6 +22,7 @@ describe("the new device's wait", () => {
 
   afterEach(async () => {
     await act(async () => { renderer?.unmount(); });
+    jest.useRealTimers();
     renderer = undefined;
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -37,6 +38,16 @@ describe("the new device's wait", () => {
 
   it("T53: counts down to the PC's own deadline, in whole seconds", async () => {
     expect(await mount(<JoinWait pc="Desk" hold={{ reason: "join_hold", until: "2026-11-20T04:00:07.400Z" }} now={NOW} />)).toContain("8");
+  });
+
+  it("T53: the live wait changes seconds without a fresh refusal from the PC", async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(NOW);
+    const hold = { reason: "join_hold", until: "2026-11-20T04:00:07.400Z" } as const;
+    expect(await mount(<JoinWait pc="Desk" hold={hold} />)).toContain("8");
+    await act(async () => { jest.advanceTimersByTime(1000); });
+    if (renderer === undefined) throw new TypeError("Missing wait");
+    expect(text(renderer.root)).toContain("7");
   });
 
   it("T53: a hold with no deadline shows no countdown", async () => {
