@@ -104,7 +104,7 @@ interface Hold {
 }
 interface PcOrder {
   shown: string[] | null;
-  last: { ids: string[]; evidence: Evidence | null } | null;
+  last: { ids: string[]; evidence: Evidence | null; arrived: number } | null;
   generation: number;
   pending: Set<number>;
   desired: string[] | null;
@@ -126,6 +126,7 @@ export class ReorderCoordinator {
   private listeners = new Set<() => void>();
   private changes = 0;
   private loads = 0;
+  private arrivals = 0;
 
   constructor(private options: { verify?: SourceProofQuery; onSettled?: (machineId: string) => void } = {}) {}
 
@@ -181,7 +182,7 @@ export class ReorderCoordinator {
     const pc = this.pc(id);
     const ids = snapshot.workspaces.map((workspace) => workspace.workspace_id);
     const evidence = evidenceOf(snapshot);
-    pc.last = { ids, evidence };
+    pc.last = { ids, evidence, arrived: ++this.arrivals };
     if (evidence && pc.retired.has(evidence.epoch)) return;
     if (pc.waiters.length > 0 && this.qualifies(pc, evidence)) for (const waiter of pc.waiters.splice(0)) waiter.resolve(ids);
     if (pc.pending.size > 0 || pc.hold) {
@@ -258,7 +259,10 @@ export class ReorderCoordinator {
     const run = pc.chain.then(async () => {
       const base = pc.failed ? await this.qualifiedBase(pc, generation) : [...current];
       pc.failed = false;
-      for (const step of workspaceMoves(base, mergeOrder(next, base))) this.acknowledge(pc, await move(step));
+      for (const step of workspaceMoves(base, mergeOrder(next, base))) {
+        const sent = this.arrivals;
+        this.acknowledge(machineId, pc, await move(step), sent);
+      }
     });
     pc.chain = run.catch(() => { pc.failed = true; });
     return run.then(() => this.settle(machineId, pc, generation, null), (error: unknown) => this.settle(machineId, pc, generation, error));
@@ -270,7 +274,7 @@ export class ReorderCoordinator {
     return new Promise((resolve, reject) => pc.waiters.push({ generation, resolve, reject }));
   }
 
-  private acknowledge(pc: PcOrder, receipt: WorkspaceMoved | void): void {
+  private acknowledge(id: string, pc: PcOrder, receipt: WorkspaceMoved | void, sent: number): void {
     pc.receipts++;
     this.invalidateCheck(pc);
     const hold = pc.hold!;
@@ -282,6 +286,9 @@ export class ReorderCoordinator {
     pc.floors.set(epoch, Math.max(pc.floors.get(epoch) ?? 0, seq!));
     pc.protectedEpoch = epoch;
     hold.epoch = epoch;
+    // a roster that arrived while this move was on its way is checked now, as one arriving after its receipt is: one of another
+    // server lifetime may come from a restart after the move. One read before the move was sent is older than the receipt
+    if (pc.last?.evidence && pc.last.arrived > sent && !pc.retired.has(pc.last.evidence.epoch)) this.mismatch(id, pc, pc.last.evidence);
   }
 
   private settle(machineId: string, pc: PcOrder, generation: number, error: unknown): void {

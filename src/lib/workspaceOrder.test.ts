@@ -372,6 +372,34 @@ describe("ReorderCoordinator", () => {
     expect(coordinator.order("local", O)).toEqual(B);
   });
 
+  test("a restarted server's roster that arrived before the move's receipt is verified once the receipt lands", async () => {
+    const asks = verifier();
+    const coordinator = new ReorderCoordinator({ verify: asks.verify });
+    const moves = mover();
+    const done = coordinator.reorder("local", O, A, moves.move);
+    const step = await moves.next();
+    coordinator.roster([entry("local", A, "E2", 0)], event);
+    expect(asks.count()).toBe(0);
+    step.resolve({ ok: true, order_epoch: "E1", moved_seq: 1 });
+    await done;
+    expect(coordinator.state("local")).toMatchObject({ held: true, checking: true });
+    const ask = await asks.next();
+    expect(ask.id).toBe("local");
+    ask.resolve({ machines: [entry("local", B, "E2", 0)], boot_id: "E2" });
+    await flush();
+    expect(coordinator.state("local")).toMatchObject({ retired: ["E1"], guard: { epoch: "E2" } });
+    expect(coordinator.order("local", O)).toEqual(B);
+  });
+
+  test("a roster read before the move was sent asks no verification when its receipt lands", async () => {
+    const asks = verifier();
+    const coordinator = new ReorderCoordinator({ verify: asks.verify });
+    coordinator.roster([entry("local", O, "E1", 0)], event);
+    await dragged(coordinator, mover(), { ok: true, order_epoch: "E2", moved_seq: 1 });
+    expect(asks.count()).toBe(0);
+    expect(coordinator.state("local")).toMatchObject({ checking: false, floors: { E2: 1 } });
+  });
+
   test("passive older boot proof never retires a newer receipt epoch", async () => {
     const asks = verifier();
     const coordinator = new ReorderCoordinator({ verify: asks.verify });
