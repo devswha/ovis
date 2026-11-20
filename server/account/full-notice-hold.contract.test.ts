@@ -12,6 +12,10 @@ const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 
 async function atCapacity() {
+  // These cases cover slots and holds, not power loss. Keep real file writes, replacements
+  // and restarts without hundreds of synchronous file and directory flushes per fixture.
+  const flush = spyOn(privateStateFs, "fsyncSync").mockImplementation(() => {});
+  closes.push(() => flush.mockRestore());
   const pc = await createListedPc(close => closes.push(close));
   const time = { now: Date.now() + 3_600_001 };
   const clock = spyOn(Date, "now").mockImplementation(() => time.now);
@@ -27,10 +31,6 @@ async function atCapacity() {
 }
 
 test("G15/T57/P8: 64 open admissions stop the next phone; ending all 64 admits it", async () => {
-  // This case measures slots, not power-loss durability. Keep the real writes, renames and
-  // snapshot reads without waiting for hundreds of file and directory flushes.
-  const flush = spyOn(privateStateFs, "fsyncSync").mockImplementation(() => {});
-  closes.push(() => flush.mockRestore());
   const { fixture, devices, service, serverId } = await atCapacity();
   const next = accountDeviceId(serverId, keyOf("k-63"));
   for (const notice of devices.openNotices()) {
