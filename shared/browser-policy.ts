@@ -13,7 +13,9 @@
  *   without a trailing dot and an IPv4-mapped IPv6 address as its IPv4 address.
  * - An Ovis server (this PC's, another PC's) is refused at its port on any name of its host, every
  *   loopback name counting as one: a tab that could open one without a token reaches every terminal
- *   of that PC.
+ *   of that PC. The decision reads names, not where a name resolves: the caller refuses a name that
+ *   resolves to one (`ovisAt` on each resolved address), and the server lets a loopback request in
+ *   only under a name of its own (server/access.ts), so a rebinding name is asked to pair.
  */
 
 export type BrowserRefusal = "invalid" | "scheme" | "opaque" | "blocked" | "ovis";
@@ -77,6 +79,8 @@ export function blockedSite(entry: string): string | null {
   if (text === "" || /\s/.test(text)) return null;
   try {
     const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text}`);
+    // another scheme leaves an international name as typed, which no web address would match
+    if (!NETWORK.has(url.protocol)) return null;
     const host = canonicalHost(url.hostname);
     return host === "" ? null : host;
   } catch {
@@ -92,13 +96,22 @@ function refused(reason: BrowserRefusal): Refused {
   return { allowed: false, reason };
 }
 
+/** Whether `hostname` (a name or an address, as the URL parser gives it) at `port` is an Ovis server of the policy. */
+export function ovisAt(hostname: string, port: number, policy: BrowserPolicy): boolean {
+  const machine = machineHost(canonicalHost(hostname));
+  return policy.ovis.some((server) => machineHost(canonicalHost(server.host)) === machine && server.port === port);
+}
+
+/** the port a network URL reaches */
+export function urlPort(url: URL): number {
+  return url.port === "" ? DEFAULT_PORT[url.protocol] ?? 0 : Number(url.port);
+}
+
 function networkDecision(url: URL, address: string, policy: BrowserPolicy): BrowserDecision {
   if (url.username !== "" || url.password !== "") return refused("invalid");
   const host = canonicalHost(url.hostname);
   if (host === "") return refused("invalid");
-  const port = url.port === "" ? DEFAULT_PORT[url.protocol]! : Number(url.port);
-  const machine = machineHost(host);
-  if (policy.ovis.some((server) => machineHost(canonicalHost(server.host)) === machine && server.port === port)) return refused("ovis");
+  if (ovisAt(host, urlPort(url), policy)) return refused("ovis");
   if (hostBlocked(host, policy.blocked)) return refused("blocked");
   return { allowed: true, url: address, origin: url.origin } as Allowed;
 }
@@ -116,13 +129,15 @@ export function decide(address: string, policy: BrowserPolicy, frameOrigin: stri
   }
   if (NETWORK.has(url.protocol)) return networkDecision(url, address, policy);
   if (url.protocol === "blob:" || url.protocol === "filesystem:") {
+    // the parsed address, so a spelling the parser tidies (a leading space, upper case) is read the same
     let inner: URL;
     try {
-      inner = new URL(address.slice(url.protocol.length));
+      inner = new URL(url.href.slice(url.protocol.length));
     } catch {
       return refused("invalid");
     }
-    if (!NETWORK.has(inner.protocol)) return refused("scheme");
+    // only a page has an origin to hold a blob: a socket's address makes an opaque one
+    if (inner.protocol !== "http:" && inner.protocol !== "https:") return refused("scheme");
     const decision = networkDecision(inner, address, policy);
     return decision.allowed ? ({ ...decision, url: address } as Allowed) : decision;
   }

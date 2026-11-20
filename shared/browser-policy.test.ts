@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { blockedSite, canonicalHost, decide, machineHost, shownAddress, type BrowserDecision, type BrowserPolicy } from "./browser-policy.ts";
+import { blockedSite, canonicalHost, decide, machineHost, ovisAt, shownAddress, type BrowserDecision, type BrowserPolicy } from "./browser-policy.ts";
 
 const policy: BrowserPolicy = { blocked: ["bank.example", "xn--bcher-kva.example", "10.0.0.7", "[2001:db8::1]"], ovis: [{ host: "127.0.0.1", port: 7317 }, { host: "100.64.0.9", port: 7317 }] };
 const reason = (decision: BrowserDecision) => decision.allowed ? "allowed" : decision.reason;
@@ -67,6 +67,10 @@ describe("the built-in browser's decision", () => {
     expect(reason(decide("blob:http://localhost:7317/x", policy))).toBe("ovis");
     expect(reason(decide("blob:null/0b6a3c2e", policy))).toBe("invalid");
     expect(reason(decide("blob:file:///x", policy))).toBe("scheme");
+    expect(reason(decide("blob:wss://site.example/0b6a3c2e", policy))).toBe("scheme");
+    expect(reason(decide(" blob:https://bank.example/0b6a3c2e", policy))).toBe("blocked");
+    expect(reason(decide("BLOB:https://site.example/0b6a3c2e", policy))).toBe("allowed");
+    expect(reason(decide(" filesystem:https://site.example/temporary/a", policy))).toBe("allowed");
     const allowed = decide("blob:https://site.example/0b6a3c2e", policy);
     expect(allowed).toMatchObject({ allowed: true, origin: "https://site.example" });
   });
@@ -105,6 +109,8 @@ describe("a blocked site as typed", () => {
     ["", null],
     ["two words", null],
     ["http://", null],
+    ["custom://bücher.example/path", null],
+    ["wss://bücher.example/", "xn--bcher-kva.example"],
   ])("keeps %j as %j", (entry, expected) => {
     expect(blockedSite(entry)).toBe(expected);
   });
@@ -113,6 +119,16 @@ describe("a blocked site as typed", () => {
     const sites: BrowserPolicy = { blocked: [blockedSite("a.localhost")!], ovis: [] };
     expect(reason(decide("http://a.localhost:5173/", sites))).toBe("blocked");
     expect(reason(decide("http://b.localhost:5173/", sites))).toBe("allowed");
+  });
+});
+
+describe("an Ovis server at an address a name resolved to", () => {
+  it("is found by the address and the port, loopback in any spelling", () => {
+    expect(ovisAt("127.0.0.1", 7317, policy)).toBe(true);
+    expect(ovisAt("[::1]", 7317, policy)).toBe(true);
+    expect(ovisAt("100.64.0.9", 7317, policy)).toBe(true);
+    expect(ovisAt("127.0.0.1", 7318, policy)).toBe(false);
+    expect(ovisAt("203.0.113.7", 7317, policy)).toBe(false);
   });
 });
 
