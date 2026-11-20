@@ -153,12 +153,17 @@ export async function openPhoneSettings(page: Page, origin: string): Promise<voi
     await page.goto(origin, { waitUntil: "domcontentloaded" });
     await page.locator(".conn-live").waitFor({ state: "attached" });
   } catch (error) {
-    const shown = await page.evaluate(() => ({
-      url: location.href,
-      conn: [...document.querySelectorAll(".conn")].map((chip) => `${chip.className}: ${chip.textContent ?? ""}`),
-      terminals: document.querySelectorAll(".xterm").length,
-      dialogs: [...document.querySelectorAll("[role=dialog], [role=alertdialog]")].map((dialog) => dialog.getAttribute("aria-label") ?? dialog.className),
-    })).catch((readError: unknown) => ({ unreadable: String(readError) }));
+    // a page that stopped running scripts never answers: the read gives up, so the timeout above is still reported
+    let gaveUp: ReturnType<typeof setTimeout> | undefined;
+    const shown = await Promise.race([
+      page.evaluate(() => ({
+        url: location.href,
+        conn: [...document.querySelectorAll(".conn")].map((chip) => `${chip.className}: ${chip.textContent ?? ""}`),
+        terminals: document.querySelectorAll(".xterm").length,
+        dialogs: [...document.querySelectorAll("[role=dialog], [role=alertdialog]")].map((dialog) => dialog.getAttribute("aria-label") ?? dialog.className),
+      })),
+      new Promise<never>((_, reject) => { gaveUp = setTimeout(() => reject(new Error("the page did not answer within 5 s")), 5_000); }),
+    ]).catch((readError: unknown) => ({ unreadable: String(readError) })).finally(() => clearTimeout(gaveUp));
     throw new Error(`${error instanceof Error ? error.message.split("\n")[0] : String(error)}; page ${JSON.stringify(shown)}; sockets ${JSON.stringify(sockets)}`, { cause: error });
   } finally {
     page.off("websocket", noteSocket);
