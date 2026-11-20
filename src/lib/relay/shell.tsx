@@ -446,7 +446,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         case "retry": await connect({ ...attempt, retriedAccountOpen: true }); return;
         case "pair":
           cancelAttempt();
-          joinPc({ ...attempt.offer, join: attempt.offer }, { sheet: "join", alone: true });
+          joinPc({ ...attempt.offer, join: attempt.offer }, { sheet: attempt.freshPc ? "new" : "join", alone: true, ...(attempt.freshPc ? { typed: true } : {}) });
           return;
         case "wait": {
           show({ kind: "connecting", name: attempt.offer.name ?? null, hold: step.hold });
@@ -917,12 +917,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       // by hand opens only on a press meanwhile (security-triage, condition 3); once that has passed it opens as before.
       // A launch never comes here: it reopens only a pairing made on this device by hand.
       // a join card a launch put up and nobody pressed yet asks again on a reload: it never opens the PC by itself
+      // a PC new in the account that no device is in yet takes the number its own screen shows, as the dashboard's Add
+      // does; any other asks a device already in to approve. The account's own way in, refused, falls back the same way
+      const fresh = joinable !== undefined && newPcs([joinable], Date.now()).length > 0;
       if (joinable?.join && joinable.accountOpen && openKey !== null && !isNewAccountPc(joinable, Date.now()) && !launchJoinFor(joinable.server_id)) {
-        await connect({ offer: { v: 1, server_id: joinable.server_id, ...joinable.join, name: joinable.name }, code: false, paired: true, accountOpen: openKey });
+        await connect({ offer: { v: 1, server_id: joinable.server_id, ...joinable.join, name: joinable.name }, code: false, paired: true, accountOpen: openKey, ...(fresh ? { freshPc: true as const } : {}) });
       } else if (joinable !== undefined) {
-        // a PC new in the account that no device is in yet takes the number its own screen shows, as the dashboard's Add
-        // does; any other asks a device already in to approve
-        const fresh = newPcs([joinable], Date.now()).length > 0;
         joinPc(joinable, { sheet: fresh ? "new" : "join", alone: true, ...(fresh ? { typed: true } : {}) });
       }
       else show({ kind: "empty" });

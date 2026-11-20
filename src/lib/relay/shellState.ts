@@ -249,6 +249,8 @@ export interface Attempt {
   signIn?: AccountSession;
   readonly accountOpen?: SignInKey;
   readonly retriedAccountOpen?: true;
+  /** a PC new in the account that no device is in yet: a pairing it falls back to takes the number its screen shows */
+  readonly freshPc?: true;
   readonly holdRetryMs?: number;
   retryEnrollment?: boolean;
   retriedPending?: boolean;

@@ -17,6 +17,7 @@ import { dashboardModel, dashboardPcs } from "./dashboard.ts";
 import { accountOpenPeer, accountOpenRefusalFrame } from "./accountOpenPeer.fixture.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
+import { AccountOpenUnsupportedError } from "../../../shared/relay-channel.ts";
 import { mountRelayShell, type RelayShellMount } from "./shell.tsx";
 import { openRelayTransport, RelayTransport } from "./transport.ts";
 
@@ -167,6 +168,14 @@ it("C3: a reload of the join card a launch put up, not pressed yet, asks again a
 
 it("a PC just added to the account that no device is in yet opens on its own page as a new PC, typing the number it shows", async () => {
   const run = await accountPc({ release: false, seen: false, open: () => { throw new TypeError("nothing opens before the number"); } });
+  await run.openPage();
+  expect(run.navigations).toEqual([expect.stringContaining(`/s/${run.serverId}/#offer=`)]);
+  expect(JSON.parse(browser.sessionStore.get("ovis-add-pc-sheet") ?? "null")).toMatchObject({ mode: "new", server_id: run.serverId, alone: true });
+  expect(browser.sessionStore.get("ovis-typed-join")).toBe(run.serverId);
+});
+
+it("a just-added PC that does not take the account's way in falls back to the new-PC pairing, typing its number", async () => {
+  const run = await accountPc({ seen: false, open: async () => { throw new AccountOpenUnsupportedError(); } });
   await run.openPage();
   expect(run.navigations).toEqual([expect.stringContaining(`/s/${run.serverId}/#offer=`)]);
   expect(JSON.parse(browser.sessionStore.get("ovis-add-pc-sheet") ?? "null")).toMatchObject({ mode: "new", server_id: run.serverId, alone: true });
