@@ -29,8 +29,13 @@ export class FirstActivation {
       }
       if (STEP2_STATE.some(file => lstatSync(join(stateDir, file), { throwIfNoEntry: false }))) return new FirstActivation(path, false);
       const registry = readDeviceRegistry(join(stateDir, "devices.json"), true);
-      if (registry.kind !== "ok" || !registry.devices.some(row => row.origin === undefined && !row.imported)
-        || registry.devices.some(row => row.origin !== undefined || row.imported)) return new FirstActivation(path, false);
+      if (registry.kind !== "ok") return new FirstActivation(path, false);
+      const local = registry.devices.filter(row => !row.imported);
+      // A never-bound PC needs no exception. Its eventual binding starts the usual wait.
+      if (local.length === 0 || local.some(row => row.origin !== undefined)
+        || !registry.devices.some(row => row.account !== undefined)) {
+        return new FirstActivation(path, false);
+      }
       writePrivateState(path, { v: 1, pending: true });
       return new FirstActivation(path, true);
     } catch (error) {

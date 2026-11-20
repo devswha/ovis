@@ -288,14 +288,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   }
   const askingTheScreen = ownWindow
     && ((pathname === "/api/account/lock" && request.method === "GET") || (pathname === "/api/account/unlock" && request.method === "POST"));
-  const retryingDenial = ownWindow && !funnel && devices.localRemovalRetry()
+  const localDenial = ownWindow && !funnel && (devices.localRemovalRetry() || devices.clockOnlyFault())
     && ((request.method === "POST" && pathname === "/api/devices/revoke-all")
       || (request.method === "DELETE" && /^\/api\/devices\/[0-9a-f]{16}$/.test(pathname)));
   // strict is every source the store fails closed on (the log, the admission order, removal evidence, the journal: S19)
   if (safety !== null && safety !== undefined && !askingTheScreen) {
-    const clockOnlyLegacy = access.level === "full" && (access.via === "device" || access.via === "relay")
-      && access.device !== undefined && devices.legacyClockCredential(access.device.id);
-    access = lockBoundary(access, { locked: safety.state().locked, strict: devices.failsClosed && !clockOnlyLegacy && !retryingDenial }, {
+    access = lockBoundary(access, { locked: safety.state().locked, strict: devices.failsClosed && !localDenial }, {
       localProof: false, ownProgram: ctx.ownerSocket === true, originOf: (rowId) => devices.originOf(rowId),
     });
   }
@@ -591,7 +589,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/devices" || pathname.startsWith("/api/devices/")) {
     try {
       // one device, or all of them: the registry names what was revoked, and the cleanup follows its ids
-      const revokeAccess = retryingDenial && access.level === "full" ? { ...access, via: "local" as const } : access;
+      const revokeAccess = localDenial && access.level === "full" ? { ...access, via: "local" as const } : access;
       return await handleDeviceRequest(request, pathname, devices, revokeAccess, ctx.peer.kind === "relay" ? ctx.peer.key : null, (revoked) => {
         for (const id of revoked) {
           // The device registry is the delivery authority even if cleaning the push file fails.

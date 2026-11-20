@@ -333,6 +333,7 @@ export function createServer(
     heldByDevicesJson: (key) => devices.hasKey(key),
     checkFreshness: () => accountCatchUp.checkFreshness(),
     releaseOf: id => recoveryReleases?.releaseOf(id) ?? null,
+    serviceStep2Off: () => pcAccount.serviceStep2Off(),
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
     now: () => Date.now(),
     setTimeout: (run, ms) => devices.waitClock().setTimeout(run, ms),

@@ -29,13 +29,13 @@ export class CatchUpGate {
   constructor(private readonly binding: () => string | null, private readonly released: (id: string) => boolean = () => false,
     private readonly firstActivation: () => boolean = () => false) {}
 
-  waits(row: GatedRow, credential = true): boolean {
+  waits(row: GatedRow, credential = true, admitsLegacy: () => boolean = () => true): boolean {
     const binding = this.binding();
     if (binding === null || this.released(row.id)) return false;
     if (this.lifted.has(row.id)) return true;
     if (pairedAtPc(row.origin)) return false;
     if (this.caughtUpFor === binding) return this.waiting.has(row.id);
-    return !credential || row.origin?.from !== "legacy" || !(this.step2OffFor === binding || this.firstActivation());
+    return !credential || row.origin?.from !== "legacy" || !(this.step2OffFor === binding || this.firstActivation()) || !admitsLegacy();
   }
 
   /** Only T50's pre-Step-2 rows are excused, never a row judged unsafe by a read or waiting after a lift. */

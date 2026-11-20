@@ -40,6 +40,8 @@ interface PcDoc {
   gen: number;
   /** the removal evidence was on disk once: its file missing since is damage, never a fresh start (S19) */
   evidence_written?: true;
+  /** A listed PC's explicit service opt-out cannot be undone by a named recovery release. */
+  step2_off_for?: string | null;
 }
 
 const REASONS: ReadonlySet<string> = new Set(["revoke_all", "identity_reset", "left_on_pc", "unlisted"]);
@@ -63,6 +65,7 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (first !== null && !(typeof first === "object" && first !== undefined && typeof first.key === "string" && (first.list_key === null || typeof first.list_key === "string"))) return "invalid first";
   if (typeof doc.others_ever !== "boolean") return "invalid others_ever";
   if (doc.evidence_written !== undefined && doc.evidence_written !== true) return "invalid evidence_written";
+  if (doc.step2_off_for != null && (typeof doc.step2_off_for !== "string" || !ID.test(doc.step2_off_for))) return "invalid step2_off_for";
   if (doc.gen === undefined) return { ...doc, gen: 0 } as PcDoc;
   if (!Number.isSafeInteger(doc.gen) || doc.gen < 0) return "invalid gen";
   return doc as PcDoc;
@@ -310,6 +313,22 @@ export class PcAccountState {
     const admitNo = this.doc.next_admit;
     this.write({ ...this.doc, next_admit: admitNo + 1 });
     return { from, how, by, admit_no: admitNo, at: new Date(now).toISOString() };
+  }
+
+  serviceStep2Off(): boolean {
+    const binding = this.binding();
+    return binding !== null && this.doc.step2_off_for === binding.bind_id;
+  }
+
+  setServiceStep2Off(off: boolean): boolean {
+    const binding = this.binding();
+    if (binding === null || this.serviceStep2Off() === off) return false;
+    try { this.write({ ...this.doc, step2_off_for: off ? binding.bind_id : null }); }
+    catch (error) {
+      this.unwritten(error, "The service's Step 2 status could not be saved");
+      throw error;
+    }
+    return true;
   }
 
   private write(doc: PcDoc): void {

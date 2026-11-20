@@ -530,7 +530,6 @@ export class DeviceStore {
   private tombstones: AccountTombstone[] = [];
   /** Why account records cannot be applied: a tombstone file that will not parse is not an empty one. */
   private accountProblem: string | null = null;
-  private legacyClockProblem: string | null = null;
   readonly error: string | null = null;
 
   /**
@@ -757,7 +756,6 @@ export class DeviceStore {
     });
     const bad = marked.find(row => row.untrusted_created_at === row.created_at);
     if (!bad) return;
-    this.legacyClockProblem = `A legacy pairing time lies in the future (${bad.created_at}): account records are refused until it is repaired.`;
     if (marked.every((row, index) => row === this.devices[index])) return;
     this.devices = marked;
     try { this.save(marked); }
@@ -836,12 +834,13 @@ export class DeviceStore {
   }
 
   get accountError(): string | null {
-    return this.accountIntegrityError ?? this.legacyClockProblem;
+    const bad = this.devices.find(row => row.untrusted_created_at === row.created_at);
+    return this.accountIntegrityError ?? (bad ? `A legacy pairing time lies in the future (${bad.created_at}): account records are refused until it is repaired.` : null);
   }
 
   /** A local denial does not need the listed registry; it still needs the rest of the PC's safety state. */
   get revokeAllError(): string | null {
-    return this.revokeIntegrityError ?? this.denyProblem ?? this.legacyClockProblem;
+    return this.revokeIntegrityError ?? this.denyProblem;
   }
 
   private get revokeIntegrityError(): string | null {
@@ -857,16 +856,15 @@ export class DeviceStore {
     return this.denyProblem !== null && this.revokeIntegrityError === null && this.error === null;
   }
 
-  /** Only a proved legacy credential may pass the clock-only fault at the HTTP/WS boundary. */
-  legacyClockCredential(id: string): boolean {
-    return this.legacyClockProblem !== null && this.accountIntegrityError === null && this.error === null
-      && this.devices.some(row => row.id === id && row.origin?.from === "legacy" && !this.stale(row) && !this.catchingUp(id));
+  /** The local owner may take access away without trusting any legacy timestamp. */
+  clockOnlyFault(): boolean {
+    return this.accountError !== null && this.accountIntegrityError === null && this.error === null;
   }
 
   /** No device gets in by a row or a code when the PC cannot trust its account state. */
   get failsClosed(): boolean {
     // one rule (S19): with the flag on, anything that makes account records refused makes only this PC get in
-    return (this.safety !== null || this.pc !== null || this.evidence !== null) && this.accountError !== null;
+    return (this.safety !== null || this.pc !== null || this.evidence !== null) && this.accountIntegrityError !== null;
   }
 
 
@@ -916,8 +914,8 @@ export class DeviceStore {
     return this.admissionAllowed(key, confirm, options);
   }
 
-  private admissionAllowed(key: string | undefined, proof: ConfirmProof | "list" | undefined, options?: { pairingHere?: boolean }): boolean {
-    if (this.failsClosed) return false;
+  private admissionAllowed(key: string | undefined, proof: ConfirmProof | "list" | "legacy_credential" | undefined, options?: { pairingHere?: boolean }): boolean {
+    if (this.failsClosed || (proof !== "legacy_credential" && this.accountError !== null)) return false;
     const state = this.safety?.state();
     if (state === undefined) return true;
     if (key !== undefined) {
@@ -925,7 +923,7 @@ export class DeviceStore {
       if (!options?.pairingHere && (this.isTombstoned(key) || (this.evidence?.standingRevokes(key).length ?? 0) > 0)) return false;
     }
     // only a proof admitConfirmed minted from a live reservation counts: a hand-built one passes nothing
-    const confirm = proof === "list" ? undefined : proof;
+    const confirm = typeof proof === "string" ? undefined : proof;
     const confirmed = confirm !== undefined && MINTED_PROOFS.has(confirm) && key !== undefined && confirm.key === key;
     // a locked PC admits only the key approved on its own screen (P11); a recover admit is ended by the lock (P22)
     if (state.locked && !(confirmed && confirm.source === "screen")) return false;
@@ -1152,7 +1150,7 @@ export class DeviceStore {
 
   /** A join hold permits only the row's own leave; a catch-up wait permits no signature. */
   private canSpeak(id: string, ownLeave = false): boolean {
-    if (this.failsClosed) return false;
+    if (this.accountError !== null) return false;
     const member = this.devices.find(row => row.id === id);
     if (member) return !this.catchingUp(id, false) && this.memberAdmitted(member, Date.now(), ownLeave);
     const row = this.joinedRows?.row(id);
@@ -1244,11 +1242,12 @@ export class DeviceStore {
   canRevokeAsPc(access: Access): boolean {
     if (access.level !== "full" || !ownerAccess(access)) return false;
     return access.via === "local" ||
-      ((access.via === "tailscale" || access.via === "token") && !this.safety?.inForce.locked && !this.failsClosed);
+      ((access.via === "tailscale" || access.via === "token") && !this.safety?.inForce.locked && this.accountError === null);
   }
 
   /** R1/T19: Revoke is key-wide, so a remote caller may revoke its own row alone or a set of entirely newer rows. */
   remoteRevoke(callerId: string | null, targetId: string): "allowed" | "older" | "unorderable" {
+    if (this.accountError !== null) return "unorderable";
     const caller = callerId === null ? undefined : this.anyRow(callerId);
     const target = this.anyRow(targetId);
     if (caller === undefined || target === undefined) return "unorderable";
@@ -1266,6 +1265,7 @@ export class DeviceStore {
    * and every target row must be newer than every member row of the signer.
    */
   removeAuthority(signer: string, key: string, account: string): boolean {
+    if (this.clockOnlyFault()) return false;
     if (signer === key) return true;
     // an account-joined key signs only its own remove (P5, ruling 1): only devices.json member rows count here
     if (!this.memberRows(signer, account).some((row) => this.devices.includes(row))) return false;
@@ -1878,7 +1878,7 @@ export class DeviceStore {
     // a row its evidence covers serves no request, whatever session it holds (S14); while the PC fails closed no
     // session opens another stream either: only this PC itself gets in (S19, P8)
     if (device && this.catchingUp(id)) return null;
-    if (this.evidence !== null && ((this.failsClosed && (!device || !this.legacyClockCredential(id))) || (device !== undefined && this.stale(device)))) return null;
+    if (this.evidence !== null && (this.failsClosed || (device !== undefined && this.stale(device)))) return null;
     if (device) return this.memberAdmitted(device, Date.now()) ? { role: device.role, key: device.relay_public_key, provisional: false } : null;
     const waiting = this.pending?.waiting?.rows.get(id);
     if (waiting) return { role: "watch", key: waiting.key, provisional: true };
@@ -1906,7 +1906,7 @@ export class DeviceStore {
   private accountRowStale(row: AccountRow): boolean {
     const stored = this.joinedAsStored(row);
     const state = this.safety?.inForce;
-    return this.failsClosed || state?.locked === true || this.failedRows.has(row.id) || this.failedDenies.has(row.key)
+    return this.accountError !== null || state?.locked === true || this.failedRows.has(row.id) || this.failedDenies.has(row.key)
       || this.isTombstoned(row.key) || this.coveredByEvidence(stored) || this.frozen(stored)
       || (state?.freezes.some(({ record }) => record.target === row.key || (record.kind === "freeze" &&
         (this.accountOrder?.late(row.key) !== false || (this.accountOrder.no(row.key) ?? row.no) > record.after))) ?? false);
@@ -1940,12 +1940,12 @@ export class DeviceStore {
    * caller without the key learns nothing; else the row's own verdict, read after the proof (T66).
    */
   async matchAccountRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string): Promise<{ match: DeviceMatch } | { refused: Exclude<AccessAnswer, { ok: true }>; holdUntil: string | null; readmission?: ReturnType<AccountRowSource["readmission"]> } | null> {
-    if (this.joinedRows === null || this.failsClosed || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
+    if (this.joinedRows === null || this.accountError !== null || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
     const member = this.devices.find((d) => d.id === deviceId);
     const row = this.joinedRows.row(deviceId);
     if (member ? !member.held || this.stale(member) : !row || this.accountRowStale(row)) return null;
     const key = member?.relay_public_key ?? row?.key;
-    if (!key || !await verifyRelayProof(key, { nonce, signature, serverId }) || this.failsClosed) return null;
+    if (!key || !await verifyRelayProof(key, { nonce, signature, serverId }) || this.accountError !== null) return null;
     const currentMember = this.devices.find((d) => d.id === deviceId);
     if (member) {
       if (!currentMember || currentMember.relay_public_key !== key || this.stale(currentMember)) return null;
@@ -1987,7 +1987,7 @@ export class DeviceStore {
 
   private provedSayer(id: string, key: string | undefined): Sayer | null {
     const row = this.anyRow(id);
-    if (!key || row?.relay_public_key !== key || !row.origin || this.failsClosed) return null;
+    if (!key || row?.relay_public_key !== key || !row.origin || this.accountError !== null) return null;
     const joined = this.joinedRows?.row(id);
     // a sayer whose own devices.json row still waits for the first whole read (S2-27) cannot vouch for another row
     const live = this.canSpeak(id) && !(joined ? this.accountRowStale(joined) : this.stale(row));
@@ -2030,7 +2030,8 @@ export class DeviceStore {
   /** Whether the devices.json row `id` waits for the first whole read (T41). */
   catchingUp(id: string, credential = true): boolean {
     const device = this.devices.find((d) => d.id === id);
-    return device !== undefined && (this.catchUp?.waits({ id, origin: device.origin }, credential) ?? false);
+    return device !== undefined && (this.catchUp?.waits({ id, origin: device.origin }, credential,
+      () => this.admissionAllowed(device.relay_public_key, "legacy_credential")) ?? false);
   }
 
   /** Whether `id` is an account-joined row (S2-26): its every route goes through accountRowMay. */
@@ -2435,16 +2436,16 @@ export class DeviceStore {
   async refusedRelayReceipts(deviceId: string, proof: { nonce: Uint8Array; signature: string; serverId: string }): Promise<readonly BlockReceipt[]> {
     const binding = this.pc?.binding();
     const order = this.accountOrder;
-    if (!binding || !order || !this.safety || this.failsClosed || order.lastVersion(binding.bind_id, proof.serverId) === null) return [];
+    if (!binding || !order || !this.safety || this.accountError !== null || order.lastVersion(binding.bind_id, proof.serverId) === null) return [];
     const key = this.relayKeyOf(deviceId) ?? order.relayKey(proof.serverId, deviceId);
     if (!key || order.no(key) === null || !await verifyRelayProof(key, proof)) return [];
-    if (this.pc?.binding()?.bind_id !== binding.bind_id || order.lastVersion(binding.bind_id, proof.serverId) === null || this.failsClosed) return [];
+    if (this.pc?.binding()?.bind_id !== binding.bind_id || order.lastVersion(binding.bind_id, proof.serverId) === null || this.accountError !== null) return [];
     return this.safety.receiptsBySigner(key, binding.account).filter((receipt) => receipt.outcome === "applied");
   }
 
   /** The transport owns a fresh 32-byte nonce per session and consumes AUTH only once. */
   async matchRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string, now = Date.now()): Promise<DeviceMatch | null> {
-    if (this.failsClosed && !this.legacyClockCredential(deviceId)) return null;
+    if (this.failsClosed) return null;
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key !== undefined);
     // a row that waits to link signs in as any row does, by the key its PAIR named, while it stands; only that
     // sign-in proves the key
@@ -2453,7 +2454,7 @@ export class DeviceStore {
     if (publicKey === undefined || (device !== undefined && this.stale(device))) return null;
     const verified = await verifyRelayProof(publicKey, { nonce, signature, serverId });
     // a log that turned strict while the proof was checked refuses it too (S19)
-    if (this.failsClosed && !this.legacyClockCredential(deviceId)) return null;
+    if (this.failsClosed) return null;
     // the row went, or linked, while its signature was checked: the proof was for a row that is no more
     if (waiting !== undefined) return verified && this.provisional(deviceId) === waiting ? { id: waiting.id, label: waiting.label, role: "watch" } : null;
     // Authorization changes during WebCrypto invalidate the proof; a rename does not.
@@ -2470,7 +2471,7 @@ export class DeviceStore {
     const digest = hash(token);
     const candidateIndex = this.unconfirmedFirstPairs.findIndex(({ device }) => same(digest, device.token_hash));
     if (candidateIndex !== -1) {
-      if (this.failsClosed) return null;
+      if (this.accountError !== null) return null;
       const { device: candidate, origin } = this.unconfirmedFirstPairs[candidateIndex]!;
       if (!this.admits(undefined)) return null;
       const admitted = this.admitted({ ...candidate, last_seen_at: new Date(now).toISOString() }, now);
@@ -2496,7 +2497,7 @@ export class DeviceStore {
     }
     for (const device of this.devices) {
       if (!same(digest, device.token_hash)) continue;
-      if (this.failsClosed && !this.legacyClockCredential(device.id)) return null;
+      if (this.failsClosed) return null;
       // a row its evidence covers or a block freezes opens nothing, whichever way it signs in (S14, S22)
       if (this.catchingUp(device.id) || (this.evidence !== null && this.stale(device)) || !this.memberAdmitted(device, now)) return null;
       this.noteSeen(device, now);
@@ -2777,7 +2778,7 @@ export class DeviceStore {
   }
 
   /** Holding a pairing code requires an ordinary paired member, not just a drive session. */
-  canHoldCode(id: string): boolean { return !this.failsClosed && this.devices.some(device => device.id === id) && this.canDrive(id); }
+  canHoldCode(id: string): boolean { return this.accountError === null && this.devices.some(device => device.id === id) && this.canDrive(id); }
 
   private pruneUnconfirmedFirstPairs(now: number): void {
     this.unconfirmedFirstPairs = this.unconfirmedFirstPairs.filter(({ expires }) => now <= expires);

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { DEVICE_COOKIE } from "../auth.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
+import { mergeSiblingState } from "../state-merge.ts";
 import { relayConnection, relayFixture } from "../relay/test-helpers.ts";
 import { legacyOrigin } from "./admission-order.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
@@ -103,7 +104,8 @@ test("a reconciled snapshot ends first activation for good, even across restart"
 test.each([false, true])("a future legacy timestamp keeps credential access on a bound=%s PC, not Step 2 grants", async bound => {
   const pc = await upgrade({ bound, created: Date.now() + 2 * DAY });
   const { devices, fixture, serverId } = pc.start();
-  expect(devices.failsClosed).toBe(true);
+  expect(devices.failsClosed).toBe(false);
+  expect(devices.admits(pc.device.publicKey)).toBe(false);
   expect(devices.match(pc.token)?.id).toBe(pc.device.id);
   const response = await fetch(`http://127.0.0.1:${fixture.app.port}/api/devices`, {
     headers: { cookie: `${DEVICE_COOKIE}=${pc.token}`, "x-forwarded-for": "100.64.0.9" },
@@ -147,5 +149,65 @@ test("a clock-ahead legacy row cannot say It's me after the clock catches up wit
 
   const notice = devices.openNotices().find(entry => entry.key === pending.spki);
   expect(notice !== undefined && devices.itsMe(pc.device.id, notice.id, pc.device.publicKey)).toBe(false);
-  expect(devices.failsClosed).toBe(true);
+  expect(devices.failsClosed).toBe(false);
+});
+
+test("a real Step-1 sibling merge does not cost the PC its own offline legacy cookie", async () => {
+  const local = await upgrade();
+  const sibling = await upgrade();
+  const importedToken = "sibling-cookie";
+  writeFileSync(join(sibling.stateDir, "devices.json"), JSON.stringify({ gate_closed_at: sibling.row.created_at, devices: [{
+    ...sibling.row, token_hash: createHash("sha256").update(importedToken).digest("hex"),
+  }] }), { mode: 0o600 });
+  mergeSiblingState(local.stateDir, sibling.stateDir);
+
+  const { devices } = local.start(async () => { throw new TypeError("offline"); });
+
+  expect(devices.list(null).some(row => row.id === sibling.device.id)).toBe(true);
+  expect([devices.match(local.token)?.id, devices.match(importedToken)]).toEqual([local.device.id, null]);
+});
+
+test("a later account binding does not inherit an unbound PC's first activation", async () => {
+  const pc = await upgrade({ bound: false });
+  const first = pc.start();
+  expect(first.devices.match(pc.token)?.id).toBe(pc.device.id);
+  first.fixture.app.stop();
+  PcAccountState.open(pc.stateDir).bind(ACCOUNT, pc.device.publicKey).commit();
+
+  const { devices } = pc.start(async () => { throw new TypeError("offline"); });
+
+  expect(devices.catchingUp(pc.device.id)).toBe(true);
+  expect(devices.match(pc.token)).toBeNull();
+});
+
+test.each(["single", "all"] as const)("a clock-only fault permits the owner's local %s Revoke", async kind => {
+  const pc = await upgrade({ created: Date.now() + 2 * DAY });
+  const { devices, fixture } = pc.start();
+  const base = `http://127.0.0.1:${fixture.app.port}`;
+  const path = `/api/devices/${kind === "all" ? "revoke-all" : pc.device.id}`;
+  const method = kind === "all" ? "POST" : "DELETE";
+  const guard = { origin: base, "x-herdr-machine": "1" };
+  const revoke = (headers: HeadersInit) => fetch(base + path, { method, headers });
+  expect(devices.match(pc.token)?.id).toBe(pc.device.id);
+
+  const local = await revoke({ ...guard, authorization: "Bearer owner-only" });
+
+  expect(local.status, local.status >= 400 ? await local.text() : undefined).toBe(kind === "all" ? 200 : 204);
+  expect(devices.match(pc.token)).toBeNull();
+  expect(devices.failsClosed).toBe(false);
+  await fixture.app.stop();
+  expect(pc.start().devices.match(pc.token)).toBeNull();
+});
+
+test("a clock-ahead cookie does not authorize remote removal of its own device", async () => {
+  const pc = await upgrade({ created: Date.now() + 2 * DAY });
+  const { devices, fixture } = pc.start();
+  const base = `http://127.0.0.1:${fixture.app.port}`;
+
+  const response = await fetch(`${base}/api/devices/${pc.device.id}`, { method: "DELETE", headers: {
+    origin: base, "x-herdr-machine": "1", "x-forwarded-for": "100.64.0.9", cookie: `${DEVICE_COOKIE}=${pc.token}`,
+  } });
+
+  expect(response.status).toBe(403);
+  expect(devices.match(pc.token)?.id).toBe(pc.device.id);
 });

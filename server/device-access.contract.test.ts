@@ -559,8 +559,17 @@ it("revoking every device closes relayed remote terminals through /ws?machine_id
 it("a revocation of every device that cannot be persisted changes nothing, and once it can, every credential issued before is void", async () => {
   const root = mkdtempSync(join(tmpdir(), "herdr-device-revoke-all-write-"));
   // Step 1 changes nothing on a failed registry write; Step 2 fails closed on a failed durable deny.
-  const options = { port: 0, stateDir: root, token: "", tailscaleOwner: null, accountOpensAll: false } as const;
-  let server = createServer(options);
+  const options = { port: 0, stateDir: root, token: "", tailscaleOwner: null } as const;
+  const startOptedOut = () => {
+    const previous = process.env["OVIS_ACCOUNT_OPENS_ALL"];
+    process.env["OVIS_ACCOUNT_OPENS_ALL"] = "0";
+    try { return createServer(options); }
+    finally {
+      if (previous === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+      else process.env["OVIS_ACCOUNT_OPENS_ALL"] = previous;
+    }
+  };
+  let server = startOptedOut();
   let base = `http://127.0.0.1:${server.port}`;
   const forwarded = { "x-forwarded-for": "198.51.100.24" };
   const abort = new AbortController();
@@ -609,7 +618,7 @@ it("a revocation of every device that cannot be persisted changes nothing, and o
     abort.abort();
     await owner.ended;
     server.stop();
-    server = createServer(options);
+    server = startOptedOut();
     base = `http://127.0.0.1:${server.port}`;
     expect(JSON.parse(readFileSync(join(root, "devices.json"), "utf8"))).toEqual({ gate_closed_at: expect.any(String), devices: [] });
     expect((await session(forwarded)).status).toBe(401);

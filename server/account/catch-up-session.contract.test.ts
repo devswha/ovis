@@ -6,6 +6,7 @@ import { FrameType, type MuxFrame, ACCOUNT_OPENS_ALL_FEATURE } from "../../share
 import { rotateRelayIdentity } from "../relay/identity.ts";
 import { bounded, relayAccountFixture, relayConnection } from "../relay/test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
+import { PcAccountState } from "./pc-binding.ts";
 
 const ACCOUNT = "acct_1";
 const closes: (() => void)[] = [];
@@ -15,7 +16,10 @@ afterEach(() => { for (const close of closes.splice(0)) close(); });
 async function startedPc() {
   // the service answers no snapshot yet: the PC's own reads after its start cannot end the wait
   const service = new FakeAccountService();
-  const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
+  const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, {
+    accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch },
+    prepare: stateDir => PcAccountState.open(stateDir).migrate(ACCOUNT, true),
+  });
   closes.push(() => fixture.close());
   rotateRelayIdentity(fixture.stateDir);
   const identity = fixture.app.context.services.relay.currentIdentity()!;

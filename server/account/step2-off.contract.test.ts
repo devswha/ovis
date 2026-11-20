@@ -8,18 +8,26 @@ import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT, createListedPc, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { ask, memberRow, pairingPc } from "./pairing.test-helpers.ts";
 import { PcAccountState } from "./pc-binding.ts";
+import { askRecovery } from "./recovery.ts";
+import { SafetyLog } from "./safety-log.ts";
 
 const closes: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); });
 
-async function legacyPc(options: { tombstone?: boolean; failure?: () => Response } = {}) {
+async function legacyPc(options: { tombstone?: boolean; freeze?: "target" | "cutoff"; failure?: () => Response } = {}) {
   const good = await memberRow(ACCOUNT);
   const gone = options.tombstone ? await memberRow(ACCOUNT) : null;
+  const freezeTarget = options.freeze === "cutoff" ? (await memberRow(ACCOUNT)).key.spki : good.key.spki;
   const pc = await pairingPc({
     rows: (gone ? [good.row, gone.row] : [good.row]).map(row => ({ ...row, origin: legacyOrigin(row.created_at) })),
     server: { accountOpensAll: true },
     prepare(dir) {
       PcAccountState.open(dir).migrate(ACCOUNT, true);
+      if (options.freeze) expect(SafetyLog.open(dir).append({ got: "snapshot", record: {
+        v: 1, kind: "freeze", id: `f:${"a".repeat(64)}`, account: ACCOUNT,
+        target: freezeTarget,
+        after: 1, signer: "service", signed_at: good.row.created_at, signature: "",
+      } }).outcome).toBe("applied");
       if (gone) writeFileSync(join(dir, "account-tombstones.json"), JSON.stringify({
         v: 1, tombstones: [{ key: gone.key.spki, account: ACCOUNT, record_id: "local", removed_at: new Date(Date.now() + 1_000).toISOString() }],
       }), { mode: 0o600 });
@@ -111,4 +119,38 @@ test("a whole snapshot after step2_off restores an account-joined phone's access
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
 
   expect([duringOff?.key ?? null, devices.sessionRow(device.id)?.key]).toEqual([null, device.publicKey]);
+});
+
+test.each(["target", "cutoff"] as const)("step2_off cannot bypass a persisted standalone freeze %s", async freeze => {
+  const { pc, legacy, mailbox } = await legacyPc({ freeze });
+  pc.account.reportsStep2Off = true;
+
+  await mailbox.readSnapshot();
+
+  expect(pc.devices.sessionRow(legacy.id)).toBeNull();
+});
+
+test.skipIf(process.platform === "win32")("a named recovery release cannot satisfy a joined row under step2_off", async () => {
+  const { fixture, device, serverId, service } = await createListedPc(close => closes.push(close));
+  const { accountMailbox, devices, recoveryReleases } = fixture.app.context.services;
+  const notice = devices.openNotices().find(entry => entry.row === device.id);
+  if (!notice) throw new Error("Missing list admission notice");
+  devices.decideNotice(notice.id);
+  const wall = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS + 1);
+  closes.push(() => wall.mockRestore());
+  await (await relayConnection(fixture, { serverId })).auth(device, [ACCOUNT_OPENS_ALL_FEATURE]);
+  service.opensAll = false;
+  service.reportsStep2Off = true;
+  await accountMailbox.readSnapshot();
+
+  const reply = await askRecovery(fixture.stateDir, { act: "release", rows: [device.id] });
+
+  expect(reply).not.toHaveProperty("released");
+  // Even a release already recorded for this row must not satisfy the service wait.
+  if (!recoveryReleases) throw new Error("Missing Step 2 recovery store");
+  recoveryReleases.release([{ id: device.id, key: device.publicKey }], "test");
+  expect(devices.sessionRow(device.id)).toBeNull();
+  service.opensAll = true;
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(devices.sessionRow(device.id)?.key).toBe(device.publicKey);
 });

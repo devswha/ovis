@@ -51,8 +51,8 @@ export class AccountCatchUp {
 
   /** An explicit opt-out is not a whole read: no renewal, no lift, and no account-list access. */
   step2Off(): void {
+    if (this.options.pc?.setServiceStep2Off(true)) this.rows?.store()?.waitForService();
     this.gate?.step2Off();
-    this.rows?.store()?.waitForRead();
   }
 
   /** `readmission`: the proved returning device a sign-in's own pull may readmit (S2-28, T55). */
@@ -60,11 +60,13 @@ export class AccountCatchUp {
     const store = this.rows?.store();
     try {
       store?.commitList(snapshot, readmission);
-      if (this.devices.failsClosed) throw new SnapshotWriteRefused(this.devices.accountError ?? "account_unavailable");
+      const accountError = this.devices.accountError;
+      if (accountError !== null) throw new SnapshotWriteRefused(accountError);
       store?.expire();
       this.options.activation?.complete();
       this.releases?.endAll();
       this.gate?.wholeRead(this.devices.list(null).filter(row => !this.devices.admits(this.devices.relayKeyOf(row.id))).map(row => row.id));
+      this.options.pc?.setServiceStep2Off(false);
     } catch (error) {
       // A list write may already have changed some rows. They cannot serve on a partial read.
       store?.waitForRead();
