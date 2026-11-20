@@ -2,7 +2,7 @@ import { existsSync, lstatSync, opendirSync, readFileSync, statSync, realpathSyn
 import type { Stats } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { normalize } from "node:path";
+import { normalize, posix } from "node:path";
 import { aclReader, harmlessGroups, trustRefusal } from "./herdr-core/discovery.ts";
 import { herdrAcceptsConnection } from "./herdr/client.ts";
 import type { FoundHerdrSession } from "../shared/machines.ts";
@@ -15,7 +15,7 @@ export interface HerdrDiscoveryHost {
   platform?: NodeJS.Platform;
   probe?(socket: string): Promise<boolean>;
 }
-interface DiscoveryScope { dirs: Set<string>; paths: Set<string>; uid: number | undefined }
+interface DiscoveryScope { dirs: Set<string>; paths: Set<string>; uid: number | undefined; temps: string[] }
 const MAX_CANDIDATES = 256;
 const PROBE_TIMEOUT_MS = 1000;
 const currentHost = (): HerdrDiscoveryHost => ({ home: process.env.HOME || homedir(), xdg: process.env.XDG_CONFIG_HOME, procRoot: "/proc", platform: process.platform, uid: process.getuid?.() });
@@ -31,7 +31,8 @@ export function testHerdrSession(name: string): boolean {
  * XDG_CONFIG_HOME); their sessions are never the user's to connect to.
  */
 export function throwawayPath(path: string, home: string, ...temps: (string | undefined)[]): boolean {
-  const inside = (dir: string, at: string) => normalize(at + "/").startsWith(dir.replace(/\/+$/, "") + "/");
+  // herdr sockets are POSIX paths, whatever this app's own platform
+  const inside = (dir: string, at: string) => posix.normalize(at + "/").startsWith(dir.replace(/\/+$/, "") + "/");
   const temp = [...temps, "/tmp", "/var/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/dev/shm"]
     .filter((dir): dir is string => !!dir?.startsWith("/") && !inside(dir, home));
   return [join(home, ".cache"), ...temp].some((dir) => inside(dir, path));
@@ -49,10 +50,10 @@ function processSocket(args: string[], home: string, xdg?: string): string | nul
 }
 
 async function discoveryScope(host: HerdrDiscoveryHost): Promise<DiscoveryScope> {
-  const scope: DiscoveryScope = { dirs: new Set(), paths: new Set(), uid: host.uid ?? process.getuid?.() };
+  const scope: DiscoveryScope = { dirs: new Set(), paths: new Set(), uid: host.uid ?? process.getuid?.(), temps: [tmpdir()] };
   const add = (path: string) => {
-    const session = /\/herdr\/sessions\/([^/]+)\/herdr\.sock$/.exec(path)?.[1];
-    if (scope.paths.size < MAX_CANDIDATES && !(session && testHerdrSession(session)) && !throwawayPath(path, host.home, tmpdir()) && existsSync(path)) scope.paths.add(path);
+    const session = /\/sessions\/([^/]+)\/herdr\.sock$/.exec(path)?.[1];
+    if (scope.paths.size < MAX_CANDIDATES && !(session && testHerdrSession(session)) && !throwawayPath(path, host.home, ...scope.temps) && existsSync(path)) scope.paths.add(path);
   };
   const allowRoot = (root: string | undefined) => {
     if (!root?.startsWith("/")) return;
@@ -61,7 +62,10 @@ async function discoveryScope(host: HerdrDiscoveryHost): Promise<DiscoveryScope>
   };
   allowRoot(join(host.home, ".config")); allowRoot(host.xdg);
   const server = (args: string[], home: string | undefined, xdg?: string, tmp?: string) => {
-    if (home !== host.home || xdg?.startsWith("/") && throwawayPath(xdg, home, tmpdir(), tmp)) return;
+    if (home !== host.home) return;
+    // a TMPDIR of this account's processes stays a throwaway folder for every root the scan reaches
+    if (tmp?.startsWith("/") && !scope.temps.includes(tmp)) scope.temps.push(tmp);
+    if (xdg?.startsWith("/") && throwawayPath(xdg, home, ...scope.temps)) return;
     const path = processSocket(args, home, xdg);
     if (!path) return;
     allowRoot(xdg?.startsWith("/") ? xdg : join(home, ".config"));
@@ -233,7 +237,7 @@ export async function discoverPinnableHerdrSessions(host: HerdrDiscoveryHost = c
     const unsafe = walk(dirname(path));
     if (unsafe !== null) return unsafe;
     if (await chosenHerdrSocketStatus(path, host, scope) !== "usable") return null;
-    const session = /\/herdr\/sessions\/([a-zA-Z0-9_-]{1,64})\/herdr\.sock$/.exec(path)?.[1];
+    const session = /\/sessions\/([a-zA-Z0-9_-]{1,64})\/herdr\.sock$/.exec(path)?.[1];
     return { socket_path: path, ...(session ? { session } : {}), label: session ?? "Default session" };
   }));
   return {
@@ -246,7 +250,7 @@ export async function discoverHerdrSessions(host: HerdrDiscoveryHost = currentHo
   const scope = await discoveryScope(host);
   const results = await Promise.all([...scope.paths].map(async (path): Promise<FoundHerdrSession | null> => {
     if (await chosenHerdrSocketStatus(path, host, scope) !== "usable") return null;
-    const session = /\/herdr\/sessions\/([a-zA-Z0-9_-]{1,64})\/herdr\.sock$/.exec(path)?.[1];
+    const session = /\/sessions\/([a-zA-Z0-9_-]{1,64})\/herdr\.sock$/.exec(path)?.[1];
     return { socket_path: path, ...(session ? { session } : {}), label: session ?? "Default session" };
   }));
   return results.filter((result): result is FoundHerdrSession => result !== null);

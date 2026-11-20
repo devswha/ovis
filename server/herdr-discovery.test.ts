@@ -113,6 +113,14 @@ describe("running herdr discovery", () => {
     expect(await discoverHerdrSessions(f)).toEqual([work]);
     // nor when the throwaway root is the scanner's own
     expect(await discoverHerdrSessions({ ...f, xdg: roots[0][1], procRoot: join(f.home, "missing") })).toEqual([work]);
+    // nor a root in another process's own TMPDIR that the scanner reaches as its own
+    expect(await discoverHerdrSessions({ ...f, xdg: roots[1][1] })).toEqual([work]);
+    // nor a test session behind a linked herdr folder
+    const linked = fixture();
+    listening(join(linked.home, "dotfiles/herdr-config/sessions/ovis-test/herdr.sock"));
+    mkdirSync(join(linked.home, ".config"));
+    symlinkSync(join(linked.home, "dotfiles/herdr-config"), join(linked.home, ".config/herdr"));
+    expect(await discoverHerdrSessions(linked)).toEqual([]);
     const listed = ["ovis-test", "ovis-test-gate", "check-873df7"].map((session) => ({ socket_path: `/h/.config/herdr/sessions/${session}/herdr.sock`, session, label: session }));
     const cached = { socket_path: "/h/.cache/ovis-tmp/trial/config/herdr/sessions/work/herdr.sock", session: "work", label: "work" };
     const temp = { socket_path: "/tmp/x/config/herdr/herdr.sock", label: "Default session" };

@@ -19,7 +19,7 @@ import { HerdrProfileState, herdrMachineId } from "./herdr-profile-state.ts";
 import { type HerdrMachineProfile, samePort, sameSshSession } from "./herdr-profiles.ts";
 import { appBuild } from "./app-revision.ts";
 import { shellQuote, validateTarget } from "./machine-security.ts";
-import { parseFoundHerdrSessions, validHerdrSocket } from "./herdr-discovery.ts";
+import { parseFoundHerdrSessions, throwawayPath, validHerdrSocket } from "./herdr-discovery.ts";
 import { isCoreAdapterSocket } from "./herdr-core/pipe.ts";
 import { writePrivateState } from "./private-state.ts";
 import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-document.ts";
@@ -1392,7 +1392,7 @@ export class MachineManager {
           // the default session's socket is saved as herdr to start (job.defaultSocket), so the named one's row would save
           // the PC with that socket, and after that PC restarts its bridge would say the session no longer runs instead of
           // starting it by its name
-          if (!session && answered && !listedHere) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
+          if (!session && answered && !listedHere && !throwawayPath(expectedSocket, inspection.home)) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
         }
         if (sessions.has(expectedSocket)) throw await offer(choice);
       }
