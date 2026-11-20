@@ -308,12 +308,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         case "wait": {
           show({ kind: "connecting", name: attempt.offer.name ?? null, hold: step.hold });
           if (step.hold.reason === "frozen") return;
-          const deadline = "until" in step.hold && step.hold.until !== null ? Date.parse(step.hold.until) : NaN;
+          const remainingMs = "until" in step.hold && step.hold.until !== null ? Date.parse(step.hold.until) - Date.now() : 0;
           const retryMs = attempt.holdRetryMs ?? HOLD_RETRY_MIN_MS;
           // A temporary refusal closes the channel; only another attempt can learn that the hold changed.
           holdTimer = setTimeout(() => {
             if (last === attempt) void connect({ ...attempt, holdRetryMs: Math.min(HOLD_RETRY_MAX_MS, retryMs * 2) });
-          }, Number.isFinite(deadline) ? Math.max(0, deadline - Date.now()) : retryMs);
+          }, remainingMs > 0 ? remainingMs : retryMs);
           return;
         }
         default: {
