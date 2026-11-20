@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { accountRouteAction, accountRowMay, type AccountCaller, type RowAction } from "./account-row-rights.ts";
 
-const self: AccountCaller = { rowId: "row-self", key: "k-self", state: "live" };
+const self: AccountCaller = { rowId: "row-self", key: "k-self", state: "live", mayRevoke: id => id === "row-self" || id === "row-newer" };
 const held: AccountCaller = { ...self, state: "hold" };
 
 const verdicts = (caller: AccountCaller, actions: readonly RowAction[]) => actions.map((action) => ({ action: action.action, verdict: accountRowMay(caller, action) }));
@@ -17,11 +17,12 @@ describe("S2-26 what an account-joined row may do (T36, T37, T40, R3 to R10)", (
   test("T37: ordered row Revoke works and Revoke all remains local for both row types", () => {
     expect(accountRowMay(self, { action: "revoke", rowId: "row-self" })).toEqual({ ok: true });
     expect(accountRowMay(held, { action: "revoke", rowId: "row-self" })).toEqual({ ok: true });
-    expect(accountRowMay(self, { action: "revoke", rowId: "row-other" })).toEqual({ refused: "not_yours" });
+    expect(accountRowMay(self, { action: "revoke", rowId: "row-newer" })).toEqual({ ok: true });
+    expect(accountRowMay(self, { action: "revoke", rowId: "row-other" })).toEqual({ refused: "older_device" });
     expect(accountRowMay(self, { action: "revoke_all" })).toEqual({ refused: "local_required" });
   });
 
-  test("T40: account-joined link leaves the key and files unchanged", () => {
+  test("T40: the route policy refuses an account-joined link", () => {
     expect(accountRowMay(self, { action: "link" })).toEqual({ refused: "link_not_owner" });
   });
 
@@ -64,7 +65,7 @@ describe("S2-26 what an account-joined row may do (T36, T37, T40, R3 to R10)", (
   });
 });
 
-describe("S2-26 every route an account-joined caller reaches maps to one rights check (R1 to R10)", () => {
+describe("S2-26 representative account route mappings (R1 to R10)", () => {
   test("R1 to R10: the routes map to their actions; unregistered routes have no action", () => {
     const cases: [string, string, RowAction | null][] = [
       ["PATCH", "/api/devices/aaaaaaaaaaaaaaaa", { action: "label", rowId: "aaaaaaaaaaaaaaaa" }],

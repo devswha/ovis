@@ -1,7 +1,6 @@
 /**
- * What an account-joined row may do on this PC (Step 2, rows P5, T36, T37, T40, R1 to R10). It removes only itself,
- * admits nobody, turns no lock on or off, and reaches no other PC through this one. One check guards every route and
- * the signed records, so no path grants more than another.
+ * Dispatcher policy for an account-joined row on this PC. Row Revoke uses the PC's admission order;
+ * signed records, including a signed remove, are independently authorized by their handler.
  */
 import { DISPATCH_READS, LOCAL_DRIVE_POSTS, RELAY_CONTROLS } from "../dispatch-routes.ts";
 
@@ -9,6 +8,7 @@ export interface AccountCaller {
   readonly rowId: string;
   readonly key: string;
   readonly state: "live" | "hold" | "expired";
+  readonly mayRevoke: (targetId: string) => boolean;
 }
 
 export type RowAction =
@@ -32,7 +32,7 @@ export function accountRowMay(caller: AccountCaller, request: RowAction): RowVer
     // Each signed record is independently authorized at its production owner.
     case "records": return OK;
     case "remove": return request.key === caller.key ? OK : refuse("not_yours");
-    case "revoke":
+    case "revoke": return caller.mayRevoke(request.rowId) ? OK : refuse("older_device");
     case "label": return request.rowId === caller.rowId ? OK : refuse("not_yours");
     case "block":
     case "lift":

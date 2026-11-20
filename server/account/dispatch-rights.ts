@@ -39,6 +39,7 @@ export function accountDispatchRefusal(request: Request, ctx: ServerContext): Re
   const action = accountRouteAction(request.method, localPath)
     ?? (accountReadAllowed(request.method, localPath) ? { action: "read" as const } : null);
   if (action === null) return fail("account_route_denied");
-  const verdict = accountRowMay({ rowId: row.id, key: row.key, state: row.state }, action);
+  const verdict = accountRowMay({ rowId: row.id, key: row.key, state: row.state,
+    mayRevoke: target => ctx.services.devices.remoteRevoke(row.id, target) === "allowed" }, action);
   return "refused" in verdict ? fail(verdict.refused) : null;
 }
