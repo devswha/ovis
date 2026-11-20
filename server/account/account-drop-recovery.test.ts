@@ -84,6 +84,23 @@ test.each(["last listed row", "still-listed sibling"] as const)("P8/T41/P10: lea
   expect(rows(dir)).toEqual([]);
 });
 
+test("P8/T41/P10: a journalled Revoke-all after a pending leave keeps the leave's own reason", async () => {
+  const pc = await listedPc();
+  const { fixture, device } = pc;
+  const { devices } = fixture.app.context.services;
+  const dir = fixture.stateDir;
+  const fault = failReplacement(join(dir, JOURNAL_FILE));
+  try { await expect(leave(pc)).rejects.toThrow("replacement failed"); } finally { fault.mockRestore(); }
+  expect(drops(dir)).toEqual([]);
+  devices.revokeAll();
+  fixture.app.stop();
+  restartOffline(dir);
+  expect(drops(dir).filter(entry => entry.row === device.id)).toEqual([
+    { kind: "drop", how: "remove", key: device.publicKey, row: device.id, account: ACCOUNT },
+  ]);
+  expect(rows(dir)).toEqual([]);
+});
+
 test("P8/T41/P10: offline Revoke recovery allocates no new drop after the original is trimmed", async () => {
   const { fixture, device, member } = await listedPc();
   const dir = fixture.stateDir;
