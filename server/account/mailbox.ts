@@ -175,12 +175,11 @@ export class AccountMailbox {
     return typeof signer === "string" && typeof account === "string" && this.options.devices.accountSigner(signer, account) !== null;
   }
 
-  private holdsKey(key: string): boolean {
-    return this.waiting().some((record) => removedKey(record) === key && this.authorized(record));
+  /** A list candidate meets the same enrollment, held-key and counted-removal checks as a signed add. */
+  listHeld(key: string): boolean {
+    const gates = this.gates("list");
+    return gates.enrolling() || gates.held(key);
   }
-
-  /** What holds a key back from the account's list (P19): authorized waiting removes only; a full queue gates nothing there. */
-  listHeld(key: string): boolean { return this.pendingError !== null || this.holdsKey(key); }
 
   private dropSignerRemovals(key: string): void {
     if (this.pendingError !== null) return;
@@ -198,11 +197,12 @@ export class AccountMailbox {
    * What holds an add back here (docs/account.md, "Enrolling a PC"): the enrollment barrier, a waiting
    * remove for its key (whatever its signer), a held key, and a queue that is full or cannot be read.
    */
-  gates(): AddGates {
+  gates(source: "add" | "list" = "add"): AddGates {
+    const removing = (key: string) => this.pendingError !== null || this.waiting().some(record => removedKey(record) === key && this.authorized(record));
     return {
       enrolling: () => this.options.holds?.enrolling() ?? false,
-      held: (key, includeWaiting = true) => this.pendingError !== null || (includeWaiting && this.holdsKey(key)) || (this.options.holds?.holds(key) ?? false),
-      removing: (key) => this.pendingError !== null || this.holdsKey(key),
+      held: (key, includeWaiting = true) => this.pendingError !== null || (includeWaiting && removing(key)) || (this.options.holds?.holds(key, source) ?? false),
+      removing,
     };
   }
 
