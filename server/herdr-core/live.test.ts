@@ -92,6 +92,7 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
     expect(await proc.exited).toBe(0);
     const stored = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "scripts", "hc-schema.json"), "utf8")) as typeof schema;
     const hello = await hc.hello();
+    expect([hello.version, stored.info.version].filter((version) => !/^\d+\.\d+\.\d+$/.test(version)), "a release of hc names itself major.minor.patch: name a release in OVIS_TEST_HC_BIN").toEqual([]);
     if (!olderThan(hello.version, stored.info.version)) {
       // the hc the types were made from, or a newer one: refresh with OVIS_HC_BIN=<it> bun run generate:types --refresh-hc
       expect(schema).toEqual(stored);
