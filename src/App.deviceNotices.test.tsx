@@ -273,7 +273,7 @@ it("S2P-10, T53: replayed closes clear a refusal and stop a locked press from re
       expect(reconnect).not.toBe(laptop);
       await act(async () => {
         reconnect.open();
-        reconnect.read({ type: "features", features: [DEVICE_NOTICE_FEATURE] });
+        reconnect.read({ type: "features", features: [DEVICE_NOTICE_FEATURE], connection: "laptop-reconnect" });
         reconnect.read({ type: "device-notice-replay", replay: { notices: [
           { ...admission, seq: 3, open: false },
           { ...pending, seq: 4, open: false },
