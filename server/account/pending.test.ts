@@ -112,6 +112,28 @@ test("T71/S31: dropping a named key releases its code use and its challenge cann
   expect(released).toEqual([{ codeId: "use-1", key: phone.spki }]);
 });
 
+test.each([
+  ["its code ends (Revoke all, identity reset, expiry)", "code"],
+  ["its key is removed, blocked or Revoked", "key"],
+] as const)("S13-1: a proof in flight when %s never reaches the waiting list or the screen, and gives its use back once", async (_name, end) => {
+  const released: { codeId: string; key: string }[] = [];
+  const pending = new PendingRedemptions({ serverId: SERVER, journalDrop: () => {}, release: (codeId, key) => { released.push({ codeId, key }); } });
+  const phone = await device();
+  const codeId = "use-1";
+  const { challenge } = pending.name("code1", "Phone", phone.spki, "relay", undefined, { codeId });
+  const signature = await signPairProof(SERVER, challenge, phone.spki, phone.keys.privateKey);
+  const screenUpdates: number[] = [];
+  pending.onChange(() => { screenUpdates.push(pending.view().length); });
+
+  // verification yields before the proof can publish an entry: the code or key ends in that same turn
+  const verifying = pending.prove(challenge, signature);
+  if (end === "code") pending.dropCode(codeId); else pending.dropKey(phone.spki, "revoked");
+
+  const result = await verifying;
+  expect({ proved: result?.label ?? null, waiting: pending.view().map((entry) => entry.label), screenUpdates, released })
+    .toEqual({ proved: null, waiting: [], screenUpdates: [], released: [{ codeId, key: phone.spki }] });
+});
+
 test("T71: the PC's screen sees every redemption of a code side by side, with how each came", async () => {
   const { pending } = store();
   await proved(pending, "code1", "Phone");
