@@ -12,15 +12,19 @@ import type { BrowserContent } from "../../../shared/browser-broker.ts";
  */
 const linux = process.platform === "linux";
 const PASSWORD = "hunter2-secret";
+const UNLABELED = "unlabeled-secret-value";
 let root: string;
 let site: ReturnType<typeof Bun.serve>;
 let run: ReturnType<typeof Bun.spawn<"pipe", "pipe", "ignore">>;
 const submitted: string[] = [];
+let onSubmitted: (() => void) | null = null;
 let lines: AsyncIterator<string>;
 
 const FORM = `<!doctype html><title>Form</title><h1>Sign in</h1>
 <button id="b" style="position:absolute;left:20px;top:80px;width:120px;height:40px" onclick="document.title='clicked'">Press me</button>
-<form action="/submitted" style="position:absolute;left:20px;top:160px"><input name="q" aria-label="Search"><input type="password" aria-label="Password" value="${PASSWORD}"></form>`;
+<form action="/submitted" style="position:absolute;left:20px;top:160px"><input name="q" aria-label="Search"><input type="password" aria-label="Password" value="${PASSWORD}"></form>
+<div style="position:absolute;left:20px;top:240px"><input value="${UNLABELED}"><textarea>${UNLABELED}</textarea></div>
+<a href="/popup-page" target="_blank" style="position:absolute;left:20px;top:320px">Open more</a>`;
 
 async function* stdoutLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   let buffered = "";
@@ -57,7 +61,7 @@ beforeAll(async () => {
     port: 0,
     fetch(request) {
       const url = new URL(request.url);
-      if (url.pathname === "/submitted") submitted.push(url.search);
+      if (url.pathname === "/submitted") { submitted.push(url.search); onSubmitted?.(); }
       return new Response(url.pathname === "/form" ? FORM : "<title>Done</title>ok", { headers: { "content-type": "text/html" } });
     },
   });
@@ -113,16 +117,49 @@ describe.skipIf(!linux)("the built-in browser's agent socket in Electron", () =>
     expect(outline).toContain('heading "Sign in"');
     expect(outline).toMatch(/@e\d+ text input "Password"/);
     expect(outline).not.toContain(PASSWORD);
+    expect(outline).not.toContain(UNLABELED);
     const ref = (label: string) => new RegExp(`(@e\\d+) [^\\n]*"${label}"`).exec(outline)?.[1];
 
     expect(words((await call("a", "browser_click", { tab: tab.id, ref: ref("Press me") })).content)).toBe("Clicked.");
     expect(words((await call("a", "browser_snapshot", { tab: tab.id })).content)).toContain("Title: clicked");
     expect(words((await call("a", "browser_screenshot", { tab: tab.id })).content)).toContain("not on the user's screen");
 
-    const arrived = new Promise<void>((done) => { const check = () => submitted.length > 0 ? done() : setImmediate(check); check(); });
+    const arrived = new Promise<void>((done, failed) => {
+      const timer = setTimeout(() => failed(new Error("the form was never submitted")), 10_000);
+      onSubmitted = () => { clearTimeout(timer); done(); };
+    });
     expect(words((await call("a", "browser_type", { tab: tab.id, ref: ref("Search"), text: "hello there", submit: true })).content)).toBe("Typed.");
     await arrived;
     expect(submitted[0]).toStartWith("?q=hello+there");
+
+    // a window the page opens is a tab of the same pane: listed for it, for no other
+    // the form went to /submitted: back to the page with the link, and a fresh snapshot for its ref
+    expect(words((await call("a", "browser_navigate", { tab: tab.id, url: `${A}/form` })).content)).toBe("Loading.");
+    const linked = await new Promise<string>((done, failed) => {
+      const deadline = Date.now() + 10_000;
+      const look = async () => {
+        const text = words((await call("a", "browser_snapshot", { tab: tab.id })).content);
+        if (text.includes("Open more")) return done(text);
+        if (Date.now() > deadline) return failed(new Error("the form page never came back"));
+        setImmediate(() => void look());
+      };
+      void look();
+    });
+    const link = /(@e\d+) [^\n]*"Open more"/.exec(linked)?.[1];
+    expect(words((await call("a", "browser_click", { tab: tab.id, ref: link })).content)).toBe("Clicked.");
+    const popup = await new Promise<{ id: number; address: string }>((done, failed) => {
+      const deadline = Date.now() + 10_000;
+      const look = async () => {
+        const mine = JSON.parse(words((await call("a", "browser_tabs")).content)) as { id: number; address: string }[];
+        const found = mine.find((entry) => entry.address.endsWith("/popup-page"));
+        if (found) return done(found);
+        if (Date.now() > deadline) return failed(new Error("the opened window was never listed for its pane"));
+        setImmediate(() => void look());
+      };
+      void look();
+    });
+    expect(JSON.parse(words((await call("b", "browser_tabs")).content))).toEqual([]);
+    expect(words((await call("a", "browser_close", { tab: popup.id })).content)).toBe("Closed.");
 
     await harness(`hold ${tab.id}`);
     expect(words((await call("a", "browser_snapshot", { tab: tab.id })).content)).toContain("taken control");

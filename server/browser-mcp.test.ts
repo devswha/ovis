@@ -63,6 +63,16 @@ describe("the built-in browser's MCP server", () => {
     ]);
   });
 
+  it("ends a call the app closes without answering, at once", async () => {
+    const options = place();
+    writeFileSync(options.tokenFile, "a-token-0123456789abcdef0123456789abcdef");
+    const server = createServer((connection) => connection.once("data", () => connection.end()));
+    servers.push(server);
+    await new Promise<void>((listening) => server.listen(options.socket, listening));
+    const answer = await handle({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "browser_tabs", arguments: {} } }, options);
+    expect(answer).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("closed the connection") }] } });
+  });
+
   it("says so when the token is gone or the app is not there", async () => {
     const options = place();
     const call = { jsonrpc: "2.0" as const, id: 7, method: "tools/call", params: { name: "browser_tabs", arguments: {} } };

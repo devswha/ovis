@@ -17,6 +17,7 @@ import { hostForm } from "./browserState.ts";
 export const BROWSER_PROFILES = ["mine", "agent"] as const;
 export type BrowserProfile = (typeof BROWSER_PROFILES)[number];
 export const MAX_BROWSER_TABS = 8;
+const AGENT_OPEN_MS = 30_000;
 /** a download larger than this is cancelled, and a profile keeps at most MAX_DOWNLOADS from one start of the app */
 export const MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024;
 export const MAX_DOWNLOADS = 50;
@@ -209,9 +210,21 @@ export class BrowserTabs {
     if (!tab) return null;
     const contents = tab.view.webContents;
     const listed = await new Promise<boolean>((settle) => {
-      contents.once("did-stop-loading", () => settle(tab.allowed !== null));
-      contents.once("did-fail-load", (_event, code, _text, _url, isMainFrame) => { if (isMainFrame && code !== -3) settle(false); });
-      contents.once("destroyed", () => settle(false));
+      const stopped = () => done(tab.allowed !== null);
+      const failed = (_event: unknown, code: number, _text: string, _url: string, isMainFrame: boolean) => { if (isMainFrame && code !== -3) done(false); };
+      const gone = () => done(false);
+      // a page that never stops loading is listed if its first address was allowed, by then
+      const timer = setTimeout(() => done(tab.allowed !== null), AGENT_OPEN_MS);
+      function done(result: boolean): void {
+        clearTimeout(timer);
+        contents.off("did-stop-loading", stopped);
+        contents.off("did-fail-load", failed);
+        contents.off("destroyed", gone);
+        settle(result);
+      }
+      contents.on("did-stop-loading", stopped);
+      contents.on("did-fail-load", failed);
+      contents.on("destroyed", gone);
     });
     if (!listed) this.close(tab.id);
     return listed ? tab.id : null;
@@ -310,7 +323,8 @@ export class BrowserTabs {
     if (tab.profile === "agent") contents.setWebRTCIPHandlingPolicy("disable_non_proxied_udp");
     contents.setWindowOpenHandler(({ url }) => {
       if (!this.tabs.has(tab.id)) return { action: "deny" };
-      this.open(url, tab.profile);
+      // a window the page opens is a tab of the same profile and, for an agent's, of the same pane
+      this.open(url, tab.profile, tab.owner);
       this.tell();
       return { action: "deny" };
     });

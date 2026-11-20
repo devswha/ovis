@@ -49,6 +49,9 @@ const LANDMARK_ROLES = new Set([
   'search'
 ])
 
+/** roles whose children are the value typed into them (Ovis) */
+const EDITABLE_ROLES = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton'])
+
 const HEADING_PATTERN = /^heading$/
 
 const SKIP_ROLES = new Set(['none', 'presentation', 'generic'])
@@ -83,7 +86,8 @@ export function walkTree(
     return
   }
 
-  if (!name && !isLandmark) {
+  // an editable field's children hold its value (Chromium's inner editor): never read them, even unnamed (Ovis)
+  if (!name && !isLandmark && !EDITABLE_ROLES.has(role)) {
     walkChildren(node, nodeById, depth, entries, nextRef)
     return
   }

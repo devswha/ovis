@@ -44,7 +44,14 @@ export function callBroker(socket: string, tokenFile: string, tool: string, args
     const connection = connect(socket);
     let buffered = "";
     const timer = setTimeout(() => { connection.destroy(); settle(failed("The Ovis desktop app did not answer.")); }, CALL_TIMEOUT_MS);
-    const done = (answer: Omit<BrowserAnswer, "id">) => { clearTimeout(timer); connection.end(); settle(answer); };
+    let answered = false;
+    const done = (answer: Omit<BrowserAnswer, "id">) => {
+      if (answered) return;
+      answered = true;
+      clearTimeout(timer);
+      connection.end();
+      settle(answer);
+    };
     connection.setEncoding("utf8");
     connection.on("connect", () => connection.write(`${JSON.stringify({ id, token, tool, args })}\n`));
     connection.on("data", (chunk: string) => {
@@ -59,6 +66,8 @@ export function callBroker(socket: string, tokenFile: string, tool: string, args
       }
     });
     connection.on("error", () => done(failed("The Ovis desktop app is not running, or its built-in browser is off.")));
+    // the app quit or its built-in browser was turned off before it answered
+    connection.on("close", () => done(failed("The Ovis desktop app closed the connection before it answered.")));
   });
 }
 
