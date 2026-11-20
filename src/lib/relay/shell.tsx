@@ -34,6 +34,8 @@ export type { RelayShellMount } from "./shellState.ts";
 export { forgetSavedPc } from "./updateFlow.ts";
 declare const __APP_VERSION__: string;
 const INTRODUCED_GRACE_MS = 15 * 60_000;
+const HOLD_RETRY_MIN_MS = 1_000;
+const HOLD_RETRY_MAX_MS = 30_000;
 /** How long a confirm waits for the account service before it stops saying "checking": a service that never answers must not hold the Pair button. */
 export const ACCOUNT_READ_WAIT_MS = 8_000;
 /** How long a fresh account pairing waits for its link and sign-in before the PC opens anyway: a PC slow to answer must not hold the app. */
@@ -305,12 +307,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
           return;
         case "wait": {
           show({ kind: "connecting", name: attempt.offer.name ?? null, hold: step.hold });
+          if (step.hold.reason === "frozen") return;
           const deadline = "until" in step.hold && step.hold.until !== null ? Date.parse(step.hold.until) : NaN;
-          if (Number.isFinite(deadline)) {
-            holdTimer = setTimeout(() => {
-              if (last === attempt) void connect({ ...attempt });
-            }, Math.max(0, deadline - Date.now()));
-          }
+          const retryMs = attempt.holdRetryMs ?? HOLD_RETRY_MIN_MS;
+          // A temporary refusal closes the channel; only another attempt can learn that the hold changed.
+          holdTimer = setTimeout(() => {
+            if (last === attempt) void connect({ ...attempt, holdRetryMs: Math.min(HOLD_RETRY_MAX_MS, retryMs * 2) });
+          }, Number.isFinite(deadline) ? Math.max(0, deadline - Date.now()) : retryMs);
           return;
         }
         default: {

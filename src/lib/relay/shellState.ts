@@ -247,6 +247,7 @@ export interface Attempt {
   signIn?: AccountSession;
   readonly accountOpen?: SignInKey;
   readonly retriedAccountOpen?: true;
+  readonly holdRetryMs?: number;
   retryEnrollment?: boolean;
   retriedPending?: boolean;
   /**

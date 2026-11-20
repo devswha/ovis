@@ -241,6 +241,7 @@ it.each([
       return accountOpenRefusalFrame(scenario.code, "held", "hold" in scenario ? scenario.hold : undefined);
     } }),
   }) });
+  jest.useFakeTimers();
   await run.openPage();
   const state = run.current().state;
   expect({ auths, screen: state.kind === "failed" ? state.failure : state.kind, navigation: run.navigations }).toEqual({
@@ -253,6 +254,7 @@ it("T53, P17 wire: a held refusal whose notice is not published yet reaches the 
   const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
     ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_FEATURE], provisional: true, auth: () => accountOpenRefusalFrame("held", "", { reason: "join_hold", until: null }) }),
   }) });
+  jest.useFakeTimers();
   await run.openPage();
   expect(run.current().state).toMatchObject({ kind: "connecting", hold: { reason: "join_hold", until: null } });
 });
