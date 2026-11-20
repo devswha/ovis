@@ -19,6 +19,8 @@ test("T56: a failed service past one hour closes account-only sessions and refus
   const { devices, accountMailbox } = pc.fixture.app.context.services;
   devices.useClock(clock);
   clock.advance(JOIN_HOLD_MS);
+  const schedule = clock.setTimeout.bind(clock);
+  spyOn(clock, "setTimeout").mockImplementation((fire, ms) => schedule(fire, ms === STALE_READ_MS ? ms - 1 : ms));
   // Refresh through the real mailbox with the PC clock installed, not by supplying staleness to the row store: the
   // hour below counts from this whole read
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });

@@ -107,6 +107,7 @@ export interface RequestServices {
   readonly safetyLog: SafetyLog | null;
   /** Step 2 (S2-27): the wait after a start for rows not paired at this PC; null with the release flag off. */
   readonly catchUp: CatchUpGate | null;
+  checkAccountFreshness(): void;
   /** Step 2 (S2-25): the account-joined rows of this PC's relay identity; null with the release flag off. */
   readonly accountRows: ReturnType<typeof accountRowsFor> | null;
   readonly preferences: PreferenceStore;

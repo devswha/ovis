@@ -72,13 +72,12 @@ describe("S2-27 account-joined rows wait for the catch-up (T41, T42, T56, T65, T
     pc.events.length = 0;
     const readAt = pc.clock.now;
     pc.clock.now = readAt + STALE_READ_MS - 1;
-    pc.store.staleness(readAt);
     expect(pc.store.access(pc.live.id)).toEqual({ ok: true });
     pc.clock.now = readAt + STALE_READ_MS;
-    pc.store.staleness(readAt);
+    pc.store.waitForRead();
     expect(pc.events).toEqual([`close ${pc.live.id} catching_up`, `close ${pc.held.id} catching_up`]);
     expect(pc.store.access(pc.live.id)).toEqual({ refused: "catching_up" });
-    pc.store.staleness(readAt);
+    pc.store.waitForRead();
     expect(pc.events).toHaveLength(2);
   });
 

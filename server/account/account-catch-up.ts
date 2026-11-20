@@ -9,6 +9,8 @@ import type { Readmission } from "./readmission.ts";
 export class AccountCatchUp {
   readonly gate: CatchUpGate | null;
   private cancelStaleness: (() => void) | undefined;
+  private remaining: (() => number) | undefined;
+  private onStale: (() => void) | undefined;
 
   constructor(
     private readonly devices: DeviceStore,
@@ -26,15 +28,35 @@ export class AccountCatchUp {
     this.gate?.wholeRead(row => this.devices.admits(this.devices.relayKeyOf(row.id)));
     // Only an applied whole read renews the deadline. Failed pulls never postpone it, and a hung service cannot
     // prevent the PC from closing idle sessions at the deadline.
-    const lastWholeReadAt = Date.now();
-    this.cancelStaleness?.();
-    this.cancelStaleness = this.devices.waitClock().setTimeout(() => {
-      store?.staleness(lastWholeReadAt);
-    }, STALE_READ_MS);
+    this.clearDeadline();
+    if (!store) return;
+    const clock = this.devices.waitClock();
+    const deadline = clock.now() + STALE_READ_MS;
+    this.remaining = () => deadline - clock.now();
+    this.onStale = () => store.waitForRead();
+    const fire = () => {
+      const left = this.checkFreshness();
+      if (left > 0) this.cancelStaleness = clock.setTimeout(fire, Math.ceil(left));
+    };
+    this.cancelStaleness = clock.setTimeout(fire, STALE_READ_MS);
   }
 
-  stop(): void {
+  /** Also checked synchronously at use; the timeout only guarantees closure of idle sessions. */
+  checkFreshness(): number {
+    const left = this.remaining?.() ?? 0;
+    if (left <= 0 && this.onStale) {
+      const expire = this.onStale;
+      this.clearDeadline();
+      expire();
+    }
+    return left;
+  }
+
+  private clearDeadline(): void {
+    this.remaining = this.onStale = undefined;
     this.cancelStaleness?.();
     this.cancelStaleness = undefined;
   }
+
+  stop(): void { this.clearDeadline(); }
 }

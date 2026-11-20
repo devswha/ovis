@@ -114,6 +114,7 @@ export class AccountDeviceStore implements AccountRowSource {
 
   /** Whether row `id` may sign in now. A held row whose ten seconds are over passes the admission guard again first. */
   access(id: string): AccessAnswer {
+    this.ports.checkFreshness?.();
     if (this.error === null) this.expire();
     const row = this.rows().find((candidate) => candidate.id === id);
     if (!row) return { refused: "not_listed" };
@@ -186,8 +187,7 @@ export class AccountDeviceStore implements AccountRowSource {
   }
 
   /** T56: the last whole read is STALE_READ_MS old: every row waits for the next one, its sessions closed. */
-  staleness(lastWholeReadAt: number): void {
-    if (this.ports.now() - lastWholeReadAt < STALE_READ_MS) return;
+  waitForRead(): void {
     for (const row of this.rows()) this.wait(row);
   }
 

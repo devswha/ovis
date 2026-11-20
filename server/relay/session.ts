@@ -247,6 +247,7 @@ export class RelaySession {
 
   receive(data: string | ArrayBuffer): void {
     if (typeof data === "string") { this.close("protocol_error"); return; }
+    if (this.state === "ready") this.options.services.checkAccountFreshness();
     const bytes = new Uint8Array(data);
     this.mux.receive(bytes);
     for (const socket of this.sockets.values()) socket?.drain();
