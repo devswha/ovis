@@ -202,7 +202,7 @@ export interface StoredDevice {
   imported?: true;
   /** A promoted list admission keeps the original notice ID until its hold ends. */
   held?: string;
-  /** The carried notice stays answerable after its timer or an elder's digits release the hold. */
+  /** A promoted admission's open notice when the member no longer carries a hold. */
   carried_notice?: string;
   /** the account removals of its key that its pairing on this PC knew, and stands over (P13) */
   paired_over?: string[];
@@ -2946,11 +2946,12 @@ export class DeviceStore {
     const signer = signerKey && device.added_by && this.provedSayer(device.added_by, signerKey);
     const approved = signer && mayEndHold(signer, { key: joined.key, no: joined.no, admitNo: joined.origin.admit_no }, now);
     const carry = joined.state === "hold" && (joined.hold_until === null || (!approved && Date.parse(joined.hold_until) > now));
-    const held = carry ? this.listNotice(device.id)?.id : undefined;
+    const notice = this.listNotice(device.id)?.id;
+    const held = carry ? notice : undefined;
     if (carry && !held) throw new Error("The held admission has no durable notice");
     if (!this.enroll({ ...device,
       ...(this.pc ? { origin: this.pc.admit("remote", "promoted", signerKey ?? null, now) } : {}),
-      ...(held ? { held } : {}),
+      ...(held ? { held } : notice ? { carried_notice: notice } : {}),
     }, now, [], false)) return false;
     if (held) this.promotedHolds.carry(held, joined.hold_until);
     this.joinedRows?.promoted(joined.id);
