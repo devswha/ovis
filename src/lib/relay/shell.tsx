@@ -22,6 +22,7 @@ import { setTransport } from "../transport.ts";
 import { takeEntryUrl, watchNavigation } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
+import { holdWaitMs } from "./joinHold.ts";
 import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
@@ -49,6 +50,11 @@ const LAUNCHED = "ovis-launched";
 let restored: ((event: PageTransitionEvent) => void) | null = null;
 
 /** The PC this device opened last, kept by its id alone (no key), so the next launch opens it again. */
+/** The PC a hand open was marking as chosen was forgotten meanwhile: nothing is written for it. */
+class PcForgotten extends Error {
+  constructor() { super("This PC was forgotten on this device"); this.name = "PcForgotten"; }
+}
+
 function rememberPc(serverId: string): void {
   try { localStorage.setItem(LAST_PC, serverId); } catch { /* a page without storage opens on the front page */ }
 }
@@ -465,10 +471,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         case "wait": {
           show({ kind: "connecting", name: attempt.offer.name ?? null, hold: step.hold });
           if (step.hold.reason === "frozen") return;
-          const remainingMs = "until" in step.hold && step.hold.until !== null ? Date.parse(step.hold.until) - Date.now() : 0;
+          const remainingMs = holdWaitMs(step.hold, Date.now()) ?? 0;
           const retryMs = attempt.holdRetryMs ?? HOLD_RETRY_MIN_MS;
-          // A temporary refusal closes the channel; only another attempt can learn that the hold changed, and an
-          // It's me ends it early on the PC (OD3): ask again from a second on, never past the deadline.
+          // The refusal closes the channel, so retry to learn if It's me ended the hold early (OD3).
+          // Back off from one second, capped by any remaining time on this PC's deadline.
           holdTimer = setTimeout(() => {
             if (last === attempt) void connect({ ...attempt, holdRetryMs: Math.min(HOLD_RETRY_MAX_MS, retryMs * 2) });
           }, remainingMs > 0 ? Math.min(remainingMs, retryMs) : retryMs);
@@ -640,8 +646,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     rememberPc(attempt.offer.server_id);
     // opened here: a PC an introduction alone saved is now one this device chose, which a later launch may reopen
     void store.get(attempt.offer.server_id).then((saved) => saved?.introduced_at === undefined ? undefined
-      : store.update(attempt.offer.server_id, (current) => { const { introduced_at: _chosen, ...chosen } = current ?? saved; return chosen; }))
-      .catch((error: unknown) => { console.warn("Ovis: this PC could not be marked as opened here", error instanceof Error ? error.name : error); });
+      : store.update(attempt.offer.server_id, (current) => {
+        // forgotten meanwhile: a pairing the person removed is never written back
+        if (current === undefined) throw new PcForgotten();
+        const { introduced_at: _chosen, ...chosen } = current;
+        return chosen;
+      }))
+      .catch((error: unknown) => { if (!(error instanceof PcForgotten)) console.warn("Ovis: this PC could not be marked as opened here", error instanceof Error ? error.name : error); });
     // the pairing's own page opened the PC: a later load of it acts as whoever is signed in then
     keepDeviceOnlyPc(null);
     keepConfirmedSignIn(null);
