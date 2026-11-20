@@ -134,12 +134,13 @@ it("P18, T34: reloading after a lost registration reply opens the PC with the sa
     override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
   }(offer) });
   const pending = await run.accountStore.get("signin_key");
-  expect(pending?.no).toBeNull();
+  if (pending === undefined) throw new TypeError("Missing pending registration");
+  expect(pending.no).toBeNull();
   await run.reload();
   expect(run.markup()).toContain('data-pc-action="open"');
   await run.openPage();
   expect(run.apps()).toBe(1);
-  expect(run.registrationKeys).toEqual([pending?.key.public_spki, pending?.key.public_spki]);
+  expect(run.registrationKeys).toEqual([pending.key.public_spki, pending.key.public_spki]);
 });
 
 it.each([false, true])("G5: an old PC (provisional WELCOME: %s) gets no account AUTH and offers pairing", async (provisional) => {
