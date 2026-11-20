@@ -2,8 +2,9 @@
  * Not me's signed blocks on their way to the account service (ledger S32-1, device table T51, T60): kept in this
  * device's account store before any PC or the service is sent one, and until the service has answered for each, so a
  * closed tab or a reload loses no block. A later attempt sends the same signed records again (the service takes a
- * record id once). Only the service's answer to the record itself removes it: no answer, a 5xx, 401, 408 or 429 keeps
- * it, and so does any failure before it went out (a refused token refresh, a sign-out).
+ * record id once). Only the service's answer to the record itself removes it: taken, or refused for good (FINAL). Any
+ * other answer keeps it: no answer, a 5xx, a 401, 408 or 429, a route the service hides (404 while step 2 is off for
+ * the account), try_again, a sign-in too old, and any failure before it went out (a refused token refresh, a sign-out).
  */
 import type { BlockRecord } from "../../../shared/account-records.ts";
 import { AccountRefreshError, AccountServiceError } from "./service.ts";
@@ -19,7 +20,8 @@ export interface UnsentBlocks {
 /** How the service answered for a whole set: took it, found its target already removed, or refused it for good. */
 export type Delivered = "sent" | "done" | "refused";
 
-const RETRIED = new Set([401, 408, 429]);
+/** The service's refusals of a block record itself (ovis-account src/safety.ts), which no later send changes. */
+const FINAL = new Set(["record_invalid", "signature_invalid", "account_mismatch", "frozen", "signer_not_member", "unknown_target", "signer_not_older", "target_removed"]);
 
 /**
  * Stores `records` for `session`, one entry per record id, in one step with reading that it is still the stored
@@ -61,9 +63,9 @@ export async function postKept(store: AccountStore, session: AccountSession, rec
   return refusals.length > 0 ? "done" : "sent";
 }
 
-/** The service's refusal of the record itself that no retry can change: a 4xx other than 401, 408 and 429. */
+/** The service's refusal of the record itself that no retry can change (never a token refresh's answer). */
 function final(error: unknown): boolean {
-  return error instanceof AccountServiceError && !(error instanceof AccountRefreshError) && error.status >= 400 && error.status < 500 && !RETRIED.has(error.status);
+  return error instanceof AccountServiceError && !(error instanceof AccountRefreshError) && FINAL.has(error.code);
 }
 
 /**
