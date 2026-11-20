@@ -151,6 +151,28 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(await pending).toBe(false);
   });
 
+  test("P14: an unfenced service freeze invalidates read scope until generation repair", async () => {
+    const { devices, ports, safetyLog } = pc();
+    const owner = await member(devices);
+    const target = await key();
+    const record = await block(target.spki, owner);
+    const snapshot = page({ blocks: [record], freezes: [{ block: record.id, target: target.spki, after: 9 }] }).page;
+    const before = ports.scope();
+    const rename = privateStateFs.renameSync;
+    const fault = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (String(to).endsWith("/account-pc.json")) throw new Error("generation unavailable");
+      rename(from, to);
+    });
+    try {
+      expect(() => ports.commit({ snapshot, lifts: [] })).toThrow();
+      expect(safetyLog.state().freezes).toHaveLength(1);
+      expect(ports.scope()).toBeNull();
+    } finally { fault.mockRestore(); }
+    ports.commit({ snapshot, lifts: [] });
+    expect(ports.scope()?.gen).toBe((before?.gen ?? -1) + 1);
+    expect(safetyLog.state().freezes).toHaveLength(1);
+  });
+
   test("G12, P23, P24: an unapplied service block restricts newer admissions across restart until an older key lifts it", async () => {
     const first = pc();
     const signer = await member(first.devices);
