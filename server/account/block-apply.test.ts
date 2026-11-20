@@ -129,7 +129,7 @@ describe("blocks and freezes on the PC (P16, P21, T51)", () => {
     try {
       await bounded(verifying.promise, 1000);
       release.resolve();
-      const receipt = { outcome: "applied", id: record.id, n: 1 };
+      const receipt = { outcome: "applied", id: record.id, n: 1 } as const;
       expect(await delivered).toEqual([receipt, receipt]);
       expect(log.entries()).toHaveLength(1);
       expect(devices.gen()).toBe(gen + 1);

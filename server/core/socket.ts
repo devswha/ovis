@@ -201,10 +201,16 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       if (message.type === "notice-answer") {
         // "Not me": each block applies at once and is answered with its receipt; one that applied decides the notice (T51).
         // "It's me" is the join hold's to judge (T53) and decides nothing here
-        if (notices === undefined || message.answer !== "not_me" || !Array.isArray(message.blocks) || message.blocks.length > 2) return;
+        if (notices === undefined || typeof message.id !== "string" || message.answer !== "not_me" || !Array.isArray(message.blocks) || message.blocks.length > 2) return;
         const receipts: BlockReceipt[] = [];
         for (const block of message.blocks) receipts.push(await notices.block(block));
-        if (receipts.some((receipt) => receipt.outcome !== "refused")) notices.decide(message.id);
+        if (receipts.some((receipt) => receipt.outcome !== "refused")) {
+          try { notices.decide(message.id); }
+          catch (error) {
+            console.error(`[devices] the notice could not be decided: ${error instanceof Error ? error.message : String(error)}`);
+            send(client, { type: "error", code: "notice_decision_failed", message: "The notice could not be closed and remains open." });
+          }
+        }
         send(client, { type: "notice-answer-result", id: message.id, receipts });
         return;
       }

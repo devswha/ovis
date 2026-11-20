@@ -714,11 +714,11 @@ export class DeviceStore {
     return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.denyProblem ?? this.accountProblem;
   }
 
-  /** The safety log or the admission order fails closed: no device gets in by a row or a code. */
+  /** No device gets in by a row or a code when the PC cannot trust its account state. */
   get failsClosed(): boolean {
     // with the flag on, an account tombstone file that cannot be read is a key out nobody can tell: only this PC gets in (S19)
     if (this.evidence !== null && this.accountProblem !== null) return true;
-    return (this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.denyProblem) !== null;
+    return (this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.denyProblem) !== null;
   }
 
   /**
@@ -888,8 +888,6 @@ export class DeviceStore {
       throw error;
     }
     if (record.kind !== "block" || this.safety === null || this.failsClosed) return refused(record.id, "record_invalid");
-    const known = this.safety.receipt(record.id);
-    if (known !== null && known.outcome !== "refused") return known;
     if (!await verifySafetyRecord(record)) return refused(record.id, "record_invalid");
     return this.commitBlock(record, got);
   }
@@ -910,7 +908,10 @@ export class DeviceStore {
   private commitBlock(record: BlockRecord, got: SafetyGot): BlockReceipt {
     const refused = (reason: Extract<BlockReceipt, { outcome: "refused" }>["reason"]): BlockReceipt => ({ outcome: "refused", id: record.id, reason });
     const { safety, evidence } = this;
-    if (safety === null || evidence === null || this.failsClosed || record.account !== this.account()) return refused("record_invalid");
+    if (safety === null || this.failsClosed) return refused("record_invalid");
+    const known = safety.receipt(record.id);
+    if (known !== null && known.outcome !== "refused") return known;
+    if (evidence === null || record.account !== this.account()) return refused("record_invalid");
     const signers = this.devices.filter((d) => d.relay_public_key === record.signer && d.role === "drive" && d.account === record.account && d.origin !== undefined && !this.coveredByEvidence(d));
     if (signers.length === 0) return refused("signer_not_member");
     if (signers.some((d) => this.frozen(d))) return refused("frozen");
