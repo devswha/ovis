@@ -27,7 +27,7 @@ import type { AgentStatus } from "../../shared/protocol.ts";
 import { agentGroup, type AgentGroup } from "./agentRoster.ts";
 import { BLIND_MS } from "./agentStateWatch.ts";
 import { sidebarAgents, type SidebarAgent } from "./sidebarAgents.ts";
-import { stateSeqs } from "./sidebarOrder.ts";
+import { copilotBadge, stateSeqs } from "./sidebarOrder.ts";
 import { knownStatus } from "./status.ts";
 
 export type StampState = Exclude<AgentGroup, "done">;
@@ -48,6 +48,8 @@ export interface StateStamp {
   seq?: number;
   finish?: number;
   gone?: number;
+  /** This interval includes a status observed independently of Herdr's counters. */
+  observed?: true;
 }
 
 /**
@@ -108,7 +110,7 @@ export function stateLooks(machines: readonly Machine[], status: (machineId: str
         finish: pane.finish_id,
         done: knownStatus(pane.agent_status) === "done",
         wait: pane.background_wait === true,
-        own: OWN_STATE_AGENTS.has(pane.agent ?? ""),
+        own: OWN_STATE_AGENTS.has(pane.agent ?? "") || copilotBadge(pane) !== undefined,
       })),
     };
   });
@@ -130,7 +132,7 @@ function uncounted(stamp: StateStamp): StateStamp {
 }
 
 function proven(stamp: StateStamp | undefined, row: SeenRow, counted: boolean): stamp is StateStamp {
-  return stamp !== undefined && stamp.state === row.state && !row.own
+  return stamp !== undefined && stamp.state === row.state && !stamp.observed && !row.own
     && stamp.seq !== undefined && stamp.seq === row.seq
     && counted && stamp.finish !== undefined && stamp.finish === row.finish;
 }
@@ -141,7 +143,7 @@ function ahead(stamp: StateStamp, row: SeenRow, counted: boolean): boolean {
 }
 
 function keptStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp {
-  return { state: stamp.state, at: Math.min(stamp.at, now), terminal: stamp.terminal, ...(stamp.seq === undefined ? {} : { seq: stamp.seq }), ...(stamp.finish === undefined || !counted ? {} : { finish: stamp.finish }) };
+  return { state: stamp.state, at: Math.min(stamp.at, now), terminal: stamp.terminal, ...(stamp.observed && { observed: true }), ...(stamp.seq === undefined ? {} : { seq: stamp.seq }), ...(stamp.finish === undefined || !counted ? {} : { finish: stamp.finish }) };
 }
 
 function leftStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp {
@@ -218,7 +220,7 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
       } else if (began) {
         const told = stamp !== undefined && stamp.gone === undefined && stamp.state === row.state && stamp.at >= (saw?.since ?? watched.at)
           && (lags || stamp.seq === undefined || row.seq === undefined || stamp.seq === row.seq);
-        if (stamp !== undefined && told) rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), terminal: row.terminal, ...(lags && stamp.seq !== undefined ? { seq: stamp.seq } : seq), ...finish };
+        if (stamp !== undefined && told) rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), terminal: row.terminal, ...(stamp.observed && { observed: true }), ...(lags && stamp.seq !== undefined ? { seq: stamp.seq } : seq), ...finish };
         else if (proven(stamp, row, counted)) rows[row.pane] = keptStamp(stamp, now, counted);
         else if (dated && (saw !== undefined || (known === undefined && stamp === undefined && now - watched.first > BLIND_MS))) rows[row.pane] = { state: row.state, at: now, terminal: row.terminal, ...seq, ...finish };
       } else if (stamp !== undefined && stamp.state !== row.state) {
@@ -230,12 +232,14 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
         // and this pane's: it cannot have left a state that reads the same before and after it. Unless background work
         // held the row at working: that work's end shows the rest, and moves no counter
         const single = !saw.wait && saw.seq !== undefined && row.seq === saw.seq + 1;
-        const stands = saw.left === undefined ? !counter || saw.owed || single : !row.own && saw.seq !== undefined && row.seq === saw.seq;
+        const stands = saw.left === undefined ? !counter || saw.owed || single : !stamp.observed && !row.own && saw.seq !== undefined && row.seq === saw.seq;
         if (!finished && stands) {
           const herdrs = counter ? row.seq : stamp.seq;
-          rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), terminal: row.terminal, ...(herdrs === undefined ? {} : { seq: herdrs }), ...finish };
+          rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), terminal: row.terminal, ...(stamp.observed && { observed: true }), ...(herdrs === undefined ? {} : { seq: herdrs }), ...finish };
         }
       }
+      const saved = rows[row.pane];
+      if (saved && row.own) saved.observed = true;
     }
     for (const [pane, stamp] of Object.entries(before)) {
       if (memory.has(pane) && (rows[pane] !== undefined || stamp.terminal === memory.get(pane)?.terminal)) continue;
@@ -276,7 +280,7 @@ function sameRows(left: Readonly<Record<string, StateStamp>>, right: Readonly<Re
   const entries = Object.entries(left);
   return entries.length === Object.keys(right).length && entries.every(([pane, a]) => {
     const b = right[pane];
-    return b !== undefined && a.state === b.state && a.at === b.at && a.terminal === b.terminal && a.seq === b.seq && a.finish === b.finish && a.gone === b.gone;
+    return b !== undefined && a.state === b.state && a.at === b.at && a.terminal === b.terminal && a.seq === b.seq && a.finish === b.finish && a.gone === b.gone && a.observed === b.observed;
   });
 }
 
@@ -305,9 +309,9 @@ export function parseStateStamps(raw: string | null): StateStamps {
     if (rows === null) continue;
     const kept: Record<string, StateStamp> = {};
     for (const [pane, value] of Object.entries(rows)) {
-      const { state, at, terminal, seq, finish, gone } = fieldsOf(value) ?? {};
+      const { state, at, terminal, seq, finish, gone, observed } = fieldsOf(value) ?? {};
       if (!isStampState(state) || !isNumber(at) || typeof terminal !== "string") continue;
-      kept[pane] = { state, at, terminal, ...(isNumber(seq) ? { seq } : {}), ...(isNumber(finish) ? { finish } : {}), ...(isNumber(gone) ? { gone } : {}) };
+      kept[pane] = { state, at, terminal, ...(observed === true && { observed: true }), ...(isNumber(seq) ? { seq } : {}), ...(isNumber(finish) ? { finish } : {}), ...(isNumber(gone) ? { gone } : {}) };
     }
     const { lifetime, epoch } = fieldsOf(pc) ?? {};
     stamps[id] = { lifetime: typeof lifetime === "string" ? lifetime : null, epoch: typeof epoch === "string" ? epoch : null, rows: kept };

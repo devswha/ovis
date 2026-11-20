@@ -14,6 +14,15 @@ const snap = (statuses: Record<string, AgentStatus>, seqs: Record<string, number
 });
 
 describe("activity counters, independent of opened finishes", () => {
+  it("uses a Copilot sample for the badge without replacing an approval, background wait or unread finish", () => {
+    const show = (raw: AgentStatus, busy: boolean, waiting?: true) =>
+      shownStatus({ ...pane("p", raw), copilot_processing: busy, background_wait: waiting }, null);
+    expect(show("idle", true)).toBe("working");
+    expect(show("working", false)).toBe("idle");
+    expect(show("done", false)).toBe("done");
+    expect(show("blocked", true)).toBe("blocked");
+    expect(show("idle", true, true)).toBe("waiting");
+  });
   it("ignores absent, nonnumeric and nonfinite counters", () => {
     const snapshot = snap({}, { valid: 7, text: 1, missing: 1, infinite: Infinity, nan: NaN });
     Object.assign(snapshot.agents[1]!, { state_change_seq: "9" });

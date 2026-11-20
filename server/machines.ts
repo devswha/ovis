@@ -681,6 +681,8 @@ export class MachineManager {
     }
     return this.machines.get(pc)?.finishes.ended(epoch) ?? false;
   }
+  get rosterWatched(): boolean { return this.listeners.size > 0; }
+
   subscribe(listener: (event: MachineEvent) => void): () => void {
     this.listeners.add(listener);
     listener({ type: "machines", machines: this.list() });

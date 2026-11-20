@@ -35,8 +35,11 @@ Resume the intended session in the CLI to establish fresh foreground evidence.
 
 When you start Copilot yourself with `--ui-server`, Chat follows the session that Copilot's
 local API names as its foreground session, through foreground switches. It reads that API only
-when the listener is bound to loopback and belongs to the pane's own process. It sends only
-`connect` and `session.getForeground`. Ovis never adds `--ui-server` to a launch.
+when the listener is bound to loopback and belongs to the pane's own process. Chat uses only
+`connect` and `session.getForeground`. For the sidebar, Ovis also asks `session.metadata.isProcessing`
+about that foreground session. If the read fails or the foreground changes during it, Herdr's
+status stands. Activity alone never marks a turn finished or releases a queued message.
+Ovis never adds `--ui-server` to a launch.
 
 That API has no authentication. With Copilot CLI 1.0.105, any program that can reach its
 loopback port can control the session, including creating new sessions, and setting

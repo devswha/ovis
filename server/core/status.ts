@@ -16,6 +16,7 @@ import { claudeLastTurnEnd, claudeTranscriptStart, type ClaudeTurnEnd } from "..
 import { codexLastTurnEnd, codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
+import { CopilotActivity } from "../copilot-activity.ts";
 import { listHcMachines, startMachineBridge } from "../herdr-core/machine-bridge.ts";
 import { coreConnection } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
@@ -185,7 +186,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * to the one before counted too: a card read begun under an earlier count is of an agent that left (server/card-waits.ts)
    */
   const agentLifetime = new Map<string, number>();
-  const handsChanged = (paneId: string): void => { agentLifetime.set(paneId, (agentLifetime.get(paneId) ?? 0) + 1); };
+  const copilotActivity = new CopilotActivity();
+  const handsChanged = (paneId: string): void => { copilotActivity.forget(paneId); agentLifetime.set(paneId, (agentLifetime.get(paneId) ?? 0) + 1); };
   const eventAgent = new Map<string, { agent: string | null; since: number }>();
   const statusNow = options.statusNow ?? Date.now;
   function newLifetime(paneId: string, keep: string | null): void {
@@ -485,7 +487,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     return order ? { ...settled, ...order } : settled;
   };
   // clients see a card a pane waits on over what its agent reported, which the finishes and the turns were read from
-  const clientSnapshot = async (): Promise<SessionSnapshot> => cards.apply(await deliverySnapshot());
+  const clientSnapshot = async (): Promise<SessionSnapshot> => cards.apply(copilotActivity.apply(await deliverySnapshot()));
   let visitReadAt = -Infinity;
   function countVisit(snapshot?: ReturnType<typeof clientSnapshot>, visit: { surface?: TelemetrySurface; ingress?: TelemetryIngress } = {}): void {
     const telemetry = options.telemetry;
@@ -588,6 +590,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (!replay) releaseOpenCodePane(paneId);
     }
     const ran = agentNow.get(paneId);
+    if (agent !== "copilot") copilotActivity.forget(paneId);
     agentNow.set(paneId, agent);
     // its agent is gone (it exited at its card): the wait goes with it, so does a read of its screen under way, and the
     // status reported now is what shows. The card reads take no agent for it from a snapshot read begun before this,
@@ -787,6 +790,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const shellSnapshots = new WeakSet<HerdrPane>();
   const snapshotVerifications = new WeakMap<HerdrPane, number>();
   function paneGone(paneId: string): void {
+    copilotActivity.forget(paneId);
     cards.forget(paneId);
     lastPanes?.delete(paneId);
     paneClosed.set(paneId, opencodeAgents.beginRead());
@@ -962,10 +966,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     timer.unref?.();
     return () => clearInterval(timer);
   }))(cardPace);
+  const activityTimer = setInterval(() => {
+    void copilotActivity.tick(cardRoster, () => broadcastAll({ type: "session-changed" }), clients.size > 0 || machines?.rosterWatched === true);
+  }, 3000);
+  activityTimer.unref?.();
   plans.start();
 
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId), () => collector.refresh());
-  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
+  const tracked = { ...collector, stop() { cardsStopped = true; clearInterval(activityTimer); copilotActivity.stop(); untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
 
   /**
    * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an answer up
