@@ -76,7 +76,7 @@ it.each([
   const postBlock: typeof fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const url = String(input);
     if (url === `${session.service}/v1/pcs` && init?.method === "GET") {
-      return Response.json({ pcs: showRoster ? roster.map(row => ({
+      return Response.json({ pcs: showRoster ? [...roster, { id: "attic", name: "Attic", server_id: "f".repeat(32) }].map(row => ({
         server_id: row.server_id, label: row.name, added_at: new Date(0).toISOString(), last_seen_at: null,
       })) : [] });
     }
@@ -146,6 +146,8 @@ it.each([
       expect(lines).toContain("Study: not reached; it applies the block at its next check");
       expect(lines).toContain("Lab: needs an Ovis update to block");
       expect(lines.filter(line => line.startsWith("Lab:"))).toHaveLength(1);
+      // a PC of the account this browser has never listed is still named, and still gets no request
+      expect(lines).toContain("Attic: not reached; it applies the block at its next check");
       expect(lines.some(line => line.startsWith("Other:"))).toBe(false);
       return;
     }
