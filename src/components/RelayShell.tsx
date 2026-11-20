@@ -176,9 +176,9 @@ export function RelayShell(props: RelayShellProps) {
   // the dashboard of the account's PCs is a page people open on purpose, by its address (Settings → Devices and PCs →
   // Relayed connections): no launch, sign-in, pairing or Back ever lands on it, and the front page is Add a PC instead
   const manage = machinesRoute !== null || isDashboardHash(hash);
-  // a sheet opened on one of the two screens goes with it, whether by a link or the browser's Back
+  // a sheet opened on one of the screens goes with it, whether by a link or the browser's Back (to Add a PC too)
   const onMachines = machinesRoute !== null;
-  useEffect(() => { setSheet(null); }, [onMachines]);
+  useEffect(() => { setSheet(null); }, [onMachines, manage]);
   const signedOutOrSigningIn = account?.kind === "signed-out" || account?.kind === "signing-in";
   const view = signedOutOrSigningIn ? signedOutView : null;
   const signInFirst = view === "sign-in";
