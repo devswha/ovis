@@ -2149,6 +2149,32 @@ export class DeviceStore {
     return true;
   }
 
+  /**
+   * `ovis recover --remove` (T70, T73): a removal at this PC of a row, by its id, or of a key, with or without a row
+   * here. Its Revoke stands and is journalled before the rows go; the blocks that key signed here are lifted by the
+   * PC (liftOrphanedBlocks). Only with the release flag on, and refused while this PC's account state is unreadable.
+   */
+  removeKey(input: { target: string; by: "local" }): { removed: string[] } | { refused: "log_unreadable" | "unknown" } {
+    if (this.evidence === null || this.failsClosed) return { refused: "log_unreadable" };
+    const named = this.devices.find((d) => d.id === input.target);
+    const key = named !== undefined ? named.relay_public_key : isRelayPublicKey(input.target) ? input.target : undefined;
+    if (named === undefined && key === undefined) return { refused: "unknown" };
+    const gone = this.devices.filter((d) => d === named || (key !== undefined && d.relay_public_key === key));
+    const now = Date.now();
+    const evidence = this.evidence;
+    const denied = this.deny(() => {
+      if (gone.length > 0) this.tombstone(gone, now);
+      else { evidence.addRevoke(key!, null, now); this.refreshTombstones(); this.dropWaiting([key!], "revoke"); }
+    });
+    if (gone.length > 0) this.drop(gone, "pc", "recover");
+    else {
+      this.journalEvent({ kind: "remove", how: "recover", key: key!, no: null, row: null, label: "", by: null, account: null });
+      this.liftOrphanedBlocks();
+    }
+    if (denied !== null) throw denied;
+    return { removed: gone.map((d) => d.id) };
+  }
+
   /** The rows `gone` lose their access in one write; their sessions close and each removal is announced. */
   private drop(gone: readonly StoredDevice[], by: DeviceRemovedEvent["by"], why?: string): void {
     if (this.evidence !== null) { this.dropBeforeWrite(gone, by, why); return; }

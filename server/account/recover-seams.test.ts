@@ -83,11 +83,12 @@ describe("ovis recover acts on this PC's own state (T70, T73, T69)", () => {
     await devices.applyBlock(second, "handed");
     expect(log.appendLift(first.id, { account: ACCOUNT })).toMatchObject({ outcome: "applied" });
     expect(blocksInForce(log)).toEqual([second.id]);
-    expect(devices.removedByAccount(target.spki)).toBe(true);
+    const markers = () => log.state().markers.map((entry) => entry.record.id);
+    expect(markers()).toEqual([first.id, second.id]);
     expect(log.state().locked).toBe(true);
     expect(log.appendLift(second.id, { account: ACCOUNT }, { forget: true })).toMatchObject({ outcome: "applied" });
     expect(blocksInForce(log)).toEqual([]);
-    expect(devices.removedByAccount(other.spki)).toBe(false);
+    expect(markers()).toEqual([first.id]);
     expect(log.state().locked).toBe(true);
   });
 
