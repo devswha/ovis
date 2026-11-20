@@ -443,6 +443,53 @@ it("closes a device revoked during listener registration before publishing AUTH_
   } finally { raced.mockRestore(); }
 });
 
+it("flag off: a missing row after AUTH proof stops watching without closing the relay session", async () => {
+  const f = relayFixture(false, { accountOpensAll: false });
+  fixtures.push(f);
+  const device = await relayDevice(f);
+  const { devices } = f.app.context.services;
+  const link = await relayConnection(f, { clock: new TestClock() });
+  const lookedUp = deferred<string>();
+  const row = spyOn(devices, "sessionRow").mockImplementationOnce((id) => {
+    lookedUp.resolve(id);
+    return null;
+  });
+  const admission = link.auth(device).catch((error: unknown) => error);
+  try {
+    expect(await bounded(lookedUp.promise)).toBe(device.id);
+    await link.flush();
+    expect(link.frames.map(({ type }) => type).filter(type => type !== FrameType.RECEIVED)).toEqual([FrameType.WELCOME]);
+    expect(link.channel.isOpen()).toBe(true);
+
+    devices.revoke(device.id);
+    await link.flush();
+    expect(link.channel.isOpen()).toBe(true);
+  } finally {
+    row.mockRestore();
+    link.stop();
+    await admission;
+  }
+});
+
+it("flag off: the relay delivers a selected mux PING even when the session closes before send", async () => {
+  const f = relayFixture(false, { accountOpensAll: false });
+  fixtures.push(f);
+  const link = await relayConnection(f);
+  await link.auth(await relayDevice(f));
+  await link.flush();
+  const beforePing = link.frames.length;
+
+  const freshness = spyOn(f.app.context.services, "checkAccountFreshness").mockImplementationOnce(() => {
+    link.session.close("auth_revoked");
+  });
+  try {
+    link.session.mux.ping();
+    await link.flush();
+    expect(link.frames.slice(beforePing).map(({ type }) => type)).toEqual([FrameType.PING, FrameType.SESSION_ERROR]);
+    expect(await bounded(link.serverError)).toBe("auth_revoked");
+  } finally { freshness.mockRestore(); }
+});
+
 it("sends WELCOME behind the protected handshake, before HELLO, and still requires HELLO before AUTH", async () => {
   const f = fixture();
   const device = await relayDevice(f);

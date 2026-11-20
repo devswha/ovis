@@ -199,7 +199,8 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         return;
       }
       if (message.type === "notice-answer") {
-        if (message.answer === "its_me") {
+        // It's me waits for its UI: a PC with notices (flag on) says so; one without ignores it as before
+        if (notices !== undefined && message.answer === "its_me") {
           send(client, { type: "error", code: "not_supported", message: "It's me is not available until the app supports it" });
           return;
         }

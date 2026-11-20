@@ -160,7 +160,7 @@ export class RelaySession {
       send: (bytes) => {
         if (this.state === "ready") options.services.checkAccountFreshness();
         // Revocation can start here, after the mux selected a frame. Only teardown may still go on the wire.
-        if (this.state === "closed" && bytes[1] !== FrameType.SESSION_ERROR && bytes[1] !== FrameType.WS_CLOSE
+        if (options.services.devices.opensAll() && this.state === "closed" && bytes[1] !== FrameType.SESSION_ERROR && bytes[1] !== FrameType.WS_CLOSE
           && bytes[1] !== FrameType.RESET && bytes[1] !== FrameType.RECEIVED && bytes[1] !== FrameType.CREDIT) {
           throw new MuxProtocolError("auth_changed", "Session closed before frame delivery");
         }
@@ -577,8 +577,13 @@ export class RelaySession {
     // the row as its own session sees it: a device, or one that waits to link. What a waiting row may do is decided
     // anew for every stream (principal), never from the answer below
     const row = devices.sessionRow(device.id);
-    if (!this.mux.active) { this.unwatch(); return; }
-    if (!row) { this.close("auth_failed"); return; }
+    if (!row || !this.mux.active) {
+      // a row that stopped standing while its proof was checked (an account row that expired) ends the session; with
+      // the flag off nothing changes
+      if (!row && this.mux.active && devices.opensAll()) { this.close("auth_failed"); return; }
+      this.unwatch();
+      return;
+    }
     if (row.role !== device.role) {
       this.close("auth_changed");
       return;

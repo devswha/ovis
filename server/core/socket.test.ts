@@ -7,11 +7,11 @@ import type { MachineManager } from "../machines.ts";
 import { type Client, connectionData } from "./connections.ts";
 import { createSocket } from "./socket.ts";
 
-function socket(stopped: boolean, notices?: Parameters<typeof createSocket>[0]["notices"]) {
+function socket(stopped: boolean, notices?: Parameters<typeof createSocket>[0]["notices"], accountEnabled = notices !== undefined) {
   const ended: string[] = [];
   const handler = createSocket({
     clients: new Set(), present: new Set(), stopped: () => stopped, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, terminalModes: () => false, watchPane() {}, unwatchPane() {},
-    notices, end: (_client, reason) => { ended.push(reason); }, holdPending() {}, attachments: new Map(),
+    notices, accountEnabled, end: (_client, reason) => { ended.push(reason); }, holdPending() {}, attachments: new Map(),
     clientSnapshot: async () => ({}) as SessionSnapshot, herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
   });
   const client: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: () => 1, close: () => {} };
@@ -28,6 +28,16 @@ it("T53 postponed: a socket refuses It's me even with the session's proved key",
     await handler.message(client, JSON.stringify({ type: "notice-answer", id: "admission", answer: "its_me" }));
   }
   expect(sent.mock.calls.map(([raw]) => JSON.parse(String(raw)).code)).toEqual(["not_supported", "not_supported"]);
+  expect(itsMe).not.toHaveBeenCalled();
+});
+
+it("flag off: a socket ignores It's me as before, without answering", async () => {
+  const itsMe = mock(() => true);
+  const { handler, client } = socket(false, { replay: () => null, seen() {}, decide() {}, open: () => undefined, mayAnswer: () => false, block: async () => ({ outcome: "refused", id: "", reason: "record_invalid" }), itsMe }, false);
+  const sent = spyOn(client, "send");
+  client.data.deviceId = "member";
+  await handler.message(client, JSON.stringify({ type: "notice-answer", id: "admission", answer: "its_me" }));
+  expect(sent).not.toHaveBeenCalled();
   expect(itsMe).not.toHaveBeenCalled();
 });
 
