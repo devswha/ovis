@@ -97,3 +97,28 @@ test("T56: a failed method journal leaves the previous read deadline in force", 
   clock.advance(1);
   expect(closedAt).toEqual([STALE_READ_MS]);
 });
+
+test("T56: a page delivered after server shutdown starts no new deadline", async () => {
+  const pc = await createListedPc(close => closes.push(close));
+  const { devices, accountMailbox } = pc.fixture.app.context.services;
+  const clock = new TestClock();
+  devices.useClock(clock);
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const fetched = Promise.withResolvers<void>();
+  const deliver = Promise.withResolvers<void>();
+  const page = accountMailbox.snapshotPage.bind(accountMailbox);
+  spyOn(accountMailbox, "snapshotPage").mockImplementationOnce(async (...args) => {
+    const result = await page(...args);
+    fetched.resolve();
+    await deliver.promise;
+    return result;
+  });
+  const reading = accountMailbox.readSnapshot();
+  await bounded(fetched.promise);
+  pc.fixture.app.stop();
+  expect(clock.tasks.size).toBe(0);
+  deliver.resolve();
+  const outcome = await bounded(reading);
+  expect(clock.tasks.size).toBe(0);
+  expect(outcome?.committed).toBe(false);
+});
