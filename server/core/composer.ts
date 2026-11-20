@@ -264,9 +264,9 @@ export function showsLive(colors: string, live: string): boolean {
 }
 
 const screenText = (text: string): string => stripVTControlCharacters(text).split(/\r?\n/).map((line) => line.trimEnd()).join("\n").trimEnd();
-/** a working agent's braille spinner turns between two reads (pi's `── ⠸ Working ──`): the same screen still. Only a
-    frame set in a border counts, so a braille character anywhere else, the input box's included, still tells reads apart */
-const spinnerless = (text: string): string => text.replace(/(─ )[\u2801-\u28ff](?= )/g, "$1\u2800");
+/** a working agent's braille spinner turns between two reads (pi's `── ⠸ Working ──`): the same screen still. Only the
+    frame in a row that is that border counts, so a braille character anywhere else, the input box's included, still tells reads apart */
+const spinnerless = (text: string): string => text.replace(/^(\s*─{2,} )[\u2801-\u28ff](?= [^─]+ ─{9,}$)/gm, "$1\u2800");
 
 /**
  * herdr reports Codex at rest
