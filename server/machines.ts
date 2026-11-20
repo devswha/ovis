@@ -1379,17 +1379,27 @@ export class MachineManager {
       } else if (found.length) {
         const choice = answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED;
         const served = adding && await servedAlready();
-        if (!served) throw await offer(choice);
-        if (unlisted) { for (const row of await localSessions()) sessions.set(row.socket_path, row); unlisted = false; }
-        if (served === "socket" && !sessions.has(expectedSocket)) {
-          if (named) throw await offer(choice);
-          // Not beside an Ovis that does not answer: that PC connects as before. Nor for a session named in the dialog: only
-          // the default session's socket is saved as herdr to start (job.defaultSocket), so the named one's row would save
-          // the PC with that socket, and after that PC restarts its bridge would say the session no longer runs instead of
-          // starting it by its name
-          if (!session && answered && !listedHere) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
+        let ask = !served;
+        if (served) {
+          if (unlisted) { for (const row of await localSessions()) sessions.set(row.socket_path, row); unlisted = false; }
+          if (served === "socket" && !sessions.has(expectedSocket)) {
+            if (named) ask = true;
+            // Not beside an Ovis that does not answer: that PC connects as before. Nor for a session named in the dialog: only
+            // the default session's socket is saved as herdr to start (job.defaultSocket), so the named one's row would save
+            // the PC with that socket, and after that PC restarts its bridge would say the session no longer runs instead of
+            // starting it by its name
+            else if (!session && answered && !listedHere) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
+          }
+          if (sessions.has(expectedSocket)) ask = true;
         }
-        if (sessions.has(expectedSocket)) throw await offer(choice);
+        if (ask) {
+          // A PC added beside its one answering Ovis connects to it, with nothing to choose: a herdr session instead is
+          // named under the dialog's advanced settings. Its sessions are offered only beside an Ovis that is not that
+          // clear (none answering, more than one) and on a saved PC's reconnect
+          if (!adding || !answered || found.length !== 1 || session) throw await offer(choice);
+          target.own_ovis = found[0]!.socket_path;
+          expectedSocket = target.own_ovis;
+        }
       }
     }
     const offered = { remote_ovis: runtime.machine.remote_ovis, installFix: runtime.installFix, remoteRevision: runtime.remoteRevision };

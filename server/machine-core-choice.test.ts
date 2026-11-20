@@ -147,6 +147,13 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
     manager.patch(id, { enabled: true });
     return settled.promise.finally(() => { clearTimeout(timeout); off(); });
   };
+  // a PC added beside its own answering Ovis connects to it, with no choice asked, and is saved with that Ovis
+  const ownOvisAdded = (added: SetupJob) => {
+    expect(added).toMatchObject({ phase: "connected", runtime: "herdr-core" });
+    expect(added.action_required ?? null).toBeNull();
+    expect(added.found_herdr_sessions).toBeUndefined();
+    expect(manager.list().find((pc) => pc.id === added.machine_id)?.target).toEqual({ destination: "fixture-added", own_ovis: socket });
+  };
   try {
     if (outcome === "default bridge") {
       for (const auto of [true, false]) {
@@ -165,19 +172,12 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
       const saved = await run({ destination: "fixture-only" }, false);
       expect(saved).toMatchObject({ phase: "connected", runtime: "herdr" });
       expect(saved.action_required ?? null).toBeNull();
-      const added = await add({ destination: "fixture-added" });
-      expect(added).toMatchObject({ phase: "failed", action_required: "choose_herdr", error: "Choose this PC's Ovis server or a running herdr session.", found_herdr_sessions: sessions, found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
-      expect(added.found_herdr_sessions).toContainEqual(expect.objectContaining({ socket_path: bridge.socket_path }));
-      expect(manager.endpoint(added.machine_id!)).toBeUndefined();
-      expect(await add({ destination: "fixture-added", own_ovis: socket })).toMatchObject({ phase: "connected", runtime: "herdr-core" });
+      ownOvisAdded(await add({ destination: "fixture-added" }));
       expect(starts).toBe(0);
       return;
     }
     if (outcome === "default herdr older peer") {
-      const added = await add({ destination: "fixture-added" });
-      expect(added).toMatchObject({ phase: "failed", action_required: "choose_herdr", error: "Choose this PC's Ovis server or a running herdr session.", found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
-      expect(added.found_herdr_sessions).toHaveLength(sessions.length);
-      for (const row of sessions) expect(added.found_herdr_sessions).toContainEqual(row);
+      ownOvisAdded(await add({ destination: "fixture-added" }));
       expect(starts).toBe(0);
       return;
     }
@@ -190,8 +190,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
         return;
       }
       if (outcome === "herdr stopped, no bundle") {
-        expect(added).toMatchObject({ phase: "failed", action_required: "choose_herdr", error: "Choose this PC's Ovis server or a running herdr session.", found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
-        expect(added.found_herdr_sessions).toEqual(sessions);
+        ownOvisAdded(added);
         expect(starts).toBe(0);
         return;
       }
@@ -202,10 +201,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
         expect(starts).toBe(0);
         return;
       }
-      expect(added).toMatchObject({ phase: "failed", action_required: "choose_herdr", error: "Choose this PC's Ovis server or a running herdr session.", found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
-      expect(added.found_herdr_sessions).toEqual([{ socket_path: bridge.socket_path, label: "Default session" }]);
-      expect(manager.endpoint(added.machine_id!)).toBeUndefined();
-      expect(await add({ destination: "fixture-added", own_ovis: socket })).toMatchObject({ phase: "connected", runtime: "herdr-core" });
+      ownOvisAdded(added);
       const chosen = await add({ destination: "fixture-default", herdr_socket: bridge.socket_path });
       expect(chosen.phase).toBe("approval");
       expect(starts).toBe(0);

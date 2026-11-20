@@ -31,7 +31,7 @@ function listening(socket: string) {
 describe("running herdr discovery", () => {
   it.each([
     ["/home/u/.local/bin/herdr", [], undefined],
-    ["/usr/local/bin/herdr", ["--session", "check-873df7"], "check-873df7"],
+    ["/usr/local/bin/herdr", ["--session", "qa-873df7"], "qa-873df7"],
     ["/usr/local/bin/herdr-real", ["--session", "work"], "work"],
   ] as const)("finds server executable %s", async (binary, flags, session) => {
     const f = fixture();
@@ -96,6 +96,23 @@ describe("running herdr discovery", () => {
     expect(await discoverHerdrSessions(f)).toEqual([{ socket_path: socket, label: "Default session" }]);
     writeFileSync(join(f.procRoot, "100/environ"), `HOME=${outside.home}\0XDG_CONFIG_HOME=${outside.home}\0`);
     expect(await discoverHerdrSessions(f)).toEqual([]);
+  });
+
+  it("never lists this app's test sessions or a session under a throwaway config root", async () => {
+    const f = fixture();
+    const work = { socket_path: join(f.home, ".config/herdr/sessions/work/herdr.sock"), session: "work", label: "work" };
+    for (const session of ["work", "ovis-test", "ovis-test-gate", "ovis-demo", "check-873df7", "check-873df7-2"]) listening(join(f.home, `.config/herdr/sessions/${session}/herdr.sock`));
+    const scratch = tempRoot("hd-tmp-");
+    const roots = [["trial", join(f.home, ".cache/ovis-tmp/trial/config"), ""], ["scratch", join(scratch, "config"), scratch]] as const;
+    for (const [i, [session, xdg, tmp]] of roots.entries()) {
+      listening(join(xdg, "herdr/sessions", session, "herdr.sock"));
+      mkdirSync(join(f.procRoot, `${100 + i}`));
+      writeFileSync(join(f.procRoot, `${100 + i}/cmdline`), ["/usr/local/bin/herdr", "--session", session, "server", ""].join("\0"));
+      writeFileSync(join(f.procRoot, `${100 + i}/environ`), `HOME=${f.home}\0XDG_CONFIG_HOME=${xdg}\0TMPDIR=${tmp}\0`);
+    }
+    expect(await discoverHerdrSessions(f)).toEqual([work]);
+    const listed = ["ovis-test", "ovis-test-gate", "check-873df7"].map((session) => ({ socket_path: `/h/.config/herdr/sessions/${session}/herdr.sock`, session, label: session }));
+    expect(parseFoundHerdrSessions([work, ...listed])).toEqual([work]);
   });
 
   it("preserves whitespace in macOS process HOME and XDG values", async () => {

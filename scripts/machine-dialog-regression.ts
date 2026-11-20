@@ -75,13 +75,15 @@ try {
           assert.deepEqual(requests, [{ destination: "fixture-only" }]);
           assert.equal(await dialog.getByRole("button", { name: "Retry connection", exact: true }).count(), 0);
           const settled = () => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+          const fold = dialog.locator("form details");
+          const advanced = async (): Promise<void> => { if (!await fold.evaluate((details: HTMLDetailsElement) => details.open)) await fold.locator("summary").click(); };
           await destination.fill("");
           await update.click();
           await settled();
           assert.equal(await destination.evaluate((input: HTMLInputElement) => input.validity.valueMissing), true);
           assert.equal(requests.length, 1, "update click obeys the required destination");
           await destination.fill("fixture-only");
-          await dialog.locator("summary").click();
+          await advanced();
           const port = dialog.getByRole("spinbutton", { name: "SSH port", exact: true });
           await port.fill("70000");
           await update.click();
@@ -120,7 +122,11 @@ try {
             await reload();
             await destination.fill("fixture-only");
             await destination.press("Enter");
-            await dialog.getByRole("button", { name: choice, exact: true }).waitFor();
+            const ovis = dialog.getByRole("button", { name: "Use Ovis on this PC (herdr-core)", exact: true });
+            await ovis.waitFor();
+            // beside the PC's Ovis its herdr sessions wait, closed, in the form's Advanced settings: the card offers the Ovis alone
+            assert.equal(await fold.evaluate((details: HTMLDetailsElement) => details.open), false);
+            assert.equal(await dialog.getByRole("button", { name: "Use work", exact: true }).count(), 0, "a session is not offered until Advanced settings opens");
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
             const shots = join(process.env.UI_EVIDENCE_DIR || join(repo, "evidence"), "found-herdr"); mkdirSync(shots, { recursive: true });
             for (const theme of ["light", "dark"]) {
@@ -131,8 +137,10 @@ try {
             assert.equal(await dialog.getByText("Connection failed").count(), 0, "a needed choice does not read as a failed connection");
             await dialog.getByText("Choose this PC's Ovis server or a running herdr session.", { exact: true }).waitFor();
             const answers = dialog.locator(".machine-action button");
-            assert.deepEqual(await answers.allTextContents(), ["Use Ovis on this PC (herdr-core)", "Use work", "Use Default session", "Start a new herdr here"]);
+            assert.deepEqual(await answers.allTextContents(), ["Use Ovis on this PC (herdr-core)"]);
             assert.equal(await answers.first().evaluate((button) => button.classList.contains("btn-primary")), true);
+            await advanced();
+            assert.deepEqual(await fold.locator(".machine-action-buttons button").allTextContents(), ["Use work", "Use Default session", "Start a new herdr here"]);
             await dialog.getByRole("button", { name: choice, exact: true }).click();
             await dialog.getByRole("button", { name: "Open PC", exact: true }).waitFor();
             assert.deepEqual(selected, [{ destination: "fixture-only" }, choice === "Use work"
@@ -157,12 +165,14 @@ try {
               await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
             });
             await reload(); await destination.fill("fixture-only"); await destination.press("Enter");
+            await dialog.getByRole("button", { name: "Use Ovis on this PC (herdr-core)", exact: true }).waitFor();
+            if (choice !== "Use Ovis on this PC (herdr-core)") await advanced();
             await dialog.getByRole("button", { name: choice, exact: true }).click();
             await dialog.getByText("Attempt failed", { exact: true }).waitFor();
             assert.equal(selected.length, 2);
             if (changed === "address") await destination.fill("another-pc");
             else {
-              await dialog.locator("summary").click();
+              await advanced();
               if (changed === "port") await dialog.getByRole("spinbutton", { name: "SSH port", exact: true }).fill("2222");
               else await dialog.getByRole("textbox", { name: "herdr session name", exact: true }).fill("different");
             }
