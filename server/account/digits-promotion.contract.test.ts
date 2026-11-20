@@ -14,7 +14,7 @@ import { ask, phone } from "./pairing.test-helpers.ts";
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 
-async function approveListed(memberAgeMs: number) {
+async function approveListed(memberAgeMs: number, elapsed = 4_000) {
   const { fixture, member, serverId, service } = await createListedPc(close => closes.push(close));
   const { relay, devices, accountMailbox } = fixture.app.context.services;
   const time = { now: Date.now() + memberAgeMs };
@@ -26,7 +26,8 @@ async function approveListed(memberAgeMs: number) {
   const notice = devices.openNotices().find(n => n.key === key);
   if (!notice?.row) throw new Error("Expected a listed tablet");
   const id = notice.row;
-  time.now += 4_000; // Promotion must not start a new ten-second window.
+  time.now += elapsed;
+  if (elapsed === 10_000) expect(devices.sessionRow(id)).toMatchObject({ role: "drive" });
 
   const approver = await relayConnection(fixture, { serverId });
   await approver.auth(member);
@@ -62,7 +63,7 @@ async function approveListed(memberAgeMs: number) {
   const list = parseAccountDevicesFile(await Bun.file(join(fixture.stateDir, ACCOUNT_DEVICES_FILE)).json());
   expect(list.devices.filter(r => r.key === key)).toEqual([]);
   expect(DeviceJournal.open(fixture.stateDir).entries().at(-1)).toMatchObject({ kind: "promote", row: id, by: member.publicKey });
-  return { devices, time, id, frame, held: promoted[0]?.held, notice: notice.id };
+  return { devices, time, member, id, frame, held: promoted[0]?.held, notice: notice.id };
 }
 
 test("H1/T38: a recent member's digits promote the row with the original hold", async () => {
@@ -75,10 +76,16 @@ test("H1/T38: a recent member's digits promote the row with the original hold", 
   expect(devices.sessionRow(id)).toMatchObject({ role: "drive" });
 });
 
-test("H1/T38: an established member's digits promote the row and end the hold", async () => {
-  const { devices, id, frame, held, notice } = await approveListed(3_600_001);
+test.each([
+  { case: "recent approval after timer release", age: 0, elapsed: 10_000 },
+  { case: "established approval during the hold", age: 3_600_001, elapsed: 4_000 },
+])("P15/T57, H1/T38: $case promotes without answering the notice", async ({ age, elapsed }) => {
+  const { devices, time, member, id, frame, held, notice } = await approveListed(age, elapsed);
   expect(frame).toBe(FrameType.AUTH_OK);
   expect(held).toBeUndefined();
-  expect(devices.openNotices().some(n => n.id === notice)).toBe(false);
   expect(devices.sessionRow(id)).toMatchObject({ role: "drive" });
+  expect(devices.openNotices().some(n => n.id === notice)).toBe(true);
+  time.now += 3_600_001;
+  expect(devices.itsMe(member.id, notice, member.publicKey)).toBe(true);
+  expect(devices.openNotices().some(n => n.id === notice)).toBe(false);
 });
