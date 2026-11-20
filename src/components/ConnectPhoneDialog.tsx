@@ -93,6 +93,8 @@ export interface RelayAccount {
   service: string;
   onOpen: () => void;
   onSignedIn: () => void;
+  /** this PC's step-2 switch, as Settings reads it: only then does Add this PC try the one press */
+  opensAll?: () => boolean;
 }
 
 export interface ConnectPhoneDialogProps {
@@ -660,7 +662,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
             {relaySwitch}
             {switchFailure}
             {startFailure}
-            <AddThisPc relayOn={on} gateNote={false} signedInHere={takeSignedInNow} />
+            <AddThisPc relayOn={on} gateNote={false} signedInHere={takeSignedInNow} {...(account.opensAll === undefined ? {} : { opensAll: account.opensAll })} />
           </>
         )}
       </div>

@@ -163,11 +163,13 @@ describe("the relay tab reopened already signed in", () => {
   let state: { relay: "online" | "off"; pcAccount: string | null; enrolling: boolean };
   let service: FakeAccountService;
   let linkGate: ReturnType<typeof Promise.withResolvers<void>> | null;
+  let pressed: string[];
 
   beforeEach(async () => {
     state = { relay: "off", pcAccount: null, enrolling: false };
     service = new FakeAccountService();
     linkGate = null;
+    pressed = [];
     for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "location", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -194,6 +196,8 @@ describe("the relay tab reopened already signed in", () => {
       if (url.pathname === "/api/relay/start") { state.relay = "online"; return Response.json(status("online")); }
       if (url.pathname === "/api/relay/link") { if (linkGate !== null) await linkGate.promise; return Response.json({ url: OFFER }); }
       if (url.pathname === "/api/relay/link/close" || url.pathname === "/api/account/relay-account") return Response.json({ ok: true });
+      if (url.pathname === "/api/account/one-press") { pressed.push(url.pathname); state.pcAccount = ACCOUNT; return Response.json({ account: ACCOUNT }); }
+      if (url.origin === SERVICE && /^\/v1\/pcs\/[0-9a-f]{32}\/admit$/.test(url.pathname)) { pressed.push("admit"); return Response.json({ server_id: url.pathname.split("/")[3], account: ACCOUNT, admitted_at: new Date().toISOString(), new_until: new Date(Date.now() + 86_400_000).toISOString() }); }
       if (url.pathname === "/api/account/status") return Response.json({ account: state.pcAccount, enrolling: state.enrolling, unlinked: [], removals: [], adds: [], blocked: [] });
       if (url.origin === SERVICE && url.pathname === "/v1/providers") return Response.json({ providers: ["google"], device: ["google"], device_page: ["google"] });
       if (url.origin === SERVICE) return service.fetch(input, init);
@@ -226,7 +230,8 @@ describe("the relay tab reopened already signed in", () => {
       await act(async () => {});
     }
   };
-  const account = { service: SERVICE, onOpen: () => undefined, onSignedIn: () => undefined };
+  let opensAll = false;
+  const account = { service: SERVICE, onOpen: () => undefined, onSignedIn: () => undefined, opensAll: () => opensAll };
   const tabAt = (phase: "online" | "off") => <SettingsProvider><RelayTab relay={relayOf(phase)} closesGate={false} signedIn accountId={ACCOUNT} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>;
   const mount = async (phase: "online" | "off"): Promise<void> => {
     await act(async () => { renderer = create(tabAt(phase), { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) }); });
@@ -283,5 +288,18 @@ describe("the relay tab reopened already signed in", () => {
     await act(async () => { renderer!.update(tabAt("online")); });
     linkGate.resolve();
     await until(() => button("Stop waiting").length === 1);
+  });
+
+  it("adds the PC in one press from the relay tab where the PC's step-2 switch is on, as Settings does", async () => {
+    opensAll = true;
+    state.relay = "online";
+    try {
+      await mount("online");
+      await until(() => button("Add this PC to my account").length === 1);
+      await act(async () => { button("Add this PC to my account")[0]!.props.onClick(); });
+      await until(() => pressed.includes("/api/account/one-press"));
+      expect(pressed).toEqual(["admit", "/api/account/one-press"]);
+      expect(button("Stop waiting")).toHaveLength(0);
+    } finally { opensAll = false; }
   });
 });
