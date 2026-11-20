@@ -1,10 +1,10 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountDeviceId, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
-import { privateStateFs } from "../private-state.ts";
-import { relayFixture } from "../relay/test-helpers.ts";
+import { privateStateFs, writePrivateState } from "../private-state.ts";
+import { bounded, relayConnection, relayFixture } from "../relay/test-helpers.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { keyOf } from "./account-devices.test-helpers.ts";
 import { DeviceJournal, JOURNAL_FILE, JOURNAL_MAX } from "./device-journal.ts";
@@ -39,6 +39,54 @@ function restartOffline(dir: string) {
   restarted.app.stop();
   return restarted.app.context.services.devices;
 }
+
+const RECOVERY_FILES = ["account-pc.json", REMOVAL_FILE, JOURNAL_FILE, "devices.json", "revoke-all.json", "account-tombstones.json"] as const;
+const recoveryFiles = (dir: string) => Object.fromEntries(RECOVERY_FILES.map(name => {
+  const path = join(dir, name);
+  return [name, existsSync(path) ? readFileSync(path, "utf8") : null];
+}));
+
+/** A live listed row, a Revoke-all stopped before its receipt, then one start that cannot read the listed registry. */
+async function revokeAllAcrossUnreadableRows() {
+  const { fixture, device, serverId } = await listedPc();
+  const dir = fixture.stateDir;
+  const path = join(dir, ACCOUNT_DEVICES_FILE);
+  fixture.app.stop();
+  const file = parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8")));
+  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const })) });
+  const live = startOffline(dir).app;
+  const fault = failReplacement(join(dir, REMOVAL_FILE), device.id);
+  try { expect(() => live.context.services.devices.revokeAll()).toThrow("replacement failed"); } finally { fault.mockRestore(); live.stop(); }
+  const before = recoveryFiles(dir);
+  chmodSync(path, 0o000);
+  try {
+    const unreadable = startOffline(dir).app;
+    const strict = unreadable.context.services.devices.failsClosed;
+    unreadable.stop();
+    return { dir, device, serverId, unreadable: { strict, files: recoveryFiles(dir) }, before };
+  } finally { chmodSync(path, 0o600); }
+}
+
+test("T41/S19/P8/P10: an unreadable listed registry during Revoke-all recovery: the revoked row cannot sign in afterwards", async () => {
+  const { dir, device, serverId } = await revokeAllAcrossUnreadableRows();
+  const restarted = startOffline(dir);
+  closes.push(() => restarted.close());
+  const link = await relayConnection(restarted, { serverId });
+  const outcome = await link.auth(device).then(() => "auth_ok", async () => await bounded(link.serverError));
+  expect(outcome).toBe("auth_failed");
+});
+
+test("T41/S19/P8/P10: an unreadable listed registry during Revoke-all recovery: the Revoke and drop are recorded and the intent kept until durable", async () => {
+  const { dir, device, unreadable, before } = await revokeAllAcrossUnreadableRows();
+  expect(unreadable).toEqual({ strict: true, files: before });
+  restartOffline(dir);
+  expect(drops(dir).filter(entry => entry.row === device.id)).toEqual([
+    { kind: "drop", how: "revoke_all", key: device.publicKey, row: device.id, account: ACCOUNT },
+  ]);
+  expect(RemovalEvidence.open(dir, null).standingRevokes(device.publicKey)).toHaveLength(1);
+  expect(rows(dir)).toEqual([]);
+  expect(existsSync(join(dir, "revoke-all.json"))).toBe(false);
+});
 
 test.each(["unallocated sequence", "transfer points to admission"] as const)("T41/S19/P8/P10: a contradictory drop receipt preserves the registry (%s)", async damage => {
   const { fixture, device } = await listedPc();
