@@ -27,8 +27,11 @@ test("T56: a failed service past one hour closes account-only sessions and refus
   // Refresh through the real mailbox with the PC clock installed, not by supplying staleness to the row store: the
   // hour below counts from this whole read
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
-  const session = await relayConnection(pc.fixture, { serverId: pc.serverId });
+  const session = await relayConnection(pc.fixture, { serverId: pc.serverId, websocket: pc.fixture.app.context.services.core.socketHandlers });
   await session.auth(pc.device, [ACCOUNT_OPENS_ALL_FEATURE]);
+  const socket = session.openSocket();
+  await socket.opened;
+  await socket.until(message => message.type === "features");
   expect((await ask(session, "/api/account/status")).status).toBe(200);
   const errors: string[] = [];
   session.onFrame = frame => { if (frame.type === FrameType.SESSION_ERROR) errors.push(frame.payload.code); };
@@ -40,6 +43,9 @@ test("T56: a failed service past one hour closes account-only sessions and refus
   expect((await ask(session, "/api/account/status")).status).toBe(200);
   correction = -1;
   clock.advance(1);
+  expect(await bounded(socket.closed)).toMatchObject({ code: 1008 });
+  expect(devices.canDrive(pc.device.id)).toBe(false);
+  expect(await bounded(session.serverError)).toBe("auth_changed");
   await session.flush();
   expect(errors).toEqual(["auth_changed"]);
   await expect(ask(session, "/api/account/status")).rejects.toThrow();
