@@ -2056,8 +2056,7 @@ export class DeviceStore {
     const key = this.relayKeyOf(deviceId) ?? order.relayKey(proof.serverId, deviceId);
     if (!key || order.no(key) === null || !await verifyRelayProof(key, proof)) return [];
     if (this.pc?.binding()?.bind_id !== binding.bind_id || order.lastVersion(binding.bind_id, proof.serverId) === null || this.failsClosed) return [];
-    return this.safety.entries().filter(({ record }) => record.kind === "block" && record.signer === key && record.account === binding.account)
-      .map(({ n, record }) => ({ outcome: "applied", id: record.id, n }));
+    return this.safety.receiptsBySigner(key, binding.account).filter((receipt) => receipt.outcome === "applied");
   }
 
   /** The transport owns a fresh 32-byte nonce per session and consumes AUTH only once. */

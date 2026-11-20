@@ -143,8 +143,18 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
     expect(SafetyLog.open(fixture.stateDir).receipt(lift.id)).toMatchObject({ outcome: "applied" });
   });
 
-  test("T60: only a negotiated refusal with the signer's valid proof carries its PC receipts", async () => {
+  test.each([
+    ["only a negotiated refusal with the signer's valid proof carries its PC receipts", false],
+    ["a proved signer's refusal excludes blocks signed under an earlier account binding", true],
+  ] as const)("T60: %s", async (_name, earlierBinding) => {
     const { services, service, member, identity, fixture } = await server(true);
+    if (earlierBinding) {
+      const prior = await signSafetyRecord({ v: 1, kind: "block", account: "acct_previous", target: (await phone()).spki, target_no: 2,
+        signer: member.publicKey, signer_no: 1, signed_at: "2026-10-01T00:00:00.000Z", nonce: newRecordId() }, member.keys.privateKey);
+      expect(services.safetyLog?.append({ record: prior, got: "handed",
+        asof: { signer_no: 1, target_no: 2, after: 0, joined: 0, signer_removed: false } }).outcome).toBe("applied");
+      expect(services.safetyLog?.appendLift(prior.id, { account: prior.account }).outcome).toBe("applied");
+    }
     service.registerDevice(ACCOUNT, member.publicKey, "Signer");
     expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     const target = await relayDevice(fixture);
