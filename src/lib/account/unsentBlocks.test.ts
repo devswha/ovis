@@ -104,9 +104,10 @@ it("S32-1: leaving the account keeps every unsent block: only the service's answ
   await store.set("session", a);
   await keepUnsent(store, a, [await block()]);
   await store.update("unsent_blocks", (current) => ({ ...current, theirs: { account: "acct", sign_in_id: "b", records: [] } }));
+  const before = await store.get("unsent_blocks");
+  expect(Object.keys(before ?? {})).toHaveLength(2);
   await leaveAccount({ service: new AccountService({ store, fetch: service.fetch }), accountStore: store, relayStore: new MemoryDeviceStore(), session: a });
-  expect(Object.keys(await store.get("unsent_blocks") ?? {}).sort()).toEqual(["theirs", ...Object.keys(await store.get("unsent_blocks") ?? {}).filter((id) => id !== "theirs")].sort());
-  expect(Object.keys(await store.get("unsent_blocks") ?? {})).toHaveLength(2);
+  expect(await store.get("unsent_blocks")).toEqual(before);
 });
 
 it("S32-1: a failed post never writes its records back into a queue that a sign-out cleared meanwhile", async () => {

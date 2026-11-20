@@ -1132,7 +1132,8 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
     });
   };
 
-  // S32-1: a sign-out drops its sign-in's unsent blocks, so it asks first while any wait, or while that cannot be read.
+  // S32-1: a block that has not reached the account is sent only by a later sign-in to it, so a sign-out asks first while
+  // any waits, or while that cannot be read (the queue itself stays either way).
   // The question belongs to the sign-in that asked: a switch to another one voids it.
   const [unsentAsked, setUnsentAsked] = useState<{ readonly session: AccountSession; readonly state: "waiting" | "unknown" | "retry" | "refused" } | null>(null);
   const signOut = (): void => {
