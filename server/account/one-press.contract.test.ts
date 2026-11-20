@@ -288,3 +288,17 @@ test("a not_listed refusal of anything but the snapshot route never unbinds a PC
   await f.app.context.services.accountMailbox.readSnapshot();
   expect(f.devices.account()).toBe("acct_1");
 });
+
+test("PADD-1: a Revoke all that finishes while the press waits on the account service binds nothing", async () => {
+  let revoke: (() => void) | null = null;
+  const f = await pc({ accountFetch: async (request, service) => {
+    if (new URL(request.url).pathname === "/v1/pc/admission" && revoke !== null) { const now = revoke; revoke = null; now(); }
+    return await service.fetch(request);
+  } });
+  await setUpFor(f, "acct_1");
+  await admitAt(f, "acct_1");
+  revoke = () => { f.devices.revokeAll(); };
+  const pressed = await press(f, "acct_1");
+  expect(pressed.status).toBe(409);
+  expect(f.devices.account()).toBeNull();
+});
