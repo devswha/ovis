@@ -33,6 +33,21 @@ describe("chatScrollMemory", () => {
     expect(readChatPosition("p100")).toBeDefined();
   });
 
+  test("a save that comes due after the window is gone writes nothing and does not throw", () => {
+    let due: (() => void) | undefined;
+    const written: string[] = [];
+    const storage = { getItem: () => null, setItem: (_key: string, value: string) => { written.push(value); }, removeItem() {} };
+    Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: { setTimeout: (run: () => void) => { due = run; return 1; }, clearTimeout() {}, sessionStorage: storage } });
+    try {
+      rememberChatPosition("p1", { historyId: "h", turn: "a", offset: 0, atEnd: true });
+    } finally {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+    expect(due).toBeDefined();
+    expect(() => due?.()).not.toThrow();
+    expect(written).toEqual([]);
+  });
+
   test("restores the saved row, else the end", () => {
     const anchors = ["x", "y", "z"];
     const saved = { historyId: "h", turn: "y", offset: -20, atEnd: false };
