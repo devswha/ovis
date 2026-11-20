@@ -15,7 +15,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, type Stats, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { AccountRecordError, parseSafetyRecord, type BlockRecord, type PcLiftRecord, type SafetyRecord, type SafetyRecordKind } from "../../shared/account-records.ts";
+import { AccountRecordError, parseSafetyRecord, type BlockRecord, type DeviceLiftRecord, type PcLiftRecord, type SafetyRecord, type SafetyRecordKind } from "../../shared/account-records.ts";
 import { privateStateRefusal, writePrivateState } from "../private-state.ts";
 
 export const SAFETY_LOG_FILE = "account-log.json";
@@ -354,7 +354,7 @@ export class SafetyLog {
   }
 
   /** Number a whole read's lifts together; no new receipt counts until the single replacement succeeds. */
-  commitLifts(lifts: readonly import("../../shared/account-records.ts").DeviceLiftRecord[]): { added: number; receipts: SafetyReceipt[] } {
+  commitLifts(lifts: readonly DeviceLiftRecord[]): { added: number; receipts: SafetyReceipt[] } {
     if (lifts.length === 0) return { added: 0, receipts: [] };
     const unavailable = () => ({ added: 0, receipts: lifts.map((record): SafetyReceipt => ({ outcome: "refused", id: record?.id ?? "", code: "log_unavailable" })) });
     if (this.strict !== null || !this.load()) return unavailable();
