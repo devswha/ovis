@@ -250,7 +250,10 @@ export function createConnections({ clients, present, pending, devices, detachCl
       if (!state.revoked && !client.data.readOnly && !devices.canDrive(client.data.deviceId)) end(client, "revoked");
       if (state.revoked) return false;
     }
-    if (client.data.untilLock) state.unwatchLock = client.data.untilLock(() => end(client, "revoked"));
+    if (client.data.untilLock) {
+      state.unwatchLock = client.data.untilLock(() => end(client, "revoked"));
+      if (state.revoked) return false;
+    }
     if (client.data.recheckMs !== undefined) state.recheck = setTimeout(() => client.close(1000, "Portal sign-in check"), client.data.recheckMs);
     return true;
   }
