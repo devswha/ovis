@@ -26,7 +26,7 @@ import { HandedLifts } from "./account/handed-lift.ts";
 import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import { accountOpensAll, type DeviceNotice, type NoticeReplay } from "../shared/account-devices-api.ts";
-import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceSafetyRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
+import { AccountRecordError, isDeviceSafetyRecord, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceLiftRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import { PromotedHolds } from "./account/promoted-holds.ts";
 import { mayEndHold, type Sayer } from "./account/join-hold.ts";
 import type { BlockReceipt } from "../shared/account-devices-api.ts";
@@ -1165,8 +1165,13 @@ export class DeviceStore {
       if (error instanceof AccountRecordError) return false;
       throw error;
     }
-    if (record.kind !== "lift" || record.signer === "pc" || this.safety === null) return false;
-    if (!await verifySafetyRecord(record as DeviceSafetyRecord)) return false;
+    if (record.kind !== "lift" || !isDeviceSafetyRecord(record) || this.safety === null) return false;
+    return await verifySafetyRecord(record) && this.liftStanding(record, order);
+  }
+
+  /** Recheck a signature-verified lift synchronously when the deciding read changes standing. */
+  liftStanding(record: DeviceLiftRecord, order: LiftOrder | null): boolean {
+    if (this.safety === null) return false;
     const blocked = this.safety.state().blocks.find((entry) => entry.record.id === record.target);
     if (blocked === undefined) {
       const line = this.safety.state().freezes.find((entry) => entry.record.id === `f:${record.target}`)?.record;
@@ -2691,7 +2696,10 @@ export class DeviceStore {
   has(id: string): boolean { return this.devices.some((device) => device.id === id) || (this.joinedRows?.row(id) ?? null) !== null; }
 
   /** Whether the device may answer a pane's prompt: paired to drive, not to watch. */
-  canDrive(id: string): boolean { return this.sessionRow(id)?.role === "drive"; }
+  canDrive(id: string): boolean {
+    if (!this.opensAll()) return this.devices.some(row => row.id === id && row.role === "drive" && !Object.hasOwn(row, "held"));
+    return this.sessionRow(id)?.role === "drive";
+  }
 
   /** Holding a pairing code requires an ordinary paired member, not just a drive session. */
   canHoldCode(id: string): boolean { return this.devices.some(device => device.id === id) && this.canDrive(id); }

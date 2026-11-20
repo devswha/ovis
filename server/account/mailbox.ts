@@ -248,7 +248,7 @@ export class AccountMailbox {
         return this.snapshotPage(account, cursor, used);
       }, { ...ports, scope: () => this.stopped ? null : ports.scope(), commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
-        ports.commit(stage);
+        const committedLifts = ports.commit(stage);
         const removed = new Set(stage.snapshot.removed.map((row) => row.key));
         const settled = new Set<unknown>();
         for (const add of staged) {
@@ -262,6 +262,7 @@ export class AccountMailbox {
           if (this.options.pendingPath) writePrivateState(this.options.pendingPath, pending);
           this.pending = pending;
         }
+        return committedLifts;
       } });
       return { outcome, adds };
     } catch (error) {
@@ -637,8 +638,9 @@ export class AccountMailbox {
 
   /** A PC route called with a fresh proof of this PC's relay key for the `account` role. */
   private async proved(identity: RelayIdentity, path: string, body: Record<string, unknown>, gone = false): Promise<Record<string, unknown> | null> {
-    const challenge = await this.call("/v1/pc/challenge", { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)) });
-    if (typeof challenge?.challenge_id !== "string") throw new Error("The account service sent no challenge");
+    const challenge = (await this.call("/v1/pc/challenge", { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)) }))!;
+    // Rollback exposes the original native property-read error for a JSON null response.
+    if ((this.options.devices.opensAll() && challenge === null) || typeof challenge.challenge_id !== "string") throw new Error("The account service sent no challenge");
     const proof = answerServerChallenge(challenge.frame, importSecretKey(identity.secret_key),
       { server_id: identity.server_id, role: "account", connection_id: challenge.challenge_id });
     if (!proof) throw new Error("The account service sent a malformed challenge");

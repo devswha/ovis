@@ -41,6 +41,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
     if (newest === fenced) return;
     try { pc.raiseGen(); } catch (error) {
       pc.unwritten(error, "The service freeze generation could not be persisted");
+      devices.recheckListedSessions();
       throw new SnapshotWriteRefused("Service freeze generation unavailable", { cause: error });
     }
     fencedThrough.set(safetyLog, newest);
@@ -90,6 +91,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
         throw error;
       }
       const blocks = new Map(stage.snapshot.blocks.map((block) => [block.id, block]));
+      let installedFreeze = false;
       fenceFreezes();
       for (const line of stage.snapshot.freezes) {
         const block = blocks.get(line.block);
@@ -99,6 +101,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
         const receipt = safetyLog.append({ got: "snapshot", record: { v: 1, kind: "freeze", id, account: block.account,
           target: line.target, after: line.after, signer: "service", signed_at: block.signed_at, signature: "" } });
         if (receipt.outcome !== "applied") throw new Error("Cannot record the snapshot freeze line");
+        installedFreeze = true;
         devices.recheckListedSessions();
         fenceFreezes();
       }
@@ -107,16 +110,19 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
         if (error instanceof Error) throw new SnapshotWriteRefused(error.message, { cause: error });
         throw error;
       }
+      // Signatures and order were checked against this snapshot; a line installed in this turn invalidates the
+      // standing check, even though there was no intervening read or generation change from another writer.
+      const lifts = installedFreeze ? stage.lifts.filter(lift => devices.liftStanding(lift, deps.order)) : stage.lifts;
       // P14: the generation is raised on disk before any lift counts, so no decision taken at the old generation stands
       // beside a lift; if it cannot be written, nothing is lifted and the previous watermark still applies
-      if (stage.lifts.length > 0) {
+      if (lifts.length > 0) {
         try { pc.raiseGen(); } catch (error) {
           restoreOrder();
           if (error instanceof Error) throw new SnapshotWriteRefused(error.message, { cause: error });
           throw error;
         }
       }
-      const { receipts } = safetyLog.commitLifts(stage.lifts, "snapshot");
+      const { receipts } = safetyLog.commitLifts(lifts, "snapshot");
       const refused = receipts.find((receipt) => receipt.outcome === "refused");
       if (refused) {
         restoreOrder(); // commitLifts published nothing, so the previous watermark still applies.
@@ -124,6 +130,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       }
       journal.recordSnapshotLifts(safetyLog);
       devices.handedLifts.decide(stage.snapshot.lifts);
+      return lifts.length;
     },
     commitList(snapshot) {
       devices.resumePromotedHolds();

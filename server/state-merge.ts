@@ -120,8 +120,13 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
       continue;
     }
     if (rules.dropConflictingKeys && twin.relay_public_key !== device.relay_public_key) { rules.onDropped?.(device); continue; }
+    const history = {
+      role: device.role === "watch" || twin.role === "watch" ? "watch" : "drive",
+      created_at: earliest([device.created_at, twin.created_at])!,
+      last_seen_at: [device.last_seen_at, twin.last_seen_at].filter((seen): seen is string => seen !== null).sort().at(-1) ?? null,
+    } satisfies Pick<StoredDevice, "role" | "created_at" | "last_seen_at">;
     if (!rules.dropConflictingKeys && separateHeldTwins(device, twin)) {
-      devices.push({ ...device, role: twin.role === "watch" ? "watch" : device.role });
+      devices.push({ ...device, ...history });
       continue;
     }
     // the credential is chosen apart from the rest: whichever is kept, the role is never widened
@@ -152,9 +157,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
       ...(joinedBy === undefined ? {} : { joined_by: joinedBy }),
       ...(origin === undefined ? {} : { origin }),
       ...(notOwnKey ? { imported: true as const } : {}),
-      role: device.role === "watch" || twin.role === "watch" ? "watch" : "drive",
-      created_at: earliest([device.created_at, twin.created_at])!,
-      last_seen_at: [device.last_seen_at, twin.last_seen_at].filter((seen): seen is string => seen !== null).sort().at(-1) ?? null,
+      ...history,
       // the signed add behind the row, kept from either copy (/api/account/status lists it)
       ...(device.account_add === undefined && twin.account_add !== undefined ? { account_add: twin.account_add } : {}),
       ...(takes

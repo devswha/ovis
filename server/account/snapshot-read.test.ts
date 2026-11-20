@@ -41,7 +41,7 @@ function pc(options: { lastVersion?: number | null; methods?: number | null; lif
     knownBlocks: () => new Set(),
     deny: async (record) => { events.push(`deny ${name(record)}`); state.gen++; return true; },
     liftAuthority: async (candidate) => { events.push("lift checked"); return options.liftOk?.(candidate) ?? true; },
-    commit: (stage) => { events.push("commit"); committed.push(stage); },
+    commit: (stage) => { events.push("commit"); committed.push(stage); return stage.lifts.length; },
     methodsVersion: () => methods,
     journalMethod: (version) => { journaled.push(version); methods = version; },
     requestRead: () => { events.push("read requested"); },

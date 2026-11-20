@@ -39,8 +39,8 @@ export interface SnapshotPorts {
    * is older here than the blocked key and not removed. Asked before the commit turn; a change it relied on raises gen.
    */
   liftAuthority(lift: DeviceLiftRecord, snapshot: AccountSnapshot): Promise<boolean>;
-  /** Synchronous: every guard again, then the journal, the files and memory, in one turn. */
-  commit(stage: StagedRead): void;
+  /** Synchronous: journal, files and memory in one turn. Returns the number of lifts still authorized. */
+  commit(stage: StagedRead): number;
   /** List admissions follow the safety writes and staged signed adds in the same synchronous turn. */
   commitList?(snapshot: AccountSnapshot): void;
   methodsVersion(): number | null;
@@ -113,7 +113,8 @@ export async function readSnapshot(
   if (now.gen !== noted.gen + raised) return refused("generation_changed");
   const last = ports.lastVersion();
   if (last !== null && snapshot.version < last) return refused("stale");
-  try { ports.commit({ snapshot, lifts: authorized }); } catch (error) {
+  let committedLifts: number;
+  try { committedLifts = ports.commit({ snapshot, lifts: authorized }); } catch (error) {
     if (error instanceof OrderConflict) return refused("malformed");
     if (error instanceof SnapshotWriteRefused) return refused("commit_failed");
     throw error;
@@ -121,5 +122,5 @@ export async function readSnapshot(
   if (ports.methodsVersion() !== snapshot.methods_version) ports.journalMethod(snapshot.methods_version);
   // Publishing list access also renews freshness; no durable operation may follow it.
   ports.commitList?.(snapshot);
-  return { committed: true, snapshot: snapshot.snapshot, denials, liftsRefused: snapshot.lifts.length - authorized.length };
+  return { committed: true, snapshot: snapshot.snapshot, denials, liftsRefused: snapshot.lifts.length - committedLifts };
 }
