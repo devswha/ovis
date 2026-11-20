@@ -141,6 +141,28 @@ describe("the device journal (P10, P15)", () => {
     expect(DeviceJournal.open(dir).openNotices()).toHaveLength(0);
   }, 30_000);
 
+  test("S2P-10, T57: reconnect replays a decision made after the device acknowledged the open admission", () => {
+    const dir = stateDir();
+    const journal = DeviceJournal.open(dir);
+    const admission = admit(journal, "aaaaaaaaaaaaaaaa", 5);
+    const device = "bbbbbbbbbbbbbbbb";
+    const tells = () => true;
+    expect(journal.replay(device, tells).notices).toMatchObject([{ id: admission.id, open: true }]);
+    journal.ack(device, admission.seq);
+
+    // The device is offline when the PC closes the admission.
+    expect(journal.decide(admission.id)).toBe(true);
+    const reopened = DeviceJournal.open(dir);
+    const replayed = reopened.replay(device, tells).notices;
+    expect(replayed).toMatchObject([{ id: admission.id, kind: "admit", open: false }]);
+    const [close] = replayed;
+    if (!close) throw new Error("Missing replayed close");
+    expect(close.seq).toBeGreaterThan(admission.seq);
+    expect(reopened.replay("cccccccccccccccc", tells).notices).toEqual([close]);
+    reopened.ack(device, close.seq);
+    expect(reopened.replay(device, tells).notices).toEqual([]);
+  });
+
   test("G14: failed journal write admits nobody and a throwing listener skips nobody else", async () => {
     const dir = stateDir();
     const devices = store(dir);
