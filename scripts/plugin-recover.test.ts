@@ -11,7 +11,7 @@ const rows = [
   { id: "b2", label: "Old laptop", origin: { from: "legacy", how: "legacy" }, waiting: "catching_up", last_seen_at: null, refusal: "frozen" },
 ];
 
-function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string; releaseRows?: typeof rows } = {}) {
+function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string; releaseRows?: typeof rows; admitError?: string } = {}) {
   const sent: RecoveryAction[] = [];
   const prompts: string[] = [];
   const out: string[] = [];
@@ -28,7 +28,7 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
         case "list": return { rows: options.releaseRows ?? rows, pending: [{ id: "0123456789abcdef0123456789abcdef", label: "New phone", fingerprint: "AB12-CD34" }] };
         case "release": return { released: request.rows };
         case "undo": return { releases: ["r1"], ...(options.undoWarning ? { warning: options.undoWarning } : {}) };
-        case "admit": return { admitted: "fedcba9876543210" };
+        case "admit": return options.admitError ? { error: options.admitError } : { admitted: "fedcba9876543210" };
         case "remove": return options.writeError ? { error: options.writeError } : { removed: ["a1"] };
         case "lift": return options.writeError ? { error: options.writeError } : { lifted: request.blocks };
         case "revoke_all": return options.writeError ? { error: options.writeError } : { revoked: 2 };
@@ -113,6 +113,14 @@ test("P22: admit answered with anything but yes sends nothing, and needs a termi
   const piped = io({ terminal: false, answers: ["y"] });
   expect(await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], piped.value)).toBe(1);
   expect(piped.sent).toEqual([]);
+});
+
+test("P22: an admission refusal tells a revoked device to pair again at this PC's screen", async () => {
+  const refusal = "This PC refused to admit the key (locked, frozen, or its log cannot be read)";
+  const run = io({ answers: ["y"], admitError: refusal });
+  expect(await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], run.value)).toBe(1);
+  expect(run.text()).toContain(refusal);
+  expect(run.text()).toMatch(/revoked here.*pair it again at this PC's screen/i);
 });
 
 for (const { args, exit } of [{ args: [], exit: 0 }, { args: ["--admit"], exit: 2 }]) {
