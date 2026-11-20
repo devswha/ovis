@@ -17,7 +17,7 @@ async function pc() {
   clock.advance(Date.UTC(2026, 0, 1, 12));
   const time = spyOn(Date, "now").mockImplementation(() => clock.now());
   closes.push(() => time.mockRestore());
-  const listed = await createListedPc(close => closes.push(close));
+  const listed = await createListedPc(close => closes.push(close), clock);
   const row = () => {
     const found = parseAccountDevicesFile(JSON.parse(readFileSync(join(listed.fixture.stateDir, ACCOUNT_DEVICES_FILE), "utf8")))
       .devices.find(candidate => candidate.id === listed.device.id);
@@ -29,6 +29,18 @@ async function pc() {
   expect((await link.auth(listed.device, [ACCOUNT_OPENS_ALL_FEATURE])).role).toBe("drive");
   return { ...listed, clock, row, link };
 }
+
+test("P9/T54: the PC journals expiry and closes a silent session without a whole read", async () => {
+  const machine = await pc();
+  machine.service.opensAll = false;
+  machine.clock.advance(60 * 86_400_000);
+  const drops = DeviceJournal.open(machine.fixture.stateDir).entries()
+    .filter(entry => entry.row === machine.device.id && entry.kind === "drop");
+  expect(drops.map(entry => entry.how)).toEqual(["expired"]);
+  expect(machine.row().state).toBe("expired");
+  expect(await bounded(machine.link.serverError)).toBe("auth_changed");
+  await bounded(machine.link.closed);
+});
 
 test("P9/T54: an idle session cannot refresh its day while whole reads fail", async () => {
   const machine = await pc();
