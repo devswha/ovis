@@ -60,6 +60,24 @@ describe("buildSnapshot", () => {
     expect(snapshot.tabs[0]!.label).toBe("3");
   });
 
+  it("takes a tab the app named after its agent's program for an unnamed one, as the app does, and keeps a name someone gave", () => {
+    const agent = (address: string, app: string) => terminal(address, { status: { app, state: "idle" }, labels: { where: "api / Claude Code" } });
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [
+      { id: "s1t1", name: "Claude Code", root: block("t1") },
+      { id: "s1t2", name: "", root: block("t2") },
+      { id: "s1t3", name: "copilot", root: block("t3") },
+      { id: "s1t4", name: "Oh-My-Pi", root: block("t4") },
+      { id: "s1t5", name: "Codex", root: block("t5") },
+      { id: "s1t6", name: "fix login", root: block("t6") },
+      { id: "s1t7", name: "Claude Code", root: block("t7") },
+    ] }] };
+    const snapshot = buildSnapshot([
+      agent("t1", "claude-code"), agent("t2", "claude-code"), agent("t3", "copilot"), agent("t4", "omp"),
+      agent("t5", "claude-code"), agent("t6", "claude-code"), terminal("t7"),
+    ], layout, "0.1.14");
+    expect(snapshot.tabs.map((t) => t.label)).toEqual(["1", "2", "3", "4", "Codex", "fix login", "Claude Code"]);
+  });
+
   const named = (cwd: string, folder?: string) => buildSnapshot([terminal("t1", { cwd })], {
     spaces: [{ id: "s1", name: "", ...(folder === undefined ? {} : { folder }), tabs: [{ id: "s1t1", name: "", root: block("t1") }] }],
   }, "0.1.17").workspaces[0]!.label;

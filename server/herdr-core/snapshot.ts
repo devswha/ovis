@@ -5,7 +5,7 @@ import type { Foreground, Status, Terminal } from "./hc-api.generated.ts";
 import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayout, place, reconcile, sideBySide } from "./layout-doc.ts";
 import { worktreeOfLabels } from "./worktrees.ts";
 import { paneAgent, type ProgramPlatform, reportedAgent, reportedStatus } from "../agent-identity.ts";
-import { catalogPlatform, type CatalogPlatform } from "../../shared/agent-catalog.ts";
+import { AGENT_CATALOG, catalogPlatform, type CatalogPlatform } from "../../shared/agent-catalog.ts";
 import type { JobProcess } from "../foreground-job.ts";
 
 /**
@@ -214,6 +214,23 @@ function basename(path: string): string {
 }
 
 interface ShownTab { id: string; label: string; terminals: HcTerminal[]; root: LayoutNode | null; kept: boolean }
+
+const nameKey = (name: string): string => name.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
+/**
+ * The Herdr app names a tab after its program until someone names it, and such a tab shows its agent's
+ * session title (herdr-app defaults/mods/tabs/main.js): no name of its own here either. The app's program
+ * names are its own ("Copilot", "oh-my-pi"), so the agent's id and catalog name are read without case
+ * or punctuation.
+ */
+function namedAfterAgent(name: string, terminals: readonly HcTerminal[]): boolean {
+  return terminals.some((terminal) => {
+    const agent = agentOfStatus(terminal.status);
+    if (agent === null) return false;
+    const entry = AGENT_CATALOG.find((candidate) => candidate.id === agent);
+    return [agent, entry?.name].some((said) => said !== undefined && nameKey(said) === nameKey(name));
+  });
+}
 interface Group { id: string; label: string; folder?: string; tabs: ShownTab[] }
 
 function besides(root: LayoutNode | null, count: number, address: string): LayoutNode | null {
@@ -248,7 +265,8 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
       if (held.length === 0) { group.tabs.push({ id: tab["id"], label: typeof tabName === "string" ? tabName : "", terminals: [], root: null, kept: false }); continue; }
       const first = held[0]!;
       const where = first.labels?.["where"]?.split(" / ").map((part) => part.trim());
-      group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : where?.[1] || first.labels?.[TAB_NAME_LABEL] || "", terminals: held, root: tree && resolve(tree, LAYOUT_AREA), kept: false });
+      const name = typeof tabName === "string" && tabName ? tabName : where?.[1] || first.labels?.[TAB_NAME_LABEL] || "";
+      group.tabs.push({ id: tab["id"], label: namedAfterAgent(name, held) ? "" : name, terminals: held, root: tree && resolve(tree, LAYOUT_AREA), kept: false });
       if (!group.label) {
         const spaceName = space["name"];
         const folder = space["folder"];
