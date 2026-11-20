@@ -55,10 +55,11 @@ irm https://ovis.sh/install.ps1 | iex
 
 ## Your PCs, anywhere
 
-Sign in to your Ovis account with GitHub, Google or Apple (your first sign-in makes it), and every computer in it opens from your other devices: the desktop app on Mac, Windows or Linux, the iPhone and Android apps, or any browser at [app.ovis.sh](https://app.ovis.sh). They connect through the Ovis relay, end-to-end encrypted, with nothing to set up on your network. [How accounts work →](docs/guide.md#through-an-account)
+Sign in to your Ovis account with GitHub, Google or Apple (your first sign-in makes it), and the computers in it show up on your other devices: the desktop app on Mac, Windows or Linux, the iPhone and Android apps, and any browser at [app.ovis.sh](https://app.ovis.sh). They connect through the Ovis relay, end-to-end encrypted, with nothing to set up on your network. [How accounts work →](docs/guide.md#through-an-account)
 
-- **Add a computer in one press.** On it, open **Settings → Devices and PCs → Account** and press **Sign in and add this PC** (**Add this PC to my account** if you are signed in already). Your first computer, or one you add right after a two-step sign-in, goes in with that press; any other is confirmed once from a device you already use.
-- **Add a phone or another device.** Sign in to the same account on it and approve it once on a device you already use: it then reaches every computer in the account. Or pair a phone by QR code: on the computer, open **Settings → Devices and PCs → Add a connection → Phones and devices**, sign in, choose **Show the QR code** and scan it with the phone.
+- **Add a computer.** On it, open **Settings → Devices and PCs → Account**, sign in and add this PC. A new account's first computer, or one added right after a two-step sign-in, goes in with that one press; any other you confirm from a device you already use.
+- **Add a phone or another device.** Sign in to the same account on it. A computer that does not know the device yet asks you to approve it once on a device you already use.
+- **Pair a phone by QR code.** On a computer that is in no account yet, open **Settings → Devices and PCs → Add a connection → Phones and devices**, sign in, choose **Show the QR code** and scan it with a phone signed in to the same account.
 - **Without an account.** Tailscale, your Wi-Fi or SSH work too: **Start without signing in** on the phone, or **Add a connection → Tailscale** or **Direct** on the desktop. The Android app reaches a computer over SSH by itself, and can install Ovis there. [Remote PCs →](docs/remote-pcs.md)
 
 ## Features
@@ -69,7 +70,7 @@ Sign in to your Ovis account with GitHub, Google or Apple (your first sign-in ma
 - **The real terminal, one click away.** With a key bar on phones.
 - **New agents from anywhere.** In a folder you pick, from the desktop or the phone.
 - **Every workspace in one list.** Your other PCs too, over the relay or SSH.
-- **A browser of your choice.** Give Claude Code, Codex or GitHub Copilot a browser tool (Chrome DevTools or Playwright MCP) in **Settings → Agents**, and have the desktop app open links in the browser you pick.
+- **A browser of your choice.** Give Claude Code, Codex or GitHub Copilot a browser tool (Chrome DevTools MCP or Playwright MCP) in **Settings → Agents**, and have the desktop app open links in the browser you pick.
 
 [All features →](docs/guide.md#features)
 
