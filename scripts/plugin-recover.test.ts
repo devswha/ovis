@@ -13,13 +13,14 @@ const rows = [
 
 function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string } = {}) {
   const sent: RecoveryAction[] = [];
+  const prompts: string[] = [];
   const out: string[] = [];
   const answers = [...(options.answers ?? [])];
   const value: RecoverIo = {
     out: (text) => { out.push(text); },
     terminal: options.terminal ?? true,
     platform: options.platform ?? "linux",
-    ask: async (question) => { out.push(question); return answers.shift() ?? ""; },
+    ask: async (question) => { prompts.push(question); out.push(question); return answers.shift() ?? ""; },
     send: async (request) => {
       if (options.unreachable) throw new Error("ENOENT");
       sent.push(request);
@@ -34,7 +35,7 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
       }
     },
   };
-  return { value, sent, text: () => out.join("") };
+  return { value, sent, prompts, text: () => out.join("") };
 }
 
 test("T70: recover lists the rows that wait, how each came in, and whether it can be released", async () => {
@@ -123,7 +124,7 @@ for (const { row, args, confirmed, answers, result } of [
     const run = io({ answers: [...answers] });
     expect(await runRecover(args, run.value)).toBe(0);
     expect(run.sent).toEqual([confirmed]);
-    const prompts = run.text().split("\n").filter((line) => line.includes("[y/N]"));
+    const prompts = run.prompts.filter((prompt) => prompt.includes("[y/N]"));
     expect(prompts).toHaveLength(answers.length);
     if (args[0] === "--revoke-all") expect(prompts[0]).toMatch(/every device.*this PC.*signed out/i);
     else for (const [index, target] of args.slice(1).entries()) expect(prompts[index]).toContain(target);
