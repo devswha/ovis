@@ -162,6 +162,8 @@ export class AccountDeviceStore implements AccountRowSource {
     }
     const ids = new Set(idle.map((row) => row.id));
     if (ids.size > 0) this.write({ ...this.file, devices: this.file.devices.map((row) => ids.has(row.id) ? { ...row, state: "expired", hold_until: null } : row) });
+    // Expiry ends this admission. A later proved readmission reuses its id, not its catch-up wait.
+    for (const id of ids) this.waiting.delete(id);
     return idle.map((row) => row.key);
   }
 
