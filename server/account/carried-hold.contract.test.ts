@@ -33,3 +33,12 @@ test("H1/T38: an established member's later digits release the same carried hold
   expect(devices.sessionRow(id)).toMatchObject({ role: "drive", key });
   expect(devices.openNotices().some(n => n.id === notice)).toBe(true);
 });
+
+test("T38/P22: confirming the promoted key on the PC screen releases its hold", async () => {
+  const { devices, id, key } = await recentlyPromoted();
+  const reservation = devices.redeemCode(devices.startPairing().code, "code", key);
+  if (!reservation.ok) throw new Error(`Code reservation failed: ${reservation.reason}`);
+  expect(devices.admitConfirmed({ codeId: reservation.codeId, key, label: "Tablet", source: "screen" })?.id).toBe(id);
+  expect(devices.originOf(id)?.from).toBe("pc");
+  expect(devices.sessionRow(id)).toMatchObject({ role: "drive", key });
+});
