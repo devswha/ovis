@@ -78,8 +78,9 @@ export class KeyProofPairings {
     const session = this.#sessions.get(sessionId);
     if (session === undefined || session.pendingId !== undefined) return this.#end(sessionId);
     const entry = await this.#pending.prove(session.challenge, signature);
-    // a session that left while its proof was checked ended it there (leave -> forget): `entry` is null then
     if (entry === null) return this.#end(sessionId);
+    // the session ended in the turn its entry was published, before this one could name it: the entry goes too
+    if (!this.#sessions.has(sessionId)) { this.#pending.decline(entry.id); return { refuse: "auth_failed" }; }
     session.pendingId = entry.id;
     this.#byPending.set(entry.id, sessionId);
     return { pending: entry };
