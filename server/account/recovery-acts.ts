@@ -16,9 +16,10 @@ export interface RecoverySeams {
    * in too), with origin recover; the redemption is used up whatever the PC answers.
    */
   admitPending(id: string, fingerprint: string): DeviceMatch | null | "unknown" | "mismatch";
-  removeKey(input: { target: string; by: "local" }): { removed: string[] } | { refused: string };
-  appendLift(blockId: string, forget: boolean): { outcome: string };
-  revokeAll(): string[];
+  /** `user`: this PC's OS user, for the journal (P24) */
+  removeKey(input: { target: string; by: "local"; user: string }): { removed: string[] } | { refused: string };
+  appendLift(blockId: string, forget: boolean, user: string): { outcome: string };
+  revokeAll(user: string): string[];
 }
 
 const UNREADABLE = { error: "This PC cannot read its safety log, so nothing is changed: log_unreadable" };
@@ -68,11 +69,11 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
         const acts = options.seams;
         if (acts === undefined) return { error: `${action.act} is not available on this PC yet` };
         if (!pc.logReadable) return UNREADABLE;
-        if (action.act === "revoke_all") return { revoked: acts.revokeAll().length };
+        if (action.act === "revoke_all") return { revoked: acts.revokeAll(options.user).length };
         if (action.act === "remove") {
           const removed: string[] = [];
           for (const target of action.targets) {
-            const done = acts.removeKey({ target, by: "local" });
+            const done = acts.removeKey({ target, by: "local", user: options.user });
             if ("refused" in done) return { error: `${target} was not removed: ${done.refused}`, removed };
             removed.push(...done.removed);
           }
@@ -80,7 +81,7 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
         }
         if (action.act === "lift") {
           for (const block of action.blocks) {
-            const done = acts.appendLift(block, false);
+            const done = acts.appendLift(block, false, options.user);
             if (done.outcome !== "applied" && done.outcome !== "already_applied") return { error: `${block} was not lifted: ${done.outcome}` };
           }
           return { lifted: [...action.blocks] };

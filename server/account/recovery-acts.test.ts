@@ -89,9 +89,9 @@ function seams(options: { fingerprint?: string; admitted?: boolean } = {}) {
       calls.push(`admit ${id} recover`);
       return options.admitted === false ? null : { id: "fedcba9876543210", label: "Phone", role: "drive" };
     },
-    removeKey: ({ target }) => { calls.push(`remove ${target}`); return { removed: [target] }; },
-    appendLift: (block, forget) => { calls.push(`lift ${block} ${forget}`); return { outcome: "applied" }; },
-    revokeAll: () => { calls.push("revoke_all"); return ["a", "b"]; },
+    removeKey: ({ target, user }) => { calls.push(`remove ${target} ${user}`); return { removed: [target] }; },
+    appendLift: (block, forget, user) => { calls.push(`lift ${block} ${forget} ${user}`); return { outcome: "applied" }; },
+    revokeAll: (user) => { calls.push(`revoke_all ${user}`); return ["a", "b"]; },
   };
   return { made, calls, pending };
 }
@@ -121,7 +121,7 @@ test("T37/T69/T70: remove, lift and revoke-all go through this PC's own seams", 
   expect(await acts({ act: "remove", targets: ["0123456789abcdef"] })).toEqual({ removed: ["0123456789abcdef"] });
   expect(await acts({ act: "lift", blocks: ["a".repeat(64)] })).toEqual({ lifted: ["a".repeat(64)] });
   expect(await acts({ act: "revoke_all" })).toEqual({ revoked: 2 });
-  expect(calls).toEqual(["remove 0123456789abcdef", `lift ${"a".repeat(64)} false`, "revoke_all"]);
+  expect(calls).toEqual(["remove 0123456789abcdef owner", `lift ${"a".repeat(64)} false owner`, "revoke_all owner"]);
 });
 
 test("P23: while the log cannot be read, every act that writes refuses, and list still answers", async () => {
