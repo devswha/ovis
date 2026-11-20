@@ -269,6 +269,8 @@ export function sameSignIn(a: AccountSession, b: AccountSession): boolean {
 export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number; bearer?: string } = {}): Promise<AccountSession> {
   const now = options.now ?? Date.now;
   const response = await (options.fetch ?? fetch)(new URL("/v1/token", service), {
+    // a redirect target's answer is never this grant's (see AccountService's fetch)
+    redirect: "error",
     method: "POST", headers: { "content-type": "application/json", ...(options.bearer === undefined ? {} : { authorization: `Bearer ${options.bearer}` }) }, body: JSON.stringify(grant),
   });
   if (!response.ok) throw await failure(response);
@@ -299,8 +301,9 @@ export class AccountService {
 
   constructor(private readonly options: AccountServiceOptions) {
     const send: Fetch = options.fetch ?? ((input, init) => fetch(input, init));
-    // fetch fails with a TypeError only when no answer came (an abort is a DOMException, and passes as it is)
-    this.fetch = (input, init) => send(input, init).catch((error: unknown) => {
+    // fetch fails with a TypeError only when no answer came (an abort is a DOMException, and passes as it is); a redirect
+    // is never followed, so a redirect target's answer never stands in for this endpoint's own: it fails, as no answer
+    this.fetch = (input, init) => send(input, { ...init, redirect: "error" }).catch((error: unknown) => {
       throw error instanceof TypeError ? new AccountServiceUnreachableError({ cause: error }) : error;
     });
     this.now = options.now ?? Date.now;
@@ -630,9 +633,6 @@ export class AccountService {
           headers: { authorization: `Bearer ${session.access_token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           ...(signal === undefined ? {} : { signal }),
-          // `only`: the endpoint's own answer counts, never a redirect's target (a followed 303 is a GET); a redirect
-          // fails the fetch, which reads as no answer
-          ...(only === undefined ? {} : { redirect: "error" as const }),
         });
       } catch (error) {
         if (again !== undefined && error instanceof AccountServiceUnreachableError && sent < sends && await again.wait(error, sent)) continue;

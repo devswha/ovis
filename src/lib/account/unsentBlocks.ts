@@ -17,7 +17,7 @@ export interface UnsentBlocks {
   /** the sign-in that signed them, for the record: entries are matched by `account`, so any sign-in to it sends them */
   readonly sign_in_id: string | undefined;
   readonly records: readonly BlockRecord[];
-  /** the service refused them for good; they stay until that was shown to the account's owner */
+  /** the service refused them for good; they stay until the account's owner pressed OK on that refusal */
   readonly refused?: true;
 }
 
@@ -54,7 +54,7 @@ export async function keepUnsent(store: AccountStore, session: AccountSession, r
 
 /**
  * Posts the kept `records` with `post`. A record the service confirmed leaves the store, by its id; one it refused for
- * good is marked refused, to leave once that was shown; any other stays as it is. None is written back once something
+ * good is marked refused, to leave once its owner pressed OK; any other stays as it is. None is written back once something
  * else removed it. The first answer a retry may change is thrown once every record was tried.
  */
 export async function postKept(store: AccountStore, session: AccountSession, records: readonly BlockRecord[], post: (record: BlockRecord) => Promise<void>): Promise<Delivered> {
@@ -93,7 +93,7 @@ function answeredBy(error: unknown): string | undefined {
 }
 
 /**
- * `ids` of `account` whose final refusal its owner has now been shown: they leave the store, while `account` is still
+ * `ids` of `account` whose final refusal its owner has now pressed OK on: they leave the store, while `account` is still
  * the stored sign-in's (read in the same step). A record still waiting stays.
  */
 export async function refusalShown(store: AccountStore, account: string, ids: readonly string[]): Promise<void> {
