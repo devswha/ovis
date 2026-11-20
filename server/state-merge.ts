@@ -96,6 +96,12 @@ const earliest = (values: (string | null | undefined)[]): string | null =>
  */
 export interface MergeRules { readonly holdImports?: boolean; readonly dropConflictingKeys?: boolean; readonly onDropped?: (device: StoredDevice) => void }
 
+// Rollback cannot transfer a held credential to a live twin, in either direction.
+function separateHeldTwins(own: StoredDevice, other: StoredDevice): boolean {
+  return (Object.hasOwn(own, "held") || Object.hasOwn(other, "held"))
+    && (own.relay_public_key !== other.relay_public_key || own.token_hash !== other.token_hash);
+}
+
 export function mergeRegistries(own: Registry | null, other: Registry | null,
   bases: { own: ReadonlySet<string> | null; other: ReadonlySet<string> | null },
   incomplete: { own: boolean; other: boolean } = { own: false, other: false }, rules: MergeRules = {}): Registry & { held: StoredDevice[] } {
@@ -114,6 +120,10 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
       continue;
     }
     if (rules.dropConflictingKeys && twin.relay_public_key !== device.relay_public_key) { rules.onDropped?.(device); continue; }
+    if (!rules.dropConflictingKeys && separateHeldTwins(device, twin)) {
+      devices.push({ ...device, role: twin.role === "watch" ? "watch" : device.role });
+      continue;
+    }
     // the credential is chosen apart from the rest: whichever is kept, the role is never widened
     if (twin.token_hash !== device.token_hash) console.error(`Paired device ${device.id} has another credential in the other state dir; the one in use is kept`);
     // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
@@ -138,7 +148,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
     const joinedBy = word >= 0 ? marks[word] : device.account !== undefined && device.account === twin.account ? marks[0] : keptMark;
     devices.push({
       ...rest,
-      ...(twin.held && !device.held ? { held: twin.held } : {}),
+      ...(rules.dropConflictingKeys && twin.held && !device.held ? { held: twin.held } : {}),
       ...(joinedBy === undefined ? {} : { joined_by: joinedBy }),
       ...(origin === undefined ? {} : { origin }),
       ...(notOwnKey ? { imported: true as const } : {}),
@@ -302,8 +312,14 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     const copy = theirCopy.get(device.id);
     if (copy === undefined) return { ...device, imported: true as const };
     const mineToo = myCopy.get(device.id);
+    if (!rules.dropConflictingKeys && mineToo && separateHeldTwins(mineToo, copy)) return { ...copy, role: device.role };
     const kept = mineToo === undefined ? copy.origin : keptOrigin(copy, mineToo, device.relay_public_key);
-    return { ...device, ...(kept === undefined ? {} : { origin: kept }), ...(copy.imported || copy.relay_public_key !== device.relay_public_key ? { imported: true as const } : {}) };
+    const other = { ...device, ...(kept === undefined ? {} : { origin: kept }), ...(copy.imported || copy.relay_public_key !== device.relay_public_key ? { imported: true as const } : {}) };
+    if (!rules.dropConflictingKeys && mineToo) {
+      if (Object.hasOwn(copy, "held")) other.held = copy.held;
+      else delete other.held;
+    }
+    return other;
   }) };
   // rows held back from an import stay in the other dir's file, and out of the ids this merge records
   if (held.length) otherMerged.devices.push(...held);
