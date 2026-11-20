@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import { agentBrowser, desktopCommand, findProgram, linuxBrowsers, linuxEntries, macBrowsers, parseDesktopEntry, parseRegQuery, readLinkBrowser, runsInterpreter, webAddress, windowsBrowsers, windowsCommand, windowsCommandWords, writeLinkBrowser } from "./browsers.ts";
 
@@ -180,8 +180,10 @@ describe("macOS browsers", () => {
 describe("agent-browser", () => {
   it("is found on the PATH or where npm, Bun and Homebrew put it; on Windows only as an .exe", () => {
     const at = (paths: string[]) => (path: string) => paths.includes(path);
-    expect(findProgram("agent-browser", { PATH: "/usr/bin:/opt/bin" }, "/home/u", "linux", at(["/opt/bin/agent-browser", "/home/u/.bun/bin/agent-browser"]))).toBe("/opt/bin/agent-browser");
-    expect(findProgram("agent-browser", { PATH: "/usr/bin" }, "/home/u", "linux", at(["/home/u/.bun/bin/agent-browser"]))).toBe("/home/u/.bun/bin/agent-browser");
+    const PATH = ["/usr/bin", "/opt/bin"].join(delimiter);
+    expect(findProgram("agent-browser", { PATH }, "/home/u", "linux", at([join("/opt/bin", "agent-browser"), join("/home/u", ".bun", "bin", "agent-browser")]))).toBe(join("/opt/bin", "agent-browser"));
+    expect(findProgram("agent-browser", { PATH: "/usr/bin" }, "/home/u", "linux", at([join("/home/u", ".bun", "bin", "agent-browser")]))).toBe(join("/home/u", ".bun", "bin", "agent-browser"));
+    expect(findProgram("agent-browser", { PATH }, "/home/u", "win32", at([join("/opt/bin", "agent-browser"), join("/opt/bin", "agent-browser.cmd")]))).toBeNull();
     expect(findProgram("agent-browser", { PATH: "" }, "/home/u", "darwin", at([]))).toBeNull();
   });
 
