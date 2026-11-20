@@ -22,7 +22,10 @@ function fail(message: string): never {
 }
 
 /** Device table P6, P21: a registered key with its place in the account's order and whether the list may admit it. */
-export interface SnapshotDevice { readonly key: string; readonly no: number; readonly eligible: boolean; readonly label: string }
+export interface SnapshotDevice {
+  readonly key: string; readonly no: number; readonly eligible: boolean; readonly label: string;
+  readonly two_step?: "set" | "unknown"; readonly provider?: "google" | "github" | "apple";
+}
 /** Device table P6, P21: a removed key keeps its `no`, with no end date. */
 export interface SnapshotRemoved { readonly key: string; readonly no: number }
 /** Device table P16, G12: the service's freeze line for one block; keys above `after` are not listed. */
@@ -73,18 +76,18 @@ const isIso = (v: unknown): v is string => typeof v === "string" && ISO_MS.test(
 const isLabel = (v: unknown): v is string => typeof v === "string" && v.length >= 1 && v.length <= 48 && !/[\p{Cc}\p{Cs}]/u.test(v);
 const isDay = (v: unknown): v is string => typeof v === "string" && DAY.test(v) && isIso(`${v}T00:00:00.000Z`);
 
-function object(value: unknown, fields: readonly string[], what: string): Record<string, unknown> {
+function object(value: unknown, fields: readonly string[], what: string, optional: readonly string[] = []): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) fail(`${what} is a JSON object`);
   const record = value as Record<string, unknown>;
-  for (const name of Object.keys(record)) if (!fields.includes(name)) fail(`Unexpected field ${name} in ${what}`);
+  for (const name of Object.keys(record)) if (!fields.includes(name) && !optional.includes(name)) fail(`Unexpected field ${name} in ${what}`);
   for (const name of fields) if (!(name in record)) fail(`${what} has no ${name}`);
   return record;
 }
 
-function list(value: unknown, what: string, max: number, item: (entry: unknown) => void): void {
+function list<T>(value: unknown, what: string, max: number, item: (entry: unknown) => T): T[] {
   if (!Array.isArray(value)) fail(`${what} is a list`);
   if (value.length > max) fail(`${what} has more than ${max} entries`);
-  for (const entry of value) item(entry);
+  return Array.from(value, item);
 }
 
 /** A nested safety record of this page's account; its own parse error is this page's. */
@@ -117,9 +120,11 @@ export function parseSnapshotPage(value: unknown): AccountSnapshotPage {
   check(Number.isSafeInteger(page.methods_version) && (page.methods_version as number) >= 0, "Invalid methods_version");
   check(Number.isSafeInteger(page.page) && (page.page as number) >= 0, "Invalid page");
   check(typeof page.last === "boolean", "Invalid last");
-  list(page.devices, "devices", SNAPSHOT_PAGE_MAX, (entry) => {
-    const device = object(entry, ["key", "no", "eligible", "label"], "A device");
-    check(isAccountKeyEncoding(device.key) && isOrder(device.no) && typeof device.eligible === "boolean" && isLabel(device.label), "Invalid device");
+  const devices = list(page.devices, "devices", SNAPSHOT_PAGE_MAX, (entry): SnapshotDevice => {
+    const { key, no, eligible, label, provider, two_step } = object(entry, ["key", "no", "eligible", "label"], "A device", ["two_step", "provider"]);
+    if (!isAccountKeyEncoding(key) || !isOrder(no) || typeof eligible !== "boolean" || !isLabel(label)) fail("Invalid device");
+    return { key, no, eligible, label, two_step: two_step === "set" ? "set" : "unknown",
+      ...(provider === "google" || provider === "github" || provider === "apple" ? { provider } : {}) };
   });
   list(page.removed, "removed", SNAPSHOT_PAGE_MAX, (entry) => {
     const removed = object(entry, ["key", "no"], "A removed key");
@@ -134,17 +139,14 @@ export function parseSnapshotPage(value: unknown): AccountSnapshotPage {
     const line = object(entry, ["block", "target", "after"], "A freeze line");
     check(typeof line.block === "string" && /^[0-9a-f]{64}$/.test(line.block) && isAccountKeyEncoding(line.target) && isOrder(line.after), "Invalid freeze line");
   });
-  return page as unknown as AccountSnapshotPage;
+  return { ...(page as unknown as AccountSnapshotPage), devices };
 }
 
 /**
  * Device table P6, G1, T58: pages 0..n in order, each with the same snapshot id, account, PC, version and methods_version,
  * and only the last saying so. `lastApplied` is the version of the last snapshot this PC applied.
- * A key appears once across `devices` and `removed`, and one `no` names one key.
- */
-/**
- * Device table P6, G1, G12 (continued): each block and lift is named once in a read, and every freeze line names a block
- * this snapshot carries or one this PC already holds (`knownBlocks`, its safety log's blocks).
+ * Keys and numbers are unique across `devices` and `removed`; blocks and lifts are unique in the read.
+ * G12: each freeze line names a block from the snapshot or the PC's safety log (`knownBlocks`).
  */
 export function assembleSnapshot(pages: readonly AccountSnapshotPage[], expected: { account: string; server_id: string; lastApplied: number | null; knownBlocks?: ReadonlySet<string> }): AccountSnapshot {
   const first = pages[0];

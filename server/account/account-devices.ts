@@ -43,7 +43,7 @@ export type AccountRow = AccountJoinedRow;
 /** A whole read's list, as S2-24's commit hands it over. */
 export type ListCommit = Pick<AccountSnapshot, "account" | "snapshot" | "version" | "devices" | "removed">;
 
-export interface JournalEntry {
+export interface JournalEntry extends Pick<SnapshotDevice, "provider" | "two_step"> {
   readonly kind: "admit" | "drop";
   readonly key: string;
   readonly row: string;
@@ -213,7 +213,8 @@ export class AccountDeviceStore implements AccountRowSource {
       origin: this.ports.admitOrigin(now),
       confirmed_at: iso(now), last_signin_day: null, state: "hold", hold_until: null,
     };
-    this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.no, label: row.label });
+    this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.no, label: row.label,
+      two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) });
     this.write({ ...this.file, devices: [...this.file.devices, row] });
   }
 

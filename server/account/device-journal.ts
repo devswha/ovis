@@ -20,7 +20,7 @@ export const JOURNAL_FILE = DEVICE_JOURNAL_FILE;
 export const JOURNAL_MAX = 1_000;
 export const OPEN_NOTICES_MAX = 64;
 
-export interface JournalEntry {
+export interface JournalEntry extends Pick<AccountRowEntry, "provider" | "two_step"> {
   readonly seq: number;
   readonly id: string;
   readonly at: string;
@@ -152,7 +152,8 @@ export class DeviceJournal {
       }
     }
     const written = this.append({ kind: entry.kind, how: drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
-      row: entry.row, label: entry.label ?? "", by: null, account: entry.account }, drop);
+      row: entry.row, label: entry.label ?? "", by: null, account: entry.account,
+      ...(entry.kind === "admit" ? { two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) }, drop);
     if (drop) evidence.markJournalled(drop, written.seq);
   }
 
@@ -203,7 +204,7 @@ export class DeviceJournal {
   }
 
   notice(entry: JournalEntry): DeviceNotice {
-    const { undo: _undo, ...fields } = entry;
+    const { undo: _undo, provider: _provider, two_step: _twoStep, ...fields } = entry;
     return { ...fields, open: this.doc.open.some((open) => open.id === entry.id), method: null, two_step: null };
   }
 
