@@ -4,7 +4,7 @@ import { accountDeviceId, exportAccountKey } from "../../shared/account-records.
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
-import { relayAccountFixture, type TestClock } from "../relay/test-helpers.ts";
+import { relayAccountFixture, relayFixture, type TestClock } from "../relay/test-helpers.ts";
 
 export const ACCOUNT = "acct_1";
 
@@ -13,6 +13,17 @@ export async function registerSnapshotPc(service: FakeAccountService, fixture: {
   await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${service.issueToken(ACCOUNT)}` },
     body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
   return identity.server_id;
+}
+
+/** A PC that can apply its first snapshot once the fixture has established the account binding. */
+export function memberSnapshotPc(options: Parameters<typeof relayFixture>[1] = {}) {
+  const service = new FakeAccountService();
+  service.opensAll = true;
+  const fixture = relayFixture(false, { ...options, accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
+  return { fixture, async firstRead() {
+    await registerSnapshotPc(service, fixture);
+    expect(await fixture.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  } };
 }
 
 /** A bound PC whose whole read has admitted one account row. */
