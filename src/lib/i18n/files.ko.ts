@@ -18,8 +18,6 @@ export const FILES_KO: Record<string, string> = {
   "Show source": "소스 보기",
   "Resize file panel": "파일 패널 너비 조절",
   "Show beside the pane": "창 옆에 표시",
-  "Reload page": "페이지 새로고침",
-  "Close page": "페이지 닫기",
   "Show as a popup": "팝업으로 표시",
   "Close files": "파일 닫기",
   "Showing the first {shown} of {total}.": "전체 {total} 중 처음 {shown}만 보입니다.",

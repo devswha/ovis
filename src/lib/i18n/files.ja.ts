@@ -18,8 +18,6 @@ export const FILES_JA: Record<string, string> = {
   "Show source": "ソースを表示",
   "Resize file panel": "ファイルパネルの幅を変更",
   "Show beside the pane": "ペインの横に表示",
-  "Reload page": "ページを再読み込み",
-  "Close page": "ページを閉じる",
   "Show as a popup": "ポップアップで表示",
   "Close files": "ファイルを閉じる",
   "Showing the first {shown} of {total}.": "{total} 件中、最初の {shown} 件を表示しています。",

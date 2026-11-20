@@ -645,6 +645,19 @@ const BASE: Record<string, string> = {
   "From every workspace.": "すべてのワークスペースから。",
   "Pick a folder to start in.": "始めるフォルダーを選びます。",
   "Show QR code": "QR コードを表示",
+  "Address": "アドレス",
+  "Agent's tab": "エージェントのタブ",
+  "An agent is using this tab": "エージェントが使用中",
+  "Take control": "操作を引き継ぐ",
+  "You have control · the agent waits": "自分が操作中 · エージェントは待機",
+  "Forward": "進む",
+  "Type an address": "アドレスを入力",
+  "This address can't be opened in the built-in browser.": "このアドレスは内蔵ブラウザーで開けません。",
+  "Type an address to open it in a tab of your own. Its cookies stay apart from the agents' tabs.": "アドレスを入力すると自分のタブで開きます。Cookie はエージェントのタブとは別に保存されます。",
+  "Browser": "ブラウザー",
+  "Reload page": "ページを再読み込み",
+  "Close page": "ページを閉じる",
+  "Stop": "停止",
 };
 
 export const JA_PARTS: Record<string, Record<string, string>> = {

@@ -18,8 +18,6 @@ export const FILES_ZH: Record<string, string> = {
   "Show source": "显示源代码",
   "Resize file panel": "调整文件面板宽度",
   "Show beside the pane": "在窗格旁显示",
-  "Reload page": "重新加载页面",
-  "Close page": "关闭页面",
   "Show as a popup": "以弹窗显示",
   "Close files": "关闭文件",
   "Showing the first {shown} of {total}.": "显示 {total} 项中的前 {shown} 项。",

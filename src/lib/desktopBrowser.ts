@@ -15,6 +15,8 @@ export interface DesktopBrowserTab {
   address: string;
   title: string;
   loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
   /** an agent tab a person holds: the agent's tools wait */
   held: boolean;
   /** the pane (on this PC) whose agent opened an agent tab; null for a person's own tab */
@@ -38,12 +40,25 @@ export interface DesktopBrowser {
   results: DesktopBrowserResult[];
 }
 
+export interface BrowserBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 interface Bridge {
   current(): Promise<unknown>;
   onChange(listener: (browser: unknown) => void): () => void;
   close(id: number): void;
   thumbnail?(id: number): Promise<unknown>;
   reveal?(id: string): void;
+  open?(url: string): Promise<number | null>;
+  show?(id: number, bounds: BrowserBounds): void;
+  hide?(): void;
+  navigate?(id: number, url: string): Promise<boolean>;
+  go?(id: number, step: "back" | "forward" | "reload" | "stop"): void;
+  hold?(id: number, held: boolean): void;
 }
 
 function bridge(): Bridge | undefined {
@@ -64,6 +79,8 @@ function tab(value: unknown): DesktopBrowserTab | null {
     address: row["address"],
     title: typeof row["title"] === "string" ? row["title"] : "",
     loading: row["loading"] === true,
+    canGoBack: row["canGoBack"] === true,
+    canGoForward: row["canGoForward"] === true,
     held: row["held"] === true,
     owner: typeof row["owner"] === "string" ? row["owner"] : null,
   };
@@ -133,4 +150,75 @@ export async function browserTabThumbnail(id: number): Promise<string | null> {
   if (typeof thumbnail !== "function") return null;
   const picture = await thumbnail(id).catch(() => null);
   return typeof picture === "string" && picture.startsWith("data:image/") ? picture : null;
+}
+
+/** Whether this page runs in the desktop app, whose built-in browser a setting turns on. */
+export function hasDesktopBrowser(): boolean {
+  return bridge() !== undefined;
+}
+
+/** a tab of the person's own on `url`: its id, or null when main refused the address or has no place for one */
+export async function openBrowserTab(url: string): Promise<number | null> {
+  const open = bridge()?.open;
+  return typeof open === "function" ? open(url).catch(() => null) : null;
+}
+
+/** has main draw the tab over `bounds` of the window, in the page's CSS pixels */
+export function showBrowserTab(id: number, bounds: BrowserBounds): void {
+  bridge()?.show?.(id, bounds);
+}
+
+export function hideBrowserTab(): void {
+  bridge()?.hide?.();
+}
+
+/** loads another address in a tab of the person's own, or in an agent's tab they hold */
+export async function navigateBrowserTab(id: number, url: string): Promise<boolean> {
+  const navigate = bridge()?.navigate;
+  return typeof navigate === "function" ? navigate(id, url).catch(() => false) : false;
+}
+
+export function goBrowserTab(id: number, step: "back" | "forward" | "reload" | "stop"): void {
+  bridge()?.go?.(id, step);
+}
+
+/** a person takes an agent's tab (the agent waits) or hands it back */
+export function holdBrowserTab(id: number, held: boolean): void {
+  bridge()?.hold?.(id, held);
+}
+
+/**
+ * What a person types in the address field: a web address. Without a scheme it takes https://, and
+ * http:// for this PC's own pages (a dev server on localhost), which seldom have a certificate.
+ */
+export function typedAddress(text: string): string | null {
+  const trimmed = text.trim();
+  if (trimmed === "" || /\s/.test(trimmed)) return null;
+  const schemed = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^[^/:]+:\d+(?:[/?#]|$)/.test(trimmed);
+  try {
+    const url = new URL(schemed ? trimmed : `https://${trimmed}`);
+    if (!schemed && /^(?:localhost|.+\.localhost|127(?:\.\d+){3}|\[::1\])$/i.test(url.hostname)) url.protocol = "http:";
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which built-in browser tab the file panel's place shows: a tab's id, "new" for a tab of the person's own yet to
+ * open, or null. A tab opened from "new" is shown once main lists it (its first address allowed); a tab that goes
+ * away, or the whole browser turned off, shows nothing.
+ */
+export function useShownBrowserTab(tabs: DesktopBrowserTab[] | null) {
+  const [selected, select] = useState<number | "new" | null>(null);
+  const [opening, setOpening] = useState<number | null>(null);
+  const shown = tabs === null || selected === null || selected === "new" ? null : tabs.find((tab) => tab.id === selected) ?? null;
+  useEffect(() => {
+    if (tabs === null || (typeof selected === "number" && shown === null)) select(null);
+    if (opening !== null && tabs?.some((tab) => tab.id === opening)) {
+      select(opening);
+      setOpening(null);
+    }
+  }, [tabs, selected, shown, opening]);
+  return { selected, select, shown, opened: setOpening };
 }

@@ -93,7 +93,7 @@ export const STATE_WORD: Readonly<Record<MachineState, string>> = {
   error: "Connection error",
 };
 
-interface Props { machines: Machine[]; footerStart?: ReactNode; allMachines?: Machine[]; selectedMachineId: string; selectedPaneId: string | null; activity: SidebarActivity; actions: AppActions; watching?: boolean; appLayout?: (machineId: string) => LayoutOffer; drawerOpen?: boolean; filterRequest?: number; onSelect(machineId: string, paneId: string | null): void; onNew(machineId: string): void; onSetup(machine: Machine, update?: boolean): void; onUsageLogin(paneId: string): void }
+interface Props { machines: Machine[]; footerStart?: ReactNode; afterPcs?: ReactNode; allMachines?: Machine[]; selectedMachineId: string; selectedPaneId: string | null; activity: SidebarActivity; actions: AppActions; watching?: boolean; appLayout?: (machineId: string) => LayoutOffer; drawerOpen?: boolean; filterRequest?: number; onSelect(machineId: string, paneId: string | null): void; onNew(machineId: string): void; onSetup(machine: Machine, update?: boolean): void; onUsageLogin(paneId: string): void }
 export function MachineSidebar(props: Props) {
   const t = useT();
   const activity = props.activity;
@@ -272,6 +272,7 @@ export function MachineSidebar(props: Props) {
         {exitToPcs === "shell" && <ShellPcs {...shellPcs} />}
       </div>
     </section>
+    {props.afterPcs}
     {!settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={listId} onSplit={changeSplit} onFold={foldSections} />}
     {!settings.agentGroups && agentList}
     <footer className="sidebar-footer">
