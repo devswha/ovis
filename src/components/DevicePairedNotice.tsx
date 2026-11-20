@@ -20,7 +20,7 @@ export function DeviceNotices({ pc, notices, cut = 0, onDismiss, onShown, action
   const shown = notices.filter((notice) => TOLD_KINDS.has(notice.kind));
   const newest = shown.reduce((seq, notice) => Math.max(seq, notice.seq), 0);
   useEffect(() => { if (newest > 0) onShown?.(newest); }, [newest, onShown]);
-  return <>{cut > 0 && <p className="settings-hint">{t("Older notices from {pc} were cleared before this device saw them.", { pc })}</p>}{shown.map((notice) => {
+  return <>{cut > 0 && <p className="settings-hint">{t("{count} older notices from {pc} were cleared before this device saw them.", { count: cut, pc })}</p>}{shown.map((notice) => {
     const time = new Date(notice.at).toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" });
     const method = notice.method === null ? null : METHOD_NAMES[notice.method];
     const headline = notice.kind === "method" ? t("A sign-in method was added to your account at {time}.", { time })
