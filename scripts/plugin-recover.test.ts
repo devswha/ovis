@@ -11,7 +11,7 @@ const rows = [
   { id: "b2", label: "Old laptop", origin: { from: "legacy", how: "legacy" }, waiting: "catching_up", last_seen_at: null, refusal: "frozen" },
 ];
 
-function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string } = {}) {
+function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string; releaseRows?: typeof rows } = {}) {
   const sent: RecoveryAction[] = [];
   const prompts: string[] = [];
   const out: string[] = [];
@@ -25,7 +25,7 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
       if (options.unreachable) throw new Error("ENOENT");
       sent.push(request);
       switch (request.act) {
-        case "list": return { rows, pending: [{ id: "0123456789abcdef0123456789abcdef", label: "New phone", fingerprint: "AB12-CD34" }] };
+        case "list": return { rows: options.releaseRows ?? rows, pending: [{ id: "0123456789abcdef0123456789abcdef", label: "New phone", fingerprint: "AB12-CD34" }] };
         case "release": return { released: request.rows };
         case "undo": return { releases: ["r1"], ...(options.undoWarning ? { warning: options.undoWarning } : {}) };
         case "admit": return { admitted: "fedcba9876543210" };
@@ -114,6 +114,16 @@ test("P22: admit answered with anything but yes sends nothing, and needs a termi
   expect(await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], piped.value)).toBe(1);
   expect(piped.sent).toEqual([]);
 });
+
+for (const { args, exit } of [{ args: [], exit: 0 }, { args: ["--admit"], exit: 2 }]) {
+  test(`P22: recover${args.length ? " --admit without an id" : ""} lists pending devices even with no release rows`, async () => {
+    const run = io({ terminal: false, releaseRows: [] });
+    expect(await runRecover(args, run.value)).toBe(exit);
+    expect(run.sent).toEqual([{ act: "list" }]);
+    expect(run.text()).toMatch(/0123456789abcdef0123456789abcdef.*New phone.*AB12-CD34.*ovis recover --admit 0123456789abcdef0123456789abcdef/);
+    if (exit === 2) expect(run.text()).toContain("usage: ovis recover");
+  });
+}
 
 for (const { row, args, confirmed, answers, result } of [
   { row: "T37", args: ["--remove", "key-a", "a1"], answers: ["", "y"], confirmed: { act: "remove", targets: ["a1"] }, result: /removed.*a1/i },
