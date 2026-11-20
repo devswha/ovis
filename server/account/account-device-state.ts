@@ -95,7 +95,8 @@ export const CLEARED: DevicesFile = { account: null, snapshot: null, version: 1,
 export function loadAccountDevices(path: string, serverId: string): { file: DevicesFile; error: string | null; foreign?: true } {
   let value: unknown;
   try { value = JSON.parse(readFileSync(path, "utf8")); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { file: CLEARED, error: null };
+    if (!(error instanceof Error)) throw error;
+    if ("code" in error && error.code === "ENOENT") return { file: CLEARED, error: null };
     return { file: CLEARED, error: `Cannot read ${path}: account-joined devices are refused until it is restored or fixed.` };
   }
   try {

@@ -167,7 +167,6 @@ export class AccountDeviceStore implements AccountRowSource {
     const entry = list.devices.find((candidate) => candidate.key === key && candidate.eligible);
     if (!expired || !entry || list.removed.some((gone) => gone.key === key) || list.account !== this.file.account) return false;
     if (!this.ports.hasNoticeSlot() || this.ports.heldByDevicesJson(key) || !this.ports.admits(key, list.account)) return false;
-    this.file = { ...this.file, devices: this.file.devices.filter((row) => row !== expired) };
     this.admit(entry, false);
     return true;
   }
@@ -241,7 +240,7 @@ export class AccountDeviceStore implements AccountRowSource {
     const standing = this.ports.admitListedRows(() => {
       this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.origin.admit_no, label: row.label,
         two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) });
-      this.write({ ...this.file, devices: [...this.file.devices, row] });
+      this.write({ ...this.file, devices: [...this.file.devices.filter(candidate => candidate.key !== entry.key), row] });
       return [row.id];
     });
     if (!standing.includes(row.id)) return false;
