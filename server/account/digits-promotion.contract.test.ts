@@ -74,3 +74,11 @@ test("H1/T38: a recent member's digits promote the row with the original hold", 
   time.now++;
   expect(devices.sessionRow(id)).toMatchObject({ role: "drive" });
 });
+
+test("H1/T38: an established member's digits promote the row and end the hold", async () => {
+  const { devices, id, frame, held, notice } = await approveListed(3_600_001);
+  expect(frame).toBe(FrameType.AUTH_OK);
+  expect(held).toBeUndefined();
+  expect(devices.openNotices().some(n => n.id === notice)).toBe(false);
+  expect(devices.sessionRow(id)).toMatchObject({ role: "drive" });
+});
