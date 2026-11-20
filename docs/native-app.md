@@ -602,8 +602,8 @@ Still open on Android:
 
 ### PCs over SSH
 
-The Android app can add a PC the person already reaches over SSH: **Add over SSH** on the connect
-screen. The phone talks to the PC's sshd itself (ConnectBot's `sshlib`, BSD-3-Clause), with no Ovis
+The Android app can add a PC the person already reaches over SSH: **SSH** under **Add a PC** on
+the connect screen. The phone talks to the PC's sshd itself (ConnectBot's `sshlib`, BSD-3-Clause), with no Ovis
 relay, no account and no port open but SSH. A user guide is [ssh-from-phone.md](ssh-from-phone.md);
 the iOS plan is [ios-ssh-plan.md](ios-ssh-plan.md). Nothing in `server/` or `shared/` changes: the PC
 runs the Ovis it already has.
@@ -658,7 +658,9 @@ Keys and host keys (`SshPcs`, `SshVault`, `SshKeys`, `SshHostKeys`; `SshPcsTest`
   line leaves the app (`ssh-ed25519 … ovis-phone:<model>`). Android's Keystore cannot hold an
   ed25519 key on every phone, hence a sealed software key. A seed the phone can no longer open
   (`key-lost`) is never replaced quietly: setting the PC up again makes a new one.
-- A pasted private key and its passphrase are sealed the same way. The app reads OpenSSH keys
+- A pasted private key and its passphrase are sealed the same way. Pasting one sits under
+  **Advanced** on the setup screen: a private key on the clipboard passes other apps, so the first
+  choices are the phone's own key (its public line copied or shared) and the password once. The app reads OpenSSH keys
   (bcrypt-encrypted or not) and PEM keys (`RSA`/`EC PRIVATE KEY`, encrypted or not); ed25519, RSA
   and ECDSA; it refuses DSA, and says how to convert PKCS#8 (`ssh-keygen -p -f key`) and PuTTY
   keys. A paste is read before anything goes to the network, so a wrong passphrase is told at once.
@@ -672,7 +674,7 @@ Keys and host keys (`SshPcs`, `SshVault`, `SshKeys`, `SshHostKeys`; `SshPcsTest`
 - Backups stay off (`allowBackup="false"`), so none of it reaches a Google backup either.
 
 Manage (`app/web/connect.js`): an SSH PC in Your PCs has Manage instead of Forget: rename, show
-the phone's key line again (with Copy), set up again (another way to sign in, another key, the
+the phone's key line again (with Copy and Share), set up again (another way to sign in, another key, the
 phone's key registered again; the PC keeps its origin), forget its host key, and remove it, which can
 also take the phone's key out of the PC's `authorized_keys`: only the lines whose key field is that
 key, the file's mode kept, and only when no other saved PC may sign in to the same account with it

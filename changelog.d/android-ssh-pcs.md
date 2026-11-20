@@ -1,8 +1,8 @@
 ### Added
-- The Android app adds a PC you already reach over SSH: **Add over SSH** on the connect screen,
-  with no relay, no account and no port open but SSH. The phone signs in with a key of its own
-  (registered there with your password once, or by pasting its line into `authorized_keys`), or
-  with a private key you paste in (OpenSSH or PEM; ed25519, RSA or ECDSA; with a passphrase or
+- The Android app adds a PC you already reach over SSH: **SSH** under **Add a PC**, with no relay,
+  no account and no port open but SSH. The phone signs in with a key of its own (registered there
+  with your password once, or by copying or sharing its line into `authorized_keys`), or, under
+  **Advanced**, with a private key you paste in (OpenSSH or PEM; ed25519, RSA or ECDSA; with a passphrase or
   not). The PC's host key fingerprint is shown to confirm first, and a changed one stops the app
   until you forget it on purpose. Keys stay on the phone, sealed by the Android Keystore.
 - Where that account has no Ovis yet, the phone can install it there with the official installer,

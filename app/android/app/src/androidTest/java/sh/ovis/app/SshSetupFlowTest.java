@@ -60,6 +60,7 @@ public class SshSetupFlowTest {
         onView(withId(R.id.ssh_host)).perform(replaceText(SshFixtureTest.host()));
         onView(withId(R.id.ssh_port)).perform(replaceText(String.valueOf(SshFixtureTest.port())));
         onView(withId(R.id.ssh_user)).perform(replaceText(SshFixtureTest.user()), closeSoftKeyboard());
+        onView(withId(R.id.ssh_advanced)).perform(scrollTo(), click());
         onView(withId(R.id.ssh_method_paste)).perform(scrollTo(), click());
         onView(withId(R.id.ssh_private_key)).perform(scrollTo(), replaceText(key));
         onView(withId(R.id.ssh_passphrase)).perform(scrollTo(), replaceText(passphrase), closeSoftKeyboard());

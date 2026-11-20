@@ -6,15 +6,17 @@ no account and no port open but SSH. Linux and macOS computers; Android for now 
 
 ## Add it
 
-1. On the app's first screen, tap **Add over SSH**.
+1. On **Add a PC** (after signing in, or **Start without signing in**), tap **SSH**.
 2. Fill in the address (a host name or an IP your phone reaches: on the same Wi-Fi, or over
    Tailscale), the SSH port and your user name there.
 3. Choose how the phone signs in:
    - **This phone's own key** (recommended). The app shows one line; add it to
-     `~/.ssh/authorized_keys` on the computer (Copy, then paste it there), then tap Connect.
+     `~/.ssh/authorized_keys` on the computer (Copy, or Share it to mail or a messenger you read on
+     the computer, then paste it there), then tap Connect.
    - **Password, once**. The phone signs in with your password one time, adds its own key to
      `~/.ssh/authorized_keys` there, checks that the key works, and forgets the password.
-   - **A private key I paste in**. OpenSSH (`-----BEGIN OPENSSH PRIVATE KEY-----`) or PEM
+   - Under **Advanced: paste a private key**, **A private key I paste in**. Use it only for a key
+     you already have: a private key on the clipboard can be read by other apps. OpenSSH (`-----BEGIN OPENSSH PRIVATE KEY-----`) or PEM
      (`-----BEGIN RSA PRIVATE KEY-----`, `-----BEGIN EC PRIVATE KEY-----`); ed25519, RSA or
      ECDSA; with its passphrase if it has one. Its public key must already be in
      `authorized_keys` there.

@@ -11,9 +11,12 @@
     <string name="ssh_method_phone">This phone\'s own key (recommended)</string>
     <string name="ssh_method_password">Password, once: the phone adds its key there</string>
     <string name="ssh_method_paste">A private key I paste in</string>
+    <string name="ssh_advanced">Advanced: paste a private key</string>
     <string name="ssh_phone_key_note">Add this line to ~/.ssh/authorized_keys on that machine:</string>
     <string name="ssh_copy">Copy</string>
     <string name="ssh_copied">Copied</string>
+    <string name="ssh_share">Share</string>
+    <string name="ssh_share_title">Send this phone\'s key to the PC</string>
     <string name="ssh_phone_key_failed">This phone could not make its key: %1$s</string>
     <string name="ssh_password_label">Password (used once, never saved)</string>
     <string name="ssh_key_label">Private key (OpenSSH or PEM)</string>

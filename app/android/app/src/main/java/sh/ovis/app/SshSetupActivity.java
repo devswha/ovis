@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Build;
@@ -35,9 +36,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Adds a PC over SSH, or sets one up again (EXTRA_ORIGIN: register the phone again, use another key,
  * confirm a host key that was forgotten on purpose). Address and account, then how the phone signs in:
- * its own key, shown to paste into authorized_keys; a password used once to add that key there, as Ovis
- * on a PC registers its own key; or a private key pasted in (OpenSSH or PEM, ed25519, RSA or ECDSA, with
- * a passphrase or not). The host key's fingerprint is shown and confirmed before anything is sent to the
+ * its own key, shown to copy or share into authorized_keys; a password used once to add that key there, as
+ * Ovis on a PC registers its own key; or, under Advanced, a private key pasted in (OpenSSH or PEM, ed25519,
+ * RSA or ECDSA, with a passphrase or not): a private key passing through the clipboard and other apps is
+ * the riskiest way, so it is not offered first. The host key's fingerprint is shown and confirmed before anything is sent to the
  * machine. The PC's Ovis is found or started (SshLink), or installed from here when there is none and
  * the person agrees, then checked to answer as Ovis; then the PC opens.
  */
@@ -113,8 +115,19 @@ public class SshSetupActivity extends Activity {
         method = new RadioGroup(this);
         method.addView(radio(R.id.ssh_method_phone, R.string.ssh_method_phone));
         method.addView(radio(R.id.ssh_method_password, R.string.ssh_method_password));
-        method.addView(radio(R.id.ssh_method_paste, R.string.ssh_method_paste));
+        RadioButton pasteWay = radio(R.id.ssh_method_paste, R.string.ssh_method_paste);
+        method.addView(pasteWay);
         form.addView(method);
+        Button advanced = button(getString(R.string.ssh_advanced), false);
+        advanced.setId(R.id.ssh_advanced);
+        advanced.setOnClickListener(v -> {
+            pasteWay.setVisibility(View.VISIBLE);
+            advanced.setVisibility(View.GONE);
+        });
+        form.addView(advanced);
+        boolean imported = editing != null && "imported".equals(editing.auth);
+        pasteWay.setVisibility(imported ? View.VISIBLE : View.GONE);
+        advanced.setVisibility(imported ? View.GONE : View.VISIBLE);
 
         LinearLayout keyPanel = panel();
         keyPanel.addView(note(getString(R.string.ssh_phone_key_note)));
@@ -129,7 +142,12 @@ public class SshSetupActivity extends Activity {
         keyPanel.addView(keyLine);
         Button copy = button(getString(R.string.ssh_copy), false);
         copy.setOnClickListener(v -> copy(keyLine.getText().toString()));
-        keyPanel.addView(copy);
+        Button share = button(getString(R.string.ssh_share), false);
+        share.setOnClickListener(v -> share(this, keyLine.getText().toString()));
+        LinearLayout keyButtons = new LinearLayout(this);
+        keyButtons.addView(copy);
+        keyButtons.addView(share);
+        keyPanel.addView(keyButtons);
         phoneKeyPanel = keyPanel;
         form.addView(keyPanel);
         showPhoneKey(false);
@@ -162,7 +180,7 @@ public class SshSetupActivity extends Activity {
         form.addView(pastePanel);
 
         method.setOnCheckedChangeListener((group, checked) -> showPanel(checked));
-        method.check(editing != null && "imported".equals(editing.auth) ? R.id.ssh_method_paste : R.id.ssh_method_phone);
+        method.check(imported ? R.id.ssh_method_paste : R.id.ssh_method_phone);
 
         LinearLayout statusRow = new LinearLayout(this);
         statusRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -223,6 +241,14 @@ public class SshSetupActivity extends Activity {
         clipboard.setPrimaryClip(ClipData.newPlainText("ssh key", text));
         // Android 13 and later show their own confirmation
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(this, R.string.ssh_copied, Toast.LENGTH_SHORT).show();
+    }
+
+    /** Hands this phone's public key line to another app (mail, a messenger, a note that syncs to the PC) through the share sheet. */
+    static void share(android.content.Context context, String line) {
+        Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, line);
+        Intent chooser = Intent.createChooser(send, context.getString(R.string.ssh_share_title));
+        if (!(context instanceof Activity)) chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        context.startActivity(chooser);
     }
 
     private void pasteKey() {

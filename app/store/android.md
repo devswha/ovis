@@ -295,7 +295,7 @@ service's records, the only data that reaches the developer):
     in that row), and the SSH password, which is not a Play data type and goes only to the PC's
     sshd. The answers stay as they are; add "the public key of the phone's SSH key, kept by
     the user's own PC" to the Device or other IDs row when this ships.
-  - **App access**: add to the instructions: *Add over SSH (Android) needs a computer the
+  - **App access**: add to the instructions: *SSH under Add a PC (Android) needs a computer the
     reviewer can reach over SSH, with Ovis on it; the demo shows the same app without one.* Do not
     hand Google a login to a real machine.
   - **Policy**: an SSH client is allowed (Device and Network Abuse covers apps that interfere

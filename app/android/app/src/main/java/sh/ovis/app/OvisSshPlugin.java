@@ -22,7 +22,7 @@ import java.util.List;
  * PCs added over SSH. Capacitor loads its plugins before the WebView's first page, so when the PC
  * about to open is an SSH PC its tunnel already listens on that page's address (SshTunnels). The
  * connect screen (app/web/connect.js) adds one through `add`, lists them with `list`, and manages
- * each: `rename`, `phoneKey` and `copy` (this phone's key line again), `setUp` (register again, another
+ * each: `rename`, `phoneKey` with `copy` and `share` (this phone's key line again), `setUp` (register again, another
  * key, a forgotten host key confirmed), `forgetHostKey`, and `remove`, which can also take this phone's
  * key out of the PC's authorized_keys.
  *
@@ -153,6 +153,17 @@ public class OvisSshPlugin extends Plugin {
         getActivity().runOnUiThread(() -> {
             ClipboardManager clipboard = getContext().getSystemService(ClipboardManager.class);
             if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("ssh", text));
+            call.resolve();
+        });
+    }
+
+    /** Opens the share sheet with `text` (this phone's public key line), to send it to the PC another way. */
+    @PluginMethod
+    public void share(PluginCall call) {
+        if (!fromAppPage(call)) return;
+        String text = call.getString("text", "");
+        getActivity().runOnUiThread(() -> {
+            SshSetupActivity.share(getActivity(), text);
             call.resolve();
         });
     }
