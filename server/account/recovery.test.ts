@@ -148,7 +148,9 @@ test.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)("R11: anot
     socket.on("error", (error) => { console.log(JSON.stringify({ uid: process.getuid(), code: error.code })); });
   `, socket.path], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: process.env });
   ends.push(() => { if (run.exitCode === null) run.kill(); });
-  const [exit, stdout, stderr] = await bounded(Promise.all([run.exited, run.stdout.text(), run.stderr.text()]));
+  const [exit, stdout, stderr] = await bounded(Promise.all([
+    run.exited, new Response(run.stdout).text(), new Response(run.stderr).text(),
+  ]));
   expect(exit, stderr).toBe(0);
   expect(JSON.parse(stdout)).toEqual({ uid: 65534, code: "EACCES" });
 });
