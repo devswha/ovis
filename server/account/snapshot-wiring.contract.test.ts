@@ -3,10 +3,11 @@ import { HandedLifts } from "./handed-lift.ts";
 import { SafetyLog } from "./safety-log.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
-import { FrameType } from "../../shared/relay-mux.ts";
+import { ACCOUNT_OPENS_ALL_FEATURE, FrameType } from "../../shared/relay-mux.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
 import { bounded, deferred, relayAccountFixture, relayConnection, relayDevice } from "../relay/test-helpers.ts";
 import { ask, phone } from "./pairing.test-helpers.ts";
@@ -144,11 +145,15 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
   });
 
   test.each([
-    ["only a negotiated refusal with the signer's valid proof carries its PC receipts", false],
-    ["a proved signer's refusal excludes blocks signed under an earlier account binding", true],
-  ] as const)("T60: %s", async (_name, earlierBinding) => {
+    ["a proved signer's refusal carries its PC receipts", "proved"],
+    ["a proved signer's refusal excludes blocks signed under an earlier account binding", "earlier"],
+    ["an unproved signer's refusal carries no receipts", "unproved"],
+    ["a refusal without negotiation carries no receipts", "legacy"],
+    ["an unknown key's refusal carries no receipts", "unknown"],
+    ["an ordered key's refusal carries no receipts when its log is empty", "empty"],
+  ] as const)("T60: %s", async (_name, scenario) => {
     const { services, service, member, identity, fixture } = await server(true);
-    if (earlierBinding) {
+    if (scenario === "earlier") {
       const prior = await signSafetyRecord({ v: 1, kind: "block", account: "acct_previous", target: (await phone()).spki, target_no: 2,
         signer: member.publicKey, signer_no: 1, signed_at: "2026-10-01T00:00:00.000Z", nonce: newRecordId() }, member.keys.privateKey);
       expect(services.safetyLog?.append({ record: prior, got: "handed",
@@ -157,24 +162,30 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
     }
     service.registerDevice(ACCOUNT, member.publicKey, "Signer");
     expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
-    const target = await relayDevice(fixture);
-    const block = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.publicKey, target_no: 2,
-      signer: member.publicKey, signer_no: 1, signed_at: "2026-11-01T00:00:00.000Z", nonce: newRecordId() }, member.keys.privateKey);
-    const receipt = await services.devices.applyBlock(block, "handed");
-    expect(receipt.outcome).toBe("applied");
-    expect(services.devices.revoke(member.id)).toBe(true);
-    const id = accountDeviceId(identity.server_id, member.publicKey);
-    const refusal = async (keys: CryptoKeyPair, features: readonly string[]) => {
-      const link = await relayConnection(fixture, { serverId: identity.server_id });
-      const reply = deferred<unknown>();
-      link.onFrame = (frame) => { if (frame.type === FrameType.SESSION_ERROR) reply.resolve(frame.payload); };
-      void link.auth({ ...member, keys, id }, features).catch(() => {});
-      return bounded(reply.promise);
-    };
+    const stranger = await phone();
     const plain = { code: "auth_failed", message: "auth_failed" };
-    expect(await refusal(member.keys, [])).toEqual(plain);
-    expect(await refusal(target.keys, ["account-opens-all-1"])).toEqual(plain);
-    expect(await refusal(member.keys, ["account-opens-all-1"])).toEqual({ ...plain, receipts: [receipt] });
+    let expected: typeof plain & { readonly receipts?: readonly BlockReceipt[] } = plain;
+    if (scenario !== "empty") {
+      const target = await relayDevice(fixture);
+      const block = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.publicKey, target_no: 2,
+        signer: member.publicKey, signer_no: 1, signed_at: "2026-11-01T00:00:00.000Z", nonce: newRecordId() }, member.keys.privateKey);
+      const receipt = await services.devices.applyBlock(block, "handed");
+      expect(receipt.outcome).toBe("applied");
+      if (scenario === "proved" || scenario === "earlier") {
+        expected = { ...plain, receipts: [receipt] };
+      }
+    }
+    expect(services.devices.revoke(member.id)).toBe(true);
+    const publicKey = scenario === "unknown" ? stranger.spki : member.publicKey;
+    const keys = scenario === "unknown" || scenario === "unproved" ? stranger.keys : member.keys;
+    const id = accountDeviceId(identity.server_id, publicKey);
+    const link = await relayConnection(fixture, { serverId: identity.server_id });
+    const reply = deferred<unknown>();
+    link.onFrame = (frame) => { if (frame.type === FrameType.SESSION_ERROR) reply.resolve(frame.payload); };
+    const before = service.requests.length;
+    void link.auth({ publicKey, keys, id }, scenario === "legacy" ? [] : [ACCOUNT_OPENS_ALL_FEATURE]).catch(() => {});
+    expect(await bounded(reply.promise)).toEqual(expected);
+    expect(service.requests.slice(before).filter((request) => request === "POST /v1/pc/snapshot")).toEqual(["POST /v1/pc/snapshot"]);
   });
 
   test("P24: with the flag off the PC never asks for a snapshot", async () => {
