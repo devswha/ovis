@@ -202,7 +202,12 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         // "It's me" is the join hold's to judge (T53), only for the session's proved key, never a bare device id; the
         // confirmation it publishes is the answer. A PC without notices (flag off) ignores it as before.
         if (message.answer === "its_me") {
-          if (notices !== undefined && typeof message.id === "string" && client.data.deviceId !== undefined && client.data.provedKey) notices.itsMe(client.data.deviceId, message.id, client.data.provedKey);
+          if (notices === undefined || typeof message.id !== "string" || client.data.deviceId === undefined || !client.data.provedKey) return;
+          try { notices.itsMe(client.data.deviceId, message.id, client.data.provedKey); }
+          catch (error) {
+            console.error(`[devices] It's me could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+            send(client, { type: "error", code: "notice_decision_failed", message: "The notice could not be closed and remains open." });
+          }
           return;
         }
         // "Not me": each block applies at once and is answered with its receipt; one that applied decides the notice (T51).
