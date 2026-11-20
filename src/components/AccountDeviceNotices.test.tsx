@@ -10,12 +10,14 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { HerdrSocket } from "../lib/ws.ts";
 import { useAccountDeviceNotices } from "./AccountDeviceNotices.tsx";
 
-it("T51, T60: a failed account delivery can retry the exact signed block without changing the PC receipt", async () => {
+it.each([false, true])("T51, T60: retry the exact signed block after failed account delivery (dismissed while pending: %s)", async (dismissWhilePending) => {
   const notice = deviceNotice({ key: (await newKey()).public_spki });
   const wire = new DeviceNoticeWire("ws://localhost/ws");
   const events = new EventTarget();
   const posted: BlockRecord[] = [];
   const onPc: string[] = [];
+  const started = Promise.withResolvers<void>();
+  const pendingReply = Promise.withResolvers<Response>();
   const serverId = "a".repeat(32);
   const machines: readonly Machine[] = [{ id: LOCAL_MACHINE, name: "Desk", kind: "local", enabled: true, state: "connected", error: null, snapshot: null }];
   const session = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "test", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3600_000 } as const;
@@ -41,8 +43,12 @@ it("T51, T60: a failed account delivery can retry the exact signed block without
     const record = parseSafetyRecord(JSON.parse(String(init?.body)).record);
     if (record.kind !== "block") throw new TypeError("Expected a block");
     posted.push(record);
-    if (posted.length === 1) throw new TypeError("The account response was lost");
-    return Response.json({});
+    if (posted.length === 1) {
+      started.resolve();
+      if (dismissWhilePending) return pendingReply.promise;
+      throw new TypeError("The account response was lost");
+    }
+    return Response.json({ id: record.id });
   }, { preconnect: fetch.preconnect });
   const post = spyOn(globalThis, "fetch").mockImplementation(postBlock);
   const send = spyOn(wire, "send").mockImplementation((message) => {
@@ -71,8 +77,17 @@ it("T51, T60: a failed account delivery can retry the exact signed block without
 
     const notMe = button("Not me");
     if (notMe === undefined) throw new TypeError("Missing Not me button");
-    await act(async () => { await notMe.props.onClick(); });
-    expect(root.findAllByProps({ "data-state": "applied" })).toHaveLength(1);
+    if (dismissWhilePending) {
+      let delivery: Promise<void> | undefined;
+      await act(async () => { delivery = notMe.props.onClick(); await started.promise; });
+      await act(async () => { root.findByProps({ "aria-label": "Dismiss" }).props.onClick(); });
+      expect(root.findAllByProps({ "data-testid": "device-notice" })).toHaveLength(0);
+      await act(async () => { pendingReply.resolve(new Response(null, { status: 503 })); await delivery; });
+      expect(root.findAllByProps({ "data-testid": "device-notice" })).toHaveLength(0);
+    } else {
+      await act(async () => { await notMe.props.onClick(); });
+      expect(root.findAllByProps({ "data-state": "applied" })).toHaveLength(1);
+    }
     expect(root.findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
 
     // The PC already applied the block. Its decision and a disconnected notice feed must not drop the account retry.
@@ -86,7 +101,7 @@ it("T51, T60: a failed account delivery can retry the exact signed block without
     expect(posted.map((record) => record.id)).toEqual([pcRecordId, pcRecordId]);
     expect(posted[0]).toEqual(posted[1]);
     expect(onPc).toHaveLength(1);
-    expect(root.findAllByProps({ "data-state": "applied" })).toHaveLength(1);
+    expect(root.findAllByProps({ "data-state": "applied" })).toHaveLength(dismissWhilePending ? 0 : 1);
     expect(root.findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
     expect(button("Try again")).toBeUndefined();
   } finally {
