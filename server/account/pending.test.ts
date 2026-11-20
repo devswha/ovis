@@ -115,6 +115,7 @@ test("T71/S31: dropping a named key releases its code use and its challenge cann
 test.each([
   ["its code ends (Revoke all, identity reset, expiry)", "code"],
   ["its key is removed, blocked or Revoked", "key"],
+  ["its session closes (KeyProofPairings.leave)", "session"],
 ] as const)("S13-1: a proof in flight when %s never reaches the waiting list or the screen, and gives its use back once", async (_name, end) => {
   const released: { codeId: string; key: string }[] = [];
   const pending = new PendingRedemptions({ serverId: SERVER, journalDrop: () => {}, release: (codeId, key) => { released.push({ codeId, key }); } });
@@ -127,7 +128,9 @@ test.each([
 
   // verification yields before the proof can publish an entry: the code or key ends in that same turn
   const verifying = pending.prove(challenge, signature);
-  if (end === "code") pending.dropCode(codeId); else pending.dropKey(phone.spki, "revoked");
+  if (end === "code") pending.dropCode(codeId);
+  else if (end === "key") pending.dropKey(phone.spki, "revoked");
+  else pending.forget(challenge);
 
   const result = await verifying;
   expect({ proved: result?.label ?? null, waiting: pending.view().map((entry) => entry.label), screenUpdates, released })
