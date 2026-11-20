@@ -177,5 +177,7 @@ describe("showsLive", () => {
     expect(showsLive(viewport, live)).toBeTrue();
     // any other change between the reads is still another screen
     expect(showsLive(viewport, live.replace("how", "hows"))).toBeFalse();
+    // a braille character outside the border's spinner is the screen's own: typed in the box, it is another screen
+    expect(showsLive(viewport.replace("how", "how⠋"), live.replace("how", "how⠙"))).toBeFalse();
   });
 });
