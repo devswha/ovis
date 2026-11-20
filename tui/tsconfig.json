@@ -1,5 +1,6 @@
 {
   "extends": "../tsconfig.json",
+  "references": [{ "path": "../shared/vendor/paseo-e2ee" }],
   "compilerOptions": {
     "lib": [
       "ES2022"
