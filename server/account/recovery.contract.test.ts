@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { newRecordId, signSafetyRecord, type BlockRecord, type SafetyRecord } from "../../shared/account-records.ts";
 import { bounded } from "../relay/test-helpers.ts";
 import { JOURNAL_FILE } from "./device-journal.ts";
-import { memberRow, pairingPc, phone, provingDevice, type Pc } from "./pairing.test-helpers.ts";
+import { memberRow, pairingPc, phone, provingDevice, setUpFor, type Pc } from "./pairing.test-helpers.ts";
 import { pcRecordId } from "./safety-log.ts";
 import { askRecovery, RECOVER_DIR, RECOVER_SOCKET } from "./recovery.ts";
 
@@ -170,6 +170,28 @@ test.if(unix)("T69/P24: a lift at the PC ends the block, and the journal says re
   expect(await bounded(askRecovery(made.stateDir, { act: "lift", blocks: [block.id] }))).toEqual({ lifted: [block.id] });
   expect(made.app.context.services.safetyLog!.state().blocks).toEqual([]);
   expect(journal(made).filter((entry) => entry.kind === "lift")).toEqual([expect.objectContaining({ how: "recover", label: block.id, by: userInfo().username })]);
+});
+
+test.if(unix)("T69: a lift ends an active block under the PC's former account", async () => {
+  const made = await pairingPc({ server: { accountOpensAll: true } });
+  pcs.push(made);
+  await setUpFor(made, "acct_1");
+  const [signer, target] = [await phone(), await phone()];
+  const block = await signSafetyRecord({
+    v: 1, kind: "block", account: "acct_old", target: target.spki, target_no: 9, signer: signer.spki,
+    signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId(),
+  }, signer.keys.privateKey);
+  const log = made.app.context.services.safetyLog;
+  expect(log?.append({
+    record: block, got: "handed", asof: { signer_no: 1, target_no: 9, after: 9, joined: 9, signer_removed: false },
+  }).outcome).toBe("applied");
+  expect(log?.state().blocks.map((entry) => entry.record.id)).toEqual([block.id]);
+
+  expect(await bounded(askRecovery(made.stateDir, { act: "lift", blocks: [block.id] }))).toEqual({ lifted: [block.id] });
+  expect(log?.state().blocks).toEqual([]);
+  expect(journal(made).filter((entry) => entry.kind === "lift")).toEqual([
+    expect.objectContaining({ label: block.id, account: "acct_old" }),
+  ]);
 });
 
 test.if(unix)("T37/P24: remove and revoke-all are journalled with recover and this PC's user", async () => {
