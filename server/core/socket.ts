@@ -44,7 +44,7 @@ function watchablePane(paneId: unknown): paneId is string {
   return typeof paneId === "string" && paneId.length <= 256 && paneId.trim() !== "" && !paneId.trim().startsWith("-") && !/[\u0000-\u001f\u007f]/.test(paneId);
 }
 
-export function createSocket({ clients, present, stopped, admit, setRole, watchable, terminalHistory, terminalModes, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames, herdrFailure, notices }: {
+export function createSocket({ clients, present, stopped, admit, setRole, watchable, terminalHistory, terminalModes, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames, herdrFailure, accountEnabled = accountOpensAll(), notices: noticeHandlers }: {
   herdrFailure?: HerdrFailureView;
   clients: Set<Client>;
   present: Set<Client>;
@@ -71,9 +71,11 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
   countVisit: (snapshot?: Promise<SessionSnapshot>, visit?: { surface?: TelemetrySurface; ingress?: TelemetryIngress }) => void;
   drainOutput: (client: Client) => void;
   frames: Omit<FrameHandlers, ConnectionFrame>;
+  accountEnabled?: boolean | undefined;
   /** the device journal's notices for a paired device (server/devices.ts), with OVIS_ACCOUNT_OPENS_ALL on */
   notices?: { replay(deviceId: string): NoticeReplay | null; seen(deviceId: string, seq: number): void; block(record: unknown): Promise<BlockReceipt>; decide(id: string): void };
 }): SocketHandler {
+  const notices = accountEnabled ? noticeHandlers : undefined;
   const websocketDiagnostics = new ConnectionDiagnostics("websocket");
   const connectionFrames = {
     "machine-events"(client: Client, message: Frame<"machine-events">): void {
@@ -156,9 +158,7 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       if (terminalHistory()) features.push("terminal-history");
       if (terminalModes()) features.push("terminal-modes");
       if (client.data.machineEvents) features.push("machine-events");
-      // advertised for the step 2 tracks to build on; the notice handlers land later, and the flag stays off
-      // anywhere real until the release gate (S2-38)
-      if (accountOpensAll()) features.push(ACCOUNT_OPENS_ALL_CAPABILITY);
+      if (accountEnabled) features.push(ACCOUNT_OPENS_ALL_CAPABILITY);
       // a folder OVIS_PASTE_DIR names lets the page read an upload's path whole through it (#2771); a
       // watch-only connection, which may list no folder, is not told where it is
       const pasteDir = client.data.readOnly ? undefined : pasteDirectoryForAll();
@@ -201,7 +201,6 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       if (message.type === "notice-answer") {
         // "Not me": each block applies at once and is answered with its receipt; one that applied decides the notice (T51).
         // "It's me" is the join hold's to judge (T53) and decides nothing here
-        // with the release flag off the store refuses every block, so nothing applies
         if (notices === undefined || message.answer !== "not_me" || !Array.isArray(message.blocks) || message.blocks.length > 2) return;
         const receipts: BlockReceipt[] = [];
         for (const block of message.blocks) receipts.push(await notices.block(block));

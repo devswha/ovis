@@ -13,9 +13,9 @@
 import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { compareAdmission, isRowOrigin, legacyOrigin, type RowOrigin } from "./account/admission-order.ts";
+import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOrigin, legacyOrigin, type AdmissionPosition, type RowOrigin } from "./account/admission-order.ts";
 import { type ClearReason, PcAccountState } from "./account/pc-binding.ts";
-import type { SafetyGot, SafetyLog } from "./account/safety-log.ts";
+import type { BlockAsOf, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import type { DeviceJournal, JournalEntry } from "./account/device-journal.ts";
 import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
@@ -778,10 +778,9 @@ export class DeviceStore {
     if (state.freezes.length === 0) return true;
     // a key confirm on this PC's own screen, or ovis recover --admit, of this very key passes a freeze (P23, rule R1)
     if (confirmed) return true;
-    const row = key === undefined ? undefined : this.devices.find((d) => d.relay_public_key === key);
-    const admitNo = row?.origin?.admit_no;
-    if (admitNo === undefined) return false;
-    return state.freezes.every((freeze) => freeze.asof?.joined != null && admitNo < freeze.asof.joined);
+    const rows = key === undefined ? [] : this.devices.filter((d) => d.relay_public_key === key);
+    return rows.length > 0 && state.freezes.every((freeze) =>
+      key !== freeze.record.target && rows.every((row) => !this.newerThanFreeze(row, freeze.asof)));
   }
 
   /** Hears every end of a code (cancel, expiry, an admission, Revoke all, a relay identity reset), by its id (T71). */
@@ -861,13 +860,18 @@ export class DeviceStore {
     return { id: device.id, label: device.label, role: device.role };
   }
 
-  /**
-   * Whether a block in force freezes this row (P16, S22): it joined this PC after the block's target did. A row with no
-   * place in this PC's order counts as newer. A freeze the service states names no row here and freezes none (P24).
-   */
+  /** P16: a screen-confirmed row is never newer; an unplaced row counts as newer. */
+  private newerThanFreeze(device: StoredDevice, asof: BlockAsOf | undefined): boolean {
+    if (device.origin?.from === "pc") return false;
+    if (asof?.joined == null) return true;
+    const cutoff = { admit_no: asof.joined, ...(asof.legacy_created_at === undefined ? {} : { legacy_created_at: asof.legacy_created_at }) };
+    return compareAdmissionPositions(admissionPosition(device), cutoff) !== "older";
+  }
+
+  /** S22: local blocks freeze rows in place; service freezes have no local cutoff. */
   private frozen(device: StoredDevice): boolean {
     const blocks = this.safety?.state().blocks ?? [];
-    return blocks.some((entry) => entry.asof?.joined != null && (device.origin === undefined || device.origin.admit_no > entry.asof.joined) && device.relay_public_key !== entry.record.target);
+    return blocks.some((entry) => device.relay_public_key !== entry.record.target && this.newerThanFreeze(device, entry.asof));
   }
 
   /**
@@ -883,7 +887,7 @@ export class DeviceStore {
       if (error instanceof AccountRecordError) return refused(typeof (value as { id?: unknown })?.id === "string" ? (value as { id: string }).id : "", "record_invalid");
       throw error;
     }
-    if (record.kind !== "block" || this.safety === null) return refused(record.id, "record_invalid");
+    if (record.kind !== "block" || this.safety === null || this.failsClosed) return refused(record.id, "record_invalid");
     const known = this.safety.receipt(record.id);
     if (known !== null && known.outcome !== "refused") return known;
     if (!await verifySafetyRecord(record)) return refused(record.id, "record_invalid");
@@ -905,40 +909,41 @@ export class DeviceStore {
   /** The commit turn of a verified block, in P8's order, with no wait inside. */
   private commitBlock(record: BlockRecord, got: SafetyGot): BlockReceipt {
     const refused = (reason: Extract<BlockReceipt, { outcome: "refused" }>["reason"]): BlockReceipt => ({ outcome: "refused", id: record.id, reason });
-    if (this.safety === null || this.evidence === null || this.failsClosed || record.account !== this.account()) return refused("record_invalid");
+    const { safety, evidence } = this;
+    if (safety === null || evidence === null || this.failsClosed || record.account !== this.account()) return refused("record_invalid");
     const signers = this.devices.filter((d) => d.relay_public_key === record.signer && d.role === "drive" && d.account === record.account && d.origin !== undefined && !this.coveredByEvidence(d));
     if (signers.length === 0) return refused("signer_not_member");
     if (signers.some((d) => this.frozen(d))) return refused("frozen");
     const targets = this.devices.filter((d) => d.relay_public_key === record.target);
-    if (targets.length === 0) return refused("unknown_target");
-    // every row of the target, duplicates included, joined after every row of the signer: else nothing applies
-    if (!targets.every((target) => signers.every((signer) => compareAdmission(signer, target) === "older"))) return refused("signer_not_older");
-    const joined = Math.min(...targets.map((d) => d.origin!.admit_no));
+    let cutoff: AdmissionPosition | null = null;
+    for (const target of targets) {
+      const position = admissionPosition(target);
+      if (position === null || !signers.every((signer) => compareAdmission(signer, target) === "older")) return refused("signer_not_older");
+      if (cutoff === null || compareAdmissionPositions(position, cutoff) === "older") cutoff = position;
+    }
+    if (cutoff === null) return refused("unknown_target");
+    const { admit_no: joined, ...legacyDate } = cutoff;
     const signerNo = Math.min(...signers.map((d) => d.origin!.admit_no));
-    // (1) the deny: the block in the log, gen raised, the target's marker
-    const appended = this.safety.append({ record, got, asof: { signer_no: signerNo, target_no: joined, after: joined, joined, signer_removed: false } });
-    if (appended.outcome !== "applied") {
-      this.denyProblem = `A block could not be written to the safety log: only this PC itself gets in until one is.`;
-      this.drop(targets, "pc");
+    const asof: BlockAsOf = { signer_no: signerNo, target_no: joined, after: joined, joined, signer_removed: false, ...legacyDate };
+    const affected = this.devices.filter((d) => d.relay_public_key !== record.target && this.newerThanFreeze(d, asof));
+    let receipt = refused("record_invalid");
+    // P8: advance gen before a durable log receipt can be replayed.
+    const denied = this.deny([record.target], () => {
+      const appended = safety.append({ record, got, asof });
+      if (appended.outcome !== "applied") throw new Error(`Block log append did not apply: ${appended.outcome}`);
+      receipt = appended;
+      evidence.addRemoval(record.target, record.account, { id: record.id, at: new Date().toISOString(), records: [record] });
+      this.refreshTombstones();
+    }, { genFirst: true });
+    if (denied !== null) {
+      this.keepOut([...targets, ...affected], false);
       return refused("record_invalid");
     }
-    const denied = this.deny([record.target], () => {
-      this.evidence!.addRemoval(record.target, record.account, { id: record.id, at: new Date().toISOString(), records: [record] });
-      this.refreshTombstones();
-    });
-    // the block is on disk, its marker is not: the target stays out by its key and nothing else is written; the next
-    // start writes the marker from the log (markBlockTargets, P8)
-    if (denied !== null) { this.keepOut(targets, false); return appended; }
-    // (2, 3) the newer rows frozen in place, their sessions ended; the target's rows out, theirs ended too (T64)
-    for (const device of this.devices.filter((d) => !targets.includes(d) && this.frozen(d))) {
-      const listeners = this.revocations.get(device.id);
-      this.revocations.delete(device.id);
-      for (const close of listeners ?? []) close();
-    }
+    this.keepOut(affected, false);
     this.dropWaiting([record.target], "block");
     try { this.drop(targets, "pc"); }
     catch (error) { console.error(`[devices] the registry write of a block failed after its deny; the next start finishes it: ${error instanceof Error ? error.message : String(error)}`); }
-    return appended;
+    return receipt;
   }
 
   /** The PC leaves its account, for one of the three named reasons (P12); nothing else clears the binding. */
@@ -2086,10 +2091,11 @@ export class DeviceStore {
    * P8 step 1, the deny on disk with `gen` raised. One that cannot be written still lets the caller close what it
    * removes, and makes this PC fail closed until a later deny is written; returned, never acknowledged.
    */
-  private deny(keys: readonly string[], write: () => void): Error | null {
+  private deny(keys: readonly string[], write: () => void, { genFirst = false } = {}): Error | null {
     try {
+      if (genFirst) this.pc?.raiseGen();
       write();
-      this.pc?.raiseGen();
+      if (!genFirst) this.pc?.raiseGen();
       if (this.evidence?.onDisk === true) this.pc?.noteEvidenceWritten();
       // only the deny of the very key that failed ends its closing, and never while a Revoke all is unfinished on disk
       for (const key of keys) this.failedDenies.delete(key);
