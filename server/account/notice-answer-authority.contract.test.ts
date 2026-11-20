@@ -1,13 +1,34 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import * as herdr from "../herdr/client.ts";
 import { relayConnection } from "../relay/test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
-import { createListedPc } from "./listed-pc.test-helpers.ts";
+import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { phone } from "./pairing.test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
+
+test("a same-account watch member cannot block a listed device or decide its notice", async () => {
+  const { fixture, device, member, serverId } = await createListedPc(close => closes.push(close));
+  const { devices, core, safetyLog } = fixture.app.context.services;
+  const notice = devices.openNotices().find(entry => entry.row === device.id);
+  if (!notice || !safetyLog) throw new Error("Missing listed admission or safety log");
+  devices.update(member.id, { role: "watch" });
+  expect(devices.list(null, true).find(row => row.id === member.id)).toMatchObject({ role: "watch", account: ACCOUNT });
+  const before = safetyLog.entries().map(entry => entry.record.id);
+  const block = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: device.publicKey, target_no: 2,
+    signer: member.publicKey, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, member.keys.privateKey);
+  const link = await relayConnection(fixture, { serverId, websocket: core.socketHandlers });
+  await link.auth(member, [ACCOUNT_OPENS_ALL_FEATURE]);
+  const socket = link.openSocket();
+  await socket.opened;
+  socket.send({ type: "notice-answer", answer: "not_me", id: notice.id, blocks: [block] });
+  await socket.until(message => message.type === "notice-answer-result" && message.id === notice.id);
+  expect(devices.openNotices().map(entry => entry.id)).toContain(notice.id);
+  expect(safetyLog.entries().map(entry => entry.record.id)).toEqual(before);
+});
 
 test.each([
   ["admitted device", true], ["different account", true], ["other same-account row", false],
