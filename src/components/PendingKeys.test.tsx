@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { SettingsProvider } from "../lib/settings.ts";
@@ -43,15 +43,44 @@ describe("keys waiting for this PC's screen", () => {
   it("T72: declines exactly the one key pressed, and approving is left to this PC's screen", async () => {
     const declined: string[] = [];
     await act(async () => { renderer = create(<SettingsProvider><PendingKeys pending={[pending("p1", "Pixel 9", "AB12-CD34"), pending("p2", "iPad", "EF56-GH78")]} onDecline={(id) => declined.push(id)} /></SettingsProvider>); });
-    const buttons = renderer!.root.findAll((node) => node.type === "button");
+    const buttons = renderer!.root.findAll((node) => node.type === "button" && text(node) === "Decline");
     expect(buttons.map(text)).toEqual(["Decline", "Decline"]);
+    expect(renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] !== "Dismiss")).toEqual(buttons);
     await act(async () => { buttons[1]!.props.onClick(); });
     expect(declined).toEqual(["p2"]);
+  });
+
+  it("T71/T72: dismisses the list without declining a key until a new key arrives", async () => {
+    const onDecline = mock();
+    const first = pending("p1", "Pixel 9", "AB12-CD34");
+    const screen = (keys: readonly PendingKey[]) => <SettingsProvider><PendingKeys pending={keys} onDecline={onDecline} /></SettingsProvider>;
+    await act(async () => { renderer = create(screen([first])); });
+    const view = renderer;
+    if (view === undefined) throw new Error("No pending keys rendered");
+    const dismiss = view.root.find((node) => node.type === "button" && node.props["aria-label"] === "Dismiss");
+    await act(async () => { dismiss.props.onClick(); });
+    expect(view.toJSON()).toBeNull();
+    expect(onDecline).not.toHaveBeenCalled();
+    await act(async () => { view.update(screen([{ ...first, label: "Updated phone" }])); });
+    expect(view.toJSON()).toBeNull();
+    await act(async () => { view.update(screen([first, pending("p2", "iPad", "EF56-GH78")])); });
+    expect(text(view.root)).toContain("EF56-GH78");
+    expect(onDecline).not.toHaveBeenCalled();
   });
 
   it("T71: the device shows the same fingerprint while it waits for the PC's screen", async () => {
     await act(async () => { renderer = create(<SettingsProvider><KeyFingerprintWait pc="Desk" fingerprint="AB12-CD34" /></SettingsProvider>); });
     expect(text(renderer!.root)).toContain("AB12-CD34");
+  });
+
+  it("T71: dismisses the fingerprint wait, with no answer control on the waiting device", async () => {
+    await act(async () => { renderer = create(<SettingsProvider><KeyFingerprintWait pc="Desk" fingerprint="AB12-CD34" /></SettingsProvider>); });
+    const view = renderer;
+    if (view === undefined) throw new Error("No fingerprint wait rendered");
+    const dismiss = view.root.find((node) => node.type === "button" && node.props["aria-label"] === "Dismiss");
+    expect(view.root.findAllByType("button")).toEqual([dismiss]);
+    await act(async () => { dismiss.props.onClick(); });
+    expect(view.toJSON()).toBeNull();
   });
 
   it("P11: where the PC has no screen proof the device says to approve on the PC and asks for no comparison", async () => {
