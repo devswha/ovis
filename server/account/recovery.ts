@@ -56,7 +56,11 @@ export function openRecoverySocket(options: {
   const dirStat = lstatOrNull(dir);
   if (dirStat === null || !recoverDirSafe(dirStat)) return { refused: "recover_dir_unsafe" };
   const path = join(dir, RECOVER_SOCKET);
-  rmSync(path, { force: true });
+  const previous = lstatOrNull(path);
+  if (previous !== null) {
+    if (!previous.isSocket() || previous.uid !== ownUid()) return { refused: "socket_unsafe" };
+    rmSync(path, { force: true });
+  }
   const umask = process.umask(0o077);
   let listener: ReturnType<typeof Bun.listen<Connection>>;
   try {
