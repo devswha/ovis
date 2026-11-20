@@ -7,6 +7,7 @@ import { STALE_READ_MS } from "./account-devices.ts";
 import { ask } from "./pairing.test-helpers.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { parseSnapshotPage } from "../../shared/account-snapshot.ts";
+import type { WsStream } from "../../shared/relay-mux-engine.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
@@ -121,4 +122,29 @@ test("T56: a page delivered after server shutdown starts no new deadline", async
   const outcome = await bounded(reading);
   expect(clock.tasks.size).toBe(0);
   expect(outcome?.committed).toBe(false);
+});
+
+test("T56: a server-originated WebSocket frame also checks elapsed freshness", async () => {
+  const pc = await createListedPc(close => closes.push(close));
+  const { devices, accountMailbox } = pc.fixture.app.context.services;
+  const clock = new TestClock();
+  devices.useClock(clock);
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const wall = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
+  closes.push(() => wall.mockRestore());
+  const opened = Promise.withResolvers<WsStream>();
+  const link = await relayConnection(pc.fixture, {
+    serverId: pc.serverId, onWs: stream => { stream.accept(); opened.resolve(stream); },
+  });
+  await link.auth(pc.device, [ACCOUNT_OPENS_ALL_FEATURE]);
+  const socket = link.openSocket();
+  await socket.opened;
+  const server = await bounded(opened.promise);
+  server.send(JSON.stringify({ type: "pong" }));
+  await link.flush();
+  expect(socket.messages).toHaveLength(1);
+  spyOn(clock, "now").mockReturnValue(STALE_READ_MS);
+  server.send(JSON.stringify({ type: "pong" }));
+  await link.flush();
+  expect(socket.messages).toHaveLength(1);
 });
