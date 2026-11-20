@@ -1019,8 +1019,9 @@ describe("the hosted shell's front page", () => {
       (window.history as unknown as { replaceState: (state: unknown, title: string, url: string) => void }).replaceState = (_state, _title, url) => { replaced.push(url); };
       const went: string[] = [];
       launch();
-      await mountRelayShell(mountFor({ store: deviceStore(await pcs("a".repeat(32))), entryUrl: "https://app.ovis.sh/#pcs", navigate: (path) => { went.push(path); }, checkPc: answering() }));
-      Reflect.deleteProperty(globalThis, "Capacitor");
+      try {
+        await mountRelayShell(mountFor({ store: deviceStore(await pcs("a".repeat(32))), entryUrl: "https://app.ovis.sh/#pcs", navigate: (path) => { went.push(path); }, checkPc: answering() }));
+      } finally { Reflect.deleteProperty(globalThis, "Capacitor"); }
       expect(replaced).toEqual(["/"]);
       expect(went).toEqual([]);
     });
@@ -1153,6 +1154,22 @@ describe("the hosted shell's front page", () => {
         },
       }));
       await until(() => went.length > 0, "the account's PC opened");
+      expect(went).toEqual([expect.stringMatching(new RegExp(`^/s/${listed.server_id}/#offer=`))]);
+    });
+
+    it("goes on to the join card of an account PC this device is not in yet when every saved PC is off", async () => {
+      launch();
+      const went: string[] = [];
+      const pair = generateKeyPair();
+      const listed = { server_id: deriveServerId(pair.publicKey), label: "Office", added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+      await mountRelayShell(mountFor({
+        store: deviceStore(await pcs("a".repeat(32))), navigate: (path) => { went.push(path); }, checkPc: answering(["a".repeat(32)]),
+        accountStore, accountService: SERVICE, accountProviders: ["github"],
+        accountFetch: async (input) => new URL(String(input)).pathname === "/v1/pcs" ? Response.json({ pcs: [listed] }) : new Response(null, { status: 404 }),
+      }));
+      await until(() => went.length > 0, "the account PC's join card");
       expect(went).toEqual([expect.stringMatching(new RegExp(`^/s/${listed.server_id}/#offer=`))]);
     });
 
