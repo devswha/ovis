@@ -50,14 +50,14 @@ export type LiftOrder = Pick<AccountOrder, "late" | "registered" | "no">;
 function parse(value: unknown): OrderDoc | null {
   if (typeof value !== "object" || value === null) return null;
   const doc = value as Partial<OrderDoc>;
-  if (doc.v !== 1 || !(doc.account === null || typeof doc.account === "string") || !Number.isSafeInteger(doc.max_no) || typeof doc.keys !== "object" || doc.keys === null) return null;
+  if (doc.v !== 1 || !(doc.account === null || typeof doc.account === "string") || doc.max_no === undefined || !Number.isSafeInteger(doc.max_no) || doc.max_no < 0 || typeof doc.keys !== "object" || doc.keys === null) return null;
   if (doc.last_version !== undefined || doc.bind_id !== undefined || doc.server_id !== undefined) {
     if (typeof doc.bind_id !== "string" || typeof doc.server_id !== "string" || typeof doc.last_version !== "number" || !Number.isSafeInteger(doc.last_version) || doc.last_version < 1) return null;
   }
   if (doc.methods_version !== undefined && (!Number.isSafeInteger(doc.methods_version) || doc.methods_version < 0)) return null;
   const keys: Record<string, OrderEntry> = {};
   for (const [key, entry] of Object.entries(doc.keys)) {
-    if (!entry || (entry.no !== null && !Number.isSafeInteger(entry.no)) || typeof entry.late !== "boolean") return null;
+    if (!entry || (entry.no !== null && (!Number.isSafeInteger(entry.no) || entry.no > doc.max_no)) || typeof entry.late !== "boolean") return null;
     if (entry.removed != null && typeof entry.removed !== "boolean") return null;
     if (entry.joined != null && (!Number.isSafeInteger(entry.joined) || entry.joined < 0)) return null;
     keys[key] = { ...entry, removed: entry.removed ?? null, joined: entry.joined ?? null };
