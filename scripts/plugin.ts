@@ -1286,7 +1286,7 @@ async function confirm(): Promise<number> {
   const { runConfirm } = await import("./plugin-confirm.ts");
   return await runConfirm({
     stateDir: runningStateDir(APP_STATE_DIR), platform: process.platform, uid: process.getuid?.(),
-    desktop: Boolean(process.env["DISPLAY"] || process.env["WAYLAND_DISPLAY"]),
+    env: { DISPLAY: process.env["DISPLAY"], WAYLAND_DISPLAY: process.env["WAYLAND_DISPLAY"] },
     out: (text) => process.stdout.write(text),
     open: (url) => { spawn("xdg-open", [url], { stdio: "ignore", detached: true }).on("error", () => {}).unref(); },
   });

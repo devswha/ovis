@@ -606,7 +606,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return handlePortalRequest(request, pathname, options.portal, { port: ctx.port ?? DEFAULT_PORT, ...portalGuards() });
   }
   if (ctx.services.lockRoutes !== undefined && (pathname === "/api/account/lock" || pathname === "/api/account/unlock")) {
-    return ctx.services.lockRoutes(request, pathname, access, ctx.peer.kind === "relay");
+    return ctx.services.lockRoutes(request, pathname, access, ownWindow);
   }
   if (pathname.startsWith("/api/account/")) return handleAccountRequest(request, pathname, ctx, access);
   if (pathname === "/api/relay" || pathname.startsWith("/api/relay/")) {

@@ -11,8 +11,8 @@ export interface ConfirmIo {
   stateDir: string;
   platform: NodeJS.Platform;
   uid: number | undefined;
-  /** a desktop session is there to open a browser in */
-  desktop: boolean;
+  /** the caller's display variables: a browser opens only under X11 (DISPLAY) or Wayland (WAYLAND_DISPLAY) */
+  env: { readonly DISPLAY?: string | undefined; readonly WAYLAND_DISPLAY?: string | undefined };
   out(text: string): void;
   open(url: string): void;
 }
@@ -53,6 +53,6 @@ export async function runConfirm(io: ConfirmIo): Promise<number> {
     return 1;
   }
   io.out(`Approve or decline on this PC's confirm page: ${url}\n`);
-  if (io.desktop) io.open(url);
+  if (Boolean(io.env.DISPLAY) || Boolean(io.env.WAYLAND_DISPLAY)) io.open(url);
   return 0;
 }

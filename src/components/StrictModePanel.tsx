@@ -22,6 +22,47 @@ export interface LockState {
 /** An act this window asked for, waiting on this PC's screen until `until` (ms). */
 interface Asked { readonly kind: "lock" | "unlock"; readonly until: number }
 
+function AskedLine({ asked }: { asked: Asked }) {
+  const t = useT();
+  return <p className="settings-hint" role="status">{t(asked.kind === "lock"
+    ? "Strict mode is not on yet. Approve it on this PC's screen by {time}. To open that screen, run ovis confirm on this PC."
+    : "Strict mode stays on until you approve turning it off on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.",
+  { time: new Date(asked.until).toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" }) })}</p>;
+}
+
+/**
+ * The access gate of a locked PC (T47, N4): the one thing a window there may do is ask to turn strict mode off, which
+ * the PC's screen then approves. The server lets only this PC's own window read the lock; any other gets nothing here.
+ */
+export function StrictUnlockAsk() {
+  const t = useT();
+  const [lock, setLock] = useState<string | null>(null);
+  const [asked, setAsked] = useState<Asked | null>(null);
+  const [refused, setRefused] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void fetchLockState().then((state) => { if (live) setLock(state.locked); }, () => { if (live) setLock(null); });
+    return () => { live = false; };
+  }, []);
+  if (lock === null) return null;
+  const ask = () => {
+    const until = Date.now() + CONFIRM_WINDOW_MS;
+    setRefused(false);
+    void requestUnlock(lock).then(() => setAsked({ kind: "unlock", until }), (error: unknown) => {
+      console.warn("Ovis: strict mode was not asked for", error instanceof Error ? error.name : error);
+      setRefused(true);
+    });
+  };
+  return (
+    <div className="strict-mode">
+      <p>{t("This PC is in strict mode.")}</p>
+      <button type="button" className="btn" onClick={ask}>{t("Ask to turn strict mode off")}</button>
+      {refused && <p className="settings-hint" role="status">{t("This PC did not take the request. Try again.")}</p>}
+      {asked !== null && <AskedLine asked={asked} />}
+    </div>
+  );
+}
+
 /** Why the PC refused a request (server/account/lock-routes.ts codes, folded). */
 type Refusal = "local_required" | "already" | "no_screen_proof" | "lock_removals_pending" | "other";
 
@@ -63,13 +104,10 @@ export function StrictModePanel({ state, local, asked = null, refused = null, on
         local_required: t("Turn strict mode on or off in a browser on this PC itself."),
         already: t("Strict mode changed already. This shows it as it is now."),
         no_screen_proof: t("Strict mode needs a confirmation on this PC's screen, which only Linux has for now."),
-        lock_removals_pending: t("This PC has not finished signing out the devices strict mode ended, so it stays on. Check its state folder."),
+        lock_removals_pending: t("Strict mode stays on until this PC finishes signing out the devices it ended. Try again shortly."),
         other: t("This PC did not take the request. Try again."),
       }[refused]}</p>}
-      {asked !== null && <p className="settings-hint" role="status">{t(asked.kind === "lock"
-        ? "Strict mode is not on yet. Approve it on this PC's screen by {time}. To open that screen, run ovis confirm on this PC."
-        : "Strict mode stays on until you approve turning it off on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.",
-      { time: new Date(asked.until).toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" }) })}</p>}
+      {asked !== null && <AskedLine asked={asked} />}
     </div>
   );
 }
@@ -99,7 +137,9 @@ export function StrictModeSection({ offered, auth }: { offered: boolean; auth: H
   if (!offered || state === null) return null;
   const ask = (kind: Asked["kind"], request: () => Promise<string>) => {
     setRefused(null);
-    void request().then(() => { setAsked({ kind, until: Date.now() + CONFIRM_WINDOW_MS }); return read(); }, (error: unknown) => {
+    // taken before sending: the PC's own window starts when it gets the request, never earlier
+    const until = Date.now() + CONFIRM_WINDOW_MS;
+    void request().then(() => { setAsked({ kind, until }); return read(); }, (error: unknown) => {
       console.warn("Ovis: strict mode was not asked for", error instanceof Error ? error.name : error);
       setRefused(refusalOf(error));
       return read();

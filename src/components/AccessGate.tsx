@@ -8,6 +8,7 @@ import type { AccessRefusal } from "../../shared/protocol.ts";
 import { useT } from "../lib/i18n.ts";
 import { changePc, inNativeApp } from "../lib/nativeApp.ts";
 import { userErrorMessage, type UserError } from "../lib/userError.ts";
+import { StrictUnlockAsk } from "./StrictModePanel.tsx";
 
 
 export interface AccessGateProps {
@@ -97,6 +98,7 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
         <h1 id="access-gate-title" className="access-gate-title">
           {t(reason === "token_required" ? "Unlock" : "Pair this device")}
         </h1>
+        {reason === "locked" && <StrictUnlockAsk />}
         {reason === "other_user" && (
           <p className="access-gate-refused" role="status">{t("Tailscale says this device belongs to someone other than this PC's owner. The owner can still let it in with a pairing code.")}</p>
         )}
