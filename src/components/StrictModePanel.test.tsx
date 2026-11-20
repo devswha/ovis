@@ -9,7 +9,7 @@ const unlocked: LockState = {
   bound: true, confirm: "available", locked: null, strict: false,
   preview: { rows: [{ id: "r1", label: "Galaxy S30", origin: { from: "remote", how: "list" }, file: "account" }, { id: "r2", label: "Old iPad", origin: null, file: "devices" }], grants: ["token", "tailscale"] },
 };
-const locked: LockState = { bound: true, confirm: "available", locked: { id: "l1", at: "2026-11-20T04:00:00.000Z", by: "pc" }, strict: false };
+const locked: LockState = { bound: true, confirm: "available", locked: "l1", strict: false };
 
 describe("the strict-mode screen", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -89,9 +89,12 @@ describe("the strict-mode section in Settings", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
   let requests: string[];
+  let answer: LockState;
+  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
 
   beforeEach(() => {
     requests = [];
+    answer = unlocked;
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -101,7 +104,7 @@ describe("the strict-mode section in Settings", () => {
     Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7318").pathname}`);
-      return init?.method === "POST" ? Response.json({ confirm: "c1" }, { status: 202 }) : Response.json(unlocked);
+      return init?.method === "POST" ? Response.json({ confirm: "c1" }, { status: 202 }) : Response.json(answer);
     };
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
   });
@@ -120,6 +123,29 @@ describe("the strict-mode section in Settings", () => {
     await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered={false} local /></SettingsProvider>); });
     expect(renderer!.toJSON()).toBeNull();
     expect(requests).toEqual([]);
+  });
+
+  it("T46, R10, Q20: after asking, says strict mode is not on until approved on this PC's screen, by when, and how to open that page", async () => {
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered local /></SettingsProvider>); });
+    const before = text(renderer!.root);
+    expect(before).not.toContain("ovis confirm");
+    const button = renderer!.root.find((node) => node.type === "button");
+    await act(async () => { button.props.onClick(); });
+    const shown = text(renderer!.root);
+    expect(shown).toContain("Strict mode is not on yet");
+    expect(shown).toContain("ovis confirm");
+    expect(shown).toMatch(/\d{1,2}:\d{2}/);
+  });
+
+  it("T47: asking to turn it off says it stays on until approved on this PC's screen", async () => {
+    answer = locked;
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered local /></SettingsProvider>); });
+    const button = renderer!.root.find((node) => node.type === "button");
+    await act(async () => { button.props.onClick(); });
+    expect(requests).toContain("POST /api/account/unlock");
+    const shown = text(renderer!.root);
+    expect(shown).toContain("Strict mode stays on");
+    expect(shown).toContain("ovis confirm");
   });
 
   it("T46, R10: reads the PC's state, and the switch only asks the PC's screen", async () => {
