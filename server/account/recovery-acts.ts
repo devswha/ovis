@@ -11,9 +11,11 @@ import { AlreadyReleasedError, ReleaseJournalError, releaseRefusal, type Recover
 export interface RecoverySeams {
   pendingOf(id: string): { id: string; key: string; label: string; fingerprint: string; codeId?: string } | null;
   pendingList(): { id: string; label: string; fingerprint: string }[];
-  /** takes the waiting redemption out only when `fingerprint` is its key's */
-  takePending(id: string, fingerprint: string): { id: string; key: string; label: string; fingerprint: string; codeId?: string } | null;
-  admitConfirmed(confirm: { codeId: string; key: string; label: string; source: "recover" }): DeviceMatch | null;
+  /**
+   * Admits the waiting redemption `id` when `fingerprint` is its key's, through its own pairing (so its session is let
+   * in too), with origin recover; the redemption is used up whatever the PC answers.
+   */
+  admitPending(id: string, fingerprint: string): DeviceMatch | null | "unknown" | "mismatch";
   removeKey(input: { target: string; by: "local" }): { removed: string[] } | { refused: string };
   appendLift(blockId: string, forget: boolean): { outcome: string };
   revokeAll(): string[];
@@ -83,12 +85,9 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
           }
           return { lifted: [...action.blocks] };
         }
-        const waiting = acts.takePending(action.pending, action.fingerprint);
-        if (waiting === null) {
-          return { error: acts.pendingOf(action.pending) === null ? "No such device waits here" : "The fingerprint does not match the waiting device" };
-        }
-        if (waiting.codeId === undefined) return { error: "No such device waits here" };
-        const admitted = acts.admitConfirmed({ codeId: waiting.codeId, key: waiting.key, label: waiting.label, source: "recover" });
+        const admitted = acts.admitPending(action.pending, action.fingerprint);
+        if (admitted === "unknown") return { error: "No such device waits here" };
+        if (admitted === "mismatch") return { error: "The fingerprint does not match the waiting device" };
         return admitted === null ? { error: "This PC refused to admit the key (locked, frozen, or its log cannot be read)" } : { admitted: admitted.id };
       }
     }

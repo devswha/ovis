@@ -555,8 +555,12 @@ export function createServer(
     const seams: RecoverySeams = {
       pendingOf: (id) => pendingRedemptions?.list().find((entry) => entry.id === id) ?? null,
       pendingList: () => (pendingRedemptions?.list() ?? []).map(({ id, label, fingerprint }) => ({ id, label, fingerprint })),
-      takePending: (id, fingerprint) => pendingRedemptions?.take(id, fingerprint) ?? null,
-      admitConfirmed: (confirm) => devices.admitConfirmed(confirm),
+      admitPending: (id, fingerprint) => {
+        const waiting = pendingRedemptions?.list().find((entry) => entry.id === id);
+        if (waiting === undefined || keyProofPairings === undefined) return "unknown";
+        if (waiting.fingerprint !== fingerprint) return "mismatch";
+        return keyProofPairings.approve(id, fingerprint, "recover");
+      },
       removeKey: (input) => devices.removeKey(input),
       appendLift: (blockId, forget) => safetyLog!.appendLift(blockId, pcAccount?.binding() ?? null, { forget }),
       revokeAll: () => devices.revokeAll(),
