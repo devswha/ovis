@@ -2108,7 +2108,7 @@ export class DeviceStore {
   }
 
   /** One authorization write precedes every state change and enrollment announcement. */
-  private enroll(admitting: StoredDevice, now: number, origin: readonly string[], codeSpent = true, path: { startedBy?: string | null; digits?: boolean; confirm?: ConfirmProof; by?: string; pairingHere?: boolean } = {}, signerKey?: string): boolean {
+  private enroll(admitting: StoredDevice, now: number, origin: readonly string[], codeSpent = true, path: { startedBy?: string | null; digits?: boolean; confirm?: ConfirmProof; by?: string; pairingHere?: boolean; replaces?: StoredDevice } = {}, signerKey?: string): boolean {
     // the final guard, in the commit turn: nothing waits between it and the write
     if (!this.admits(admitting.relay_public_key, path.confirm, path)) throw new AdmissionRefusedError();
     const initial = this.knowingRemovals(this.admitted(admitting, now, path));
@@ -2117,14 +2117,16 @@ export class DeviceStore {
     // The list ID is derived from the key and unique on this PC; a pairing may choose a different member ID.
     const joined = rows[0];
     const notice = joined && this.listNotice(joined);
-    const held = joined && this.carriesJoinHold(admitted, joined, now, signerKey);
+    const signerId = path.replaces?.id ?? admitted.added_by;
+    const signer = signerKey && signerId ? this.provedSayer(signerId, signerKey) : null;
+    const held = joined && !path.confirm && this.carriesJoinHold(admitted, joined, now, signer);
     if (held && !notice) throw new Error("The held admission has no durable notice");
     const device = held && notice ? { ...admitted, held: notice.id }
       : notice && !path.confirm && admitted.origin?.from === "remote" ? { ...admitted, carried_notice: notice.id } : admitted;
     // A waiting first link enrolls its own binding row. Every other member enrollment consumes T67.
     if (device.account !== undefined && device.linked_at === undefined) this.pc?.setOthersEver();
     this.journalAdmission(device, joined, notice, path.by);
-    const next = [...this.devices, device];
+    const next = path.replaces ? this.devices.map(row => row === path.replaces ? device : row) : [...this.devices, device];
     const gate = this.gateClosedAt ?? device.created_at;
     this.save(next, gate);
     this.devices = next;
@@ -2141,6 +2143,8 @@ export class DeviceStore {
     // removeRows detaches the old authority and closes its sessions before persisting the removal.
     if (rows.length) this.joinedRows?.removeRows(rows.map(row => row.id), "promoted", id => this.closeAccountSessions(id));
     this.accountOrder?.recordJoins([device]);
+    // A link changes an existing pairing. It neither spends a code nor announces another pairing.
+    if (path.replaces) return true;
     if (codeSpent) this.voidPending();
     if (device.account !== undefined) this.endNoAccountCode();
     // A relay enrollment closes the gate immediately, invalidating every first-cookie candidate.
@@ -2990,10 +2994,9 @@ export class DeviceStore {
     return this.journal?.openNotices().find((notice) => notice.row === row.id && notice.key === row.key && notice.no === row.origin.admit_no);
   }
 
-  private carriesJoinHold(device: StoredDevice, joined: AccountRow, now: number, signerKey: string | undefined): boolean {
+  private carriesJoinHold(device: StoredDevice, joined: AccountRow, now: number, signer: Sayer | null): boolean {
     if (joined.state !== "hold" || (device.origin?.from === "pc" && ["code", "digits", "qr", "confirmed"].includes(device.origin.how))) return false;
     if (joined.hold_until !== null && Date.parse(joined.hold_until) <= now) return false;
-    const signer = signerKey && device.added_by && this.provedSayer(device.added_by, signerKey);
     return !signer || !mayEndHold(signer, { key: joined.key, no: joined.no, admitNo: joined.origin.admit_no }, now);
   }
 
@@ -3111,16 +3114,17 @@ export class DeviceStore {
     if ((this.safety !== null || key !== oldKey) && !this.admits(key)) return null;
     // the new key has no age of the key before it, flag on or off, until this PC numbers it (P22)
     const { origin: _oldKeys, ...movedKey } = linked;
-    const updated = key !== oldKey ? this.admitted(movedKey, Date.now()) : linked;
-    const next = this.devices.map((d) => d === device ? updated : d);
     if (this.pc?.account() === account && (device.account !== account || oldKey !== key)) this.pc.setOthersEver();
-    this.bindingWith(account, key, () => this.save(next));
-    this.devices = next;
-    if (key !== oldKey) {
-      this.applyWaitingBlocks();
-      if (this.safety !== null && (this.failsClosed || !this.has(deviceId))) return null;
-    }
-    this.accountOrder?.recordJoins([updated]);
+    if (!this.bindingWith(account, key, () => {
+      if (key !== oldKey) {
+        const signerKey = device.account === account && this.isAccountApproverSession(deviceId, oldKey) ? oldKey : undefined;
+        return this.enroll(movedKey, Date.now(), [], false, { replaces: device }, signerKey);
+      } else {
+        this.replaceDevice(device, linked);
+        this.accountOrder?.recordJoins([linked]);
+        return true;
+      }
+    })) return null;
     this.endNoAccountCode();
     for (const listener of [...this.relinks.get(deviceId) ?? []]) listener(sessionId);
     return this.list(null).find((d) => d.id === deviceId) ?? null;
@@ -3160,9 +3164,7 @@ export class DeviceStore {
     if (device === undefined) return null;
     if (!this.admits(confirm.key, proof)) return null;
     const updated: StoredDevice = { ...device, relay_public_key: confirm.key, account: waiting.account, linked_at: new Date(now).toISOString(), link_moved_key: true, ...(ownWord ? { joined_by: vouched ? "service" as const : "word" as const } : {}), origin: this.pc.admit("pc", "link", null, now) };
-    const next = this.devices.map((d) => d === device ? updated : d);
-    this.bindingWith(waiting.account, confirm.key, () => this.save(next));
-    this.devices = next;
+    this.bindingWith(waiting.account, confirm.key, () => this.enroll(updated, now, [], false, { replaces: device, confirm: proof }));
     this.endNoAccountCode();
     for (const listener of [...this.relinks.get(confirm.row) ?? []]) listener(sessionId);
     return { id: updated.id, label: updated.label, role: updated.role };

@@ -2,7 +2,6 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { handleRequest, type ServerContext } from "../dispatch.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
-import { STALE_READ_MS } from "./account-devices.ts";
 import { accountRouteAction, accountRouteGuard } from "./account-row-rights.ts";
 import { DISPATCH_MUTATIONS, RELAY_CONTROLS } from "../dispatch-routes.ts";
 import { relayConnection } from "../relay/test-helpers.ts";
@@ -187,7 +186,7 @@ test("R7: every machine selector must name this PC before HTTP or WS dispatch", 
 
 test.each(["join_hold", "catching_up"] as const)("S25, T36-T40: a request at dispatch while %s cannot drive", async reason => {
   const { rows, request } = await listedDispatcher();
-  if (reason === "catching_up") rows.staleness(Date.now() - STALE_READ_MS);
+  if (reason === "catching_up") rows.waitForRead();
   const response = await request("GET", "/api/preferences");
   expect(response?.status).toBe(403);
   expect(await response?.json()).toMatchObject({ error: { code: reason } });
