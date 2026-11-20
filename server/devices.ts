@@ -952,9 +952,9 @@ export class DeviceStore {
     const origin = this.pc.admit(confirm.source === "screen" ? "pc" : "recover", reserved.how, null, now);
     const existing = this.devices.find((d) => d.relay_public_key === confirm.key);
     if (existing !== undefined) {
-      const next = this.devices.map((d) => d === existing ? { ...d, origin } : d);
-      this.save(next);
-      this.devices = next;
+      const confirmed = { ...existing, origin };
+      if (confirm.source === "screen") delete confirmed.held;
+      this.replaceDevice(existing, confirmed);
       this.voidPending();
       return { id: existing.id, label: existing.label, role: existing.role };
     }
@@ -1851,8 +1851,7 @@ export class DeviceStore {
     if (!notice?.row || !notice.key || !sayer) return false;
     const member = this.devices.find((d) => d.id === notice.row);
     if (member) {
-      if (member.held !== notice.id || member.relay_public_key !== notice.key || !member.origin || !this.promotedHolds.running(notice.id)
-        || !mayEndHold(sayer, { key: notice.key, no: this.accountOrder?.no(notice.key) ?? null, admitNo: member.origin.admit_no }, Date.now()) || !this.admits(notice.key)) return false;
+      if (!this.promotedHolds.mayConfirm(member, notice, { sayer, accountNo: this.accountOrder?.no(notice.key) ?? null, now: Date.now() })) return false;
       const decision = this.journal?.append({ ...notice, kind: "confirm", how: "its_me", by: provedKey }, notice.id);
       if (!decision) return false;
       this.releasePromoted(member);
@@ -1863,7 +1862,7 @@ export class DeviceStore {
     return held?.key === notice.key && held.origin.admit_no === notice.no && (this.joinedRows?.itsMe(held.id, sayer) ?? false);
   }
 
-  private provedSayer(id: string, key: string): Sayer | null {
+  private provedSayer(id: string, key: string | undefined): Sayer | null {
     const row = this.anyRow(id);
     if (!key || row?.relay_public_key !== key || !row.origin || this.failsClosed) return null;
     const joined = this.joinedRows?.row(id);
@@ -1876,11 +1875,14 @@ export class DeviceStore {
 
   private releasePromoted(row: StoredDevice): void {
     const { held, ...live } = row;
-    if (!held) return;
-    const next = this.devices.map((d) => d === row ? live : d);
+    if (held) this.replaceDevice(row, live);
+  }
+
+  private replaceDevice(row: StoredDevice, updated: StoredDevice): void {
+    const next = this.devices.map((d) => d === row ? updated : d);
     this.save(next);
     this.devices = next;
-    this.promotedHolds.forget(held);
+    if (row.held && !updated.held) this.promotedHolds.forget(row.held);
   }
 
 
@@ -2176,7 +2178,19 @@ export class DeviceStore {
     // Legacy account-member approvals never take a tombstoned key.
     if (approval.addedBy !== undefined && (this.accountError !== null || this.isTombstoned(publicKey))) { this.noteRelayFailure(approval.path, now); return null; }
     const listed = approval.addedBy === undefined ? undefined : this.joinedRows?.rowsByKey(publicKey)[0];
-    const id = approval.id ?? listed?.id;
+    const carried = approval.addedBy === undefined ? undefined : this.devices.find(d => d.relay_public_key === publicKey && d.held);
+    const id = approval.id ?? listed?.id ?? carried?.id;
+    if (carried && approval.addedBy !== undefined) {
+      const notice = this.openNotices().find(n => n.id === carried.held);
+      const sayer = this.provedSayer(approval.addedBy, this.relayKeyOf(approval.addedBy));
+      if (!listed && carried.id === id && !this.stale(carried) && !this.keyHeldByOther(publicKey, carried.id) && notice && sayer
+        && this.promotedHolds.mayConfirm(carried, notice, { sayer, accountNo: this.accountOrder?.no(publicKey) ?? null, now })) {
+        this.releasePromoted(carried);
+        return { device: { id: carried.id, label: carried.label, role: carried.role } };
+      }
+      this.noteRelayFailure(approval.path, now);
+      return null;
+    }
     const collision = listed
       ? id !== listed.id || !this.canAddAt(listed.id, publicKey) || this.keyHeldByOther(publicKey, listed.id)
       : id !== undefined && this.has(id);
@@ -2369,8 +2383,7 @@ export class DeviceStore {
     if (this.journal === null) return;
     const recovered = device.origin?.from === "recover";
     const promotion = device.origin?.how === "promoted";
-    const original = promotion && !device.held ? this.listNotice(device.id)?.id : undefined;
-    this.publish(this.journal.append({ kind: promotion ? "promote" : "admit", how: recovered ? "recover" : device.origin?.how ?? "code", key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: recovered ? by ?? null : promotion ? device.origin?.by ?? null : device.added_by ?? null, account: device.account ?? null }, original));
+    this.publish(this.journal.append({ kind: promotion ? "promote" : "admit", how: recovered ? "recover" : device.origin?.how ?? "code", key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: recovered ? by ?? null : promotion ? device.origin?.by ?? null : device.added_by ?? null, account: device.account ?? null }));
   }
 
   /** A removal's journal entry, after its deny (P8 step 4). A journal that cannot be written stops no removal. */

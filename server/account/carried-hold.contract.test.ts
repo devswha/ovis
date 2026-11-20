@@ -1,13 +1,13 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { relayDevice } from "../relay/test-helpers.ts";
-import { ACCOUNT, listedPc } from "./listed-pc.test-helpers.ts";
+import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { phone } from "./pairing.test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 
 async function recentlyPromoted() {
-  const { fixture, service, member: elder } = await listedPc(closes);
+  const { fixture, service, member: elder } = await createListedPc(close => closes.push(close));
   const time = { now: Date.now() + 3_600_001 };
   const clock = spyOn(Date, "now").mockImplementation(() => time.now);
   closes.push(() => clock.mockRestore());

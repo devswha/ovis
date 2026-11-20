@@ -1,5 +1,6 @@
 import type { StoredDevice } from "../devices.ts";
-import { JOIN_HOLD_MS, holdSecondsLeft } from "./join-hold.ts";
+import type { JournalEntry } from "./device-journal.ts";
+import { JOIN_HOLD_MS, holdSecondsLeft, mayEndHold, type Sayer } from "./join-hold.ts";
 
 /** The notice ID survives on the member row. Deadlines deliberately belong to this running process only. */
 export class PromotedHolds {
@@ -18,7 +19,13 @@ export class PromotedHolds {
     }
   }
 
-  running(notice: string): boolean { return this.deadlines.has(notice); }
+  /** Compare standing against the original admission, not the newer promotion. */
+  mayConfirm(row: StoredDevice, notice: JournalEntry, approval: { readonly sayer: Sayer; readonly accountNo: number | null; readonly now: number }): boolean {
+    if (notice.how !== "list" || !notice.key || row.id !== notice.row || row.relay_public_key !== notice.key) return false;
+    if (row.held ? row.held !== notice.id || !this.deadlines.has(row.held) : row.origin?.how !== "promoted") return false;
+    return this.admits(notice.key) && mayEndHold(approval.sayer, { key: notice.key, no: approval.accountNo, admitNo: notice.no }, approval.now);
+  }
+
   forget(notice: string): void { this.deadlines.delete(notice); }
 
   refusal(row: StoredDevice, now: number) {

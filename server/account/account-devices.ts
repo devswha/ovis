@@ -38,7 +38,7 @@ export interface AccountRowSource {
   access(id: string): AccessAnswer;
   pruneDenied(evidence: RemovalEvidence, legacyRevoke?: "revoke_all"): void;
   removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void;
-  /** "It's me" for the held row `id` (T53): true when it ended the hold. */
+  /** An eligible "It's me" answers the notice, ending the hold if one remains. */
   itsMe(id: string, sayer: Sayer): boolean;
 }
 
@@ -211,13 +211,13 @@ export class AccountDeviceStore implements AccountRowSource {
     return { ok: true };
   }
 
-  /** "It's me" for the held row `id` (T53): ends its hold only for an established older row and a passing guard. */
+  /** T53/T57: the timer can make the row live, but cannot decide its notice. */
   itsMe(id: string, sayer: Sayer): boolean {
-    const row = this.rows().find((candidate) => candidate.id === id && candidate.state === "hold");
-    if (!row || row.hold_until === null || !mayEndHold(sayer, { key: row.key, no: row.no, admitNo: row.origin.admit_no }, this.ports.now())) return false;
+    const row = this.row(id);
+    if (!row || (row.state === "hold" && row.hold_until === null) || !mayEndHold(sayer, { key: row.key, no: row.no, admitNo: row.origin.admit_no }, this.ports.now())) return false;
     if (!this.admits(row.key)) return false;
     this.ports.journal({ kind: "its_me", key: row.key, row: row.id, account: this.file.account, no: row.origin.admit_no, by: sayer.key });
-    this.goLive(id);
+    if (row.state === "hold") this.goLive(id);
     return true;
   }
 
