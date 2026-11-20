@@ -22,23 +22,21 @@ export function Artifacts(props: { paneId: string; status: AgentStatus | undefin
   return settings.composerArtifacts ? <ArtifactsChip {...props} /> : null;
 }
 
-function ArtifactsChip({ paneId, status }: { paneId: string; status: AgentStatus | undefined }) {
-  const t = useT();
-  const locale = useLocale();
+/**
+ * The pages a Claude Code pane published, read again whenever `refresh` changes (its status, a list
+ * opening); empty for another pane until its own answer comes, and with no pane.
+ */
+export function usePaneArtifacts(paneId: string | null, refresh: unknown): ClaudeArtifact[] {
   const { fetchPaneArtifacts } = useMachineApi();
   const machineId = useMachineId();
   const [artifacts, setArtifacts] = useState<ClaudeArtifact[]>([]);
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLSpanElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  const id = useId();
-  usePhoneSheetBack(() => setOpen(false), open);
-  useEffect(() => { setArtifacts([]); setOpen(false); }, [paneId, machineId]);
+  useEffect(() => { setArtifacts([]); }, [paneId, machineId]);
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     // Session discovery may outlast the route's one-second budget even for an idle pane.
     // Keep asking while empty: there is no chip to reopen and no later status edge is promised.
+    if (paneId === null) return;
     const load = (): void => {
       fetchPaneArtifacts(paneId).then((found) => {
         if (!alive) return;
@@ -48,7 +46,21 @@ function ArtifactsChip({ paneId, status }: { paneId: string; status: AgentStatus
     };
     load();
     return () => { alive = false; clearTimeout(timer); };
-  }, [fetchPaneArtifacts, paneId, status, open]);
+  }, [fetchPaneArtifacts, paneId, refresh]);
+  return artifacts;
+}
+
+function ArtifactsChip({ paneId, status }: { paneId: string; status: AgentStatus | undefined }) {
+  const t = useT();
+  const locale = useLocale();
+  const machineId = useMachineId();
+  const [open, setOpen] = useState(false);
+  const artifacts = usePaneArtifacts(paneId, `${status ?? ""}:${open}`);
+  const root = useRef<HTMLSpanElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const id = useId();
+  usePhoneSheetBack(() => setOpen(false), open);
+  useEffect(() => { setOpen(false); }, [paneId, machineId]);
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent): void => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
