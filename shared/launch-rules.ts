@@ -69,9 +69,10 @@ export function firstMessageFault(value: unknown, agent: unknown): string | null
 
 /**
  * The flag that adds an MCP server to an agent's launch, which only the server sets, from the browser tool chosen
- * for that agent (shared/browser-tools.ts): a client names no MCP command. Codex's `-c mcp_servers…` is refused below.
+ * for that agent (shared/browser-tools.ts): a client names no MCP command. Codex's `-c mcp_servers…` is refused below. Their `mcp` subcommands, which add a server to the agent's own settings, are refused too.
  */
 const MCP_FLAGS: Readonly<Record<string, string>> = { claude: "--mcp-config", copilot: "--additional-mcp-config" };
+const MCP_COMMAND_AGENTS = new Set(["claude", "codex", "copilot"]);
 
 type LaunchFlag = "model" | "effort" | "config";
 /** the flags whose values are checked, by agent: Codex's `-c`/`--config` sets `model` and `model_reasoning_effort` too */
@@ -115,6 +116,7 @@ export function launchArgsFault(kind: string, args: readonly string[]): string |
   const options = args.includes("--") ? args.slice(0, args.indexOf("--")) : args;
   const mcpFlag = MCP_FLAGS[kind];
   if (mcpFlag !== undefined && options.some((arg) => arg === mcpFlag || arg.startsWith(`${mcpFlag}=`))) return `agent.args must not carry ${mcpFlag}: the PC adds the browser tool from its settings`;
+  if (MCP_COMMAND_AGENTS.has(kind) && options.includes("mcp")) return "agent.args must not run the agent's mcp command, which writes its own settings";
   if (kind !== "claude" && kind !== "codex" && kind !== "dsh-tui") return null;
   const efforts = LAUNCH_EFFORTS[kind];
   for (let at = 0; at < args.length; at++) {

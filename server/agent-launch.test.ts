@@ -273,6 +273,18 @@ describe("an agent start with a browser tool chosen", () => {
     expect(codex!.join(" ")).toContain("@playwright/mcp@0.0.86");
   });
 
+  it("replaces a link left at the config file's name instead of writing through it", async () => {
+    const dir = toolsDir();
+    stored = { claude: "playwright" };
+    mkdirSync(dir, { recursive: true });
+    const target = join(dirname(dir), "agent-own-settings.json");
+    writeFileSync(target, "{\"own\":true}");
+    fs.symlinkSync(target, join(dir, "claude-playwright.json"));
+    await started("claude");
+    expect(readFileSync(target, "utf8")).toBe("{\"own\":true}");
+    expect(fs.lstatSync(join(dir, "claude-playwright.json")).isSymbolicLink()).toBe(false);
+  });
+
   it("adds nothing to an agent with none chosen, nor to one that takes none", async () => {
     const dir = toolsDir();
     stored = { codex: "playwright", grok: "playwright" };

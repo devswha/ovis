@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
+import { join, resolve } from "node:path";
 import { freeAgentName } from "./agent-name.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { isShellAgentKind, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
@@ -83,7 +83,7 @@ let browserTools: { read: () => unknown; dir: string } | null = null;
 
 /** Where the launch reads the shared `agentBrowserTools` setting from, and the folder its MCP config files go in. */
 export function readBrowserToolSetting(read: () => unknown, dir: string): void {
-  browserTools = { read, dir };
+  browserTools = { read, dir: resolve(dir) };
 }
 
 /**
@@ -105,7 +105,10 @@ export function withBrowserTool(kind: string, args: string[] | undefined, platfo
     const config = browserToolConfig(kind, tool, platform);
     if (!existsSync(file) || readFileSync(file, "utf8") !== config) {
       mkdirSync(browserTools.dir, { recursive: true, mode: 0o700 });
-      writeFileSync(file, config);
+      // a new file renamed over the old one: a link left at that name is replaced, never written through
+      const staged = `${file}.${process.pid}.tmp`;
+      writeFileSync(staged, config, { flag: "wx", mode: 0o600 });
+      renameSync(staged, file);
     }
   }
   return withBrowserToolArgs(args ?? [], browserToolArgs(kind, tool, platform, file));

@@ -95,6 +95,13 @@ describe("an MCP server named by the client", () => {
   ])("is refused for %s: only the PC adds one, from its settings", (kind, args) => {
     expect(launchArgsFault(kind, args)).toContain("browser tool");
   });
+  it.each([
+    ["codex", ["mcp", "add", "x", "--", "sh"]],
+    ["claude", ["mcp", "add", "x", "sh"]],
+    ["copilot", ["--model", "x", "mcp", "add", "x", "--", "sh"]],
+  ])("is refused through %s's own mcp command, which writes its settings", (kind, args) => {
+    expect(launchArgsFault(kind, args)).toContain("mcp command");
+  });
   it("is the prompt's own text after --", () => {
     expect(launchArgsFault("codex", ["--", "--mcp-config and mcp_servers"])).toBeNull();
     expect(launchArgsFault("claude", ["--", "--mcp-config"])).toBeNull();
