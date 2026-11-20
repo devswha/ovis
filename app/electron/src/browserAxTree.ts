@@ -56,6 +56,11 @@ const HEADING_PATTERN = /^heading$/
 
 const SKIP_ROLES = new Set(['none', 'presentation', 'generic'])
 
+/** whether a node takes typing (an input, a textarea, a contenteditable element): its children are its value (Ovis) */
+function isEditable(node: AXNode): boolean {
+  return node.properties?.some((p) => p.name === 'editable' && p.value.value !== undefined && p.value.value !== false && p.value.value !== '') ?? false
+}
+
 export function walkTree(
   node: AXNode,
   nodeById: Map<string, AXNode>,
@@ -63,6 +68,14 @@ export function walkTree(
   entries: SnapshotEntry[],
   nextRef: () => number
 ): void {
+  // what is typed into a field is never read, whatever the field's role or label (Ovis)
+  if (isEditable(node)) {
+    const role = node.role?.value ?? ''
+    if (!node.ignored && node.backendDOMNodeId) {
+      entries.push({ ref: `@e${nextRef()}`, role: formatInteractiveRole(role === 'generic' ? 'textbox' : role), name: node.name?.value || '(unlabeled)', backendDOMNodeId: node.backendDOMNodeId ?? 0, depth })
+    }
+    return
+  }
   if (node.ignored) {
     walkChildren(node, nodeById, depth, entries, nextRef)
     return

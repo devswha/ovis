@@ -16,7 +16,7 @@ import { openOutside } from "./openOutside.ts";
 import { findBrowsers, readLinkBrowser, webAddress, writeLinkBrowser, type FoundBrowsers, type LinkBrowser } from "./browsers.ts";
 import { BrowserTabs, type BrowserBounds } from "./browserTabs.ts";
 import { debuggingSwitch, ownAddresses, readBrowserState } from "./browserState.ts";
-import { networkInterfaces, userInfo } from "node:os";
+import { networkInterfaces } from "node:os";
 import { BrowserBroker, brokerPath } from "./browserBroker.ts";
 import { BROWSER_TOKENS_DIR } from "../../../shared/browser-broker.ts";
 
@@ -79,8 +79,9 @@ let pendingLink: string | null = null;
 let browser: BrowserTabs | null = null;
 let browserPort: number | null = null;
 let stateWatch: FSWatcher | null = null;
-/** the agents' way into it (browserBroker.ts), open only while it is on */
-const broker = new BrowserBroker(() => browser, join(stateDir, BROWSER_TOKENS_DIR), brokerPath(app.getPath("userData"), process.platform, userInfo().username));
+/** the agents' way into it (browserBroker.ts), open only while it is on; none where there is no local-only socket (Windows) */
+const brokerSocket = brokerPath(app.getPath("userData"), process.platform);
+const broker = brokerSocket === null ? null : new BrowserBroker(() => browser, join(stateDir, BROWSER_TOKENS_DIR), brokerSocket);
 
 const accountService = accountServiceOf(process.env);
 
@@ -121,14 +122,14 @@ function updateBrowser(): void {
   const state = readBrowserState(stateDir, browserPort, debuggingSwitch((name) => app.commandLine.hasSwitch(name)));
   const was = browser !== null;
   if (!state.enabled) {
-    if (browser) broker.stop();
+    if (browser) broker?.stop();
     browser?.closeAll();
     browser = null;
   } else if (browser) {
     browser.setPolicy(state.policy);
   } else {
     browser = new BrowserTabs(() => window, state.policy, join(app.getPath("userData"), "browser-downloads"), tellBrowser, () => ownAddresses(networkInterfaces()));
-    broker.start().catch((error: unknown) => console.error(`The built-in browser's agent socket did not open: ${message(error)}`));
+    broker?.start().catch((error: unknown) => console.error(`The built-in browser's agent socket did not open: ${message(error)}`));
   }
   if (was !== (browser !== null)) tellBrowser();
 }
@@ -269,7 +270,7 @@ async function waitUntilEnded(pid: number, timeoutMs: number): Promise<void> {
 
 async function stopForQuit(): Promise<void> {
   quitting = true;
-  broker.stop(true);
+  broker?.stop(true);
   spawning?.kill("SIGTERM");
   await busy;
   const running = server;

@@ -13,9 +13,12 @@ import { BROWSER_TOKEN_FILE, MAX_BROWSER_LINE, type BrowserAnswer, type BrowserC
 import { clickRef, snapshot, typeRef } from "./browserAgent.ts";
 import type { BrowserTabs } from "./browserTabs.ts";
 
-/** where the socket is: a unix socket in a folder only the user can open, a named pipe on Windows */
-export function brokerPath(userData: string, platform: string, user: string): string {
-  return platform === "win32" ? `\\\\.\\pipe\\ovis-browser-${user.replace(/[^A-Za-z0-9_-]/g, "_")}` : join(userData, "browser", "broker.sock");
+/**
+ * Where the socket is: a unix socket in a folder only the user can open. None on Windows: a named pipe Node
+ * makes takes remote clients too (it cannot ask for PIPE_REJECT_REMOTE_CLIENTS), so agents have no way in there yet.
+ */
+export function brokerPath(userData: string, platform: string): string | null {
+  return platform === "win32" ? null : join(userData, "browser", "broker.sock");
 }
 
 /** the pane whose token file holds `token`, read now */
@@ -53,11 +56,9 @@ export class BrowserBroker {
 
   async start(): Promise<void> {
     if (this.server) return;
-    if (!this.path.startsWith("\\\\")) {
-      mkdirSync(join(this.path, ".."), { recursive: true, mode: 0o700 });
-      chmodSync(join(this.path, ".."), 0o700);
-      rmSync(this.path, { force: true });
-    }
+    mkdirSync(join(this.path, ".."), { recursive: true, mode: 0o700 });
+    chmodSync(join(this.path, ".."), 0o700);
+    rmSync(this.path, { force: true });
     const server = createServer((socket) => this.serve(socket));
     this.server = server;
     await new Promise<void>((listening, failed) => {
@@ -67,7 +68,7 @@ export class BrowserBroker {
         listening();
       });
     });
-    if (!this.path.startsWith("\\\\")) chmodSync(this.path, 0o600);
+    chmodSync(this.path, 0o600);
   }
 
   /**
@@ -79,7 +80,7 @@ export class BrowserBroker {
     this.server = null;
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
-    if (!this.path.startsWith("\\\\")) rmSync(this.path, { force: true });
+    rmSync(this.path, { force: true });
     if (keepTokens) return;
     try {
       for (const name of readdirSync(this.tokensDir)) if (BROWSER_TOKEN_FILE.test(name)) rmSync(join(this.tokensDir, name), { force: true });
@@ -145,12 +146,16 @@ export class BrowserBroker {
         return text(await snapshot(tab.contents, tab.address));
       case "browser_click": {
         const ref = typeof args["ref"] === "string" ? args["ref"] : null;
-        return ref !== null && await clickRef(tab.contents, ref) ? text("Clicked.") : "No such element: take a new browser_snapshot.";
+        const may = () => typeof tabs.agentTab(owner, id) !== "string";
+        if (ref !== null && await clickRef(tab.contents, ref, may)) return text("Clicked.");
+        return may() ? "No such element: take a new browser_snapshot." : "The user has taken control of this tab: wait until they hand it back.";
       }
       case "browser_type": {
         const ref = typeof args["ref"] === "string" ? args["ref"] : null;
         if (typeof args["text"] !== "string") return "browser_type needs the text.";
-        return ref !== null && await typeRef(tab.contents, ref, args["text"], args["submit"] === true) ? text("Typed.") : "No such element to type in: take a new browser_snapshot.";
+        const may = () => typeof tabs.agentTab(owner, id) !== "string";
+        if (ref !== null && await typeRef(tab.contents, ref, args["text"], args["submit"] === true, may)) return text("Typed.");
+        return may() ? "No such element to type in: take a new browser_snapshot." : "The user has taken control of this tab: wait until they hand it back.";
       }
       case "browser_screenshot": {
         if (!tab.shown) return "The tab is not on the user's screen, so it has no picture: use browser_snapshot to read it.";

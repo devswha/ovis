@@ -37,17 +37,24 @@ export async function snapshot(contents: WebContents, address: string): Promise<
   return lines.join("\n");
 }
 
-/** Runs `fn` (a function's source) on the element a ref names; false when the latest snapshot holds no such element any more. */
-async function onRef(contents: WebContents, ref: string, fn: string, args: unknown[] = []): Promise<boolean> {
+const OBJECT_GROUP = "ovis-agent";
+
+/**
+ * Runs `fn` (a function's source, one of this file's) on the element a ref names; false when the latest snapshot
+ * holds no such element any more, or `may()` says no once it is found (the person took the tab meanwhile).
+ */
+async function onRef(contents: WebContents, ref: string, may: () => boolean, fn: string, args: unknown[] = []): Promise<boolean> {
   const node = refsOf.get(contents)?.get(ref);
   if (node === undefined || node === 0) return false;
   try {
-    const { object } = await send<{ object: { objectId?: string } }>(contents, "DOM.resolveNode", { backendNodeId: node });
-    if (object.objectId === undefined) return false;
+    const { object } = await send<{ object: { objectId?: string } }>(contents, "DOM.resolveNode", { backendNodeId: node, objectGroup: OBJECT_GROUP });
+    if (object.objectId === undefined || !may()) return false;
     const { result } = await send<{ result: { value?: unknown } }>(contents, "Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: fn, arguments: args.map((value) => ({ value })), returnByValue: true, awaitPromise: true });
     return result.value === true;
   } catch {
     return false;
+  } finally {
+    if (!contents.isDestroyed() && contents.debugger.isAttached()) void contents.debugger.sendCommand("Runtime.releaseObjectGroup", { objectGroup: OBJECT_GROUP }).catch(() => {});
   }
 }
 
@@ -75,10 +82,10 @@ const TYPE = `function (text, submit) {
   return true;
 }`;
 
-export function clickRef(contents: WebContents, ref: string): Promise<boolean> {
-  return onRef(contents, ref, CLICK);
+export function clickRef(contents: WebContents, ref: string, may: () => boolean): Promise<boolean> {
+  return onRef(contents, ref, may, CLICK);
 }
 
-export function typeRef(contents: WebContents, ref: string, text: string, submit: boolean): Promise<boolean> {
-  return onRef(contents, ref, TYPE, [text, submit]);
+export function typeRef(contents: WebContents, ref: string, text: string, submit: boolean, may: () => boolean): Promise<boolean> {
+  return onRef(contents, ref, may, TYPE, [text, submit]);
 }

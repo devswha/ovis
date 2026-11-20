@@ -23,7 +23,7 @@ let lines: AsyncIterator<string>;
 const FORM = `<!doctype html><title>Form</title><h1>Sign in</h1>
 <button id="b" style="position:absolute;left:20px;top:80px;width:120px;height:40px" onclick="document.title='clicked'">Press me</button>
 <form action="/submitted" style="position:absolute;left:20px;top:160px"><input name="q" aria-label="Search"><input type="password" aria-label="Password" value="${PASSWORD}"></form>
-<div style="position:absolute;left:20px;top:240px"><input value="${UNLABELED}"><textarea>${UNLABELED}</textarea></div>
+<div style="position:absolute;left:20px;top:240px"><input value="${UNLABELED}"><textarea>${UNLABELED}</textarea><div contenteditable="true">${UNLABELED}</div></div>
 <a href="/popup-page" target="_blank" style="position:absolute;left:20px;top:320px">Open more</a>`;
 
 async function* stdoutLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
