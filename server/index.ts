@@ -550,7 +550,7 @@ export function createServer(
       }
     },
   }) : undefined;
-  const recoverySocket = recoveryReleases && journal ? (() => {
+  const recoverySocket = recoveryReleases && journal && safetyLog ? (() => {
     // the acts beyond release and undo, through this PC's own stores (Track A's devices.ts and safety-log.ts)
     const seams: RecoverySeams = {
       pendingOf: (id) => pendingRedemptions?.list().find((entry) => entry.id === id) ?? null,
@@ -563,8 +563,9 @@ export function createServer(
       },
       removeKey: (input) => devices.removeKey(input),
       appendLift: (blockId, forget, user) => {
-        const binding = pcAccount?.binding() ?? null;
-        const done = safetyLog!.appendLift(blockId, binding, { cause: "recover", forget });
+        const block = safetyLog.state().blocks.find((entry) => entry.record.id === blockId);
+        const binding = block === undefined ? pcAccount?.binding() ?? null : { account: block.record.account };
+        const done = safetyLog.appendLift(blockId, binding, { cause: "recover", forget });
         if (done.outcome === "applied") journal.append({ kind: "lift", how: "recover", key: null, no: null, row: null, label: blockId, by: user, account: binding?.account ?? null });
         return done;
       },
