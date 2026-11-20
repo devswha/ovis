@@ -179,8 +179,13 @@ let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc>
  * The relay is never turned on without a press. Nothing else is listed or opened without one. A device that only
  * watches this PC can list nothing, and is shown nothing.
  */
-export function AddThisPc({ relayAbove = true, gateNote = true, service, signedInHere, onListed }: {
+export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service, signedInHere, onListed }: {
   relayAbove?: boolean;
+  /**
+   * The relay's state as a switch beside this one shows it (the relay tab): once it is on, an offer to turn it on and
+   * add the PC becomes the plain offer. Only that idle offer changes; an add or a wait under way goes on as it is.
+   */
+  relayOn?: boolean;
   /** false where the relay's own switch beside it already says that turning it on closes the device gate (the relay tab) */
   gateNote?: boolean;
   onListed?: () => void;
@@ -562,6 +567,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, service, signedI
     });
   };
   const relayOff = state.kind === "relay-off";
+  useEffect(() => { if (relayOn === true) setState((current) => current.kind === "relay-off" ? { kind: "offer" } : current); }, [relayOn]);
   const [closesGate, setClosesGate] = useState(false);
   useEffect(() => {
     if (!relayOff) return;

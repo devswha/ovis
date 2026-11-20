@@ -161,9 +161,13 @@ describe("the relay tab reopened already signed in", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
   let state: { relay: "online" | "off"; pcAccount: string | null; enrolling: boolean };
+  let service: FakeAccountService;
+  let linkGate: ReturnType<typeof Promise.withResolvers<void>> | null;
 
   beforeEach(async () => {
     state = { relay: "off", pcAccount: null, enrolling: false };
+    service = new FakeAccountService();
+    linkGate = null;
     for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "location", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -183,18 +187,22 @@ describe("the relay tab reopened already signed in", () => {
       querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => SERVICE } : null,
       addEventListener: () => {}, removeEventListener: () => {},
     } });
-    const fetch = async (input: string | URL | Request): Promise<Response> => {
+    const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = new URL(String(input instanceof Request ? input.url : input), `http://127.0.0.1:${PORT}`);
       if (url.pathname === "/api/health") return Response.json({ ok: true, bridge_protocol: 1, own_window: { port: PORT }, auth: { required: false, authenticated: true, via: "local", role: "drive" }, security: { pairing_gate: "closed", token_configured: false } });
       if (url.pathname === "/api/relay") return Response.json(status(state.relay));
+      if (url.pathname === "/api/relay/start") { state.relay = "online"; return Response.json(status("online")); }
+      if (url.pathname === "/api/relay/link") { if (linkGate !== null) await linkGate.promise; return Response.json({ url: OFFER }); }
+      if (url.pathname === "/api/relay/link/close" || url.pathname === "/api/account/relay-account") return Response.json({ ok: true });
       if (url.pathname === "/api/account/status") return Response.json({ account: state.pcAccount, enrolling: state.enrolling, unlinked: [], removals: [], adds: [], blocked: [] });
       if (url.origin === SERVICE && url.pathname === "/v1/providers") return Response.json({ providers: ["google"], device: ["google"], device_page: ["google"] });
+      if (url.origin === SERVICE) return service.fetch(input, init);
       return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
     };
     setTransport({ ...nativeTransport, fetch: fetch as typeof nativeTransport.fetch });
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
     spyOn(console, "warn").mockImplementation(() => {});
-    await indexedAccountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "google", access_token: "a", refresh_token: "r", expires_at: Date.now() + 3_600_000 });
+    await indexedAccountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "google", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3_600_000 });
   });
 
   afterEach(async () => {
@@ -218,13 +226,12 @@ describe("the relay tab reopened already signed in", () => {
       await act(async () => {});
     }
   };
+  const account = { service: SERVICE, onOpen: () => undefined, onSignedIn: () => undefined };
+  const tabAt = (phase: "online" | "off") => <SettingsProvider><RelayTab relay={relayOf(phase)} closesGate={false} signedIn accountId={ACCOUNT} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>;
   const mount = async (phase: "online" | "off"): Promise<void> => {
-    const account = { service: SERVICE, onOpen: () => undefined, onSignedIn: () => undefined };
-    await act(async () => {
-      renderer = create(<SettingsProvider><RelayTab relay={relayOf(phase)} closesGate={false} signedIn accountId={ACCOUNT} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>,
-        { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) });
-    });
+    await act(async () => { renderer = create(tabAt(phase), { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) }); });
   };
+  const button = (label: string) => renderer!.root.findAll((node) => node.type === "button" && text(node) === label);
 
   it("with the relay off, offers the relay's own add button rather than a plain Add that would fail", async () => {
     await mount("off");
@@ -248,5 +255,22 @@ describe("the relay tab reopened already signed in", () => {
     state = { relay: "online", pcAccount: null, enrolling: false };
     await until(() => renderer!.root.findAll((node) => node.type === "button" && text(node) === "Add this PC to my account").length === 1, 10_000);
     expect(text(renderer!.root)).not.toContain("This PC is in your Ovis account");
+  });
+
+  it("offers the plain add once the relay's switch turns it on", async () => {
+    await mount("off");
+    await until(() => button("Turn on the relay and add this PC").length === 1);
+    await act(async () => { renderer!.update(tabAt("online")); });
+    await until(() => button("Add this PC to my account").length === 1);
+  });
+
+  it("goes on with a press of Turn on the relay and add this PC while the relay's state is read again", async () => {
+    await mount("off");
+    await until(() => button("Turn on the relay and add this PC").length === 1);
+    linkGate = Promise.withResolvers<void>();
+    await act(async () => { button("Turn on the relay and add this PC")[0]!.props.onClick(); });
+    await act(async () => { renderer!.update(tabAt("online")); });
+    linkGate.resolve();
+    await until(() => button("Stop waiting").length === 1);
   });
 });

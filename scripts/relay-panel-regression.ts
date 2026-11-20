@@ -376,7 +376,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await accountQr.getByText("This PC shows a QR code only while it is in no account.", { exact: true }).waitFor();
     assert.equal(await accountQr.getAttribute("data-account"), "mine", "the part says the PC is in this browser's account");
     assert.equal(await accountQr.getByRole("button").count(), 0, "a PC that is in an account offers no QR code");
-    assert.equal(await relayTab.getByRole("button", { name: "Open the account", exact: true }).count(), 0, "and nothing says to add this PC to the account any more");
+    assert.equal(await relayTab.getByRole("button", { name: /^(Open the account|Add this PC to my account|Turn on the relay and add this PC)$/ }).count(), 0, "and nothing says to add this PC to the account any more");
     assert.equal(await accountQr.evaluate((node) => node.contains(document.activeElement)), true, "the answered notice hands the focus to what the part says now");
     // the PC itself makes no such code any more, whatever page asks for it
     const refused = await page.evaluate(async () => {
