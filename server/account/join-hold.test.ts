@@ -49,7 +49,7 @@ describe("S2-29 the join hold and the first device (T34, T53, T67)", () => {
     // Prior S2-29 persisted the snapshot number (1), not this admission's PC-local number (42).
     const prior = new AccountDeviceStore(dir, SERVER, { ...ports,
       admitOrigin: (at) => ({ from: "remote", how: "list", by: null, admit_no: 42, at: new Date(at).toISOString() }),
-      journal: (entry) => { journal.append({ kind: "admit", how: "list", key: entry.key, no: 1, row: entry.row, label: "held", by: null, account: read.account }); },
+      journal: (entry) => { journal.append({ kind: "admit", how: "list", key: entry.key, no: 1, row: entry.row, label: "held", by: null, account: read.account, provider: "google", two_step: "set" }); },
     });
     prior.commitList(read);
     const [row] = prior.rows();
@@ -61,7 +61,7 @@ describe("S2-29 the join hold and the first device (T34, T53, T67)", () => {
     reopened.commitList(read);
     expect(reopened.access(row.id)).toEqual({ refused: "join_hold", seconds: 10 });
     const replay = disk.replay("older-member", (entry) => entry.no !== null && 5 < entry.no);
-    expect(replay.notices).toMatchObject([{ row: row.id, open: true, no: 42 }]);
+    expect(replay.notices).toMatchObject([{ row: row.id, open: true, no: 42, method: "google", two_step: "set" }]);
     const [replacement] = replay.notices;
     if (!replacement) throw new Error("The repaired notice was not replayed");
     expect(disk.openNotices().map((entry) => entry.id)).toEqual([replacement.id]);
