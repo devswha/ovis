@@ -59,7 +59,9 @@ it("rejects corrupt approval state without overwriting it", () => {
 it("connection consent is separate from installation approval and survives restart", () => {
   const dir = directory(), target = { destination: "BuildBox" };
   const store = new HerdrProfileState(dir);
+  expect(store.has("id")).toBe(false);
   store.allowConnection("id", target); store.flush();
+  expect(store.has("id")).toBe(true);
   const restored = new HerdrProfileState(dir);
   expect(restored.connectionApproved("id", target)).toBe(true);
   expect(restored.approved("id", target)).toBe(false);

@@ -13,9 +13,9 @@ import type { BridgeDescriptor } from "./bridge.ts";
 import { HerdrError, sessionSnapshot } from "./herdr/client.ts";
 import { ConnectionDiagnostics, transportFailureCode } from "./connection-diagnostics.ts";
 import { FinishEpochLedger } from "./finish-epoch-ledger.ts";
-import { labelOmoPanes } from "./conversation.ts";
-import type { CompletionTracker } from "./completion.ts";
+import { labelOmoPanes } from "./conversation.ts"; import type { CompletionTracker } from "./completion.ts";
 import { HerdrProfileState, herdrMachineId } from "./herdr-profile-state.ts";
+import { acceptFirstSight, bridgeInstalls, linkHerdrProfile, needsApproval, releaseUnapprovedFirstSight } from "./setup-approval.ts";
 import { type HerdrMachineProfile, samePort, sameSshSession } from "./herdr-profiles.ts";
 import { appBuild } from "./app-revision.ts";
 import { shellQuote, validateTarget } from "./machine-security.ts";
@@ -478,6 +478,7 @@ export class MachineManager {
     for (const profile of profiles) {
       try {
         const id = herdrMachineId(profile.id);
+        const firstSight = !this.profileState.has(profile.id);
         this.profileState.reconcile(profile.id, profile.target, () => {
           // Stop old authority before fallible cleanup; no setup or reconnect may reuse its key.
           const runtime = this.machines.get(id);
@@ -509,15 +510,7 @@ export class MachineManager {
         if (runtime.machine.name !== profile.label) { runtime.machine.name = profile.label; changed = true; }
         runtime.machine.enabled = enabled;
         runtime.machine.target = profile.target ? this.profileState.target(profile.id, profile.target) : undefined;
-        if (!enabled) {
-          runtime.machine.action_required = null;
-          runtime.machine.error = profile.target ? "Disabled in herdr" : "This saved herdr machine uses an unsupported SSH address or session.";
-        } else if (!this.mayConnect(runtime)) {
-          if (reconnect || (!runtime.machine.action_required && runtime.machine.state !== "error")) {
-            runtime.machine.action_required = "connect";
-            runtime.machine.error = null;
-          }
-        } else if (reconnect) void this.reconnect(runtime);
+        linkHerdrProfile(runtime.machine, { enabled, firstSight, hasTarget: !!profile.target, allowed: this.mayConnect(runtime), wantsReconnect: reconnect }, () => { void this.reconnect(runtime, { firstSight: true }); }, () => { void this.reconnect(runtime); });
       } catch (error) { errors.push(error); }
     }
     for (const [id, runtime] of this.machines) {
@@ -1468,22 +1461,14 @@ export class MachineManager {
     }
     const hasBundle = inspection.bundleReady;
     if (!descriptor && !hasBundle && inspection.bundleOlder && !job) throw new MachineActionRequired("This PC has the bridge runtime of a different version. Update the bridge to reconnect; herdr sessions keep running.", "update_bridge");
-    const installs: string[] = [];
-    if (ownUpdate) installs.push(`Ask this PC's own Ovis to install its update${ownUpdate.latest_version ? ` v${ownUpdate.latest_version}` : ""} through its own updater, then reconnect (herdr sessions keep running)`);
-    if (update) installs.push("Download and verify the bridge runtime, then restart this bridge (herdr sessions keep running)");
-    if (!descriptor && !hasBundle) installs.push(host.bundleDescription);
-    if (!descriptor && !herdrPath) installs.push(host.installHerdr ? `herdr 0.9.3 through its own installer (${HERDR_INSTALL_CMD})` : "Bundled herdr 0.9.3 (existing installations are preserved)");
-    if (!descriptor && job) installs.push("Start the loopback bridge and, only if absent, the herdr daemon");
-    if (ssh.usedSecret) installs.push("Register a dedicated SSH public key for automatic reconnection");
-    if (installs.length) {
+    const installs = bridgeInstalls({ ownUpdate, update, hasDescriptor: !!descriptor, hasBundle, hasHerdr: !!herdrPath, hasJob: !!job, usedSecret: ssh.usedSecret, bundleDescription: host.bundleDescription, herdrLine: host.installHerdr ? `herdr 0.9.3 through its own installer (${HERDR_INSTALL_CMD})` : "Bundled herdr 0.9.3 (existing installations are preserved)" });
+    if (installs.length && needsApproval(installs, { bundleReady: hasBundle, herdrPresent: !!herdrPath })) {
       if (!job) throw new MachineActionRequired("Remote setup needs approval. Use Reconnect / setup on this PC.", "setup");
       job.public.installations = installs;
       // an automatic bridge update was approved by the app update (or the tap that started it)
-      if (!job.auto) {
-        this.stage(job, "approval", "Review the changes on this PC");
-        await this.wait(job);
-      }
+      if (!job.auto) { this.stage(job, "approval", "Review the changes on this PC"); await this.wait(job); }
       job.installationApproved = update || !descriptor;
+    } else if (installs.length && job) job.public.installations = installs; if (installs.length) {
       if (update || !descriptor && !hasBundle) { this.stage(job, "installing", `Installing verified ${platform} bundle…`); await host.installBundle(ssh, platform, job.abort.signal, { cacheDir: join(this.stateDir, "bundles"), owner: installLockOwner(this.stateDir, target), onProgress: (stage, done, total) => this.progress(job, stage, done, total) }); }
       if (!descriptor && !herdrPath && host.installHerdr) { this.stage(job, "installing", "Installing herdr with its own installer…"); herdrPath = await host.installHerdr(ssh); }
       if (ssh.usedSecret) {
@@ -2033,9 +2018,9 @@ export class MachineManager {
     clearTimeout(runtime.retry); runtime.retry = undefined;
     void this.reconnect(runtime);
   }
-  private async reconnect(runtime: Runtime): Promise<void> {
+  private async reconnect(runtime: Runtime, options?: { firstSight?: boolean }): Promise<void> {
     if (this.setupOwns(runtime)) return;
-    if (!this.mayConnect(runtime)) return;
+    if (!options?.firstSight && !this.mayConnect(runtime)) return;
     if (this.stopped || !runtime.machine.enabled) return;
     this.disconnect(runtime);
     runtime.triedAt = this.now();
@@ -2086,9 +2071,9 @@ export class MachineManager {
     runtime.ssh = new SshConnection(runtime.machine.target!, this.sshDir, join(this.sshDir, runtime.machine.id));
     try {
       await runtime.ssh.start(); await this.prepare(runtime);
-      if (generation !== runtime.generation || this.stopped) return;
+      if (generation !== runtime.generation || this.stopped) return; else if (options?.firstSight) acceptFirstSight(this.profileState, () => this.persist(), runtime.machine);
       await this.observe(runtime); this.emit();
-    } catch (e) { this.lost(runtime, generation, e); }
+    } catch (e) { const before = runtime.generation; this.lost(runtime, generation, e); if (options?.firstSight && before === generation && releaseUnapprovedFirstSight(runtime, before, this.stopped, this.mayConnect(runtime))) this.emit(); }
   }
   private queueAutoUpdate(id: string): void {
     if (this.autoQueued.has(id)) return;

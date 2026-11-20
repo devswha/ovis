@@ -5624,7 +5624,7 @@ describe("shared preferences API", () => {
 });
 
 describe("access facts on /api/health", () => {
-  type Body = { auth: HealthAuth; lan_exposure?: LanExposure; security?: SecuritySummary; herdr_core?: HerdrCoreFacts; herdr_runtime?: HerdrRuntimeFacts };
+  type Body = { auth: HealthAuth; lan_exposure?: LanExposure; security?: SecuritySummary; herdr_core?: HerdrCoreFacts; herdr_runtime?: HerdrRuntimeFacts; ssh_total?: number; ssh_connected?: number };
   const SECRET = "fictional-t0k3n-value";
   const guard = { "content-type": "application/json", "x-herdr-machine": "1" };
   const CORE_FACTS: HerdrCoreFacts = { version: "0.1.17", session: "default", running: false };
@@ -5677,6 +5677,8 @@ describe("access facts on /api/health", () => {
           const answer = await secured.read(headers, scope);
           expect(answer.body.auth.authenticated).toBe(false);
           expect(answer.body.security).toBeUndefined();
+          expect(answer.body.ssh_total).toBeUndefined();
+          expect(answer.body.ssh_connected).toBeUndefined();
           for (const name of ["token_configured", "pairing_gate", "bind_scope", "observed_ingress", "public_exposure", "0.0.0.0"]) expect(answer.text).not.toContain(name);
         }
       }
@@ -5690,10 +5692,15 @@ describe("access facts on /api/health", () => {
       const signedIn = await secured.read(bearer);
       expect(signedIn.body.auth.authenticated).toBe(true);
       expect(signedIn.body.herdr_core).toEqual(CORE_FACTS);
-      expect((await secured.read(bearer, "?scope=bridge")).body.herdr_core).toBeUndefined();
+      expect(signedIn.body.ssh_total).toBe(0);
+      expect(signedIn.body.ssh_connected).toBe(0);
+      const bridge = await secured.read(bearer, "?scope=bridge");
+      expect(bridge.body.herdr_core).toBeUndefined();
+      expect(bridge.body.ssh_total).toBeUndefined();
       const anonymous = await secured.read({});
       expect(anonymous.body.auth.authenticated).toBe(false);
       expect(anonymous.body.herdr_core).toBeUndefined();
+      expect(anonymous.body.ssh_total).toBeUndefined();
     } finally { secured.stop(); }
   });
 
@@ -5708,14 +5715,20 @@ describe("access facts on /api/health", () => {
       const watching = await secured.read({ cookie: `ovis_device=${token}`, "x-forwarded-for": "192.168.0.20" });
       expect(watching.body.auth).toMatchObject({ authenticated: true, role: "watch" });
       expect(watching.body.herdr_core).toBeUndefined();
-      expect((await secured.read({ authorization: `Bearer ${SECRET}` })).body.herdr_core).toEqual(CORE_FACTS);
+      expect(watching.body.ssh_total).toBeUndefined();
+      const owner = await secured.read({ authorization: `Bearer ${SECRET}` });
+      expect(owner.body.herdr_core).toEqual(CORE_FACTS);
+      expect(owner.body).toMatchObject({ ssh_total: 0, ssh_connected: 0 });
     } finally { secured.stop(); }
     const open = serve({ hostname: "0.0.0.0" });
     try {
       const stranger = await open.read({ "x-forwarded-for": "192.168.0.20" });
       expect(stranger.body.auth).toMatchObject({ authenticated: true, via: "open" });
       expect(stranger.body.herdr_core).toBeUndefined();
-      expect((await open.read({})).body.herdr_core).toEqual(CORE_FACTS);
+      expect(stranger.body.ssh_total).toBeUndefined();
+      const local = await open.read({});
+      expect(local.body.herdr_core).toEqual(CORE_FACTS);
+      expect(local.body).toMatchObject({ ssh_total: 0, ssh_connected: 0 });
     } finally { open.stop(); }
   });
 
