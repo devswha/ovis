@@ -1,8 +1,9 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
+import { newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { channelBinding } from "../../shared/relay-e2ee.ts";
-import { FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE } from "../../shared/relay-mux.ts";
+import { ACCOUNT_OPENS_ALL_FEATURE, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE } from "../../shared/relay-mux.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { readDeviceRegistry } from "../devices.ts";
 import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
@@ -13,6 +14,22 @@ import { ask, phone } from "./pairing.test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
+
+test("a promoted key removed by a waiting block is not announced and cannot sign in", async () => {
+  const { fixture, member, serverId, device } = await createListedPc(close => closes.push(close));
+  const { devices, safetyLog } = fixture.app.context.services;
+  const record = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: device.publicKey, target_no: 2,
+    signer: member.publicKey, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, member.keys.privateKey);
+  expect(safetyLog?.wait({ record, got: "mailbox", signer_removed: false })).toBe(true);
+  const announced: string[] = [];
+  closes.push(devices.onNotice(entry => { if (entry.kind === "promote" && entry.row === device.id) announced.push(entry.id); }));
+  expect(devices.pairRelayApproved("Laptop", device.publicKey, { path: "account", addedBy: member.id, id: device.id })).toBeNull();
+  expect(devices.removedByAccount(device.publicKey)).toBe(true);
+  expect(devices.has(device.id)).toBe(false);
+  const link = await relayConnection(fixture, { serverId });
+  expect(await bounded(Promise.race([link.auth(device, [ACCOUNT_OPENS_ALL_FEATURE]), link.serverError]))).toBe("auth_failed");
+  expect(announced).toEqual([]);
+});
 
 async function approveListed(memberAgeMs: number, elapsed = 4_000) {
   const { fixture, member, serverId, service } = await createListedPc(close => closes.push(close));
