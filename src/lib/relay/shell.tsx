@@ -98,12 +98,13 @@ function launchOrder(devices: readonly RelayDevice[], opens: boolean, signedIn =
  * device already in): one this device has no pairing for, that has a way to join and was seen lately, the one opened
  * last first, else the one seen most recently. Null when there is none: Add a PC.
  */
-function accountLaunchPc(pcs: readonly MyPc[]): string | null {
-  const open = pcs.filter((pc) => !pc.paired && pc.join !== undefined && pc.state !== "offline");
+function accountLaunchPc(pcs: readonly MyPc[], now: number): MyPc | null {
+  // a PC new in the account (new_until) is never picked by itself: security-triage condition 3
+  const open = pcs.filter((pc) => !pc.paired && pc.join !== undefined && pc.state !== "offline" && !isNewAccountPc(pc, now));
   let last: string | null = null;
   try { last = localStorage.getItem(LAST_PC); } catch { /* no storage: the most recent one */ }
   const seen = (pc: MyPc): number => pc.last_seen_at === null ? 0 : Date.parse(pc.last_seen_at);
-  return (open.find((pc) => pc.server_id === last) ?? [...open].sort((a, b) => seen(b) - seen(a))[0])?.server_id ?? null;
+  return open.find((pc) => pc.server_id === last) ?? [...open].sort((a, b) => seen(b) - seen(a))[0] ?? null;
 }
 
 export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
@@ -355,8 +356,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (view?.kind === "signed-in") accountTried = true;
       // signed in and the directory not read yet: the launch waits for it on its card (accountChanged draws this again)
       accountLaunch = false; launchCard = null;
-      const pc = view?.kind === "signed-in" ? accountLaunchPc(view.pcs ?? []) : null;
-      if (pc !== null) { left = true; navigate(serverScopePath(pc)); return; }
+      const pc = view?.kind === "signed-in" ? accountLaunchPc(view.pcs ?? [], Date.now()) : null;
+      // its join card, waiting for the person's press: never the PC's bare page, which opens a PC the account lets this
+      // device into by itself (security-triage condition 3: nothing this device did not choose opens without a press)
+      if (pc !== null) { left = true; joinPc(pc, { sheet: "join", alone: true }); return; }
     }
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
     if (devices.length && !checked) { checked = true; void sweep.check(); }

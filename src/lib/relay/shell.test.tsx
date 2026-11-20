@@ -1127,9 +1127,13 @@ describe("the hosted shell's front page", () => {
         return { server_id: deriveServerId(pair.publicKey), label, added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: seenAgo === null ? null : new Date(Date.now() - seenAgo).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
       };
       const older = row("Older", 5 * 60_000), recent = row("Recent", 60_000), off = row("Off", null);
-      await returned(deviceStore([]), went, [off, older, recent]);
+      // new in the account: never picked by itself, however recently seen (security-triage condition 3)
+      const fresh = { ...row("New", 1_000), new_until: new Date(Date.now() + 3_600_000).toISOString() };
+      await returned(deviceStore([]), went, [off, older, fresh, recent]);
       await until(() => went.length > 0, "the account's PC opened");
-      expect(went).toEqual([`/s/${recent.server_id}/`]);
+      expect(went).toEqual([expect.stringMatching(new RegExp(`^/s/${recent.server_id}/#offer=`))]);
+      // its join card waits for the person's press: nothing was confirmed for it
+      expect(browser.sessionStore.get("ovis-confirmed-pc")).toBeUndefined();
     });
 
     it("opens the account's PC on a cold launch with a stored sign-in and nothing saved here, once both are read", async () => {
@@ -1149,7 +1153,7 @@ describe("the hosted shell's front page", () => {
         },
       }));
       await until(() => went.length > 0, "the account's PC opened");
-      expect(went).toEqual([`/s/${listed.server_id}/`]);
+      expect(went).toEqual([expect.stringMatching(new RegExp(`^/s/${listed.server_id}/#offer=`))]);
     });
 
     it("opens no account PC once Cancel was pressed on the launch's wait for the account's PCs", async () => {

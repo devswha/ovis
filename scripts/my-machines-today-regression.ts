@@ -196,7 +196,8 @@ const relayOpens = (width: number): number => pageLog.filter((line) => line.star
 async function signIn(page: Page): Promise<void> {
   await page.goto(APP);
   await page.locator(".account-provider").first().click();
-  await page.locator('.app, [data-add-pc-mode], main.relay-add-screen[data-account-state="signed-in"]').first().waitFor();
+  // the dashboard too: baseline mode runs this against a shell from before the change, which landed there
+  await page.locator('.app, [data-add-pc-mode], main.relay-add-screen[data-account-state="signed-in"], [data-dashboard-mode="account"]').first().waitFor();
 }
 /** Every string a person can read on the page now: its text and its labels. */
 const rendered = (page: Page): Promise<string> => page.evaluate(() => [document.body.innerText,
@@ -332,6 +333,8 @@ function steps(browser: Browser, width: 390 | 1440): Step[] {
       second = await device(browser, width);
       shown = second.page;
       await signIn(second.page);
+      // a device the account has not let in yet opens no machine by itself: it lands on its join card or Add a PC
+      assert.equal(await second.page.locator(".app").count(), 0, "the second device opened the machine without a press");
       await load(second.page, "#my-machines");
       await inState(second.page, "needs-approval").waitFor();
       const text = await row(second.page).innerText();
