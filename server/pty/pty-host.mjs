@@ -93,6 +93,8 @@ const socket = process.platform === "win32" ? undefined : term._socket;
 if (socket) {
   const destroy = socket.destroy.bind(socket);
   socket.destroy = (...args) => {
+    // Without a test deadline, node-pty's own 200 ms destroy must not substitute for our exit check.
+    if (process.env.OVIS_TEST_PTY_NO_CLOSE_DEADLINE === "1" && !args[0] && !closing?.done) return socket;
     if (args[0] && !finalRead && closing === null) {
       // an EIO'd pty is readable forever: reading stops, or it spins until the close
       socket._handle?.readStop?.();

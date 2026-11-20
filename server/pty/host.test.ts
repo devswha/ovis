@@ -603,7 +603,8 @@ function parity(host: "node" | "rust") {
       } finally { ended.session.kill(); }
     }, 15_000);
 
-    // With no grace deadline to expire, the command's exit must release the hold.
+    // Neither the host's grace deadline nor node-pty's fallback may release the hold:
+    // the same exit check used in production must observe the command's end.
     it.skipIf(process.platform === "win32")("ends a plain exit without waiting out the hold for a closed terminal", async () => {
       const ended = run("sh", ["-c", "exit 7"], { env: { OVIS_TEST_PTY_NO_CLOSE_DEADLINE: "1" } });
       try {

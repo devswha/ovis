@@ -379,13 +379,22 @@ fn pump(shared: &Arc<Shared>, master: RawFd, wake: RawFd) {
     }
     // a command dying closes its terminal before it can be waited for: its end is its own unless it is
     // still running after EXIT_QUIET, when it has closed its terminal without exiting
-    // Tests can require the child exit, rather than the grace deadline, to close the PTY.
-    let still_running = |state: &mut State| state.exit.is_none();
-    let state = shared.lock();
-    if std::env::var("OVIS_TEST_PTY_NO_CLOSE_DEADLINE").is_ok_and(|value| value == "1") {
-        drop(shared.changed.wait_while(state, still_running).unwrap_or_else(|poisoned| poisoned.into_inner()));
-    } else {
-        drop(shared.changed.wait_timeout_while(state, EXIT_QUIET, still_running).unwrap_or_else(|poisoned| poisoned.into_inner()));
+    {
+        // Test mode removes only the deadline: both modes use the same exit decision.
+        let no_deadline = std::env::var("OVIS_TEST_PTY_NO_CLOSE_DEADLINE").is_ok_and(|value| value == "1");
+        let mut state = shared.lock();
+        let deadline = Instant::now() + EXIT_QUIET;
+        while state.exit.is_none() {
+            if no_deadline {
+                state = shared.changed.wait(state).unwrap_or_else(|poisoned| poisoned.into_inner());
+            } else {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                state = shared.changed.wait_timeout(state, left).unwrap_or_else(|poisoned| poisoned.into_inner()).0;
+            }
+        }
     }
     stop(shared);
     let mut state = shared.lock();
