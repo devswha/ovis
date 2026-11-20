@@ -2112,10 +2112,11 @@ export class DeviceStore {
     // the final guard, in the commit turn: nothing waits between it and the write
     if (!this.admits(admitting.relay_public_key, path.confirm, path)) throw new AdmissionRefusedError();
     const initial = this.knowingRemovals(this.admitted(admitting, now, path));
-    const admitted = this.evidence === null ? initial : { ...initial, created_at: this.nextStamp(Date.parse(initial.created_at)) };
-    const rows = admitted.relay_public_key ? this.joinedRows?.rowsByKey(admitted.relay_public_key) ?? [] : [];
+    const rows = initial.relay_public_key ? this.joinedRows?.rowsByKey(initial.relay_public_key) ?? [] : [];
     // The list ID is derived from the key and unique on this PC; a pairing may choose a different member ID.
     const joined = rows[0];
+    const at = this.evidence === null ? initial.created_at : this.nextStamp(Date.parse(initial.created_at));
+    const admitted = { ...initial, created_at: at, ...(joined && initial.origin ? { origin: { ...initial.origin, at } } : {}) };
     const notice = joined && this.listNotice(joined);
     const signerId = path.replaces?.id ?? admitted.added_by;
     const signer = signerKey && signerId ? this.provedSayer(signerId, signerKey) : null;
