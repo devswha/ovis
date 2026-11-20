@@ -177,8 +177,10 @@ let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc>
  * The relay is never turned on without a press. Nothing else is listed or opened without one. A device that only
  * watches this PC can list nothing, and is shown nothing.
  */
-export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }: {
+export function AddThisPc({ relayAbove = true, service, signedInHere, onListed, opensAll = () => false }: {
   relayAbove?: boolean;
+  /** this PC lists account-opens-all/1 now (its step-2 switch is on): only then is a one press tried */
+  opensAll?: () => boolean;
   onListed?: () => void;
   service?: () => AccountService;
   /**
@@ -516,7 +518,7 @@ export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }
       const { name, serverId, account } = await listThisPc(accountService(), { relistMs: RELIST_MS, ...(as === null ? {} : { as: { account: as, running: current, reached } }) });
       if (!current()) return null;
       // in one press when the account service admits it; the window this listing opened is then needed no more
-      if (account !== null && await addInOnePress(accountService(), serverId, account, current)) {
+      if (account !== null && await addInOnePress(accountService(), serverId, account, current, opensAll())) {
         // an attempt given up or replaced meanwhile clears nothing that a newer one owns
         if (!current()) return null;
         keepAddPcWaiting(null);
@@ -722,9 +724,11 @@ const pcServiceHere = (): string | null => desktopAccount() === null && !inNativ
 
 export const accountServiceHere = (): string | null => desktopAccount()?.service ?? pcServiceHere();
 
-export function AccountSection({ onAccount, recheck = 0 }: {
+export function AccountSection({ onAccount, recheck = 0, opensAll }: {
   onAccount?: (state: AccountState) => void;
   recheck?: number;
+  /** this PC lists account-opens-all/1 now (App, from the local socket's features) */
+  opensAll?: () => boolean;
 } = {}) {
   const t = useT();
   const bridge = desktopAccount();
@@ -1196,7 +1200,7 @@ export function AccountSection({ onAccount, recheck = 0 }: {
               )}
             </div>
           )}
-          <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} />
+          <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} {...(opensAll === undefined ? {} : { opensAll })} />
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
           {/* A PC's own page in a browser signs in with a device code or the link page, whose sign-in the service never lets
               delete the account (web_sign_in_required): it says where to delete instead. */}

@@ -43,7 +43,7 @@ describe("AddThisPc", () => {
   };
   let signedIn: string | null;
   /** whether the account service admits this PC in one press (a fresh two-step sign-in), and what the PC answers the press with */
-  let onePress: { admits: boolean; pcStatus: number };
+  let onePress: { admits: boolean; pcStatus: number; opensAll: boolean };
   let admitted: string[];
   let asked: { path: string; localOnly: boolean }[];
   let directory: string[];
@@ -74,7 +74,7 @@ describe("AddThisPc", () => {
     renderers = [];
     pc = { account: null, enrolling: false, linkError: null, statusDown: false, offer: offerOf(publicKey, "desk"), hang: null, relay: "on", blocked: null, start: "ok", closeMissing: false, gate: "closed", via: "loopback", paired: false, cookieSticks: true, healthDown: false, role: "drive" };
     signedIn = ACCOUNT;
-    onePress = { admits: false, pcStatus: 200 };
+    onePress = { admits: false, pcStatus: 200, opensAll: true };
     admitted = [];
     asked = [];
     directory = [];
@@ -161,7 +161,7 @@ describe("AddThisPc", () => {
     let renderer!: ReactTestRenderer;
     let fresh = signedInAs === null ? null : { account: signedInAs, adds };
     const signedInHere = (): { account: string; adds: boolean } | null => { const taken = fresh; fresh = null; return taken; };
-    act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere }) })); });
+    act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere, opensAll: () => onePress.opensAll }) })); });
     renderers.push(renderer);
     await settle();
     return renderer;
@@ -210,6 +210,15 @@ describe("AddThisPc", () => {
   test("one press refused by the account service (no two-step sign-in, a stale sign-in, the daily cap) keeps today's digit wait, and the PC is never asked", async () => {
     const renderer = await waitingFrom();
     expect([directory, admitted]).toEqual([["putPc"], [ACCOUNT]]);
+    expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
+    expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
+  });
+
+  test("a PC whose step-2 switch is off is never tried in one press: the account service is not asked, and the digit wait comes", async () => {
+    onePress.admits = true;
+    onePress.opensAll = false;
+    const renderer = await waitingFrom();
+    expect(admitted).toEqual([]);
     expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
     expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
   });

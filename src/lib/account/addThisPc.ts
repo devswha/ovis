@@ -211,8 +211,11 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
  * the PC then takes the service's word for that account. The account is the stored sign-in's, never the one the PC
  * was named for: the PC is named it again first, and refuses a press for any other. False on every refusal, an
  * older service or PC included, and once `running` says the attempt is over: the caller keeps today's digit wait.
+ * `opensAll`: this PC lists account-opens-all/1 (its step-2 switch is on); without it the service is not asked at all,
+ * so a PC that would refuse the press spends none of the account's daily adds and rings nobody.
  */
-export async function addInOnePress(service: AccountService, serverId: string, account: string, running: () => boolean): Promise<boolean> {
+export async function addInOnePress(service: AccountService, serverId: string, account: string, running: () => boolean, opensAll: boolean): Promise<boolean> {
+  if (!opensAll) return false;
   const session = await service.session();
   if (session?.account !== account || !running()) return false;
   try { await service.forSignIn(session).admitPc(serverId); } catch (error) {
