@@ -115,6 +115,25 @@ describe("device notices on the real PC socket", () => {
     expect(cards()).toEqual([]);
   });
 
+  it("T57, P15: an acknowledged admission survives a reconnect that omits it", async () => {
+    const { wire, socket } = await connect();
+    const admission = deviceNotice();
+    await act(async () => { wire.snapshot(); wire.read({ type: "device-notice", notice: admission }); });
+    expect(wire.seen()).toEqual([{ type: "notice-seen", seq: 1 }]);
+    await act(async () => { wire.close(); });
+    expect(cards()).toEqual([]);
+
+    await act(async () => { socket.connect(); wire.open(); });
+    expect(cards()).toEqual([]);
+    await act(async () => { wire.snapshot(); wire.read({ type: "device-notice-replay", replay: { notices: [], cut: 0 } }); });
+    expect(cards()).toEqual([admission]);
+    expect(wire.seen()).toEqual([{ type: "notice-seen", seq: 1 }]);
+
+    const decided = { ...admission, open: false };
+    await act(async () => { wire.read({ type: "device-notice", notice: decided }); });
+    expect(cards()).toEqual([decided]);
+  });
+
   it("T57: replay cannot resurrect a dismissed method notice, and a rowless open admission stays", async () => {
     const { wire } = await connect();
     const admission = deviceNotice();
@@ -189,7 +208,7 @@ describe("device notices on the real PC socket", () => {
     });
   });
 
-  it("G5: withdrawing the capability clears cards and ignores later frames", async () => {
+  it("G5, T57: withdrawing the capability hides cards and ignores later frames", async () => {
     const { wire } = await connect();
     await act(async () => { wire.snapshot(); wire.read({ type: "device-notice", notice: deviceNotice() }); });
     expect(cards()).toHaveLength(1);
@@ -197,7 +216,7 @@ describe("device notices on the real PC socket", () => {
     const withdrawn = cards();
     await act(async () => { wire.read({ type: "device-notice", notice: method }); wire.snapshot(); });
     expect({ withdrawn, restored: cards(), acknowledged: wire.seen() }).toEqual({
-      withdrawn: [], restored: [], acknowledged: [{ type: "notice-seen", seq: 1 }],
+      withdrawn: [], restored: [deviceNotice()], acknowledged: [{ type: "notice-seen", seq: 1 }],
     });
   });
 
