@@ -7,6 +7,7 @@ import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { createListedPc } from "./listed-pc.test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
+import { DeviceJournal } from "./device-journal.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
@@ -61,4 +62,59 @@ test("P9/T54: a proved sign-in refuses an idle admission when the service is dow
   expect(result).toBe("not_listed");
   expect(machine.row()).toMatchObject({ state: "expired", last_signin_day: lastDay });
   expect(await bounded(machine.link.serverError)).toBe("auth_changed");
+});
+
+test("T55/S27: only the expired device's proved attempt gets a new admission, notice and hold", async () => {
+  const machine = await pc();
+  const { accountMailbox, devices } = machine.fixture.app.context.services;
+  const previous = machine.row().origin.admit_no;
+  machine.clock.advance(60 * 86_400_000);
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(machine.row().state).toBe("expired");
+  expect(await bounded(machine.link.serverError)).toBe("auth_changed");
+  // A background whole read is not the returning device's proof.
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(machine.row().origin.admit_no).toBe(previous);
+  expect(machine.row().state).toBe("expired");
+
+  const returning = await relayConnection(machine.fixture, { serverId: machine.serverId });
+  const result = await bounded(Promise.race([
+    returning.auth(machine.device, [ACCOUNT_OPENS_ALL_FEATURE]).then(() => "authenticated", () => returning.serverError),
+    returning.serverError,
+  ]));
+  expect(result).toBe("held");
+  const admitted = machine.row();
+  expect(admitted).toMatchObject({
+    state: "hold", last_signin_day: null,
+    origin: { admit_no: previous + 1 },
+    hold_until: new Date(machine.clock.now() + 10_000).toISOString(),
+  });
+  const history = DeviceJournal.open(machine.fixture.stateDir).entries().filter(entry => entry.row === machine.device.id);
+  expect(history.map(({ kind, how, no }) => [kind, how, no]))
+    .toEqual([["admit", "list", previous], ["drop", "expired", null], ["admit", "list", previous + 1]]);
+  expect(devices.openNotices().filter(notice => notice.row === machine.device.id))
+    .toContainEqual(expect.objectContaining({ kind: "admit", no: previous + 1, account: "acct_1" }));
+  machine.clock.advance(10_000);
+  const ready = await relayConnection(machine.fixture, { serverId: machine.serverId });
+  expect((await ready.auth(machine.device, [ACCOUNT_OPENS_ALL_FEATURE])).role).toBe("drive");
+  expect((await ask(ready, "/api/devices")).status).toBe(200);
+});
+
+test.each(["wrong proof", "failed read"] as const)("T55/S27: %s cannot authorize later background readmission", async failure => {
+  const machine = await pc();
+  const { accountMailbox } = machine.fixture.app.context.services;
+  const previous = machine.row().origin.admit_no;
+  machine.clock.advance(60 * 86_400_000);
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  if (failure === "failed read") machine.service.opensAll = false;
+  const returning = await relayConnection(machine.fixture, { serverId: machine.serverId });
+  const signer = failure === "wrong proof" ? { ...machine.member, id: machine.device.id } : machine.device;
+  const result = await bounded(Promise.race([
+    returning.auth(signer, [ACCOUNT_OPENS_ALL_FEATURE]).then(() => "authenticated", () => returning.serverError),
+    returning.serverError,
+  ]));
+  expect(result).toBe(failure === "wrong proof" ? "auth_failed" : "not_listed");
+  machine.service.opensAll = true;
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(machine.row()).toMatchObject({ state: "expired", origin: { admit_no: previous } });
 });
