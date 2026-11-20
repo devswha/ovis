@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DeviceJournal } from "./device-journal.ts";
+import { DeviceJournal, JOURNAL_FILE } from "./device-journal.ts";
+import { privateStateFs } from "../private-state.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { keyOf } from "./account-devices.test-helpers.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
@@ -47,6 +48,29 @@ async function refusal(pc: Awaited<ReturnType<typeof listedPc>>, features: reado
 }
 
 describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
+  test("P8, T41: an offline restart journals a revoke after journal replacement failed", async () => {
+    const { fixture, device, member } = await listedPc();
+    const { devices } = fixture.app.context.services;
+    const { stateDir } = fixture;
+    const rename = privateStateFs.renameSync;
+    const fault = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (to === join(stateDir, JOURNAL_FILE)) throw new Error("journal unavailable");
+      rename(from, to);
+    });
+    try { expect(() => devices.revoke(device.id)).toThrow("journal unavailable"); } finally { fault.mockRestore(); }
+    expect(devices.has(device.id)).toBe(false);
+    fixture.app.stop();
+    const recovered = relayFixture(false, { stateDir, accountOpensAll: true, accountService: { url: "off" } });
+    try {
+      const restarted = recovered.app.context.services.devices;
+      expect(restarted.isTombstoned(device.publicKey)).toBe(true);
+      expect(restarted.has(member.id)).toBe(true);
+      expect(restarted.has(device.id)).toBe(false);
+      const history = DeviceJournal.open(stateDir).entries().filter(entry => entry.row === device.id);
+      expect(history.map(({ kind, how }) => [kind, how])).toEqual([["admit", "list"], ["drop", "revoke"]]);
+    } finally { recovered.app.stop(); }
+  });
+
   test.each(["before", "after"] as const)("P8, T41: startup finishes an account revoke interrupted %s its journal write", async (cut) => {
     const { fixture, device, member } = await listedPc();
     const { devices } = fixture.app.context.services;
