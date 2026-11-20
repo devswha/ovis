@@ -119,6 +119,21 @@ it("S32-1: a redirect is no answer: a 303 the browser would follow to a 200 nami
   expect((await unsentBlocks(store, session)).flatMap((kept) => kept.records)).toEqual([record]);
 });
 
+it("S32-1: a block post refused 401 again after a refresh that worked leaves the entry open, not refused", async () => {
+  const store = memoryAccountStore();
+  await store.set("session", session);
+  const record = await block();
+  await keepUnsent(store, session, [record]);
+  const service = new AccountService({ store, fetch: async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/v1/token") return Response.json({ access_token: "fresh", refresh_token: "fresh-r", expires_in: 3600, account: session.account, provider: "github" });
+    return Response.json({ error: { code: "unauthorized", message: "x" } }, { status: 401 });
+  } });
+  await expect(postKept(store, session, [record], (kept) => service.postSafetyRecord(kept))).rejects.toMatchObject({ status: 401 });
+  expect(await unsentBlocks(store, session)).toEqual([{ account: session.account, sign_in_id: session.sign_in_id, records: [record] }]);
+  expect((await store.get("session"))?.access_token).toBe("fresh");
+});
+
 it("S32-1: a record still waiting is never removed as a shown refusal", async () => {
   const store = memoryAccountStore();
   await store.set("session", session);
