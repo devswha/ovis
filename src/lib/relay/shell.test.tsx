@@ -1132,6 +1132,26 @@ describe("the hosted shell's front page", () => {
       expect(went).toEqual([`/s/${recent.server_id}/`]);
     });
 
+    it("opens the account's PC on a cold launch with a stored sign-in and nothing saved here, once both are read", async () => {
+      browser.setVisibility("hidden");
+      launch();
+      const went: string[] = [];
+      const pair = generateKeyPair();
+      const listed = { server_id: deriveServerId(pair.publicKey), label: "Desk", added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+      await mountRelayShell(mountFor({
+        store: deviceStore([]), navigate: (path) => { went.push(path); }, accountStore, accountService: SERVICE, accountProviders: ["github"],
+        accountFetch: async (input) => {
+          const path = new URL(String(input)).pathname;
+          if (path === "/v1/pcs") return Response.json({ pcs: [listed] });
+          return new Response(null, { status: 404 });
+        },
+      }));
+      await until(() => went.length > 0, "the account's PC opened");
+      expect(went).toEqual([`/s/${listed.server_id}/`]);
+    });
+
     it("opens no account PC once Cancel was pressed on the launch's wait for the account's PCs", async () => {
       browser.setVisibility("hidden");
       const went: string[] = [];

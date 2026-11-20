@@ -213,6 +213,8 @@ export interface RelayShellMount {
   pendingPush?: PendingPushStore;
   open?: typeof openRelayTransport;
   navigate?: (path: string) => void;
+  /** a navigation that takes the current history entry's place (a PC's own page going on to its join); `navigate` when it is given */
+  replace?: (path: string) => void;
   label?: string;
   shellVersion?: string;
   reload?: () => Promise<void>;

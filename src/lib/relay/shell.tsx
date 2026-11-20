@@ -113,6 +113,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   await loadObservedVersions(store);
   const open = mount.open ?? openRelayTransport;
   const navigate = mount.navigate ?? ((path: string) => window.location.assign(path));
+  const replace = mount.replace ?? mount.navigate ?? ((path: string) => window.location.replace(path));
   const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
   let entry = shellEntry(mount.entryUrl);
   // bumped by every link this page takes after it loaded, and by Cancel or Back: a step of the page's own load that
@@ -128,7 +129,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // `left`: the launch sent this page to a PC: nothing more is drawn or probed on the way out
   let launching = !scoped && entryHash === "", signedInNow = false, left = false, launched = false, accountLaunch = false;
   // the card a launch waits on for the account's PCs: only while it is the screen does a read of them go on with the launch
-  let launchCard: RelayShellState | null = null;
+  let launchCard: RelayShellState | null = null, accountTried = false;
   // Back to a front page the browser kept whole (its back/forward cache) finds it as it left it, on the way to a PC: it
   // loads again, past this tab's launch, so it draws the front page
   if (restored !== null) window.removeEventListener("pageshow", restored);
@@ -317,7 +318,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // one launch a page: a sign-in that lands after a launch found no PC answering asks none of them again
     const order = left || launched || navigatedSinceEntry() || entries !== 0 ? null : launchOrder(devices, launching, signedInNow);
     // a launch with no saved PC answering goes on to the account's PCs this device is not in yet, once they are read
-    if (order !== null) accountLaunch = true;
+    // and so does a sign-in that finished on this page after the launch, which read no account yet
+    if (order !== null || (signedInNow && !accountTried && !left && !navigatedSinceEntry() && entries === 0)) accountLaunch = true;
     if (order !== null && order.length > 0) {
       launched = true;
       const loaded = entries, asking: RelayShellState = { kind: "connecting", name: order[0]?.name ?? null };
@@ -333,8 +335,19 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (accountLaunch && (navigatedSinceEntry() || entries !== 0)) accountLaunch = false;
     if (accountLaunch) {
       const view = account.state;
+      // the stored sign-in is not read yet, or its directory: the launch waits on its card, never longer than a read may take
+      const unread = account.enabled && (!accountRead || view?.kind === "signing-in" || (view?.kind === "signed-in" && view.pcs === null && view.error === null));
+      if (unread && launchCard === null) {
+        launchCard = { kind: "connecting", name: null };
+        show(launchCard);
+        const card = launchCard;
+        // fixed wait: a sign-in or a directory that has not answered by then opens no PC; the front page draws what is known
+        setTimeout(() => { if (shown === card && launchCard === card) { accountLaunch = false; launchCard = null; void showFront(); } }, ACCOUNT_READ_WAIT_MS);
+        return;
+      }
+      if (unread && shown === launchCard) return;
+      accountTried = true;
       // signed in and the directory not read yet: the launch waits for it on its card (accountChanged draws this again)
-      if (view?.kind === "signed-in" && view.pcs === null && view.error === null) { launchCard = { kind: "connecting", name: null }; show(launchCard); return; }
       accountLaunch = false; launchCard = null;
       const pc = view?.kind === "signed-in" ? accountLaunchPc(view.pcs ?? []) : null;
       if (pc !== null) { left = true; navigate(serverScopePath(pc)); return; }
@@ -373,7 +386,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       // a join a PC's own page offers waits for its press: a load of that page (a reload, a restore, a relaunch) asks nothing
       if (!options.alone) keepConfirmedPc(pc.server_id);
     }
-    navigate(link.pathname + link.hash);
+    // a PC's own page that goes on to its own join leaves no entry of its own behind: one Back leaves the join
+    if (options.alone && link.pathname === window.location.pathname) replace(link.pathname + link.hash); else navigate(link.pathname + link.hash);
   };
   /** The signed-in account's row for this PC when this device is not paired with it and may ask to join it. */
   const accountPcToJoin = async (serverId: string): Promise<MyPc | undefined> => {
