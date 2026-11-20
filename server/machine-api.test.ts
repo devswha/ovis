@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord } from "../shared/account-records.ts";
@@ -56,20 +56,23 @@ it("G5: with the account release off, an owner's roster records POST is refused 
 
 it("T60: a signed roster block passes the receiving PC's real account route", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-roster-block-"));
+  const account = "acct_1";
+  // two members admitted well before this run (devices.json rows), so neither is in a fresh join hold
+  const member = async (index: number) => {
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const spki = await exportAccountKey(keys.publicKey);
+    const at = `2026-10-0${index + 1}T00:00:00.000Z`;
+    return { id: `member-${index}`, keys, spki, row: { id: `member-${index}`, relay_public_key: spki, account, linked_at: at, created_at: at,
+      label: `Phone ${index}`, role: "drive", token_hash: String(index).repeat(64), last_seen_at: null } };
+  };
+  const signer = await member(0);
+  const blocked = await member(1);
+  writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ gate_closed_at: signer.row.created_at, devices: [signer.row, blocked.row] }), { mode: 0o600 });
   const target = createServer({ hostname: "127.0.0.1", port: 0, token: "target", stateDir, sidecar: false, machines: false, tailscaleOwner: null, accountOpensAll: true });
   try {
     const { devices } = target.context.services;
-    const account = "acct_1";
-    const member = async (label: string) => {
-      const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-      const spki = await exportAccountKey(keys.publicKey);
-      const row = devices.pairRelay(devices.startPairing().code, label, spki);
-      if (!row) throw new Error("Could not pair test device");
-      devices.linkAccountKey(row.device.id, spki, spki, account);
-      return { id: row.device.id, keys, spki };
-    };
-    const signer = await member("Older phone");
-    const blocked = await member("Newer phone");
+    // the receiving PC has read its account once (S2-27): a PC still catching up takes no signature
+    target.context.services.catchUp?.wholeRead();
     const record = await signSafetyRecord({
       v: 1, kind: "block", account, target: blocked.spki, target_no: 2, signer: signer.spki, signer_no: 1,
       signed_at: new Date().toISOString(), nonce: newRecordId(),
