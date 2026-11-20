@@ -58,6 +58,8 @@ async function accountPc({ release = true, loseRegistrationReply = false, open }
   };
   const mountAt = (entryUrl: string) => mountRelayShell({
     container: Object.create(null), entryUrl, shellVersion: "1.0.0", store, accountStore,
+    // these read the account's rows on the front page: a launch that leaves it for the PC (shell.test.tsx) does not run
+    ...(new URL(entryUrl).pathname === "/" ? { navigatedSinceEntry: () => true } : {}),
     accountService: SERVICE, accountFetch: async (input, init) => {
       const path = new URL(input instanceof Request ? input.url : input).pathname;
       requests.push(path);

@@ -77,22 +77,38 @@ const LAUNCH_WAIT_MS = 4_000;
  * shows: Back from a PC, a Cancel on its page, or a reload lands on the front page and stays there. `signedIn`: the page
  * a sign-in returned to, which opens one once its sign-in is read, as the launch it continues would have.
  */
-function launchOrder(devices: readonly RelayDevice[], opens: boolean, signedIn = false): RelayDevice[] {
+function launchOrder(devices: readonly RelayDevice[], opens: boolean, signedIn = false): RelayDevice[] | null {
   try {
     const first = sessionStorage.getItem(LAUNCHED) === null;
     sessionStorage.setItem(LAUNCHED, "1");
     // a row with no device id is a pairing that never finished: opening its page would ask to pair again
     const paired = devices.filter((device) => device.device_id !== null);
-    if (!(opens && (first || signedIn))) return [];
+    if (!(opens && (first || signedIn))) return null;
     const last = localStorage.getItem(LAST_PC);
     return [...paired.filter((device) => device.server_id === last), ...paired.filter((device) => device.server_id !== last)].slice(0, LAUNCH_PCS);
-  } catch { return []; }
+  } catch { return null; }
+}
+
+/**
+ * The account's PC a launch with no saved PC to open goes to, to join it on its own page (its join card, approved from a
+ * device already in): one this device has no pairing for, that has a way to join and was seen lately, the one opened
+ * last first, else the one seen most recently. Null when there is none: Add a PC.
+ */
+function accountLaunchPc(pcs: readonly MyPc[]): string | null {
+  const open = pcs.filter((pc) => !pc.paired && pc.join !== undefined && pc.state !== "offline");
+  let last: string | null = null;
+  try { last = localStorage.getItem(LAST_PC); } catch { /* no storage: the most recent one */ }
+  const seen = (pc: MyPc): number => pc.last_seen_at === null ? 0 : Date.parse(pc.last_seen_at);
+  return (open.find((pc) => pc.server_id === last) ?? [...open].sort((a, b) => seen(b) - seen(a))[0])?.server_id ?? null;
 }
 
 export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // any navigation in this tab since the entry was read, even one the page takes no step for (Back to another
   // fragment): a `#sign-in=` entry starts only on a page nothing moved
   const navigatedSinceEntry = mount.navigatedSinceEntry ?? watchNavigation(window);
+  // the PC a launch sent this tab to is taken before anything waits, by any page: only that PC's own page, loaded at
+  // once, may act on it; a front page that came back first (Back) drops it, so a later visit a person makes keeps its card
+  const launchedPc = takeLaunchedPc();
   const store = mount.store ?? indexedDeviceStore;
   await loadObservedVersions(store);
   const open = mount.open ?? openRelayTransport;
@@ -110,7 +126,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // app's way to its front page, never a visit to the dashboard, which only its own address in a browser or Settings opens
   if (!scoped && entryHash === "#pcs" && inNativeApp()) window.history.replaceState(null, "", "/");
   // `left`: the launch sent this page to a PC: nothing more is drawn or probed on the way out
-  let launching = !scoped && entryHash === "", signedInNow = false, left = false, launched = false;
+  let launching = !scoped && entryHash === "", signedInNow = false, left = false, launched = false, accountLaunch = false;
   // Back to a front page the browser kept whole (its back/forward cache) finds it as it left it, on the way to a PC: it
   // loads again, past this tab's launch, so it draws the front page
   if (restored !== null) window.removeEventListener("pageshow", restored);
@@ -118,7 +134,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   window.addEventListener("pageshow", restored);
   if (scoped) markLaunched();
   // this PC's page was opened by a launch, not by a person: if the PC turns out off, the launch goes on to Add a PC
-  const launchedHere = scoped && takeLaunchedPc() === entry.serverId;
+  const launchedHere = scoped && launchedPc === entry.serverId;
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
   let last: Attempt | null = null, opening: AbortController | null = null;
@@ -193,7 +209,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       return;
     }
     if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
-    else if (frontUp()) { if (sheetJoin && shown) show(shown); else await showFront(); }
+    // a launch waiting on its card for the account's PCs goes on once they are read
+    else if (frontUp() || (accountLaunch && app === null && !left && shown?.kind === "connecting")) { if (sheetJoin && shown) show(shown); else await showFront(); }
     signedInNow = false;
   };
   /**
@@ -296,8 +313,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // not answer, the first other saved PC that does. None answering: Add a PC, which lists them
     // nothing moved since the entry was read (a link, Back, a sheet's route): the page stays where it was taken
     // one launch a page: a sign-in that lands after a launch found no PC answering asks none of them again
-    const order = left || launched || navigatedSinceEntry() || entries !== 0 ? [] : launchOrder(devices, launching, signedInNow);
-    if (order.length > 0) {
+    const order = left || launched || navigatedSinceEntry() || entries !== 0 ? null : launchOrder(devices, launching, signedInNow);
+    // a launch with no saved PC answering goes on to the account's PCs this device is not in yet, once they are read
+    if (order !== null) accountLaunch = true;
+    if (order !== null && order.length > 0) {
       launched = true;
       const loaded = entries, asking: RelayShellState = { kind: "connecting", name: order[0]?.name ?? null };
       show(asking);
@@ -308,6 +327,15 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (pc !== null && !navigatedSinceEntry()) { left = true; keepLaunchedPc(pc); navigate(serverScopePath(pc)); }
     }
     if (left) return;
+    launched = launched || order !== null;
+    if (accountLaunch && !navigatedSinceEntry() && entries === 0) {
+      const view = account.state;
+      // signed in and the directory not read yet: the launch waits for it on its card (accountChanged draws this again)
+      if (view?.kind === "signed-in" && view.pcs === null && view.error === null) { show({ kind: "connecting", name: null }); return; }
+      accountLaunch = false;
+      const pc = view?.kind === "signed-in" ? accountLaunchPc(view.pcs ?? []) : null;
+      if (pc !== null) { left = true; navigate(serverScopePath(pc)); return; }
+    }
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
     if (devices.length && !checked) { checked = true; void sweep.check(); }
   };
@@ -431,7 +459,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the PC a launch opened before its check could say it is off: the relay now says so, and the launch lands where it
     // would have, on the front page (Add a PC), once; a PC opened by a person keeps its card and its Try again
     if (launchedHere && attempt.paired && attempt.fresh !== true && app === null && (failure === "pc-offline" || failure === "pc-unresponsive") && refused === undefined && !navigatedSinceEntry() && entries === 0) {
-      cancelAttempt(); navigate("/"); return;
+      // left: Back restoring this page from the browser's cache loads it again (the pageshow below)
+      cancelAttempt(); left = true; navigate("/"); return;
     }
     show({ kind: "failed", ...(attempt.paired && attempt.fresh !== true ? {} : { pairing: true as const }), failure: (refused === undefined ? null : refusalOf(refused)) ?? failure, name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id, ...(mismatch ? { mismatch } : {})  });
   };

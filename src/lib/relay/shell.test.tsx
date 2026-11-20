@@ -1007,6 +1007,12 @@ describe("the hosted shell's front page", () => {
       }
     });
 
+    it("drops a launch's mark on a front page that comes back first, so a PC opened by a person later keeps its card", async () => {
+      browser.sessionStore.set("ovis-launched-pc", "a".repeat(32));
+      await mountRelayShell(mountFor({ store: deviceStore([]), navigate: () => {} }));
+      expect(browser.sessionStore.has("ovis-launched-pc")).toBe(false);
+    });
+
     it("takes the phone app's #pcs as its way to the front page, never the dashboard, and opens no PC from it", async () => {
       const replaced: string[] = [];
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true } });
@@ -1111,6 +1117,19 @@ describe("the hosted shell's front page", () => {
       await returned(deviceStore([]), went, [{ server_id: "b".repeat(32), label: "Desk PC", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: AP }]);
       expect(went).toEqual([]);
       expect(last().state.kind).toBe("empty");
+    });
+
+    it("opens the account's PC this device is not in yet after a sign-in, to join it on its own page, the one seen last first", async () => {
+      browser.setVisibility("hidden");
+      const went: string[] = [];
+      const row = (label: string, seenAgo: number | null) => {
+        const pair = generateKeyPair();
+        return { server_id: deriveServerId(pair.publicKey), label, added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: seenAgo === null ? null : new Date(Date.now() - seenAgo).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
+      };
+      const older = row("Older", 5 * 60_000), recent = row("Recent", 60_000), off = row("Off", null);
+      await returned(deviceStore([]), went, [off, older, recent]);
+      await until(() => went.length > 0, "the account's PC opened");
+      expect(went).toEqual([`/s/${recent.server_id}/`]);
     });
 
     it("opens nothing after a refused or cancelled sign-in, whose reason the sign-in screen says", async () => {
