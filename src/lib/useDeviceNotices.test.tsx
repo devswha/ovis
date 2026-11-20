@@ -123,6 +123,19 @@ describe("device notices on the real PC socket", () => {
       withdrawn: [], restored: [], acknowledged: [{ type: "notice-seen", seq: 1 }],
     });
   });
+
+  it("P15: exposes the selected PC's trimmed replay count even with no surviving cards", async () => {
+    const { wire } = await connect();
+    await act(async () => {
+      wire.snapshot();
+      wire.read({ type: "device-notice-replay", replay: { notices: [], cut: 12 } });
+    });
+    expect(result).toHaveProperty("cut", 12);
+    await act(async () => { wire.read({ type: "device-notice", notice: method }); });
+    expect(result).toHaveProperty("cut", 12);
+    await act(async () => { wire.snapshot([]); });
+    expect(result).toHaveProperty("cut", 0);
+  });
 });
 
 class FakeSocket implements NoticeSocket {
