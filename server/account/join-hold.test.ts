@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AccountDeviceStore, type AccountRowPorts } from "./account-devices.ts";
-import { DeviceJournal } from "./device-journal.ts";
+import { DeviceJournal, JOURNAL_FILE, JOURNAL_MAX } from "./device-journal.ts";
 import { listNotices } from "./list-notices.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
 import { keyOf, listOrigins, snapshotList as list, nameOf, SERVER } from "./account-devices.test-helpers.ts";
@@ -42,7 +42,7 @@ function machine(over: Partial<AccountRowPorts> = {}, first: { othersEver?: bool
 const established = (over: Partial<Sayer> = {}): Sayer => ({ key: keyOf("k-old"), drives: true, state: "live", no: 1, late: false, admitNo: null, admittedAt: 0, ...over });
 
 describe("S2-29 the join hold and the first device (T34, T53, T67)", () => {
-  test("a whole read publishes an interrupted admission before restarting its hold", () => {
+  test("a whole read publishes an interrupted admission after trimming before restarting its hold", async () => {
     const { dir, ports } = machine();
     const evidence = RemovalEvidence.open(dir, null);
     const read = list(["k-held"]);
@@ -50,6 +50,13 @@ describe("S2-29 the join hold and the first device (T34, T53, T67)", () => {
       admitListedRows(write) { write(); throw new Error("stopped after row write"); },
     });
     expect(() => first.commitList(read)).toThrow("stopped after row write");
+    // Fill the replay window in one fixture write; a real append performs the trim.
+    const file = Bun.file(join(dir, JOURNAL_FILE));
+    const doc = await file.json();
+    const fillers = Array.from({ length: JOURNAL_MAX - 1 }, (_, i) => ({ ...doc.entries[0],
+      seq: doc.next_seq + i, id: `history-${i}`, kind: "merge", row: null, awaitingListCheck: undefined }));
+    await Bun.write(file, JSON.stringify({ ...doc, entries: [...doc.entries, ...fillers], next_seq: doc.next_seq + fillers.length }));
+    DeviceJournal.open(dir).append({ kind: "merge", how: "merge", row: null, no: null, key: null, account: null, by: null, label: "" });
     const journal = DeviceJournal.open(dir);
     expect(journal.openNotices()).toEqual([]);
     const notices = listNotices(journal, evidence, () => {});
