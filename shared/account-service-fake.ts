@@ -560,13 +560,15 @@ export class FakeAccountService {
         return capped;
       }
       this.admitTimes.set(account, [...times, this.now()]);
-      this.pcAdmissions.set(box(admitted, account), { at: this.now(), taken: false, family: session.family });
+      // one instant for the admission, its directory entry and this answer: a retry answers the same
+      const at = this.now();
+      this.pcAdmissions.set(box(admitted, account), { at, taken: false, family: session.family });
       this.usedAccounts.add(account);
       entry.new_until = new Date(this.now() + PC_NEW_MS).toISOString();
-      entry.admitted_at = this.iso();
+      entry.admitted_at = new Date(at).toISOString();
       entry.exempt = exempt;
       this.ring(account, session.family);
-      return json({ server_id: admitted, account, admitted_at: this.iso(), new_until: entry.new_until });
+      return json({ server_id: admitted, account, admitted_at: new Date(at).toISOString(), new_until: entry.new_until });
     }
     const pc = /^\/v1\/pcs\/([0-9a-f]{32})$/.exec(path)?.[1];
     if (pc !== undefined && request.method === "PUT") {

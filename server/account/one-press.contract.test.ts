@@ -319,3 +319,19 @@ test("first-PC exemption: the same sign-in may repeat its admit before the PC re
   expect((await f.account.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}/admit`, { method: "POST", headers: { authorization: `Bearer ${other}` }, body: "{}" }))).status).toBe(403);
   expect((await press(f, "acct_retry")).status).toBe(200);
 });
+
+test("PADD-1: a relay identity reset that finishes while the press waits on the account service binds nothing", async () => {
+  let reset: (() => Promise<void>) | null = null;
+  const f = await pc({ accountFetch: async (request, service) => {
+    if (new URL(request.url).pathname === "/v1/pc/admission" && reset !== null) { const now = reset; reset = null; const answer = await service.fetch(request); await now(); return answer; }
+    return await service.fetch(request);
+  } });
+  await setUpFor(f, "acct_1");
+  await admitAt(f, "acct_1");
+  const before = f.app.context.services.relay.currentIdentity()!.server_id;
+  reset = async () => { await f.app.context.services.relay.resetIdentity(); };
+  const pressed = await press(f, "acct_1");
+  expect(f.app.context.services.relay.currentIdentity()?.server_id).not.toBe(before);
+  expect([pressed.status, pressed.body.error?.code]).toEqual([409, "identity_changed"]);
+  expect(f.devices.account()).toBeNull();
+});

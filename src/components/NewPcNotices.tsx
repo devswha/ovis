@@ -58,7 +58,7 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         const now = Date.now();
         const told = pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now));
         // a notice this device already closed is nothing left to tell
-        telling = told.some((pc) => !dismissed(newPcKey(session.account, pc)));
+        telling = told.some((pc) => pc.server_id !== ownWindowOf && !dismissed(newPcKey(session.account, pc)));
         setListing(current !== undefined && sameSignIn(current, session) ? { session, pcs: told } : null);
       } catch (error) {
         if (mine !== version) return;
@@ -86,7 +86,7 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
       window.removeEventListener(ACCOUNT_SIGN_OUT_EVENT, signInChanged);
       window.removeEventListener(ACCOUNT_PCS_CHANGED_EVENT, visibleRead);
     };
-  }, [signIn, enabled]);
+  }, [signIn, enabled, ownWindowOf]);
 
   if (listing === null) return null;
   return listing.pcs.filter((pc) => pc.server_id !== ownWindowOf).map((pc) => {

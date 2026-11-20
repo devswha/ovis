@@ -254,3 +254,13 @@ it("PADD-11: a dismissed notice is nothing left to tell: focus reads come at mos
   for (let tab = 0; tab < 5; tab++) await act(async () => { browser.dispatchEvent(new Event("focus")); });
   expect(reads()).toBeLessThanOrEqual(before + 1);
 });
+
+it("PADD-11: the PC whose own window this is, new or not, keeps no minute reads going: only notices shown here count", async () => {
+  jest.useFakeTimers();
+  // the only new PC is this window's own: nothing is shown, so the list is read only every five minutes
+  await mount(PC);
+  const reads = () => (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit?][] } }).mock.calls.filter(([, init]) => init?.method === "GET").length;
+  const before = reads();
+  await act(async () => { jest.advanceTimersByTime(4 * 60_000); });
+  expect(reads()).toBe(before);
+});
