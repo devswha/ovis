@@ -32,7 +32,7 @@ export function testHerdrSession(name: string): boolean {
  */
 export function throwawayPath(path: string, home: string, ...temps: (string | undefined)[]): boolean {
   // herdr sockets are POSIX paths, whatever this app's own platform
-  const inside = (dir: string, at: string) => posix.normalize(at + "/").startsWith(dir.replace(/\/+$/, "") + "/");
+  const inside = (dir: string, at: string) => posix.normalize(at + "/").startsWith(posix.normalize(dir + "/"));
   const temp = [...temps, "/tmp", "/var/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/dev/shm"]
     // a temp folder holding the home, or its .config, would be everything: such a TMPDIR is no throwaway folder
     .filter((dir): dir is string => !!dir?.startsWith("/") && !inside(dir, home) && !inside(dir, posix.join(home, ".config")));

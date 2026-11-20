@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { chosenHerdrSocketStatus, discoverHerdrSessions, parseFoundHerdrSessions, profileGroups } from "./herdr-discovery.ts";
+import { chosenHerdrSocketStatus, discoverHerdrSessions, parseFoundHerdrSessions, profileGroups, throwawayPath } from "./herdr-discovery.ts";
 import { harmlessGroups } from "./herdr-core/discovery.ts";
 
 const roots: string[] = [];
@@ -144,6 +144,10 @@ describe("running herdr discovery", () => {
     const kept = { ...work, socket_path: "/h/.config/herdr/sessions/work/herdr.sock" };
     const unnamed = { socket_path: "/h/.config/herdr/sessions/ovis-test/herdr.sock", label: "Default session" };
     expect(parseFoundHerdrSessions([kept, ...listed, cached, temp, unnamed], "/h")).toEqual([kept]);
+    // a temp folder named with . or .. is the folder it names; its sibling is not inside it
+    expect(throwawayPath("/srv/scratch/trial/herdr/herdr.sock", "/h", "/srv/scratch/.")).toBe(true);
+    expect(throwawayPath("/srv/scratch/trial/herdr/herdr.sock", "/h", "/srv/x/../scratch")).toBe(true);
+    expect(throwawayPath("/srv/scratch-other/herdr/herdr.sock", "/h", "/srv/scratch/.")).toBe(false);
   });
 
   it("preserves whitespace in macOS process HOME and XDG values", async () => {
