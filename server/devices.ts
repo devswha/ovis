@@ -732,10 +732,11 @@ export class DeviceStore {
 
   /** The times this PC wrote itself: rows' making, its own tombstones and Revokes; never a time a record carries (P13). */
   private ownTimes(): string[] {
-    return [...this.devices.map((d) => d.created_at), ...this.tombstones.filter((t) => t.record_id === "local").map((t) => t.removed_at), ...this.evidence?.times() ?? []];
+    return [...this.devices.map((d) => d.created_at), ...(this.joinedRows?.rows() ?? []).map(row => row.confirmed_at),
+      ...this.tombstones.filter((t) => t.record_id === "local").map((t) => t.removed_at), ...this.evidence?.times() ?? []];
   }
 
-  private nextStamp(now: number): string {
+  nextStamp(now: number): string {
     const times = this.ownTimes();
     const last = Math.max(Number.NEGATIVE_INFINITY, ...times.map((t) => Date.parse(t)).filter((t) => Number.isFinite(t)));
     return new Date(Math.max(now, last + 1)).toISOString();

@@ -234,10 +234,11 @@ export class AccountDeviceStore implements AccountRowSource {
     // taking the no-hold path is itself what sets the flag, so the path is used up by its first use
     if (!first.othersEver()) first.setOthersEver();
     const now = this.ports.now();
+    const origin = this.ports.admitOrigin(now);
     const row: AccountRow = {
       id: accountDeviceId(this.serverId, entry.key), key: entry.key, no: entry.no, label: entry.label,
-      origin: this.ports.admitOrigin(now),
-      confirmed_at: iso(now), last_signin_day: null, state: bypass ? "live" : "hold", hold_until: null,
+      origin,
+      confirmed_at: origin.at, last_signin_day: null, state: bypass ? "live" : "hold", hold_until: null,
     };
     const standing = this.ports.admitListedRows(() => {
       this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.origin.admit_no, label: row.label,

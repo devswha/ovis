@@ -330,7 +330,7 @@ export function createServer(
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
     now: () => Date.now(),
     setTimeout: (run, ms) => devices.waitClock().setTimeout(run, ms),
-    admitOrigin: (at) => pcAccount.admit("remote", "list", null, at),
+    admitOrigin: (at) => pcAccount.admit("remote", "list", null, Date.parse(devices.nextStamp(at))),
     firstDevice: {
       othersEver: () => pcAccount.othersEver(),
       setOthersEver: () => { pcAccount.setOthersEver(); },
