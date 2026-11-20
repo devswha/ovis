@@ -219,7 +219,11 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(await read(ports, page({ version: 1, devices: [{ key: older.spki, no: 1, eligible: false, label: "Phone" }],
       removed: [{ key: target.spki, no: 2 }] }))).toMatchObject({ committed: true });
     const record = await lift(blocked.id, older);
-    const refused = spyOn(privateStateFs, "renameSync").mockImplementation(() => { throw new Error("log unavailable"); });
+    const rename = privateStateFs.renameSync;
+    const refused = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (String(to).endsWith("/account-log.json")) throw new Error("log unavailable");
+      rename(from, to);
+    });
     try {
       expect(await read(ports, page({ version: 2, lifts: [record] }))).toMatchObject({ committed: false });
       expect(ports.lastVersion()).toBe(1);
