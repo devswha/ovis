@@ -15,7 +15,7 @@ import { SettingsProvider } from "./lib/settings.ts";
 import { storeSelection } from "./lib/useSplitView.ts";
 
 async function withDeviceNotices(
-  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly admission?: Pick<DeviceNotice, "method" | "two_step">; readonly decline?: () => Promise<Response>; readonly role?: () => DeviceRole },
+  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly deskFeatures?: Parameters<DeviceNoticeWire["snapshot"]>[0]; readonly admission?: Pick<DeviceNotice, "method" | "two_step">; readonly decline?: () => Promise<Response>; readonly role?: () => DeviceRole },
   check: (fixture: { readonly tree: ReactTestRenderer; readonly laptop: DeviceNoticeWire; readonly desk: DeviceNoticeWire;
     readonly delivered: readonly BlockRecord[]; readonly servicePosts: readonly { readonly body: unknown; readonly status: number }[] }) => void | Promise<void>,
 ) {
@@ -131,7 +131,7 @@ async function withDeviceNotices(
       laptop.open();
       desk.open();
       laptop.snapshot();
-      desk.snapshot();
+      desk.snapshot(options.deskFeatures);
       laptop.read({ type: "device-notice", notice: deviceNotice({ label: "Laptop phone", key: target.public_spki, ...options.admission }) });
       desk.read({ type: "device-notice", notice: deviceNotice({ label: "Desk phone", key: target.public_spki }) });
     });
@@ -174,11 +174,11 @@ it.each([
 it.each([
   ["identified", { laptopId: "a".repeat(32) }, "applied", "Laptop: blocked"],
   ["unidentified", {}, "waiting", "Laptop: waiting for its answer"],
-] as const)("T51, T60, T65: an %s notice PC takes one signed block; proxy receipts never count", async (_label, identity, state, line) => {
+  ["identified with a flag-off roster PC", { laptopId: "a".repeat(32), deskFeatures: [] }, "applied", "Laptop: blocked"],
+] as const)("G5, T51, T60, T65: %s notice PC takes one signed block and only enabled roster PCs get records POSTs", async (_label, identity, state, line) => {
   await withDeviceNotices({ no: 3, ...identity }, async ({ tree, laptop, desk, delivered, servicePosts }) => {
     const button = tree.root.findAllByType("button").find((node) => node.children.includes("Not me"));
-    expect(button).toBeDefined();
-    if (button === undefined) return;
+    if (button === undefined) throw new TypeError("Missing Not me");
     await act(async () => { await button.props.onClick(); });
 
     const answers = laptop.sent.filter((frame) => frame.type === "notice-answer").map(parseNoticeAnswer);
@@ -189,14 +189,13 @@ it.each([
     expect(answer.blocks).toHaveLength(1);
     for (const block of answer.blocks) expect(await verifySafetyRecord(block)).toBe(true);
     expect(desk.sent.filter((frame) => frame.type === "notice-answer")).toEqual([]);
-    expect(delivered).toEqual(answer.blocks);
     expect(servicePosts).toEqual([{ body: { record: answer.blocks[0] }, status: 200 }]);
+    expect(delivered).toEqual(identity.deskFeatures === undefined ? answer.blocks : []);
 
     const card = tree.root.findByProps({ "data-testid": "device-notice" });
-    expect(card.findAllByType("li").map((row) => [row.props["data-state"], row.children.join("")])).toEqual([
-      [state, line],
-      ["waiting", "Desk: waiting for its answer"],
-    ]);
+    expect(card.findAllByType("li").map((row) => [row.props["data-state"], row.children.join("")])).toEqual(
+      identity.deskFeatures === undefined ? [[state, line], ["waiting", "Desk: waiting for its answer"]] : [[state, line]],
+    );
   });
 });
 
