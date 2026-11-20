@@ -7,7 +7,7 @@ import { privateStateFs } from "../private-state.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { keyOf } from "./account-devices.test-helpers.ts";
-import { DeviceJournal, JOURNAL_FILE } from "./device-journal.ts";
+import { DeviceJournal, JOURNAL_FILE, JOURNAL_MAX } from "./device-journal.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { applyAccountRecords } from "./records.ts";
 
@@ -82,4 +82,24 @@ test.each(["last listed row", "still-listed sibling"] as const)("P8/T41/P10: lea
   restartOffline(dir);
   expect(drops(dir).filter(entry => entry.row === device.id || entry.row === sibling)).toEqual(expected);
   expect(rows(dir)).toEqual([]);
+});
+
+test("P8/T41/P10: offline Revoke recovery allocates no new drop after the original is trimmed", async () => {
+  const { fixture, device, member } = await listedPc();
+  const dir = fixture.stateDir;
+  const { devices } = fixture.app.context.services;
+  const fault = failReplacement(join(dir, ACCOUNT_DEVICES_FILE));
+  try { expect(() => devices.revoke(device.id)).toThrow("replacement failed"); } finally { fault.mockRestore(); }
+  expect(rows(dir).map(row => row.id)).toEqual([device.id]);
+  const original = DeviceJournal.open(dir).entries().at(-1);
+  expect(original).toMatchObject({ kind: "drop", how: "revoke", row: device.id });
+  for (let index = 0; index < JOURNAL_MAX; index++) {
+    devices.journalEvent({ kind: "account", how: "link", key: member.publicKey, row: member.id, account: ACCOUNT, no: null, label: "", by: null });
+  }
+  const retained = DeviceJournal.open(dir).entries();
+  expect(retained[0]?.seq).toBe((original?.seq ?? 0) + 1);
+  fixture.app.stop();
+  restartOffline(dir);
+  expect(rows(dir)).toEqual([]);
+  expect(DeviceJournal.open(dir).entries().at(-1)?.seq).toBe(retained.at(-1)?.seq);
 });
