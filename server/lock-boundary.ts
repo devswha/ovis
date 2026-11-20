@@ -35,11 +35,27 @@ export function lockBoundary(access: Access, scope: LockScope, request: {
  */
 export class LockSignal {
   readonly #listeners = new Set<() => void>();
+  /** how many locks were written in this run: what was admitted before one cannot see it once it opens */
+  #fired = 0;
+  get fired(): number { return this.#fired; }
   on(listener: () => void): () => void {
     this.#listeners.add(listener);
     return () => { this.#listeners.delete(listener); };
   }
   fire(): void {
+    this.#fired++;
     for (const listener of [...this.#listeners]) listener();
   }
+}
+
+/**
+ * The lifetime of a connection or stream let in on a grant a lock refuses, taken when its request is admitted. A lock
+ * written between that admission and the moment it opens (a WebSocket handshake in flight) ends it as it opens.
+ */
+export function untilLockFrom(signal: LockSignal): (close: () => void) => () => void {
+  const admittedAt = signal.fired;
+  return (close) => {
+    if (signal.fired !== admittedAt) { close(); return () => {}; }
+    return signal.on(close);
+  };
 }

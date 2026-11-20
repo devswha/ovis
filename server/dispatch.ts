@@ -52,7 +52,7 @@ import type { PendingRedemption, PendingRedemptions } from "./account/pending.ts
 import type { KeyProofPairings } from "./account/key-proof.ts";
 import { handlePendingRequest } from "./account/pending-routes.ts";
 import type { lockRoutes } from "./account/lock-routes.ts";
-import { lockBoundary, type LockSignal } from "./lock-boundary.ts";
+import { lockBoundary, untilLockFrom, type LockSignal } from "./lock-boundary.ts";
 import { handleAccountRequest } from "./account/routes.ts";
 import type { AccountMailbox } from "./account/mailbox.ts";
 import type { AccountHolds } from "./account/holds.ts";
@@ -284,7 +284,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const lockSignal = ctx.services.lockSignal;
   const survivesLock = access.level === "full" && (bridgeAuthorized || (access.device !== undefined && access.via !== "local")
     || lockBoundary(access, { locked: true, strict: false }, { localProof: false, ownProgram: ctx.ownerSocket === true, originOf: (rowId) => devices.originOf(rowId) }).level === "full");
-  const untilLock = lockSignal !== undefined && !survivesLock ? (close: () => void) => lockSignal.on(close) : undefined;
+  const untilLock = lockSignal !== undefined && !survivesLock ? untilLockFrom(lockSignal) : undefined;
 
   // on the owner's socket a request naming another host or showing a proxy gets nothing, its health included
   if (options.profile === "machine" && access.level !== "full") return machineUnauthorized(pathname);
