@@ -210,7 +210,8 @@ export class AccountDeviceStore implements AccountRowSource {
         if (sameAccount && readmission?.(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
         continue;
       }
-      if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) break;
+      // This new key needs a slot. A later proved replacement in the same list does not.
+      if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) continue;
       if (this.ports.heldByDevicesJson(entry.key) || !this.ports.admits(entry.key, list.account)) continue;
       const first = this.ports.firstDevice;
       const bypass = firstDevice({
