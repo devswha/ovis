@@ -109,6 +109,32 @@ test("T41/S19/P8/P10: a missing listed registry during Revoke-all recovery: the 
   expect(outcome).toBe("auth_failed");
 });
 
+test("T41/S19/P8/P10: a new Revoke-all while the listed registry will not parse fails, keeps its intent, and the listed row cannot sign in once the file is restored", async () => {
+  const { fixture, device, serverId } = await listedPc();
+  const dir = fixture.stateDir;
+  const path = join(dir, ACCOUNT_DEVICES_FILE);
+  const intent = join(dir, "revoke-all.json");
+  fixture.app.stop();
+  const file = parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8")));
+  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const })) });
+  const original = readFileSync(path, "utf8");
+  expect(existsSync(intent)).toBe(false);
+  writeFileSync(path, "{");
+  const broken = startOffline(dir).app;
+  try {
+    expect(broken.context.services.devices.failsClosed).toBe(true);
+    expect(() => broken.context.services.devices.revokeAll()).toThrow();
+    expect(existsSync(intent)).toBe(true);
+  } finally { broken.stop(); }
+  writeFileSync(path, original, { mode: 0o600 });
+  const restarted = startOffline(dir);
+  closes.push(() => restarted.close());
+  expect(RemovalEvidence.open(dir, null).standingRevokes(device.publicKey)).toHaveLength(1);
+  const link = await relayConnection(restarted, { serverId });
+  const outcome = await link.auth(device).then(() => "auth_ok", async () => await bounded(link.serverError));
+  expect(outcome).toBe("auth_failed");
+});
+
 test.each(["unallocated sequence", "transfer points to admission"] as const)("T41/S19/P8/P10: a contradictory drop receipt preserves the registry (%s)", async damage => {
   const { fixture, device } = await listedPc();
   const dir = fixture.stateDir;
