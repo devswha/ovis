@@ -5,6 +5,7 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { FrameType, type MuxFrame, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
 import { bounded, relayAccountFixture, relayConnection } from "../relay/test-helpers.ts";
+import { ask } from "./pairing.test-helpers.ts";
 
 const ACCOUNT = "acct_1";
 const closes: (() => void)[] = [];
@@ -36,6 +37,18 @@ async function signIn(pc: Awaited<ReturnType<typeof startedPc>>, features: reado
 }
 
 describe("S2-27 a devices.json row not paired at this PC waits for the first whole read after a start (T41, T42)", () => {
+  test("P7/S22: a waiting legacy row's sign-in reads the ready service before the periodic pull", async () => {
+    const pc = await startedPc();
+    // Drain the failed startup pull before the service recovers, so it cannot race this sign-in.
+    await pc.fixture.app.context.services.accountMailbox.pull();
+    pc.service.opensAll = true;
+    // No manual read and no timer advance: this attempt must fetch and apply the first whole read itself.
+    expect(await signIn(pc, [ACCOUNT_OPENS_ALL_FEATURE])).toBe("ok");
+    const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await link.auth(pc.member, [ACCOUNT_OPENS_ALL_FEATURE]);
+    expect((await ask(link, "/api/account/status")).status).toBe(200);
+  });
+
   test("T41: a legacy row's proved sign-in is refused catching_up until a whole read; an old app gets today's code", async () => {
     const pc = await startedPc();
     expect(await signIn(pc, [ACCOUNT_OPENS_ALL_FEATURE])).toEqual({ code: "held", message: "This PC waits for the account's list before letting this device in", hold: { reason: "catching_up" } });
