@@ -13,6 +13,7 @@ const relay: Access = { level: "full", via: "relay", role: "drive", device: { id
 
 function store(initial: { bound?: boolean; locked?: string | null; strict?: boolean } = {}) {
   const writes: string[] = [];
+  const removals = { pending: false };
   let wrote!: () => void;
   const written = new Promise<void>((resolve) => { wrote = resolve; });
   let locked = initial.locked ?? null;
@@ -22,8 +23,9 @@ function store(initial: { bound?: boolean; locked?: string | null; strict?: bool
     preview: () => ({ rows: [{ id: "0123456789abcdef", label: "Phone", origin: { from: "remote", how: "list" }, file: "account" }], grants: ["token"] }),
     lock: () => { writes.push("lock"); locked = "lock-1"; wrote(); },
     unlock: (id) => { writes.push(`unlock ${id}`); locked = null; wrote(); },
+    removalsPending: () => removals.pending,
   };
-  return { lockStore, writes, written };
+  return { lockStore, writes, written, removals };
 }
 
 function routes(options: { platform?: NodeJS.Platform; store?: ReturnType<typeof store> } = {}) {
@@ -92,4 +94,26 @@ test("T46: a PC in no account, an already locked PC, or one without screen proof
 test("T47: an unlock of a lock that is not the one in force is refused", async () => {
   const { handle } = routes({ store: store({ locked: "lock-1" }) });
   expect((await (await ask(handle, "POST", "/api/account/unlock", local, { lock: "lock-2" })).json() as { error: { code: string } }).error.code).toBe("not_locked");
+});
+
+test("T46/T47: while this run holds a lock's removals it could not write, an unlock is refused before the screen is asked", async () => {
+  const made = store({ locked: "lock-1" });
+  made.removals.pending = true;
+  const { handle, confirms } = routes({ store: made });
+  const asked = await ask(handle, "POST", "/api/account/unlock", local, { lock: "lock-1" });
+  expect([asked.status, ((await asked.json()) as { error: { code: string } }).error.code]).toEqual([409, "lock_removals_pending"]);
+  expect(confirms.pending()).toEqual([]);
+});
+
+test("T46/T47: an unlock prompt shown earlier and approved while the lock's removals are unwritten writes nothing", async () => {
+  const made = store({ locked: "lock-1" });
+  const { handle, confirms, writes, approve } = routes({ store: made });
+  const asked = await ask(handle, "POST", "/api/account/unlock", local, { lock: "lock-1" });
+  const { confirm } = await asked.json() as { confirm: string };
+  made.removals.pending = true;
+  // the route's own continuation was registered on the answer first, so it has run by the time this await returns
+  const answered = confirms.answer(confirm);
+  approve(confirm);
+  expect(await bounded(answered)).toBe("approved");
+  expect(writes).toEqual([]);
 });
