@@ -4,6 +4,7 @@ import { parseNoticeAnswer, type DeviceNotice } from "../shared/account-devices-
 import { parseSafetyRecord, verifySafetyRecord, type BlockRecord } from "../shared/account-records.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { App } from "./App.tsx";
+import { indexedAccountService } from "./lib/account/service.ts";
 import { indexedAccountStore, memoryAccountStore, newKey } from "./lib/account/store.ts";
 import { DeviceNoticeWire, deviceNotice, NOTICE_SNAPSHOT } from "./lib/deviceNoticeWire.fixture.ts";
 import { translate } from "./lib/i18n.ts";
@@ -86,6 +87,7 @@ async function withDeviceNotices(
       servicePosts.push({ body: JSON.parse(init.body), status: response.status });
       return response;
     }
+    if (url.origin === "https://account.example" && pathname === "/v1/signout") return service.fetch(url, init);
     if (pathname === "/api/health") return Response.json({
       auth: { required: false, authenticated: true, role: "drive" },
       web_ui: { boot_id: null, revision: null, server_id: options.laptopId },
@@ -115,6 +117,7 @@ async function withDeviceNotices(
     return session;
   });
   const account = spyOn(indexedAccountStore, "get").mockImplementation(keys.get);
+  const accountUpdate = spyOn(indexedAccountStore, "update").mockImplementation(keys.update);
   try {
     storeSelection(options.remoteNotice ? "desk" : "local", null);
     await act(async () => { tree = create(<SettingsProvider><App /></SettingsProvider>); });
@@ -134,6 +137,7 @@ async function withDeviceNotices(
     await act(async () => { tree?.unmount(); });
     sessions.mockRestore();
     account.mockRestore();
+    accountUpdate.mockRestore();
     for (const [key, previous] of originals) {
       if (previous) Object.defineProperty(globalThis, key, previous);
       else Reflect.deleteProperty(globalThis, key);
@@ -214,5 +218,16 @@ it("T60: a remote notice counts the page PC’s own records receipt, not the pro
     expect(card.findAllByType("li").map((row) => row.children.join("")).sort()).toEqual([
       "Desk: waiting for its answer", "Laptop: blocked",
     ]);
+  });
+});
+
+it("T51: signing out hides Not me on an open admission without a fresh notice", async () => {
+  await withDeviceNotices({ no: 3 }, async ({ tree }) => {
+    const card = tree.root.findByProps({ "data-testid": "device-notice" });
+    const actions = () => card.findAllByType("button").filter((node) => node.children.includes("Not me"));
+    expect(actions()).toHaveLength(1);
+    await act(async () => { await indexedAccountService.signOut(); });
+    expect(await indexedAccountService.session()).toBeUndefined();
+    expect(actions()).toHaveLength(0);
   });
 });
