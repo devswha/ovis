@@ -431,7 +431,8 @@ interface ProvisionalRow {
   links: number;
   /** what its last link is waiting for, or got: the account service's word, or no answer from it */
   link?: "asked" | "service_unreachable";
-  readonly cancel: () => void;
+  /** ends its link window: set again while a replacement of its key waits on the screen */
+  cancel: () => void;
 }
 
 /** What a code made for a PC in no account holds besides its six digits: the pairings it still takes, and the rows that wait to link. */
@@ -498,7 +499,7 @@ export class DeviceStore {
   private readonly revocations = new Map<string, Set<(waiting?: true) => void>>();
   private readonly relinks = new Map<string, Set<(sessionId: string) => void>>();
   /** keys waiting to replace a screen-approved key, by row (T72): in memory only, so a restart drops them (P22) */
-  private readonly replacements = new Map<string, { key: string; account: string; at: number; challenge: string; sessionId: string; vouched: boolean; ownWord: boolean }>();
+  private readonly replacements = new Map<string, { key: string; account: string; at: number; challenge: string; sessionId: string; vouched: boolean; ownWord: boolean; waitingRow?: true }>();
   private readonly revokeAllListeners = new Set<() => void>();
   private readonly gateListeners = new Set<() => void>();
   private readonly pairings = new Set<(event: DevicePairedEvent, origin: readonly string[]) => void>();
@@ -1710,18 +1711,29 @@ export class DeviceStore {
    * one made since would have taken the row (dropWaiting). That write's failure is logged and changes nothing of the
    * above; the next start clears it.
    */
-  private promote(id: string, link: { oldKey: string; key: string; account: string }, sessionId: string, vouched: boolean): PairedDevice | null {
+  private promote(id: string, link: { oldKey: string; key: string; account: string }, sessionId: string, vouched: boolean, replacement = false, screen?: ConfirmProof): PairedDevice | null {
     const row = this.provisional(id);
     const waiting = this.pending?.waiting;
     if (!row || !waiting || row.key !== link.oldKey || this.account() !== null || this.removedByAccount(link.key)) return null;
     if (waiting.confirmedId !== undefined && waiting.confirmedId !== row.id) return null;
-    // Only a same-key screen confirmation can carry the named-Revoke exception checked by admitConfirmed.
-    const confirm = link.key === row.key ? row.confirmed : undefined;
+    // Only a same-key screen confirmation, or this PC's screen confirm of a moved key as its replacement, carries a
+    // confirm proof (T72, P22)
+    const kept = link.key === row.key ? row.confirmed : undefined;
+    const confirm = screen !== undefined ? { proof: screen, how: "link" as const, by: undefined } : kept;
     const path = confirm === undefined ? {} : {
       confirm: confirm.proof, pairingHere: confirm.proof.source === "screen", ...(confirm.by === undefined ? {} : { by: confirm.by }),
     };
     if (!this.admits(link.key, confirm?.proof, path)) return null;
     const now = Date.now();
+    // a link that moves the key its PAIR named admits a key nobody here approved: with the flag on it waits, as a
+    // stored row's does, for a confirm of its own on this PC's screen, and the row waits with it (P22, T7, T72)
+    if (this.pc !== null && link.key !== link.oldKey && screen === undefined) {
+      if (!replacement) throw new ReplacementNeedsAppError();
+      this.replacements.set(id, { key: link.key, account: link.account, at: now, challenge: randomBytes(32).toString("base64url"), sessionId, vouched, ownWord: true, waitingRow: true });
+      row.cancel();
+      row.cancel = this.clock.setTimeout(() => this.dropProvisional(waiting, row, "link_timeout"), REPLACEMENT_TTL_MS);
+      return { id: row.id, label: row.label, role: "watch", created_at: new Date(now).toISOString(), last_seen_at: null, current: false, via_relay: true };
+    }
     const at = new Date(now).toISOString();
     // the removal of a key the row keeps, by this PC (removedByAccount refused the account's above)
     const removedAt = link.key === link.oldKey ? this.tombstones.find((t) => t.key === link.key)?.removed_at : undefined;
@@ -2643,7 +2655,7 @@ export class DeviceStore {
   linkAccountKey(deviceId: string, oldKey: string, key: string, account: string, sessionId = "", vouched = false, replacement = false): PairedDevice | null {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
-    if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId, vouched);
+    if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId, vouched, replacement);
     const moved = key !== oldKey || device.link_moved_key === true;
     // the link that takes a row from no account into one is on the device's own word unless a member of that same
     // account approved its pairing: a code started by a device outside the account names its starter in `added_by` and
@@ -2694,12 +2706,20 @@ export class DeviceStore {
    */
   replaceConfirmed(confirm: { row: string; key: string; source: "screen" }, now = Date.now()): DeviceMatch | null {
     const waiting = this.pendingReplacement(confirm.row, now);
-    const device = this.devices.find((d) => d.id === confirm.row);
-    if (waiting === null || waiting.key !== confirm.key || device === undefined || this.pc === null) return null;
-    const { sessionId, vouched, ownWord } = this.replacements.get(confirm.row)!;
+    if (waiting === null || waiting.key !== confirm.key || this.pc === null) return null;
+    const { sessionId, vouched, ownWord, waitingRow } = this.replacements.get(confirm.row)!;
     this.replacements.delete(confirm.row);
     const proof: ConfirmProof = { codeId: `replace:${confirm.row}`, key: confirm.key, source: confirm.source };
     MINTED_PROOFS.add(Object.freeze(proof));
+    // a row waiting to link joins now, with the confirmed key: its link, held until this confirm (T72)
+    if (waitingRow === true) {
+      const row = this.provisional(confirm.row);
+      if (row === undefined) return null;
+      const joined = this.promote(confirm.row, { oldKey: row.key, key: confirm.key, account: waiting.account }, sessionId, vouched, false, proof);
+      return joined === null ? null : { id: joined.id, label: joined.label, role: joined.role };
+    }
+    const device = this.devices.find((d) => d.id === confirm.row);
+    if (device === undefined) return null;
     if (!this.admits(confirm.key, proof)) return null;
     const updated: StoredDevice = { ...device, relay_public_key: confirm.key, account: waiting.account, linked_at: new Date(now).toISOString(), link_moved_key: true, ...(ownWord ? { joined_by: vouched ? "service" as const : "word" as const } : {}), origin: this.pc.admit("pc", "link", null, now) };
     const next = this.devices.map((d) => d === device ? updated : d);
