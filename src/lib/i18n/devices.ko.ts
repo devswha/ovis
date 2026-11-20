@@ -293,6 +293,7 @@ export const DEVICES_KO: Record<string, string> = {
   "{pc}: needs an Ovis update to block": "{pc}: 차단하려면 Ovis 업데이트가 필요해요",
   "The block did not go through yet.": "차단이 아직 전달되지 않았어요.",
   "It's me": "나예요",
+  "{pc} did not accept It's me from this device.": "{pc}에서 이 기기의 '나예요'를 받지 않았어요.",
   "{pc} opens in {seconds} s": "{seconds}초 후 {pc} 열림",
   "{pc} holds this device after a Not me from another device": "{pc}: 다른 기기에서 '내가 아니에요'를 눌러 멈췄어요",
   "{pc} is checking your account first": "{pc}: 계정을 먼저 확인하는 중",

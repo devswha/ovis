@@ -43,6 +43,7 @@ function ItsMeAction({ notice, pc, socket, own }: {
 }) {
   const inFlight = useRef(false);
   const [sending, setSending] = useState(false);
+  const [refused, setRefused] = useState(false);
   const waiting = useRef<ItsMeWaiting>(new Map());
   const canAnswer = own !== null && notice.account === own.account && notice.kind === "admit" && notice.open && socket.accountOpensAll();
 
@@ -51,6 +52,7 @@ function ItsMeAction({ notice, pc, socket, own }: {
     const pcId = pc.server_id ?? pc.relay?.server_id ?? pc.id;
     inFlight.current = true;
     setSending(true);
+    setRefused(false);
     try {
       const started = await indexedAccountStore.get("session");
       if (started === undefined || started.account !== notice.account) return;
@@ -62,6 +64,8 @@ function ItsMeAction({ notice, pc, socket, own }: {
         const [outcome] = await Promise.allSettled([answerOnPc(socket, { notice, answer: itsMeAnswer(notice) }, ANSWER_TIMEOUT_MS)]);
         if (outcome.status === "fulfilled") waiting.current = withItsMeAnswered(waiting.current, notice.id, pcId);
       }
+      // The PC answers a refused It's me with nothing (too new, held or not caught up): say so rather than go quiet.
+      if (waiting.current.get(notice.id)?.has(pcId)) setRefused(true);
     } catch (error) {
       if (!(error instanceof DOMException)) throw error;
       console.warn("Ovis: could not read the sign-in for an admission answer", error.name);
@@ -71,7 +75,7 @@ function ItsMeAction({ notice, pc, socket, own }: {
     }
   };
 
-  return canAnswer ? <ItsMeButton sending={sending} onPress={confirm} /> : null;
+  return canAnswer ? <ItsMeButton sending={sending} onPress={confirm} refusedBy={refused ? pc.name : null} /> : null;
 }
 
 type NoticeFleet = {
