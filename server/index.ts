@@ -325,7 +325,11 @@ export function createServer(
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
     now: () => Date.now(),
     admitOrigin: (at) => pcAccount.admit("remote", "list", null, at),
-    admitListedRows: write => devices.admitListedRows(write),
+    admitListedRows: write => {
+      const ids = devices.admitListedRows(write);
+      journal.openListedRows(ids);
+      return ids;
+    },
   }) : null;
   const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
     safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: accountRows, held: (key) => accountMailbox.gates().held(key),

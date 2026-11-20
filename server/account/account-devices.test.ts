@@ -26,13 +26,13 @@ const clock = { now: Date.UTC(2026, 0, 1) };
 function ports(dir: string, over: Partial<AccountRowPorts> = {}) {
   const events: string[] = [];
   const base: AccountRowPorts = {
+    admitListedRows: write => [...write()],
     journal: (entry) => { events.push(`journal ${entry.kind} ${nameOf(entry.key)} file=[${fileKeys(dir).join(",")}]`); },
     closeSessions: (rowId, reason) => { events.push(`close ${rowId} ${reason}`); },
     heldByDevicesJson: () => false,
     admits: () => true,
     now: () => clock.now,
     admitOrigin: listOrigins(),
-    admitListedRows: write => [...write()],
   };
   return { events, ports: { ...base, ...over } };
 }

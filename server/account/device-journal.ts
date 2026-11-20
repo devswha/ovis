@@ -35,6 +35,8 @@ export interface JournalEntry extends Pick<AccountRowEntry, "provider" | "two_st
   readonly account: string | null;
   /** a recovery's undo names the release it ends (kind `release`) */
   readonly undo?: string;
+  /** A list admission recorded before its row passed waiting blocks; history, not yet a notice. */
+  readonly awaitingListCheck?: true;
 }
 export type JournalInput = Omit<JournalEntry, "seq" | "id" | "at">;
 
@@ -153,8 +155,22 @@ export class DeviceJournal {
     }
     const written = this.append({ kind: entry.kind, how: drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
       row: entry.row, label: entry.label ?? "", by: null, account: entry.account,
-      ...(entry.kind === "admit" ? { two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) }, drop);
+      ...(entry.kind === "admit" ? { awaitingListCheck: true, two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) }, drop);
     if (drop) evidence.markJournalled(drop, written.seq);
+  }
+
+  /** Make only the surviving admissions visible to notice replay and the open set. */
+  openListedRows(ids: readonly string[]): void {
+    if (!ids.length) return;
+    const open = [...this.doc.open];
+    const latest = new Map(this.doc.entries.filter(entry => entry.kind === "admit" || entry.kind === "drop").map(entry => [entry.row, entry.seq]));
+    const entries = this.doc.entries.map(entry => {
+      if (!entry.awaitingListCheck || !entry.row || !ids.includes(entry.row) || latest.get(entry.row) !== entry.seq) return entry;
+      const { awaitingListCheck: _, ...notice } = entry;
+      open.push(notice);
+      return notice;
+    });
+    if (open.length !== this.doc.open.length) this.write({ ...this.doc, entries, open });
   }
 
   /** Catch up after a committed batch or interrupted journal write. Each notice and its cursor share one write. */
@@ -180,7 +196,7 @@ export class DeviceJournal {
       trimmed = cut.at(-1)!.seq;
       entries = entries.slice(cut.length);
     }
-    const open = entry.kind === "admit" ? [...this.doc.open, entry] : this.doc.open;
+    const open = entry.kind === "admit" && !entry.awaitingListCheck ? [...this.doc.open, entry] : this.doc.open;
     if (!this.exists) this.companions();
     this.write({ ...this.doc, next_seq: entry.seq + 1, entries, open, trimmed, ...(drop && { last_row_drop: { ...drop, journalled: entry.seq } }),
       ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) });
@@ -194,7 +210,7 @@ export class DeviceJournal {
    */
   replay(row: string, tells: (entry: JournalEntry) => boolean): NoticeReplay {
     const seen = this.doc.seen[row] ?? 0;
-    const unseen = this.doc.entries.filter((entry) => entry.seq > seen && tells(entry));
+    const unseen = this.doc.entries.filter((entry) => !entry.awaitingListCheck && entry.seq > seen && tells(entry));
     const undecided = this.doc.open.filter((entry) => tells(entry) && !unseen.some((other) => other.id === entry.id));
     const missedOpen = this.doc.open.filter((entry) => entry.seq > seen && entry.seq <= this.doc.trimmed).length;
     return {

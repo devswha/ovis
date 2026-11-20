@@ -2,8 +2,8 @@
  * Account-joined rows (Step 2, rows P1, S21, S23, T34, T35, T44, T49): devices the account's list admits, kept in
  * `account-devices.json` and never in devices.json, so an older Ovis that reads only devices.json never lets one in.
  * The list only admits what the guards admit and only drops what it no longer names; it writes no tombstone and no
- * marker. A row write is checked against waiting blocks before its admission is journalled; it waits in `hold` until the join
- * hold is satisfied; a drop closes sessions first, then journals, then writes.
+ * marker. The commit journals an admission before its row write. Only rows that survive waiting blocks publish a join
+ * notice; a drop closes sessions first, then journals, then writes.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -214,13 +214,12 @@ export class AccountDeviceStore implements AccountRowSource {
       confirmed_at: iso(now), last_signin_day: null, state: "hold", hold_until: null,
     };
     const standing = this.ports.admitListedRows(() => {
+      this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.no, label: row.label,
+        two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) });
       this.write({ ...this.file, devices: [...this.file.devices, row] });
       return [row.id];
     });
-    if (!standing.includes(row.id)) return false;
-    this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.no, label: row.label,
-      two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) });
-    return true;
+    return standing.includes(row.id);
   }
 
   private drop(rows: readonly AccountRow[], reason: DropReason, close?: AccountRowPorts["closeSessions"]): string[] {
