@@ -25,7 +25,7 @@ interface WaitingRow {
 const USAGE = "usage: ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block or freeze id>... | --revoke-all]\n";
 
 function terminalText(text: string): string {
-  return text.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, (char) => {
+  return text.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, (char) => {
     const code = char.charCodeAt(0);
     return code < 0x100 ? `\\x${code.toString(16).padStart(2, "0")}` : `\\u${code.toString(16).padStart(4, "0")}`;
   });
@@ -115,7 +115,7 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
           io.out(`${terminalText(`${kind} ${id}  key ${target.slice(-12)}  signed by ${signer}  (ovis recover --lift ${id})`)}\n`);
         }
       }
-      for (const entry of listed.pending ?? []) io.out(`${terminalText(`waiting: ${entry.id}  ${entry.label}  key ${entry.fingerprint}  (ovis recover --admit ${entry.id})`)}\n`);
+      for (const entry of listed.pending ?? []) io.out(`${terminalText(`waiting: ${entry.id}  ${entry.label}`)}\n  key ${terminalText(entry.fingerprint)}  (ovis recover --admit ${terminalText(entry.id)})\n`);
       return admitWithoutId ? 2 : 0;
     }
     let failed = false;

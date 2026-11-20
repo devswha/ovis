@@ -188,7 +188,7 @@ for (const { args, exit } of [{ args: [], exit: 0 }, { args: ["--admit"], exit: 
     const run = io({ terminal: false, releaseRows: [] });
     expect(await runRecover(args, run.value)).toBe(exit);
     expect(run.sent).toEqual([{ act: "list" }]);
-    expect(run.text()).toMatch(/0123456789abcdef0123456789abcdef.*New phone.*AB12-CD34.*ovis recover --admit 0123456789abcdef0123456789abcdef/);
+    expect(run.text()).toMatch(/0123456789abcdef0123456789abcdef.*New phone.*AB12-CD34.*ovis recover --admit 0123456789abcdef0123456789abcdef/s);
     if (exit === 2) expect(run.text()).toContain("usage: ovis recover");
   });
 }
