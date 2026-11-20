@@ -120,6 +120,23 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(safetyLog.state().freezes).toEqual([]);
   });
 
+  test("P15, T52: each applied lift is journalled once across reopen and replay", async () => {
+    const first = pc();
+    const signer = await member(first.devices);
+    const targets = [await member(first.devices), await member(first.devices)];
+    const blocks = await Promise.all(targets.map((target) => block(target.spki, signer)));
+    for (const record of blocks) expect((await first.devices.applyBlock(record, "handed")).outcome).toBe("applied");
+    const lifts = await Promise.all(blocks.map((record) => lift(record.id, signer)));
+    const stage = { snapshot: page({ lifts }).page, lifts };
+    first.ports.commit(stage);
+    expect(first.safetyLog.state().blocks).toEqual([]);
+    const again = pc(first.dir);
+    const notices = () => DeviceJournal.open(first.dir).entries().filter(({ kind }) => kind === "lift").map(({ key }) => key);
+    expect(notices()).toEqual(targets.map(({ spki }) => spki));
+    again.ports.commit(stage);
+    expect(notices()).toEqual(targets.map(({ spki }) => spki));
+  });
+
   test("P14: a refused block earns no credit for a concurrent independent revoke", async () => {
     const { devices, ports } = pc();
     const older = await member(devices);
