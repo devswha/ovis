@@ -25,7 +25,7 @@ it("T60: the machine router forwards only the records POST with the target PC cr
     handleMachineRequest(new Request(`https://app.example/api/machines/desk/${suffix}`, {
       method, headers: { origin, "x-herdr-machine": "1", "content-type": "application/json", authorization: "Bearer caller" },
       body: method === "GET" ? undefined : JSON.stringify(records),
-    }), manager, undefined, undefined, readOnly, undefined, undefined, undefined, undefined, owner);
+    }), manager, undefined, undefined, readOnly, undefined, undefined, undefined, undefined, owner, true);
 
   expect((await send("POST", "account/records", "https://other.example")).status).toBe(403);
   expect((await send("POST", "account/records", "https://app.example", true)).status).toBe(403);
@@ -36,6 +36,22 @@ it("T60: the machine router forwards only the records POST with the target PC cr
   expect(calls).toEqual([]);
   expect((await send("POST")).status).toBe(200);
   expect(calls).toEqual([{ method: "POST", path: "/api/account/records", authorization: "Bearer target", body: records }]);
+});
+
+it("G5: with the account release off, an owner's roster records POST is refused as on main and nothing is forwarded", async () => {
+  let forwarded = 0;
+  using target = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { forwarded++; return Response.json({ results: [] }); } });
+  const manager = {
+    endpoint: (id: string) => id === "desk" ? { url: target.url.origin, token: "target" } : undefined,
+    trackTerminal: () => () => {},
+  } as unknown as MachineManager;
+  const response = await handleMachineRequest(new Request("https://app.example/api/machines/desk/account/records", {
+    method: "POST", headers: { origin: "https://app.example", "x-herdr-machine": "1", "content-type": "application/json" },
+    body: JSON.stringify({ records: [] }),
+  }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true, false);
+  expect(response.status).toBe(403);
+  expect(((await response.json()) as { error: { code: string } }).error.code).toBe("forbidden");
+  expect(forwarded).toBe(0);
 });
 
 it("T60: a signed roster block passes the receiving PC's real account route", async () => {
