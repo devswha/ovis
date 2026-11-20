@@ -37,8 +37,6 @@ export async function snapshot(contents: WebContents, address: string): Promise<
   return lines.join("\n");
 }
 
-const OBJECT_GROUP = "ovis-agent";
-
 /**
  * Runs `fn` (a function's source, one of this file's) on the element a ref names; false when the latest snapshot
  * holds no such element any more, or `may()` says no once it is found (the person took the tab meanwhile).
@@ -46,15 +44,17 @@ const OBJECT_GROUP = "ovis-agent";
 async function onRef(contents: WebContents, ref: string, may: () => boolean, fn: string, args: unknown[] = []): Promise<boolean> {
   const node = refsOf.get(contents)?.get(ref);
   if (node === undefined || node === 0) return false;
+  let objectId: string | undefined;
   try {
-    const { object } = await send<{ object: { objectId?: string } }>(contents, "DOM.resolveNode", { backendNodeId: node, objectGroup: OBJECT_GROUP });
-    if (object.objectId === undefined || !may()) return false;
-    const { result } = await send<{ result: { value?: unknown } }>(contents, "Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: fn, arguments: args.map((value) => ({ value })), returnByValue: true, awaitPromise: true });
+    ({ object: { objectId } } = await send<{ object: { objectId?: string } }>(contents, "DOM.resolveNode", { backendNodeId: node }));
+    if (objectId === undefined || !may()) return false;
+    const { result } = await send<{ result: { value?: unknown } }>(contents, "Runtime.callFunctionOn", { objectId, functionDeclaration: fn, arguments: args.map((value) => ({ value })), returnByValue: true, awaitPromise: true });
     return result.value === true;
   } catch {
     return false;
   } finally {
-    if (!contents.isDestroyed() && contents.debugger.isAttached()) void contents.debugger.sendCommand("Runtime.releaseObjectGroup", { objectGroup: OBJECT_GROUP }).catch(() => {});
+    // only this call's own object: another call on the same tab may still be using its own
+    if (objectId !== undefined && !contents.isDestroyed() && contents.debugger.isAttached()) void contents.debugger.sendCommand("Runtime.releaseObject", { objectId }).catch(() => {});
   }
 }
 

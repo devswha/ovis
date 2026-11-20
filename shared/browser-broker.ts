@@ -2,7 +2,7 @@
  * How an agent reaches the desktop app's built-in browser: never its debugging port, only these tools,
  * which the app runs on that agent's own tabs (app/electron/src/browserBroker.ts). The agent runs
  * `ovis-server browser-mcp` (server/browser-mcp.ts), an MCP server that passes each call to the app
- * over a socket of this PC (a unix socket, a named pipe on Windows) with the pane's token: one line of
+ * over a unix socket of this PC with the pane's token (none on Windows yet: app/electron/src/browserBroker.ts brokerPath): one line of
  * JSON per request and per answer. A token is a file only the user can read in the server's state
  * folder (`browser-tokens/<pane>.token`); the app takes a call only while that file holds it.
  */

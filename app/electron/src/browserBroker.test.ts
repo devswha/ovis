@@ -21,7 +21,7 @@ let onSubmitted: (() => void) | null = null;
 let lines: AsyncIterator<string>;
 
 const FORM = `<!doctype html><title>Form</title><h1>Sign in</h1>
-<button id="b" style="position:absolute;left:20px;top:80px;width:120px;height:40px" onclick="document.title='clicked'">Press me</button>
+<button id="b" style="position:absolute;left:20px;top:80px;width:120px;height:40px" onclick="window.presses = (window.presses || 0) + 1; document.title = 'clicked ' + window.presses">Press me</button>
 <form action="/submitted" style="position:absolute;left:20px;top:160px"><input name="q" aria-label="Search"><input type="password" aria-label="Password" value="${PASSWORD}"></form>
 <div style="position:absolute;left:20px;top:240px"><input value="${UNLABELED}"><textarea>${UNLABELED}</textarea><div contenteditable="true">${UNLABELED}</div></div>
 <a href="/popup-page" target="_blank" style="position:absolute;left:20px;top:320px">Open more</a>`;
@@ -120,8 +120,10 @@ describe.skipIf(!linux)("the built-in browser's agent socket in Electron", () =>
     expect(outline).not.toContain(UNLABELED);
     const ref = (label: string) => new RegExp(`(@e\\d+) [^\\n]*"${label}"`).exec(outline)?.[1];
 
-    expect(words((await call("a", "browser_click", { tab: tab.id, ref: ref("Press me") })).content)).toBe("Clicked.");
-    expect(words((await call("a", "browser_snapshot", { tab: tab.id })).content)).toContain("Title: clicked");
+    // two calls on the same ref both land; whether they overlap inside the app is up to its scheduling
+    const both = await Promise.all([call("a", "browser_click", { tab: tab.id, ref: ref("Press me") }), call("a", "browser_click", { tab: tab.id, ref: ref("Press me") })]);
+    expect(both.map((answer) => words(answer.content))).toEqual(["Clicked.", "Clicked."]);
+    expect(words((await call("a", "browser_snapshot", { tab: tab.id })).content)).toContain("Title: clicked 2");
     expect(words((await call("a", "browser_screenshot", { tab: tab.id })).content)).toContain("not on the user's screen");
 
     const arrived = new Promise<void>((done, failed) => {

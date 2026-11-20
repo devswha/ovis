@@ -148,14 +148,16 @@ export class BrowserBroker {
         const ref = typeof args["ref"] === "string" ? args["ref"] : null;
         const may = () => typeof tabs.agentTab(owner, id) !== "string";
         if (ref !== null && await clickRef(tab.contents, ref, may)) return text("Clicked.");
-        return may() ? "No such element: take a new browser_snapshot." : "The user has taken control of this tab: wait until they hand it back.";
+        const now = tabs.agentTab(owner, id);
+        return typeof now === "string" ? now : "No such element: take a new browser_snapshot.";
       }
       case "browser_type": {
         const ref = typeof args["ref"] === "string" ? args["ref"] : null;
         if (typeof args["text"] !== "string") return "browser_type needs the text.";
         const may = () => typeof tabs.agentTab(owner, id) !== "string";
         if (ref !== null && await typeRef(tab.contents, ref, args["text"], args["submit"] === true, may)) return text("Typed.");
-        return may() ? "No such element to type in: take a new browser_snapshot." : "The user has taken control of this tab: wait until they hand it back.";
+        const now = tabs.agentTab(owner, id);
+        return typeof now === "string" ? now : "No such element to type in: take a new browser_snapshot.";
       }
       case "browser_screenshot": {
         if (!tab.shown) return "The tab is not on the user's screen, so it has no picture: use browser_snapshot to read it.";
