@@ -126,4 +126,36 @@ describe("a key approved on this PC's screen is replaced only by a confirm of it
     expect(state.first()).toEqual({ key: k, list_key: null });
   });
 
+
+  test("T7, T72: a row waiting to link that links with another key joins nobody until that key is confirmed on this PC's screen", async () => {
+    const { dir, devices } = pc();
+    const { code } = devices.startAccountPairing(ACCOUNT);
+    const first = await key();
+    const id = devices.pairRelay(code, "Phone", first)!.device.id;
+    const next = await key();
+    // only an app that shows the fingerprint may ask, as for a stored row
+    expect(() => devices.linkAccountKey(id, first, next, ACCOUNT)).toThrow(ReplacementNeedsAppError);
+    expect(devices.linkAccountKey(id, first, next, ACCOUNT, "", false, true)).toMatchObject({ id });
+    // no member, no binding, nothing on disk: the new key waits for its confirm
+    expect(row(dir, id)).toBeUndefined();
+    expect(devices.account()).toBeNull();
+    expect(devices.pendingReplacement(id)).toMatchObject({ key: next, account: ACCOUNT });
+    // the waiting row outlives its link window while the replacement waits on the screen
+    expect(devices.replaceConfirmed({ row: id, key: first, source: "screen" })).toBeNull();
+    expect(devices.replaceConfirmed({ row: id, key: next, source: "screen" })).toMatchObject({ id });
+    expect(row(dir, id)).toMatchObject({ relay_public_key: next, account: ACCOUNT, origin: expect.objectContaining({ from: "pc" }) });
+    expect(devices.account()).toBe(ACCOUNT);
+  });
+
+  test("T7: a declined or expired replacement of a waiting row admits nobody, and the same-key link still joins", async () => {
+    const { dir, devices } = pc();
+    const { code } = devices.startAccountPairing(ACCOUNT);
+    const first = await key();
+    const id = devices.pairRelay(code, "Phone", first)!.device.id;
+    devices.linkAccountKey(id, first, await key(), ACCOUNT, "", false, true);
+    devices.declineReplacement(id);
+    expect(devices.pendingReplacement(id)).toBeNull();
+    expect(devices.linkAccountKey(id, first, first, ACCOUNT)).toMatchObject({ id });
+    expect(row(dir, id)).toMatchObject({ relay_public_key: first, account: ACCOUNT });
+  });
 });
