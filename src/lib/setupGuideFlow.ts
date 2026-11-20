@@ -1,4 +1,5 @@
 import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
+import type { SecuritySummary } from "../../shared/access.ts";
 import type { HealthAuth, PairedDevice, RelayStatus } from "../../shared/protocol.ts";
 import type { SetupStep } from "./agentSetup.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
@@ -74,6 +75,11 @@ export function phoneWay(relay: { unsupported: boolean; status: Pick<RelayStatus
   if (auth.role === "watch" || auth.via === "portal") return "other";
   if (relay.status === null) return "wait";
   return relay.status.blocked === null ? "relay" : "other";
+}
+
+/** Device table T70: other devices reach this PC only through the relay when it is bound to its loopback and this page did not come in through Tailscale or a proxy (the routes this setup can see; SSH it cannot). */
+export function relayOnlyPc(summary: Pick<SecuritySummary, "bind_scope" | "observed_ingress">): boolean {
+  return summary.bind_scope === "loopback" && !["tailscale", "funnel", "proxy"].includes(summary.observed_ingress);
 }
 
 export type PhoneBoxOpening = "tap" | "first-run";
