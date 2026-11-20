@@ -551,7 +551,7 @@ export function createServer(
     },
   }) : undefined;
   const recoverySocket = recoveryReleases ? (() => {
-    const opened = openRecoverySocket({ stateDir, handle: recoveryActs({ releases: recoveryReleases, logReadable: () => !devices.failsClosed, user: userInfo().username }) });
+    const opened = openRecoverySocket({ stateDir, handle: recoveryActs({ releases: recoveryReleases, logReadable: () => !devices.failsClosed && SafetyLog.open(stateDir).readable, user: userInfo().username }) });
     if ("refused" in opened) { if (opened.refused !== "windows") console.error(`ovis recover is not available: ${opened.refused}`); return null; }
     return opened;
   })() : null;

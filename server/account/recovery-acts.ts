@@ -41,6 +41,8 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
         return { released: chosen.map((row) => row.id) };
       }
       case "undo": {
+        // the log is read as each act comes, not only at the start (S19): while it cannot be, nothing is changed
+        if (!pc.logReadable) return { error: "This PC cannot read its safety log, so nothing is changed: log_unreadable" };
         const undone = releases.undo(action.rows ?? undefined, options.user);
         return { releases: undone.releases, ...(undone.journalError === null ? {} : { warning: `The undo was not journalled: ${undone.journalError.message}` }) };
       }
