@@ -921,6 +921,9 @@ entry for the same PC replaces it, at most 32 PCs and 256 devices). Answers 204.
 (the one account route that needs no drive access, since it reads only the caller's own
 introduction); answers `{ "pcs" }` for its own key, or 404 `introduction_none`.
 
+A PC saved only by an introduction is one this device never chose: the app never opens it by itself
+(at a launch, or as the PC opened last) until the person opens it once, which marks it chosen.
+
 Known risk (T10 in the design): a compromised X can show the new device other PCs' keys than the
 member sent. It already holds X's sessions; what it gains is the new device trying those keys. Each
 PC then still admits it only by its own `devices.json`, and a PC the device has never been added to
