@@ -1,4 +1,4 @@
-import { expect, it, spyOn } from "bun:test";
+import { expect, it, mock, spyOn } from "bun:test";
 import { resolve } from "node:path";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import { OUTPUT_HARD_BYTES } from "../output-window.ts";
@@ -18,17 +18,17 @@ function socket(stopped: boolean, notices?: Parameters<typeof createSocket>[0]["
   return { handler, client, ended };
 }
 
-it("T53: a socket answers only with the session's proved key, never with a bare device id", async () => {
-  const calls: string[][] = [];
-  const { handler, client } = socket(false, { replay: () => null, seen() {}, decide() {}, block: async () => ({ outcome: "refused", id: "", reason: "record_invalid" }),
-    itsMe: (...args) => { calls.push(args); return true; } });
+it("T53 postponed: a socket refuses It's me even with the session's proved key", async () => {
+  const itsMe = mock(() => true);
+  const { handler, client } = socket(false, { replay: () => null, seen() {}, decide() {}, block: async () => ({ outcome: "refused", id: "", reason: "record_invalid" }), itsMe });
+  const sent = spyOn(client, "send");
   client.data.deviceId = "member";
-  const answer = JSON.stringify({ type: "notice-answer", id: "admission", answer: "its_me" });
-  await handler.message!(client, answer);
-  expect(calls).toEqual([]);
-  client.data.provedKey = "session-key";
-  await handler.message!(client, answer);
-  expect(calls).toEqual([["member", "admission", "session-key"]]);
+  for (const provedKey of [undefined, "session-key"]) {
+    client.data.provedKey = provedKey;
+    await handler.message(client, JSON.stringify({ type: "notice-answer", id: "admission", answer: "its_me" }));
+  }
+  expect(sent.mock.calls.map(([raw]) => JSON.parse(String(raw)).code)).toEqual(["not_supported", "not_supported"]);
+  expect(itsMe).not.toHaveBeenCalled();
 });
 
 it("tells a new connection its features before its snapshot, which waits on herdr, and even when that read fails", async () => {

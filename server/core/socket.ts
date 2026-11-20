@@ -199,9 +199,11 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         return;
       }
       if (message.type === "notice-answer") {
+        if (message.answer === "its_me") {
+          send(client, { type: "error", code: "not_supported", message: "It's me is not available until the app supports it" });
+          return;
+        }
         // "Not me": each block applies at once and is answered with its receipt; one that applied decides the notice (T51).
-        // "It's me" is the join hold's to judge (T53) and decides nothing here
-        if (notices !== undefined && typeof message.id === "string" && message.answer === "its_me" && client.data.deviceId !== undefined && client.data.provedKey) { notices.itsMe(client.data.deviceId, message.id, client.data.provedKey); return; }
         if (notices === undefined || typeof message.id !== "string" || message.answer !== "not_me" || !Array.isArray(message.blocks) || message.blocks.length > 2) return;
         const receipts: BlockReceipt[] = [];
         for (const block of message.blocks) receipts.push(await notices.block(block));
