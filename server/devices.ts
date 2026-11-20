@@ -432,6 +432,11 @@ function pairedHere(device: StoredDevice): boolean {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** What a thrown value says, for a log line; a value that cannot be told says so. */
+function describe(error: unknown): string {
+  try { return error instanceof Error ? error.message : String(error); } catch { return "an error that cannot be described"; }
+}
+
 export class DeviceStore {
   private devices: StoredDevice[] = [];
   /** when the first device was paired: from then on, only this PC, the owner's login, a device or the token get in */
@@ -874,9 +879,11 @@ export class DeviceStore {
       type: "device-paired", event_id: randomBytes(8).toString("hex"), device_id: device.id, label: device.label, enrolled_at: new Date(enrolledAt).toISOString(),
       ...(approver ? { approved_by: { device_id: approver.id, label: approver.label } } : {}),
     };
+    // with the flag off, main's own order: a listener that throws fails the pairing
+    if (this.safety === null) { for (const listener of this.pairings) listener(event, origin); return; }
     // each on its own: one that throws skips nobody else (G14)
     for (const listener of [...this.pairings]) {
-      try { listener(event, origin); } catch (error) { console.warn(`[devices] a pairing listener failed: ${error instanceof Error ? error.message : String(error)}`); }
+      try { listener(event, origin); } catch (error) { console.warn(`[devices] a pairing listener failed: ${describe(error)}`); }
     }
   }
 
@@ -1654,8 +1661,9 @@ export class DeviceStore {
 
   private announceRemoval(device: StoredDevice, by: DeviceRemovedEvent["by"]): void {
     const event: DeviceRemovedEvent = { type: "device-removed", event_id: randomBytes(8).toString("hex"), device_id: device.id, label: device.label, removed_at: new Date().toISOString(), ...(by === undefined ? {} : { by }) };
+    if (this.safety === null) { for (const listener of [...this.removals]) listener(event); return; }
     for (const listener of [...this.removals]) {
-      try { listener(event); } catch (error) { console.warn(`[devices] a removal listener failed: ${error instanceof Error ? error.message : String(error)}`); }
+      try { listener(event); } catch (error) { console.warn(`[devices] a removal listener failed: ${describe(error)}`); }
     }
   }
 
