@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
+import { privateStateFs } from "../private-state.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { join } from "node:path";
@@ -26,6 +27,10 @@ async function atCapacity() {
 }
 
 test("G15/T57/P8: 64 open admissions stop the next phone; ending all 64 admits it", async () => {
+  // This case measures slots, not power-loss durability. Keep the real writes, renames and
+  // snapshot reads without waiting for hundreds of file and directory flushes.
+  const flush = spyOn(privateStateFs, "fsyncSync").mockImplementation(() => {});
+  closes.push(() => flush.mockRestore());
   const { fixture, devices, service, serverId } = await atCapacity();
   const next = accountDeviceId(serverId, keyOf("k-63"));
   for (const notice of devices.openNotices()) {
