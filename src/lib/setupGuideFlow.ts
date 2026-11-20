@@ -77,9 +77,9 @@ export function phoneWay(relay: { unsupported: boolean; status: Pick<RelayStatus
   return relay.status.blocked === null ? "relay" : "other";
 }
 
-/** Device table T70: other devices reach this PC only through the relay when it is bound to its loopback and this page did not come in through Tailscale or a proxy (the routes this setup can see; SSH it cannot). */
+/** Device table T70: other devices reach this PC only through the relay when it is bound to its loopback and this page came in on it directly; any other or unnamed ingress may be a route of its own (SSH this setup cannot see). */
 export function relayOnlyPc(summary: Pick<SecuritySummary, "bind_scope" | "observed_ingress">): boolean {
-  return summary.bind_scope === "loopback" && !["tailscale", "funnel", "proxy"].includes(summary.observed_ingress);
+  return summary.bind_scope === "loopback" && summary.observed_ingress === "direct";
 }
 
 export type PhoneBoxOpening = "tap" | "first-run";
