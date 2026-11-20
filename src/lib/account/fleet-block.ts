@@ -34,10 +34,18 @@ export interface FleetBlock {
 /** `answer` is what PC `serverId` said over its own channel; anything else, or a receipt for a block not sent, changes nothing. */
 export function withBlockReceipt(fleet: FleetBlock, serverId: string, answer: unknown): FleetBlock {
   if (!fleet.outcomes.has(serverId)) return fleet;
-  let receipt;
-  try { receipt = parseBlockReceipt(answer); } catch { return fleet; }
-  if (!fleet.ids.includes(receipt.id)) return fleet;
+  const receipt = matchingReceipt(fleet.ids, answer);
+  if (receipt === undefined) return fleet;
   return { ...fleet, outcomes: new Map(fleet.outcomes).set(serverId, blockOutcome(serverId, receipt)) };
+}
+
+function matchingReceipt(ids: readonly string[], answer: unknown) {
+  try {
+    const receipt = parseBlockReceipt(answer);
+    return ids.includes(receipt.id) ? receipt : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** One PC's transport for blocks (its notice-answer or POST /api/account/records): the receipts that PC itself sent back. */
@@ -58,19 +66,27 @@ export async function sendBlocks(blocks: readonly BlockRecord[], options: {
   const tries = options.tries ?? 3;
   const relayed = options.relayed ?? new Map<string, BlockSend>();
   let fleet: FleetBlock = { ids: blocks.map((block) => block.id), outcomes: new Map([...options.pcs.keys(), ...relayed.keys()].map((serverId) => [serverId, { server_id: serverId, state: "waiting" as const }])) };
-  const toPc = async (serverId: string, send: BlockSend): Promise<void> => {
-    for (let attempt = 1; attempt <= tries; attempt++) {
+  const toPc = async (serverId: string, send: BlockSend, counted: boolean): Promise<void> => {
+    let replied = false;
+    for (let attempt = 0; attempt < tries; attempt++) {
       let receipts: readonly unknown[];
-      try { receipts = await send(blocks); } catch {
-        if (attempt === tries) fleet = { ...fleet, outcomes: new Map(fleet.outcomes).set(serverId, { server_id: serverId, state: "unreachable" }) };
-        continue;
+      try { receipts = await send(blocks); } catch { continue; }
+      replied = true;
+      let matched = false;
+      for (const answer of receipts) {
+        const receipt = matchingReceipt(fleet.ids, answer);
+        if (receipt === undefined) continue;
+        matched = true;
+        if (counted) fleet = { ...fleet, outcomes: new Map(fleet.outcomes).set(serverId, blockOutcome(serverId, receipt)) };
       }
-      for (const receipt of receipts) fleet = withBlockReceipt(fleet, serverId, receipt);
-      return;
+      if (matched) return;
+    }
+    if (!replied && tries > 0 && (counted || !options.pcs.has(serverId))) {
+      fleet = { ...fleet, outcomes: new Map(fleet.outcomes).set(serverId, { server_id: serverId, state: "unreachable" }) };
     }
   };
   const service = options.service(blocks).catch((error: unknown) => { console.warn("Ovis: the account service did not take the block", error instanceof Error ? error.name : error); });
-  const deliver = [...relayed].map(([, send]) => send(blocks).then(() => undefined, () => undefined));
-  await Promise.all([...[...options.pcs].map(([serverId, send]) => toPc(serverId, send)), ...deliver, service]);
+  const deliver = [...relayed].map(([serverId, send]) => toPc(serverId, send, false));
+  await Promise.all([...[...options.pcs].map(([serverId, send]) => toPc(serverId, send, true)), ...deliver, service]);
   return fleet;
 }
