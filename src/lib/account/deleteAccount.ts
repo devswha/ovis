@@ -22,6 +22,12 @@ export async function deleteAccount(options: { service: AccountService; accountS
     only: (current) => current === undefined || sameSignIn(current, options.session), spare: ["pending"],
     unsent: (entry) => entry.account !== options.session.account,
   });
+  // the deleted account's unsent blocks go even when a sign-in took its place meanwhile: no sign-in can send them now
+  await options.accountStore.update("unsent_blocks", (current) => {
+    if (current === undefined) return undefined;
+    const kept = Object.fromEntries(Object.entries(current).filter(([, entry]) => entry.account !== options.session.account));
+    return Object.keys(kept).length === 0 ? undefined : kept;
+  });
 }
 
 /**

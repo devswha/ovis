@@ -20,7 +20,7 @@ import { ownWindowSignIn, useOwnWindowRedirect } from "../lib/account/ownWindow.
 import { AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, pcAccountServiceOf, sameSignIn, SignedOutError, type AccountIdentity, type AccountService, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
-import { postKept, unsentBlocks } from "../lib/account/unsentBlocks.ts";
+import { postKept, refusalShown, unsentBlocks, type UnsentBlocks } from "../lib/account/unsentBlocks.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
@@ -1135,18 +1135,31 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
   // S32-1: a block that has not reached the account is sent only by a later sign-in to it, so a sign-out asks first while
   // any waits, or while that cannot be read (the queue itself stays either way).
   // The question belongs to the sign-in that asked: a switch to another one voids it.
-  const [unsentAsked, setUnsentAsked] = useState<{ readonly session: AccountSession; readonly state: "waiting" | "unknown" | "retry" | "refused" } | null>(null);
+  // A final refusal (`refused`, by record id) is said before the sign-out, and leaves the store once said.
+  const [unsentAsked, setUnsentAsked] = useState<{ readonly session: AccountSession; readonly state: "waiting" | "unknown" | "retry" | "refused"; readonly refused?: readonly string[] } | null>(null);
+  useEffect(() => {
+    if (unsentAsked?.state !== "refused" || unsentAsked.refused === undefined) return;
+    void refusalShown(indexedAccountStore, unsentAsked.session.account, unsentAsked.refused)
+      .catch((error: unknown) => console.warn("Ovis: a shown refusal could not be cleared", error instanceof Error ? error.name : error));
+  }, [unsentAsked]);
+  /** Says the final refusals `entries` hold, if any; whether there were. */
+  const sayRefused = (session: AccountSession, entries: readonly UnsentBlocks[]): boolean => {
+    const refused = entries.filter((entry) => entry.refused === true).flatMap((entry) => entry.records.map((record) => record.id));
+    if (refused.length > 0) setUnsentAsked({ session, state: "refused", refused });
+    return refused.length > 0;
+  };
   const signOut = (): void => {
     void indexedAccountStore.get("session").then(async (session) => {
       if (session === undefined) { endSignIn(); return; }
-      let waiting: number;
-      try { waiting = (await unsentBlocks(indexedAccountStore, session)).length; }
+      let entries: UnsentBlocks[];
+      try { entries = await unsentBlocks(indexedAccountStore, session); }
       catch (error) {
         console.warn("Ovis: the unsent blocks could not be read", error instanceof Error ? error.name : error);
         setUnsentAsked({ session, state: "unknown" });
         return;
       }
-      if (waiting > 0) setUnsentAsked({ session, state: "waiting" }); else endSignIn(session);
+      if (entries.some((entry) => entry.refused !== true)) setUnsentAsked({ session, state: "waiting" });
+      else if (!sayRefused(session, entries)) endSignIn(session);
     }, () => endSignIn());
   };
   /** The asking sign-in, while it is still the stored one; otherwise the question goes and nothing happens. */
@@ -1160,19 +1173,19 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
     const session = await stillAsking();
     if (session === null) return;
     const service = indexedAccountService.forSignIn(session);
-    let refused = false;
+    let entries: UnsentBlocks[];
     try {
       for (const entry of await unsentBlocks(indexedAccountStore, session)) {
-        if (await postKept(indexedAccountStore, session, entry.records, (record) => service.postSafetyRecord(record)) === "refused") refused = true;
+        if (entry.refused !== true) await postKept(indexedAccountStore, session, entry.records, (record) => service.postSafetyRecord(record));
       }
+      entries = await unsentBlocks(indexedAccountStore, session);
     } catch (error) {
       console.warn("Ovis: the account service did not confirm the block", error instanceof Error ? error.name : error);
       setUnsentAsked({ session, state: "retry" });
       return;
     }
-    // a final refusal is said; the person decides whether to sign out anyway
-    if (refused) setUnsentAsked({ session, state: "refused" });
-    else endSignIn(session);
+    // a final refusal, this send's or an earlier one's, is said; the person decides whether to sign out anyway
+    if (!sayRefused(session, entries)) endSignIn(session);
   };
   const checkAgain = async (): Promise<void> => {
     if (await stillAsking() === null) return;
