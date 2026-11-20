@@ -2542,7 +2542,13 @@ export class DeviceStore {
   }
 
   /** An admission notice was decided ("Not me" applied, T51): it leaves `open`. */
-  decideNotice(id: string): void { this.journal?.decide(id); }
+  decideNotice(id: string, replay = false): void {
+    if (replay) {
+      const notice = this.openNotices().find(entry => entry.id === id);
+      if (!notice?.key || this.failsClosed || this.rowsOfKey(notice.key).length > 0) return;
+    }
+    this.journal?.decide(id);
+  }
 
   revoke(id: string, by: DeviceRemovedEvent["by"] = "pc"): boolean {
     this.assertWritable();
