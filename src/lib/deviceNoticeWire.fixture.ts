@@ -1,8 +1,8 @@
 import type { DeviceNotice } from "../../shared/account-devices-api.ts";
-import type { ServerMessage } from "../../shared/protocol.ts";
+import type { ServerFeature, ServerMessage } from "../../shared/protocol.ts";
 
 export const DEVICE_NOTICE_FEATURE = "account-opens-all/1";
-export const NOTICE_SNAPSHOT = { workspaces: [], panes: [], agents: [], tabs: [], layouts: [], herdr_lifetime: "new" };
+export const NOTICE_SNAPSHOT = { version: "test", protocol: 22, workspaces: [], panes: [], agents: [], tabs: [], layouts: [], herdr_lifetime: "new" };
 
 export const deviceNotice = (changes: Partial<DeviceNotice> = {}): DeviceNotice => ({
   seq: 1, id: "a".repeat(32), at: "2026-11-20T04:00:00.000Z", kind: "admit", how: "list",
@@ -18,7 +18,7 @@ export class DeviceNoticeWire extends EventTarget {
   close() { this.readyState = 3; this.dispatchEvent(new CloseEvent("close", { code: 1000 })); }
   open() { this.readyState = 1; this.dispatchEvent(new Event("open")); }
   read(message: ServerMessage) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(message) })); }
-  snapshot(features: readonly string[] = [DEVICE_NOTICE_FEATURE]) {
+  snapshot(features: readonly ServerFeature[] = [DEVICE_NOTICE_FEATURE]) {
     this.read({ type: "snapshot", snapshot: NOTICE_SNAPSHOT, features: [...features] });
   }
   seen() { return this.sent.filter((message) => message.type === "notice-seen"); }

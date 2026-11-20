@@ -7,6 +7,8 @@ import { noticeSeen, withNoticeAcked, withNoticeDecided, withNoticeReplay, type 
 /** What this hook needs of a PC's socket (HerdrSocket): its frames, and a send that only a PC offering it takes. */
 export interface NoticeSocket {
   on(handler: (message: ServerMessage) => void): () => void;
+  onDisconnect(handler: () => void): () => void;
+  accountOpensAll(): boolean;
   sendNotice(message: NoticeSeen | NoticeAnswer): boolean;
 }
 
@@ -15,30 +17,41 @@ export interface NoticeSocket {
  * up to the newest one shown once that PC takes it, and dismissed here only; a dismiss sends nothing, and an open
  * admission is not dismissed (it stays until its PC says it was decided).
  */
-export function useDeviceNotices(sockets: readonly { id: string; socket: NoticeSocket }[]) {
+export function useDeviceNotices(sockets: readonly { id: string; socket: NoticeSocket }[], selectedPcId: string) {
   const [byPc, setByPc] = useState<ReadonlyMap<string, PcNotices>>(new Map());
-  const key = sockets.map(({ id }) => id).join(" ");
   useEffect(() => {
-    const offs = sockets.map(({ id, socket }) => socket.on((message) => {
-      if (message.type !== "device-notice-replay" && message.type !== "device-notice") return;
-      setByPc((current) => {
-        const was = current.get(id);
-        const replay = message.type === "device-notice-replay" ? message.replay : { notices: [message.notice], cut: was?.cut ?? 0 };
-        return new Map(current).set(id, withNoticeReplay(was, replay));
+    const offs = sockets.flatMap(({ id, socket }) => {
+      const clear = () => setByPc((current) => {
+        const notices = current.get(id);
+        if (notices === undefined || (notices.notices.length === 0 && notices.cut === 0)) return current;
+        return new Map(current).set(id, { ...notices, notices: [], cut: 0 });
       });
-    }));
+      return [socket.onDisconnect(clear), socket.on((message) => {
+        if (!socket.accountOpensAll()) {
+          if (message.type === "features" || message.type === "snapshot") clear();
+          return;
+        }
+        if (message.type !== "device-notice-replay" && message.type !== "device-notice") return;
+        setByPc((current) => {
+          const was = current.get(id);
+          const replay = message.type === "device-notice-replay" ? message.replay : { notices: [message.notice], cut: was?.cut ?? 0 };
+          return new Map(current).set(id, withNoticeReplay(was, replay));
+        });
+      })];
+    });
     return () => { for (const off of offs) off(); };
-  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sockets]);
+  const selectedSocket = sockets.find(({ id }) => id === selectedPcId)?.socket;
+  const shown = byPc.get(selectedPcId);
+  const seenSeq = shown === undefined ? undefined : noticeSeen(shown)?.seq;
   useEffect(() => {
-    let acked: Map<string, PcNotices> | null = null;
-    for (const { id, socket } of sockets) {
-      const notices = byPc.get(id);
-      const seen = notices === undefined ? null : noticeSeen(notices);
-      if (notices === undefined || seen === null || !socket.sendNotice(seen)) continue;
-      (acked ??= new Map(byPc)).set(id, withNoticeAcked(notices, seen.seq));
-    }
-    if (acked !== null) setByPc(acked);
-  }, [byPc, key]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (seenSeq === undefined || !selectedSocket?.sendNotice({ type: "notice-seen", seq: seenSeq })) return;
+    setByPc((current) => {
+      const notices = current.get(selectedPcId);
+      if (notices === undefined) return current;
+      return new Map(current).set(selectedPcId, withNoticeAcked(notices, seenSeq));
+    });
+  }, [seenSeq, selectedPcId, selectedSocket]);
   const dismiss = useCallback((id: string, notice: DeviceNotice) => {
     setByPc((current) => {
       const notices = current.get(id);

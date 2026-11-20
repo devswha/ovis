@@ -402,6 +402,8 @@ export class HerdrSocket {
       }
     });
 
+    let earlyNoticeOffer = false;
+    let pendingNoticeReplay: Extract<ServerMessage, { type: "device-notice-replay" }> | undefined;
     socket.addEventListener("message", (event) => {
       if (this.socket !== socket) return;
       this.trace.flush();
@@ -529,7 +531,21 @@ export class HerdrSocket {
         this.resolveRequest(message.id, message.ok ? { ok: true } : { ok: false, code: message.code ?? "insert_failed", message: message.message ?? "the pane did not take the text" });
       }
       // A terminal/parser failure is not malformed JSON and must not disappear.
+      if (message.type === "features" && !this.featuresKnown) {
+        earlyNoticeOffer = message.features?.includes(ACCOUNT_OPENS_ALL_CAPABILITY) === true;
+        if (!earlyNoticeOffer) pendingNoticeReplay = undefined;
+      }
+      if ((message.type === "device-notice" || message.type === "device-notice-replay") && !this.accountOpensAll()) {
+        // A first-connect offer can precede its trusted snapshot; never retain a replay without that offer.
+        if (earlyNoticeOffer && !this.featuresKnown && message.type === "device-notice-replay") pendingNoticeReplay = message;
+        return;
+      }
       this.emit(message);
+      if (this.featuresKnown && pendingNoticeReplay !== undefined) {
+        const replay = pendingNoticeReplay;
+        pendingNoticeReplay = undefined;
+        if (this.accountOpensAll()) this.emit(replay);
+      }
       for (const paneId of unwatched) this.emit({ type: "watch-end", pane_id: paneId });
     });
 

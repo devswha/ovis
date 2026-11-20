@@ -79,6 +79,8 @@ it("T57, P15: Laptop's pane never shows Desk's device notice", async () => {
     expect(cards).toHaveLength(1);
     expect(JSON.stringify(tree.toJSON())).toContain("Laptop phone");
     expect(JSON.stringify(tree.toJSON())).not.toContain("Desk phone");
+    expect(laptop.seen()).toEqual([{ type: "notice-seen", seq: 1 }]);
+    expect(desk.seen()).toEqual([]);
   } finally {
     await act(async () => { tree?.unmount(); });
     sessions.mockRestore();

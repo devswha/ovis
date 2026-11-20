@@ -334,7 +334,7 @@ export function App() {
   const rowStore = browserStorage();
   const rowOn = rowFacts && rowStore !== null && setupRowState(rowStore) === "on";
   const noticeSockets = machines.flatMap((machine) => { const socket = machineSessions.peek(machine.id)?.socket; return socket === undefined ? [] : [{ id: machine.id, socket }]; });
-  const deviceNotices = useDeviceNotices(noticeSockets);
+  const deviceNotices = useDeviceNotices(noticeSockets, selectedMachineId);
   const selectedNotices = deviceNotices.byPc.get(selectedMachineId);
   const otherDevicePaired = useOtherDevice(rowOn, [...pairedNotices, ...removedNotices].map((notice) => notice.event_id).join(" "), true);
   const alertsHealth = usePushHealth();

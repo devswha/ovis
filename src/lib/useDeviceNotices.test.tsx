@@ -19,7 +19,7 @@ describe("device notices on the real PC socket", () => {
   let result: ReturnType<typeof useDeviceNotices> | undefined;
 
   function Probe({ socket }: { socket: HerdrSocket }) {
-    result = useDeviceNotices([{ id: "desk", socket }]);
+    result = useDeviceNotices([{ id: "desk", socket }], "desk");
     return null;
   }
 
@@ -82,7 +82,7 @@ describe("device notices on the real PC socket", () => {
   it("T57, G5: the capability snapshot acknowledges offered replay, never a subsequent dismiss", async () => {
     const { wire, socket } = await connect();
     await act(async () => {
-      wire.read({ type: "features", herdr_lifetime: "new", features: [DEVICE_NOTICE_FEATURE] });
+      wire.read({ type: "features", herdr_lifetime: "new", connection: "desk-1", features: [DEVICE_NOTICE_FEATURE] });
       wire.read({ type: "device-notice-replay", replay: { notices: [deviceNotice(), method], cut: 0 } });
     });
     expect(socket.accountOpensAll()).toBe(false);
@@ -143,6 +143,8 @@ class FakeSocket implements NoticeSocket {
   offers = true;
   private readonly handlers = new Set<(message: ServerMessage) => void>();
   on(handler: (message: ServerMessage) => void) { this.handlers.add(handler); return () => { this.handlers.delete(handler); }; }
+  onDisconnect() { return () => {}; }
+  accountOpensAll() { return this.offers; }
   sendNotice(message: NoticeSeen | NoticeAnswer) { if (!this.offers) return false; this.sent.push(message); return true; }
   receive(message: ServerMessage) { for (const handler of this.handlers) handler(message); }
 }
@@ -159,7 +161,7 @@ describe("each PC's device notices in the app", () => {
   });
 
   function Probe({ sockets }: { sockets: readonly { id: string; socket: NoticeSocket }[] }) {
-    seen = useDeviceNotices(sockets);
+    seen = useDeviceNotices(sockets, "desk");
     return null;
   }
 
