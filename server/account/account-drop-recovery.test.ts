@@ -47,6 +47,18 @@ const recoveryFiles = (dir: string) => Object.fromEntries(RECOVERY_FILES.map(nam
   return [name, existsSync(path) ? readFileSync(path, "utf8") : null];
 }));
 
+test("P8: an invalid listed count cannot finish recovery with a missing registry", async () => {
+  const { fixture } = await listedPc();
+  const dir = fixture.stateDir;
+  fixture.app.stop();
+  rmSync(join(dir, ACCOUNT_DEVICES_FILE));
+  const intent = join(dir, "revoke-all.json");
+  writePrivateState(intent, { id: "fixture", by: "pc", at: new Date().toISOString(), rows: [], listed: "1" });
+  const devices = restartOffline(dir);
+  expect(existsSync(intent)).toBe(true);
+  expect(devices.failsClosed).toBe(true);
+});
+
 /** A live listed row, a Revoke-all stopped before its receipt, then one start that cannot read the listed registry. */
 async function revokeAllAcrossUnreadableRows() {
   const { fixture, device, serverId } = await listedPc();
