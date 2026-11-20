@@ -33,6 +33,19 @@ it("T53: a socket answers It's me only with the session's proved key, never with
   expect(sent).not.toHaveBeenCalled();
 });
 
+it("T53: an It's me the PC cannot record (its journal or registry write throws) keeps the connection and says the notice stays open", async () => {
+  const { handler, client } = socket(false, { replay: () => null, seen() {}, decide() {}, open: () => undefined, mayAnswer: () => false, block: async () => ({ outcome: "refused", id: "", reason: "record_invalid" }),
+    itsMe: () => { throw new Error("EIO"); } });
+  const sent = spyOn(client, "send");
+  const logged = spyOn(console, "error").mockImplementation(() => {});
+  client.data.deviceId = "member";
+  client.data.provedKey = "session-key";
+  try {
+    await handler.message(client, JSON.stringify({ type: "notice-answer", id: "admission", answer: "its_me" }));
+  } finally { logged.mockRestore(); }
+  expect(sent.mock.calls.map(([raw]) => JSON.parse(String(raw)).code)).toEqual(["notice_decision_failed"]);
+});
+
 it("flag off: a socket ignores It's me as before, without answering", async () => {
   const itsMe = mock(() => true);
   const { handler, client } = socket(false, { replay: () => null, seen() {}, decide() {}, open: () => undefined, mayAnswer: () => false, block: async () => ({ outcome: "refused", id: "", reason: "record_invalid" }), itsMe }, false);
