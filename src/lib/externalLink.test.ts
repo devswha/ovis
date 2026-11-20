@@ -38,6 +38,59 @@ describe("openExternal", () => {
   });
 });
 
+describe("the desktop app's browser for links", () => {
+  /** Runs `run` in a page the desktop app gave its ovisBrowsers bridge, and gives back what reached it, a new tab's link and window.open. */
+  function inDesktopApp(run: () => void): { bridged: string[]; tabs: unknown[][] } {
+    const bridged: string[] = [];
+    const tabs: unknown[][] = [];
+    const originals = { window: Object.getOwnPropertyDescriptor(globalThis, "window"), document: Object.getOwnPropertyDescriptor(globalThis, "document") };
+    const ovisBrowsers = { list: async () => null, choose: async () => {}, open: (url: string) => { bridged.push(url); } };
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { ovisBrowsers, open: (...args: unknown[]) => { tabs.push(args); return null; } } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: () => {
+      const link = { href: "", target: "", rel: "", click: () => tabs.push([link.href, link.target, link.rel]) };
+      return link;
+    } } });
+    try {
+      run();
+    } finally {
+      for (const name of ["window", "document"] as const) {
+        if (originals[name]) Object.defineProperty(globalThis, name, originals[name]);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+    }
+    return { bridged, tabs };
+  }
+
+  it("hands a web link to the app, and keeps sign-ins, Ovis pages and other schemes on the system browser's path", () => {
+    const { bridged, tabs } = inDesktopApp(() => {
+      openExternal("https://example.com/", "link");
+      openExternal("https://github.com/login/device", "sign-in");
+      openExternal("mailto:team@ovis.sh", "link");
+    });
+    expect(bridged).toEqual(["https://example.com/"]);
+    expect(tabs).toEqual([["https://github.com/login/device", "_blank", "noopener noreferrer"], ["mailto:team@ovis.sh", "_blank", "noopener,noreferrer"]]);
+  });
+
+  it("takes over a plain click on a web ExternalLink only", () => {
+    const click = (props: Parameters<typeof ExternalLink>[0], event: { button: number; defaultPrevented?: boolean }) => {
+      const fired = { ...event, defaultPrevented: event.defaultPrevented ?? false, preventDefault() { fired.defaultPrevented = true; } };
+      (ExternalLink(props).props as { onClick: (event: unknown) => void }).onClick(fired);
+      return fired.defaultPrevented;
+    };
+    let seen = 0;
+    const { bridged } = inDesktopApp(() => {
+      expect(click({ kind: "link", href: "https://ovis.sh/", onClick: () => { seen++; } }, { button: 0 })).toBe(true);
+      expect(click({ kind: "link", href: "https://ovis.sh/middle" }, { button: 1 })).toBe(false);
+      expect(click({ kind: "sign-in", href: "https://github.com/login/device" }, { button: 0 })).toBe(false);
+      expect(click({ kind: "ovis", href: "https://pc.example/" }, { button: 0 })).toBe(false);
+      expect(click({ kind: "link", href: "mailto:team@ovis.sh" }, { button: 0 })).toBe(false);
+      expect(click({ kind: "link", href: "https://ovis.sh/handled" }, { button: 0, defaultPrevented: true })).toBe(true);
+    });
+    expect(bridged).toEqual(["https://ovis.sh/"]);
+    expect(seen).toBe(1);
+  });
+});
+
 describe("reserveTab", () => {
   it("opens a blank tab the page it is sent to has no handle on, or answers null when the browser blocks it", () => {
     const tab = { opener: {} as unknown };
