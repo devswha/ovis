@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
 import { DeviceStore, readDeviceRegistry } from "../devices.ts";
 import { relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
+import { loadRelayIdentity, savedServerId } from "../relay/identity.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
@@ -320,6 +321,10 @@ describe("a safe PC state before any listener (T41, T48)", () => {
 
   test("T48: a sibling folder of another relay identity merges none of its rows into this PC", async () => {
     const [dir, sibling] = [stateDir(), stateDir()];
+    // two PCs: each folder holds its own saved relay identity
+    loadRelayIdentity(dir);
+    loadRelayIdentity(sibling);
+    expect(savedServerId(dir)).not.toBe(savedServerId(sibling));
     const own = relayFixture(false, { stateDir: dir, accountOpensAll: true });
     own.app.stop();
     const other = relayFixture(false, { stateDir: sibling, accountOpensAll: true });
