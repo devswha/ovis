@@ -112,6 +112,7 @@ async function dragged(coordinator: ReorderCoordinator, moves: ReturnType<typeof
   await done;
 }
 const flush = () => new Promise<void>((resolve) => queueMicrotask(resolve));
+const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
 /** a proof endpoint that, like the demo's and a remote PC's, answers at most once per second and refuses with null */
 function interval() {
   let last = -Infinity;
@@ -504,6 +505,54 @@ describe("ReorderCoordinator", () => {
     coordinator.roster([entry("remote", B, "E2", 1)], event);
     await flush();
     expect(proof.requests).toEqual(["0:E1:start", "1101:E2:start"]);
+    expect(coordinator.order("remote", O)).toEqual(B);
+  });
+
+  test("a delayed older read of the server lifetime read before the move spends no verification", async () => {
+    const proof = interval();
+    const coordinator = new ReorderCoordinator({ verify: proof.verify });
+    const moves = mover();
+    coordinator.roster([entry("remote", O, "before", 5)], { kind: "load", started: coordinator.loadStarted() });
+    const done = coordinator.reorder("remote", O, A, moves.move);
+    const step = await moves.next();
+    coordinator.roster([entry("remote", O, "before", 4)], event);
+    proof.boot = "moved"; proof.ids = A;
+    step.resolve({ ok: true, order_epoch: "moved", moved_seq: 1 });
+    await done;
+    proof.clock = 1; proof.boot = "restart"; proof.ids = B;
+    coordinator.roster([entry("remote", B, "restart", 1)], event);
+    await flush();
+    expect(proof.requests).toEqual(["1:restart:start"]);
+    expect(coordinator.order("remote", O)).toEqual(B);
+  });
+
+  test("a later read of a server lifetime a verification already answered for asks no second one", async () => {
+    const proof = interval();
+    const reading = Promise.withResolvers<void>();
+    let calls = 0;
+    const coordinator = new ReorderCoordinator({ verify: async () => {
+      if (++calls === 1) await reading.promise;
+      return proof.verify();
+    } });
+    const moves = mover();
+    coordinator.roster([entry("remote", O, "E1", 0)], event);
+    const done = coordinator.reorder("remote", O, ["c", "b", "a"], moves.move).catch((error: unknown) => error);
+    const first = await moves.next();
+    proof.ids = movedTabOrder(O, first.step.workspaceId, first.step.insertIndex)!;
+    first.resolve({ ok: true, order_epoch: "E1", moved_seq: 1 });
+    const second = await moves.next();
+    coordinator.roster([entry("remote", O, "earlier", 4)], event);
+    coordinator.roster([entry("remote", A, "earlier", 5)], event);
+    reading.resolve();
+    await drain();
+    proof.clock = 1100;
+    second.reject(new Error("herdr refused"));
+    expect(await done).toBeInstanceOf(Error);
+    await drain();
+    proof.clock = 1101; proof.boot = "restart"; proof.ids = B;
+    coordinator.roster([entry("remote", B, "restart", 1)], event);
+    await drain();
+    expect(proof.requests).toEqual(["0:E1:start", "1101:restart:start"]);
     expect(coordinator.order("remote", O)).toEqual(B);
   });
 

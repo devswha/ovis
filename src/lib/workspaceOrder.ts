@@ -96,8 +96,6 @@ const evidenceOf = (snapshot: OrderRosterEntry["snapshot"]): Evidence | null =>
   snapshot && typeof snapshot.order_epoch === "string" && snapshot.order_epoch !== "" && Number.isSafeInteger(snapshot.read_seq) && snapshot.read_seq! >= 0
     ? { epoch: snapshot.order_epoch, seq: snapshot.read_seq! } : null;
 
-const sameEvidence = (a: Evidence, b: Evidence | null): boolean => !!b && a.epoch === b.epoch && a.seq === b.seq;
-
 interface Hold {
   epoch: string | null;
   receipts: number;
@@ -123,8 +121,8 @@ interface PcOrder {
   waiters: { generation: number; resolve: (ids: string[]) => void; reject: (error: Error) => void }[];
   gone: boolean;
   check: { key: string; abort: AbortController } | null;
-  /** the evidence the last answered verification was asked for: asking again for it would spend the PC's interval for nothing */
-  answered: Evidence | null;
+  /** the server lifetime the last answered verification was asked about: asking again would spend the PC's interval for nothing */
+  answered: string | null;
 }
 
 export class ReorderCoordinator {
@@ -223,7 +221,7 @@ export class ReorderCoordinator {
       if (pc.check !== check) return;
       pc.check = null;
       if (answer && !check.abort.signal.aborted && key === `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.generation}:${pc.protectedEpoch}`) {
-        pc.answered = evidence;
+        pc.answered = evidence.epoch;
         this.proved(id, pc, answer);
       }
     }, () => { if (pc.check === check) pc.check = null; });
@@ -322,12 +320,12 @@ export class ReorderCoordinator {
   /**
    * A roster that arrived while the moves were on their way was let through or had its check cut short by a later receipt.
    * Once they settle it is checked as one arriving now would be: one of another server lifetime may come from a restart
-   * after a move. Not when its evidence is the one read when the newest move with a receipt was sent (older than that
-   * receipt, also when an event repeats it), nor when a verification already answered for it.
+   * after a move. Not when it is of the server lifetime read when the newest move with a receipt was sent (no restart
+   * since; also a repeated or delayed older read), nor of one a verification already answered about.
    */
   private recheck(machineId: string, pc: PcOrder, sent: Evidence | null): void {
     const last = pc.last?.evidence;
-    if (!last || pc.retired.has(last.epoch) || sameEvidence(last, sent) || sameEvidence(last, pc.answered)) return;
+    if (!last || pc.retired.has(last.epoch) || last.epoch === sent?.epoch || last.epoch === pc.answered) return;
     this.mismatch(machineId, pc, last);
   }
 }
