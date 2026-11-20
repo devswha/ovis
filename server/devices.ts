@@ -858,6 +858,10 @@ export class DeviceStore {
    * Holds and account removals always deny the key; only a pairing on this PC can end a local Revoke (P13).
    */
   admits(key: string | undefined, confirm?: ConfirmProof, options?: { pairingHere?: boolean }): boolean {
+    return this.admissionAllowed(key, confirm, options);
+  }
+
+  private admissionAllowed(key: string | undefined, proof: ConfirmProof | "list" | undefined, options?: { pairingHere?: boolean }): boolean {
     if (this.failsClosed) return false;
     const state = this.safety?.state();
     if (state === undefined) return true;
@@ -866,6 +870,7 @@ export class DeviceStore {
       if (!options?.pairingHere && (this.isTombstoned(key) || (this.evidence?.standingRevokes(key).length ?? 0) > 0)) return false;
     }
     // only a proof admitConfirmed minted from a live reservation counts: a hand-built one passes nothing
+    const confirm = proof === "list" ? undefined : proof;
     const confirmed = confirm !== undefined && MINTED_PROOFS.has(confirm) && key !== undefined && confirm.key === key;
     // a locked PC admits only the key approved on its own screen (P11); a recover admit is ended by the lock (P22)
     if (state.locked && !(confirmed && confirm.source === "screen")) return false;
@@ -873,11 +878,14 @@ export class DeviceStore {
     // a key confirm on this PC's own screen, or ovis recover --admit, of this very key passes a freeze (P23, rule R1)
     if (confirmed) return true;
     const rows = key === undefined ? [] : this.devices.filter((d) => d.relay_public_key === key);
+    // Only retaining a current list admission can use its age: a new pairing or readmission cannot inherit it.
+    const listed = proof === "list" && key !== undefined ? this.joinedRows?.rowsByKey(key).find(candidate => candidate.state !== "expired") : undefined;
+    if (listed) rows.push(this.joinedAsStored(listed));
     return state.freezes.every(({ record, asof }) => {
       if (key === record.target) return false;
       if (record.kind === "freeze") {
-        const no = key === undefined ? null : this.accountOrder?.no(key);
-        return key !== undefined && no != null && !this.accountOrder?.late(key) && no <= record.after;
+        const no = key === undefined ? null : this.accountOrder?.no(key) ?? listed?.no;
+        return key !== undefined && no != null && this.accountOrder?.late(key) === false && no <= record.after;
       }
       return rows.length > 0 && rows.every((row) => !this.newerThanFreeze(row, asof));
     });
@@ -899,7 +907,7 @@ export class DeviceStore {
 
   /** A list read is not local pairing: it cannot supersede any standing removal. */
   admitsFromList(key: string, account: string): boolean {
-    return this.admits(key) && !this.isTombstoned(key) && !this.coveredByEvidence({ relay_public_key: key, account });
+    return this.admissionAllowed(key, "list") && !this.isTombstoned(key) && !this.coveredByEvidence({ relay_public_key: key, account });
   }
 
   /** Hears every key a deny takes, in the deny turn, rows or not (Revoke, account remove, block, Revoke all). */
