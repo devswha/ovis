@@ -4,11 +4,11 @@ import { accountDeviceId, exportAccountKey } from "../../shared/account-records.
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
-import { relayAccountFixture, type relayFixture, type TestClock } from "../relay/test-helpers.ts";
+import { relayAccountFixture, type TestClock } from "../relay/test-helpers.ts";
 
 export const ACCOUNT = "acct_1";
 
-export async function registerSnapshotPc(service: FakeAccountService, fixture: ReturnType<typeof relayFixture>) {
+export async function registerSnapshotPc(service: FakeAccountService, fixture: { readonly stateDir: string }) {
   const identity = rotateRelayIdentity(fixture.stateDir);
   await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${service.issueToken(ACCOUNT)}` },
     body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
