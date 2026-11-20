@@ -78,9 +78,9 @@ export function connectTabs({ sshOffered, relay, readOnly }: { sshOffered: boole
 }
 
 /**
- * The tab the dialog shows until one is picked: a phone mostly pairs itself; a PC's window the relay, but only where the
- * page has the Ovis account. Without it the relay tab is the relay's own pairing, which makes a code as it opens and
- * would replace one another window shows, so the window opens on the first way that asks nothing of the PC.
+ * The tab the dialog shows until one is picked: a phone mostly pairs itself (Phones and devices, which opens on the relay
+ * where the window has it); a PC's window the relay, but only where the page has the Ovis account. Without it the relay
+ * tab is the relay's own pairing, so the window opens on the first way that adds a PC instead.
  */
 export function openingTab({ tabs, phone, noticeWaiting, hasAccount }: { tabs: readonly ConnectTab[]; phone: boolean; noticeWaiting: boolean; hasAccount: boolean }): ConnectTab {
   if (noticeWaiting && hasAccount && tabs.includes("relay")) return "relay";
