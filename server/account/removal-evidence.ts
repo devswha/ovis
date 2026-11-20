@@ -103,6 +103,14 @@ export class RemovalEvidence {
     return this.problem === null ? null : `${this.problem}: only this PC itself gets in until the removal evidence is restored.`;
   }
 
+  /** Before serving: a replay that cannot finish stays strict until a fresh start can retry it. */
+  recover(replay: () => void): void {
+    try { replay(); } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      this.problem = `Cannot finish removal recovery for ${this.path} (${error.message})`;
+    }
+  }
+
   private forgets(key: string, account: string): readonly string[] { return this.log?.forgets(key, account) ?? []; }
 
   private removalStands(marker: Marker, removal: Removal): boolean {
@@ -119,6 +127,8 @@ export class RemovalEvidence {
   }
 
   standingRevokes(key: string): Revoke[] { return this.doc.revokes.filter((r) => r.key === key && this.revokeStands(r)); }
+
+  get rowDrops(): readonly RowDrop[] { return this.doc.row_drops ?? []; }
 
   dropFor(row: string, admission: number): RowDrop | undefined {
     return this.doc.row_drops?.find(drop => drop.row === row && drop.admit_no === admission);
@@ -192,6 +202,8 @@ export class RemovalEvidence {
     const at = new Date(now).toISOString();
     for (const tombstone of tombstones) {
       if (tombstone.record_id === "local") {
+        // The compatibility projection of a standing Revoke is not a second Revoke to import.
+        if (this.standingRevokes(tombstone.key).some(r => (r.account ?? "") === tombstone.account && r.at === tombstone.removed_at)) continue;
         const id = localRevokeId(tombstone.key, tombstone.account, tombstone.removed_at);
         if (doc.revokes.some((r) => r.id === id)) continue;
         const ended = rows.some((row) => row.relay_public_key === tombstone.key && row.pairedHere && Date.parse(row.created_at) > Date.parse(tombstone.removed_at));

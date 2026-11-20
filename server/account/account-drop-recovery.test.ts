@@ -33,8 +33,9 @@ async function leave({ fixture, device, serverId }: Awaited<ReturnType<typeof li
   return applyAccountRecords(fixture.app.context.services.devices, [record], serverId);
 }
 
+const startOffline = (dir: string) => relayFixture(false, { stateDir: dir, accountOpensAll: true, accountService: { url: "off" } });
 function restartOffline(dir: string) {
-  const restarted = relayFixture(false, { stateDir: dir, accountOpensAll: true, accountService: { url: "off" } });
+  const restarted = startOffline(dir);
   restarted.app.stop();
   return restarted.app.context.services.devices;
 }
@@ -77,9 +78,12 @@ test("T41/S19/P8/P10: an unwritable drop receipt starts strict and retries the o
     const written = DeviceJournal.open(dir).entries().at(-1);
     expect(written).toMatchObject({ kind: "drop", how: "revoke", row: device.id });
     const before = readFileSync(journalPath, "utf8");
-    const strict = restartOffline(dir);
-    expect(strict.sessionRow(member.id)).toBeNull();
-    expect(strict.accountError).not.toBeNull();
+    const { app } = startOffline(dir);
+    try {
+      expect((await fetch(`http://127.0.0.1:${app.port}/api/devices`)).status).toBe(200);
+      expect(app.context.services.devices.sessionRow(member.id)).toBeNull();
+      expect(app.context.services.devices.accountError).not.toBeNull();
+    } finally { app.stop(); }
     expect(rows(dir).map(row => row.id)).toEqual([device.id]);
     fault.mockRestore();
     const repaired = restartOffline(dir);
@@ -186,12 +190,19 @@ test("P8/T41/P10: offline Revoke recovery allocates no new drop after the origin
   expect(rows(dir).map(row => row.id)).toEqual([device.id]);
   const original = DeviceJournal.open(dir).entries().at(-1);
   expect(original).toMatchObject({ kind: "drop", how: "revoke", row: device.id });
-  for (let index = 0; index < JOURNAL_MAX; index++) {
-    devices.journalEvent({ kind: "account", how: "link", key: member.publicKey, row: member.id, account: ACCOUNT, no: null, label: "", by: null });
-  }
+  fixture.app.stop();
+  // Fill unused capacity in one write. Only real appends evict the original entries, including the drop.
+  const path = join(dir, JOURNAL_FILE);
+  const doc = JSON.parse(readFileSync(path, "utf8"));
+  const link = { kind: "account", how: "link", key: member.publicKey, row: member.id, account: ACCOUNT, no: null, label: "", by: null } as const;
+  const fill = Array.from({ length: JOURNAL_MAX - doc.entries.length }, (_, i) => ({
+    ...link, seq: doc.next_seq + i, id: i.toString(16).padStart(32, "0"), at: new Date().toISOString(),
+  }));
+  writeFileSync(path, JSON.stringify({ ...doc, next_seq: doc.next_seq + fill.length, entries: [...doc.entries, ...fill] }));
+  const journal = DeviceJournal.open(dir);
+  for (let index = fill.length; index < JOURNAL_MAX; index++) journal.append(link);
   const retained = DeviceJournal.open(dir).entries();
   expect(retained[0]?.seq).toBe((original?.seq ?? 0) + 1);
-  fixture.app.stop();
   restartOffline(dir);
   expect(rows(dir)).toEqual([]);
   expect(DeviceJournal.open(dir).entries().at(-1)?.seq).toBe(retained.at(-1)?.seq);

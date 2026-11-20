@@ -92,11 +92,15 @@ export class DeviceJournal {
     try {
       const doc = JSON.parse(text) as Partial<Doc>;
       if (!isDoc(doc)) journal.problem = `${journal.path} is not this PC's device journal`;
-      else if (doc.last_row_drop !== undefined && (!isRowDrop(doc.last_row_drop) || doc.last_row_drop.journalled === undefined || doc.last_row_drop.journalled >= Number(doc.next_seq))) {
+      else if (doc.last_row_drop !== undefined && (!isRowDrop(doc.last_row_drop) || doc.last_row_drop.journalled === undefined)) {
         journal.problem = `${journal.path} has an invalid account row receipt`;
       } else if (doc.snapshot_lift_n !== undefined && (!Number.isSafeInteger(doc.snapshot_lift_n) || doc.snapshot_lift_n < 1)) {
         journal.problem = `${journal.path} has an invalid snapshot lift number`;
-      } else { journal.doc = doc; journal.exists = true; }
+      } else {
+        journal.doc = doc;
+        journal.exists = true;
+        if (doc.last_row_drop) journal.checkRowReceipts([doc.last_row_drop]);
+      }
     } catch { journal.problem = `${journal.path} is not JSON`; }
     return journal;
   }
@@ -106,6 +110,20 @@ export class DeviceJournal {
   }
 
   entries(): readonly JournalEntry[] { return this.doc.entries; }
+
+  /** A trimmed notice need not survive its receipt, but an unallocated or contradictory sequence proves nothing. */
+  checkRowReceipts(drops: readonly RowDrop[]): void {
+    if (this.problem !== null || drops.length === 0) return;
+    const known = new Map([...this.doc.open, ...this.doc.entries].map(entry => [entry.seq, entry]));
+    for (const { row, how, journalled: seq } of drops) {
+      if (seq === undefined) continue;
+      const entry = known.get(seq);
+      if (seq >= this.doc.next_seq || (entry ? entry.kind !== "drop" || entry.row !== row || entry.how !== how : seq > this.doc.trimmed)) {
+        this.problem = `${this.path} contradicts the account row receipt for ${row} at sequence ${seq}`;
+        return;
+      }
+    }
+  }
 
   openNotices(): readonly JournalEntry[] { return this.doc.open; }
 
@@ -119,6 +137,7 @@ export class DeviceJournal {
 
   /** A registry write may be replayed. Row IDs are reused, so a new admission reopens the row's history. */
   recordAccountRow(entry: AccountRowEntry, evidence: RemovalEvidence): void {
+    if (this.strict !== null) throw new Error(this.strict);
     // If the process stopped between the two replacements, finish the earlier receipt before reusing its slot.
     const prior = this.doc.last_row_drop;
     if (prior) evidence.markJournalled(prior, prior.journalled);

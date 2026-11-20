@@ -18,6 +18,7 @@ import { type ClearReason, PcAccountState } from "./account/pc-binding.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import { rowDrop } from "./account/row-drop-evidence.ts";
+import { RevokeAllIntent } from "./account/revoke-all-intent.ts";
 import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device-journal.ts";
 import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
@@ -546,12 +547,14 @@ export class DeviceStore {
   private denyProblem: string | null = null;
   private readonly revokeAllPath: string;
   private readonly stateDirPath: string;
+  private readonly revokeAllIntent: RevokeAllIntent | null;
   constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; joinedRows?: AccountRowSource | null; held?: (key: string) => boolean } = {}) {
     this.joinedRows = account.joinedRows ?? null;
     this.safety = account.safety ?? null;
     this.handedLifts = new HandedLifts(stateDir);
     this.pc = account.pc ?? null;
     this.stateDirPath = stateDir;
+    this.revokeAllPath = join(stateDir, "revoke-all.json");
     this.evidence = account.removals ?? null;
     this.accountHeld = account.held;
     // removal evidence this PC wrote once and that is gone now is damage, never a fresh start (S19)
@@ -561,7 +564,6 @@ export class DeviceStore {
     this.path = join(stateDir, "devices.json");
     this.tombstonePath = join(stateDir, "account-tombstones.json");
     this.pendingTombstonePath = join(stateDir, "account-tombstones.pending.json");
-    this.revokeAllPath = join(stateDir, "revoke-all.json");
     const tombstones = readTombstones(this.tombstonePath);
     const pendingRead = readTombstones(this.pendingTombstonePath);
     const pending = pendingRead ?? [];
@@ -588,18 +590,16 @@ export class DeviceStore {
     }
     // the tombstone files' own repair asks only whether they could be read: a strict safety log is a separate refusal
     // a Revoke all that stopped half way is finished before anything is served, whatever else could not be read (P8, T41)
-    if (this.error === null && this.evidence !== null && existsSync(this.revokeAllPath)) {
-      const gate = this.gateClosedAt ?? new Date().toISOString();
-      // a deny recovered at start raises the generation, as the live path does (P8, T41)
+    this.revokeAllIntent = this.evidence === null ? null : new RevokeAllIntent(stateDir, this.revokeAllRows());
+    if (this.evidence) this.journal?.checkRowReceipts(this.evidence.rowDrops);
+    if (this.journal?.strict || this.evidence?.strict) return;
+    if (this.error === null) {
       try {
-        this.pc?.raiseGen();
-        this.joinedRows?.pruneDenied(this.evidence, "revoke_all");
-        this.finishRevokeAll(this.revokeAllRows(), gate);
-      } catch (error) {
+        this.resumeRevokeAll();
+      } catch {
         // what could not be finished on disk is finished in memory, and the PC fails closed until a start finishes it
         this.devices = [];
-        this.gateClosedAt = gate;
-        this.denyProblem = `Revoke all could not be finished (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until it is.`;
+        this.gateClosedAt ??= new Date().toISOString();
       }
     }
     // a strict order changes nothing else on disk, not even a repair: its damage stays visible (S29)
@@ -614,15 +614,19 @@ export class DeviceStore {
       const ahead = [...this.ownTimes(), ...this.carried.filter((t) => t.record_id === "local").map((t) => t.removed_at)].find((t) => !isIsoTime(t) || Date.parse(t) > Date.now() + DAY_MS);
       if (ahead !== undefined) this.accountProblem = `A time this PC wrote lies in the future (${ahead}): account records are refused until it is repaired.`;
     }
-    if (this.error === null && this.accountProblem === null && this.pc?.strict == null) {
+    if (this.error === null && this.accountProblem === null && this.pc?.strict == null && !this.revokeAllIntent?.strict) {
       if (this.evidence !== null) {
-        this.finishJournalledRemovals();
-        // a lock standing at open whose removals never ran ends its rows now, journalled, before anything is served
-        if (this.safety?.strict === null && this.safety.inForce.locked === true) this.endUnlockedRows();
-        this.takeInEvidence([...tombstones ?? [], ...pending]);
-        // the log is the truth (P24): a block in force whose marker never reached the disk gets it before anything is served
-        this.markBlockTargets();
-        this.joinedRows?.pruneDenied(this.evidence);
+        const evidence = this.evidence;
+        evidence.recover(() => {
+          this.finishJournalledRemovals();
+          // A standing lock ends its remaining rows before anything is served.
+          if (this.safety?.strict === null && this.safety.inForce.locked === true) this.endUnlockedRows();
+          this.takeInEvidence([...tombstones ?? [], ...pending]);
+          // the log is the truth (P24): restore any missing block marker before anything is served
+          this.markBlockTargets();
+          this.joinedRows?.pruneDenied(evidence);
+        });
+        if (evidence.strict !== null) return;
       } else {
         if (pending.length) {
           this.writeTombstones(this.tombstones);
@@ -780,13 +784,17 @@ export class DeviceStore {
   }
 
   get accountError(): string | null {
-    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.denyProblem ?? this.accountProblem;
+    return this.strictProblem ?? this.accountProblem;
   }
 
   /** No device gets in by a row or a code when the PC cannot trust its account state. */
   get failsClosed(): boolean {
     // one rule (S19): with the flag on, anything that makes account records refused makes only this PC get in
     return (this.safety !== null || this.pc !== null || this.evidence !== null) && this.accountError !== null;
+  }
+
+  private get strictProblem(): string | null {
+    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.revokeAllIntent?.strict ?? this.denyProblem;
   }
 
 
@@ -1191,6 +1199,7 @@ export class DeviceStore {
 
   /** The PC leaves its account, for one of the three named reasons (P12); nothing else clears the binding. */
   clearAccountBinding(reason: ClearReason, by: string): boolean {
+    if (reason !== "revoke_all") this.resumeRevokeAll();
     if (this.pc !== null) {
       const cleared = this.pc.clear(reason, by);
       if (cleared) this.endAccountRows(reason);
@@ -2338,6 +2347,7 @@ export class DeviceStore {
 
   revoke(id: string, by: DeviceRemovedEvent["by"] = "pc"): boolean {
     this.assertWritable();
+    this.resumeRevokeAll();
     const target = this.anyRow(id);
     if (!target) return false;
     if (this.evidence !== null) {
@@ -2436,7 +2446,7 @@ export class DeviceStore {
    */
   revokeAll(user?: string): string[] {
     this.assertWritable();
-    if (this.evidence !== null) return this.revokeAllInOrder(user);
+    if (this.revokeAllIntent !== null) return this.revokeAllInOrder(this.revokeAllIntent, user);
     this.endAccountRows("revoke_all");
     this.tombstone(this.devices, Date.now());
     const gate = this.gateClosedAt ?? this.devices[0]?.created_at ?? new Date().toISOString();
@@ -2561,12 +2571,13 @@ export class DeviceStore {
    * after the closing; the file stays, and the next start finishes the work before serving (T20). `user`: the OS user
    * of `ovis recover --revoke-all`, journalled beside each removal (P24).
    */
-  private revokeAllInOrder(user?: string): string[] {
+  private revokeAllInOrder(intent: RevokeAllIntent, user?: string): string[] {
+    this.resumeRevokeAll();
     const now = new Date().toISOString();
     // the file names every row it covers, a pending one's too, so it is finished from itself and never from less (T20)
     const gone = this.revokeAllRows();
     const gateWasOpen = !this.rawGated;
-    const denied = this.deny(gone.flatMap((d) => d.relay_public_key ?? []), () => writePrivateState(this.revokeAllPath, { id: randomBytes(16).toString("hex"), by: "pc", at: now, rows: gone }));
+    const denied = this.deny(gone.flatMap((d) => d.relay_public_key ?? []), () => intent.begin(gone, now));
     const gate = this.gateClosedAt ?? this.devices[0]?.created_at ?? now;
     // a file that could not be written holds nothing: the rows stay where the next Revoke all finds them, out of every
     // session meanwhile, and the PC closed (P8, T20)
@@ -2594,13 +2605,23 @@ export class DeviceStore {
     try {
       for (const device of gone) this.journalRemoval(device, "pc", user === undefined ? undefined : "recover", user);
       for (const device of gone) this.announceRemoval(device, "pc");
-      this.finishRevokeAll(gone, gate);
+      intent.finish(rows => this.finishRevokeAll(rows, gate));
+      this.settleDenies();
     } catch (error) {
       this.denyProblem = `Revoke all could not be finished (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until it is.`;
       this.pc?.unwritten(error, "Revoke all could not clear this PC's account");
       throw error;
     }
     return gone.map((device) => device.id);
+  }
+
+  private resumeRevokeAll(): void {
+    this.revokeAllIntent?.finish(rows => {
+      this.assertWritable();
+      this.pc?.raiseGen();
+      if (this.evidence) this.joinedRows?.pruneDenied(this.evidence, "revoke_all");
+      this.finishRevokeAll(rows, this.gateClosedAt ?? new Date().toISOString());
+    });
   }
 
   /** The writes of a Revoke all whose file is on disk: its Revokes, the empty registry, the PC's account; then the file goes. */
@@ -2614,7 +2635,6 @@ export class DeviceStore {
     // the file goes only once the PC has left its account: a binding that cannot be read keeps it (P12)
     if (this.pc?.strict != null) throw new Error(this.pc.strict);
     this.clearAccountBinding("revoke_all", "pc");
-    rmSync(this.revokeAllPath, { force: true });
     // every row and key it covered is revoked on disk now: their earlier failures end
     for (const row of rows) {
       this.failedRows.delete(row.id);
