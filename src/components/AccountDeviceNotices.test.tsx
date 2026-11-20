@@ -15,8 +15,10 @@ it.each([
   ["T51, T60: retry the exact signed block after a 503 after dismissal", "503 after dismissal"],
   ["T51, T60: retry the exact signed block after a wrong record ID", "wrong record ID"],
   ["T51, T60, T65: show unopened and flag-off roster PCs without posting to them", "roster"],
+  ["T51, T60, T65: a flag-off route outranks an unopened route to the same PC listed after it", "roster twin after"],
+  ["T51, T60, T65: a flag-off route outranks an unopened route to the same PC listed before it", "roster twin before"],
 ] as const)("%s", async (_title, failure) => {
-  const showRoster = failure === "roster";
+  const showRoster = failure.startsWith("roster");
   const dismissWhilePending = failure === "503 after dismissal";
   const notice = deviceNotice({ key: (await newKey()).public_spki });
   const wire = new DeviceNoticeWire("ws://localhost/ws");
@@ -34,7 +36,12 @@ it.each([
   ] as const;
   const machines: readonly Machine[] = [
     { id: LOCAL_MACHINE, name: "Desk", kind: "local", enabled: true, state: "connected", error: null, snapshot: null },
-    ...(showRoster ? [...roster, { id: "other", name: "Other", server_id: "e".repeat(32) }].map((machine): Machine => ({
+    ...(showRoster ? [
+      ...(failure === "roster twin before" ? [{ id: "lab-relay", name: "Lab", server_id: "d".repeat(32) }] : []),
+      ...roster,
+      ...(failure === "roster twin after" ? [{ id: "lab-relay", name: "Lab", server_id: "d".repeat(32) }] : []),
+      { id: "other", name: "Other", server_id: "e".repeat(32) },
+    ].map((machine): Machine => ({
       ...machine, kind: "relay", enabled: true, state: "connected", error: null, snapshot: null,
     })) : []),
   ];
@@ -88,7 +95,7 @@ it.each([
         case "503 after dismissal": return pendingReply.promise;
         case "wrong record ID": return Response.json({ id: "another-record" });
         case "lost response": throw new TypeError("The account response was lost");
-        case "roster": break;
+        case "roster": case "roster twin after": case "roster twin before": break;
       }
     }
     return Response.json({ id: record.id });
@@ -138,6 +145,7 @@ it.each([
       const lines = root.findAllByType("li").map(node => node.children.join(""));
       expect(lines).toContain("Study: not reached; it applies the block at its next check");
       expect(lines).toContain("Lab: needs an Ovis update to block");
+      expect(lines.filter(line => line.startsWith("Lab:"))).toHaveLength(1);
       expect(lines.some(line => line.startsWith("Other:"))).toBe(false);
       return;
     }
