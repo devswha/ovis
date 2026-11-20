@@ -10,7 +10,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writePrivateState } from "../private-state.ts";
-import { REMOVAL_FILE, type Marker, type Removal, type Revoke, type Unrevoke } from "./removal-evidence.ts";
+import { isAccountKeyEncoding } from "../../shared/account-records.ts";
+import { parseEvidence, REMOVAL_FILE, type Marker, type Removal, type Revoke, type Unrevoke } from "./removal-evidence.ts";
 
 const ENROLLING_FILE = "account-enrolling.json";
 const HELD_FILE = "account-held.json";
@@ -29,6 +30,8 @@ const byId = <T extends { id: string }>(lists: readonly (readonly T[])[]): T[] =
 
 function mergeEvidence(active: string, sibling: string): void {
   const docs = [read(active, REMOVAL_FILE), read(sibling, REMOVAL_FILE)].flatMap((doc) => doc === "missing" ? [] : [doc.value]);
+  // evidence of a form this PC does not know is refused, never copied or rewritten as valid (T28, S19)
+  if (docs.some((doc) => parseEvidence(doc) === null)) throw new Error(`${REMOVAL_FILE} is not this PC's removal evidence`);
   if (docs.length < 2) {
     if (docs.length === 1) for (const dir of [active, sibling]) if (!existsSync(join(dir, REMOVAL_FILE))) writePrivateState(join(dir, REMOVAL_FILE), docs[0]);
     return;
@@ -54,6 +57,8 @@ function mergeHolds(active: string, sibling: string): void {
   if (ownBarrier === "missing" && otherBarrier !== "missing") writePrivateState(join(active, ENROLLING_FILE), otherBarrier.value);
   if (otherBarrier === "missing" && ownBarrier !== "missing") writePrivateState(join(sibling, ENROLLING_FILE), ownBarrier.value);
   const held = [read(active, HELD_FILE), read(sibling, HELD_FILE)].flatMap((doc) => doc === "missing" ? [] : [doc.value]);
+  // a held list that is not one holds every key until repaired: refused here, never merged into holding nobody (S19)
+  if (held.some((doc) => !Array.isArray(doc.keys) || !doc.keys.every(isAccountKeyEncoding) || typeof doc.full !== "boolean")) throw new Error(`${HELD_FILE} is not a list of held keys`);
   if (held.length === 0) return;
   const merged = { keys: [...new Set(held.flatMap((doc) => doc.keys as string[]))], full: held.some((doc) => doc.full === true) };
   for (const dir of [active, sibling]) writePrivateState(join(dir, HELD_FILE), merged);
