@@ -67,6 +67,12 @@ export function firstMessageFault(value: unknown, agent: unknown): string | null
   return null;
 }
 
+/**
+ * The flag that adds an MCP server to an agent's launch, which only the server sets, from the browser tool chosen
+ * for that agent (shared/browser-tools.ts): a client names no MCP command. Codex's `-c mcp_servers…` is refused below.
+ */
+const MCP_FLAGS: Readonly<Record<string, string>> = { claude: "--mcp-config", copilot: "--additional-mcp-config" };
+
 type LaunchFlag = "model" | "effort" | "config";
 /** the flags whose values are checked, by agent: Codex's `-c`/`--config` sets `model` and `model_reasoning_effort` too */
 const LAUNCH_FLAGS: Record<"claude" | "codex" | "dsh-tui", Record<string, LaunchFlag>> = {
@@ -106,6 +112,9 @@ const configValue = (value: string): string => {
  */
 export function launchArgsFault(kind: string, args: readonly string[]): string | null {
   if (!args.every(hasNoControlCharacters)) return "agent.args must not contain control characters (a tab or a line break included)";
+  const options = args.includes("--") ? args.slice(0, args.indexOf("--")) : args;
+  const mcpFlag = MCP_FLAGS[kind];
+  if (mcpFlag !== undefined && options.some((arg) => arg === mcpFlag || arg.startsWith(`${mcpFlag}=`))) return `agent.args must not carry ${mcpFlag}: the PC adds the browser tool from its settings`;
   if (kind !== "claude" && kind !== "codex" && kind !== "dsh-tui") return null;
   const efforts = LAUNCH_EFFORTS[kind];
   for (let at = 0; at < args.length; at++) {
@@ -129,6 +138,7 @@ export function launchArgsFault(kind: string, args: readonly string[]): string |
       const setting = split < 0 ? "" : configValue(value.slice(split + 1));
       if (key === "model") model = setting;
       if (key === "model_reasoning_effort") effort = setting;
+      if (/^(["']?)mcp_servers\1\s*(\.|$)/u.test(key)) return "agent.args must not set mcp_servers: the PC adds the browser tool from its settings";
     }
     if (model !== null && !MODEL_NAME.test(model)) return "agent.args --model must name one model";
     if (effort !== null && !efforts.includes(effort)) {
