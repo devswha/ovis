@@ -984,6 +984,14 @@ describe("the hosted shell's front page", () => {
       expect(last().state.kind).toBe("list");
     });
 
+    it("opens the PC opened last when its check says nothing of it (the relay refused or could not be reached), as before", async () => {
+      const went: string[] = [];
+      launch();
+      localStorage.setItem("ovis-last-pc", "b".repeat(32));
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs("a".repeat(32), "b".repeat(32))), navigate: (path) => { went.push(path); }, checkPc: async () => ({ kind: "offline", reason: "relay" }) }));
+      expect(went).toEqual([`/s/${"b".repeat(32)}/`]);
+    });
+
     it("takes the phone app's #pcs as its way to the front page, never the dashboard, and opens no PC from it", async () => {
       const replaced: string[] = [];
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true } });

@@ -45,6 +45,8 @@ export const ACCOUNT_STEPS_WAIT_MS = 15_000;
 
 const LAST_PC = "ovis-last-pc";
 const LAUNCHED = "ovis-launched";
+/** the shell's one listener for a page Back restores from the browser's cache (a later mount, in tests, replaces it) */
+let restored: ((event: PageTransitionEvent) => void) | null = null;
 
 /** The PC this device opened last, kept by its id alone (no key), so the next launch opens it again. */
 function rememberPc(serverId: string): void {
@@ -102,7 +104,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let launching = !scoped && entryHash === "", signedInNow = false, left = false, launched = false;
   // Back to a front page the browser kept whole (its back/forward cache) finds it as it left it, on the way to a PC: it
   // loads again, past this tab's launch, so it draws the front page
-  window.addEventListener("pageshow", (event) => { if (event.persisted && left) window.location.reload(); });
+  if (restored !== null) window.removeEventListener("pageshow", restored);
+  restored = (event: PageTransitionEvent) => { if (event.persisted && left) window.location.reload(); };
+  window.addEventListener("pageshow", restored);
   if (scoped) markLaunched();
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
@@ -297,21 +301,23 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (devices.length && !checked) { checked = true; void sweep.check(); }
   };
   /**
-   * The first of `order` that answers its check, in that order, waiting on each one before it until it answers or the
-   * launch's wait is over; null when none does.
+   * The first of `order` that its check does not find off, in that order: only a relay that had nobody for a PC (offline,
+   * `pc`) passes it over. One that answers, a check the relay turned away or could not finish, and one still running once
+   * the launch's wait is over all open that PC, whose page connects, retries and says why it cannot. Null when every
+   * one was found off.
    */
   const reachable = async (order: readonly RelayDevice[]): Promise<string | null> => {
-    // only an answer this check found counts: a check the relay turned away puts back what the last one found
+    // a check the relay turned away puts back what the last one found, so only this check's own word that the PC is off counts
     const checks = order.map((pc) => {
       const shown = sweep.status.get(pc.server_id), prior = shown?.kind === "checking" ? shown.previous : shown;
-      return sweep.checkOne(pc.server_id).then(() => { const now = sweep.status.get(pc.server_id); return now?.kind === "answered" && now !== prior; });
+      return sweep.checkOne(pc.server_id).then(() => { const now = sweep.status.get(pc.server_id); return now?.kind === "offline" && now.reason === "pc" && now !== prior; });
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    // fixed wait: a PC that has not answered by then is not opened; Add a PC lists it, and its check goes on there
+    // fixed wait: a PC whose check has not settled by then opens anyway, as the last PC always did
     const late = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), LAUNCH_WAIT_MS); });
     let found: string | null = null;
-    for (const [index, check] of checks.entries()) {
-      if (await Promise.race([check, late])) { found = order[index]?.server_id ?? null; break; }
+    for (const [index, off] of checks.entries()) {
+      if (!await Promise.race([off, late])) { found = order[index]?.server_id ?? null; break; }
     }
     clearTimeout(timer);
     return found;

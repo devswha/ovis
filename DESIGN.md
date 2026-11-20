@@ -5078,9 +5078,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and **Forget this PC** (a neutral button that asks once in a `ConfirmDialog`, **Forget**, then
   deletes this phone's key for the PC and leaves for the front page). Neither is destructive on the
   PC, which keeps listing the phone until it is revoked there, so neither is a `.btn-danger`.
-- The hosted shell's front page is never the dashboard. A launch opens the PC this device opened last, or the
-  next saved PC that answers its check (`launchOrder`, at most four, two at a time, four seconds at most, the
-  connecting card meanwhile); none answering, a later visit, Back, a sign-in's return or the phone app's own row
+- The hosted shell's front page is never the dashboard. A launch opens the PC this device opened last unless its
+  check finds it off (the relay had nobody for it), then the next saved PC not found off (`launchOrder`, at most
+  four, two at a time; a check still running after four seconds, or one the relay refused, opens that PC, whose page
+  retries and says why; the connecting card meanwhile); every one off, a later visit, Back, a sign-in's return or the phone app's own row
   (`#pcs` inside the app) shows Add a PC, whose list says Off or Needs approval beside a PC, as the Claude and
   ChatGPT apps open on the last conversation and keep account pages behind Settings. The dashboard opens only by
   its own addresses (`#overview`, `#pcs`, `#devices`, `#relay`, `#settings`), which a signed-in Add a PC offers as
