@@ -64,7 +64,7 @@ import { AccountHolds } from "./account/holds.ts";
 import { AccountIntroductions } from "./account/introductions.ts";
 import { userInfo } from "node:os";
 import { openRecoverySocket, RecoveryReleases } from "./account/recovery.ts";
-import { recoveryActs } from "./account/recovery-acts.ts";
+import { recoveryActs, type RecoverySeams } from "./account/recovery-acts.ts";
 import { PendingRedemptions, type PendingRedemption } from "./account/pending.ts";
 import { askScreenForKey, KeyProofPairings } from "./account/key-proof.ts";
 import { desktopOwnerChannel, desktopOwnerFdChannel, LOCAL_CONFIRM_FILE, LocalConfirms, openConfirmListener, takeDesktopOwnerFd } from "./account/local-confirm.ts";
@@ -551,7 +551,17 @@ export function createServer(
     },
   }) : undefined;
   const recoverySocket = recoveryReleases ? (() => {
-    const opened = openRecoverySocket({ stateDir, handle: recoveryActs({ releases: recoveryReleases, logReadable: () => !devices.failsClosed && SafetyLog.open(stateDir).readable, user: userInfo().username }) });
+    // the acts beyond release and undo, through this PC's own stores (Track A's devices.ts and safety-log.ts)
+    const seams: RecoverySeams = {
+      pendingOf: (id) => pendingRedemptions?.list().find((entry) => entry.id === id) ?? null,
+      pendingList: () => (pendingRedemptions?.list() ?? []).map(({ id, label, fingerprint }) => ({ id, label, fingerprint })),
+      takePending: (id, fingerprint) => pendingRedemptions?.take(id, fingerprint) ?? null,
+      admitConfirmed: (confirm) => devices.admitConfirmed(confirm),
+      removeKey: (input) => devices.removeKey(input),
+      appendLift: (blockId, forget) => safetyLog!.appendLift(blockId, pcAccount?.binding() ?? null, { forget }),
+      revokeAll: () => devices.revokeAll(),
+    };
+    const opened = openRecoverySocket({ stateDir, handle: recoveryActs({ releases: recoveryReleases, logReadable: () => !devices.failsClosed && SafetyLog.open(stateDir).readable, user: userInfo().username, seams }) });
     if ("refused" in opened) { if (opened.refused !== "windows") console.error(`ovis recover is not available: ${opened.refused}`); return null; }
     return opened;
   })() : null;

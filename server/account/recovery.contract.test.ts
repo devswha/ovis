@@ -17,7 +17,7 @@ const unix = process.platform !== "win32";
 test.if(unix)("R11: with the flag on, the server answers ovis recover on its recovery socket", async () => {
   const made = await pairingPc({ server: { accountOpensAll: true } });
   pcs.push(made);
-  expect(await bounded(askRecovery(made.stateDir, { act: "list" }))).toEqual({ rows: [] });
+  expect(await bounded(askRecovery(made.stateDir, { act: "list" }))).toEqual({ rows: [], pending: [] });
 });
 
 test.if(unix)("R11: with the flag off, the server opens no recovery socket", async () => {
