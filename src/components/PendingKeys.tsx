@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { X } from "lucide-react";
+
 import "./PendingKeys.css";
 
 import type { PendingKey } from "../../shared/machines.ts";
@@ -10,10 +13,15 @@ import { useT } from "../lib/i18n.ts";
  */
 export function PendingKeys({ pending, onDecline }: { pending: readonly PendingKey[]; onDecline: (id: string) => void }) {
   const t = useT();
-  if (pending.length === 0) return null;
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
+  if (pending.every((key) => hidden.has(key.id))) return null;
   return (
     <div className="pending-keys">
-      <p className="settings-hint">{t("Waiting for this PC's screen. Approve only a key whose fingerprint your device shows too.")}</p>
+      <div className="pending-keys-heading">
+        <p className="settings-hint">{t("Waiting for this PC's screen. Approve only a key whose fingerprint your device shows too.")}</p>
+        <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")}
+          onClick={() => setHidden((previous) => new Set([...previous, ...pending.map((key) => key.id)]))}><X /></button>
+      </div>
       <ul className="connect-found-list">
         {pending.map((key) => (
           <li key={key.id} className="connect-found-row">
@@ -34,9 +42,14 @@ export function PendingKeys({ pending, onDecline }: { pending: readonly PendingK
  */
 export function KeyFingerprintWait({ pc, fingerprint }: { pc: string; fingerprint: string | null }) {
   const t = useT();
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
   return (
     <div className="pending-keys" role="status">
-      <p>{t("Approve this device on {pc}'s screen", { pc })}</p>
+      <div className="pending-keys-heading">
+        <p>{t("Approve this device on {pc}'s screen", { pc })}</p>
+        <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => setHidden(true)}><X /></button>
+      </div>
       {fingerprint !== null && <p className="pending-key-fingerprint">{fingerprint}</p>}
       {fingerprint !== null && <p className="settings-hint">{t("The PC shows the same code.")}</p>}
     </div>
