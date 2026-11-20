@@ -96,12 +96,14 @@ const evidenceOf = (snapshot: OrderRosterEntry["snapshot"]): Evidence | null =>
   snapshot && typeof snapshot.order_epoch === "string" && snapshot.order_epoch !== "" && Number.isSafeInteger(snapshot.read_seq) && snapshot.read_seq! >= 0
     ? { epoch: snapshot.order_epoch, seq: snapshot.read_seq! } : null;
 
+const sameEvidence = (a: Evidence, b: Evidence | null): boolean => !!b && a.epoch === b.epoch && a.seq === b.seq;
+
 interface Hold {
   epoch: string | null;
   receipts: number;
   legacy: boolean;
   settleMark: number | null;
-  /** the last roster's evidence when the first move since the hold last settled went out; undefined until one does */
+  /** the last roster's evidence when the newest move with a receipt since the hold last settled was sent; undefined until one */
   sent?: Evidence | null;
 }
 interface PcOrder {
@@ -121,6 +123,8 @@ interface PcOrder {
   waiters: { generation: number; resolve: (ids: string[]) => void; reject: (error: Error) => void }[];
   gone: boolean;
   check: { key: string; abort: AbortController } | null;
+  /** the evidence the last answered verification was asked for: asking again for it would spend the PC's interval for nothing */
+  answered: Evidence | null;
 }
 
 export class ReorderCoordinator {
@@ -137,7 +141,7 @@ export class ReorderCoordinator {
   private pc(id: string): PcOrder {
     let pc = this.pcs.get(id);
     if (!pc) {
-      pc = { shown: null, last: null, generation: 0, pending: new Set(), desired: null, hold: null, floors: new Map(), protectedEpoch: null, guard: null, retired: new Set(), receipts: 0, chain: Promise.resolve(), failed: false, waiters: [], gone: false, check: null };
+      pc = { shown: null, last: null, generation: 0, pending: new Set(), desired: null, hold: null, floors: new Map(), protectedEpoch: null, guard: null, retired: new Set(), receipts: 0, chain: Promise.resolve(), failed: false, waiters: [], gone: false, check: null, answered: null };
       this.pcs.set(id, pc);
     }
     return pc;
@@ -218,7 +222,10 @@ export class ReorderCoordinator {
     void verify(id, check.abort.signal).then((answer) => {
       if (pc.check !== check) return;
       pc.check = null;
-      if (answer && !check.abort.signal.aborted && key === `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.generation}:${pc.protectedEpoch}`) this.proved(id, pc, answer);
+      if (answer && !check.abort.signal.aborted && key === `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.generation}:${pc.protectedEpoch}`) {
+        pc.answered = evidence;
+        this.proved(id, pc, answer);
+      }
     }, () => { if (pc.check === check) pc.check = null; });
   }
 
@@ -261,9 +268,8 @@ export class ReorderCoordinator {
       const base = pc.failed ? await this.qualifiedBase(pc, generation) : [...current];
       pc.failed = false;
       for (const step of workspaceMoves(base, mergeOrder(next, base))) {
-        const hold = pc.hold!;
-        if (hold.sent === undefined) hold.sent = pc.last?.evidence ?? null;
-        this.acknowledge(pc, await move(step));
+        const sent = pc.last?.evidence ?? null;
+        this.acknowledge(pc, await move(step), sent);
       }
     });
     pc.chain = run.catch(() => { pc.failed = true; });
@@ -276,7 +282,7 @@ export class ReorderCoordinator {
     return new Promise((resolve, reject) => pc.waiters.push({ generation, resolve, reject }));
   }
 
-  private acknowledge(pc: PcOrder, receipt: WorkspaceMoved | void): void {
+  private acknowledge(pc: PcOrder, receipt: WorkspaceMoved | void, sent: Evidence | null): void {
     pc.receipts++;
     this.invalidateCheck(pc);
     const hold = pc.hold!;
@@ -288,6 +294,7 @@ export class ReorderCoordinator {
     pc.floors.set(epoch, Math.max(pc.floors.get(epoch) ?? 0, seq!));
     pc.protectedEpoch = epoch;
     hold.epoch = epoch;
+    hold.sent = sent;
   }
 
   private settle(machineId: string, pc: PcOrder, generation: number, error: unknown): void {
@@ -303,7 +310,9 @@ export class ReorderCoordinator {
       } else {
         hold.settleMark = this.loads;
         this.options.onSettled?.(machineId);
-        this.recheck(machineId, pc, hold);
+        const sent = hold.sent;
+        hold.sent = undefined;
+        if (sent !== undefined) this.recheck(machineId, pc, sent);
       }
     }
     this.notify();
@@ -313,15 +322,12 @@ export class ReorderCoordinator {
   /**
    * A roster that arrived while the moves were on their way was let through or had its check cut short by a later receipt.
    * Once they settle it is checked as one arriving now would be: one of another server lifetime may come from a restart
-   * after a move. Only when its evidence changed since the first move went out: the roster read before it is older than
-   * every receipt, also when an event repeats it.
+   * after a move. Not when its evidence is the one read when the newest move with a receipt was sent (older than that
+   * receipt, also when an event repeats it), nor when a verification already answered for it.
    */
-  private recheck(machineId: string, pc: PcOrder, hold: Hold): void {
-    const sent = hold.sent;
-    hold.sent = undefined;
+  private recheck(machineId: string, pc: PcOrder, sent: Evidence | null): void {
     const last = pc.last?.evidence;
-    if (sent === undefined || hold.epoch === null || !last || pc.retired.has(last.epoch)) return;
-    if (sent && sent.epoch === last.epoch && sent.seq === last.seq) return;
+    if (!last || pc.retired.has(last.epoch) || sameEvidence(last, sent) || sameEvidence(last, pc.answered)) return;
     this.mismatch(machineId, pc, last);
   }
 }
