@@ -171,14 +171,14 @@ export class DeviceJournal {
   openListedRows(ids: readonly string[]): void {
     if (!ids.length) return;
     const open = [...this.doc.open];
-    const latest = new Map(this.doc.entries.filter(entry => entry.kind === "admit" || entry.kind === "drop").map(entry => [entry.row, entry.seq]));
+    const latest = new Map(this.doc.entries.filter(entry => entry.kind === "admit" || entry.kind === "promote" || entry.kind === "drop").map(entry => [entry.row, entry.seq]));
     const entries = this.doc.entries.map(entry => {
       if (!entry.awaitingListCheck || !entry.row || !ids.includes(entry.row) || latest.get(entry.row) !== entry.seq) return entry;
       const { awaitingListCheck: _, ...notice } = entry;
-      open.push(notice);
+      if (notice.kind === "admit") open.push(notice);
       return notice;
     });
-    if (open.length !== this.doc.open.length) this.write({ ...this.doc, entries, open });
+    if (entries.some((entry, i) => entry !== this.doc.entries[i])) this.write({ ...this.doc, entries, open });
   }
 
   /** Catch up after a committed batch or interrupted journal write. Each notice and its cursor share one write. */

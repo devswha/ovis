@@ -2125,19 +2125,22 @@ export class DeviceStore {
       : notice && !path.confirm && admitted.origin?.from === "remote" ? { ...admitted, carried_notice: notice.id } : admitted;
     // A waiting first link enrolls its own binding row. Every other member enrollment consumes T67.
     if (device.account !== undefined && device.linked_at === undefined) this.pc?.setOthersEver();
-    this.journalAdmission(device, joined, notice, path.by);
-    const next = path.replaces ? this.devices.map(row => row === path.replaces ? device : row) : [...this.devices, device];
-    const gate = this.gateClosedAt ?? device.created_at;
-    this.save(next, gate);
-    this.devices = next;
-    this.gateClosedAt = gate;
-    // P19: judge waiting blocks against the new row before returning or announcing it.
-    this.applyWaitingBlocks();
-    if (this.safety !== null && !this.has(device.id)) {
-      if (codeSpent) this.voidPending();
+    let entry: JournalEntry | null = null;
+    const standing = this.admitListedRows(() => {
+      entry = this.journalAdmission(device, joined, notice, path.by);
+      const next = path.replaces ? this.devices.map(row => row === path.replaces ? device : row) : [...this.devices, device];
+      const gate = this.gateClosedAt ?? device.created_at;
+      this.save(next, gate);
+      this.devices = next;
+      this.gateClosedAt = gate;
+      return [device.id];
+    });
+    if (!standing.includes(device.id)) {
+      if (codeSpent && !this.has(device.id)) this.voidPending();
       return false;
     }
-    if (this.safety !== null && this.failsClosed) return false;
+    if (joined) this.journal?.openListedRows(standing);
+    if (entry) this.publish(entry);
     if (device.held && joined) this.promotedHolds.carry(device.held, joined.hold_until);
     // Save the replacement before retiring the list row (restart finishes an interrupted transfer).
     // removeRows detaches the old authority and closes its sessions before persisting the removal.
@@ -2383,7 +2386,7 @@ export class DeviceStore {
       if (!this.admits(undefined)) return null;
       const admitted = this.admitted({ ...candidate, last_seen_at: new Date(now).toISOString() }, now);
       const confirmed = this.safety === null ? admitted : { ...admitted, created_at: this.nextStamp(Date.parse(admitted.created_at)) };
-      this.journalAdmission(confirmed);
+      const entry = this.journalAdmission(confirmed);
       const next = [...this.devices, confirmed];
       const gate = this.gateClosedAt ?? confirmed.created_at;
       // This is an authorization write, not last-seen telemetry: do not match the cookie
@@ -2391,6 +2394,7 @@ export class DeviceStore {
       this.save(next, gate);
       this.devices = next;
       this.gateClosedAt = gate;
+      if (entry) this.publish(entry);
       // Once one first-pair cookie closes the gate, every sibling candidate is stale:
       // subsequent devices must be issued through the gated pairing flow.
       this.unconfirmedFirstPairs = [];
@@ -2460,11 +2464,12 @@ export class DeviceStore {
    * An admission's journal entry, on disk before its row (G14): a journal that cannot be written throws, and nobody
    * is admitted. Then every listener hears it, each on its own.
    */
-  private journalAdmission(device: StoredDevice, joined?: AccountRow, notice?: JournalEntry, by?: string): void {
-    if (this.journal === null) return;
+  private journalAdmission(device: StoredDevice, joined?: AccountRow, notice?: JournalEntry, by?: string): JournalEntry | null {
+    if (this.journal === null) return null;
     const recovered = device.origin?.from === "recover";
     const promotion = joined !== undefined;
-    this.publish(this.journal.append({ kind: promotion ? "promote" : "admit", how: recovered ? "recover" : device.origin?.how ?? "code", key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: recovered ? by ?? null : promotion ? device.origin?.by ?? null : device.added_by ?? null, account: device.account ?? notice?.account ?? null }));
+    return this.journal.append({ kind: promotion ? "promote" : "admit", ...(promotion ? { awaitingListCheck: true } : {}),
+      how: recovered ? "recover" : device.origin?.how ?? "code", key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: recovered ? by ?? null : promotion ? device.origin?.by ?? null : device.added_by ?? null, account: device.account ?? notice?.account ?? null });
   }
 
   /** A removal's journal entry, after its deny (P8 step 4). A journal that cannot be written stops no removal. */
