@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { DeviceStore } from "../devices.ts";
 import { bounded, relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { linkRecord, phone, sendLink } from "./pairing.test-helpers.ts";
@@ -64,8 +65,20 @@ async function recentlyPromoted() {
   expect(approve(recent.id)?.device.id).toBe(id);
   expect(devices.sessionRow(id)).toBeNull();
   time.now++;
-  return { devices, elder, approve, id, key, notice: notice.id };
+  return { fixture, devices, elder, approve, id, key, notice: notice.id };
 }
+
+test("flag off: a colliding member approval refuses without reading carried notices", async () => {
+  const { fixture, elder, id, key } = await recentlyPromoted();
+  fixture.app.stop();
+  const devices = new DeviceStore(fixture.stateDir);
+  const notices = spyOn(devices, "openNotices");
+  try {
+    expect(devices.pairRelayApproved("Tablet", key, { path: "account", addedBy: elder.id, id })).toBeNull();
+    expect(notices).not.toHaveBeenCalled();
+    expect(devices.sessionRow(id)).toBeNull();
+  } finally { notices.mockRestore(); }
+});
 
 test("flag off: a held member survives rollback listed but cannot sign in or sign records", async () => {
   const { fixture, service } = await createListedPc(close => closes.push(close));

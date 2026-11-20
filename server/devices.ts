@@ -2269,7 +2269,7 @@ export class DeviceStore {
     // Legacy account-member approvals never take a tombstoned key.
     if (approval.addedBy !== undefined && (this.accountError !== null || this.isTombstoned(publicKey))) { this.noteRelayFailure(approval.path, now); return null; }
     const listed = approval.addedBy === undefined ? undefined : this.joinedRows?.rowsByKey(publicKey)[0];
-    const carried = approval.addedBy === undefined ? undefined : this.devices.find(d => d.relay_public_key === publicKey && d.held);
+    const carried = approval.addedBy === undefined || !this.opensAll() ? undefined : this.devices.find(d => d.relay_public_key === publicKey && d.held);
     const id = approval.id ?? listed?.id ?? carried?.id;
     if (carried && approval.addedBy !== undefined) {
       const notice = this.openNotices().find(n => n.id === carried.held);
