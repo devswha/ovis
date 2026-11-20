@@ -743,14 +743,14 @@ export class DeviceStore {
 
   /** The times this PC wrote itself: rows' making, its own tombstones and Revokes; never a time a record carries (P13). */
   private ownTimes(): string[] {
-    return [...this.devices.filter(row => row.untrusted_created_at !== row.created_at).map(row => row.created_at), ...(this.joinedRows?.rows() ?? []).map(row => row.confirmed_at),
+    return [...this.devices.filter(row => !row.imported && row.untrusted_created_at !== row.created_at).map(row => row.created_at), ...(this.joinedRows?.rows() ?? []).map(row => row.confirmed_at),
       ...this.tombstones.filter((t) => t.record_id === "local").map((t) => t.removed_at), ...this.evidence?.times() ?? []];
   }
 
   private quarantineLegacyClock(now: number): void {
     const firstMigration = this.pc?.migrating === true && !this.pc.upgrading;
     const marked = this.devices.map(row => {
-      const legacy = row.origin?.from === "legacy" || (firstMigration && row.origin === undefined && !row.imported);
+      const legacy = !row.imported && (row.origin?.from === "legacy" || (firstMigration && row.origin === undefined));
       return legacy && isIsoTime(row.created_at) && Date.parse(row.created_at) > now + DAY_MS && row.untrusted_created_at !== row.created_at
         ? { ...row, untrusted_created_at: row.created_at } : row;
     });
@@ -834,7 +834,7 @@ export class DeviceStore {
   }
 
   get accountError(): string | null {
-    const bad = this.devices.find(row => row.untrusted_created_at === row.created_at);
+    const bad = this.pc === null ? undefined : this.devices.find(row => !row.imported && row.untrusted_created_at === row.created_at);
     return this.accountIntegrityError ?? (bad ? `A legacy pairing time lies in the future (${bad.created_at}): account records are refused until it is repaired.` : null);
   }
 
@@ -3315,7 +3315,7 @@ export class DeviceStore {
     }
     // the evidence holds the Revoke when it is sound; a tombstone file that cannot be read is left as it is (S19)
     if (this.evidence !== null && this.evidence.strict === null) {
-      if (this.accountError === null) this.refreshTombstones();
+      if (this.accountIntegrityError === null) this.refreshTombstones();
       this.dropWaiting(rows.flatMap((d) => d.relay_public_key ?? []), "revoke");
       return;
     }

@@ -295,7 +295,6 @@ export function createServer(
   const blocked = pcAccount?.strict ?? damage(stateDir) ?? (sibling ? damage(sibling) : null);
   if (blocked !== null) console.error(blocked);
   const untouched = blocked !== null;
-  const activation = opensAll && !untouched ? FirstActivation.open(stateDir, sibling) : undefined;
   // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
   if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling);
   // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
@@ -311,6 +310,7 @@ export function createServer(
   const conflicts: StoredDevice[] = [];
   const closure = safetyLog !== null && (safetyLog.strict !== null || safetyLog.state().locked || safetyLog.state().freezes.length > 0);
   const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, onDropped: (device) => conflicts.push(device) } : {}) : null;
+  const activation = opensAll && !untouched ? FirstActivation.open(stateDir, sibling) : undefined;
   let accountBlocked: string | null = accountMerge;
   if (sibling && !untouched && accountBlocked === null) {
     try { accountBlocked = mergeAccountTombstones(stateDir, sibling, opensAll); }

@@ -56,9 +56,9 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { answerServerChallenge, deriveServerId } from "../shared/relay-server-proof.ts";
 
 export async function defaultStep2BrowserQa({ createServer }: RelayServerTree): Promise<void> {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-default-step2-qa-"));
   const prior = process.env["OVIS_ACCOUNT_OPENS_ALL"];
   delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
-  const stateDir = mkdtempSync(join(tmpdir(), "ovis-default-step2-qa-"));
   try {
     const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null,
       sidecar: false, accountService: { url: "off" } });
@@ -69,7 +69,7 @@ export async function defaultStep2BrowserQa({ createServer }: RelayServerTree): 
         await page.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
         await page.goto(`http://127.0.0.1:${app.port}`);
         await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
-        await openSettingsPage(page, "Devices");
+        await openSettingsPage(page, "Devices and PCs");
         await page.getByText("Strict mode needs this PC signed in to an Ovis account.", { exact: true }).waitFor();
         console.log("default Step 2: the PC's Devices settings show its strict-mode account requirement");
       } finally { await closeMarked(browser); }

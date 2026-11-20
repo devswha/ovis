@@ -25,8 +25,9 @@ export class AccountCatchUp {
   ) {
     const { pc, releases, activation } = options;
     this.releases = releases;
+    activation?.scope(pc);
     this.gate = rows === null ? null : new CatchUpGate(() => pc?.binding()?.bind_id ?? null,
-      id => releases?.releaseOf(id) != null, () => activation?.pending() === true);
+      id => releases?.releaseOf(id) != null, binding => activation?.pending(binding) === true);
     devices.attachCatchUp(this.gate, releases);
     if (rows && releases) this.stopRecovery = releases.registerRecoverySource(() =>
       (rows.store()?.waitingRows() ?? []).map(row => devices.listedRecoveryCandidate(row)));
@@ -63,7 +64,7 @@ export class AccountCatchUp {
       const accountError = this.devices.accountError;
       if (accountError !== null) throw new SnapshotWriteRefused(accountError);
       store?.expire();
-      this.options.activation?.complete();
+      this.options.activation?.complete(this.options.pc?.binding()?.bind_id ?? null);
       this.releases?.endAll();
       this.gate?.wholeRead(this.devices.list(null).filter(row => !this.devices.admits(this.devices.relayKeyOf(row.id))).map(row => row.id));
       this.options.pc?.setServiceStep2Off(false);

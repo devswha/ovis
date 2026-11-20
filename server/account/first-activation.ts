@@ -7,13 +7,14 @@ import { ACCOUNT_ORDER_FILE } from "./account-order.ts";
 import { REMOVAL_FILE } from "./removal-evidence.ts";
 import { DEVICE_JOURNAL_FILE, SAFETY_LOG_FILE } from "./safety-log.ts";
 import { SnapshotWriteRefused } from "./snapshot-read.ts";
+import type { PcAccountState } from "./pc-binding.ts";
 
 const FILE = "account-activation.json";
-const STEP2_STATE = ["account-pc.json", ADMISSION_FILE, ACCOUNT_ORDER_FILE, REMOVAL_FILE, DEVICE_JOURNAL_FILE, SAFETY_LOG_FILE];
+const STEP2_STATE = [ADMISSION_FILE, ACCOUNT_ORDER_FILE, REMOVAL_FILE, DEVICE_JOURNAL_FILE, SAFETY_LOG_FILE];
 
 /** The one migration window for a PC's pre-Step-2 credentials. Written before any Step-2 state is created. */
 export class FirstActivation {
-  private constructor(private readonly path: string, private active: boolean) {}
+  private constructor(private readonly path: string, private active: boolean | string) {}
 
   static open(stateDir: string, sibling: string | null | undefined): FirstActivation {
     const path = join(stateDir, FILE);
@@ -24,8 +25,11 @@ export class FirstActivation {
       }
       if (lstatSync(path, { throwIfNoEntry: false })) {
         const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-        return new FirstActivation(path, typeof value === "object" && value !== null
-          && "v" in value && value.v === 1 && "pending" in value && value.pending === true);
+        if (typeof value !== "object" || value === null || !("v" in value) || value.v !== 1
+          || !("pending" in value) || value.pending !== true) return new FirstActivation(path, false);
+        const binding = "bind_id" in value ? value.bind_id : undefined;
+        return new FirstActivation(path, binding === undefined ? true
+          : typeof binding === "string" && /^[0-9a-f]{32}$/.test(binding) && binding);
       }
       if (STEP2_STATE.some(file => lstatSync(join(stateDir, file), { throwIfNoEntry: false }))) return new FirstActivation(path, false);
       const registry = readDeviceRegistry(join(stateDir, "devices.json"), true);
@@ -45,10 +49,25 @@ export class FirstActivation {
     }
   }
 
-  pending(): boolean { return this.active; }
+  /** Attach an interrupted or unscoped migration marker only to the original T50 binding. */
+  scope(pc: PcAccountState | null): void {
+    if (this.active !== true) return;
+    this.active = false;
+    const binding = pc?.binding();
+    if (pc === null || !binding || pc.strict !== null || pc.clears().length > 0 || pc.first() !== null
+      || binding.pending || binding.service) return;
+    try {
+      writePrivateState(this.path, { v: 1, pending: true, bind_id: binding.bind_id });
+      this.active = binding.bind_id;
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+    }
+  }
 
-  complete(): void {
-    if (!this.active) return;
+  pending(binding: string): boolean { return this.active === binding; }
+
+  complete(binding: string | null): void {
+    if (binding === null || !this.pending(binding)) return;
     try { writePrivateState(this.path, { v: 1, pending: false }); }
     catch (error) {
       if (error instanceof Error) throw new SnapshotWriteRefused("Cannot finish first activation", { cause: error });

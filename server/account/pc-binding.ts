@@ -204,12 +204,16 @@ export class PcAccountState {
     if (own !== null && theirs !== null && own.account !== theirs.account) { this.problem = `${this.path} and ${path} bind this PC to two accounts`; return; }
     this.siblingBinding = theirs;
     const doc = { ...this.doc, binding: own, clears, others_ever: this.doc.others_ever || parsed.others_ever };
-    // the clears are one set in both folders: the sibling learns every clear too, so starting it alone never brings a
-    // cleared account back (P12, T48)
-    if (parsed.clears.length !== clears.length) {
+    const off = (binding: AccountBinding | null) => binding !== null
+      && (this.doc.step2_off_for === binding.bind_id || parsed.step2_off_for === binding.bind_id);
+    const activeBinding = own ?? theirs;
+    if (activeBinding !== null && off(activeBinding)) doc.step2_off_for = activeBinding.bind_id;
+    // Both folders keep the clears and the service opt-out for the binding they hold.
+    if (parsed.clears.length !== clears.length || (theirs !== null && off(theirs) && parsed.step2_off_for !== theirs.bind_id)) {
       const siblingDoc: PcDoc = { ...parsed, clears, binding: standing(parsed.binding) ?? (parsed.binding?.pending === true && !clears.some((clear) => clear.bind_id === parsed.binding!.bind_id) ? parsed.binding : null) };
+      if (theirs !== null && off(theirs)) siblingDoc.step2_off_for = theirs.bind_id;
       try { writePrivateState(path, siblingDoc); } catch (error) {
-        this.problem = `${path} cannot learn this PC's cleared account (${error instanceof Error ? error.message : String(error)})`;
+        this.problem = `${path} cannot learn this PC's account denials (${error instanceof Error ? error.message : String(error)})`;
         return;
       }
     }

@@ -27,7 +27,7 @@ export class CatchUpGate {
 
   /** `binding`: this PC's binding id now, null in no account, where nobody waits (no block can name it). */
   constructor(private readonly binding: () => string | null, private readonly released: (id: string) => boolean = () => false,
-    private readonly firstActivation: () => boolean = () => false) {}
+    private readonly firstActivation: (binding: string) => boolean = () => false) {}
 
   waits(row: GatedRow, credential = true, admitsLegacy: () => boolean = () => true): boolean {
     const binding = this.binding();
@@ -35,7 +35,7 @@ export class CatchUpGate {
     if (this.lifted.has(row.id)) return true;
     if (pairedAtPc(row.origin)) return false;
     if (this.caughtUpFor === binding) return this.waiting.has(row.id);
-    return !credential || row.origin?.from !== "legacy" || !(this.step2OffFor === binding || this.firstActivation()) || !admitsLegacy();
+    return !credential || row.origin?.from !== "legacy" || !(this.step2OffFor === binding || this.firstActivation(binding)) || !admitsLegacy();
   }
 
   /** Only T50's pre-Step-2 rows are excused, never a row judged unsafe by a read or waiting after a lift. */
