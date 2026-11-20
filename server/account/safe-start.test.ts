@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
@@ -9,7 +9,7 @@ import { loadRelayIdentity, savedServerId } from "../relay/identity.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
-import { SafetyLog } from "./safety-log.ts";
+import { pcRecordId, SafetyLog } from "./safety-log.ts";
 
 const ACCOUNT = "acct_1";
 const SERVER_ID = "0123456789abcdef0123456789abcdef";
@@ -334,5 +334,38 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     fixtures.push(f);
     dirs.splice(dirs.indexOf(dir), 1);
     expect(f.app.context.services.devices.has(foreign.id)).toBe(false);
+  });
+
+  test("T48: a foreign sibling cannot lift this PC's block and stays byte-identical", async () => {
+    const [dir, sibling] = [stateDir(), stateDir()];
+    expect(loadRelayIdentity(dir).server_id).not.toBe(loadRelayIdentity(sibling).server_id);
+    const own = store(dir);
+    const [signer, target] = [await member(own), await member(own)];
+    const registry = readFileSync(join(dir, "devices.json"));
+    const deny = await block(target.spki, signer);
+    expect(await own.applyBlock(deny, "handed")).toMatchObject({ outcome: "applied" });
+    // Replay must deny the target even if the registry write did not survive.
+    writeFileSync(join(dir, "devices.json"), registry, { mode: 0o600 });
+    const other = SafetyLog.open(sibling);
+    expect(other.append({
+      record: { v: 1, id: pcRecordId(), kind: "lift", account: ACCOUNT, target: deny.id, signer: "pc", signed_at: new Date().toISOString(), forget: false, signature: "" },
+      got: "pc", cause: "screen",
+    })).toMatchObject({ outcome: "applied" });
+    other.close();
+    const snapshot = () => new Map(readdirSync(sibling, { recursive: true })
+      .filter((path) => statSync(join(sibling, path)).isFile())
+      .map((path) => [path, readFileSync(join(sibling, path))]));
+    const before = snapshot();
+
+    const f = relayFixture(false, { stateDir: dir, siblingStateDir: sibling, accountOpensAll: true });
+    fixtures.push(f);
+    dirs.splice(dirs.indexOf(dir), 1);
+    const { devices, safetyLog } = f.app.context.services;
+
+    expect(safetyLog?.state().blocks.map(({ record }) => record.id)).toEqual([deny.id]);
+    expect(await signIn(devices, target)).toBeNull();
+    const after = snapshot();
+    expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
+    expect([...before].filter(([path, bytes]) => !after.get(path)?.equals(bytes)).map(([path]) => path)).toEqual([]);
   });
 });
