@@ -509,7 +509,7 @@ export class AccountMailbox {
     const next = [...this.pending, record];
     // full: a waiting add makes room (it can come again); with none, the remove is undecided and its sender tries again
     if (waiting.length >= PENDING_MAX) {
-      if (removedKey(record) === null) return false;
+      if (this.options.devices.opensAll() && removedKey(record) === null) return false;
       const add = next.findIndex((kept) => removedKey(kept) === null);
       if (add === -1) {
         // nowhere to keep it: its key stays out of every add until a pairing here settles it
