@@ -277,4 +277,5 @@ export const DEVICES_KO: Record<string, string> = {
   "{method} sign-in, two-step sign-in not confirmed": "{method} 로그인, 2단계 인증 확인 안 됨",
   "Key {fingerprint}": "키 {fingerprint}",
   "{count} older notices from {pc} were cleared before this device saw them.": "{pc}의 오래된 알림 {count}개는 이 기기가 보기 전에 지워졌어요.",
+  "An older notice from {pc} was cleared before this device saw it.": "{pc}의 오래된 알림 1개는 이 기기가 보기 전에 지워졌어요.",
 };

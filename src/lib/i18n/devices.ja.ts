@@ -277,4 +277,5 @@ export const DEVICES_JA: Record<string, string> = {
   "{method} sign-in, two-step sign-in not confirmed": "{method} でサインイン、2 段階認証は未確認",
   "Key {fingerprint}": "キー {fingerprint}",
   "{count} older notices from {pc} were cleared before this device saw them.": "{pc} の古いお知らせ {count} 件は、このデバイスが見る前に消去されました。",
+  "An older notice from {pc} was cleared before this device saw it.": "{pc} の古いお知らせ 1 件は、このデバイスが見る前に消去されました。",
 };
