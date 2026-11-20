@@ -12,6 +12,7 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { AccountSignIn, CheckPcsButton, PcStatusLine } from "./AccountPcs.tsx";
 import { JoinWait } from "./JoinWait.tsx";
 import { KeyId } from "./KeyId.tsx";
+import { KeyFingerprintWait } from "./PendingKeys.tsx";
 import { relayFailureText } from "./relayFailureText.ts";
 import { CodeEntry, ReadyCheckpoint, type RelayShellProps } from "./RelayShell.tsx";
 import { RelayAddPc } from "./RelayAddPc.tsx";
@@ -263,7 +264,7 @@ export function RelayShellCardContent({ props, view, signInFirst, addingPc, setS
           <SheepMascot screen="connecting" size={56} badge />
           <h1 className="relay-shell-title">{t("Connecting to {name}…", { name: pc })}</h1>
           {state.approved && <p className="relay-shell-copy">{t("Approved. {name} opens in a moment.", { name: pc })}</p>}
-          <PcCard name={pc} />
+          {state.keyFingerprint === undefined ? <PcCard name={pc} /> : <KeyFingerprintWait pc={pc} fingerprint={state.keyFingerprint} />}
         </>
       )}
       {state.kind === "connecting" && !state.pairing && (

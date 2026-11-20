@@ -16,6 +16,7 @@ import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { relayFailureText } from "./relayFailureText.ts";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import { JoinWait } from "./JoinWait.tsx";
+import { KeyFingerprintWait } from "./PendingKeys.tsx";
 
 export type AddPcSheetMode = "new" | "join" | "add";
 export type AddPcPhase = "start" | "confirm" | "connecting" | "compare" | "wrong" | "approving" | "ready" | "failed";
@@ -163,6 +164,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
         break;
       case "connecting":
         body = state.kind === "connecting" && state.hold !== undefined ? <JoinWait pc={name} hold={state.hold} />
+          : state.kind === "connecting" && state.keyFingerprint !== undefined ? <KeyFingerprintWait pc={name} fingerprint={state.keyFingerprint} />
           : <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{t("Connecting to {name}…", { name })}</p></div>;
         actions = cancel;
         break;

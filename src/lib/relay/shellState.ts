@@ -96,7 +96,7 @@ export type RelayShellState =
    * `approved`: the PC accepted the pairing, and the account steps go on behind this screen; absent before that.
    * `hold`: the PC's structured account-open refusal; `pairing`: a new pairing, not a saved PC opening again
    */
-  | { kind: "connecting"; name: string | null; approved?: true; pairing?: true; readonly hold?: HoldState }
+  | { kind: "connecting"; name: string | null; approved?: true; pairing?: true; readonly hold?: HoldState; readonly keyFingerprint?: string }
   | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion }
   | { kind: "code-entry"; failure: TypedCodeFailure | null }
   | { kind: "code-looking" }

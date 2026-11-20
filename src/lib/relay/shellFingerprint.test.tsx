@@ -38,31 +38,40 @@ it("T71, P11: a code pairing shows the pending fingerprint until the attempt is 
   };
   const markup = () => renderToStaticMarkup(createElement(SettingsProvider, null, createElement(RelayShell, current())));
   const opening = Promise.withResolvers<Parameters<NonNullable<RelayShellMount["open"]>>[1]>();
+  const destinations: string[] = [];
+  const mount: RelayShellMount = {
+    entryUrl, container: Object.create(null), store, shellVersion: "1.0.0", label: "Phone",
+    accountStore: memoryAccountStore(), accountProviders: [],
+    createRoot: () => ({ render, unmount() {} }),
+    renderApp: () => { throw new TypeError("The PC has not approved the key"); },
+    pendingPush: { get: async () => undefined, clear: async () => {} },
+    navigate: (path) => { destinations.push(path); },
+    open: async (_offer, options) => {
+      opening.resolve(options);
+      await new Promise<void>((resolve) => options?.signal?.addEventListener("abort", () => resolve(), { once: true }));
+      throw new DOMException("Pairing cancelled", "AbortError");
+    },
+  };
+  let cancel: (() => void) | undefined;
   try {
-    await mountRelayShell({
-      entryUrl, container: Object.create(null), store, shellVersion: "1.0.0", label: "Phone",
-      accountStore: memoryAccountStore(), accountProviders: [],
-      createRoot: () => ({ render, unmount() {} }),
-      renderApp: () => { throw new TypeError("The PC has not approved the key"); },
-      pendingPush: { get: async () => undefined, clear: async () => {} },
-      navigate() {},
-      open: async (_offer, options) => {
-        opening.resolve(options);
-        await new Promise<void>((resolve) => options?.signal?.addEventListener("abort", () => resolve(), { once: true }));
-        throw new DOMException("Pairing cancelled", "AbortError");
-      },
-    });
+    await mountRelayShell(mount);
     current().onPair();
     const options = await opening.promise;
+    cancel = current().onCancel;
     const fingerprint = "7RJ5-P9C2";
     expect(markup()).not.toContain(fingerprint);
     options?.keyProof?.(fingerprint);
     expect(markup()).toContain(fingerprint);
-    current().onCancel();
+    cancel();
+    cancel = undefined;
+    expect(options?.signal?.aborted).toBe(true);
+    const [destination] = destinations;
+    if (destination !== "/") throw new TypeError("Cancel did not return to the front page");
+    await mountRelayShell({ ...mount, entryUrl: new URL(destination, app).href });
     options?.keyProof?.(fingerprint);
     expect(markup()).not.toContain(fingerprint);
   } finally {
-    props?.onCancel();
+    cancel?.();
     setTransport(nativeTransport);
     browser.dispose();
   }

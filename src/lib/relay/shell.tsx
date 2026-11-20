@@ -406,6 +406,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         ...prepared,
         ...(accountOpen === undefined ? {} : { store: withAccountDevice(store, accountDevice(attempt.offer, accountOpen.key)), accountOpensAll: true }),
         ...(directSocket ? { directSocket, ...(directTailnet ? { directTailnet } : {}) } : {}),
+        ...(!attempt.paired && attempt.offer.code !== undefined ? {
+          keyProof: (keyFingerprint: string) => {
+            if (!controller.signal.aborted && last === attempt && shown?.kind === "connecting") show({ ...shown, keyFingerprint });
+          },
+        } : {}),
         // a link without a code: the digits wait on screen until this phone says they match
         compare: (digits) => new Promise<void>((resolve) => {
           if (controller.signal.aborted) return;

@@ -146,8 +146,8 @@ export interface RelayChannelOptions {
   readonly accountOpensAll?: boolean;
   /**
    * Offer KEY_PROOF_FEATURE (device table T71, T72): a pairing by code proves its key over the PC's KEY_CHALLENGE and
-   * is told the fingerprint it computed itself from this offer's server_id, that challenge and its own key, to show
-   * while the PC's screen confirms it. Nothing the PC or the relay sends is shown as a fingerprint.
+   * on KEY_PENDING reports the fingerprint it computed from this offer's server_id, that challenge and its own key.
+   * Nothing the PC or the relay sends is shown as a fingerprint.
    */
   readonly keyProof?: (fingerprint: string) => void;
   /** Offer DIRECT_CARRIER, so the PC names its direct carriers in AUTH_OK: only a client that can open them. */
@@ -219,7 +219,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     let challenge: Uint8Array | undefined;
     /** set once PAIR_CONFIRM went out: before it, AUTH_OK would be a PC skipping the comparison on this phone */
     let confirmed = false;
-    let keyProved = false;
+    let keyProof: { readonly fingerprint: string; readonly shown: boolean } | undefined;
     let secure: SecureChannel | undefined;
     let mux: MuxEngine | undefined;
     let connectionId = "";
@@ -333,17 +333,20 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         return;
       }
       // one challenge per pairing: a second one, or one to a device that did not ask, ends the attempt
-      if (phase === "auth" && frame.type === FrameType.KEY_CHALLENGE && offer.code !== undefined && options.keyProof !== undefined && !keyProved) {
-        keyProved = true;
+      if (phase === "auth" && frame.type === FrameType.KEY_CHALLENGE && offer.code !== undefined && options.keyProof !== undefined && keyProof === undefined) {
         const fingerprint = await pairFingerprint(offer.server_id, frame.payload.challenge, device.public_spki);
         const signature = await signPairProof(offer.server_id, frame.payload.challenge, device.public_spki, device.private_key);
         expect(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS, () => new RelayAdmissionTimeoutError("auth"));
         mux?.extendSetup(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS);
         await send({ type: FrameType.KEY_PROVE, flags: 0, stream_id: 0, payload: { signature } });
-        options.keyProof(fingerprint);
+        keyProof = { fingerprint, shown: false };
         return;
       }
-      if (phase === "auth" && frame.type === FrameType.KEY_PENDING && keyProved) return;
+      if (phase === "auth" && frame.type === FrameType.KEY_PENDING && keyProof !== undefined) {
+        if (!keyProof.shown) options.keyProof?.(keyProof.fingerprint);
+        keyProof = { ...keyProof, shown: true };
+        return;
+      }
       // a PC that selects something (the account feature) answers HELLO after the provisional WELCOME this
       // phone already signed in on: the same nonce, so the sign-in stands, and only what it selected is new
       if (phase === "auth" && frame.type === FrameType.WELCOME && !frame.payload.provisional && provisionalNonce !== undefined && !answered) {
