@@ -6,9 +6,10 @@ import { channelBinding } from "../../shared/relay-e2ee.ts";
 import { ACCOUNT_OPENS_ALL_FEATURE, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE } from "../../shared/relay-mux.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { readDeviceRegistry } from "../devices.ts";
-import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
+import { bounded, deferred, relayConnection, relayDevice } from "../relay/test-helpers.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { DeviceJournal } from "./device-journal.ts";
+import { RemovalEvidence } from "./removal-evidence.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { ask, phone } from "./pairing.test-helpers.ts";
 
@@ -29,6 +30,23 @@ test("a promoted key removed by a waiting block is not announced and cannot sign
   const link = await relayConnection(fixture, { serverId });
   expect(await bounded(Promise.race([link.auth(device, [ACCOUNT_OPENS_ALL_FEATURE]), link.serverError]))).toBe("auth_failed");
   expect(announced).toEqual([]);
+});
+
+test("promotion origin and member creation follow a local Revoke at the same wall time", async () => {
+  const { fixture, member, device } = await createListedPc(close => closes.push(close));
+  const { devices } = fixture.app.context.services;
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now());
+  closes.push(() => clock.mockRestore());
+  const other = await relayDevice(fixture);
+  expect(devices.revoke(other.id)).toBe(true);
+  const [revoke] = RemovalEvidence.open(fixture.stateDir, null).standingRevokes(other.publicKey);
+  if (!revoke) throw new Error("Missing durable Revoke");
+  expect(devices.pairRelayApproved("Laptop", device.publicKey, { path: "account", addedBy: member.id, id: device.id })?.device.id).toBe(device.id);
+  const registry = readDeviceRegistry(join(fixture.stateDir, "devices.json"));
+  const promoted = registry.kind === "ok" && registry.devices.find(row => row.id === device.id);
+  if (!promoted || !promoted.origin) throw new Error("Missing promoted member");
+  expect(Date.parse(promoted.origin.at)).toBeGreaterThan(Date.parse(revoke.at));
+  expect(promoted.created_at).toBe(promoted.origin.at);
 });
 
 async function approveListed(memberAgeMs: number, elapsed = 4_000) {
