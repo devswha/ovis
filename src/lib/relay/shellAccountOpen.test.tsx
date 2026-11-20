@@ -156,6 +156,9 @@ it("C3: a reload of the join card a launch put up, not pressed yet, asks again a
   await run.openPage();
   expect({ apps: run.apps(), navigations: run.navigations }).toEqual({ apps: 0, navigations: [expect.stringContaining(`/s/${run.serverId}/#offer=`)] });
   expect(browser.sessionStore.get("ovis-launch-join")).toBe(run.serverId);
+  // back on the front page, the card is over: a row pressed there opens its PC by the account's key again
+  await run.reload();
+  expect(browser.sessionStore.has("ovis-launch-join")).toBe(false);
 });
 
 it("P18: an account service without the release only receives the challenge probe and still offers Join", async () => {

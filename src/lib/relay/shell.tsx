@@ -156,6 +156,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   if (scoped) markLaunched();
   // this PC's page was opened by a launch, not by a person: if the PC turns out off, the launch goes on to Add a PC
   const launchedHere = scoped && launchedPc === entry.serverId;
+  // a front page that came back (Back, a reload) ends a launch's join card: a row a person presses next opens its PC as usual
+  if (!scoped) keepLaunchJoin(null);
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
   let last: Attempt | null = null, opening: AbortController | null = null;
