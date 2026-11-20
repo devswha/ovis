@@ -141,18 +141,20 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     drain();
     await Promise.all(settled);
   };
-  const checkOne = async (serverId: string): Promise<void> => {
+  /** `where`: ahead of the queue (a person's Check again), or after what is queued (a launch's checks, in its order) */
+  const checkOne = async (serverId: string, where: "front" | "back" = "front"): Promise<void> => {
     if (stopped) return;
     const waiting = queue.findIndex((entry) => entry.device.server_id === serverId);
     if (waiting >= 0) {
       const [entry] = queue.splice(waiting, 1);
-      if (entry) { queue.unshift(entry); drain(); return entry.settled.promise; }
+      // a launch's check keeps a queued one where it waits; a person's moves it to the front
+      if (entry) { queue.splice(where === "front" ? 0 : waiting, 0, entry); drain(); return entry.settled.promise; }
     }
     const under = running.get(serverId);
     if (under !== undefined) return under;
     const device = await store.get(serverId);
     if (device === undefined || stopped) return;
-    const settled = enqueue(device, "front");
+    const settled = enqueue(device, where);
     redraw();
     drain();
     await settled;

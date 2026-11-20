@@ -65,8 +65,9 @@ function rememberPc(serverId: string): void {
  * own way in (security-triage condition 3: nothing this device did not choose opens without a press).
  */
 const LAUNCH_JOIN = "ovis-launch-join";
-function keepLaunchJoin(serverId: string | null): void {
-  try { if (serverId === null) sessionStorage.removeItem(LAUNCH_JOIN); else sessionStorage.setItem(LAUNCH_JOIN, serverId); } catch { /* the card asks once */ }
+/** False when the mark cannot be kept: a launch then puts up no join card, which a reload could open by the account key. */
+function keepLaunchJoin(serverId: string | null): boolean {
+  try { if (serverId === null) sessionStorage.removeItem(LAUNCH_JOIN); else sessionStorage.setItem(LAUNCH_JOIN, serverId); return true; } catch { return false; }
 }
 function launchJoinFor(serverId: string): boolean {
   try { return sessionStorage.getItem(LAUNCH_JOIN) === serverId; } catch { return false; }
@@ -186,7 +187,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   pressedJoin = (event: MouseEvent) => {
     const target = event.target as { closest?: (selector: string) => Element | null } | null;
     const link = typeof target?.closest === "function" ? target.closest("a[href]") : null;
-    const id = link === null ? null : serverIdOfPath(new URL(link.getAttribute("href") ?? "", window.location.href).pathname);
+    let id: string | null = null;
+    try { id = link === null ? null : serverIdOfPath(new URL(link.getAttribute("href") ?? "", window.location.href).pathname); } catch { /* not an address */ }
     if (id !== null && launchJoinFor(id)) keepLaunchJoin(null);
   };
   document.addEventListener("click", pressedJoin, true);
@@ -407,7 +409,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const pc = view?.kind === "signed-in" ? accountLaunchPc(view.pcs ?? [], Date.now()) : null;
       // its join card, waiting for the person's press: never the PC's bare page, which opens a PC the account lets this
       // device into by itself (security-triage condition 3: nothing this device did not choose opens without a press)
-      if (pc !== null) { left = true; keepLaunchJoin(pc.server_id); joinPc(pc, { sheet: "join", alone: true }); return; }
+      // no storage for the mark: no card a reload could open by the account's key; the front page lists the PC instead
+      if (pc !== null && keepLaunchJoin(pc.server_id)) { left = true; joinPc(pc, { sheet: "join", alone: true }); return; }
     }
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
     if (devices.length && !checked) { checked = true; void sweep.check(); }
@@ -422,7 +425,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // a check the relay turned away puts back what the last one found, so only this check's own word that the PC is off counts
     const checks = order.map((pc) => {
       const shown = sweep.status.get(pc.server_id), prior = shown?.kind === "checking" ? shown.previous : shown;
-      return sweep.checkOne(pc.server_id).then(() => { const now = sweep.status.get(pc.server_id); return now?.kind === "offline" && now.reason === "pc" && now !== prior; });
+      return sweep.checkOne(pc.server_id, "back").then(() => { const now = sweep.status.get(pc.server_id); return now?.kind === "offline" && now.reason === "pc" && now !== prior; });
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
     // fixed wait: a PC whose check has not settled by then opens anyway, as the last PC always did
@@ -533,7 +536,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       ? keyMismatch(attempt.offer.server_id, [{ key: error.saved, from: "saved" }, { key: error.offered, from: "link" }]) : null;
     // the PC a launch opened before its check could say it is off: the relay now says so, and the launch lands where it
     // would have, on the front page (Add a PC), once; a PC opened by a person keeps its card and its Try again
-    if (launchedHere && attempt.paired && attempt.fresh !== true && app === null && (failure === "pc-offline" || failure === "pc-unresponsive") && refused === undefined && !navigatedSinceEntry() && entries === 0) {
+    if (launchedHere && attempt.paired && attempt.fresh !== true && app === null && (failure === "pc-offline") && refused === undefined && !navigatedSinceEntry() && entries === 0) {
       // left: Back restoring this page from the browser's cache loads it again (the pageshow below)
       cancelAttempt(); left = true; keepLaunchAccount(); navigate("/"); return;
     }
