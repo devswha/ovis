@@ -317,4 +317,17 @@ describe("a safe PC state before any listener (T41, T48)", () => {
       expect(devices.accountError).not.toBeNull();
     }
   });
+
+  test("T48: a sibling folder of another relay identity merges none of its rows into this PC", async () => {
+    const [dir, sibling] = [stateDir(), stateDir()];
+    const own = relayFixture(false, { stateDir: dir, accountOpensAll: true });
+    own.app.stop();
+    const other = relayFixture(false, { stateDir: sibling, accountOpensAll: true });
+    const foreign = await relayDevice(other);
+    other.app.stop();
+    const f = relayFixture(false, { stateDir: dir, siblingStateDir: sibling, accountOpensAll: true });
+    fixtures.push(f);
+    dirs.splice(dirs.indexOf(dir), 1);
+    expect(f.app.context.services.devices.has(foreign.id)).toBe(false);
+  });
 });
