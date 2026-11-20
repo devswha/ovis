@@ -80,15 +80,17 @@ function provenCore(pid: number, socket: string | undefined): boolean {
  * Stops a test's own cores in the order given, each in its own environment: a core that dials
  * another goes first, as while it runs it starts that one again. Before each stop the core's holder
  * is read again (an orphaned holder starts a new core about 3 s later); then its pids are waited for,
- * because hc's stop returns while they live and a detached daemon's exit has no event. Whatever
- * outlives `waitMs` is killed by its recorded pid and named in `killed`, but only once provenCore shows
- * it is still that core's process; any other pid alive is named in `unproven` and left alone (record
- * pids with corePids: a pid no status named is never proven). The test asserts both are empty, so a
- * leak fails it.
+ * because hc's stop returns while they live and a detached daemon's exit has no event. Whatever of a
+ * core outlives `waitMs` is killed by its recorded pid, and gone, before the next core is stopped, so
+ * it cannot start that one again; it is named in `killed`, but only once provenCore shows it is still
+ * that core's process. Any other pid alive is named in `unproven` and left alone (record pids with
+ * corePids: a pid no status named is never proven). The test asserts both are empty, so a leak fails it.
  * Delete a core's folder only after this: a late hc child would otherwise run whatever hc PATH finds.
  */
 export async function stopTestCores(bin: string, cores: TestCore[], waitMs = 5000): Promise<{ stopped: number[]; killed: number[]; unproven: number[] }> {
   const stopped: number[] = [];
+  const killed: number[] = [];
+  const unproven: number[] = [];
   for (const core of cores) {
     if (core.pids.some(alive)) {
       // a status that fails keeps the pids recorded so far
@@ -97,25 +99,23 @@ export async function stopTestCores(bin: string, cores: TestCore[], waitMs = 500
     stopped.push(await Bun.spawn([bin, "server", "stop"], { env: core.env, stdout: "ignore", stderr: "ignore" }).exited);
     const deadline = Date.now() + waitMs;
     while (core.pids.some(alive) && Date.now() < deadline) await Bun.sleep(25);
-  }
-  const killed: number[] = [];
-  const unproven: number[] = [];
-  for (const core of cores) {
+    const ended: number[] = [];
     for (const pid of core.pids.filter(alive)) {
       if (!provenCore(pid, core.env["HC_SOCKET"])) {
         unproven.push(pid);
         continue;
       }
-      killed.push(pid);
+      ended.push(pid);
       try {
         process.kill(pid, "SIGKILL");
       } catch {
         // it ended right after the proof: a leak all the same, as it outlived the wait
       }
     }
+    killed.push(...ended);
+    const killDeadline = Date.now() + waitMs;
+    while (ended.some(alive) && Date.now() < killDeadline) await Bun.sleep(25);
   }
-  const deadline = Date.now() + waitMs;
-  while (killed.some(alive) && Date.now() < deadline) await Bun.sleep(25);
   return { stopped, killed, unproven };
 }
 

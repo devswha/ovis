@@ -41,6 +41,18 @@ it.skipIf(!existsSync("/proc/self/stat"))("reads the holder again before a stop,
   expect([core, holder].filter(alive)).toEqual([]);
 });
 
+it.skipIf(!existsSync("/proc/self/stat"))("ends what one core left before the next core is stopped, as a running first core would start the next again", async () => {
+  const [first, next] = [isolatedHcEnv(join(root, "first")), isolatedHcEnv(join(root, "next"))];
+  const left = await sleeper(first);
+  const seen = join(root, "seen-at-next-stop");
+  // its status names the first core's leftover; its stop of the next core writes down whether that leftover still runs
+  const bin = join(root, "hc-two");
+  writeFileSync(bin, `#!/bin/sh\n[ "$1 $2" = "server status" ] && echo '{"pid":${left},"holder":null}'\nif [ "$1 $2" = "server stop" ] && [ "$HC_SOCKET" = "${next["HC_SOCKET"]}" ]; then if kill -0 ${left} 2>/dev/null; then echo running > ${JSON.stringify(seen)}; else echo gone > ${JSON.stringify(seen)}; fi; fi\nexit 0\n`);
+  chmodSync(bin, 0o755);
+  expect(await stopTestCores(bin, [{ env: first, pids: [left] }, { env: next, pids: [] }], 200)).toEqual({ stopped: [0, 0], killed: [left], unproven: [] });
+  expect(readFileSync(seen, "utf8")).toBe("gone\n");
+});
+
 it("kills no recorded pid that is now a process of another core, and names it unproven", async () => {
   const env = isolatedHcEnv(join(root, "intended"));
   // what a recorded pid would be once its number went to another core: the status names it, so its start time is recorded
