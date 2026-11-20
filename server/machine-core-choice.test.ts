@@ -170,6 +170,8 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
       const saved = await run({ destination: "fixture-only" }, false);
       expect(saved).toMatchObject({ phase: "connected", runtime: "herdr" });
       expect(saved.action_required ?? null).toBeNull();
+      // Advanced settings' "herdr instead of Ovis" adds the PC on its herdr, beside the Ovis
+      expect(await add({ destination: "fixture-herdr", start_new_herdr: true })).toMatchObject({ phase: "connected", runtime: "herdr", target: { destination: "fixture-herdr", start_new_herdr: true } });
       ownOvisAdded(await add({ destination: "fixture-added" }));
       expect(starts).toBe(0);
       return;

@@ -91,6 +91,8 @@ try {
           assert.equal(await port.evaluate((input: HTMLInputElement) => input.validity.rangeOverflow), true);
           assert.equal(requests.length, 1, "update click obeys the SSH port range");
           await port.fill("2222");
+          const herdr = dialog.getByRole("checkbox", { name: "Connect to herdr instead of Ovis", exact: true });
+          assert.equal(await herdr.isChecked(), false, "Ovis is the default");
           await destination.press("Enter");
           const approve = dialog.getByRole("button", { name: "Install and connect", exact: true });
           await approve.waitFor();
@@ -264,6 +266,23 @@ try {
             await page.unroute("**/api/machines/setup**");
           }
           console.log(`PASS ${width}px: polling never restores session choices for a different form identity`);
+          {
+            const sent: SetupRequest[] = [];
+            await page.route("**/api/machines/setup**", async (route) => {
+              if (route.request().method() === "POST") {
+                sent.push(route.request().postDataJSON());
+                job = { id: "herdr", machine_id: "fixture", target: sent.at(-1)!, phase: "connected", step: "Connected", action_required: null, installations: [], challenge: null, error: null, ssh_output: null };
+              }
+              await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
+            });
+            await reload(); await destination.fill("fixture-only"); await advanced();
+            await dialog.getByRole("checkbox", { name: "Connect to herdr instead of Ovis", exact: true }).check();
+            await destination.press("Enter");
+            await dialog.getByRole("button", { name: "Open PC", exact: true }).waitFor();
+            assert.deepEqual(sent, [{ destination: "fixture-only", start_new_herdr: true }]);
+            await page.unroute("**/api/machines/setup**");
+          }
+          console.log(`PASS ${width}px: Advanced settings' herdr opt-out sends the PC's herdr instead of its Ovis`);
           for (const decision of ["early_close", "cancel", "close", "start_headless"] as const) {
             const actions: unknown[] = [];
             await page.route("**/api/machines/setup**", async (route) => {

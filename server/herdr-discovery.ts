@@ -74,7 +74,8 @@ async function discoveryScope(host: HerdrDiscoveryHost): Promise<DiscoveryScope>
     if (home !== host.home) return;
     const path = processSocket(args, home, xdg);
     if (!path) return;
-    if (tmp?.startsWith("/") && !scope.temps.includes(tmp)) scope.temps.push(tmp);
+    // a TMPDIR inside the home is no throwaway folder (the home's .cache already is one)
+    if (tmp?.startsWith("/") && !posix.normalize(tmp + "/").startsWith(home + "/") && !scope.temps.includes(tmp)) scope.temps.push(tmp);
     servers.push({ path, xdg });
   };
   if (host.platform === "linux" && host.procRoot) {

@@ -18,6 +18,7 @@ export const MACHINES_KO: Record<string, string> = {
   "Start it on that PC and reconnect, or start a new herdr here.": "그 PC에서 세션을 시작한 뒤 다시 연결하거나, 여기에서 새 herdr를 시작하세요.",
   "Choose the session to use, or start a new herdr here.": "사용할 세션을 선택하거나 여기에서 새 herdr를 시작하세요.",
   "Use {label}": "{label} 사용",
+  "Connect to herdr instead of Ovis": "Ovis 대신 herdr에 연결",
   "Start a new herdr here": "여기에서 새 herdr 시작",
   "Use Ovis on this PC (herdr-core)": "이 PC의 Ovis (herdr-core) 사용",
   "Choose what to connect to": "연결할 대상을 선택하세요",
