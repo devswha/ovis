@@ -625,6 +625,17 @@ export class DeviceStore {
    * anything is coalesced; the tombstone file is written again from the evidence; the pending file goes; and every row
    * the evidence covers goes. Nothing of it is told to anyone: no session is open yet.
    */
+  /** Whether the last journal entry naming row `id` removed it (P24): read once, at open, from the journal on disk. */
+  private journalEnded(id: string): boolean {
+    if (this.journalEndedRows === null) {
+      const last = new Map<string, string>();
+      for (const entry of this.journal?.strict === null ? this.journal.entries() : []) if (entry.row !== null) last.set(entry.row, entry.kind);
+      this.journalEndedRows = new Set([...last].flatMap(([row, kind]) => kind === "drop" || kind === "remove" ? [row] : []));
+    }
+    return this.journalEndedRows.has(id);
+  }
+  private journalEndedRows: Set<string> | null = null;
+
   /**
    * The journal is the truth (P24): a removal is journalled before devices.json is written, so a stop between the two
    * leaves a row whose last journal entry ends it. Every such row ends here, at open and before anything is served,
@@ -632,9 +643,7 @@ export class DeviceStore {
    */
   private finishJournalledRemovals(): void {
     if (this.journal === null || this.journal.strict !== null) return;
-    const last = new Map<string, string>();
-    for (const entry of this.journal.entries()) if (entry.row !== null) last.set(entry.row, entry.kind);
-    const kept = this.devices.filter((d) => last.get(d.id) !== "drop" && last.get(d.id) !== "remove");
+    const kept = this.devices.filter((d) => !this.journalEnded(d.id));
     if (kept.length === this.devices.length) return;
     const gate = this.gateClosedAt ?? this.devices[0]?.created_at ?? new Date().toISOString();
     this.save(kept, gate);
@@ -731,12 +740,13 @@ export class DeviceStore {
   /** A row whose key was removed at or after the row was made: revoked, whether or not its own write happened yet. */
   private stale(device: StoredDevice): boolean {
     // while a lock stands only a row confirmed on this PC's screen gets in, whether or not its teardown ran (P11, T46)
+    // a row whose last journal entry removed it is out, whether or not the start could finish that removal (P24)
     if (this.failedRows.has(device.id) || (device.relay_public_key !== undefined && this.failedDenies.has(device.relay_public_key))) return true;
     // main's own rule stays the floor under the evidence: a tombstone of this PC keeps its key out, whatever path took
     // the evidence in or skipped it (P13, rule 1)
     const tombstoned = device.relay_public_key !== undefined
       && this.tombstones.some((t) => t.key === device.relay_public_key && (!pairedHere(device) || this.later(t.removed_at, device.created_at, true)));
-    return tombstoned || (this.evidence !== null && (this.coveredByEvidence(device) || this.frozen(device) || (this.safety?.inForce.locked === true && device.origin?.from !== "pc")));
+    return tombstoned || (this.evidence !== null && (this.journalEnded(device.id) || this.coveredByEvidence(device) || this.frozen(device) || (this.safety?.inForce.locked === true && device.origin?.from !== "pc")));
   }
 
   get accountError(): string | null {
