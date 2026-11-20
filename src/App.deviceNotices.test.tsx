@@ -12,7 +12,7 @@ import { SettingsProvider } from "./lib/settings.ts";
 import { storeSelection } from "./lib/useSplitView.ts";
 
 async function withDeviceNotices(
-  options: { readonly no?: number | null; readonly laptopId?: string; readonly admission?: Pick<DeviceNotice, "method" | "two_step"> },
+  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly admission?: Pick<DeviceNotice, "method" | "two_step"> },
   check: (fixture: { readonly tree: ReactTestRenderer; readonly laptop: DeviceNoticeWire; readonly desk: DeviceNoticeWire;
     readonly delivered: readonly BlockRecord[]; readonly servicePosts: readonly { readonly body: unknown; readonly status: number }[] }) => void | Promise<void>,
 ) {
@@ -94,7 +94,7 @@ async function withDeviceNotices(
       { id: "local", name: "Laptop", kind: "local", enabled: true, state: "connected", error: null, snapshot: NOTICE_SNAPSHOT },
       { id: "desk", server_id: "b".repeat(32), name: "Desk", kind: "address", enabled: true, state: "connected", error: null, snapshot: NOTICE_SNAPSHOT },
     ] });
-    if (pathname === "/api/machines/desk/account/records" && init?.method === "POST" && typeof init.body === "string") {
+    if ((pathname === "/api/machines/desk/account/records" || pathname === "/api/account/records") && init?.method === "POST" && typeof init.body === "string") {
       const body: unknown = JSON.parse(init.body);
       if (typeof body !== "object" || body === null || !("records" in body) || !Array.isArray(body.records)) return new Response(null, { status: 400 });
       const receipts = [];
@@ -116,7 +116,7 @@ async function withDeviceNotices(
   });
   const account = spyOn(indexedAccountStore, "get").mockImplementation(keys.get);
   try {
-    storeSelection("local", null);
+    storeSelection(options.remoteNotice ? "desk" : "local", null);
     await act(async () => { tree = create(<SettingsProvider><App /></SettingsProvider>); });
     const laptop = wires.get("local");
     const desk = wires.get("desk");
@@ -127,7 +127,7 @@ async function withDeviceNotices(
       laptop.snapshot();
       desk.snapshot();
       laptop.read({ type: "device-notice", notice: deviceNotice({ label: "Laptop phone", key: target.public_spki, ...options.admission }) });
-      desk.read({ type: "device-notice", notice: deviceNotice({ label: "Desk phone", key: "d".repeat(43) }) });
+      desk.read({ type: "device-notice", notice: deviceNotice({ label: "Desk phone", key: target.public_spki }) });
     });
     await check({ tree, laptop, desk, delivered, servicePosts });
   } finally {
@@ -198,5 +198,21 @@ it("an admission with two-step unknown keeps the one-tap Not me (T51, T60)", asy
     const card = tree.root.findByProps({ "data-testid": "device-notice" });
     const buttons = card.findAllByType("button").filter((button) => button.children.includes(translate("en", "Not me")));
     expect(buttons.map((button) => button.props.disabled)).toEqual([false]);
+  });
+});
+
+it("T60: a remote notice counts the page PC’s own records receipt, not the proxy receipt", async () => {
+  await withDeviceNotices({ no: 3, laptopId: "a".repeat(32), remoteNotice: true }, async ({ tree, desk, laptop, delivered }) => {
+    const card = tree.root.findByProps({ "data-testid": "device-notice" });
+    const button = card.findAllByType("button").find((node) => node.children.includes("Not me"));
+    if (!button) throw new TypeError("Missing Not me");
+    await act(async () => { await button.props.onClick(); });
+    expect(laptop.sent.filter((frame) => frame.type === "notice-answer")).toEqual([]);
+    const [answer] = desk.sent.filter((frame) => frame.type === "notice-answer").map(parseNoticeAnswer);
+    if (answer?.answer !== "not_me") throw new TypeError("Missing remote notice answer");
+    expect(delivered).toEqual(answer.blocks);
+    expect(card.findAllByType("li").map((row) => row.children.join(""))).toEqual([
+      "Desk: waiting for its answer", "Laptop: blocked",
+    ]);
   });
 });
