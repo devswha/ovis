@@ -1,8 +1,8 @@
 /**
- * The desktop app signs in through the system browser (lib/account/desktop.ts); a browser on the PC's
- * own secure address, which no sign-in can be sent back to, signs in with a code
- * (lib/account/deviceSignIn.ts): one button and the Ovis link page where the service has it, else the
- * provider's device flow.
+ * The desktop app signs in through the system browser (lib/account/desktop.ts), and the PC's own window in a
+ * browser on the PC through the loopback redirect (lib/account/ownWindow.ts); any other browser on the PC's
+ * address, which no sign-in can be sent back to, signs in with a code (lib/account/deviceSignIn.ts): one button
+ * and the Ovis link page where the service has it, else the provider's device flow.
  */
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 
@@ -14,6 +14,7 @@ import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/ap
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { AccountPcError, within } from "../lib/account/join.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
+import { ownWindowSignIn, useOwnWindowRedirect } from "../lib/account/ownWindow.ts";
 import { AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, pcAccountServiceOf, sameSignIn, SignedOutError, type AccountIdentity, type AccountService, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
@@ -22,7 +23,7 @@ import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { deviceLabel, deviceOs } from "../lib/phone.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
-import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
+import { AccountPcList, AccountSignIn, HOSTED_APP_URL, PROVIDER_NAMES, ProviderMark, providerChoice } from "./AccountPcs.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { statusText } from "./RelayPanel.tsx";
 import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
@@ -33,7 +34,8 @@ interface Deletion { readonly session: AccountSession }
 type View =
   | { kind: "loading" }
   | { kind: "signed-out"; error: string | null; notice?: string }
-  | { kind: "signing-in" }
+  /** `link`: the sign-in page the browser would not open in a tab of its own, offered to open by hand */
+  | { kind: "signing-in"; link?: string }
   | { kind: "device-code"; provider: DeviceSignInProvider; userCode: string | null; verificationUri: string; verificationUriComplete: string | null }
   | { kind: "signed-in"; provider: AccountProvider; account: string; pcs: MyPc[] | null; methods: AccountIdentity[] | null; limits: AccountLimits | null; error: string | null };
 
@@ -636,21 +638,22 @@ export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }
       ) : state.kind === "waiting" ? (
         <>
           {state.signedIn === true && <p className="settings-description">{t("Signed in. Adding this PC to your account…")}</p>}
-          <p className="settings-description">{t("On a device already signed in to this account (the Ovis app or app.ovis.sh), choose Add on {name}. If it shows Join there instead, choose Join, then Type the number. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.", { name: state.name })}</p>
-          <p className="settings-description">{t("Every device of your account can use this PC after that.")}</p>
+          <p className="settings-description">{t("On a device signed in to this account (the Ovis app or app.ovis.sh), choose Add on {name}. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.", { name: state.name })}</p>
+          <NoOtherDevice />
           <p className="settings-description" role="status">{t("Waiting. The window reopens by itself if Ovis restarts.")}</p>
           <button type="button" className="btn" onClick={stop}>{t("Stop waiting")}</button>
         </>
       ) : state.kind === "done" ? (
         <>
           <p className="settings-description" role="status">{state.enrolling
-            ? t("This PC is in your account. The device that added it is still letting your other devices in.")
-            : t("This PC is in your account. Your other devices can open it now.")}</p>
+            ? t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")
+            : t("This PC is in your account. A new device of your account may need one approval here.")}</p>
           <p className="settings-description" title={state.account}>{t("Account")} <code className="account-id">{state.account.length > 12 ? `${state.account.slice(0, 12)}…` : state.account}</code></p>
         </>
       ) : state.kind === "expired" ? (
         <>
           <p className="settings-description" role="status">{t("This PC stopped waiting after 30 minutes.")}</p>
+          <NoOtherDevice />
           <button type="button" className="btn btn-primary" onClick={() => add()}>{t("Keep waiting")}</button>
         </>
       ) : (
@@ -661,6 +664,17 @@ export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }
         </>
       )}
     </div>
+  );
+}
+
+/** The one-PC owner's way to the other side of the add (first-user path D4): the hosted app in another tab of this browser. */
+function NoOtherDevice() {
+  const t = useT();
+  return (
+    <>
+      <p className="settings-description">{t("No other device? Open app.ovis.sh in a new tab here and sign in the same way. Choose Add there, then come back to this tab to approve.")}</p>
+      <ExternalLink kind="ovis" className="btn" href={HOSTED_APP_URL}>{t("Open app.ovis.sh")}</ExternalLink>
+    </>
   );
 }
 
@@ -720,6 +734,7 @@ export function AccountSection({ onAccount, recheck = 0 }: {
   const t = useT();
   const bridge = desktopAccount();
   const pcService = pcServiceHere();
+  const ownRedirect = useOwnWindowRedirect(bridge === null && pcService !== null);
   const offered = bridge !== null || pcService !== null;
   const [view, setView] = useState<View>({ kind: "loading" });
   const fallback: AccountProvider[] = bridge ? desktopProviders(bridge) : ["github"];
@@ -769,9 +784,9 @@ export function AccountSection({ onAccount, recheck = 0 }: {
       return reachable;
     });
   }, [service, fallbackKey, recheck]);
-  /** the desktop app comes back over loopback with any provider; a PC's page only through a device flow */
-  const providers: AccountProvider[] = bridge !== null ? offer?.providers ?? fallback : offer?.device ?? ["github"];
-  const linkPage = bridge === null && pcService !== null && (offer?.page.length ?? 0) > 0;
+  /** the desktop app and the PC's own window come back over loopback with any provider; another window only through a device flow */
+  const providers: AccountProvider[] = bridge !== null || ownRedirect ? offer?.providers ?? fallback : offer?.device ?? ["github"];
+  const linkPage = bridge === null && pcService !== null && ownRedirect === null && (offer?.page.length ?? 0) > 0;
   // bumped by a sign-out and on unmount: a load still waiting for the account's PCs then shows nothing
   const loads = useRef(0);
 
@@ -829,7 +844,7 @@ export function AccountSection({ onAccount, recheck = 0 }: {
   const signedOut = view.kind === "signed-out";
   const [addsPc, setAddsPc] = useState(false);
   useEffect(() => {
-    if (!linkPage || !signedOut) return;
+    if (!(linkPage || ownRedirect) || !signedOut) return;
     let live = true;
     /** whether this PC is in no account and this browser drives it; null until both were read */
     let addable: boolean | null = null;
@@ -852,7 +867,7 @@ export function AccountSection({ onAccount, recheck = 0 }: {
     read();
     const timer = setInterval(read, ADDED_POLL_MS);
     return () => { live = false; clearInterval(timer); };
-  }, [linkPage, signedOut, recheck]);
+  }, [linkPage, ownRedirect, signedOut, recheck]);
 
   if (!offered) return null;
 
@@ -906,6 +921,14 @@ export function AccountSection({ onAccount, recheck = 0 }: {
   const runSignIn = (provider: AccountProvider, viaLinkPage = linkPage, store: AccountStore = indexedAccountStore): Promise<AccountSession> | null => {
     if (bridge !== null) return desktopSignIn(provider, bridge, store);
     if (pcService === null) return null;
+    if (ownRedirect) {
+      cancelDeviceSignIn();
+      const controller = new AbortController();
+      deviceSignIn.current = controller;
+      setView({ kind: "signing-in" });
+      return ownWindowSignIn(provider, { service: pcService, redirect: ownRedirect, store, signal: controller.signal, blocked: (link) => setView({ kind: "signing-in", link }) })
+        .finally(() => { if (deviceSignIn.current === controller) deviceSignIn.current = null; });
+    }
     if (viaLinkPage) return signInWithCode(pcService, "ovis", store);
     return isDeviceProvider(provider) ? signInWithCode(pcService, provider, store) : null;
   };
@@ -1081,7 +1104,7 @@ export function AccountSection({ onAccount, recheck = 0 }: {
 
   const signInParts = (
     <>
-      {view.kind === "signed-out" && (
+      {view.kind === "signed-out" && ownRedirect !== undefined && (
         <div className="settings-item" data-offer={offer === null ? "build" : "service"}>
           {linkPage
             ? (
@@ -1091,10 +1114,24 @@ export function AccountSection({ onAccount, recheck = 0 }: {
                 {view.error !== null && <p className="account-error" role="alert">{view.error}</p>}
               </div>
             )
-            : <AccountSignIn onSignIn={(provider) => signIn(provider)} error={view.error} notice={view.notice ?? null} providers={providers} />}
+            : (
+              <>
+                {ownRedirect && addsPc && <p className="settings-description">{t("Signing in adds this PC to your account.")}</p>}
+                <AccountSignIn onSignIn={(provider) => signIn(provider, Boolean(ownRedirect) && addsPc)} error={view.error} notice={view.notice ?? null} providers={providers} />
+              </>
+            )}
         </div>
       )}
-      {view.kind === "signing-in" && <SettingsRow label={t("Signing in…")} description={t("Finish signing in in your browser.")}>{null}</SettingsRow>}
+      {view.kind === "signing-in" && (
+        <SettingsRow label={t("Signing in…")} description={t("Finish signing in in your browser.")}>
+          {ownRedirect ? (
+            <>
+              {view.link !== undefined && <ExternalLink kind="sign-in" className="btn btn-primary" href={view.link}>{t("Open the sign-in page")}</ExternalLink>}
+              <button type="button" className="btn" onClick={() => { cancelDeviceSignIn(); void load(); }}>{t("Cancel")}</button>
+            </>
+          ) : null}
+        </SettingsRow>
+      )}
       {view.kind === "device-code" && (
         <div className="settings-item account-device">
           {view.userCode === null
@@ -1102,7 +1139,7 @@ export function AccountSection({ onAccount, recheck = 0 }: {
             : view.provider === "ovis"
               ? (
                 <>
-                  <p className="settings-description">{t("On any device, open {address} and enter this code, then continue with GitHub or Google. Enter it only if you started this sign-in on this page.", { address: linkAddress(view.verificationUri) })}</p>
+                  <p className="settings-description">{t("On any device, open {address} and enter this code, then continue with {providers}. Enter it only if you started this sign-in on this page.", { address: linkAddress(view.verificationUri), providers: providerChoice(currentLocale(), offer !== null && offer.page.length > 0 ? offer.page : offer?.device ?? ["github"]) })}</p>
                   {view.verificationUriComplete !== null && <QrCode value={view.verificationUriComplete} label={t("QR code of the sign-in page with this code filled in")} />}
                   <output className="account-device-code" aria-live="polite">{view.userCode}</output>
                   <p className="settings-description" role="status">{t("Waiting for the sign-in…")}</p>

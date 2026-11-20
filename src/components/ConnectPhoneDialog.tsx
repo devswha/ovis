@@ -26,6 +26,7 @@ import { announcePairingCode, announceQrCodeEnded, DEVICES_CHANGED_EVENT, inRela
 import type { PairedDevice, PairingCode } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
+import { AddThisPc, type SignedInHere } from "./AccountSection.tsx";
 import { PhonePanel, QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { failureText, openOwnOffer, RelayPairing, statusText } from "./RelayPanel.tsx";
@@ -462,6 +463,9 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
   const [signedInProvider, setSignedInProvider] = useState<AccountSession["provider"] | null>(null);
   const [pcAccount, setPcAccount] = useState<string | null | undefined>(undefined);
   const signInView = useRef<HTMLDivElement>(null);
+  /** the sign-in that just finished on this tab, handed once to Add this PC below, which offers its one press at once */
+  const signedInHere = useRef<SignedInHere | null>(null);
+  const takeSignedInHere = useCallback((): SignedInHere | null => { const fresh = signedInHere.current; signedInHere.current = null; return fresh; }, []);
   useLayoutEffect(() => {
     const view = signInView.current;
     if (!signedIn || signedInProvider === null || view === null || view.closest("[hidden]") !== null) return;
@@ -505,7 +509,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
-        <RelaySignIn service={account.service} onOpenAccount={account.onOpen} onSignedIn={(session) => { setSignedInProvider(session.provider); account.onSignedIn(); }} />
+        <RelaySignIn service={account.service} onOpenAccount={account.onOpen} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(); }} />
       </div>
       {qr(true)}
     </>
@@ -520,11 +524,10 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
           !bare && <>{relaySwitch}{switchFailure}{startFailure}</>
         ) : (
           <>
-            {switchable && <p className="settings-description">{t("Turn on the relay, then add this PC to your account.")}</p>}
             {relaySwitch}
             {switchFailure}
             {startFailure}
-            <button type="button" className="btn connect-signin-button" onClick={account.onOpen}>{t("Open the account")}</button>
+            <AddThisPc signedInHere={takeSignedInHere} />
           </>
         )}
       </div>
