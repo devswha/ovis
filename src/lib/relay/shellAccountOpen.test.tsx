@@ -4,9 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import type { HoldState } from "../../../shared/account-devices-api.ts";
 import { accountDeviceId } from "../../../shared/account-records.ts";
-import { ACCOUNT_OPENS_ALL_MUX_FEATURE } from "../../../shared/account-devices-api.ts";
 import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
-import { encodeFrame, FrameType, MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
+import { ACCOUNT_OPENS_ALL_FEATURE, encodeFrame, FrameType, MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayPcTable } from "../../components/RelayPcTable.tsx";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
@@ -218,7 +217,7 @@ it.each([
 ] as const)("T34, G5, P7 wire: $code follows the decoded code, not the message 'held'", async (scenario) => {
   let auths = 0;
   const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
-    ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_MUX_FEATURE], provisional: true, auth: () => {
+    ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_FEATURE], provisional: true, auth: () => {
       auths++;
       return accountOpenRefusalFrame(scenario.code, "held", "hold" in scenario ? scenario.hold : undefined);
     } }),
@@ -231,12 +230,20 @@ it.each([
   });
 });
 
+it("T53, P17 wire: a held refusal whose notice is not published yet reaches the shell as a hold with no deadline", async () => {
+  const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
+    ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_FEATURE], provisional: true, auth: () => accountOpenRefusalFrame("held", "", { reason: "join_hold", until: null }) }),
+  }) });
+  await run.openPage();
+  expect(run.current().state).toMatchObject({ kind: "connecting", hold: { reason: "join_hold", until: null } });
+});
+
 it("T34 wire: the shell stays Connecting until the decoded hold deadline, then retries AUTH", async () => {
   const delay = 4_321;
   let until = "";
   const rows: string[] = [];
   const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
-    ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_MUX_FEATURE], provisional: true, auth: (frame) => {
+    ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_FEATURE], provisional: true, auth: (frame) => {
       rows.push(frame.payload.device_id);
       return rows.length === 1
         ? accountOpenRefusalFrame("held", "", { reason: "join_hold", until })
@@ -246,7 +253,7 @@ it("T34 wire: the shell stays Connecting until the decoded hold deadline, then r
   jest.useFakeTimers();
   until = new Date(Date.now() + delay).toISOString();
   await run.openPage();
-  expect(run.current().state.kind).toBe("connecting");
+  expect(run.current().state).toMatchObject({ kind: "connecting", hold: { reason: "join_hold", until } });
   jest.advanceTimersByTime(delay - 1);
   expect(rows).toHaveLength(1);
   jest.advanceTimersByTime(1);
