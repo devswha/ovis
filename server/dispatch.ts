@@ -268,7 +268,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // the lock and a log that cannot be read decide here, once, for every way in (server/lock-boundary.ts)
   const safety = ctx.services.safetyLog;
   // this PC's own window may still read the lock and ask for an unlock: both only ask the screen, which grants
-  const askingTheScreen = access.level === "full" && access.via === "local"
+  // (on a PC with an access token, that window comes in with the token: the same window, loopback and not forwarded)
+  const ownWindow = access.level === "full" && (access.via === "local" || (access.via === "token" && loopback && !forwarded));
+  const askingTheScreen = ownWindow
     && ((pathname === "/api/account/lock" && request.method === "GET") || (pathname === "/api/account/unlock" && request.method === "POST"));
   // strict is every source the store fails closed on (the log, the admission order, removal evidence, the journal: S19)
   if (safety !== null && safety !== undefined && !askingTheScreen) {
