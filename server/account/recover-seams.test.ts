@@ -81,12 +81,12 @@ describe("ovis recover acts on this PC's own state (T70, T73, T69)", () => {
     const [first, second] = [await block(target.spki, signer), await block(other.spki, signer)];
     await devices.applyBlock(first, "handed");
     await devices.applyBlock(second, "handed");
-    expect(log.appendLift(first.id, { account: ACCOUNT })).toMatchObject({ outcome: "applied" });
+    expect(log.appendLift(first.id, { account: ACCOUNT }, { cause: "recover" })).toMatchObject({ outcome: "applied" });
     expect(blocksInForce(log)).toEqual([second.id]);
     const markers = () => log.state().markers.map((entry) => entry.record.id);
     expect(markers()).toEqual([first.id, second.id]);
     expect(log.state().locked).toBe(true);
-    expect(log.appendLift(second.id, { account: ACCOUNT }, { forget: true })).toMatchObject({ outcome: "applied" });
+    expect(log.appendLift(second.id, { account: ACCOUNT }, { cause: "recover", forget: true })).toMatchObject({ outcome: "applied" });
     expect(blocksInForce(log)).toEqual([]);
     expect(markers()).toEqual([first.id]);
     expect(log.state().locked).toBe(true);
@@ -94,8 +94,8 @@ describe("ovis recover acts on this PC's own state (T70, T73, T69)", () => {
 
   test("T69: a lift at the PC needs this PC's account and a block this log holds", () => {
     const { log } = pc();
-    expect(log.appendLift(newRecordId(), null)).toMatchObject({ outcome: "refused", code: "record_invalid" });
-    expect(log.appendLift(newRecordId(), { account: ACCOUNT })).toMatchObject({ outcome: "refused", code: "record_invalid" });
+    expect(log.appendLift(newRecordId(), null, { cause: "recover" })).toMatchObject({ outcome: "refused", code: "record_invalid" });
+    expect(log.appendLift(newRecordId(), { account: ACCOUNT }, { cause: "recover" })).toMatchObject({ outcome: "refused", code: "record_invalid" });
   });
 
   test("P24: a removal and Revoke all from the recovery socket journal the act and the OS user who ran it", async () => {

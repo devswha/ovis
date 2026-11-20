@@ -301,9 +301,9 @@ export class SafetyLog {
    * A lift at the PC (`ovis recover --lift`, T69): signed `pc` under this PC's account, of a block this log holds. It
    * ends that block and its freeze only; `forget` also ends its marker. Refused with no binding, as a lock is.
    */
-  appendLift(blockId: string, binding: { readonly account: string } | null, options: { forget?: boolean } = {}): SafetyReceipt {
+  appendLift(blockId: string, binding: { readonly account: string } | null, options: { readonly cause: LiftCause; readonly forget?: boolean }): SafetyReceipt {
     if (binding === null || !this.blockIds().includes(blockId)) return { outcome: "refused", id: "", code: "record_invalid" };
-    return this.append({ record: { v: 1, id: pcRecordId(), kind: "lift", account: binding.account, target: blockId, signer: "pc", signed_at: new Date().toISOString(), forget: options.forget === true, signature: "" }, got: "pc" });
+    return this.append({ record: { v: 1, id: pcRecordId(), kind: "lift", account: binding.account, target: blockId, signer: "pc", signed_at: new Date().toISOString(), forget: options.forget === true, signature: "" }, got: "pc", cause: options.cause });
   }
 
   /** The receipt of a record this log holds (T51): the same `applied` as often as it is asked, until it is folded. */
