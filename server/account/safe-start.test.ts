@@ -259,4 +259,34 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     writeFileSync(join(dir, "device-journal.json"), "not json", { mode: 0o600 });
     expect(store(dir).failsClosed).toBe(true);
   });
+
+  test("T46, S2-18 B2: a lock whose removals never ran ends its rows at the next open, journalled, and they stay out after an unlock", async () => {
+    const dir = stateDir();
+    const devices = store(dir);
+    const row = await member(devices);
+    const lock = SafetyLog.open(dir).appendLock({ account: ACCOUNT });
+    // the stop: the lock is on disk, its removals are not
+    const reopened = store(dir);
+    expect(reopened.has(row.id)).toBe(false);
+    expect(rowIds(dir)).not.toContain(row.id);
+    expect(reopened.pendingLockRemovals()).toEqual([]);
+    SafetyLog.open(dir).appendUnlock(lock.id, { account: ACCOUNT });
+    expect(store(dir).has(row.id)).toBe(false);
+  });
+
+  test("T46, S2-18 B2: a blocked open holds the lock's removals it cannot write, refuses those rows and names them until a write succeeds", async () => {
+    const dir = stateDir();
+    const first = relayFixture(false, { stateDir: dir, accountOpensAll: true });
+    const device = await relayDevice(first);
+    first.app.stop();
+    SafetyLog.open(dir).appendLock({ account: ACCOUNT });
+    const sibling = stateDir();
+    writeFileSync(join(sibling, "devices.json"), "not json", { mode: 0o600 });
+    const f = relayFixture(false, { stateDir: dir, siblingStateDir: sibling, accountOpensAll: true });
+    fixtures.push(f);
+    dirs.splice(dirs.indexOf(dir), 1);
+    expect(f.app.context.services.devices.pendingLockRemovals()).toEqual([device.id]);
+    const link = await relayConnection(f);
+    expect(await link.auth(device).then(() => "in", () => "refused")).toBe("refused");
+  });
 });
