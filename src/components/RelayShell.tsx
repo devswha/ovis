@@ -5,11 +5,12 @@ import { createPortal } from "react-dom";
 
 import { GLOBAL_RELAY } from "../../shared/relay-regions.ts";
 import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
-import { useMyMachinesRoute } from "../lib/account/myMachinesRoute.ts";
+import { parseMyMachinesHash, useLocationHash } from "../lib/account/myMachinesRoute.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
 import { dashboardPcs } from "../lib/relay/dashboard.ts";
+import { isDashboardHash } from "../lib/relay/dashboardRoute.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import type { AccountView, RelayShellState } from "../lib/relay/shellState.ts";
 import type { ObservedVersion } from "../lib/relay/updateFlow.ts";
@@ -171,7 +172,10 @@ export function RelayShell(props: RelayShellProps) {
   const [addOpen, setAddOpen] = useState(props.addEntry === true);
   // the PC page whose More opened Add a PC, read once as it opens: a mark left by an earlier one never sends Back elsewhere
   const [addFrom] = useState(() => props.addEntry === true ? takeAddFrom() : null);
-  const machinesRoute = useMyMachinesRoute();
+  const hash = useLocationHash(), machinesRoute = parseMyMachinesHash(hash);
+  // the dashboard of the account's PCs is a page people open on purpose, by its address (Settings → Devices and PCs →
+  // Relayed connections): no launch, sign-in, pairing or Back ever lands on it, and the front page is Add a PC instead
+  const manage = machinesRoute !== null || isDashboardHash(hash);
   // a sheet opened on one of the two screens goes with it, whether by a link or the browser's Back
   const onMachines = machinesRoute !== null;
   useEffect(() => { setSheet(null); }, [onMachines]);
@@ -190,21 +194,33 @@ export function RelayShell(props: RelayShellProps) {
   // a pairing's sign-in reads on the plain page, with nothing around it; its other steps are on the step frame
   const plain = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined;
 
+  // the PCs Add a PC lists: this device's pairings, then the account's PCs not on it yet (their own page joins them),
+  // each with what is known of it
+  const offOf = (serverId: string): boolean => { const now = pcStatus?.get(serverId); const shown = now?.kind === "checking" ? now.previous : now; return shown?.kind === "offline" && shown.reason === "pc"; };
+  const addPcs = [
+    ...devices.map((device) => ({ server_id: device.server_id, name: device.name, ...(offOf(device.server_id) ? { note: t("Off|pc state") } : {}) })),
+    ...(account?.kind === "signed-in" ? account.pcs ?? [] : []).filter((row) => !row.paired && !devices.some((device) => device.server_id === row.server_id))
+      .map((row) => ({ server_id: row.server_id, name: row.name, ...(row.state === "offline" ? { note: t("Off|pc state") } : row.state === "needs-approval" ? { note: t("Needs approval") } : {}) })),
+  ];
+  const addPc = (onAddBack?: () => void) => (
+    <div className="relay-shell account-centered relay-shell-signin">
+      <RelayAddPc onBack={onAddBack} devices={addPcs}
+        qr={(qrBack) => <ScanQrStep onCodeStart={() => {
+          // signed in, the code is typed in the front page's own pairing dialog; signed out, on the way past the sign-in,
+          // as from Start without signing in: either takes the screens that follow
+          if (account?.kind === "signed-in") setAddingPc(true); else setSignedOutView("pair");
+          onCodeStart();
+        }} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />} />
+    </div>
+  );
+
   // Add a PC asked for by its address stands alone over the front page; its Back goes back to where it was asked from
   // Add a PC hands over to a screen of its own (a code to type): coming back from there lands on the front page
   if (addOpen && state.kind !== "list" && state.kind !== "empty") setAddOpen(false);
   if (addOpen && (state.kind === "list" || state.kind === "empty")) {
     return (
       <main className="relay-shell-screen relay-add-screen" data-relay-state={stateName} {...(account ? { "data-account-state": account.kind } : {})}>
-        <div className="relay-shell account-centered relay-shell-signin">
-          <RelayAddPc onBack={() => { setAddOpen(false); leaveAddEntry(addFrom); }} devices={devices}
-            qr={(qrBack) => <ScanQrStep onCodeStart={() => {
-              // signed in, the code is typed in the dashboard's own pairing dialog; signed out, on the way past the sign-in,
-              // as from Start without signing in: either takes the screens that follow
-              if (account?.kind === "signed-in") setAddingPc(true); else setSignedOutView("pair");
-              onCodeStart();
-            }} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />} />
-        </div>
+        {addPc(() => { setAddOpen(false); leaveAddEntry(addFrom); })}
       </main>
     );
   }
@@ -215,7 +231,7 @@ export function RelayShell(props: RelayShellProps) {
     // My machines has its own signed-in address and main landmark; while the directory cannot be read, the dashboard says so and offers its retry
     const machines = signedIn.error === null && machinesRoute !== null;
     const Frame = machines ? "div" : "main";
-    const dash = machines ? (
+    const dash = !manage ? addPc() : machines ? (
       <MyMachinesPage route={machinesRoute} pcs={signedIn.pcs} pcStatus={pcStatus ?? new Map()} onCheckPc={(serverId) => onCheckPc?.(serverId)}
         onJoin={(target) => setSheet({ pc: target, mode: newPcs([target], Date.now()).length > 0 ? "new" : "join" })} />
     ) : (
@@ -242,7 +258,7 @@ export function RelayShell(props: RelayShellProps) {
       />
     );
     return (
-      <Frame className={Frame === "main" ? "relay-dash-screen" : undefined} data-relay-state={stateName} data-account-state={account.kind}>
+      <Frame className={Frame === "main" ? (manage ? "relay-dash-screen" : "relay-shell-screen relay-add-screen") : undefined} data-relay-state={stateName} data-account-state={account.kind}>
         {/* one wrapper whether a sheet is open or not: swapping it in would remount the dashboard, losing the control that opened the sheet before its focus trap records it */}
         <div inert={modalOpen || undefined}>{dash}</div>
         {sheet && (

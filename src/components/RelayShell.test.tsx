@@ -28,6 +28,10 @@ const render = (shown: RelayShellProps): string => {
   }
 };
 describe("the front page's account part", () => {
+  // the dashboard is a page opened on purpose, by its address: a front page with none is Add a PC
+  let windowBefore: PropertyDescriptor | undefined;
+  beforeEach(() => { windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window"); Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "#overview" } } }); });
+  afterEach(() => { if (windowBefore) Object.defineProperty(globalThis, "window", windowBefore); else Reflect.deleteProperty(globalThis, "window"); });
   const pc = (server_id: string, name: string, state: "paired" | "needs-approval" | "offline" | "needs-update", paired = state === "paired") => ({ server_id, name, state, last_seen_at: null, added_at: null, listed: true, paired, linked: paired });
 
   it("offers GitHub alone until the service is set up for Apple", () => {
@@ -73,6 +77,20 @@ describe("the front page's account part", () => {
     expect(after).not.toContain("Sign out");
     expect(after).not.toContain("relay-shell-pc");
     expect(signInAlternatives(after)).toEqual(["Start without signing in"]);
+  });
+
+  it("opens a signed-in front page on Add a PC, never the dashboard, which only its own address opens", () => {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } });
+    const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
+    const pcStatus = new Map([["b".repeat(32), { kind: "offline", reason: "pc" }]] as const);
+    const account = { kind: "signed-in" as const, provider: "github" as const, error: null, pcs: [pc("a".repeat(32), "p620", "paired"), pc("c".repeat(32), "desk", "needs-approval"), pc("d".repeat(32), "attic", "offline")] };
+    const html = render({ ...props({ kind: "list", devices, account }), scoped: false, onSignIn: none, onSignOut: none, pcStatus });
+    expect(html).toContain('data-account-state="signed-in"');
+    expect(html).not.toContain("relay-dash");
+    const rows = [...html.matchAll(/<a class="relay-add-saved-pc" href="([^"]+)">([\s\S]*?)<\/a>/g)].map(([, href, inner]) => [href, inner!.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, " ").trim().replace(/\s+/g, " ")]);
+    expect(rows).toEqual([[`/s/${"a".repeat(32)}/`, "p620"], [`/s/${"b".repeat(32)}/`, "nuc Off"], [`/s/${"c".repeat(32)}/`, "desk Needs approval"], [`/s/${"d".repeat(32)}/`, "attic Off"]]);
+    (window.location as { hash: string }).hash = "#pcs";
+    expect(render({ ...props({ kind: "list", devices, account }), scoped: false, onSignIn: none, onSignOut: none })).toContain("relay-dash");
   });
 
   it("opens a pairing link straight into pairing, without the sign-in", () => {
@@ -154,6 +172,10 @@ describe("the front page's account part", () => {
 });
 
 describe("the dashboard", () => {
+  // the dashboard is a page opened on purpose, by its address: a front page with none is Add a PC
+  let windowBefore: PropertyDescriptor | undefined;
+  beforeEach(() => { windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window"); Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "#overview" } } }); });
+  afterEach(() => { if (windowBefore) Object.defineProperty(globalThis, "window", windowBefore); else Reflect.deleteProperty(globalThis, "window"); });
   const pc = (server_id: string, name: string, state: MyPc["state"], over: Partial<MyPc> = {}): MyPc => ({ server_id, name, state, last_seen_at: null, added_at: null, listed: true, paired: state === "paired", linked: true, ...over });
   const device = (server_id: string, name: string, relay: string) => ({ server_id, server_public_key: "k", relay, name, device_id: "0".repeat(16), label: "Phone" }) as unknown as Extract<RelayShellProps["state"], { kind: "list" }>["devices"][number];
   const AP = "wss://relay-ap.ovis.sh";
@@ -319,7 +341,8 @@ describe("the dashboard", () => {
       Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
       Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
       Object.defineProperty(globalThis, "window", { configurable: true, value: {
-        location: { href: "https://app.ovis.sh/", search: "", origin: "https://app.ovis.sh", pathname: "/" },
+        // the dashboard is a page opened on purpose, by its address
+        location: { href: "https://app.ovis.sh/#overview", search: "", hash: "#overview", origin: "https://app.ovis.sh", pathname: "/" },
         history: { state: null, replaceState() {}, pushState() {}, back() {} },
         localStorage: storage, matchMedia, innerWidth: 1440,
         addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),

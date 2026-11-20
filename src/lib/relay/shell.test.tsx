@@ -933,17 +933,20 @@ describe("the hosted shell's front page", () => {
       return ids.map((server_id) => ({ server_id, server_public_key: "k", relay: AP, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" }));
     };
     const launch = (): void => { browser.sessionStore.delete("ovis-launched"); };
+    // every saved PC answers its check, unless a test says which do not
+    const answering = (off: readonly string[] = []): RelayShellMount["checkPc"] => async (device) => off.includes(device.server_id) ? { kind: "offline", reason: "pc" } : { kind: "answered", route: "relay", relay: AP, rttMs: 20 };
 
     it("opens the PC this device opened last, by its saved pairing, once per tab", async () => {
       launch();
       localStorage.setItem("ovis-last-pc", "b".repeat(32));
       const went: string[] = [];
       const store = deviceStore(await pcs("a".repeat(32), "b".repeat(32)));
-      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); } }));
+      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); }, checkPc: answering() }));
       expect(went).toEqual([`/s/${"b".repeat(32)}/`]);
-      expect(rendered).toHaveLength(0);
+      // only the wait for its answer was drawn, never the front page
+      expect(rendered.map((element) => shellProps(element).state.kind)).toEqual(["connecting"]);
       // Back from that PC: the front page stays
-      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); } }));
+      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); }, checkPc: answering() }));
       expect(went).toHaveLength(1);
       expect(rendered.length).toBeGreaterThan(0);
     });
@@ -953,7 +956,7 @@ describe("the hosted shell's front page", () => {
       const went: string[] = [];
       const [unfinished, done] = await pcs("a".repeat(32), "b".repeat(32));
       localStorage.setItem("ovis-last-pc", "a".repeat(32));
-      await mountRelayShell(mountFor({ store: deviceStore([{ ...unfinished!, device_id: null }, done!]), navigate: (path) => { went.push(path); } }));
+      await mountRelayShell(mountFor({ store: deviceStore([{ ...unfinished!, device_id: null }, done!]), navigate: (path) => { went.push(path); }, checkPc: answering() }));
       expect(went).toEqual([`/s/${"b".repeat(32)}/`]);
     });
 
@@ -961,11 +964,36 @@ describe("the hosted shell's front page", () => {
       launch();
       localStorage.setItem("ovis-last-pc", "f".repeat(32));
       const went: string[] = [];
-      await mountRelayShell(mountFor({ store: deviceStore(await pcs("a".repeat(32))), navigate: (path) => { went.push(path); } }));
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs("a".repeat(32))), navigate: (path) => { went.push(path); }, checkPc: answering() }));
       expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
       launch();
       await mountRelayShell(mountFor({ store: deviceStore([]), navigate: (path) => { went.push(path); } }));
       expect(went).toHaveLength(1);
+    });
+
+    it("opens the next saved PC that answers when the one opened last is off, and Add a PC when none answers", async () => {
+      const [a, b, c] = ["a".repeat(32), "b".repeat(32), "c".repeat(32)];
+      const went: string[] = [];
+      launch();
+      localStorage.setItem("ovis-last-pc", b);
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs(a, b, c)), navigate: (path) => { went.push(path); }, checkPc: answering([b]) }));
+      expect(went).toEqual([`/s/${a}/`]);
+      launch();
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs(a, b)), navigate: (path) => { went.push(path); }, checkPc: answering([a, b]) }));
+      expect(went).toHaveLength(1);
+      expect(last().state.kind).toBe("list");
+    });
+
+    it("takes the phone app's #pcs as its way to the front page, never the dashboard, and opens no PC from it", async () => {
+      const replaced: string[] = [];
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true } });
+      (window.history as unknown as { replaceState: (state: unknown, title: string, url: string) => void }).replaceState = (_state, _title, url) => { replaced.push(url); };
+      const went: string[] = [];
+      launch();
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs("a".repeat(32))), entryUrl: "https://app.ovis.sh/#pcs", navigate: (path) => { went.push(path); }, checkPc: answering() }));
+      Reflect.deleteProperty(globalThis, "Capacitor");
+      expect(replaced).toEqual(["/"]);
+      expect(went).toEqual([]);
     });
 
     // the page a sign-in returns to (#code=…) opens the saved PC once its sign-in is read, as the launch it continues would
@@ -974,7 +1002,7 @@ describe("the hosted shell's front page", () => {
       await accountStore.set("pending", { "state-1": { service: SERVICE, provider: "github", state: "state-1", verifier: "verifier-123", redirect_uri: "https://app.ovis.sh/", started_at: Date.now() } });
       let exchanged = 0;
       await mountRelayShell(mountFor({
-        entryUrl: "https://app.ovis.sh/#code=good-code&state=state-1", store, navigate: (path) => { went.push(path); },
+        entryUrl: "https://app.ovis.sh/#code=good-code&state=state-1", store, navigate: (path) => { went.push(path); }, checkPc: answering(),
         accountStore, accountService: SERVICE, accountProviders: ["github"],
         accountFetch: async (input) => {
           if (new URL(String(input)).pathname === "/v1/pcs") return Response.json({ pcs: listed });
@@ -994,7 +1022,7 @@ describe("the hosted shell's front page", () => {
       // the launch that started the sign-in already passed this tab's first front page
       await returned(store, went);
       expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
-      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); } }));
+      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); }, checkPc: answering() }));
       expect(went).toHaveLength(1);
     });
 
@@ -1043,7 +1071,7 @@ describe("the hosted shell's front page", () => {
       await mountRelayShell(mountFor({ store, entryUrl: "https://app.ovis.sh/#pcs", navigate: (path) => { went.push(path); } }));
       launch();
       await mountRelayShell(mountFor({ store: deviceStore([]), entryUrl: `https://app.ovis.sh/s/${"a".repeat(32)}/` }));
-      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); } }));
+      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); }, checkPc: answering() }));
       expect(went).toEqual([]);
     });
   });

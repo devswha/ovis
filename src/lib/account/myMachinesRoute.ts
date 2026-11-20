@@ -24,8 +24,12 @@ function subscribe(changed: () => void): () => void {
   return () => { window.removeEventListener("hashchange", changed); window.removeEventListener("popstate", changed); };
 }
 
+/** The address's fragment, kept up with Back, Forward and links. */
+export function useLocationHash(): string {
+  return useSyncExternalStore(subscribe, () => window.location.hash, () => typeof window === "undefined" ? "" : window.location.hash ?? "");
+}
+
 /** The address's route, kept up with Back, Forward and links; null on any other address. */
 export function useMyMachinesRoute(): MyMachinesRoute | null {
-  const hash = useSyncExternalStore(subscribe, () => window.location.hash, () => "");
-  return parseMyMachinesHash(hash);
+  return parseMyMachinesHash(useLocationHash());
 }

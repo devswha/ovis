@@ -11,6 +11,7 @@ import type { MyPc } from "../account/myPcs.ts";
 import { sameSignIn, SignedOutError } from "../account/service.ts";
 import type { AccountProvider, AccountSession, PendingPairing } from "../account/store.ts";
 import { SIGN_IN_MS, signInReturn } from "../account/signin.ts";
+import { inNativeApp } from "../nativeApp.ts";
 import { deviceLabel } from "../phone.ts";
 import { registerPendingPush } from "../push.ts";
 import { alertPrefs, loadSettings, SettingsProvider } from "../settings.ts";
@@ -55,22 +56,26 @@ function markLaunched(): void {
   try { sessionStorage.setItem(LAUNCHED, "1"); } catch { /* no storage: launchPc opens nothing */ }
 }
 
+/** How many saved PCs a launch asks, and how long it waits for one to answer before it opens none (Add a PC lists them). */
+const LAUNCH_PCS = 4;
+const LAUNCH_WAIT_MS = 4_000;
+
 /**
- * The saved PC a launch opens: the one opened last while it is still saved, else the first. Only the first front page
- * of this tab's session opens one (`opens`: it came with no fragment), whatever it shows: Back from a PC, a Cancel on
- * its page, or a reload lands on the front page and stays there. `signedIn`: the page a sign-in returned to, which
- * opens one once its sign-in is read, as the launch it continues would have.
+ * The saved PCs a launch may open, in the order it prefers them: the one opened last while it is still saved, then the
+ * others. Only the first front page of this tab's session opens one (`opens`: it came with no fragment), whatever it
+ * shows: Back from a PC, a Cancel on its page, or a reload lands on the front page and stays there. `signedIn`: the page
+ * a sign-in returned to, which opens one once its sign-in is read, as the launch it continues would have.
  */
-function launchPc(devices: readonly { readonly server_id: string; readonly device_id: string | null }[], opens: boolean, signedIn = false): string | null {
+function launchOrder(devices: readonly RelayDevice[], opens: boolean, signedIn = false): RelayDevice[] {
   try {
     const first = sessionStorage.getItem(LAUNCHED) === null;
     sessionStorage.setItem(LAUNCHED, "1");
     // a row with no device id is a pairing that never finished: opening its page would ask to pair again
     const paired = devices.filter((device) => device.device_id !== null);
-    if (!(opens && (first || signedIn)) || paired.length === 0) return null;
+    if (!(opens && (first || signedIn))) return [];
     const last = localStorage.getItem(LAST_PC);
-    return paired.find((device) => device.server_id === last)?.server_id ?? paired[0]?.server_id ?? null;
-  } catch { return null; }
+    return [...paired.filter((device) => device.server_id === last), ...paired.filter((device) => device.server_id !== last)].slice(0, LAUNCH_PCS);
+  } catch { return []; }
 }
 
 export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
@@ -90,6 +95,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // a front page that came with a fragment (a sign-in's return, a link that starts one, a page view) does not open a PC
   // at once: a sign-in's return does once its sign-in is read (below), the others stay where the link put them
   const entryHash = new URL(mount.entryUrl).hash;
+  // the phone app's saved row for this app opens it at #pcs (app/web/connect.js), so that it is no launch: that is the
+  // app's way to its front page, never a visit to the dashboard, which only its own address in a browser or Settings opens
+  if (!scoped && entryHash === "#pcs" && inNativeApp()) window.history.replaceState(null, "", "/");
   // `left`: the launch sent this page to a PC: nothing more is drawn or probed on the way out
   let launching = !scoped && entryHash === "", signedInNow = false, left = false;
   if (scoped) markLaunched();
@@ -266,13 +274,38 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const devices = await store.list();
     if (shown !== before) return;
     // the app opens on a PC: the first front page of a launch goes straight into the PC this device opened last, by its
-    // saved pairing (a page scoped to it connects with the key it holds; nothing is paired here)
+    // saved pairing (a page scoped to it connects with the key it holds; nothing is paired here), or, when that one does
+    // not answer, the first other saved PC that does. None answering: Add a PC, which lists them
     // nothing moved since the entry was read (a link, Back, a sheet's route): the page stays where it was taken
-    const pc = left || navigatedSinceEntry() || entries !== 0 ? null : launchPc(devices, launching, signedInNow);
-    if (pc !== null) { left = true; navigate(serverScopePath(pc)); }
+    const order = left || navigatedSinceEntry() || entries !== 0 ? [] : launchOrder(devices, launching, signedInNow);
+    if (order.length > 0) {
+      const pc = await reachable(order);
+      // a Cancel, a link or Back meanwhile owns the page
+      if (pc === undefined) return;
+      if (pc !== null) { left = true; navigate(serverScopePath(pc)); }
+    }
     if (left) return;
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
     if (devices.length && !checked) { checked = true; void sweep.check(); }
+  };
+  /**
+   * The first of `order` that answers its check, in that order, waiting on each one before it until it answers or the
+   * launch's wait is over; null when none does. Undefined when anything took the page meanwhile.
+   */
+  const reachable = async (order: readonly RelayDevice[]): Promise<string | null | undefined> => {
+    const loaded = entries;
+    const asking: RelayShellState = { kind: "connecting", name: order[0]?.name ?? null };
+    show(asking);
+    const checks = order.map((pc) => sweep.checkOne(pc.server_id).then(() => sweep.status.get(pc.server_id)?.kind === "answered"));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // fixed wait: a PC that has not answered by then is not opened; Add a PC lists it, and its check goes on there
+    const late = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), LAUNCH_WAIT_MS); });
+    let found: string | null = null;
+    for (const [index, check] of checks.entries()) {
+      if (await Promise.race([check, late])) { found = order[index]?.server_id ?? null; break; }
+    }
+    clearTimeout(timer);
+    return entries !== loaded || shown !== asking ? undefined : found;
   };
   const joinPc = (pc: Pick<MyPc, "server_id" | "join"> & { readonly name?: string }, options: { typed?: boolean; sheet?: "new" | "join"; alone?: true } = {}): void => {
     if (!pc.join) return;

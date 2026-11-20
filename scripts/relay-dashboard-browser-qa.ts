@@ -141,6 +141,10 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       await page.waitForFunction(() => document.querySelectorAll('.status-dot[data-state="checking"]').length === 0, null, { timeout: LOAD_MS });
     };
     await page.locator(".account-provider").first().click();
+    // a sign-in lands on Add a PC, never the dashboard: that opens only by its own address, as here
+    await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add').waitFor({ timeout: LOAD_MS });
+    expect(await page.locator(".relay-dash").count() === 0, "the sign-in landed on the dashboard");
+    await page.evaluate(() => { location.hash = "#overview"; });
     await page.locator('.relay-dash[data-dashboard-mode="account"]').waitFor({ timeout: LOAD_MS });
     await page.locator("[data-qa-account-key-committed]").waitFor({ state: "attached" });
     if (fleet.seeds.length > 0) {
