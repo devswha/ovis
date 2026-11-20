@@ -617,7 +617,7 @@ Who gets into a PC is still decided by that PC alone, in **Settings → Devices 
 
 1. Sign out, then sign in with that Google to open the other account and see what is in it.
 2. If that account has another way to sign in, sign out and sign in to it that way, then remove Google under **Settings → Devices and PCs → Account → Ways to sign in** (the method a device signed in with can't be removed from that device).
-3. If Google is that account's only way to sign in, it can't be removed: delete that account instead (**Delete account**, same place). Only do this when nothing in it is needed. Its PCs keep the devices it added until you revoke them on each PC.
+3. If Google is that account's only way to sign in, it can't be removed yet. To keep that account, first give it another way in: in the desktop app, signed in to it with Google, add a sign-in no account uses yet (another GitHub or Apple), then sign in with that and remove Google as in step 2. If nothing in that account is needed, you can delete it instead (**Delete account**, same place); its PCs keep the devices it added until you revoke them on each PC.
 4. Sign in to this account again and choose **Add Google**.
 
 Don't delete this account instead: the other account may already have a sign-in of the same kind (each account has one per provider), and then it still couldn't take this one.
