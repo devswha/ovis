@@ -564,7 +564,7 @@ export function createServer(
       removeKey: (input) => devices.removeKey(input),
       appendLift: (blockId, forget, user) => {
         const binding = pcAccount?.binding() ?? null;
-        const done = safetyLog!.appendLift(blockId, binding, { forget });
+        const done = safetyLog!.appendLift(blockId, binding, { cause: "recover", forget });
         if (done.outcome === "applied") journal.append({ kind: "lift", how: "recover", key: null, no: null, row: null, label: blockId, by: user, account: binding?.account ?? null });
         return done;
       },
