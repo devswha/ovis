@@ -81,7 +81,7 @@ it("T60: a signed roster block passes the receiving PC's real account route", as
     const response = await handleMachineRequest(new Request("https://app.example/api/machines/desk/account/records", {
       method: "POST", headers: { origin: "https://app.example", "x-herdr-machine": "1", "content-type": "application/json" },
       body: JSON.stringify({ records: [record] }),
-    }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
+    }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true, true);
     const receipt: unknown = await response.json();
     expect({ status: response.status, body: receipt }).toEqual({
       status: 200,

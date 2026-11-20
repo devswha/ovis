@@ -123,7 +123,9 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   pairings?: { subscribe(listener: (event: DevicePairedEvent | DeviceRemovedEvent | RelayPairingsEvent | RemotePairingsEvent | PendingRedemptionsEvent) => void): () => void },
   relayBudget?: EventStreamBudget,
   /** this PC's owner (access.ts ownerAccess): only they may start or stop updates of its PCs */
-  owner = false): Promise<Response> {
+  owner = false,
+  /** OVIS_ACCOUNT_OPENS_ALL is on here: only then does the roster carry a block to another PC's account records */
+  accountOpensAll = false): Promise<Response> {
   const url = new URL(request.url);
   // A PC's file opens as this PC's /api/fs/file does, from any navigation: reading it changes
   // nothing, and Chrome on Android shows a PDF in the viewer's frame as an "Open" button whose
@@ -140,7 +142,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   // its settings): the owner from any device he signed in or paired himself, from this app's own page. A PC's own
   // routes (its panes, workspaces and files, MACHINE_PROXY_PATH) are driven as this PC's are, and keep their rules
   const path = parts.slice(1).join("/");
-  const accountRecords = request.method === "POST" && path === "account/records";
+  const accountRecords = accountOpensAll && request.method === "POST" && path === "account/records";
   const proxyPath = MACHINE_PROXY_PATH.test(path) || accountRecords;
   if (accountRecords && !owner) return fail("owner_only", "Manage the account from this PC itself, or from a paired device.", 403);
   const managing = !["GET", "HEAD", "OPTIONS"].includes(request.method) && !proxyPath;
