@@ -99,10 +99,10 @@ export interface PairedDevice {
   readonly connection?: DeviceConnection;
   /**
    * account-opens-all/1, to a remote caller only: whether it may Revoke this row from afar (device table T19 in 2d).
-   * `allowed`: itself, or a row that joined this PC after it; `older` and `unorderable` are done at that PC or from an
-   * older device
+   * `allowed`: the entire Revoke is in scope; `older` and `unorderable` require a different caller;
+   * `read_only`: this caller can only watch.
    */
-  readonly remote_revoke?: "allowed" | "older" | "unorderable";
+  readonly remote_revoke?: "allowed" | "older" | "unorderable" | "read_only";
 }
 
 /**

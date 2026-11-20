@@ -14,8 +14,8 @@ export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mi
 export interface AddGates {
   /** the PC waits for the member that linked it first to hand it the account's devices */
   enrolling(): boolean;
-  /** a waiting remove or a held key names `key`, or what waits cannot be trusted to be complete */
-  held(key: string): boolean;
+  /** T36: a self-leave is not held by a queued remove for its own key. */
+  held(key: string, includeWaiting?: boolean): boolean;
   /** a remove waiting here names `key` (an add it signed waits until that settles) */
   removing?(key: string): boolean;
 }
@@ -42,8 +42,10 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   const leaving = record.kind === "remove" && record.signer === record.key;
   const signer = store.accountSigner(record.signer, record.account, leaving);
   if (!signer) return refused("signer_not_member");
-  // with the release flag on, another key's remove needs a signer older here than every row of that key (T36, rule B)
-  if (record.kind === "remove" && store.opensAll() && !store.removeAuthority(record.signer, record.key, record.account)) return refused("older_device");
+  if (record.kind === "remove" && store.opensAll()) {
+    if (gates?.held(record.signer, !leaving)) return refused("removal_pending");
+    if (!store.removeAuthority(record.signer, record.key, record.account)) return refused("older_device");
+  }
   if (record.kind === "remove") return { id: record.id, outcome: store.removeAccountKey(record.key, record.account, { id: record.id, issuedAt: record.issued_at, by: { device_id: signer.id, label: signer.label }, signed: record }, now) ? "applied" : "unchanged" };
   // the signature covers the signer only: a key off the curve would leave a devices.json no store can read
   if (!store.acceptsRelayKey(record.key)) return refused("record_invalid");
@@ -83,7 +85,7 @@ function waited(outcome: RecordOutcome, record: AccountRecord, value: unknown, w
 
 /** `gates` with the keys of this batch's removes that could not be kept: an add for one is held back too. */
 function withUndecided(gates: AddGates | undefined, undecided: ReadonlySet<string>): AddGates {
-  return { enrolling: () => gates?.enrolling() ?? false, held: (key) => undecided.has(key) || (gates?.held(key) ?? false), removing: (key) => undecided.has(key) || (gates?.removing?.(key) ?? false) };
+  return { enrolling: () => gates?.enrolling() ?? false, held: (key, includeWaiting = true) => (includeWaiting && undecided.has(key)) || (gates?.held(key, includeWaiting) ?? false), removing: (key) => undecided.has(key) || (gates?.removing?.(key) ?? false) };
 }
 
 export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now(), gates?: AddGates, wait?: (record: unknown) => boolean): Promise<RecordOutcome[]> {

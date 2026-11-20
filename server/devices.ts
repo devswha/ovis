@@ -1025,30 +1025,28 @@ export class DeviceStore {
   }
 
   /**
-   * What a remote caller may Revoke here (T19 and T20 in 2d, rule B): itself, and a row whose key's every row joined
-   * this PC after it. A row older than it, or one it cannot be placed against, is refused; so is every row to a caller
-   * with no row here. The answer covers every row of the target's key, duplicates included.
+   * What a remote caller may Revoke here (R1/T19): its own row alone, or a target whose affected rows are all
+   * either its own row or newer. Revoke is key-wide for keyed rows, so a self-Revoke cannot take a duplicate along.
    */
   remoteRevoke(callerId: string | null, targetId: string): "allowed" | "older" | "unorderable" {
     const caller = callerId === null ? undefined : this.devices.find((d) => d.id === callerId);
     const target = this.devices.find((d) => d.id === targetId);
     if (caller === undefined || target === undefined) return "unorderable";
-    if (caller.id === target.id) return "allowed";
     const rows = target.relay_public_key === undefined ? [target] : this.devices.filter((d) => d.relay_public_key === target.relay_public_key);
     const verdicts = rows.map((row) => row.id === caller.id ? "older" : compareAdmission(caller, row));
-    if (verdicts.every((verdict) => verdict === "older")) return "allowed";
+    if ((caller.id !== target.id || rows.length === 1) && verdicts.every((verdict) => verdict === "older")) return "allowed";
     return verdicts.includes("newer") ? "older" : "unorderable";
   }
 
   /**
-   * Whether `signer` may sign the remove of `key` here (T36, P21): its own key always; another key only when every row
-   * of that key joined this PC after every member row of the signer. A key with no row here is judged by the marker alone.
+   * Admission-order authority (P21/T36): a self-leave needs no age; another key needs at least one target row,
+   * and every target row must be newer than every member row of the signer.
    */
   removeAuthority(signer: string, key: string, account: string): boolean {
     if (signer === key) return true;
     const signers = this.memberRows(signer, account);
     const targets = this.devices.filter((d) => d.relay_public_key === key);
-    return signers.length > 0 && targets.every((target) => signers.every((row) => compareAdmission(row, target) === "older"));
+    return signers.length > 0 && targets.length > 0 && targets.every((target) => signers.every((row) => compareAdmission(row, target) === "older"));
   }
 
   /** Whether the account-opens-all release flag is on for this store. */
@@ -2701,7 +2699,7 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
     const callerId = access.level === "full" ? access.device?.id ?? null : null;
     const devices = store.list(callerId, drive)
       .map((device) => { const connection = live.get(device.id); return connection ? { ...device, connection } : device; })
-      .map((device) => remote ? { ...device, remote_revoke: store.remoteRevoke(callerId, device.id) } : device);
+      .map((device) => remote ? { ...device, remote_revoke: drive ? store.remoteRevoke(callerId, device.id) : "read_only" as const } : device);
     return jsonResponse({ devices, ...(remote ? { revoke_all: "local_only" as const } : {}) }, 200, { "cache-control": "no-store" });
   }
   if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return jsonResponse({ error: { code: "invalid_origin", message: "Manage devices from this app" } }, 403);
