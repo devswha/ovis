@@ -1936,7 +1936,7 @@ export class DeviceStore {
    * one made since would have taken the row (dropWaiting). That write's failure is logged and changes nothing of the
    * above; the next start clears it.
    */
-  private promote(id: string, link: { oldKey: string; key: string; account: string; listKey?: string | null }, sessionId: string, vouched: boolean, replacement = false, screen?: ConfirmProof): PairedDevice | null {
+  private promote(id: string, link: { oldKey: string; key: string; account: string }, sessionId: string, vouched: boolean, replacement = false, screen?: ConfirmProof): PairedDevice | null {
     const row = this.provisional(id);
     const waiting = this.pending?.waiting;
     if (!row || !waiting || row.key !== link.oldKey || this.account() !== null || this.removedByAccount(link.key)) return null;
@@ -3003,10 +3003,10 @@ export class DeviceStore {
    * (`auth_changed`); the linking one goes on until it signs in again with the new key. A row that waits to link
    * is no device yet: its link makes it one (promote).
    */
-  linkAccountKey(deviceId: string, oldKey: string, key: string, account: string, sessionId = "", vouched = false, replacement = false, listKey: string | null = null): PairedDevice | null {
+  linkAccountKey(deviceId: string, oldKey: string, key: string, account: string, sessionId = "", vouched = false, replacement = false): PairedDevice | null {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
-    if (!device) return this.promote(deviceId, { oldKey, key, account, listKey }, sessionId, vouched, replacement);
+    if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId, vouched, replacement);
     const moved = key !== oldKey || device.link_moved_key === true;
     // the link that takes a row from no account into one is on the device's own word unless a member of that same
     // account approved its pairing: a code started by a device outside the account names its starter in `added_by` and

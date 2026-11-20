@@ -153,7 +153,7 @@ export interface ServerContext {
   upgrade(request: Request, options: { headers?: HeadersInit; data: SocketData }): boolean;
   readonly port: number | undefined;
   /** `serverId`: the relay identity the device signed in to, which a `link` must name (docs/account.md). */
-  readonly peer: { kind: "socket" } | { kind: "relay"; device: DeviceMatch; sessionId: string; serverId: string; key: string; nonce?: Uint8Array };
+  readonly peer: { kind: "socket" } | { kind: "relay"; device: DeviceMatch; sessionId: string; serverId: string; key: string };
   readonly services: RequestServices;
   readonly relayBodyBudget?: EventStreamBudget;
   /**

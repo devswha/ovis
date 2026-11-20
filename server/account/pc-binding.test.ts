@@ -50,7 +50,7 @@ function memberRow(account: string): StoredDevice {
 }
 
 describe("the PC's account binding (account-pc.json)", () => {
-  test("T67/H2: only the list key proved over this relay challenge survives the binding", async () => {
+  test("T59/T67: neither a current nor stale relay challenge binds a first-device list key", async () => {
     for (const fresh of [true, false]) {
       const f = relayFixture(false, { accountOpensAll: true });
       fixtures.push(f);
@@ -66,7 +66,7 @@ describe("the PC's account binding (account-pc.json)", () => {
       const request = link.open("/api/account/link", { method: "POST", headers: [["content-type", "application/json"], ["x-herdr-machine", "1"]], body: "stream" });
       await request.stream.sendBody(new Response(JSON.stringify({ record, list_key: listKey.spki, list_signature: signature })).body!);
       expect((await request.response).status).toBe(200);
-      expect(pcFile(f.stateDir).first).toEqual({ key: device.publicKey, list_key: fresh ? listKey.spki : null });
+      expect(pcFile(f.stateDir).first).toEqual({ key: device.publicKey, list_key: null });
     }
   });
 
