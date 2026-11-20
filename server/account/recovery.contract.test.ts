@@ -39,3 +39,19 @@ test.if(unix)("P23: while the log cannot be read, ovis recover still lists, and 
   expect(await bounded(askRecovery(made.stateDir, { act: "release", rows: ["0123456789abcdef"] }))).toEqual({ error: "0123456789abcdef cannot be released: log_unreadable" });
   expect(made.app.context.services.recoveryReleases!.releaseOf("0123456789abcdef")).toBeNull();
 });
+
+test.if(unix)("S19/P23: a log that turns unreadable after the start is read at each act: nothing is released or undone, and list says why", async () => {
+  const made = await pairingPc({ startRelay: false, server: { accountOpensAll: true } });
+  pcs.push(made);
+  const releases = made.app.context.services.recoveryReleases!;
+  releases.registerRecoverySource(() => [{
+    id: "0123456789abcdef", key: "key-a", label: "Phone", origin: { from: "remote", how: "list" }, waiting: "catching_up",
+    joinHold: false, held: false, openNotice: false, expired: false, covered: false, frozen: false, lastSeenAt: null,
+  }]);
+  expect(await bounded(askRecovery(made.stateDir, { act: "release", rows: ["0123456789abcdef"] }))).toEqual({ released: ["0123456789abcdef"] });
+  writeFileSync(join(made.stateDir, "account-log.json"), "not json", { mode: 0o600 });
+  const listed = await bounded(askRecovery(made.stateDir, { act: "list" })) as { rows: { refusal: string | null }[] };
+  expect(listed.rows.map((row) => row.refusal)).toEqual(["log_unreadable"]);
+  expect(await bounded(askRecovery(made.stateDir, { act: "undo", rows: null }))).toEqual({ error: "This PC cannot read its safety log, so nothing is changed: log_unreadable" });
+  expect(releases.releaseOf("0123456789abcdef")).not.toBeNull();
+});
