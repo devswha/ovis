@@ -52,4 +52,16 @@ describe("S2-27 devices.json rows wait for the first whole read (T41, T42, T65, 
     gate.wholeRead([rows.linked!.id]);
     expect(waiting(gate)).toEqual(["linked"]);
   });
+
+  test("T42: an intervening read preserves the post-lift wait for a screen-paired row", () => {
+    const gate = new CatchUpGate(() => "bind-1");
+    const affected = rows.digits;
+    if (!affected) throw new Error("Missing digits row");
+    gate.noteFreeze("block", [affected.id]);
+    gate.wholeRead([affected.id]);
+    gate.waitAfterLift("block", []);
+    expect(gate.waits(affected)).toBe(true);
+    gate.wholeRead();
+    expect(gate.waits(affected)).toBe(false);
+  });
 });
