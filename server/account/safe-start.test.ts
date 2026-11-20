@@ -289,4 +289,16 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     const link = await relayConnection(f);
     expect(await link.auth(device).then(() => "in", () => "refused")).toBe("refused");
   });
+
+  test("S19: with only the device journal unreadable, the PC every reader asks fails closed", async () => {
+    const dir = stateDir();
+    const first = relayFixture(false, { stateDir: dir, accountOpensAll: true });
+    await relayDevice(first);
+    first.app.stop();
+    writeFileSync(join(dir, "device-journal.json"), "not json", { mode: 0o600 });
+    const f = relayFixture(false, { stateDir: dir, accountOpensAll: true });
+    fixtures.push(f);
+    dirs.splice(dirs.indexOf(dir), 1);
+    expect(f.app.context.services.devices.failsClosed).toBe(true);
+  });
 });
