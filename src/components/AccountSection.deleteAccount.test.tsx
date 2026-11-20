@@ -278,11 +278,24 @@ describe("deleting the account from Settings", () => {
     await asked.promise;
     await press("Sign out anyway");
     await until(() => buttons().includes(SIGN_IN));
-    const marked = async () => Object.values(await indexedAccountStore.get("unsent_blocks") ?? {}).some((entry) => entry.refused === true);
-    await act(async () => { answer.resolve(Response.json({ error: { code: "signer_not_older", message: "x" } }, { status: 403 })); });
-    for (let turn = 0; turn < 400 && !await marked(); turn++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
-    // the settled send has drawn whatever it would
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    // the send's answer is written, then the sign-in it asked for is read again before anything is said
+    const { update, get } = indexedAccountStore;
+    let written = false;
+    const checked = Promise.withResolvers<void>();
+    spyOn(indexedAccountStore, "update").mockImplementation((async (name: string, change: never) => {
+      await update.call(indexedAccountStore, name as never, change);
+      if (name === "unsent_blocks") written = true;
+    }) as typeof indexedAccountStore.update);
+    spyOn(indexedAccountStore, "get").mockImplementation((async (name: string) => {
+      const value = await get.call(indexedAccountStore, name as never);
+      if (written && name === "session") checked.resolve();
+      return value;
+    }) as typeof indexedAccountStore.get);
+    await act(async () => {
+      answer.resolve(Response.json({ error: { code: "signer_not_older", message: "x" } }, { status: 403 }));
+      await checked.promise;
+    });
+    await act(async () => {});
     expect(shown()).not.toContain("The block did not go through yet.");
     expect(Object.values(await indexedAccountStore.get("unsent_blocks") ?? {}).map((entry) => [entry.records[0]?.id, entry.refused])).toEqual([["late-1", true]]);
   });
