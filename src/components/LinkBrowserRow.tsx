@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Compass } from "lucide-react";
 
 import { linkBrowsers, type LinkBrowserChoices } from "../lib/externalLink.ts";
@@ -12,17 +12,27 @@ export function LinkBrowserRow() {
   const t = useT();
   const [bridge] = useState(linkBrowsers);
   const [choices, setChoices] = useState<LinkBrowserChoices | null>(null);
+  // what the app has saved, and the latest choice asked for: a failed save shows the saved one again, unless a later choice came since
+  const saved = useRef<string | null>(null);
+  const asked = useRef(0);
   useEffect(() => {
     let current = true;
-    void bridge?.list().then((listed) => { if (current) setChoices(listed); }).catch(() => {});
+    void bridge?.list().then((listed) => {
+      if (!current) return;
+      saved.current = listed?.chosen ?? null;
+      setChoices(listed);
+    }).catch(() => {});
     return () => { current = false; };
   }, [bridge]);
   if (bridge === null || choices === null) return null;
   const chosen = choices.chosen !== null && choices.browsers.some((browser) => browser.id === choices.chosen) ? choices.chosen : SYSTEM_DEFAULT;
   const choose = (id: string) => {
     const next = id === SYSTEM_DEFAULT ? null : id;
+    const request = ++asked.current;
     setChoices({ ...choices, chosen: next });
-    bridge.choose(next).catch(() => setChoices(choices));
+    bridge.choose(next).then(() => { saved.current = next; }, () => {
+      if (request === asked.current) setChoices((shown) => shown && { ...shown, chosen: saved.current });
+    });
   };
   return (
     <SettingsRow icon={Compass} label={t("Browser for links")} htmlFor="settings-link-browser"

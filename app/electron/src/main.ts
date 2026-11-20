@@ -645,8 +645,8 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle("ovis:browser-choose", async (event, id: unknown) => {
     if (!serverPage(event.senderFrame)) throw new Error("Choosing a browser is not offered here");
     if (id !== null && (typeof id !== "string" || !(await browsers()).browsers.some((browser) => browser.id === id))) throw new Error("That browser is not on this computer");
-    linkBrowser = id;
     writeLinkBrowser(linkBrowserPath, id);
+    linkBrowser = id;
   });
   ipcMain.on("ovis:browser-open", (event, url: unknown) => {
     if (serverPage(event.senderFrame) && typeof url === "string") void openWebLink(url);
