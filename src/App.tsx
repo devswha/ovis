@@ -1134,7 +1134,8 @@ export function App() {
         {remotePairings.length > 0 && <AccountApprovals pairings={remotePairings} />}
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         {deviceNotices}
-        <PendingKeys pending={pendingKeys} onDecline={(id) => { void declinePendingKey(id).then(setPendingKeys, (error: unknown) => console.warn("Ovis: the device was not declined", error instanceof Error ? error.name : error)); }} />
+        {/* The PC's pending-redemptions stream owns the list; a decline response can arrive after a newer event. */}
+        <PendingKeys pending={pendingKeys} onDecline={(id) => { void declinePendingKey(id).catch((error: unknown) => console.warn("Ovis: the device was not declined", error instanceof Error ? error.name : error)); }} />
         {removedNotices.length > 0 && <DeviceRemovedNotice events={removedNotices} onDismiss={dismissRemovedNotice} />}
         {setupGuide.guide === null && <FirstStartHints active={locked === false} />}
         {setupGuide.guide !== null && <MachineContext.Provider value="local"><SetupGuide auth={auth} security={security} opensAll={machineSessions.peek("local")?.socket?.accountOpensAll() === true} onEnableAlerts={enableNotifications} settingsOpen={settingsOpen} pushOn={pushOn} sharedSettingsKnown={sharedSettingsKnown} notifications={notifications} hidden={setupGuide.paused} state={setupGuide.guide} dispatch={setupGuide.dispatch} onClose={setupGuide.close} onOpenSettings={(page) => { setSettingsLinkPage(page); setSettingsOpen(true); }}
