@@ -163,10 +163,10 @@ export function sheetTraversalPending(): boolean {
 const traversalOver = new Set<() => void>();
 
 /**
- * Calls `listener` when the history is on the entry of what is shown again with no landing to tell it,
- * and nothing is pending: a sheet made its entry, or the sheet a way back was for closed (the history
- * is on the entry under it, which is what is left shown). A way back that only ended (dropped, or
- * given up) tells nothing: the history may still be on another pane's entry.
+ * Calls `listener` when a sheet made its entry and nothing is pending then: the history is on the
+ * entry of what is shown with no landing to tell it. A way back that only ended (dropped, given up,
+ * or its sheet closed) tells nothing: after Back past more than one entry the history may still be
+ * on another pane's entry.
  */
 export function onSheetTraversalOver(listener: () => void): () => void {
   traversalOver.add(listener);
@@ -294,9 +294,8 @@ export function leaveSheet(id: string): void {
   underNavigation.delete(id);
   staying.delete(id);
   waiting.delete(id);
-  const wayFor = stranded.delete(id) || returning?.owner === id || climbing?.owner === id;
+  stranded.delete(id);
   if (!open.delete(id)) return;
-  if (wayFor) tellTraversalOver();
   leaving.set(id, setTimeout(() => {
     leaving.delete(id);
     const address = addresses.get(id);

@@ -815,6 +815,33 @@ describe("a phone's sheet where Back skips an entry made with no tap, in a brows
     leaveSecond(); await settled();
   });
 
+  it("tells nothing when the sheet a way back past more than one entry was for closes before it lands: the history is on another pane's entry", async () => {
+    const start = fake.at();
+    fake.tap();
+    h.pushState({ pane: "b" }, "", "/?pane=b");
+    fake.tap();
+    const leaveDrawer = enter(() => {});
+    fake.tap();
+    const leaveMenu = enter(() => {});
+    let over = 0;
+    const stop = sheetHistory.onSheetTraversalOver(() => { over += 1; });
+    // the user's jump lands on pane a; the way back onto b's drawer, a step by count, is dropped with no word
+    let jumped = false;
+    fake.first(() => { if (!jumped) { jumped = true; fake.drop(true); } });
+    h.go(-2); await settled();
+    fake.drop(false);
+    expect(fake.at()).toBe(start);
+    expect(sheetHistory.sheetTraversalPending()).toBe(true);
+    leaveMenu(); await settled();
+    leaveDrawer(); await settled();
+    expect(sheetHistory.sheetTraversalPending()).toBe(false); expect(over).toBe(0);
+    stop();
+    h.forward(); await settled(); await settled();
+    expect(fake.at()).toBe(start + 1);
+    h.back(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
   it("holds no address once every sheet is closed, when the way back onto the entry Back left lands nowhere", async () => {
     const start = fake.at();
     fake.tap();
@@ -831,12 +858,12 @@ describe("a phone's sheet where Back skips an entry made with no tap, in a brows
     expect(sheetHistory.sheetTraversalPending()).toBe(true);
     leaveMenu(); await settled();
     leaveDrawer(); await settled();
-    expect(sheetHistory.sheetTraversalPending()).toBe(false); expect(over).toBe(1);
+    expect(sheetHistory.sheetTraversalPending()).toBe(false); expect(over).toBe(0);
     // a sheet opened afresh, with no traversal since, is no sheet that way back was for
     fake.tap();
     const leaveFresh = enter(() => {});
     expect(typeof sheetOn()).toBe("string");
-    expect(sheetHistory.sheetTraversalPending()).toBe(false); expect(over).toBe(2);
+    expect(sheetHistory.sheetTraversalPending()).toBe(false); expect(over).toBe(1);
     stop();
     leaveFresh(); await settled();
     expect(fake.at()).toBe(start);
