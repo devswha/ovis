@@ -275,6 +275,54 @@ it("T53, T57: It's me uses only the admission PC's socket and retries only until
   expect(answers(desk)).toEqual([answer, answer]);
 });
 
+it.each([
+  ["a confirm for another admission on the same PC leaves it waiting, and it is sent once more", "other", 2],
+  ["a confirm on the first try sends it no second time", "first", 1],
+] as const)("T53, P15: %s; no attempt goes to a records route", async (_name, reply, sentTimes) => {
+  jest.useFakeTimers();
+  const desk = new DeviceNoticeWire("ws://localhost/ws?pc=desk");
+  for (const [key, value] of Object.entries({
+    window: Object.assign(new EventTarget(), { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
+    document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
+    navigator: { languages: ["en"] },
+    getComputedStyle: () => ({ getPropertyValue: () => "" }),
+    WebSocket: class { constructor() { return desk; } },
+    IS_REACT_ACT_ENVIRONMENT: true,
+  })) {
+    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const store = memoryAccountStore();
+  await store.set("session", {
+    service: "https://account.ovis.sh", account: "acct", provider: "github",
+    access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 60_000, sign_in_id: "this-sign-in",
+  });
+  spyOn(indexedAccountStore, "get").mockImplementation(store.get);
+  const fetched = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response(null, { status: 500 }), { preconnect: fetch.preconnect }));
+  const registry = new MachineSessionRegistry((id) => new MachineSession(id, { socket: new HerdrSocket(desk.url) }));
+  sessions = registry;
+  registry.get("local").socket.connect();
+  desk.open();
+  const local = itsMeMachines.filter((machine) => machine.id === "local");
+  function Notices() {
+    return useAccountDeviceNotices({ machines: local, machineSessions: registry, selectedMachineId: "local", pageServerId: undefined });
+  }
+  await act(async () => { itsMeRenderer = create(<SettingsProvider><Notices /></SettingsProvider>); });
+  const view = itsMeRenderer;
+  if (view === undefined) throw new TypeError("Missing notice view");
+  const admission = deviceNotice({ row: "new-phone" });
+  const confirm = deviceNotice({ ...admission, id: "b".repeat(32), seq: 2, kind: "confirm", how: "its_me", open: false, ...(reply === "other" ? { row: "another-phone" } : {}) });
+  const answers = () => desk.sent.filter(({ type }) => type === "notice-answer");
+  await act(async () => { desk.snapshot(); desk.read({ type: "device-notice", notice: admission }); });
+  const button = view.root.find((node) => node.type === "button" && node.children.includes("It's me"));
+  await act(async () => { button.props.onClick(); });
+  await act(async () => { desk.read({ type: "device-notice", notice: confirm }); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  expect(answers()).toHaveLength(sentTimes);
+  expect(fetched.mock.calls.map(([input]) => String(input)).filter((url) => url.includes("records"))).toEqual([]);
+});
+
 it("T53: an It's me the PC does not take says so after its one retry, and can be pressed again", async () => {
   jest.useFakeTimers();
   const desk = new DeviceNoticeWire("ws://localhost/ws?pc=desk");
