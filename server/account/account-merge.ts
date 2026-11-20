@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writePrivateState } from "../private-state.ts";
 import { isAccountKeyEncoding } from "../../shared/account-records.ts";
-import { parseEvidence, REMOVAL_FILE, type Marker, type Removal, type Revoke, type Unrevoke } from "./removal-evidence.ts";
+import { parseEvidence, REMOVAL_FILE, RemovalEvidence, type Marker, type Removal, type Revoke, type Unrevoke } from "./removal-evidence.ts";
 
 const ENROLLING_FILE = "account-enrolling.json";
 const HELD_FILE = "account-held.json";
@@ -31,6 +31,12 @@ function read(dir: string, file: string): Read {
 const byId = <T extends { id: string }>(lists: readonly (readonly T[])[]): T[] => [...new Map(lists.flat().map((item) => [item.id, item])).values()];
 
 function mergeEvidence(active: string, sibling: string): void {
+  // each folder's evidence by the evidence reader's own verdict: what it refuses (writable by others, missing beside a
+  // journal, unreadable) is refused here too, and the PC fails closed (T28, S19)
+  for (const dir of [active, sibling]) {
+    const refused = RemovalEvidence.open(dir, null).strict;
+    if (refused !== null) throw new Error(refused);
+  }
   const docs = [read(active, REMOVAL_FILE), read(sibling, REMOVAL_FILE)].flatMap((doc) => doc === "missing" ? [] : [doc.value]);
   // evidence of a form this PC does not know is refused, never copied or rewritten as valid (T28, S19)
   if (docs.some((doc) => parseEvidence(doc) === null)) throw new Error(`${REMOVAL_FILE} is not this PC's removal evidence`);
