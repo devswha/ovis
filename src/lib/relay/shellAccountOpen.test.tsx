@@ -31,7 +31,7 @@ let browser: ReturnType<typeof createShellTestPage>;
 beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
 afterEach(() => { jest.useRealTimers(); setTransport(nativeTransport); browser.dispose(); });
 
-async function accountPc({ release = true, open }: { release?: boolean; open: NonNullable<RelayShellMount["open"]> }) {
+async function accountPc({ release = true, loseRegistrationReply = false, open }: { release?: boolean; loseRegistrationReply?: boolean; open: NonNullable<RelayShellMount["open"]> }) {
   const identity = generateKeyPair();
   const serverId = deriveServerId(identity.publicKey);
   const entry = { server_id: serverId, label: "Desk", public_key: Buffer.from(identity.publicKey).toString("hex"), relay: RELAY, added_at: new Date().toISOString(), last_seen_at: new Date().toISOString() };
@@ -42,6 +42,7 @@ async function accountPc({ release = true, open }: { release?: boolean; open: No
   const returned = (await service.fetch(started)).headers.get("location");
   if (returned === null) throw new TypeError("Missing OAuth return");
   const requests: string[] = [];
+  const registrationKeys: string[] = [];
   const navigations: string[] = [];
   let props: RelayShellProps | undefined;
   let apps = 0;
@@ -60,7 +61,13 @@ async function accountPc({ release = true, open }: { release?: boolean; open: No
         case "/v1/devices/challenge": return release
           ? Response.json({ challenge_id: "12".repeat(16), challenge: "register-this-sign-in" })
           : new Response(null, { status: 404 });
-        case "/v1/devices": return Response.json({ no: 7, key: JSON.parse(String(init?.body)).key });
+        case "/v1/devices": {
+          const key = JSON.parse(String(init?.body)).key;
+          registrationKeys.push(key);
+          if (key !== registrationKeys[0]) return new Response(null, { status: 409 });
+          if (loseRegistrationReply && registrationKeys.length === 1) throw new TypeError("Registration reply lost after commit");
+          return Response.json({ no: 7, key });
+        }
         default: return service.fetch(input, init);
       }
     },
@@ -79,7 +86,7 @@ async function accountPc({ release = true, open }: { release?: boolean; open: No
     const rows = dashboardModel(dashboardPcs(state.account.pcs, [], directoryRelays), { label: "Device" }, RELAY).rows;
     return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(RelayPcTable, { rows, onSelect() {}, onOpenSheet() {} })));
   };
-  return { accountStore, serverId, requests, navigations, current, markup, apps: () => apps, openPage: () => mountAt(`${APP}/s/${serverId}/`) };
+  return { accountStore, serverId, requests, registrationKeys, navigations, current, markup, apps: () => apps, reload: () => mountAt(`${APP}/`), openPage: () => mountAt(`${APP}/s/${serverId}/`) };
 }
 
 it("T34, P18: a normal sign-in opens a listed unpaired PC as its registered account row", async () => {
@@ -117,6 +124,19 @@ it("P18: an account service without the release only receives the challenge prob
 
 const refused = (code: string, hold?: HoldState) =>
   Object.assign(new MuxProtocolError("protocol_error", "PC refused"), { code, ...(hold === undefined ? {} : { hold }) });
+
+it("P18, T34: reloading after a lost registration reply opens the PC with the same sign-in key", async () => {
+  const run = await accountPc({ loseRegistrationReply: true, open: async (offer) => new class extends RelayTransport {
+    override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+  }(offer) });
+  const pending = await run.accountStore.get("signin_key");
+  expect(pending?.no).toBeNull();
+  await run.reload();
+  expect(run.markup()).toContain('data-pc-action="open"');
+  await run.openPage();
+  expect(run.apps()).toBe(1);
+  expect(run.registrationKeys).toEqual([pending?.key.public_spki, pending?.key.public_spki]);
+});
 
 it.each([
   ["not_listed", [true, true]],
