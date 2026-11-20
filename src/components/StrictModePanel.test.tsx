@@ -3,7 +3,8 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 
 import { SettingsProvider } from "../lib/settings.ts";
 import { mock, spyOn } from "bun:test";
-import { StrictModePanel, StrictModeSection, type LockState } from "./StrictModePanel.tsx";
+import { StrictModePanel, StrictModeSection, StrictUnlockAsk, type LockState } from "./StrictModePanel.tsx";
+import { AccessGate } from "./AccessGate.tsx";
 
 const unlocked: LockState = {
   bound: true, confirm: "available", locked: null, strict: false,
@@ -91,12 +92,14 @@ describe("the strict-mode section in Settings", () => {
   let requests: string[];
   let answer: LockState;
   let refuse: { status: number; code: string } | null;
+  let refuseRead: boolean;
   const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
 
   beforeEach(() => {
     requests = [];
     answer = unlocked;
     refuse = null;
+    refuseRead = false;
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -106,6 +109,7 @@ describe("the strict-mode section in Settings", () => {
     Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7318").pathname}`);
+      if (init?.method !== "POST" && refuseRead) return Response.json({ error: { code: "locked", message: "locked" } }, { status: 403 });
       if (init?.method === "POST" && refuse !== null) return Response.json({ error: { code: refuse.code, message: "refused" } }, { status: refuse.status });
       return init?.method === "POST" ? Response.json({ confirm: "c1" }, { status: 202 }) : Response.json(answer);
     };
@@ -167,6 +171,52 @@ describe("the strict-mode section in Settings", () => {
     const shown = text(renderer!.root);
     expect(shown).toContain("Turn strict mode on or off in a browser on this PC itself.");
     expect(shown).not.toContain("ovis confirm");
+  });
+
+  it("Q20: the approve-by time is taken before the request goes out, so a slow answer never shows a later time than the PC's", async () => {
+    let now = Date.parse("2026-11-21T03:00:00.000Z");
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const reply = Promise.withResolvers<Response>();
+    const slow = async (input: string | URL | Request, init?: RequestInit) => {
+      requests.push(`${init?.method ?? "GET"} ${new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7318").pathname}`);
+      return init?.method === "POST" ? reply.promise : Response.json(answer);
+    };
+    spyOn(globalThis, "fetch").mockImplementation(Object.assign(slow, { preconnect: globalThis.fetch.preconnect }));
+    try {
+      const sent = now;
+      await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
+      await act(async () => { renderer!.root.find((node) => node.type === "button").props.onClick(); });
+      now += 90_000;
+      await act(async () => { reply.resolve(Response.json({ confirm: "c1" }, { status: 202 })); });
+      const by = (at: number) => new Date(at).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" });
+      const shown = text(renderer!.root);
+      expect(shown).toContain(by(sent + 120_000));
+      expect(shown).not.toContain(by(sent + 210_000));
+    } finally { clock.mockRestore(); }
+  });
+
+  it("T47, N4: a locked PC's own window, which the server lets read the lock, may only ask to turn strict mode off", async () => {
+    answer = locked;
+    await act(async () => { renderer = create(<SettingsProvider><StrictUnlockAsk /></SettingsProvider>); });
+    const buttons = renderer!.root.findAll((node) => node.type === "button");
+    expect(buttons.map((button) => text(button))).toEqual(["Ask to turn strict mode off"]);
+    await act(async () => { buttons[0]!.props.onClick(); });
+    expect(requests).toContain("POST /api/account/unlock");
+    expect(text(renderer!.root)).toContain("Strict mode stays on until you approve turning it off");
+  });
+
+  it("T47, R10: a window the server does not let read the lock (relay, LAN, a forwarded page) sees no unlock request", async () => {
+    refuseRead = true;
+    await act(async () => { renderer = create(<SettingsProvider><StrictUnlockAsk /></SettingsProvider>); });
+    expect(renderer!.toJSON()).toBeNull();
+  });
+
+  it("T47: the access gate of a locked PC carries the unlock request", async () => {
+    answer = locked;
+    await act(async () => {
+      renderer = create(<SettingsProvider><AccessGate reason="locked" initialCode="" consumePairCode={() => ""} pairingUnconfirmed={false} onUnlocked={() => {}} /></SettingsProvider>);
+    });
+    expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Ask to turn strict mode off")).toHaveLength(1);
   });
 
   it("T46, R10: reads the PC's state, and the switch only asks the PC's screen", async () => {

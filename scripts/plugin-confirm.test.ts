@@ -19,11 +19,11 @@ function stateDir(file?: unknown): string {
   return dir;
 }
 
-function io(dir: string, options: Partial<Pick<ConfirmIo, "platform" | "uid" | "desktop">> = {}) {
+function io(dir: string, options: Partial<Pick<ConfirmIo, "platform" | "uid" | "env">> = {}) {
   const out: string[] = [];
   const opened: string[] = [];
   const value: ConfirmIo = {
-    stateDir: dir, platform: options.platform ?? "linux", uid: "uid" in options ? options.uid : process.getuid?.(), desktop: options.desktop ?? true,
+    stateDir: dir, platform: options.platform ?? "linux", uid: "uid" in options ? options.uid : process.getuid?.(), env: options.env ?? { DISPLAY: ":0" },
     out: (text) => { out.push(text); },
     open: (url) => { opened.push(url); },
   };
@@ -37,11 +37,25 @@ test("prints the page it builds from the port and opens it where there is a desk
   expect(run.opened).toEqual(["http://127.0.0.1:41234/"]);
 });
 
-test("with no desktop, prints the page and opens nothing", async () => {
-  const run = io(stateDir({ port: 41234 }), { desktop: false });
+test.each([
+  ["headless (no DISPLAY, no WAYLAND_DISPLAY)", {}, []],
+  ["X11", { DISPLAY: ":0" }, ["http://127.0.0.1:41234/"]],
+  ["Wayland", { WAYLAND_DISPLAY: "wayland-0" }, ["http://127.0.0.1:41234/"]],
+  ["an empty DISPLAY", { DISPLAY: "" }, []],
+] as const)("%s: prints the page, and opens it only where a desktop is", async (_name, env, opened) => {
+  const run = io(stateDir({ port: 41234 }), { env });
   expect(await runConfirm(run.value)).toBe(0);
   expect(run.text()).toContain("http://127.0.0.1:41234/");
-  expect(run.opened).toEqual([]);
+  expect(run.opened).toEqual([...opened]);
+});
+
+test("t13r (1): the ownership refusal comes before any read: another user is told it is not theirs, never that the file could not be read", async () => {
+  const dir = stateDir({ port: 41234 });
+  chmodSync(join(dir, "local-confirm.json"), 0o000);
+  const run = io(dir, { uid: (process.getuid?.() ?? 1000) + 1 });
+  expect(await runConfirm(run.value)).toBe(1);
+  expect(run.text()).toContain("Run ovis confirm as the user Ovis runs as");
+  expect(run.text()).not.toContain("could not be read");
 });
 
 test("says plainly when no confirm page is open, and opens nothing", async () => {
