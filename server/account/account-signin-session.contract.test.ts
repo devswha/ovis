@@ -7,7 +7,7 @@ import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { keyOf } from "./account-devices.test-helpers.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
+import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
 import { applyAccountRecords } from "./records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
@@ -48,26 +48,49 @@ async function refusal(pc: Awaited<ReturnType<typeof listedPc>>, features: reado
 }
 
 describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
-  test("P8, T41: an offline restart journals a revoke after journal replacement failed", async () => {
-    const { fixture, device, member } = await listedPc();
+  test.each([
+    ["revoke", JOURNAL_FILE], ["remove", JOURNAL_FILE], ["remove", ACCOUNT_DEVICES_FILE],
+    ["block", JOURNAL_FILE], ["block", ACCOUNT_DEVICES_FILE], ["revoke_all", ACCOUNT_DEVICES_FILE],
+  ] as const)("P8, T41: offline restart records %s once after replacement of %s failed", async (act, file) => {
+    const { fixture, device, member, serverId } = await listedPc();
     const { devices } = fixture.app.context.services;
     const { stateDir } = fixture;
     const rename = privateStateFs.renameSync;
     const fault = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
-      if (to === join(stateDir, JOURNAL_FILE)) throw new Error("journal unavailable");
+      if (to === join(stateDir, file)) throw new Error("replacement failed");
       rename(from, to);
     });
-    try { expect(() => devices.revoke(device.id)).toThrow("journal unavailable"); } finally { fault.mockRestore(); }
+    try {
+      switch (act) {
+        case "revoke": expect(() => devices.revoke(device.id)).toThrow("replacement failed"); break;
+        case "revoke_all": expect(() => devices.revokeAll()).toThrow("replacement failed"); break;
+        case "remove": {
+          const record = await signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, signer: device.publicKey,
+            key: device.publicKey, id: newRecordId(), issued_at: new Date().toISOString() }, device.keys.privateKey);
+          await expect(applyAccountRecords(devices, [record], serverId)).rejects.toThrow("replacement failed");
+          break;
+        }
+        case "block": {
+          const record = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: device.publicKey,
+            signer: member.publicKey, target_no: 2, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, member.keys.privateKey);
+          expect(await devices.applyBlock(record, "handed")).toMatchObject({ outcome: "applied" });
+          break;
+        }
+      }
+    } finally { fault.mockRestore(); }
     expect(devices.has(device.id)).toBe(false);
+    const registry = () => parseAccountDevicesFile(JSON.parse(readFileSync(join(stateDir, ACCOUNT_DEVICES_FILE), "utf8"))).devices;
+    if (act !== "revoke") expect(registry().map(row => row.id)).toEqual([device.id]);
     fixture.app.stop();
     const recovered = relayFixture(false, { stateDir, accountOpensAll: true, accountService: { url: "off" } });
     try {
       const restarted = recovered.app.context.services.devices;
       expect(restarted.isTombstoned(device.publicKey)).toBe(true);
-      expect(restarted.has(member.id)).toBe(true);
+      expect(restarted.has(member.id)).toBe(act !== "revoke_all");
       expect(restarted.has(device.id)).toBe(false);
+      expect(registry()).toEqual([]);
       const history = DeviceJournal.open(stateDir).entries().filter(entry => entry.row === device.id);
-      expect(history.map(({ kind, how }) => [kind, how])).toEqual([["admit", "list"], ["drop", "revoke"]]);
+      expect(history.map(({ kind, how }) => [kind, how])).toEqual([["admit", "list"], ["drop", act]]);
     } finally { recovered.app.stop(); }
   });
 
