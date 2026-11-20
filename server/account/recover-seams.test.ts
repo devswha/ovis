@@ -39,7 +39,7 @@ async function member(devices: DeviceStore): Promise<Key & { id: string }> {
 const block = (target: string, by: Key): Promise<BlockRecord> =>
   signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target, target_no: 9, signer: by.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, by.keys.privateKey) as Promise<BlockRecord>;
 const blocksInForce = (log: SafetyLog) => log.state().blocks.map((entry) => entry.record.id);
-const journal = (dir: string) => (JSON.parse(readFileSync(join(dir, JOURNAL_FILE), "utf8")) as { entries: { kind: string; how: string; key: string | null }[] }).entries;
+const journal = (dir: string) => (JSON.parse(readFileSync(join(dir, JOURNAL_FILE), "utf8")) as { entries: { kind: string; how: string; key: string | null; by: string | null }[] }).entries;
 
 describe("ovis recover acts on this PC's own state (T70, T73, T69)", () => {
   test("T73: a local removal of a signer's key takes its rows, journals the removal and lifts its blocks by the PC", async () => {
@@ -96,5 +96,16 @@ describe("ovis recover acts on this PC's own state (T70, T73, T69)", () => {
     const { log } = pc();
     expect(log.appendLift(newRecordId(), null)).toMatchObject({ outcome: "refused", code: "record_invalid" });
     expect(log.appendLift(newRecordId(), { account: ACCOUNT })).toMatchObject({ outcome: "refused", code: "record_invalid" });
+  });
+
+  test("P24: a removal and Revoke all from the recovery socket journal the act and the OS user who ran it", async () => {
+    const { dir, devices } = pc();
+    const [first, second, third] = [await member(devices), await member(devices), await member(devices)];
+    const stranger = await key();
+    devices.removeKey({ target: first.spki, by: "local", user: "alice" });
+    devices.removeKey({ target: stranger.spki, by: "local", user: "alice" });
+    expect(journal(dir).filter((entry) => entry.kind === "remove" && entry.how === "recover").map((entry) => [entry.key, entry.by])).toEqual([[first.spki, "alice"], [stranger.spki, "alice"]]);
+    devices.revokeAll("alice");
+    expect(journal(dir).filter((entry) => entry.kind === "remove" && entry.key !== first.spki && entry.key !== stranger.spki).map((entry) => [entry.key, entry.how, entry.by])).toEqual([[second.spki, "recover", "alice"], [third.spki, "recover", "alice"]]);
   });
 });
