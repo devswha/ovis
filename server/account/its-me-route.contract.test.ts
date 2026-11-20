@@ -7,7 +7,7 @@ import { keyOf } from "./account-devices.test-helpers.ts";
 import { ITS_ME_MIN_AGE_MS } from "./join-hold.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 
-test("P15/T53 postponed: the It's me route answers not_supported until the It's me UI ships", async () => {
+test("P15/T53, OD3: It's me from an older device over its relay session ends the new device's hold at once and decides its notice", async () => {
   const closes: (() => void)[] = [];
   let now = Date.now();
   const clock = spyOn(Date, "now").mockImplementation(() => now);
@@ -35,10 +35,11 @@ test("P15/T53 postponed: the It's me route answers not_supported until the It's 
     await socket.until(message => message.type === "pong" && message.id === 1);
 
     expect({
-      refusal: socket.messages.find(message => message.type === "error" && message.code === "not_supported"),
+      refusal: socket.messages.find(message => message.type === "error"),
+      confirmed: socket.messages.some(message => message.type === "device-notice" && message.notice.kind === "confirm" && message.notice.how === "its_me" && message.notice.row === id),
       session: devices.sessionRow(id),
       open: devices.openNotices().some(entry => entry.id === notice.id),
-    }).toMatchObject({ refusal: { type: "error", code: "not_supported" }, session: null, open: true });
+    }).toMatchObject({ refusal: undefined, confirmed: true, session: { role: "drive", key }, open: false });
   } finally {
     clock.mockRestore();
     snapshot.mockRestore();
