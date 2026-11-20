@@ -23,7 +23,7 @@ const APP = "https://app.ovis.sh";
 const RELAY = "wss://relay.ovis.sh";
 const store: ShellDeviceStore = {
   get: async () => undefined, list: async () => [], remove: async () => {},
-  removeRow: async () => false, update: async () => { throw new TypeError("An account open must not write a pairing"); },
+  removeRow: async () => false, update: async (_id, change) => change(undefined),
 };
 
 let browser: ReturnType<typeof createShellTestPage>;

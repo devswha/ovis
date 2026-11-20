@@ -14,7 +14,7 @@ import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { UpdateStep } from "../../../shared/update.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { MyPc } from "../account/myPcs.ts";
-import { ACCOUNT_PROVIDERS, type AccountProvider, type AccountSession } from "../account/store.ts";
+import { ACCOUNT_PROVIDERS, type AccountProvider, type AccountSession, type SignInKey } from "../account/store.ts";
 import { inNativeApp } from "../nativeApp.ts";
 import { serverIdOfPath } from "../shellMode.ts";
 import { RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayRefusedError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
@@ -244,6 +244,7 @@ export interface Attempt {
   accountless?: boolean;
   /** the sign-in the confirm before this pairing was drawn for: the pairing uses its account key and joins its account, and no other's */
   signIn?: AccountSession;
+  readonly accountOpen?: SignInKey;
   retryEnrollment?: boolean;
   retriedPending?: boolean;
   /**

@@ -3,12 +3,13 @@ import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { myPcs } from "../account/myPcs.ts";
+import { signInKey } from "../account/signInKey.ts";
 import { AccountService, AccountServiceError, AccountServiceUnreachableError, accountProvidersOf, offeredProviders, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
 import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, redeemSignIn, SignInError, takePendingSignIn } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
-import type { AccountProvider, AccountSession, PendingPairing } from "../account/store.ts";
+import type { AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
 import { leaveAccount } from "../account/leave.ts";
@@ -91,7 +92,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let accountView: AccountView | null = accountService === null ? null : { kind: "signed-out", error: null };
   let directory: readonly DirectoryPc[] = [];
   /** `at`: when the account last answered; the rows of a failed read are aged to then, never past what it confirmed */
-  let listedFor: { readonly epoch: number; readonly accountKey: string; readonly account: string; readonly at: number } | undefined;
+  let listedFor: { readonly epoch: number; readonly projection: { readonly accountKey: string; readonly account: string; readonly registered: boolean }; readonly at: number; readonly openKey: SignInKey | null } | undefined;
   let shownFor: AccountSession | undefined;
   let generation = 0;
   let leaving = false;
@@ -137,6 +138,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         }
         shownFor = session;
         const listed = await account.forSignIn(session).listPcs();
+        const kept = await accountStore.get("signin_key");
+        const openKey = kept !== undefined && kept.no !== null && kept.account === session.account && kept.sign_in_id === session.sign_in_id ? kept : null;
         const devices = await store.list();
         const key = await accountStore.key();
         if (!live()) return;
@@ -147,8 +150,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         if (!sameSignIn(still, session)) { replacedBy(still); return; }
         directory = listed;
         const at = Date.now();
-        listedFor = { epoch, accountKey: key.public_spki, account: session.account, at };
-        accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(listed, devices, { now: at, accountKey: key.public_spki, account: session.account, outdated: view.outdated() }) };
+        const projection = { accountKey: key.public_spki, account: session.account, registered: openKey !== null };
+        listedFor = { epoch, projection, at, openKey };
+        accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(listed, devices, { now: at, ...projection, outdated: view.outdated() }) };
         sendQueuedAdds({ service: account, store: accountStore, account: session.account }).catch((error: unknown) => console.warn("Ovis: kept adds could not be sent", error instanceof Error ? error.name : error));
       } catch (error) {
         if (!live()) return;
@@ -161,7 +165,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           const devices = await store.list();
           if (!live()) return;
           const kept = current?.kind === "signed-in" && current.pcs !== null && listedFor?.epoch === epoch
-            ? myPcs(directory, devices, { now: listedFor.at, outdated: view.outdated(), accountKey: listedFor.accountKey, account: listedFor.account })
+            ? myPcs(directory, devices, { now: listedFor.at, ...listedFor.projection, outdated: view.outdated() })
             : current?.kind === "signed-in" && current.pcs !== null ? current.pcs : myPcs([], devices, { now: Date.now(), outdated: view.outdated() });
           if (accountView?.kind === "signed-in") accountView = { ...accountView, pcs: kept, error: t("The account service could not be reached. The PCs this device is paired with still work.") };
         }
@@ -178,7 +182,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const redraw = async (): Promise<void> => {
     const devices = await store.list();
     if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) {
-      accountView = { ...accountView, pcs: myPcs(directory, devices, { now: Date.now(), outdated: view.outdated(), accountKey: listedFor.accountKey, account: listedFor.account }) };
+      accountView = { ...accountView, pcs: myPcs(directory, devices, { now: Date.now(), ...listedFor.projection, outdated: view.outdated() }) };
     }
     await changed();
   };
@@ -315,6 +319,12 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
 
 
+  const registerSignIn = async (session: AccountSession): Promise<void> => {
+    try { await signInKey(accountStore, account.forSignIn(session)); }
+    catch (error) {
+      if (!(error instanceof AccountServiceError || error instanceof AccountServiceUnreachableError || error instanceof SignedOutError)) throw error;
+    }
+  };
   /** `pairing`: a web sign-in leaves the page, so the pairing it is for waits in its pending record (load hands it back) */
   /** `wanted`: asked again right before the page leaves for the provider (after its pending record is written); false leaves the sign-in unstarted */
   const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean | Promise<boolean>): void => {
@@ -328,7 +338,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const leave = mount.openSignIn ?? ((url: string) => window.location.assign(url));
     const unwanted = async (): Promise<void> => { accountView = { kind: "signed-out", error: null }; await changed(); };
     const native = (): Promise<void> => nativeSignIn(provider, { store: accountStore, service: accountService, ...(wanted ? { wanted } : {}) })
-      .then(() => refresh(true), (error: unknown) => error instanceof SignInNotWanted ? unwanted() : Promise.reject(error));
+      .then(async (session) => { if (pairing === undefined) await registerSignIn(session); await refresh(true); }, (error: unknown) => error instanceof SignInNotWanted ? unwanted() : Promise.reject(error));
     // a press starts as before; a start that asks `wanted` waits on it before it starts, and again before the page (or
     // the app's sheet) leaves for the provider (the link entry, shell.tsx)
     const started = nativeSignInAvailable()
@@ -355,8 +365,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       if (pending?.pairing) carried?.(pending.pairing);
       await changed();
       try {
-        await redeemSignIn(pending, returned, { store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
+        const session = await redeemSignIn(pending, returned, { store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
         if (pending?.pairing) outcome = { refused: null, provider: pending.provider };
+        else await registerSignIn(session);
       } catch (error) {
         accountView = { kind: "signed-out", error: signInFailure(error), ...(pending ? { provider: pending.provider } : {}) };
         if (pending?.pairing) outcome = { refused: signInFailure(error), provider: pending.provider };
@@ -678,5 +689,6 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   /** The providers the service named, an empty list included; the build's only when it gave no answer to read. */
   const listedNow = (): Promise<readonly AccountProvider[]> => answered().then((said) => said.listed);
   return { get state() { return accountView; }, get directory() { return directory; },
+    get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, prepare, enroll, cancelEnrollment, armRefresh };
 }

@@ -4,8 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { encodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
 import { GLOBAL_RELAY } from "../../../shared/relay-regions.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
+import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
 import type { MyPc } from "../account/myPcs.ts";
-import { sameSignIn } from "../account/service.ts";
+import { sameSignIn, SignedOutError } from "../account/service.ts";
 import type { AccountProvider, AccountSession, PendingPairing } from "../account/store.ts";
 import { SIGN_IN_MS, signInReturn } from "../account/signin.ts";
 import { deviceLabel } from "../phone.ts";
@@ -350,11 +351,17 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     let opened: RelayTransport;
     try {
       // a saved pairing signs in with the row its record names: that row is the one this attempt may forget
-      if (attempt.paired && attempt.row === undefined) {
+      if (attempt.paired && attempt.accountOpen === undefined && attempt.row === undefined) {
         attempt.row = (await store.get(attempt.offer.server_id))?.device_id ?? null;
         if (controller.signal.aborted) return;
       }
-      const prepared = await account.prepare(attempt.offer, controller.signal, consentOf(attempt));
+      const accountOpen = attempt.accountOpen;
+      if (accountOpen !== undefined) {
+        const session = await account.stored();
+        controller.signal.throwIfAborted();
+        if (session?.sign_in_id !== accountOpen.sign_in_id || session.account !== accountOpen.account) throw new SignedOutError();
+      }
+      const prepared = accountOpen === undefined ? await account.prepare(attempt.offer, controller.signal, consentOf(attempt)) : {};
       attempt.accountEnrollment = prepared.accountKey !== undefined;
       if (!attempt.paired) {
         const marked = attempt.offer.code !== undefined && attempt.offer.admission === 1;
@@ -367,6 +374,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       opened = await open(attempt.offer, {
         store, label, signal: controller.signal,
         ...prepared,
+        ...(accountOpen === undefined ? {} : { store: withAccountDevice(store, accountDevice(attempt.offer, accountOpen.key)), accountOpensAll: true }),
         ...(directSocket ? { directSocket, ...(directTailnet ? { directTailnet } : {}) } : {}),
         // a link without a code: the digits wait on screen until this phone says they match
         compare: (digits) => new Promise<void>((resolve) => {
@@ -417,7 +425,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the update screen included) signs with the saved device key instead of pairing again
     const { code, ...saved } = attempt.offer;
     const fresh = !attempt.paired || attempt.fresh === true;
-    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}) };
+    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}), ...(attempt.accountOpen ? { accountOpen: attempt.accountOpen } : {}) };
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;
@@ -453,7 +461,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   /** Forgets the attempt's own row (Attempt.row), or the saved record when the attempt never knew one. */
   const forgetRow = async (attempt: Attempt): Promise<void> => {
-    if (attempt.row === null) return;
+    if (attempt.accountOpen !== undefined || attempt.row === null) return;
     if (attempt.row === undefined) await store.remove(attempt.offer.server_id);
     else await store.removeRow(attempt.offer.server_id, attempt.row);
   };
@@ -485,7 +493,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const enroll = (opened: RelayTransport, attempt: Attempt, settled?: () => void, signal?: AbortSignal): void => {
     // the confirm said this device gets a key of its own: a sign-in stored since then adds nothing to its account here
-    if (attempt.accountless) return;
+    if (attempt.accountless || attempt.accountOpen !== undefined) return;
     enrolling.add(opened);
     const done = account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true, { consent: consentOf(attempt), ...(settled ? { settled } : {}), ...(signal ? { signal } : {}) }).then((enrollment) => {
       // the new row's link passed (or none was needed): the record it replaced is no longer kept
@@ -710,7 +718,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       // right here, on a screen of its own, and never the list (which only the tabs open)
       const joinable = await accountPcToJoin(entry.serverId);
       if (entries !== loaded) return;
-      if (joinable !== undefined) joinPc(joinable, { sheet: "join", alone: true });
+      const openKey = account.openKey;
+      if (joinable?.join && joinable.accountOpen && openKey !== null) {
+        await connect({ offer: { v: 1, server_id: joinable.server_id, ...joinable.join, name: joinable.name }, code: false, paired: true, accountOpen: openKey });
+      } else if (joinable !== undefined) joinPc(joinable, { sheet: "join", alone: true });
       else show({ kind: "empty" });
     }
     // a key saved from a forged link (an earlier build saved before admission): Forget removes it
