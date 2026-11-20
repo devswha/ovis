@@ -45,6 +45,8 @@ export class OrderConflict extends Error {
   constructor(readonly key: string) { super("Snapshot changes a pinned account number"); }
 }
 
+export type LiftOrder = Pick<AccountOrder, "late" | "registered" | "no">;
+
 function parse(value: unknown): OrderDoc | null {
   if (typeof value !== "object" || value === null) return null;
   const doc = value as Partial<OrderDoc>;
@@ -128,8 +130,12 @@ export class AccountOrder {
     this.prepare(read, bindId)();
   }
 
-  /** Validate before any widening. Publishing the watermark returns its undo for a refused lift batch. */
-  prepare(read: OrderedRead, bindId: string): () => () => void {
+  /** A read-only view for authority checks, using exactly the pins the commit will publish. */
+  preview(read: OrderedRead): LiftOrder {
+    return new AccountOrder(this.path, this.project(read), null);
+  }
+
+  private project(read: OrderedRead): OrderDoc {
     if (this.problem !== null) throw new Error(this.problem);
     const base = this.doc.account === read.account ? this.doc : { ...EMPTY, account: read.account };
     const keys: Record<string, OrderEntry> = { ...base.keys };
@@ -145,7 +151,12 @@ export class AccountOrder {
         removed: removed || pinned?.removed === true, joined: pinned?.joined ?? null };
       max = Math.max(max, no);
     }
-    const next: OrderDoc = { ...base, bind_id: bindId, server_id: read.server_id, last_version: read.version, max_no: max, keys };
+    return { ...base, max_no: max, keys };
+  }
+
+  /** Validate before any widening. Publishing the watermark returns its undo for a refused lift batch. */
+  prepare(read: OrderedRead, bindId: string): () => () => void {
+    const next: OrderDoc = { ...this.project(read), bind_id: bindId, server_id: read.server_id, last_version: read.version };
     return () => {
       const previous = this.doc;
       writePrivateState(this.path, next);

@@ -39,7 +39,7 @@ export interface SnapshotPorts {
    * This PC's own authority for a lift the service took (DeviceStore.liftAuthority): its signature holds and its signer
    * is older here than the blocked key and not removed. Asked before the commit turn; a change it relied on raises gen.
    */
-  liftAuthority(lift: DeviceLiftRecord): Promise<boolean>;
+  liftAuthority(lift: DeviceLiftRecord, snapshot: AccountSnapshot): Promise<boolean>;
   /** Synchronous: every guard again, then the journal, the files and memory, in one turn. */
   commit(stage: StagedRead): void;
   methodsVersion(): number | null;
@@ -104,7 +104,7 @@ export async function readSnapshot(
 
   const authorized: DeviceLiftRecord[] = [];
   const removed = new Set(snapshot.removed.map((row) => row.key));
-  for (const lift of snapshot.lifts) if (!removed.has(lift.signer) && await ports.liftAuthority(lift)) authorized.push(lift);
+  for (const lift of snapshot.lifts) if (!removed.has(lift.signer) && await ports.liftAuthority(lift, snapshot)) authorized.push(lift);
 
   // the commit turn: nothing below awaits, so no denial can land between these checks and the write
   const now = ports.scope();

@@ -6,7 +6,7 @@
  */
 import type { BlockRecord, DeviceLiftRecord } from "../../shared/account-records.ts";
 import type { DeviceStore } from "../devices.ts";
-import { OrderConflict, type AccountOrder } from "./account-order.ts";
+import { OrderConflict, type AccountOrder, type LiftOrder } from "./account-order.ts";
 import type { DeviceJournal } from "./device-journal.ts";
 import type { PcAccountState } from "./pc-binding.ts";
 import type { SafetyLog } from "./safety-log.ts";
@@ -27,6 +27,7 @@ export interface SnapshotDeps {
 
 export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
   const { devices, safetyLog, pc, journal } = deps;
+  const orders = new WeakMap<StagedRead["snapshot"], LiftOrder>();
   return {
     scope() {
       const account = devices.account();
@@ -42,14 +43,22 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       await devices.applyBlock(block, "snapshot", () => { raised = true; });
       return raised;
     },
-    async liftAuthority(lift: DeviceLiftRecord) {
+    async liftAuthority(lift: DeviceLiftRecord, snapshot) {
+      let order = orders.get(snapshot);
+      if (!order) {
+        try { order = deps.order.preview(snapshot); } catch (error) {
+          if (error instanceof OrderConflict) return false; // The commit journals the conflict and rejects the read.
+          throw error;
+        }
+        orders.set(snapshot, order);
+      }
       const entry = safetyLog.state().freezes.find(({ record }) => record.account === lift.account &&
         (record.kind === "block" ? record.id === lift.target : record.kind === "freeze" && record.id === `f:${lift.target}`));
       const target = entry?.record.target;
-      if (!target || deps.order.late(lift.signer) || !deps.order.registered(lift.signer, lift.account)) return false;
-      const signerNo = deps.order.no(lift.signer);
-      const targetNo = deps.order.no(target);
-      return signerNo !== null && targetNo !== null && signerNo < targetNo && devices.liftAuthority(lift);
+      if (!target || order.late(lift.signer) || !order.registered(lift.signer, lift.account)) return false;
+      const signerNo = order.no(lift.signer);
+      const targetNo = order.no(target);
+      return signerNo !== null && targetNo !== null && signerNo < targetNo && devices.liftAuthority(lift, order);
     },
     commit(stage: StagedRead) {
       const binding = pc.binding();

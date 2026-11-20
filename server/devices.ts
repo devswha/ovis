@@ -18,7 +18,7 @@ import { type ClearReason, PcAccountState } from "./account/pc-binding.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device-journal.ts";
-import type { AccountOrder } from "./account/account-order.ts";
+import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
 import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceSafetyRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
@@ -1075,7 +1075,7 @@ export class DeviceStore {
    * Whether a device's lift may end a block here (P23 way 1, T52): its signature is its signer's, the block is in this
    * log, and the signer is a member here whose every row joined this PC before the blocked key did.
    */
-  async liftAuthority(value: unknown): Promise<boolean> {
+  async liftAuthority(value: unknown, order: LiftOrder | null = this.accountOrder): Promise<boolean> {
     let record: SafetyRecord;
     try { record = parseSafetyRecord(value); } catch (error) {
       if (error instanceof AccountRecordError) return false;
@@ -1086,16 +1086,16 @@ export class DeviceStore {
     const blocked = this.safety.state().blocks.find((entry) => entry.record.id === record.target);
     if (blocked === undefined) {
       const line = this.safety.state().freezes.find((entry) => entry.record.id === `f:${record.target}`)?.record;
-      if (line?.kind !== "freeze" || line.account !== record.account || !this.accountOrder || this.accountOrder.late(record.signer)) return false;
-      const signerNo = this.accountOrder.no(record.signer);
-      const targetNo = this.accountOrder.no(line.target);
+      if (line?.kind !== "freeze" || line.account !== record.account || !order || order.late(record.signer)) return false;
+      const signerNo = order.no(record.signer);
+      const targetNo = order.no(line.target);
       return signerNo !== null && targetNo !== null && signerNo < Math.min(targetNo, line.after)
         && this.memberRows(record.signer, record.account).some((row) => !this.frozen(row));
     }
     const joined = blocked.asof?.joined;
     if (joined === null || joined === undefined) return false;
     // a key the account's order marks late is not trusted as older than the key it would free (P21, T52)
-    if (this.accountOrder?.late(record.signer) ?? false) return false;
+    if (order?.late(record.signer) ?? false) return false;
     const signers = this.memberRows(record.signer, record.account);
     return signers.length > 0 && signers.every((d) => d.origin!.admit_no < joined && !this.frozen(d));
   }
