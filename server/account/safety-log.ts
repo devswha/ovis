@@ -373,12 +373,7 @@ export class SafetyLog {
     if (refused.length) return { added: 0, receipts: refused };
     const added = next.next - this.file.next;
     if (added) {
-      try { this.writeFile(next); } catch (error) {
-        this.writeError = `Cannot write ${this.path} (${error instanceof Error ? error.message : String(error)})`;
-        this.inForce = STRICT_STATE;
-        return unavailable();
-      }
-      this.inForce = this.state();
+      if (!this.writeFile(next)) return unavailable();
       for (const { record } of next.entries.slice(-added)) {
         const ended = next.entries.find(({ record: parent }) => parent.account === record.account &&
           ((parent.kind === "block" && parent.id === record.target) || (parent.kind === "freeze" && parent.id === `f:${record.target}`)));
