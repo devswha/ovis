@@ -51,3 +51,17 @@ test("T46/T47: a blocked start refuses the unlock; a start that can write ends t
   const link = await relayConnection(repaired);
   expect(await link.auth(device).then(() => "in", () => "refused")).toBe("refused");
 });
+
+test("S19/T41: on a PC whose only damage is an unreadable device journal, a loopback window gets 403 strict and the lock says strict", async () => {
+  const dir = folder();
+  const first = start(dir);
+  await relayDevice(first);
+  first.app.stop();
+  writeFileSync(join(dir, "device-journal.json"), "not json", { mode: 0o600 });
+  const made = start(dir);
+  expect(made.app.context.services.safetyLog!.strict).toBeNull();
+  const base = `http://127.0.0.1:${made.app.port}`;
+  const tried = await fetch(`${base}/api/devices`);
+  expect([tried.status, ((await tried.json()) as { error?: { code?: string } }).error?.code]).toEqual([403, "strict"]);
+  expect(((await (await fetch(`${base}/api/account/lock`)).json()) as { strict: boolean }).strict).toBe(true);
+});

@@ -209,3 +209,4 @@ test("T46/S24: a connection whose upgrade was admitted before a lock's approval 
   lifetime(() => { closed++; });
   expect(closed).toBe(1);
 });
+
