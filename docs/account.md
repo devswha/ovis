@@ -474,10 +474,40 @@ only what the prompt says and which failure count a comparison spends.
 
 ## PC API
 
-All under `/api/account/`, JSON, `cache-control: no-store`. Every route needs drive access; through
+The account routes are under `/api/account/`, JSON, `cache-control: no-store`. Every route needs drive access; through
 the relay too. Mutations need the app's mutation guard, like the other routes. A device that waits
 to link ([Who may admit a device](#who-may-admit-a-device)) reaches its own status and its link,
 and nothing else.
+
+**Adding the first member from this PC's own window** (with account-opens-all off):
+
+- `POST /api/account/first-member/challenge` `{ "label": "Study browser" }` returns `{ "challenge": "<nonce>" }`.
+  Only one challenge stands per PC. It is single-use, expires after 60 seconds, and a new one replaces it.
+- `GET /api/relay/link` returns `{ "url": "<code-free relay offer>" }` to the PC's own window. This reads the
+  relay identity used to sign the claim. Unlike `POST /api/relay/link`, it does **not** open a pairing window.
+  An off or blocked relay answers `409 relay_off`.
+- `POST /api/account/first-member` takes `{ "account": "acct_1", "record": <signed link>, "token": "<access token>" }`.
+  Both first-member POSTs require the unforwarded own window, same origin, and `x-herdr-machine: 1`. The link's
+  `id` is the challenge; `key` and `old_key` are the signing key, and `device_id` derives from this PC and that key.
+  The PC checks the bearer with its account service's `GET /v1/session`: same account, `own_sign_in: true`, and a
+  sign-in within ten minutes (up to one minute ahead for clock skew). Failed proof answers `403 own_sign_in_required`.
+  An empty PC adds and journals one drive member and starts its enrollment. A PC with existing rows refuses
+  `409 in_account`, except that the same sole member, while still enrolling, can prove a fresh claim to rotate
+  its grant without writing another row or journal entry. Adding `"recover": true` requests rotation only:
+  it cannot add a row to an empty PC.
+
+`first-member-journal.json` in the PC's state directory is the append-only audit of successful first-member
+admissions, not a source of access. Each addition records the account, member ID, public key, label, and time.
+Failed claims and grant rotations add no entry. Like the device journal, it retains the latest 1,000 entries.
+
+Success returns `{ "device": <member> }` and the `x-ovis-first-enroll` response header. The own window sends
+that header on `POST /api/account/enroll`; it is not a relay credential. It expires after ten minutes and no
+longer works after rotation, revocation, or completion of enrollment. A lost claim response is not permission
+to list the PC or open pairing: the window reads membership before deciding whether enrollment can resume.
+An unreadable ownership check never opens digit pairing. Before the claim, `409 in_account`, `409 opens_all`
+(the PC's account-opens-all switch is on), or an older PC's `404 not_found` allows the usual listing flow
+only after the PC reports `account: null`. `409 relay_off` offers to start the relay instead. A network
+failure, unreadable or uncoded refusal, or `5xx` (including `503 account_unavailable`) lists nothing.
 
 `GET /api/account/status`
 
@@ -645,6 +675,14 @@ removal to be off or unreachable.
 How a person adds a PC to the account in the apps (WhatsApp's linked devices and Tailscale's
 Tailnet Lock follow the same idea: an existing device approves once, and the server only carries
 messages):
+
+**From the PC's own browser window.** On a PC with no account or paired devices, **Add this PC to
+my account** can use the window's account key as the first drive member. The window signs the PC's
+single-use, 60-second challenge. The PC uses the access token once, without saving it, to ask
+`GET /v1/session` whether this account signed in on its own device in the last ten minutes. Only
+then does the window list and enroll the PC; no digits or second device are needed. A remote
+window or an unverified sign-in uses the existing digit flow. A sign-in refused this proof lists
+nothing until the person chooses to continue on another device.
 
 **By QR code.** On the new PC, Settings → Devices and PCs → Add a connection → Ovis relay →
 **Show the QR code**, with the relay on and an account named for the PC: signing in on the PC's

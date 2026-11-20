@@ -12,11 +12,12 @@ import type { AccountLimits } from "../../shared/protocol.ts";
 import { AddPcWaitOver, addInOnePress, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
-import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
+import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay, routeMissing } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { AccountPcError, within } from "../lib/account/join.ts";
+import { firstMember, firstMemberMembership, type FirstClaim, type FirstEnrollment } from "../lib/account/firstMember.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
-import { ownWindowSignIn, useOwnWindowRedirect } from "../lib/account/ownWindow.ts";
+import { ownWindowRedirect, ownWindowSignIn, useOwnWindowRedirect } from "../lib/account/ownWindow.ts";
 import { AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, pcAccountServiceOf, sameSignIn, SignedOutError, type AccountIdentity, type AccountService, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
@@ -24,9 +25,11 @@ import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { deviceLabel, deviceOs } from "../lib/phone.ts";
+import { DEVICES_CHANGED_EVENT } from "../lib/useRelay.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { AccountPcList, AccountSignIn, HOSTED_APP_URL, PROVIDER_NAMES, ProviderMark, providerChoice } from "./AccountPcs.tsx";
 import { QrCode } from "./QrCode.tsx";
+import { FirstMemberSignIn } from "./FirstMemberSignIn.tsx";
 import { statusText } from "./RelayPanel.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
 
@@ -114,10 +117,14 @@ export const ANSWER_MS = 10_000;
 export const SIGNED_IN_RETRY_MS = 60_000;
 export const ADDING_MS = 2 * REOPEN_MS;
 
+type PendingFirst = { session: AccountSession; claim: FirstClaim; redirect: string };
 type AddThisPcState =
   | { kind: "hidden" }
   | { kind: "offer" }
   | { kind: "adding" }
+  | { kind: "digits"; account: string }
+  | { kind: "unfinished"; pending: PendingFirst }
+  | { kind: "sign-in-again"; previous: PendingFirst }
   /**
    * that listing found the relay off: one button turns it on and lists, under `account` (the sign-in that just
    * finished) and no other; `error`: why the last press did neither
@@ -200,6 +207,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
 }) {
   const t = useT();
   const [state, setState] = useState<AddThisPcState>({ kind: "hidden" });
+  const ownBrowser = typeof window !== "undefined" && window.location?.hostname === "127.0.0.1" && !inMacApp() && !inNativeApp();
   const accountService = useCallback((): AccountService => service?.() ?? indexedAccountService, [service]);
   /** What the screen shows of a PC that has an account: "in your account" only when it is the one signed in to now, else nothing here is true of it. */
   const joinedAs = useCallback(async (account: string, enrolling: boolean): Promise<AddThisPcState> => {
@@ -242,7 +250,10 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
           if (!live || watching === true) return;
           // while that could not be read nothing is listed without a press: the button, which the PC answers for itself
           const adding = watching === null ? null : signedIn;
-          if (adding === null && !waitKept()) { setState({ kind: "offer" }); return; }
+          if (adding === null && !waitKept()) {
+            setState(watching === null && signedIn?.adds ? { kind: "error", message: t("This PC could not be listed in your account. Try again.") } : { kind: "offer" });
+            return;
+          }
           // the sign-in that just finished here adds the PC, when it is still the one stored: another, or none, starts from the offer
           const session = await accountService().session().catch(() => undefined);
           if (!live) return;
@@ -495,17 +506,46 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
    */
   const dropped = useRef<(() => void) | null>(null);
   useEffect(() => () => { dropped.current?.(); dropped.current = null; }, []);
+  const pendingFirst = useRef<PendingFirst | null>(null);
+  const resume = ({ session, claim }: PendingFirst, running: () => boolean): FirstEnrollment => ({
+    account: session.account, async finish() {
+      const enrollment = await firstMember(accountService(), session, running, { recover: claim });
+      await enrollment.finish();
+    },
+  });
   /**
    * Lists this PC and waits, thirty minutes from this press, or from the sign-in that just finished here
    * (`as`, its account): that one says what it is doing, lists under that account alone, is given up after
    * `ADDING_MS` (the button again) or when its screen goes, and a relay that is off is offered with one button,
    * never started. The window such an attempt opened is closed again when nobody comes to wait on it.
    */
-  const add = (as: string | null = null): void => {
+  const finish = async (enrollment: FirstEnrollment, current: () => boolean): Promise<AddThisPcState | null> => {
+    try { await enrollment.finish(); }
+    catch (error) {
+      if (!current()) return null;
+      // another sign-in, or a cancelled attempt: the offer again, not a retry that cannot succeed
+      if (error instanceof AddPcWaitOver) { pendingFirst.current = null; return { kind: "offer" }; }
+      if (error instanceof AccountPcError && error.code === "claim_not_applied") return { kind: "error", message: t("This PC could not be listed in your account. Try again.") };
+      if (pendingFirst.current === null) throw error;
+      if ((error instanceof ApiError || error instanceof AccountPcError || error instanceof AccountServiceError) && error.status === 403 && error.code === "own_sign_in_required") {
+        const previous = pendingFirst.current;
+        pendingFirst.current = null;
+        return { kind: "sign-in-again", previous };
+      }
+      return { kind: "unfinished", pending: pendingFirst.current };
+    }
+    if (!current()) return null;
+    pendingFirst.current = null;
+    window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT));
+    onListed?.();
+    return joinedAs(enrollment.account, false);
+  };
+  const add = (as: string | null = null, digits = false, retry?: PendingFirst): void => {
     const mine = ++attempt.current;
     const began = ++starts.current;
     const current = (): boolean => attempt.current === mine;
-    if (as !== null) setState({ kind: "adding" });
+    const bounded = as !== null || retry !== undefined;
+    if (bounded || ownBrowser) setState({ kind: "adding" });
     let opened = false;
     let writing = false;
     let closed = false;
@@ -515,16 +555,62 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       closed = true;
       closeWindow();
     };
-    const drop = as === null ? null : (): void => { if (current()) attempt.current++; closeOpened(); };
+    const drop = !bounded ? null : (): void => { if (current()) attempt.current++; closeOpened(); };
     dropped.current = drop;
     const over = (): void => { if (dropped.current === drop) dropped.current = null; };
     const reached = (step: "opened" | "writing"): void => { if (step === "opened") opened = true; else writing = true; };
     const listing = (async (): Promise<AddThisPcState | null> => {
+      if (retry !== undefined) return finish(resume(retry, current), current);
       // the window outlives a wait that stopped by up to ten minutes: a device may have added this PC through it, and then nothing is listed again
       const { account: joined, enrolling } = await thisPcMembership();
       if (!current()) return null;
-      if (joined !== null) { keepAddPcWaiting(null); return await joinedAs(joined, enrolling); }
-      const { name, serverId, account } = await listThisPc(accountService(), { relistMs: RELIST_MS, ...(as === null ? {} : { as: { account: as, running: current, reached } }) });
+      if (joined !== null) {
+        keepAddPcWaiting(null);
+        const pending = pendingFirst.current;
+        return pending?.session.account === joined ? finish(resume(pending, current), current) : joinedAs(joined, enrolling);
+      }
+      // The sign-in picker may fall back when health is unavailable. A listing must not treat that as permission.
+      const health = await fetchBridgeHealth();
+      if (!current()) return null;
+      const direct = ownBrowser ? ownWindowRedirect(health, window.location) : null;
+      let listAs = as;
+      if (direct && !digits) {
+        const service = accountService();
+        const session = await service.session();
+        if (!current()) return null;
+        if (!session || (as !== null && session.account !== as)) throw new AddPcWaitOver("sign-in");
+        listAs = session.account;
+        if (!opensAll()) {
+          let recovery: FirstEnrollment | undefined;
+          try {
+            const enrollment = await firstMember(service, session, current, { sent: claim => {
+              pendingFirst.current = { session, claim, redirect: direct };
+              recovery = resume(pendingFirst.current, current);
+            } });
+            return finish(enrollment, current);
+          } catch (error) {
+            if (!current()) return null;
+            if (error instanceof AddPcWaitOver) throw error;
+            if (recovery !== undefined) {
+              // Only a coded client error from the claim itself rules out a lost acceptance.
+              if (!(error instanceof ApiError && error.status >= 400 && error.status < 500 && typeof error.code === "string" && /^[a-z_]{1,40}$/.test(error.code))) return finish(recovery, current);
+              pendingFirst.current = null;
+              if (error.code === "own_sign_in_required") {
+                if (error.status === 403) return { kind: "digits", account: session.account };
+                throw error;
+              }
+            }
+            if (!(error instanceof ApiError)) throw error;
+            if (!routeMissing(error) && !(error.status === 409 && (error.code === "in_account" || error.code === "relay_off" || error.code === "opens_all"))) throw error;
+            const status = await firstMemberMembership();
+            if (!current()) return null;
+            if (status.account !== null) return joinedAs(status.account, status.enrolling === true);
+            if (error.code === "relay_off") return { kind: "relay-off", account: session.account, error: null };
+            // The PC refused definitively and still has no account. Use the existing listing and digit flow.
+          }
+        }
+      }
+      const { name, serverId, account } = await listThisPc(accountService(), { relistMs: RELIST_MS, ...(listAs === null ? {} : { as: { account: listAs, running: current, reached } }) });
       if (!current()) return null;
       // in one press when the account service admits it; the window this listing opened is then needed no more
       if (account !== null && await addInOnePress(accountService(), serverId, account, current, opensAll())) {
@@ -541,20 +627,21 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       const mark = account === null ? null : { name, until: now + WAITING_MS, serverId, account, listedAt: now };
       pressed.current = mark?.until ?? null;
       keepAddPcWaiting(mark);
-      return { kind: "waiting", name, until: now + WAITING_MS, mark, resumed: false, signedIn: as !== null };
+      return { kind: "waiting", name, until: now + WAITING_MS, mark, resumed: false, signedIn: as !== null && !digits };
     })();
     // an attempt given up, or whose screen went, while its window was still being opened: closed once it is open
     if (as !== null) listing.then(() => {}, () => {}).then(() => { if (!current()) closeOpened(); });
-    (as === null ? listing : within(ADDING_MS, listing)).then((next) => { over(); if (next !== null && current()) setState(next); }, (error: unknown) => {
+    (bounded ? within(ADDING_MS, listing) : listing).then((next) => { over(); if (next !== null && current()) setState(next); }, (error: unknown) => {
       over();
       if (!current()) return;
       attempt.current++;
+      if (retry !== undefined) { setState({ kind: "unfinished", pending: retry }); return; }
       console.warn("Ovis: this PC was not listed in the account", error instanceof Error ? error.name : error);
       // nobody waits on the window a listing no press began opened
       closeOpened();
       // another sign-in, or none, is stored than the one that just finished here: nothing was listed, and the button lists under that one
       if (as !== null && error instanceof AddPcWaitOver) { setState({ kind: "offer" }); return; }
-      const relayOff = error instanceof ApiError && error.code === "relay_off";
+      const relayOff = error instanceof ApiError && error.status === 409 && error.code === "relay_off";
       if (as !== null && relayOff) { setState({ kind: "relay-off", account: as, error: null }); return; }
       setState({ kind: "error", message: relayOff
         ? relayAbove ? t("Turn on remote access through the Ovis relay above first.") : t("Turn on remote access through the Ovis relay in Settings → Devices and PCs first.")
@@ -664,6 +751,22 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
           {closesGate && gateNote && <p className="settings-condition">{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
           <button type="button" className="btn btn-primary" onClick={() => startRelayAndAdd(state.account)}>{t("Turn on the relay and add this PC")}</button>
           {state.error !== null && <p className="settings-condition" role="alert">{state.error}</p>}
+        </>
+      ) : state.kind === "digits" ? (
+        <>
+          <p className="settings-description">{t("This sign-in can't add this PC directly. Confirm the number on another device.")}</p>
+          <button type="button" className="btn btn-primary" onClick={() => add(state.account, true)}>{t("Continue on another device")}</button>
+        </>
+      ) : state.kind === "sign-in-again" ? (
+        <FirstMemberSignIn session={state.previous.session} redirect={state.previous.redirect} onSignedIn={session => {
+          const pending = { ...state.previous, session };
+          pendingFirst.current = pending;
+          add(null, false, pending);
+        }} />
+      ) : state.kind === "unfinished" ? (
+        <>
+          <p className="settings-description" role="status">{t("This PC has its first member, but setup didn't finish. Try again.")}</p>
+          <button type="button" className="btn" onClick={() => add(null, false, state.pending)}>{t("Try again")}</button>
         </>
       ) : state.kind === "waiting" ? (
         <>

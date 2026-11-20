@@ -12,7 +12,7 @@
  */
 import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOrigin, legacyOrigin, type AdmissionPosition, type RowOrigin } from "./account/admission-order.ts";
 import { type ClearReason, PcAccountState } from "./account/pc-binding.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
@@ -20,7 +20,7 @@ import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import { rowDrop } from "./account/row-drop-evidence.ts";
 import { RevokeAllIntent } from "./account/revoke-all-intent.ts";
 import type { RecoveryCandidate, RecoveryReleases } from "./account/recovery.ts";
-import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device-journal.ts";
+import { DeviceJournal, type JournalEntry, type JournalInput } from "./account/device-journal.ts";
 import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
 import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
@@ -37,7 +37,7 @@ import { ownerAccess, type Access } from "./access.ts";
 import { CLEAR_LEGACY_DEVICE_COOKIE, COOKIE_MAX_AGE_SECONDS, DEVICE_COOKIE_CLEARED, deviceCookie, isSecureRequest, noContent, parseCookies } from "./auth.ts";
 import { badRequest, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { sameOrigin } from "./machine-security.ts";
-import { privateStateRefusal, writePrivateState } from "./private-state.ts";
+import { preparePrivateState, privateStateRefusal, publishPrivateState, syncDirectory, writePrivateState } from "./private-state.ts";
 
 /** How long a pairing code pairs new devices. */
 export const CODE_TTL_MS = 10 * 60_000;
@@ -2143,7 +2143,7 @@ export class DeviceStore {
   }
 
   /** One authorization write precedes every state change and enrollment announcement. */
-  private enroll(admitting: StoredDevice, now: number, origin: readonly string[], codeSpent = true, path: { startedBy?: string | null; digits?: boolean; confirm?: ConfirmProof; by?: string; pairingHere?: boolean; replaces?: StoredDevice } = {}, signerKey?: string): boolean {
+  private enroll(admitting: StoredDevice, now: number, origin: readonly string[], codeSpent = true, path: { startedBy?: string | null; digits?: boolean; confirm?: ConfirmProof; by?: string; pairingHere?: boolean; replaces?: StoredDevice; auditFirstMember?: () => void } = {}, signerKey?: string): boolean {
     // the final guard, in the commit turn: nothing waits between it and the write
     if (!this.admits(admitting.relay_public_key, path.confirm, path)) throw new AdmissionRefusedError();
     const initial = this.knowingRemovals(this.admitted(admitting, now, path));
@@ -2166,7 +2166,9 @@ export class DeviceStore {
       entry = this.journalAdmission(device, joined, notice, path.by);
       const next = path.replaces ? this.devices.map(row => row === path.replaces ? device : row) : [...this.devices, device];
       const gate = path.replaces && !this.opensAll() ? this.gateClosedAt : this.gateClosedAt ?? device.created_at;
-      this.save(next, gate);
+      if (path.auditFirstMember) {
+        if (!this.saveFirstMember(next, gate, path.auditFirstMember)) return [];
+      } else this.save(next, gate);
       this.devices = next;
       this.gateClosedAt = gate;
       return [device.id];
@@ -2363,10 +2365,39 @@ export class DeviceStore {
     return this.isAccountApprover(id) ? this.devices.find((d) => d.id === id)?.account ?? null : null;
   }
 
-  private enrollRelay(label: string, publicKey: string, now: number, codeSpent: boolean, { addedBy, approvedIn, digits, pairingHere }: { addedBy?: string | undefined; approvedIn?: string | undefined; digits?: boolean; pairingHere: boolean }, id = randomBytes(8).toString("hex")): { device: DeviceMatch } | null {
+  enrollFirstMember(member: { id: string; key: string; account: string; label: string }): DeviceMatch | null {
+    if (this.opensAll() || this.error || this.accountError || this.devices.length !== 0 || this.isTombstoned(member.key)) return null;
+    // The flag-on journal implies companion safety files. Keep the same audit format without manufacturing that state.
+    const journal = DeviceJournal.open(dirname(this.path), undefined, "first-member-journal.json");
+    if (journal.strict !== null) return null;
+    return this.enrollRelay(member.label, member.key, Date.now(), false, { pairingHere: true, account: member.account,
+      auditFirstMember: () => journal.append({ kind: "account", how: "first member added on this PC", key: member.key, row: member.id,
+        label: normalizeLabel(member.label, "Device"), account: member.account, by: null, no: null }),
+    }, member.id)?.device ?? null;
+  }
+
+  /** Stage the original registry first: an audit failure may leave no space to write a rollback. */
+  private saveFirstMember(next: StoredDevice[], gate: string | null, audit: () => void): boolean {
+    const rollback = existsSync(this.path) ? preparePrivateState(this.path, JSON.parse(readFileSync(this.path, "utf8"))) : null;
+    try {
+      // Neither the gate nor its listeners see a new row until the audit also commits.
+      writePrivateState(this.path, { gate_closed_at: gate, devices: next });
+      try { audit(); }
+      catch {
+        if (rollback !== null) publishPrivateState(rollback, this.path);
+        else { rmSync(this.path); syncDirectory(dirname(this.path), process.platform); }
+        return false;
+      }
+      if (!this.rawGated) this.tellGateClosed();
+      return true;
+    } finally { if (rollback !== null) rmSync(rollback, { force: true }); }
+  }
+
+  private enrollRelay(label: string, publicKey: string, now: number, codeSpent: boolean, { addedBy, approvedIn, digits, pairingHere, account, auditFirstMember }: { addedBy?: string | undefined; approvedIn?: string | undefined; digits?: boolean; pairingHere: boolean; account?: string; auditFirstMember?: () => void }, id = randomBytes(8).toString("hex")): { device: DeviceMatch } | null {
     const device: StoredDevice = {
       id, label: normalizeLabel(label, "Device"), role: "drive",
       token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: publicKey,
+      ...(account === undefined ? {} : { account }),
       // PAIR authenticates this relay session too, so the device is seen as it pairs.
       created_at: new Date(now).toISOString(), last_seen_at: new Date(now).toISOString(),
       ...(addedBy === undefined ? {} : { added_by: addedBy }),
@@ -2375,7 +2406,7 @@ export class DeviceStore {
     };
     const enrolled = !codeSpent && addedBy !== undefined && approvedIn !== undefined
       ? this.enrollApproved(device, this.relayKeyOf(addedBy), now)
-      : this.enroll(device, now, [], codeSpent, { ...(digits === undefined ? {} : { digits }), pairingHere });
+      : this.enroll(device, now, [], codeSpent, { ...(digits === undefined ? {} : { digits }), pairingHere, ...(auditFirstMember && { auditFirstMember }) });
     if (!enrolled) return null;
     return { device: { id: device.id, label: device.label, role: device.role } };
   }

@@ -617,8 +617,14 @@ export class RelayService {
    * opens the window in which this PC takes comparisons (pairing-approvals.ts PAIRING_WINDOW_MS).
    */
   pairingLink(options: { localOnly?: boolean } = {}): { url: string } {
-    if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
+    const link = this.directoryLink();
     this.approvals.openWindow(Date.now(), options);
+    return link;
+  }
+
+  /** The public directory entry for this PC. Reading it opens no pairing window. */
+  directoryLink(): { url: string } {
+    if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     return { url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key, relay: this.advertised, ...offerName() }, this.app) };
   }
 

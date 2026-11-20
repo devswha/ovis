@@ -1412,7 +1412,25 @@ export async function fetchPushSubscriptionStatus(subscription: PushSubscription
   }
 }
 
-export function fetchBridgeHealth(): Promise<BridgeHealth> { return getJson("/api/health?scope=bridge"); }
+/**
+ * The bridge's health, or an ApiError when its answer is not that shape: an error-shaped 200, or an `own_window`
+ * without a usable port, is unreadable and never a "not the PC's own window" answer (docs/account.md).
+ */
+export async function fetchBridgeHealth(): Promise<BridgeHealth> {
+  const url = "/api/health?scope=bridge";
+  const body = await getJson<unknown>(url);
+  if (!isBridgeHealth(body)) throw new ApiError(url, 502, UNUSABLE_ANSWER["remote_response_invalid"]!(), "remote_response_invalid");
+  return body;
+}
+
+function isBridgeHealth(body: unknown): body is BridgeHealth {
+  if (typeof body !== "object" || body === null) return false;
+  const health = body as { error?: unknown; own_window?: unknown };
+  if (Array.isArray(body) || health.error !== undefined) return false;
+  if (health.own_window === undefined) return true;
+  const port = typeof health.own_window === "object" && health.own_window !== null ? (health.own_window as { port?: unknown }).port : undefined;
+  return Number.isInteger(port) && (port as number) > 0 && (port as number) < 65536;
+}
 export async function fetchMachines(signal?: AbortSignal, full = false): Promise<Machine[]> {
   const response = await apiFetch(full ? "/api/machines" : "/api/machines?compact_agents=1", { signal });
   if (!response.ok) throw await errorFrom("/api/machines", response);

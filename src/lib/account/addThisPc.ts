@@ -135,6 +135,11 @@ export function keepAddPcWaiting(waiting: AddPcWaiting | null): void {
 
 export interface ListedPc { readonly name: string; readonly serverId: string; readonly account: string | null }
 
+export function directoryEntry(offer: RelayOffer) {
+  return { label: (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48), relay: offer.relay,
+    public_key: Array.from(importPublicKey(offer.server_public_key), byte => byte.toString(16).padStart(2, "0")).join("") };
+}
+
 export class AddPcWaitOver extends Error {
   constructor(readonly why: "pc" | "sign-in" | "ended") {
     super(`The wait to add this PC is over: ${why}`);
@@ -198,10 +203,9 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
     running();
     await directory.deletePc(offer.server_id);
   }
-  const name = (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48);
-  const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const entry = directoryEntry(offer);
   running();
-  await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });
+  await directory.putPc(offer.server_id, entry);
   // the account this PC now asks its relay pass under (docs/relay.md, "Relay pass"); an older PC has no such route
   // (not for a wait or an attempt that ended while the entry was written: nobody waits for this PC under it)
   if (session && runs()) {
@@ -212,7 +216,7 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
       (error: unknown) => console.warn("Ovis: this PC did not take the account for its relay pass", error instanceof Error ? error.name : error),
     );
   }
-  return { name, serverId: offer.server_id, account: session?.account ?? null };
+  return { name: entry.label, serverId: offer.server_id, account: session?.account ?? null };
 }
 
 /**
@@ -260,6 +264,5 @@ export async function listOfferedPc(service: AccountService, offer: RelayOffer, 
   if (session?.account !== account) throw new AddPcWaitOver("sign-in");
   const directory = service.forSignIn(session);
   if ((await directory.listPcs()).some((pc) => pc.server_id === offer.server_id)) return;
-  const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  await directory.putPc(offer.server_id, { label: (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: offer.relay });
+  await directory.putPc(offer.server_id, directoryEntry(offer));
 }

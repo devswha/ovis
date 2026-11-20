@@ -5,6 +5,7 @@ import { jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import { sameOrigin } from "../machine-security.ts";
 import { parseIntroducedPcs } from "./introductions.ts";
 import { ACCOUNT_HELD_MAX } from "./holds.ts";
+import { FIRST_CHALLENGE, FIRST_MEMBER, claimFirstMember, firstChallenge, firstMemberSlot, localEnroller } from "./first-member.ts";
 import { applyAccountRecords, applyEnrollment, applyLink, type LinkRefusal } from "./records.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
@@ -18,7 +19,7 @@ const LINK_STATUS: Record<LinkRefusal, number> = {
  * /api/account/* (docs/account.md, "PC API"): drive access only, directly or through the relay,
  * and the app's own mutation guard for changes.
  */
-export async function handleAccountRequest(request: Request, pathname: string, context: ServerContext, access: Access): Promise<Response> {
+export async function handleAccountRequest(request: Request, pathname: string, context: ServerContext, access: Access, ownWindow: boolean): Promise<Response> {
   const reply = (body: unknown, status = 200) => jsonResponse(body, status, { "cache-control": "no-store" });
   const fail = (code: string, message: string, status: number) => reply({ error: { code, message } }, status);
   const devices = context.services.devices;
@@ -54,10 +55,19 @@ export async function handleAccountRequest(request: Request, pathname: string, c
   }
   if (request.method !== "POST") return fail("method_not_allowed", "use POST", 405);
   if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return fail("invalid_origin", "Manage the account from this app", 403);
+  if (pathname === FIRST_CHALLENGE || pathname === FIRST_MEMBER) {
+    setRequestRoute(pathname);
+    if (!ownWindow || peer.kind !== "socket") return fail("own_window_required", "Use this PC's own window", 403);
+    if (firstMemberSlot(context.services) === "occupied") return fail("in_account", "This PC already has a member", 409);
+    if (devices.error || devices.accountError || context.services.accountHolds.error) return fail("account_unavailable", "This PC could not add its first member.", 409);
+    if (devices.opensAll()) return fail("opens_all", "Use the existing pairing flow", 409);
+  }
   const body = await readJsonObject(request);
   if (body instanceof Response) return body;
   const serverId = peer.kind === "relay" ? peer.serverId : context.services.relay.currentIdentity()?.server_id ?? null;
   switch (pathname) {
+    case FIRST_CHALLENGE: return reply({ challenge: firstChallenge(devices, body.label) });
+    case FIRST_MEMBER: return claimFirstMember(context.services, body);
     case "/api/account/relay-account": {
       setRequestRoute(pathname);
       // the account this PC asks its relay pass under (docs/relay.md, "Relay pass"): named over a direct
@@ -174,7 +184,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if ((last !== undefined && typeof last !== "boolean") || (heldFull !== undefined && typeof heldFull !== "boolean")) return fail("record_invalid", "last and held_full are true or false", 400);
       if (held !== undefined && (!Array.isArray(held) || held.length > ACCOUNT_HELD_MAX || !held.every(isAccountKeyEncoding))) return fail("record_invalid", `Hold at most ${ACCOUNT_HELD_MAX} account keys`, 400);
       // what a member hands a PC it brought into the account: the caller is a member of that account here already
-      if (peer.kind !== "relay" || !devices.isAccountApproverSession(peer.device.id, peer.key) || typeof body.account !== "string" || devices.account() !== body.account) {
+      const member = peer.kind === "relay" ? peer : ownWindow ? localEnroller(context.services, request.headers.get("x-ovis-first-enroll")) : null;
+      if (!member || !devices.isAccountApproverSession(member.device.id, member.key) || typeof body.account !== "string" || devices.account() !== body.account) {
         return fail("account_required", "Link this device to the account on this PC first", 403);
       }
       const holds = context.services.accountHolds;
@@ -188,13 +199,13 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // only the member whose link brought this PC in hands over its adds during the wait; another member's wait with the mailbox's
       // the member whose link brought this PC in, or any member once that one is no longer a drive member here (revoked, say)
       const named = holds.enrollingMember();
-      const linker = named === peer.device.id || (named !== null && !devices.isAccountApprover(named));
+      const linker = named === member.device.id || (named !== null && !devices.isAccountApprover(named));
       const results = await applyEnrollment(devices, records, serverId, { gates: { enrolling: () => !linker && holds.enrolling(), held: gates.held, ...(gates.removing ? { removing: gates.removing } : {}) }, wait: (record) => mailbox.wait(record), settle: () => mailbox.settle() });
       // only the member that linked this PC ends its wait, with the last part of its enrollment, once every remove was decided
       const undecided = results.some((result) => result.outcome === "refused" && result.code === "account_unavailable");
       if (last !== false && !undecided && linker) {
         // the hand-over is journalled before the barrier ends: a journal that cannot be written keeps it (T14)
-        devices.journalEvent({ kind: "account", how: "enrolled", key: peer.key, no: null, row: peer.device.id, label: peer.device.label, by: null, account: body.account });
+        devices.journalEvent({ kind: "account", how: "enrolled", key: member.key, no: null, row: member.device.id, label: member.device.label, by: null, account: body.account });
         holds.endEnrolling();
         await mailbox.settle();
       }

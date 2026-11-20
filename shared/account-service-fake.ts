@@ -62,6 +62,9 @@ async function s256(verifier: string): Promise<string> {
 const PKCE = /^[A-Za-z0-9._~-]{43,128}$/;
 
 interface Session { account: string; provider: SignInProvider | "test"; family: string; expires: number }
+type GrantSource = { source: "device" | "redirect" | "native" }
+  | { source: "linked"; ownSignIn: boolean }
+  | { source: "refresh"; family: string };
 
 /** `public_key`: the PC's relay key (X25519, 64 hex), from which `server_id` derives; `relay`: the wss origin it is reached through. */
 export interface FakePc { server_id: string; label: string; public_key: string; relay: string; added_at: string; last_seen_at: string | null; new_until?: string | null; admitted_at?: string | null; exempt?: boolean }
@@ -104,8 +107,8 @@ export class FakeAccountService {
   private readonly deviceSignIns = new Map<string, { provider: SignInProvider; userCode: string; account: string | null; denied: boolean; interval: number; nextPoll: number; expires: number; challenge: string | null; page?: boolean; requester?: { label: string | null; os: AccountOs | null } }>();
   private readonly identityList = new Map<string, Map<SignInProvider, { added_at: string }>>();
   private readonly linkTokens = new Map<string, { account: string; family: string; provider: SignInProvider; expires: number }>();
-  /** by refresh family: when that sign-in was made (a refresh keeps it), for what needs a recent one */
-  private readonly signedInAt = new Map<string, number>();
+  /** By refresh family: the original sign-in time and the current access bearer for session proof. */
+  private readonly sessionProofs = new Map<string, { readonly at: number; readonly access: string }>();
   /** by refresh family: the sign-in's two_step_set (null: unknown, as a Google sign-in without amr) */
   private readonly twoStep = new Map<string, boolean | null>();
   /** what a sign-in made through the sign-in routes says of two-step sign-in; tests set it */
@@ -119,6 +122,8 @@ export class FakeAccountService {
   private readonly keyRegisteredAt = new Map<string, number>();
   /** by key: the refresh family that registered it with registerSessionKey */
   private readonly keyFamily = new Map<string, string>();
+  /** Redirect and native sign-ins, and links made by an own sign-in. Refresh keeps the family's mark. */
+  private readonly ownSignInFamilies = new Set<string>();
   private offered: { providers: SignInProvider[]; device: SignInProvider[]; device_page?: SignInProvider[] } = { providers: ["github", "google", "apple"], device: ["github", "google"] };
   private readonly pushes = new Map<string, { account: string; endpoint: string }>();
   private readonly counters = new Map<string, { start: number; count: number }>();
@@ -150,7 +155,7 @@ export class FakeAccountService {
     const token = randomHex(32);
     const family = randomHex(16);
     this.tokens.set(token, { account, provider: "test", family, expires: Number.POSITIVE_INFINITY });
-    this.signedInAt.set(family, this.now());
+    this.sessionProofs.set(family, { at: this.now(), access: token });
     this.twoStep.set(family, twoStep);
     return token;
   }
@@ -220,14 +225,18 @@ export class FakeAccountService {
 
   revokeToken(token: string): void { this.tokens.delete(token); }
 
-  private grant(account: string, provider: SignInProvider, family?: string, device = false) {
-    if (family === undefined) {
-      family = randomHex(16);
-      this.signedInAt.set(family, this.now());
-      this.twoStep.set(family, this.signInTwoStep);
-      if (device) this.deviceFamilies.add(family);
-    }
+  private grant(account: string, provider: SignInProvider, grant: GrantSource) {
+    const family = grant.source === "refresh" ? grant.family : randomHex(16);
     const access = randomHex(32);
+    if (grant.source === "refresh") {
+      const proof = this.sessionProofs.get(family);
+      if (proof !== undefined) this.sessionProofs.set(family, { at: proof.at, access });
+    } else {
+      this.sessionProofs.set(family, { at: this.now(), access });
+      this.twoStep.set(family, this.signInTwoStep);
+      if (grant.source === "device") this.deviceFamilies.add(family);
+      if (grant.source === "redirect" || grant.source === "native" || (grant.source === "linked" && grant.ownSignIn)) this.ownSignInFamilies.add(family);
+    }
     const refresh = randomHex(32);
     this.tokens.set(access, { account, provider, family, expires: this.now() + ACCESS_TOKEN_TTL_S * 1000 });
     this.refreshTokens.set(refresh, { account, provider, family, used: false });
@@ -274,7 +283,7 @@ export class FakeAccountService {
         if (typeof body.code_verifier !== "string" || !PKCE.test(body.code_verifier) || await s256(body.code_verifier) !== code.challenge) return invalid("The code_verifier does not match");
         if (code.link === null) {
           this.addIdentity(code.account, code.provider);
-          return this.grant(code.account, code.provider);
+          return this.grant(code.account, code.provider, { source: "redirect" });
         }
         // a link commits only here, redeemed by the very sign-in that asked for it
         const bearer = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
@@ -283,7 +292,7 @@ export class FakeAccountService {
         if (code.account !== code.link.account && this.identityList.get(code.account)?.has(code.provider)) return problem(409, "identity_in_use", "That identity belongs to another account");
         this.signIns.set(code.provider, code.link.account);
         this.addIdentity(code.link.account, code.provider);
-        return this.grant(code.link.account, code.provider);
+        return this.grant(code.link.account, code.provider, { source: "linked", ownSignIn: this.ownSignInFamilies.has(holder.family) });
       }
       case "refresh_token": {
         const refresh = typeof body.refresh_token === "string" ? this.refreshTokens.get(body.refresh_token) : undefined;
@@ -291,14 +300,14 @@ export class FakeAccountService {
         // a refresh token is good once: seeing it again means it leaked, so the whole family goes
         if (refresh.used) { this.revokeFamily(refresh.family); return invalid("Sign in again"); }
         refresh.used = true;
-        return this.grant(refresh.account, refresh.provider, refresh.family);
+        return this.grant(refresh.account, refresh.provider, { source: "refresh", family: refresh.family });
       }
       case "apple_id_token": {
         const apple = typeof body.id_token === "string" ? this.appleTokens.get(body.id_token) : undefined;
         if (typeof body.id_token === "string") this.appleTokens.delete(body.id_token);
         // the app sends its plain nonce; Apple was given its SHA-256 in lowercase hex
         if (!apple || typeof body.nonce !== "string" || body.nonce.length < 16 || body.nonce.length > 128 || await sha256Hex(body.nonce) !== apple.nonce) return invalid("The identity token is not valid for that nonce");
-        return this.grant(apple.account, "apple");
+        return this.grant(apple.account, "apple", { source: "native" });
       }
       case "urn:ietf:params:oauth:grant-type:device_code": {
         const entry = typeof body.device_code === "string" ? this.deviceSignIns.get(body.device_code) : undefined;
@@ -317,7 +326,7 @@ export class FakeAccountService {
         if (entry.account === null) return problem(400, "authorization_pending", "Waiting for the sign-in at the provider");
         this.deviceSignIns.delete(body.device_code as string);
         this.addIdentity(entry.account, entry.provider);
-        return this.grant(entry.account, entry.provider, undefined, true);
+        return this.grant(entry.account, entry.provider, { source: "device" });
       }
       default: return problem(400, "unsupported_grant_type", "Use authorization_code, refresh_token or apple_id_token");
     }
@@ -455,7 +464,9 @@ export class FakeAccountService {
         return json({ device_code: deviceCode, user_code: userCode, verification_uri: DEVICE_PAGES[deviceProvider], expires_in: DEVICE_CODE_TTL_S, interval: DEVICE_POLL_S, ...(bound ? { code_challenge_method: "S256" } : {}) });
       }
       if (url.pathname === "/v1/push/key" && request.method === "GET") return json({ public_key: "BFakeVapidPublicKeyForTests" });
-      return await this.client(request, url.pathname);
+      const response = await this.client(request, url.pathname);
+      if (url.pathname === "/v1/session" && request.method === "GET") response.headers.set("cache-control", "no-store");
+      return response;
     } catch (error) {
       if (error instanceof AccountRecordError) return problem(400, "record_invalid", error.message);
       if (error instanceof SyntaxError) return problem(400, "invalid_json", "The body is not JSON");
@@ -467,8 +478,15 @@ export class FakeAccountService {
     const bearer = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
     const session = bearer === undefined ? undefined : this.tokens.get(bearer);
     if (session === undefined || this.now() >= session.expires || this.revokedFamilies.has(session.family)) return problem(401, "unauthorized", "Sign in again");
+    const sessionRead = path === "/v1/session" && request.method === "GET";
+    const proof = this.sessionProofs.get(session.family);
+    // Other fake routes keep their existing token behavior. The proof accepts only the current access bearer.
+    if (sessionRead && (proof === undefined || proof.access !== bearer)) return problem(401, "unauthorized", "Sign in again");
     const account = session.account;
     if (!this.withinRateLimit(`requests:${account}`, ACCOUNT_REQUESTS_PER_WINDOW)) return problem(429, "rate_limited", "Too many requests; try again later");
+    if (sessionRead && proof !== undefined) {
+      return json({ account, own_sign_in: this.ownSignInFamilies.has(session.family), signed_in_at: new Date(proof.at).toISOString() });
+    }
     if (path === "/v1/signout" && request.method === "POST") {
       this.revokeFamily(session.family);
       return new Response(null, { status: 204 });
@@ -491,7 +509,7 @@ export class FakeAccountService {
       const limits = this.accountLimits.get(account);
       return limits ? json(limits) : problem(404, "not_found", "Unknown request");
     }
-    const recent = this.now() - (this.signedInAt.get(session.family) ?? Number.NEGATIVE_INFINITY) <= REAUTH_MS;
+    const recent = this.now() - (proof?.at ?? Number.NEGATIVE_INFINITY) <= REAUTH_MS;
     if ((path === "/v1/identities/link" && request.method === "POST") || (path.startsWith("/v1/identities/") && request.method === "DELETE")) {
       if (!recent) return problem(403, "reauth_required", "Sign in again first");
     }
@@ -540,7 +558,7 @@ export class FakeAccountService {
     if (admitted !== undefined && request.method === "POST" && this.opensAll) {
       // C1: an app's own sign-in, made within REAUTH_MS, with two-step sign-in set (unknown is not enough)
       if (this.deviceFamilies.has(session.family)) return problem(403, "own_sign_in_required", "Sign in in the app itself");
-      if (this.now() - (this.signedInAt.get(session.family) ?? Number.NEGATIVE_INFINITY) > REAUTH_MS) return problem(403, "session_not_fresh", "Sign in again on this device first");
+      if (this.now() - (proof?.at ?? Number.NEGATIVE_INFINITY) > REAUTH_MS) return problem(403, "session_not_fresh", "Sign in again on this device first");
       // the first-PC exemption: an account never used (no other PC, no admit or removal, no device key ever) waives two-step
       const exempt = this.twoStep.get(session.family) !== true;
       const entry = directory.get(admitted);

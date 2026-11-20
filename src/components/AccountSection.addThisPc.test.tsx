@@ -288,9 +288,9 @@ describe("AddThisPc", () => {
     expect(links()).toBe(5);
     expect(asked.filter((request) => request.path === "/api/relay/link").every((request) => request.localOnly)).toBe(true);
     expect(directory).toEqual(["putPc"]);
-    // (and the screen read once, before its offer, what this browser may do on the PC, then before every reopen which PC answers)
+    // Health is read before the offer, at the listing to establish window ownership, and before each reopen.
     expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/health", "/api/relay/link", "/api/account/relay-account"]));
-    expect(asked.filter((request) => request.path === "/api/health").length).toBe(5);
+    expect(asked.filter((request) => request.path === "/api/health").length).toBe(6);
     expect(asked.filter((request) => request.path === "/api/account/relay-account").length).toBe(1);
   });
 

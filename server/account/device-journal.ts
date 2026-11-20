@@ -88,8 +88,8 @@ export class DeviceJournal {
   /** `companions`: called once before the journal's first write, to make the files a journal implies (P13, P24). */
   private constructor(private readonly path: string, private readonly companions: () => void) {}
 
-  static open(stateDir: string, companions: () => void = () => {}): DeviceJournal {
-    const journal = new DeviceJournal(join(stateDir, JOURNAL_FILE), companions);
+  static open(stateDir: string, companions: () => void = () => {}, file: typeof JOURNAL_FILE | "first-member-journal.json" = JOURNAL_FILE): DeviceJournal {
+    const journal = new DeviceJournal(join(stateDir, file), companions);
     let text: string;
     try { text = readFileSync(journal.path, "utf8"); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") journal.problem = `Cannot read ${journal.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;

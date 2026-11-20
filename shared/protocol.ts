@@ -191,6 +191,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         `admission: 1`, and a link while it lives needs the account's admission (docs/account.md, "The account's word")
  *  POST   /api/relay/offer/keep          -> AccountPairingState; JSON { id }: such a code read by its pairing.id;
  *         400 invalid_body without one
+ *  GET    /api/relay/link                -> { url }; this PC's own window reads its relay identity for a
+ *         first-member claim. Opens no pairing window; 409 relay_off while off or blocked.
  *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
  *         digits (docs/relay.md); 409 relay_off while off
  *  POST   /api/relay/link/close          -> { ok: true }; ends that link's pairing window and declines the
@@ -205,6 +207,11 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         Relay mutations require drive role, same origin and X-Herdr-Update: 1, and a direct connection
  *         (403 local_required over the relay); a Portal visitor gets 403 owner_only (see Access).
  *         Serve-only installs refuse relay start.
+ *  POST   /api/account/first-member/challenge -> { challenge }; JSON { label }, from this PC's own window.
+ *         One use within 60 seconds; a new challenge replaces the old one.
+ *  POST   /api/account/first-member      -> { device }; JSON { account, record, token, recover? }. A fresh
+ *         own sign-in and signed link add the first member or reissue its grant while still enrolling.
+ *         The x-ovis-first-enroll response header authorizes local enrollment only (docs/account.md, "PC API").
  *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
  *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }

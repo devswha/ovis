@@ -225,6 +225,53 @@ const token = (service: FakeAccountService, body: unknown) => service.fetch(post
 const pcs = (service: FakeAccountService, access: string) => service.fetch(new Request(`${BASE}/v1/pcs`, { headers: { authorization: `Bearer ${access}` } }));
 
 describe("signing in to the fake account service", () => {
+  test("session proof keeps the original redirect time across refresh and accepts only a current access bearer", async () => {
+    let now = 1000;
+    const service = new FakeAccountService(() => now);
+    const flow = await signIn(service, "http://127.0.0.1:7012/callback");
+    const proof = (access: string) => service.fetch(`${BASE}/v1/session`, { headers: { authorization: `Bearer ${access}` } });
+    const own = await (await token(service, { grant_type: "authorization_code", code: flow.code, code_verifier: flow.verifier, redirect_uri: flow.redirect })).json();
+    now += 600_001;
+    const refreshed = await (await token(service, { grant_type: "refresh_token", refresh_token: own.refresh_token })).json();
+    const answer = await proof(refreshed.access_token);
+    expect(answer.status).toBe(200);
+    expect(answer.headers.get("cache-control")).toBe("no-store");
+    expect(await answer.json()).toEqual({ account: own.account, own_sign_in: true, signed_in_at: new Date(1000).toISOString() });
+    for (const invalid of ["not-a-token", refreshed.refresh_token, own.access_token]) {
+      const denied = await proof(invalid);
+      expect(denied.status).toBe(401);
+      expect(denied.headers.get("cache-control")).toBe("no-store");
+    }
+    now += ACCESS_TOKEN_TTL_S * 1000;
+    expect((await proof(refreshed.access_token)).status).toBe(401);
+  });
+
+  test("session proof counts native and linked own sign-ins, but not device codes", async () => {
+    let now = 1000;
+    const service = new FakeAccountService(() => now);
+    const proof = async (access: string) => (await service.fetch(`${BASE}/v1/session`, { headers: { authorization: `Bearer ${access}` } })).json();
+    const nonce = "nonce-first-member";
+    const hashed = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(nonce))).toString("hex");
+    const native = await (await token(service, { grant_type: "apple_id_token", id_token: service.appleIdToken("acct_apple", hashed), nonce })).json();
+    expect(await proof(native.access_token)).toEqual({ account: "acct_apple", own_sign_in: true, signed_in_at: new Date(now).toISOString() });
+
+    const headers = { authorization: `Bearer ${native.access_token}`, "content-type": "application/json" };
+    const { link_token } = await (await service.fetch(`${BASE}/v1/identities/link`, { method: "POST", headers, body: JSON.stringify({ provider: "github" }) })).json();
+    const { verifier, challenge } = await pkce();
+    const query = new URLSearchParams({ redirect_uri: WEB_REDIRECT, state: "link", code_challenge: challenge, code_challenge_method: "S256", link_token });
+    const link = await service.fetch(`${BASE}/v1/signin/github?${query}`);
+    const code = new URL(link.headers.get("location") ?? "about:blank").hash.slice(1);
+    now += 1000;
+    const linked = await (await service.fetch(`${BASE}/v1/token`, { method: "POST", headers, body: JSON.stringify({
+      grant_type: "authorization_code", code: new URLSearchParams(code).get("code"), code_verifier: verifier, redirect_uri: WEB_REDIRECT,
+    }) })).json();
+    expect(await proof(linked.access_token)).toEqual({ account: "acct_apple", own_sign_in: true, signed_in_at: new Date(now).toISOString() });
+
+    const device = await (await service.fetch(post("/v1/signin/github/device", {}))).json();
+    service.approveDevice(device.user_code, "acct_device");
+    const granted = await (await token(service, { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: device.device_code })).json();
+    expect(await proof(granted.access_token)).toEqual({ account: "acct_device", own_sign_in: false, signed_in_at: new Date(now).toISOString() });
+  });
   test("a sign-in returns a code with its state, and only the matching code_verifier turns it into tokens, once", async () => {
     const service = new FakeAccountService();
     service.signInAs("github", "acct_7");

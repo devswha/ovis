@@ -55,6 +55,7 @@ import { handlePendingRequest } from "./account/pending-routes.ts";
 import type { lockRoutes } from "./account/lock-routes.ts";
 import { lockBoundary, untilLockFrom, type LockSignal } from "./lock-boundary.ts";
 import { handleAccountRequest } from "./account/routes.ts";
+import { FIRST_CHALLENGE, FIRST_MEMBER } from "./account/first-member.ts";
 import type { AccountMailbox } from "./account/mailbox.ts";
 import type { AccountHolds } from "./account/holds.ts";
 import type { SafetyLog } from "./account/safety-log.ts";
@@ -285,6 +286,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (ctx.services.lockRoutes !== undefined && !ownWindow && request.method === "POST" && (pathname === "/api/account/lock" || pathname === "/api/account/unlock")) {
     setRequestRoute(pathname);
     return jsonResponse({ error: { code: "local_required", message: "Turn the lock on or off on this PC's own screen." } }, 403, { "cache-control": "no-store" });
+  }
+  const firstWindow = ownWindow && options.profile !== "machine" && ctx.peer.kind === "socket" && !machineForwardingHeaders(request.headers);
+  if ((pathname === FIRST_CHALLENGE || pathname === FIRST_MEMBER) && !firstWindow) {
+    setRequestRoute(pathname);
+    return jsonResponse({ error: { code: "own_window_required", message: "Add the first member in this PC's own window." } }, 403, { "cache-control": "no-store" });
   }
   const askingTheScreen = ownWindow
     && ((pathname === "/api/account/lock" && request.method === "GET") || (pathname === "/api/account/unlock" && request.method === "POST"));
@@ -619,7 +625,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (ctx.services.lockRoutes !== undefined && (pathname === "/api/account/lock" || pathname === "/api/account/unlock")) {
     return ctx.services.lockRoutes(request, pathname, access, ownWindow);
   }
-  if (pathname.startsWith("/api/account/")) return handleAccountRequest(request, pathname, ctx, access);
+  if (pathname.startsWith("/api/account/")) return handleAccountRequest(request, pathname, ctx, access, firstWindow);
   if (pathname === "/api/relay" || pathname.startsWith("/api/relay/")) {
     // the paired device that asks, when one does: a pairing code it starts or is handed goes with it (DeviceStore.revoke)
     return handleRelayRequest(request, pathname, ctx, access.level === "full" ? access.device?.id ?? null : null, access.level === "full" && access.via === "local", ownWindow);

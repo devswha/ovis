@@ -572,6 +572,28 @@ it("names the PC in the pairing link without a code as Ovis lists it", async () 
   expect(offer?.name).toBe(hostname().slice(0, 64));
 });
 
+it("lets its own window read the directory identity without opening a pairing window", async () => {
+  const f = await fixture();
+  await f.start();
+  const answer = await fetch(f.base + "/api/relay/link");
+  expect(answer.status).toBe(200);
+  const offer = decodeOffer((await answer.json()).url);
+  expect(offer?.server_id).toBe(f.service.currentIdentity()?.server_id);
+  expect(offer?.code).toBeUndefined();
+  expect(f.service.approvals.windowOpen()).toBe(false);
+});
+
+it("refuses the directory link to a forwarded window and to its own window with the relay off", async () => {
+  const token = newRecordId();
+  const f = await fixture(false, {}, { token });
+  for (const forwarded of [true, false]) {
+    const answer = await f.request("/link", "GET", false, { authorization: `Bearer ${token}`, ...(forwarded && { "x-forwarded-for": "127.0.0.1" }) });
+    expect({ status: answer.status, code: (await answer.json()).error?.code }).toEqual(forwarded
+      ? { status: 403, code: "own_window_required" } : { status: 409, code: "relay_off" });
+    expect(f.service.approvals.windowOpen()).toBe(false);
+  }
+});
+
 it("closes the pairing window on request, and keeps it closed for the next start", async () => {
   const f = await fixture();
   await f.start();

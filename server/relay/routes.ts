@@ -19,6 +19,12 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     return reply(service.status());
   }
   const peer = context.peer;
+  if (pathname === RELAY_CONTROLS.link && request.method === "GET") {
+    setRequestRoute("/api/relay/link");
+    if (!own || peer.kind !== "socket") return fail("own_window_required", "Use this PC's own window.", 403);
+    if (service.status().phase === "off" || service.status().blocked) return fail("relay_off", "Start the relay before adding this PC.", 409);
+    return reply(service.directoryLink());
+  }
   // one admission rule (docs/account.md): this PC itself, or a drive account member through the relay
   const remoteApprover = peer.kind === "relay" && context.services.devices.isAccountApproverSession(peer.device.id, peer.key) ? peer.device : null;
   if (pathname === "/api/relay/pairings" && request.method === "GET") {
