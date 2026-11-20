@@ -2,6 +2,7 @@ import { expect, it, spyOn } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { parseNoticeAnswer, type DeviceNotice } from "../shared/account-devices-api.ts";
 import { parseSafetyRecord, verifySafetyRecord, type BlockRecord } from "../shared/account-records.ts";
+import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { App } from "./App.tsx";
 import { indexedAccountStore, memoryAccountStore, newKey } from "./lib/account/store.ts";
 import { DeviceNoticeWire, deviceNotice, NOTICE_SNAPSHOT } from "./lib/deviceNoticeWire.fixture.ts";
@@ -12,12 +13,20 @@ import { storeSelection } from "./lib/useSplitView.ts";
 
 async function withDeviceNotices(
   options: { readonly no?: number | null; readonly laptopId?: string; readonly admission?: Pick<DeviceNotice, "method" | "two_step"> },
-  check: (fixture: { readonly tree: ReactTestRenderer; readonly laptop: DeviceNoticeWire; readonly desk: DeviceNoticeWire; readonly delivered: readonly BlockRecord[] }) => void | Promise<void>,
+  check: (fixture: { readonly tree: ReactTestRenderer; readonly laptop: DeviceNoticeWire; readonly desk: DeviceNoticeWire;
+    readonly delivered: readonly BlockRecord[]; readonly servicePosts: readonly { readonly body: unknown; readonly status: number }[] }) => void | Promise<void>,
 ) {
   const keys = memoryAccountStore();
+  const service = new FakeAccountService();
+  service.opensAll = true;
+  const accountId = "acct";
   const target = await newKey();
-  await keys.set("session", { account: "acct", sign_in_id: "test", provider: "github", service: "https://account.example", access_token: "test", refresh_token: "test", expires_at: Number.MAX_SAFE_INTEGER });
-  if (options.no !== undefined) await keys.set("signin_key", { account: "acct", sign_in_id: "test", key: await newKey(), no: options.no });
+  const key = options.no === undefined ? undefined : await newKey();
+  await keys.set("session", { account: accountId, sign_in_id: "test", provider: "github", service: "https://account.example", access_token: service.issueToken(accountId), refresh_token: "test", expires_at: Number.MAX_SAFE_INTEGER });
+  if (key !== undefined && options.no !== undefined) await keys.set("signin_key", { account: accountId, sign_in_id: "test", key, no: options.no });
+  for (const no of [1, 2, 3, 4]) {
+    service.registerDevice(accountId, no === 4 ? target.public_spki : no === options.no && key !== undefined ? key.public_spki : String(no).repeat(43), `Device ${no}`);
+  }
   const originals = new Map<string, PropertyDescriptor | undefined>();
   const install = (key: string, value: unknown): void => {
     originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -34,6 +43,7 @@ async function withDeviceNotices(
   const history = { replaceState() {}, pushState() {} };
   const wires = new Map<string, DeviceNoticeWire>();
   const delivered: BlockRecord[] = [];
+  const servicePosts: { readonly body: unknown; readonly status: number }[] = [];
   class Wire extends DeviceNoticeWire {
     constructor(url: string) { super(url); wires.set(new URL(url, location).searchParams.get("machine_id") ?? "local", this); }
     override send(message: string) {
@@ -69,7 +79,13 @@ async function withDeviceNotices(
   install("EventSource", class extends EventTarget { close() {} });
   install("IS_REACT_ACT_ENVIRONMENT", true);
   install("fetch", async (input: string | URL, init?: RequestInit) => {
-    const { pathname } = new URL(input, location);
+    const url = new URL(input, location);
+    const { pathname } = url;
+    if (url.origin === "https://account.example" && pathname === "/v1/safety-records" && typeof init?.body === "string") {
+      const response = await service.fetch(url, init);
+      servicePosts.push({ body: JSON.parse(init.body), status: response.status });
+      return response;
+    }
     if (pathname === "/api/health") return Response.json({
       auth: { required: false, authenticated: true, role: "drive" },
       web_ui: { boot_id: null, revision: null, server_id: options.laptopId },
@@ -113,7 +129,7 @@ async function withDeviceNotices(
       laptop.read({ type: "device-notice", notice: deviceNotice({ label: "Laptop phone", key: target.public_spki, ...options.admission }) });
       desk.read({ type: "device-notice", notice: deviceNotice({ label: "Desk phone", key: "d".repeat(43) }) });
     });
-    await check({ tree, laptop, desk, delivered });
+    await check({ tree, laptop, desk, delivered, servicePosts });
   } finally {
     await act(async () => { tree?.unmount(); });
     sessions.mockRestore();
@@ -152,7 +168,7 @@ it.each([
   ["identified", { laptopId: "a".repeat(32) }, "applied", "Laptop: blocked"],
   ["unidentified", {}, "waiting", "Laptop: waiting for its answer"],
 ] as const)("T51, T60, T65: an %s notice PC takes one signed block; proxy receipts never count", async (_label, identity, state, line) => {
-  await withDeviceNotices({ no: 3, ...identity }, async ({ tree, laptop, desk, delivered }) => {
+  await withDeviceNotices({ no: 3, ...identity }, async ({ tree, laptop, desk, delivered, servicePosts }) => {
     const button = tree.root.findAllByType("button").find((node) => node.children.includes("Not me"));
     expect(button).toBeDefined();
     if (button === undefined) return;
@@ -167,6 +183,7 @@ it.each([
     for (const block of answer.blocks) expect(await verifySafetyRecord(block)).toBe(true);
     expect(desk.sent.filter((frame) => frame.type === "notice-answer")).toEqual([]);
     expect(delivered).toEqual(answer.blocks);
+    expect(servicePosts).toEqual([{ body: { record: answer.blocks[0] }, status: 200 }]);
 
     const card = tree.root.findByProps({ "data-testid": "device-notice" });
     expect(card.findAllByType("li").map((row) => [row.props["data-state"], row.children.join("")])).toEqual([
