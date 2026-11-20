@@ -66,6 +66,31 @@ test.each(["unallocated sequence", "transfer points to admission"] as const)("T4
   expect(JSON.parse(readFileSync(evidencePath, "utf8"))).toEqual(JSON.parse(before));
 });
 
+test("T41/S19/P8/P10: an unwritable drop receipt starts strict and retries the original sequence", async () => {
+  const { fixture, device, member } = await listedPc();
+  const dir = fixture.stateDir;
+  const journalPath = join(dir, JOURNAL_FILE);
+  const fault = failReplacement(join(dir, REMOVAL_FILE), '"journalled"');
+  try {
+    expect(() => fixture.app.context.services.devices.revoke(device.id)).toThrow("replacement failed");
+    fixture.app.stop();
+    const written = DeviceJournal.open(dir).entries().at(-1);
+    expect(written).toMatchObject({ kind: "drop", how: "revoke", row: device.id });
+    const before = readFileSync(journalPath, "utf8");
+    const strict = restartOffline(dir);
+    expect(strict.sessionRow(member.id)).toBeNull();
+    expect(strict.accountError).not.toBeNull();
+    expect(rows(dir).map(row => row.id)).toEqual([device.id]);
+    fault.mockRestore();
+    const repaired = restartOffline(dir);
+    expect(repaired.accountError).toBeNull();
+    expect(repaired.sessionRow(member.id)?.key).toBe(member.publicKey);
+    expect(rows(dir)).toEqual([]);
+    expect(JSON.parse(readFileSync(join(dir, REMOVAL_FILE), "utf8")).row_drops).toMatchObject([{ row: device.id, journalled: written?.seq }]);
+    expect(readFileSync(journalPath, "utf8")).toBe(before);
+  } finally { fault.mockRestore(); }
+});
+
 test.each(["identity reset", "local Revoke"] as const)("P8/T41/P10: pending Revoke-all owns the listed row before %s", async action => {
   const { fixture, device } = await listedPc();
   const dir = fixture.stateDir;
