@@ -6,10 +6,9 @@ import { requestOrigin, tailnetDomain } from "../static.ts";
 
 /**
  * The Computer view: a PC's desktop through screen-here's bridge, the script OVIS_SCREEN_BRIDGE
- * names (omarchy/screen-bridge.py in the orchestrator repository). The bridge reaches the PC's VNC
- * server over SSH (this PC's own directly), and serves its viewer page and the page's VNC, sound
- * and keep-alive sockets on a one-off 127.0.0.1 address. This server opens one per view and passes
- * it on under /screen/<id>/, behind its own sign-in, with the Host and Origin the bridge admits
+ * names (remote/screen-bridge.py in the orchestrator repository). The bridge reaches the PC's screen-relay
+ * session over SSH (this PC's own directly), and serves its viewer page and the page's sockets on a
+ * one-off 127.0.0.1 address. This server opens one per view and passes it on under /screen/<id>/, behind its own sign-in, with the Host and Origin the bridge admits
  * only from its own window. Without the variable there is no Computer view.
  *
  * Opened at a tailnet name, the bridge serves the view from the PC itself (`--direct`): it answers
@@ -101,8 +100,6 @@ export async function handleScreenRequest(request: Request, url: URL, server: Se
     target.protocol = "ws:";
     const upgraded = server.upgrade(request, {
       data: { screen: { url: target.href, origin: base.origin, protocols } },
-      // noVNC asks for "binary", which the bridge answers with
-      ...(protocols.includes("binary") ? { headers: { "Sec-WebSocket-Protocol": "binary" } } : {}),
     });
     return upgraded ? undefined : new Response("upgrade failed", { status: 400 });
   }

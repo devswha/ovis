@@ -42,14 +42,7 @@ function installServices() {
   }) as typeof window.fetch;
 }
 
-const desktop = `<!doctype html><html lang="en"><body><h1>Fixture desktop</h1><script>
-const received = [];
-addEventListener("message", ({origin, data}) => {
-  if (origin !== location.origin) return;
-  received.push(data); document.body.dataset.messages = JSON.stringify(received);
-});
-parent.postMessage({screen: "ready", resizes: true}, location.origin);
-</script></body></html>`;
+const desktop = `<!doctype html><html lang="en"><body><h1>Fixture desktop</h1></body></html>`;
 
 const requests = (page: Page): Promise<RequestRecord[]> => page.evaluate(() => JSON.parse(document.documentElement.dataset["forkRequests"] ?? "[]"));
 const openDrawer = async (page: Page) => {
@@ -82,19 +75,10 @@ async function checkComputer(page: Page) {
   const frame = page.frameLocator(".computer-view iframe");
   await frame.getByRole("heading", { name: "Fixture desktop" }).waitFor();
   assert.deepEqual((await requests(page)).find(({ path }) => path === "/api/screen")?.body, { machine_id: "local" });
-  await page.getByRole("button", { name: "View settings", exact: true }).click();
-  const tuning = page.getByRole("dialog", { name: "View settings", exact: true });
-  await tuning.getByRole("group", { name: "Quality", exact: true }).getByRole("button", { name: "Low", exact: true }).click();
-  await page.waitForFunction(() => {
-    const body = document.querySelector<HTMLIFrameElement>(".computer-view iframe")?.contentDocument?.body;
-    return JSON.parse(body?.dataset["messages"] ?? "[]").some((message: { screen: string; options?: { quality: string } }) => message.screen === "options" && message.options?.quality === "low");
-  });
-  await page.keyboard.press("Escape");
-  await page.locator(".computer-view-field").press("ArrowLeft");
-  await page.waitForFunction(() => {
-    const body = document.querySelector<HTMLIFrameElement>(".computer-view iframe")?.contentDocument?.body;
-    return JSON.parse(body?.dataset["messages"] ?? "[]").some((message: { screen: string; key?: string }) => message.screen === "key" && message.key === "ArrowLeft");
-  });
+  const attributes = await page.locator(".computer-view iframe").evaluate((frame) => ({ allow: frame.getAttribute("allow"), fullscreen: (frame as HTMLIFrameElement).allowFullscreen }));
+  assert.equal(attributes.allow, "fullscreen; clipboard-read; clipboard-write");
+  assert.equal(attributes.fullscreen, true);
+  assert.equal(await page.locator(".computer-view button, .computer-view textarea").count(), 0, "the relay's viewer is shown as it is, with no Ovis controls on it");
   await openDrawer(page);
   await page.locator(".machine-screen").first().click();
   await page.locator(".chat-turn-agent").first().waitFor();
