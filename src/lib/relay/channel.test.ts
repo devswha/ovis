@@ -13,6 +13,8 @@ import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from
 import type { MuxFrame } from "../../../shared/relay-mux.ts";
 import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
 import type { RelayChannelOptions } from "../../../shared/relay-channel.ts";
+import { withAccountDevice } from "../account/accountDevice.ts";
+import type { RelayDevice, RelayDeviceStore } from "./device.ts";
 import { ACCOUNT_OPENS_ALL_MUX_FEATURE } from "../../../shared/account-devices-api.ts";
 import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
 import { probePc } from "../../../shared/relay-channel.ts";
@@ -56,7 +58,7 @@ class FakeSocket implements RelaySocket {
 }
 
 async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account", onClose?: (error: Error) => void,
-  pc: { relay?: string; hints?: readonly string[] } = {}, channel: Partial<RelayChannelOptions> = {}) {
+  pc: { relay?: string; hints?: readonly string[]; wrap?: (store: MemoryDeviceStore, device: RelayDevice) => RelayDeviceStore } = {}, channel: Partial<RelayChannelOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const registry = new DeviceStore(dir);
@@ -174,7 +176,8 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
     await server.flush();
     server.authenticate(deviceId);
   };
-  const opening = openRelayChannel(offer, { ...channel, store, ...(onClose ? { onClose } : {}), socket: (url) => {
+  const signingIn = !pairing && pc.wrap ? (await store.get(offer.server_id))! : undefined;
+  const opening = openRelayChannel(offer, { ...channel, store: signingIn ? pc.wrap!(store, signingIn) : store, ...(onClose ? { onClose } : {}), socket: (url) => {
     expect(url).toBe(`${offer.relay}/v1/ws?server_id=${offer.server_id}&role=client&v=1`);
     queueMicrotask(() => socket.deliver(JSON.stringify(attack === "assigned" ? { type: "wrong" } : { type: "assigned", connection_id: "ef".repeat(16) })));
     return socket;
@@ -669,4 +672,12 @@ it("saves the regional relay a real PC names after its provisional WELCOME", asy
   const channel = await bounded(connectReal(f, keys, offer, store, undefined, [REGIONAL, GLOBAL_RELAY]));
   cleanups.push(() => channel.close());
   expect((await store.get(offer.server_id))?.relay).toBe(REGIONAL);
+});
+
+it("T34, T40: a sign-in through the account row's store completes, and the row keeps its key and id", async () => {
+  const f = await fixture(false, undefined, undefined, { hints: ["wss://relay2.example"], wrap: (_store, device) => withAccountDevice(new MemoryDeviceStore(), device) });
+  await f.authSeen.promise;
+  f.allowAuth.resolve();
+  const channel = await f.opening;
+  expect(channel).toBeDefined();
 });
