@@ -327,4 +327,8 @@ it("T53: an It's me the PC does not take says so after its one retry, and can be
   await act(async () => { button().props.onClick(); });
   expect(refusal()).toHaveLength(0);
   expect(answers()).toHaveLength(3);
+  // decided on that PC another way meanwhile: its silence is no refusal
+  await act(async () => { desk.read({ type: "device-notice", notice: { ...admission, open: false } }); });
+  await act(async () => { jest.advanceTimersByTime(10_000); });
+  expect(refusal()).toHaveLength(0);
 });
