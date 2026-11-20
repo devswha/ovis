@@ -3,7 +3,6 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 
 import type { DeviceNotice } from "../../shared/account-devices-api.ts";
 import { keyFingerprint } from "../lib/deviceNotices.ts";
-import { translate } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { DeviceNotices } from "./DevicePairedNotice.tsx";
 
@@ -58,16 +57,6 @@ describe("device notices", () => {
     expect(shown).toContain("Apple");
     expect(shown).toContain("set");
     expect(shown.toLowerCase()).not.toContain("used");
-  });
-
-  it("an admission with two-step unknown or null says it is not confirmed (T57)", async () => {
-    const cards = await mount([
-      notice({ method: "google", two_step: "unknown" }),
-      notice({ id: "2".padStart(32, "0"), seq: 2, method: "google", two_step: null }),
-    ]);
-    const expected = translate("en", "{method} sign-in, two-step sign-in not confirmed", { method: "Google" });
-    expect(cards.map((card) => card.findAllByProps({ className: "settings-hint" }).map(text).filter((line) => line === expected)))
-      .toEqual([[expected], [expected]]);
   });
 
   it("T57: hiding an undecided admission neither records a dismissal nor answers or acknowledges it again", async () => {

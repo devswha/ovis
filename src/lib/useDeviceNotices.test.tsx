@@ -6,6 +6,7 @@ import { DeviceNotices } from "../components/DevicePairedNotice.tsx";
 import type { DeviceNotice, NoticeAnswer, NoticeSeen } from "../../shared/account-devices-api.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import { DEVICE_NOTICE_FEATURE, DeviceNoticeWire, deviceNotice } from "./deviceNoticeWire.fixture.ts";
+import { translate } from "./i18n.ts";
 import { SettingsProvider } from "./settings.ts";
 import { useDeviceNotices, type NoticeSocket } from "./useDeviceNotices.ts";
 import { HerdrSocket } from "./ws.ts";
@@ -58,6 +59,27 @@ describe("device notices on the real PC socket", () => {
       else Reflect.deleteProperty(globalThis, key);
     }
     restorations.clear();
+  });
+
+  it("a notice with two-step missing, unknown, null or unrecognised never says it is set (T57)", async () => {
+    const { wire } = await connect();
+    await act(async () => {
+      wire.snapshot();
+      for (const [index, twoStep] of [undefined, "unknown", null, "bogus"].entries()) {
+        // JSON omits undefined; both it and the unknown string enter through the PC socket decoder.
+        const seq = index + 1;
+        const payload = { ...notice(seq), label: `Phone ${seq}`, method: "google", two_step: twoStep };
+        wire.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "device-notice", notice: payload }) }));
+      }
+    });
+    const rendered = renderer?.root.findAllByProps({ "data-testid": "device-notice" }) ?? [];
+    expect(rendered).toHaveLength(4);
+    const expected = translate("en", "{method} sign-in, two-step sign-in not confirmed", { method: "Google" });
+    for (const card of rendered) {
+      const methodLines = card.findAllByProps({ className: "settings-hint" })
+        .flatMap((line) => line.children).filter((line) => typeof line === "string" && line.startsWith("Google sign-in"));
+      expect(methodLines).toEqual([expected]);
+    }
   });
 
   const cards = () => result?.byPc.get("desk")?.notices ?? [];
