@@ -13,7 +13,7 @@
  * change the log through the server's recovery socket (S2-15), never by writing this file.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, type Stats, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, type Stats, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AccountRecordError, parseSafetyRecord, type BlockRecord, type DeviceLiftRecord, type PcLiftRecord, type SafetyRecord, type SafetyRecordKind } from "../../shared/account-records.ts";
 import { privateStateRefusal, writePrivateState } from "../private-state.ts";
@@ -232,16 +232,24 @@ export class SafetyLog {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.readError = `Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
       else if (existsSync(join(this.stateDir, DEVICE_JOURNAL_FILE))) this.readError = `${this.path} is missing beside the device journal`;
       else if (this.file.next !== 1 || this.file.waiting.length !== 0) this.readError = `${this.path} is missing after this PC wrote it`;
+      else if (this.overflowMarked()) this.file = { ...this.file, overflowed: true };
       else { this.inForce = this.state(); return true; }
       return false;
     }
     let parsed: LogFile | string;
     try { parsed = parseLog(JSON.parse(text)); } catch { parsed = "it is not JSON"; }
     if (typeof parsed === "string") { this.readError = `${this.path} cannot be trusted: ${parsed}`; return false; }
-    this.file = existsSync(join(this.stateDir, SAFETY_OVERFLOW_FILE)) ? { ...parsed, overflowed: true } : parsed;
+    // a queue at capacity with no mark may have dropped a block (a crash between the drop and the mark): closed too
+    this.file = this.overflowMarked() || parsed.waiting.length >= WAITING_MAX ? { ...parsed, overflowed: true } : parsed;
     if (this.file.overflowed) return false;
     this.inForce = this.state();
     return true;
+  }
+
+  /** Whether the overflow marker stands beside the log: anything but a clean "no such file" counts (S10-2). */
+  private overflowMarked(): boolean {
+    try { lstatSync(join(this.stateDir, SAFETY_OVERFLOW_FILE)); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOENT"; }
   }
 
   /**
