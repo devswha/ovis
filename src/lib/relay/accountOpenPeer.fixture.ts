@@ -1,6 +1,24 @@
 import type { RelaySocket } from "../../../shared/relay-channel.ts";
+import type { HoldState } from "../../../shared/account-devices-api.ts";
 import { generateKeyPair, openDaemonSecureChannel, type Transport } from "../../../shared/relay-e2ee.ts";
-import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, RELAY_PROTOCOL, type MuxFrame } from "../../../shared/relay-mux.ts";
+import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError, RELAY_PROTOCOL, type MuxFrame } from "../../../shared/relay-mux.ts";
+
+export function accountOpenRefusalFrame(code: "held" | "not_listed" | "admission" | "auth_revoked", message: string, hold?: HoldState): Uint8Array {
+  const payload = { code, message, ...(hold === undefined ? {} : { hold }) };
+  const frame = { type: FrameType.SESSION_ERROR, stream_id: 0, flags: 0, payload: { code: "auth_revoked" as const, message } } as const;
+  try {
+    return encodeFrame({ ...frame, payload: Object.assign({ ...frame.payload }, payload) });
+  } catch (error) {
+    if (!(error instanceof MuxProtocolError) || error.code !== "protocol_error" || code === "auth_revoked") throw error;
+    // Before S2-25 the encoder also rejects these codes. Keep its envelope so the newer peer's reply reaches the client.
+    const body = new TextEncoder().encode(JSON.stringify(payload));
+    const envelope = encodeFrame(frame).subarray(0, 8);
+    const bytes = new Uint8Array(envelope.length + body.length);
+    bytes.set(envelope);
+    bytes.set(body, envelope.length);
+    return bytes;
+  }
+}
 
 export function accountOpenPeer(identity: ReturnType<typeof generateKeyPair>, peer: {
   readonly features: readonly string[];

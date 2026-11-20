@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import type { HoldState } from "../../../shared/account-devices-api.ts";
 import { accountDeviceId } from "../../../shared/account-records.ts";
+import { ACCOUNT_OPENS_ALL_MUX_FEATURE } from "../../../shared/account-devices-api.ts";
 import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { encodeFrame, FrameType, MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
@@ -14,7 +15,7 @@ import { memoryAccountStore } from "../account/store.ts";
 import { SettingsProvider } from "../settings.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import { dashboardModel, dashboardPcs } from "./dashboard.ts";
-import { accountOpenPeer } from "./accountOpenPeer.fixture.ts";
+import { accountOpenPeer, accountOpenRefusalFrame } from "./accountOpenPeer.fixture.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { mountRelayShell, type RelayShellMount } from "./shell.tsx";
@@ -48,6 +49,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, open }
   const requests: string[] = [];
   const registrationKeys: string[] = [];
   const navigations: string[] = [];
+  const navigated = Promise.withResolvers<string>();
   let props: RelayShellProps | undefined;
   let apps = 0;
   const render = (node: ReactNode): void => {
@@ -79,7 +81,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, open }
     renderApp: () => { apps++; return { render() {}, unmount() {} }; },
     pendingPush: { get: async () => undefined, clear: async () => {} },
     checkPc: async () => ({ kind: "offline", reason: "relay" }),
-    navigate: (path) => { navigations.push(path); },
+    navigate: (path) => { navigations.push(path); navigated.resolve(path); },
     open: (offer, options) => open(offer, options, identity),
   });
   await mountAt(`${APP}/${new URL(returned).hash}`);
@@ -90,7 +92,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, open }
     const rows = dashboardModel(dashboardPcs(state.account.pcs, [], directoryRelays), { label: "Device" }, RELAY).rows;
     return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(RelayPcTable, { rows, onSelect() {}, onOpenSheet() {} })));
   };
-  return { accountStore, serverId, requests, registrationKeys, navigations, current, markup, apps: () => apps, reload: () => mountAt(`${APP}/`), openPage: () => mountAt(`${APP}/s/${serverId}/`) };
+  return { accountStore, serverId, requests, registrationKeys, navigations, navigated: navigated.promise, current, markup, apps: () => apps, reload: () => mountAt(`${APP}/`), openPage: () => mountAt(`${APP}/s/${serverId}/`) };
 }
 
 it("T34, P18: a normal sign-in opens a listed unpaired PC as its registered account row", async () => {
@@ -205,4 +207,51 @@ it("P7: catching up without a deadline stays in Connecting and does not retry on
   await run.openPage();
   jest.advanceTimersByTime(60_000);
   expect({ kind: run.current().state.kind, attempts, navigations: run.navigations }).toEqual({ kind: "connecting", attempts: 1, navigations: [] });
+});
+
+it.each([
+  { code: "not_listed", auths: 2, screen: "connecting", pair: true },
+  { code: "admission", auths: 1, screen: "connecting", pair: true },
+  { code: "held", hold: { reason: "catching_up" }, auths: 1, screen: "connecting", pair: false },
+  { code: "held", hold: { reason: "frozen", block: "b".repeat(64) }, auths: 1, screen: "connecting", pair: false },
+  { code: "auth_revoked", auths: 1, screen: "revoked", pair: false },
+] as const)("T34, G5, P7 wire: $code follows the decoded code, not the message 'held'", async (scenario) => {
+  let auths = 0;
+  const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
+    ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_MUX_FEATURE], provisional: true, auth: () => {
+      auths++;
+      return accountOpenRefusalFrame(scenario.code, "held", "hold" in scenario ? scenario.hold : undefined);
+    } }),
+  }) });
+  await run.openPage();
+  const state = run.current().state;
+  expect({ auths, screen: state.kind === "failed" ? state.failure : state.kind, navigation: run.navigations }).toEqual({
+    auths: scenario.auths, screen: scenario.screen,
+    navigation: scenario.pair ? [expect.stringContaining(`/s/${run.serverId}/#offer=`)] : [],
+  });
+});
+
+it("T34 wire: the shell stays Connecting until the decoded hold deadline, then retries AUTH", async () => {
+  const delay = 4_321;
+  let until = "";
+  const rows: string[] = [];
+  const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
+    ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_MUX_FEATURE], provisional: true, auth: (frame) => {
+      rows.push(frame.payload.device_id);
+      return rows.length === 1
+        ? accountOpenRefusalFrame("held", "", { reason: "join_hold", until })
+        : accountOpenRefusalFrame("admission", "");
+    } }),
+  }) });
+  jest.useFakeTimers();
+  until = new Date(Date.now() + delay).toISOString();
+  await run.openPage();
+  expect(run.current().state.kind).toBe("connecting");
+  jest.advanceTimersByTime(delay - 1);
+  expect(rows).toHaveLength(1);
+  jest.advanceTimersByTime(1);
+  expect(await run.navigated).toContain(`/s/${run.serverId}/#offer=`);
+  const key = await run.accountStore.get("signin_key");
+  if (key === undefined) throw new TypeError("Missing registered key");
+  expect(rows).toEqual(Array(2).fill(accountDeviceId(run.serverId, key.key.public_spki)));
 });
