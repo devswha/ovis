@@ -72,7 +72,10 @@ describe("blocks and freezes on the PC (P16, P21, T51)", () => {
   test("T51: a notice rewrite failure keeps the notice open and reports the committed block", async () => {
     const { dir, devices } = pc();
     const signer = await member(devices);
-    const target = await member(devices);
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const spki = await exportAccountKey(keys.publicKey);
+    // The notice itself must name the account. A pre-link pairing notice grants no authority to decide it.
+    const target = { ...devices.addAccountDevice({ id: "2222222222222222", key: spki, label: "Target", role: "drive", account: ACCOUNT, addedBy: signer.id }), spki };
     const notice = devices.openNotices().find((entry) => entry.row === target.id);
     if (!notice) throw new Error("Missing target admission notice");
     const record = await block(target.spki, signer);
