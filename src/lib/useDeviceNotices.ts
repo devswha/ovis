@@ -40,10 +40,10 @@ export function useDeviceNotices(sockets: readonly { id: string; socket: NoticeS
     if (acked !== null) setByPc(acked);
   }, [byPc, key]); // eslint-disable-line react-hooks/exhaustive-deps
   const dismiss = useCallback((id: string, notice: DeviceNotice) => {
-    if (notice.open) return;
     setByPc((current) => {
       const notices = current.get(id);
-      return notices === undefined ? current : new Map(current).set(id, withNoticeDecided(notices, notice.id));
+      if (notices === undefined || !notices.notices.some((item) => item.id === notice.id && !item.open)) return current;
+      return new Map(current).set(id, withNoticeDecided(notices, notice.id));
     });
   }, []);
   return { byPc, dismiss };

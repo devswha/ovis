@@ -17,6 +17,7 @@ export function keyFingerprint(key: string): string {
 
 export interface PcNotices {
   readonly notices: readonly DeviceNotice[];
+  readonly dismissed: ReadonlySet<string>;
   /** how many notices the PC trimmed before this device saw them */
   readonly cut: number;
   /** the newest `seq` this device acknowledged */
@@ -24,10 +25,14 @@ export interface PcNotices {
 }
 
 export function withNoticeReplay(current: PcNotices | undefined, replay: NoticeReplay): PcNotices {
-  const known = new Set(current?.notices.map((item) => item.id));
-  const added = replay.notices.filter((item) => !known.has(item.id));
+  const dismissed = current?.dismissed ?? new Set<string>();
+  const notices = new Map(current?.notices.map((item) => [item.id, item]));
+  for (const item of replay.notices) {
+    if (!dismissed.has(item.id)) notices.set(item.id, item);
+  }
   return {
-    notices: [...(current?.notices ?? []), ...added].sort((a, b) => a.seq - b.seq),
+    notices: [...notices.values()].sort((a, b) => a.seq - b.seq),
+    dismissed,
     cut: replay.cut,
     acked: current?.acked ?? 0,
   };
@@ -42,7 +47,6 @@ export function withNoticeAcked(current: PcNotices, seq: number): PcNotices {
   return { ...current, acked: Math.max(current.acked, seq) };
 }
 
-/** The PC decided this admission (It's me, Not me, or on the PC itself): it leaves the list. */
 export function withNoticeDecided(current: PcNotices, id: string): PcNotices {
-  return { ...current, notices: current.notices.filter((item) => item.id !== id) };
+  return { ...current, notices: current.notices.filter((item) => item.id !== id), dismissed: new Set([...current.dismissed, id]) };
 }
