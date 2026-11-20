@@ -5,7 +5,7 @@
  * marker. Order: an admission is journalled before its row is written and the row waits in `hold` until the join
  * hold is satisfied; a drop closes sessions first, then journals, then writes.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { AccountSnapshotError, parseAccountDevicesFile, type AccountJoinedRow, type AccountSnapshot, type AdmissionOrigin, type SnapshotDevice } from "../../shared/account-snapshot.ts";
@@ -28,6 +28,8 @@ export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset"
 export interface AccountRowSource {
   /** Why `account-devices.json` cannot be used. A file that will not read is never empty (S19, T41). */
   blocked(): string | null;
+  /** No `account-devices.json` on disk: no listed row is known here, which is not proof that none was. */
+  missing(): boolean;
   rows(): readonly AccountRow[];
   row(id: string): AccountRow | null;
   rowsByKey(key: string): readonly AccountRow[];
@@ -120,6 +122,8 @@ export class AccountDeviceStore implements AccountRowSource {
   }
 
   blocked(): string | null { return this.error; }
+
+  missing(): boolean { return !existsSync(this.path); }
 
   rows(): readonly AccountRow[] { return this.error === null ? this.file.devices : []; }
 
@@ -268,6 +272,7 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
   return {
     store,
     blocked: () => store()?.blocked() ?? null,
+    missing: () => store()?.missing() ?? false,
     rows: () => store()?.rows() ?? [],
     row: (id) => store()?.row(id) ?? null,
     rowsByKey: (key) => store()?.rowsByKey(key) ?? [],

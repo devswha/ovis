@@ -2579,7 +2579,9 @@ export class DeviceStore {
     // the file names every row it covers, a pending one's too, so it is finished from itself and never from less (T20)
     const gone = this.revokeAllRows();
     const gateWasOpen = !this.rawGated;
-    const denied = this.deny(gone.flatMap((d) => d.relay_public_key ?? []), () => intent.begin(gone, now));
+    // a registry that will not read may hold listed rows: count it as some, so the intent outlives it
+    const listed = this.joinedRows?.blocked() ? 1 : this.joinedRows?.rows().length ?? 0;
+    const denied = this.deny(gone.flatMap((row) => row.relay_public_key ?? []), () => intent.begin(gone, now, listed));
     const gate = this.gateClosedAt ?? this.devices[0]?.created_at ?? now;
     // a file that could not be written holds nothing: the rows stay where the next Revoke all finds them, out of every
     // session meanwhile, and the PC closed (P8, T20)
@@ -2607,7 +2609,7 @@ export class DeviceStore {
     try {
       for (const device of gone) this.journalRemoval(device, "pc", user === undefined ? undefined : "recover", user);
       for (const device of gone) this.announceRemoval(device, "pc");
-      intent.finish(rows => this.finishRevokeAll(rows, gate));
+      intent.finish(rows => this.completeRevokeAll(intent, rows, gate));
       this.settleDenies();
     } catch (error) {
       this.denyProblem = `Revoke all could not be finished (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until it is.`;
@@ -2618,18 +2620,25 @@ export class DeviceStore {
   }
 
   private resumeRevokeAll(): void {
-    this.revokeAllIntent?.finish(rows => {
-      this.assertWritable();
-      const blocked = this.joinedRows?.blocked();
-      if (blocked) throw new Error(blocked);
+    const intent = this.revokeAllIntent;
+    intent?.finish(rows => {
       this.pc?.raiseGen();
-      if (this.evidence) this.joinedRows?.pruneDenied(this.evidence, "revoke_all");
-      this.finishRevokeAll(rows, this.gateClosedAt ?? new Date().toISOString());
+      this.completeRevokeAll(intent, rows, this.gateClosedAt ?? new Date().toISOString());
     });
   }
 
-  /** The writes of a Revoke all whose file is on disk: its Revokes, the empty registry, the PC's account; then the file goes. */
-  private finishRevokeAll(rows: readonly StoredDevice[], gate: string): void {
+  /**
+   * The one finisher of a Revoke all, new or resumed: only while the listed registry can show every row the intent
+   * covers. One that will not read, or is gone while the intent covered listed rows, keeps the intent (S19, T41).
+   */
+  private completeRevokeAll(intent: RevokeAllIntent, rows: readonly StoredDevice[], gate: string): void {
+    this.assertWritable();
+    const blocked = this.joinedRows?.blocked();
+    if (blocked) throw new Error(blocked);
+    if (intent.listed > 0 && this.joinedRows?.missing()) {
+      throw new Error("account-devices.json is missing while Revoke all covers listed rows: only this PC itself gets in until it is restored.");
+    }
+    if (this.evidence) this.joinedRows?.pruneDenied(this.evidence, "revoke_all");
     const joined = this.joinedRows?.rows() ?? [];
     this.tombstone([...rows, ...joined.map((row) => this.joinedAsStored(row))], Date.now(), "revoke_all");
     this.endAccountRows("revoke_all");
