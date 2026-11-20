@@ -299,7 +299,9 @@ service's records, the only data that reaches the developer):
     the Device or other IDs row when this ships.
   - **App access**: the instructions sent with 1.0.6 (section 4) name SSH among the ways to pair
     and say its keys stay on the phone; the demo shows the same app without a PC (the field holds
-    500 characters, so there is no room for more). Do not hand Google a login to a real machine.
+    500 characters, so there is no room for more). The next time the text is sent, say "private
+    keys stay on the phone" (497 characters): the public key goes to the PC's `authorized_keys`.
+    Do not hand Google a login to a real machine.
   - **Policy**: an SSH client is allowed (Device and Network Abuse covers apps that interfere
     with other apps or networks, which this does not); the app reaches only the address the user
     types, on the port the user types.
