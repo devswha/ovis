@@ -10,7 +10,7 @@ import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDevice, ShellDeviceStore } from "./device.ts";
 import { ACCOUNT_READ_WAIT_MS, ACCOUNT_STEPS_WAIT_MS, mountRelayShell, type RelayShellMount } from "./shell.tsx";
 import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
-import { RelayAdmissionTimeoutError } from "./channel.ts";
+import { RelayAdmissionTimeoutError, RelayPcOfflineError } from "./channel.ts";
 import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 
 const AP = "wss://relay-ap.ovis.sh";
@@ -997,7 +997,7 @@ describe("the hosted shell's front page", () => {
       const { server_id, server_public_key } = keyFor();
       const [saved] = await pcs(server_id);
       const scope = `https://app.ovis.sh/s/${server_id}/`;
-      const off = async (): Promise<never> => { throw new MuxProtocolError("timeout", "nobody there"); };
+      const off = async (): Promise<never> => { throw new RelayPcOfflineError(); };
       for (const [launched, expected] of [[true, ["/"]], [false, []]] as const) {
         const went: string[] = [];
         if (launched) browser.sessionStore.set("ovis-launched-pc", server_id);
@@ -1022,7 +1022,7 @@ describe("the hosted shell's front page", () => {
       expect([went, (last().state as { failure?: string }).failure, browser.sessionStore.has("ovis-launch-account")]).toEqual([[], "pc-unresponsive", false]);
     });
 
-    it.each(["auth_changed", "internal_error"])("keeps the card of a launched PC that answered and refused (%s): it is on", async (code) => {
+    it.each(["auth_changed", "internal_error", "timeout"])("keeps the card of a launched PC that answered and refused (%s): it is on", async (code) => {
       const { server_id, server_public_key } = keyFor();
       const [saved] = await pcs(server_id);
       const went: string[] = [];

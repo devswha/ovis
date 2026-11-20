@@ -2,8 +2,7 @@
 import { createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { encodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
-import { AccountOpenUnsupportedError } from "../../../shared/relay-channel.ts";
-import { MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { AccountOpenUnsupportedError, RelayPcOfflineError } from "../../../shared/relay-channel.ts";
 import { GLOBAL_RELAY } from "../../../shared/relay-regions.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
@@ -542,7 +541,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the PC a launch opened before its check could say it is off: the relay now says nobody answered (timeout: a PC that
     // answered and refused, or ran into an error, is on and keeps its card), and the launch lands where it
     // would have, on the front page (Add a PC), once; a PC opened by a person keeps its card and its Try again
-    if (launchedHere && attempt.paired && attempt.fresh !== true && app === null && failure === "pc-offline" && error instanceof MuxProtocolError && error.code === "timeout" && refused === undefined && !navigatedSinceEntry() && entries === 0) {
+    if (launchedHere && attempt.paired && attempt.fresh !== true && app === null && failure === "pc-offline" && error instanceof RelayPcOfflineError && refused === undefined && !navigatedSinceEntry() && entries === 0) {
       // left: Back restoring this page from the browser's cache loads it again (the pageshow below)
       cancelAttempt(); left = true; keepLaunchAccount(); navigate("/"); return;
     }
