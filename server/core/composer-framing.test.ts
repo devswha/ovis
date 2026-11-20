@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError } from "../herdr/client.ts";
 import { PendingInputError } from "../pending-input.ts";
-import { closeBackslash, createSubmitText, pendingFault, pendingText, submitFraming } from "./composer.ts";
+import { closeBackslash, createSubmitText, pendingFault, pendingText, showsLive, submitFraming } from "./composer.ts";
 
 let root: string;
 let listener: ReturnType<typeof Bun.listen>;
@@ -167,5 +167,15 @@ describe("closeBackslash", () => {
     expect(closeBackslash("pi", "under requisiciones? \\")).toBe("under requisiciones? \\ ");
     expect(closeBackslash("pi", "\u001b[200~see C:\\temp\\\u001b[201~")).toBe("\u001b[200~see C:\\temp\\ \u001b[201~");
     expect(closeBackslash("pi", "see C:\\temp\\x")).toBe("see C:\\temp\\x");
+  });
+});
+
+describe("showsLive", () => {
+  it("takes a working agent's two reads as one screen though its spinner turned between them", () => {
+    const viewport = " status\n \u001b[38;2;111;164;201m── ⠼\u001b[0m Working ──────────\n > how\n ──────────────────";
+    const live = " status\n ── ⠴ Working ──────────\n > how\n ──────────────────";
+    expect(showsLive(viewport, live)).toBeTrue();
+    // any other change between the reads is still another screen
+    expect(showsLive(viewport, live.replace("how", "hows"))).toBeFalse();
   });
 });

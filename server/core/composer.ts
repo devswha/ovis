@@ -258,12 +258,14 @@ const AGENT_BOX_READS = 3;
  * Whether the viewport's read shows the live screen: its rows are the live screen's last ones. herdr's live read can
  * hold a row more at its top than the viewport (measured with Gemini CLI 0.68.0), never other rows at the bottom.
  */
-function showsLive(colors: string, live: string): boolean {
-  const shown = screenText(colors).split("\n"), current = screenText(live).split("\n");
+export function showsLive(colors: string, live: string): boolean {
+  const shown = spinnerless(screenText(colors)).split("\n"), current = spinnerless(screenText(live)).split("\n");
   return shown.length <= current.length && shown.length >= current.length - 2 && current.slice(current.length - shown.length).join("\n") === shown.join("\n");
 }
 
 const screenText = (text: string): string => stripVTControlCharacters(text).split(/\r?\n/).map((line) => line.trimEnd()).join("\n").trimEnd();
+/** a working agent's braille spinner turns between two reads (pi's `── ⠸ Working ──`): the same screen still */
+const spinnerless = (text: string): string => text.replace(/[⠁-⣿]/g, "⠀");
 
 /**
  * herdr reports Codex at rest
