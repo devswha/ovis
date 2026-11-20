@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { SettingsProvider } from "../lib/settings.ts";
@@ -127,13 +127,13 @@ describe("the strict-mode section in Settings", () => {
   });
 
   it("G5: on a PC that does not offer it, shows nothing and asks the PC nothing", async () => {
-    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered={false} auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered={false} auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>); });
     expect(renderer!.toJSON()).toBeNull();
     expect(requests).toEqual([]);
   });
 
   it("T46, R10, Q20: after asking, says strict mode is not on until approved on this PC's screen, by when, and how to open that page", async () => {
-    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>); });
     const before = text(renderer!.root);
     expect(before).not.toContain("ovis confirm");
     const button = renderer!.root.find((node) => node.type === "button");
@@ -146,7 +146,7 @@ describe("the strict-mode section in Settings", () => {
 
   it("T47: asking to turn it off says it stays on until approved on this PC's screen", async () => {
     answer = locked;
-    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>); });
     const button = renderer!.root.find((node) => node.type === "button");
     await act(async () => { button.props.onClick(); });
     expect(requests).toContain("POST /api/account/unlock");
@@ -155,18 +155,41 @@ describe("the strict-mode section in Settings", () => {
     expect(shown).toContain("ovis confirm");
   });
 
-  it("R10: a phone or laptop on this PC's address (Tailscale, a token, the open network) gets no switch: only a window the server says is on this PC", async () => {
-    for (const via of ["tailscale", "token", "open", "device", "portal", "relay"] as const) {
-      await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via, role: "drive" }} /></SettingsProvider>); });
-      expect({ via, buttons: renderer!.root.findAll((node) => node.type === "button").length }).toEqual({ via, buttons: 0 });
+  it("R10: the switch shows exactly where the server says this is the PC's own window: local and the token from loopback yes, any other window no", async () => {
+    for (const [via, own] of [["local", true], ["token", true], ["token", false], ["tailscale", false], ["open", false], ["device", false], ["portal", false], ["relay", false]] as const) {
+      await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via, role: "drive", ...(own ? { own_window: true } : {}) }} /></SettingsProvider>); });
+      expect({ via, own, buttons: renderer!.root.findAll((node) => node.type === "button").length }).toEqual({ via, own, buttons: own ? 1 : 0 });
       await act(async () => { renderer?.unmount(); });
     }
+  });
+
+  it("one status at a time: a refused retry replaces the approve-by line", async () => {
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>); });
+    await act(async () => { renderer!.root.find((node) => node.type === "button").props.onClick(); });
+    expect(text(renderer!.root)).toContain("ovis confirm");
+    refuse = { status: 409, code: "already_locked" };
+    await act(async () => { renderer!.root.find((node) => node.type === "button").props.onClick(); });
+    const shown = text(renderer!.root);
+    expect(shown).toContain("Strict mode changed already.");
+    expect(shown).not.toContain("ovis confirm");
+  });
+
+  it("T47: the locked view's approve-by line goes when the PC's window for it has passed", async () => {
+    jest.useFakeTimers();
+    try {
+      answer = locked;
+      await act(async () => { renderer = create(<SettingsProvider><StrictUnlockAsk /></SettingsProvider>); });
+      await act(async () => { renderer!.root.find((node) => node.type === "button").props.onClick(); });
+      expect(text(renderer!.root)).toContain("ovis confirm");
+      await act(async () => { jest.advanceTimersByTime(120_000); });
+      expect(text(renderer!.root)).not.toContain("ovis confirm");
+    } finally { jest.useRealTimers(); }
   });
 
   it("T47: an unlock refused while this PC's lock removals are unwritten says so, with the PC's own repair message", async () => {
     answer = locked;
     refuse = { status: 409, code: "lock_removals_pending" };
-    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>); });
     await act(async () => { renderer!.root.find((node) => node.type === "button").props.onClick(); });
     const shown = text(renderer!.root);
     expect(shown).toContain("Strict mode stays on until this PC finishes signing out the devices it ended. Try again shortly.");
@@ -175,7 +198,7 @@ describe("the strict-mode section in Settings", () => {
 
   it("R10: a request the PC refuses says why, here local_required", async () => {
     refuse = { status: 403, code: "local_required" };
-    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>); });
     const button = renderer!.root.find((node) => node.type === "button");
     await act(async () => { button.props.onClick(); });
     const shown = text(renderer!.root);
@@ -194,7 +217,7 @@ describe("the strict-mode section in Settings", () => {
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(slow, { preconnect: globalThis.fetch.preconnect }));
     try {
       const sent = now;
-      await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
+      await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>); });
       await act(async () => { renderer!.root.find((node) => node.type === "button").props.onClick(); });
       now += 90_000;
       await act(async () => { reply.resolve(Response.json({ confirm: "c1" }, { status: 202 })); });
@@ -221,16 +244,22 @@ describe("the strict-mode section in Settings", () => {
     expect(renderer!.toJSON()).toBeNull();
   });
 
-  it("T47: the access gate of a locked PC carries the unlock request", async () => {
+  it("T47, N4: a locked PC's own window gets the strict view instead of the pairing gate; any other window gets nothing", async () => {
     answer = locked;
     await act(async () => {
-      renderer = create(<SettingsProvider><AccessGate reason="locked" initialCode="" consumePairCode={() => ""} pairingUnconfirmed={false} onUnlocked={() => {}} /></SettingsProvider>);
+      renderer = create(<SettingsProvider><AccessGate reason="locked" ownWindow initialCode="" consumePairCode={() => ""} pairingUnconfirmed={false} onUnlocked={() => {}} /></SettingsProvider>);
     });
-    expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Ask to turn strict mode off")).toHaveLength(1);
+    expect(renderer!.root.findAll((node) => node.type === "button").map((node) => text(node))).toEqual(["Ask to turn strict mode off"]);
+    expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(0);
+    await act(async () => { renderer?.unmount(); });
+    await act(async () => {
+      renderer = create(<SettingsProvider><AccessGate reason="locked" ownWindow={false} initialCode="" consumePairCode={() => ""} pairingUnconfirmed={false} onUnlocked={() => {}} /></SettingsProvider>);
+    });
+    expect(renderer!.toJSON()).toBeNull();
   });
 
   it("T46, R10: reads the PC's state, and the switch only asks the PC's screen", async () => {
-    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>); });
     const button = renderer!.root.find((node) => node.type === "button");
     await act(async () => { button.props.onClick(); });
     expect(requests).toEqual(["GET /api/account/lock", "POST /api/account/lock", "GET /api/account/lock"]);

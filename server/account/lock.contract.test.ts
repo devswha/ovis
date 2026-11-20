@@ -223,3 +223,27 @@ test("T46/S24: a connection whose upgrade was admitted before a lock's approval 
   expect(closed).toBe(1);
 });
 
+
+test("R10: health tells a window whether it is this PC's own (the lock routes' rule): loopback yes, the token from loopback yes, forwarded no", async () => {
+  const made = await lockedPc();
+  expect(((await made.local("/api/health")).body.auth as { own_window?: true } | undefined)?.own_window).toBe(true);
+  expect(((await made.local("/api/health", { headers: { "x-forwarded-for": "100.64.0.9" } })).body.auth as { own_window?: true } | undefined)?.own_window).toBeUndefined();
+  const member = await memberRow("acct_1");
+  const tokened = await pairingPc({ rows: [member.row], startRelay: false, server: { accountOpensAll: true, token: "owner-token" } });
+  pcs.push(tokened);
+  expect(((await tokened.local("/api/health", { headers: { authorization: "Bearer owner-token" } })).body.auth as { own_window?: true } | undefined)?.own_window).toBe(true);
+});
+
+test("S36-1: a lock or unlock asked by a window that is not this PC's own is refused local_required, locked or not", async () => {
+  for (const lock of [true, false]) {
+    const member = await memberRow("acct_1");
+    const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true } });
+    pcs.push(made);
+    const id = lock ? made.app.context.services.safetyLog!.appendLock({ account: "acct_1" }).id : null;
+    for (const path of ["/api/account/lock", "/api/account/unlock"]) {
+      const tried = await made.local(path, { method: "POST", headers: { "x-herdr-machine": "1", "x-forwarded-for": "100.64.0.9" }, body: { lock: id } });
+      expect({ lock, path, status: tried.status, code: tried.body.error?.code }).toEqual({ lock, path, status: 403, code: "local_required" });
+    }
+    expect(made.app.context.services.localConfirms!.pending()).toEqual([]);
+  }
+});
