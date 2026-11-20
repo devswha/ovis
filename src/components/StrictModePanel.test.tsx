@@ -110,7 +110,7 @@ describe("the strict-mode section in Settings", () => {
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7318").pathname}`);
       if (init?.method !== "POST" && refuseRead) return Response.json({ error: { code: "locked", message: "locked" } }, { status: 403 });
-      if (init?.method === "POST" && refuse !== null) return Response.json({ error: { code: refuse.code, message: "refused" } }, { status: refuse.status });
+      if (init?.method === "POST" && refuse !== null) return Response.json({ error: { code: refuse.code, message: refuse.code === "lock_removals_pending" ? "Repair this PC's state folder first: the devices this lock signs out are not written yet." : "refused" } }, { status: refuse.status });
       return init?.method === "POST" ? Response.json({ confirm: "c1" }, { status: 202 }) : Response.json(answer);
     };
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
@@ -161,6 +161,16 @@ describe("the strict-mode section in Settings", () => {
       expect({ via, buttons: renderer!.root.findAll((node) => node.type === "button").length }).toEqual({ via, buttons: 0 });
       await act(async () => { renderer?.unmount(); });
     }
+  });
+
+  it("T47: an unlock refused while this PC's lock removals are unwritten says so, with the PC's own repair message", async () => {
+    answer = locked;
+    refuse = { status: 409, code: "lock_removals_pending" };
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
+    await act(async () => { renderer!.root.find((node) => node.type === "button").props.onClick(); });
+    const shown = text(renderer!.root);
+    expect(shown).toContain("Strict mode stays on until this PC finishes signing out the devices it ended. Try again shortly.");
+    expect(shown).toContain("Repair this PC's state folder first");
   });
 
   it("R10: a request the PC refuses says why, here local_required", async () => {
