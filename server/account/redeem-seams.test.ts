@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey } from "../../shared/account-records.ts";
-import { DeviceStore } from "../devices.ts";
+import { DeviceStore, PairingRateLimitedError } from "../devices.ts";
 import { relayFixture, TestClock } from "../relay/test-helpers.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
@@ -34,7 +34,7 @@ describe("a code redeemed now, its key admitted on the PC's screen later (S2-13 
     const [named, other] = [await key(), await key()];
     const { code } = devices.startPairing();
     // a wrong code spends a guess like today's pairing, and reserves nothing
-    expect(devices.redeemCode("000000", "code", named)).toMatchObject({ ok: false });
+    expect(devices.redeemCode(code === "000000" ? "000001" : "000000", "code", named)).toMatchObject({ ok: false });
     const redeemed = devices.redeemCode(code, "code", named);
     expect(redeemed).toMatchObject({ ok: true });
     const codeId = (redeemed as { codeId: string }).codeId;
@@ -191,6 +191,103 @@ describe("a code redeemed now, its key admitted on the PC's screen later (S2-13 
     // the confirm makes no member: the row waits for its link, which the first-link rules take as today
     expect(devices.list(null)).toHaveLength(0);
     expect(devices.account()).toBeNull();
+  });
+
+  test("T5: the relay code cooldown refuses redemption of a valid code", async () => {
+    const devices = store(dir());
+    const named = await key();
+    const now = Date.now();
+    for (let i = 0; i < 4; i++) {
+      const { code } = devices.startPairing(now);
+      const wrong = code === "000000" ? "000001" : "000000";
+      for (let j = 0; j < 5; j++) {
+        expect(devices.redeemCode(wrong, "code", named, now)).toEqual({ ok: false, reason: "invalid_code" });
+      }
+    }
+    const { code } = devices.startPairing(now);
+    expect(() => devices.redeemCode(code, "code", named, now)).toThrow(PairingRateLimitedError);
+  });
+
+  test("T72: first-link confirmation reserves the join for the selected key", async () => {
+    const devices = store(dir());
+    const [named, other] = await Promise.all([key(), key()]);
+    const { code, pairing } = devices.startAccountPairing("acct_1");
+    const redeemed = devices.redeemCode(code, "qr", named);
+    if (!redeemed.ok) throw new Error("Selected key did not reserve the code");
+    const prior = devices.pairRelay(code, "Other", other);
+    if (prior === null) throw new Error("Other key did not get a provisional row");
+    const waiting = devices.admitConfirmed({ codeId: redeemed.codeId, key: named, label: "Phone", source: "screen" });
+    if (waiting === null) throw new Error("Selected key was not confirmed");
+
+    expect(devices.redeemCode(code, "qr", other)).toMatchObject({ ok: false });
+    expect(devices.pairRelay(code, "Other", other)).toBeNull();
+    expect(devices.linkAccountKey(prior.device.id, other, other, "acct_1", "", true)).toBeNull();
+    expect(devices.linkAccountKey(waiting.id, named, named, "acct_1", "", true)).toMatchObject({ id: waiting.id, role: "drive" });
+    expect(devices.accountPairingState(pairing.id)).toMatchObject({ state: "ended", ended: { why: "joined" }, joined: { device_id: waiting.id } });
+  });
+
+  test("P11: a first link keeping the screen-confirmed key passes a lock and its named Revoke", async () => {
+    const at = dir();
+    const devices = store(at);
+    const named = await key();
+    const earlier = devices.pairRelay(devices.startPairing().code, "Phone", named);
+    if (earlier === null) throw new Error("Initial pairing failed");
+    devices.revoke(earlier.device.id);
+    const log = SafetyLog.open(at);
+    const [revoke] = RemovalEvidence.open(at, log).standingRevokes(named);
+    if (revoke === undefined) throw new Error("Expected retained Revoke evidence");
+    log.append({ record: { v: 1, id: "1".repeat(32), kind: "lock", account: "acct_1", target: null, signer: "pc", signed_at: new Date().toISOString(), signature: "" }, got: "pc" });
+    const locked = store(at);
+    expect(locked.admits(named)).toBe(false);
+    const { code } = locked.startAccountPairing("acct_1");
+    const redeemed = locked.redeemCode(code, "qr", named);
+    if (!redeemed.ok) throw new Error("Key did not reserve the code");
+    const confirm = { codeId: redeemed.codeId, key: named, label: "Phone", source: "screen" } as const;
+    expect(locked.admitConfirmed(confirm)).toBeNull();
+    const waiting = locked.admitConfirmed({ ...confirm, unrevokes: [revoke.id] });
+    if (waiting === null) throw new Error("Screen confirmation did not create a waiting row");
+
+    expect(locked.linkAccountKey(waiting.id, named, await key(), "acct_1", "", true)).toBeNull();
+    expect(locked.linkAccountKey(waiting.id, named, named, "acct_1", "", true)).toMatchObject({ id: waiting.id, role: "drive" });
+    expect(locked.isTombstoned(named)).toBe(false);
+  });
+
+  test("P24: a first link keeping the recovered key journals the recovery actor", async () => {
+    const at = dir();
+    const devices = store(at);
+    const named = await key();
+    const { code } = devices.startAccountPairing("acct_1");
+    const redeemed = devices.redeemCode(code, "qr", named);
+    if (!redeemed.ok) throw new Error("Recovered key did not reserve the code");
+    const waiting = devices.admitConfirmed({ codeId: redeemed.codeId, key: named, label: "Phone", source: "recover", by: "alice" });
+    if (waiting === null) throw new Error("Recovery did not create a waiting row");
+
+    expect(devices.linkAccountKey(waiting.id, named, named, "acct_1", "", true)).toMatchObject({ id: waiting.id });
+    expect(DeviceJournal.open(at).entries()).toContainEqual(expect.objectContaining({ kind: "admit", row: waiting.id, how: "recover", by: "alice" }));
+  });
+
+  test("T13: a first link can retry after its admission counter write fails", async () => {
+    const at = dir();
+    const devices = store(at);
+    const named = await key();
+    const { code, pairing } = devices.startAccountPairing("acct_1");
+    const redeemed = devices.redeemCode(code, "qr", named);
+    if (!redeemed.ok) throw new Error("Key did not reserve the code");
+    const waiting = devices.admitConfirmed({ codeId: redeemed.codeId, key: named, label: "Phone", source: "screen" });
+    if (waiting === null) throw new Error("Screen confirmation did not create a waiting row");
+    const path = join(at, "account-pc.json");
+    renameSync(path, `${path}.saved`);
+    mkdirSync(path);
+    try {
+      expect(() => devices.linkAccountKey(waiting.id, named, named, "acct_1", "", true)).toThrow();
+    } finally {
+      rmSync(path, { recursive: true });
+      renameSync(`${path}.saved`, path);
+    }
+
+    expect(devices.account()).toBeNull();
+    expect(devices.accountPairingState(pairing.id)).toMatchObject({ state: "live", waiting: [{ id: waiting.id }] });
+    expect(devices.linkAccountKey(waiting.id, named, named, "acct_1", "", true)).toMatchObject({ id: waiting.id, role: "drive" });
   });
 
   test("T71: every end of a code is heard, and a reservation it dropped is never confirmed after", async () => {

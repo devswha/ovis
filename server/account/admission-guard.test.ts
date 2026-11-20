@@ -7,7 +7,7 @@ import { DeviceStore } from "../devices.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
-import { applyAccountRecords } from "./records.ts";
+import { applyAccountRecords, applyLink, type AddGates } from "./records.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
 import { pcRecordId, SafetyLog } from "./safety-log.ts";
 
@@ -47,6 +47,13 @@ async function block(log: SafetyLog, target: string, by: Awaited<ReturnType<type
 const add = (signer: Awaited<ReturnType<typeof accountKey>>, key: string) =>
   signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key, label: "New phone", role: "drive", issued_at: new Date().toISOString(), id: newRecordId(), signer: signer.spki }, signer.keys.privateKey);
 
+async function linkSameKey(devices: DeviceStore, deviceId: string, { spki, keys }: Awaited<ReturnType<typeof accountKey>>, gates?: AddGates) {
+  const record = await signAccountRecord({ v: 1, kind: "link", account: ACCOUNT, key: spki, old_key: spki, device_id: deviceId, server_id: SERVER_ID, issued_at: new Date().toISOString(), id: newRecordId(), signer: spki }, keys.privateKey);
+  const arrival = devices.linkArrived(deviceId);
+  if (arrival === null) throw new Error("Link did not reach record validation");
+  return applyLink(devices, record, { deviceId, serverId: SERVER_ID, sessionKey: spki }, arrival, gates === undefined ? {} : { gates });
+}
+
 describe("one final admission guard (G3, rule R1)", () => {
   test("G3: admits refuses a key held by the account mailbox", async () => {
     const { spki } = await accountKey();
@@ -69,6 +76,41 @@ describe("one final admission guard (G3, rule R1)", () => {
     devices.removeAccountKey(spki, ACCOUNT, { id: newRecordId(), issuedAt: new Date().toISOString() });
     expect(devices.removedByAccount(spki)).toBe(true);
     expect(devices.admits(spki)).toBe(false);
+  });
+
+  test("G3: a held key cannot become an approver through a same-key link", async () => {
+    const fixture = relayFixture(false, { accountOpensAll: true });
+    try {
+      const { devices, accountHolds, accountMailbox } = fixture.app.context.services;
+      const named = await accountKey();
+      const paired = devices.pairRelay(devices.startPairing().code, "Phone", named.spki);
+      if (paired === null) throw new Error("Initial pairing failed");
+      accountHolds.hold([named.spki]);
+      expect(devices.admits(named.spki)).toBe(false);
+
+      const id = paired.device.id;
+      expect(await linkSameKey(devices, id, named, accountMailbox.gates())).toHaveProperty("refused");
+      expect(devices.isAccountApprover(id)).toBe(false);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  test("G3: a key newer than a block target cannot become an approver through a same-key link", async () => {
+    const { devices, log } = pc();
+    const [signer, target, named] = await Promise.all([accountKey(), accountKey(), accountKey()]);
+    for (const k of [signer, target]) {
+      if (devices.pairRelay(devices.startPairing().code, "Older device", k.spki) === null) throw new Error("Older key did not pair");
+    }
+    const paired = devices.pairRelay(devices.startPairing().code, "Phone", named.spki);
+    if (paired === null) throw new Error("Initial pairing failed");
+    await block(log, target.spki, signer, 2);
+    expect(devices.admits(signer.spki)).toBe(true);
+    expect(devices.admits(named.spki)).toBe(false);
+
+    const id = paired.device.id;
+    expect(await linkSameKey(devices, id, named)).toHaveProperty("refused");
+    expect(devices.isAccountApprover(id)).toBe(false);
   });
 
   test("G3: admits and a signed add refuse a key revoked on this PC", async () => {
