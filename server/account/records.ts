@@ -160,7 +160,7 @@ export async function applyEnrollment(store: DeviceStore, values: readonly unkno
     const next: number[] = [];
     for (const index of adds) {
       const verified = record(index);
-      const heldBack = moved || (verified.kind === "add" && (undecided.has(verified.signer) || undecided.has(verified.key)));
+      const heldBack = moved || (store.opensAll() && verified.kind === "add" && (undecided.has(verified.signer) || undecided.has(verified.key)));
       const outcome = heldBack ? deferAdd(verified) : verified.kind === "add" && store.opensAll()
         ? deferAdd(verified, options.wait) : apply(store, verified, serverId, now, gates);
       outcomes[index] = outcome;

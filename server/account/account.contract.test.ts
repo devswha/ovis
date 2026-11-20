@@ -15,7 +15,7 @@ import { AccountIntroductions, INTRODUCTION_TTL_MS } from "./introductions.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
-import { applyAccountRecords } from "./records.ts";
+import { applyAccountRecords, applyEnrollment } from "./records.ts";
 import { createServer } from "../index.ts";
 
 type Fixture = ReturnType<typeof relayFixture>;
@@ -90,6 +90,20 @@ function registryRow(f: Fixture, id: string) {
   const registry = readDeviceRegistry(join(f.stateDir, "devices.json"));
   return registry.kind === "ok" ? registry.devices.find((device) => device.id === id) : undefined;
 }
+
+test("flag off: an unkept removal does not mask an unknown enrollment signer", async () => {
+  const devices = fixture({ accountOpensAll: false }).app.context.services.devices;
+  const stranger = await accountKey();
+  const key = (await accountKey()).spki;
+  const records = [await remove(stranger, key), await add(stranger, key)] as const;
+  const results = await applyEnrollment(devices, records, SERVER_ID, {
+    gates: { enrolling: () => false, held: () => false }, wait: () => false, settle: async () => {},
+  });
+  expect(results).toEqual([
+    { id: records[0].id, outcome: "refused", code: "account_unavailable" },
+    { id: records[1].id, outcome: "refused", code: "signer_not_member" },
+  ]);
+});
 
 test("a device links its row to the account over its own session, which gives the PC its first member", async () => {
   const f = fixture();
