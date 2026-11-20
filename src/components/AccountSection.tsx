@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { AddPcWaitOver, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, addInOnePress, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
 import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
@@ -514,6 +514,13 @@ export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }
       if (!current()) return null;
       if (joined !== null) { keepAddPcWaiting(null); return await joinedAs(joined, enrolling); }
       const { name, serverId, account } = await listThisPc(accountService(), { relistMs: RELIST_MS, ...(as === null ? {} : { as: { account: as, running: current, reached } }) });
+      if (!current()) return null;
+      // in one press when the account service admits it; the window this listing opened is then needed no more
+      if (account !== null && await addInOnePress(accountService(), serverId, account, current)) {
+        keepAddPcWaiting(null);
+        closeAddWindow().catch(warned("Ovis: this PC's pairing window could not be closed"));
+        return await joinedAs(account, false);
+      }
       if (!current()) return null;
       const now = Date.now();
       const mark = account === null ? null : { name, until: now + WAITING_MS, serverId, account, listedAt: now };

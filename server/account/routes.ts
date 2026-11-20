@@ -69,6 +69,26 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (!context.services.relay.setRelayAccount(account)) return fail("invalid_account", "Name the account", 400);
       return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
     }
+    case "/api/account/one-press": {
+      if (!devices.opensAll()) return fail("not_found", "Unknown account action", 404);
+      setRequestRoute(pathname);
+      // only the PC's owner here names the account it joins: never a device through the relay (security-triage, t13r)
+      if (peer.kind === "relay") return fail("owner_only", "Add this PC to your account on this PC itself.", 403);
+      const account = body.account;
+      if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
+      // the account the owner's browser is signed in to must be the one named for this PC, which a press never sets
+      if (context.services.relay.savedRelayAccount() !== account) return fail("account_mismatch", "This PC was set up for another account. Sign in to that one, or add this PC again.", 409);
+      if (devices.account() !== null) return fail("in_account", "This PC is already in an account", 409);
+      let admitted: Awaited<ReturnType<typeof context.services.accountMailbox.admission>>;
+      try { admitted = await context.services.accountMailbox.admission(account); }
+      catch (error) { return fail("account_unavailable", error instanceof Error ? error.message : String(error), 503); }
+      if (admitted === null) return fail("no_admission", "The account service did not admit this PC in one press", 404);
+      // the service's word counts only for the account named here (G1)
+      if (admitted.account !== account) return fail("account_mismatch", "The account service answered for another account", 502);
+      devices.bindByService(account);
+      await context.services.accountMailbox.readSnapshot();
+      return reply({ account });
+    }
     case "/api/account/introduce": {
       setRequestRoute(pathname);
       if (peer.kind !== "relay" || !devices.isAccountApproverSession(peer.device.id, peer.key)) return fail("account_required", "Introduce devices from a device linked to the account", 403);

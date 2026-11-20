@@ -206,6 +206,27 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
 }
 
 /**
+ * One press (docs/account.md, "One press"): the PC just listed under `account` joins it with no device typing digits,
+ * when the account service admits it (a fresh sign-in with two-step sign-in set, within the account's daily cap) and
+ * the PC then takes the service's word for that account. The account is the stored sign-in's, never the one the PC
+ * was named for: the PC is named it again first, and refuses a press for any other. False on every refusal, an
+ * older service or PC included, and once `running` says the attempt is over: the caller keeps today's digit wait.
+ */
+export async function addInOnePress(service: AccountService, serverId: string, account: string, running: () => boolean): Promise<boolean> {
+  const session = await service.session();
+  if (session?.account !== account || !running()) return false;
+  try { await service.forSignIn(session).admitPc(serverId); } catch (error) {
+    console.warn("Ovis: the account service did not add this PC in one press", error instanceof Error ? error.name : error);
+    return false;
+  }
+  const post = (path: string) => apiFetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account }) });
+  if (!running() || !(await post("/api/account/relay-account")).ok || !running()) return false;
+  const pressed = await post("/api/account/one-press");
+  if (!pressed.ok) console.warn("Ovis: this PC did not join in one press", pressed.status);
+  return pressed.ok;
+}
+
+/**
  * Lists the PC a QR code's offer names in `account`, beside the code: the code is drawn first and the listing never
  * holds it up. The offer gives the PC's relay key, so no
  * other pairing window of the PC is opened or closed for it. Nothing is written

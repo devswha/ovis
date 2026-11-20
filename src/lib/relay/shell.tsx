@@ -7,7 +7,7 @@ import { GLOBAL_RELAY } from "../../../shared/relay-regions.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
 import { nextOpenStep, openRefusalOf } from "../account/openPc.ts";
-import type { MyPc } from "../account/myPcs.ts";
+import { isNewAccountPc, type MyPc } from "../account/myPcs.ts";
 import { sameSignIn, SignedOutError } from "../account/service.ts";
 import type { AccountProvider, AccountSession, PendingPairing } from "../account/store.ts";
 import { SIGN_IN_MS, signInReturn } from "../account/signin.ts";
@@ -760,7 +760,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const joinable = await accountPcToJoin(entry.serverId);
       if (entries !== loaded) return;
       const openKey = account.openKey;
-      if (joinable?.join && joinable.accountOpen && openKey !== null) {
+      // a PC added in one press is new to the account for 24 hours: it opens only on a press (security-triage, condition 3)
+      if (joinable?.join && joinable.accountOpen && openKey !== null && !isNewAccountPc(joinable, Date.now())) {
         await connect({ offer: { v: 1, server_id: joinable.server_id, ...joinable.join, name: joinable.name }, code: false, paired: true, accountOpen: openKey });
       } else if (joinable !== undefined) joinPc(joinable, { sheet: "join", alone: true });
       else show({ kind: "empty" });

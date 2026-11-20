@@ -86,6 +86,7 @@ import { PushHealthNotice } from "./components/PushHealthNotice.tsx";
 import { RelayNotice } from "./components/RelayNotice.tsx";
 import { InstallHint } from "./components/InstallHint.tsx";
 import { DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
+import { NewPcNotices } from "./components/NewPcNotices.tsx";
 import { useAccountDeviceNotices } from "./components/AccountDeviceNotices.tsx";
 import { PendingKeys } from "./components/PendingKeys.tsx";
 import { RelayPairingPrompt } from "./components/RelayPairingPrompt.tsx";
@@ -1136,6 +1137,7 @@ export function App() {
         {remotePairings.length > 0 && <AccountApprovals pairings={remotePairings} />}
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         {deviceNotices}
+        {health !== null && <NewPcNotices pageServerId={health.web_ui?.server_id} signIn={accountSignedIn ?? undefined} />}
         {/* The PC's pending-redemptions stream owns the list; a decline response can arrive after a newer event. */}
         <PendingKeys pending={pendingKeys} onDecline={(id) => { void declinePendingKey(id).catch((error: unknown) => console.warn("Ovis: the device was not declined", error instanceof Error ? error.name : error)); }} />
         {removedNotices.length > 0 && <DeviceRemovedNotice events={removedNotices} onDismiss={dismissRemovedNotice} />}

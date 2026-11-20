@@ -1,6 +1,6 @@
 import "./RelayPcTable.css";
 import type { MouseEvent, ReactNode } from "react";
-import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
+import { isNewAccountPc, newPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import { inDashboardFilter, relayHost, type DashboardFilter, type dashboardModel } from "../lib/relay/dashboard.ts";
@@ -108,7 +108,7 @@ export function RelayPcTable({
         onClick={(event) => { event.stopPropagation(); if (onOpenPc) { event.preventDefault(); onOpenPc(row); } }}>{label}</a>
     );
     const detailsBtn = <button type="button" className="btn relay-pc-action-btn" data-pc-action="details" onClick={(e) => { stop(e); onSelect(row.server_id); }}>{t("Details")}</button>;
-    if (mode === "account" && row.accountOpen) return openLink("open", t("Open"));
+    if (mode === "account" && row.accountOpen && !isNewAccountPc(row, now)) return openLink("open", t("Open"));
     switch (row.displayState) {
       case "paired": case "unchecked": return openLink("open", t("Open"));
       case "needs-update": return row.paired ? openLink("update", t("Update")) : detailsBtn;
@@ -185,6 +185,7 @@ export function RelayPcTable({
                     <span className="relay-dash-act relay-pc-act" onClick={(event) => event.stopPropagation()}>{renderAction(row)}</span>
                   </div>
                   <div className="relay-pc-phone-meta">
+                    {isNewAccountPc(row, now) && <><span>{t("New")}</span><span aria-hidden="true">·</span></>}
                     {stateWord(row, updating)}<span aria-hidden="true">·</span>
                     {renderRelay(row)}<span aria-hidden="true">·</span>
                     <span className="relay-pc-seen">{renderSeen(row)}</span>
@@ -225,6 +226,7 @@ export function RelayPcTable({
                   <td className="relay-dash-state-cell relay-pc-cell-state">
                     <div className="relay-pc-state-stack">
                       {stateWord(row, updating)}
+                      {isNewAccountPc(row, now) && <small className="relay-pc-probe-line">{t("New")}</small>}
                       {enrollment !== null && <small className="relay-pc-probe-line" data-pc-enrollment="">{enrollment}</small>}
                       {sub !== null && <small className="relay-pc-probe-line">{sub}</small>}
                     </div>

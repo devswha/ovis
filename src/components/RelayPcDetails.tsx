@@ -3,7 +3,7 @@ import "./RelayPcDetails.css";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, X } from "lucide-react";
 
-import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
+import { isNewAccountPc, newPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import { relayHost } from "../lib/relay/dashboard.ts";
@@ -78,6 +78,7 @@ export function RelayPcDetails({
   }, [onClose, confirmForget]);
 
   const dot = pcDotState(pc, updating);
+  const isNew = isNewAccountPc(pc, now);
   const fresh = newPcs([pc], now).length > 0;
   const stateLabel = ((): string => {
     if (updating) return t("Updating");
@@ -147,6 +148,7 @@ export function RelayPcDetails({
             <dt>{t("State")}</dt>
             <dd>
               <span className="relay-pc-details-value">{stateLabel}</span>
+              {isNew && <small className="relay-pc-details-sub">{t("New")}</small>}
               {pc.enrollment === "failed" && <small className="relay-pc-details-sub">{t("Account setup is incomplete.")}</small>}
               {stateReason !== null && <small className="relay-pc-details-sub" {...(joinReason !== null ? { "data-reason": "join" } : {})}>{stateReason}</small>}
             </dd>
