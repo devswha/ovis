@@ -15,11 +15,14 @@ export async function signInKey(store: AccountStore, service: AccountService, ex
   const ours = (kept: SignInKey | undefined): kept is SignInKey => kept !== undefined && kept.account === session.account && kept.sign_in_id === session.sign_in_id;
   const kept = await store.get("signin_key");
   if (ours(kept) && kept.no !== null) return kept as SignInKey & { readonly no: number };
-  let pending: SignInKey = ours(kept) ? kept : { account: session.account, sign_in_id: session.sign_in_id, key: await newKey(), no: null };
-  await store.update("signin_key", (current) => {
-    if (ours(current)) { pending = current; return current; }
-    return pending;
+  const candidate: SignInKey = ours(kept) ? kept : { account: session.account, sign_in_id: session.sign_in_id, key: await newKey(), no: null };
+  let pending: SignInKey | undefined;
+  await store.updateMany(["session", "signin_key"], (current) => {
+    if (current.session === undefined || !sameSignIn(current.session, session)) return current;
+    pending = ours(current.signin_key) ? current.signin_key : candidate;
+    return { ...current, signin_key: pending };
   });
+  if (pending === undefined) throw new SignedOutError();
   const registered = await service.forSignIn(session).registerDeviceKey(pending.key);
   if (registered === null) {
     await store.update("signin_key", (current) => ours(current) && current.no === null ? undefined : current);
