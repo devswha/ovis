@@ -786,17 +786,13 @@ export class DeviceStore {
   }
 
   get accountError(): string | null {
-    return this.strictProblem ?? this.accountProblem;
+    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.revokeAllIntent?.strict ?? this.joinedRows?.blocked() ?? this.denyProblem ?? this.accountProblem;
   }
 
   /** No device gets in by a row or a code when the PC cannot trust its account state. */
   get failsClosed(): boolean {
     // one rule (S19): with the flag on, anything that makes account records refused makes only this PC get in
     return (this.safety !== null || this.pc !== null || this.evidence !== null) && this.accountError !== null;
-  }
-
-  private get strictProblem(): string | null {
-    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.revokeAllIntent?.strict ?? this.joinedRows?.blocked() ?? this.denyProblem;
   }
 
 
