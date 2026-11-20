@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
+import { DeviceNotices } from "../components/DevicePairedNotice.tsx";
 import type { DeviceNotice, NoticeAnswer, NoticeSeen } from "../../shared/account-devices-api.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import { DEVICE_NOTICE_FEATURE, DeviceNoticeWire, deviceNotice } from "./deviceNoticeWire.fixture.ts";
+import { SettingsProvider } from "./settings.ts";
 import { useDeviceNotices, type NoticeSocket } from "./useDeviceNotices.ts";
 import { HerdrSocket } from "./ws.ts";
 
@@ -18,16 +20,19 @@ describe("device notices on the real PC socket", () => {
   const sockets: HerdrSocket[] = [];
   let result: ReturnType<typeof useDeviceNotices> | undefined;
 
-  function Probe({ socket }: { socket: HerdrSocket }) {
+  function Probe({ socket, visible = true }: { socket: HerdrSocket; visible?: boolean }) {
     result = useDeviceNotices([{ id: "desk", socket }], "desk");
-    return null;
+    return visible ? <SettingsProvider><DeviceNotices pc="Desk" notices={result.byPc.get("desk")?.notices ?? []}
+      onDismiss={(item) => result?.dismiss("desk", item)} /></SettingsProvider> : null;
   }
 
-  async function connect() {
+  async function connect(visible = true) {
     const wire = new DeviceNoticeWire("ws://localhost/ws");
     for (const [key, value] of Object.entries({
       window: Object.assign(new EventTarget(), { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
-      document: Object.assign(new EventTarget(), { visibilityState: "visible" }),
+      document: Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
+      navigator: { languages: ["en"] },
+      getComputedStyle: () => ({ getPropertyValue: () => "" }),
       WebSocket: class { constructor() { return wire; } },
       IS_REACT_ACT_ENVIRONMENT: true,
     })) {
@@ -36,7 +41,7 @@ describe("device notices on the real PC socket", () => {
     }
     const socket = new HerdrSocket(wire.url);
     sockets.push(socket);
-    await act(async () => { renderer = create(<Probe socket={socket} />); });
+    await act(async () => { renderer = create(<Probe socket={socket} visible={visible} />); });
     socket.connect();
     wire.open();
     return { wire, socket };
@@ -96,6 +101,36 @@ describe("device notices on the real PC socket", () => {
       beforeSnapshot: [], afterSnapshot: [{ type: "notice-seen", seq: 2 }], dismissSent: [],
     });
     expect(cards()).toEqual([deviceNotice()]);
+  });
+
+  it("P10, T57: renders the live method received between replay and confirmation before acknowledging a later admission", async () => {
+    const { wire } = await connect();
+    const admission = deviceNotice({ seq: 4 });
+    const earlyMethod = { ...method, seq: 5 };
+    const laterAdmission = deviceNotice({ id: "c".repeat(32), seq: 6 });
+    await act(async () => {
+      wire.read({ type: "features", herdr_lifetime: "new", connection: "desk-1", features: [DEVICE_NOTICE_FEATURE] });
+      wire.read({ type: "device-notice-replay", replay: { notices: [admission], cut: 0 } });
+      wire.read({ type: "device-notice", notice: earlyMethod });
+    });
+    expect(wire.seen()).toEqual([]);
+    await act(async () => { wire.snapshot(); });
+    const confirmed = JSON.stringify(renderer?.toJSON());
+    const ackAfterConfirmation = wire.seen();
+    await act(async () => { wire.read({ type: "device-notice", notice: laterAdmission }); });
+    expect({ methodRendered: confirmed.includes("A sign-in method was added"), ackAfterConfirmation, allAcks: wire.seen() }).toEqual({
+      methodRendered: true, ackAfterConfirmation: [{ type: "notice-seen", seq: 5 }],
+      allAcks: [{ type: "notice-seen", seq: 5 }, { type: "notice-seen", seq: 6 }],
+    });
+  });
+
+  it("P10, T57: a confirmed notice is not acknowledged until its card is rendered", async () => {
+    const { wire, socket } = await connect(false);
+    await act(async () => { wire.snapshot(); wire.read({ type: "device-notice", notice: method }); });
+    expect(wire.seen()).toEqual([]);
+    await act(async () => { renderer?.update(<Probe socket={socket} />); });
+    expect(JSON.stringify(renderer?.toJSON())).toContain("A sign-in method was added");
+    expect(wire.seen()).toEqual([{ type: "notice-seen", seq: 2 }]);
   });
 
   it("G5: ignores unadvertised notice frames even if the socket later offers the feature", async () => {
