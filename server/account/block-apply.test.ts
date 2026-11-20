@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
 import { DeviceStore } from "../devices.ts";
 import { relayConnection, relayFixture } from "../relay/test-helpers.ts";
+import { ADMISSION_FILE } from "./admission-order.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
@@ -45,6 +46,19 @@ async function member(devices: DeviceStore): Promise<Key & { id: string }> {
   return { ...k, id };
 }
 
+async function migratedMembers() {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-block-migration-"));
+  dirs.push(dir);
+  const created = ["2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z", "2026-10-03T00:00:00.000Z"];
+  const [older, target, newer] = await Promise.all([key(), key(), key()]);
+  const rows = [older, target, newer].map((member, index) => ({
+    id: `legacy-${index}`, relay_public_key: member.spki, account: ACCOUNT, created_at: created[index],
+    label: `Phone ${index}`, role: "drive", token_hash: String(index).repeat(64), last_seen_at: null,
+  }));
+  writeFileSync(join(dir, "devices.json"), JSON.stringify({ gate_closed_at: created[0], devices: rows }), { mode: 0o600 });
+  return { dir, devices: open(dir), older, target, newer: { ...newer, id: "legacy-2" } };
+}
+
 /** "Not me" signed by `by` against `target`; the numbers are the record's claims, which the PC does not go by. */
 const block = (target: string, by: Key, claims = { target_no: 9, signer_no: 1 }): Promise<BlockRecord> =>
   signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target, ...claims, signer: by.spki, signed_at: new Date().toISOString(), nonce: newRecordId() }, by.keys.privateKey) as Promise<BlockRecord>;
@@ -64,6 +78,97 @@ async function signIn(devices: DeviceStore, row: Key & { id: string }, serverId 
 }
 
 describe("blocks and freezes on the PC (P16, P21, T51)", () => {
+  test("P16: blocking the middle migrated row closes the newer relay session and refuses sign-in", async () => {
+    const { dir, devices, older, target, newer } = await migratedMembers();
+    expect(await signIn(devices, newer)).not.toBeNull();
+    const session = closes(devices, newer.id);
+
+    expect(await devices.applyBlock(await block(target.spki, older), "handed")).toMatchObject({ outcome: "applied" });
+
+    expect([session.closed, await signIn(devices, newer)]).toEqual([true, null]);
+    expect(await signIn(open(dir), newer)).toBeNull();
+  });
+
+  test("P23: an older migrated signer remains eligible after blocking a newer migrated key", async () => {
+    const { devices, older, target } = await migratedMembers();
+    expect(devices.admits(older.spki)).toBe(true);
+
+    expect(await devices.applyBlock(await block(target.spki, older), "handed")).toMatchObject({ outcome: "applied" });
+
+    expect(devices.admits(older.spki)).toBe(true);
+  });
+
+  test("P16: a newer key confirmed on the PC screen keeps its session and admission", async () => {
+    const { devices } = pc();
+    const [older, target] = [await member(devices), await member(devices)];
+    const screen = await key();
+    const reserved = devices.redeemCode(devices.startPairing().code, "code", screen.spki);
+    if (!reserved.ok) throw new Error(`Code reservation failed: ${reserved.reason}`);
+    const row = devices.admitConfirmed({ codeId: reserved.codeId, key: screen.spki, label: "Screen", source: "screen" });
+    if (row === null) throw new Error("Screen confirmation failed");
+    const session = closes(devices, row.id);
+    expect(await signIn(devices, { ...screen, id: row.id })).not.toBeNull();
+
+    expect(await devices.applyBlock(await block(target.spki, older), "handed")).toMatchObject({ outcome: "applied" });
+
+    expect([session.closed, devices.admits(screen.spki)]).toEqual([false, true]);
+    expect(await signIn(devices, { ...screen, id: row.id })).not.toBeNull();
+  });
+
+  test("P8: a failed generation write refuses the block and its retry while strict", async () => {
+    const { dir, devices } = pc();
+    const [older, target, newer] = [await member(devices), await member(devices), await member(devices)];
+    const record = await block(target.spki, older);
+    const sessions = [closes(devices, target.id), closes(devices, newer.id)];
+    const generation = devices.gen();
+    const path = join(dir, ADMISSION_FILE);
+    renameSync(path, `${path}.saved`);
+    mkdirSync(path);
+
+    const receipt = await devices.applyBlock(record, "handed");
+
+    expect(receipt).toMatchObject({ outcome: "refused", id: record.id });
+    expect(devices.gen()).toBe(generation);
+    expect(devices.failsClosed).toBe(true);
+    expect(devices.sessionRow(older.id)).toBeNull();
+    expect(sessions.map((session) => session.closed)).toEqual([true, true]);
+    expect(await devices.applyBlock(record, "mailbox")).toMatchObject({ outcome: "refused", id: record.id });
+
+    rmSync(path, { recursive: true });
+    renameSync(`${path}.saved`, path);
+    const reopened = open(dir);
+    expect(await reopened.applyBlock(record, "mailbox")).toMatchObject({ outcome: "applied", id: record.id });
+    expect(reopened.gen()).toBe(generation + 1);
+  });
+
+  test("T51: flag off sends no reply bytes for an empty notice answer", async () => {
+    const fixture = relayFixture(false, { accountOpensAll: false });
+    fixtures.push(fixture);
+    const socket = new WebSocket(`ws://127.0.0.1:${fixture.app.port}/ws`);
+    try {
+      const replies = await new Promise<string[]>((resolve, reject) => {
+        const received: string[] = [];
+        let sent = false;
+        socket.onerror = () => reject(new Error("Could not open the events socket"));
+        socket.onclose = () => reject(new Error("Events socket closed before the sentinel"));
+        socket.onmessage = (event) => {
+          const raw = String(event.data);
+          const frame: { type: string; id?: number } = JSON.parse(raw);
+          if (!sent) {
+            if (frame.type !== "snapshot" && frame.type !== "error") return;
+            sent = true;
+            socket.send(JSON.stringify({ type: "notice-answer", id: "gate", answer: "not_me", blocks: [] }));
+            socket.send(JSON.stringify({ type: "ping", id: 51 }));
+          } else if (frame.type === "pong" && frame.id === 51) resolve(received);
+          else received.push(raw);
+        };
+      });
+      expect(replies).toEqual([]);
+    } finally {
+      socket.close();
+    }
+  });
+
   test("T51: one verified block marks the target and freezes only eligible newer rows without locking", async () => {
     const { devices, log } = pc();
     const [older, target, newer] = [await member(devices), await member(devices), await member(devices)];
