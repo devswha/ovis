@@ -70,6 +70,28 @@ describe("sending a Not me to every PC", () => {
   const C = "d".repeat(32);
   const block = { id: "c".repeat(64) } as unknown as import("../../../shared/account-records.ts").BlockRecord;
 
+  it("T60: retries a failed proxy and an unrelated receipt using the same signed record", async () => {
+    const proxy: string[][] = [];
+    const direct: string[][] = [];
+    const receipt = { outcome: "applied", id: block.id, n: 1 };
+    const result = await sendBlocks([block], {
+      tries: 2,
+      pcs: new Map([[A, async (records) => {
+        direct.push(records.map(({ id }) => id));
+        return [{ ...receipt, id: direct.length === 1 ? "e".repeat(64) : block.id }];
+      }]]),
+      relayed: new Map([[B, async (records) => {
+        proxy.push(records.map(({ id }) => id));
+        if (proxy.length === 1) throw new Error("Connection lost");
+        return [receipt];
+      }]]),
+      service: async () => {},
+    });
+    expect({ proxy, direct }).toEqual({ proxy: [[block.id], [block.id]], direct: [[block.id], [block.id]] });
+    expect(result.outcomes.get(A)?.state).toBe("applied");
+    expect(result.outcomes.get(B)?.state).toBe("waiting");
+  });
+
   it("T60: goes to every PC and the account service at once, and only each PC's own receipt counts", async () => {
     const order: string[] = [];
     let release = () => {};
