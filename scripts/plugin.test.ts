@@ -933,6 +933,13 @@ describe("add and login", () => {
     expect(result.exitCode).toBe(2);
     expect(result.err).not.toContain("recover");
   });
+
+  it("T70: recover uses the release flag from the same config as the server", async () => {
+    writeFileSync(join(configDir, ".env"), "OVIS_ACCOUNT_OPENS_ALL=1\n");
+    const result = await run("recover", { HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_ACCOUNT_OPENS_ALL: "0" });
+    expect(result.exitCode).toBe(1);
+    expect(result.out).toMatch(/recovery socket|desktop app/);
+  });
 });
 
 describe.skipIf(platform() === "win32")("a machine profile, under the fleet preview", () => {
