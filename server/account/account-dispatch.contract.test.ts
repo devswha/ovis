@@ -124,6 +124,29 @@ test("R7: a local terminal upgrade grants no multi-PC event document", async () 
   } finally { clock.mockRestore(); }
 });
 
+test("R7: every machine selector must name this PC before HTTP or WS dispatch", async () => {
+  const { fixture, serverId, device } = await listedDispatcher();
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
+  try {
+    const link = await relayConnection(fixture, { serverId, websocket: fixture.app.context.services.core.socketHandlers });
+    await link.auth(device);
+    const socket = link.mux.openWs({ target: "/ws?machine_id=other", headers: [], protocols: [] });
+    await link.flush();
+    expect(socket.rejection?.response?.status).toBe(403);
+    expect(await new Response(socket.rejection?.body).json()).toMatchObject({ error: { code: "local_only" } });
+    expect((await ask(link, "/api/preferences?machine_id=local")).status).toBe(200);
+    for (const [target, headers] of [
+      ["/api/preferences?machine_id=local&machine_id=other", []],
+      ["/api/preferences?machineId=other", []],
+      ["/api/preferences", [["x-herdr-machine", "other"]]],
+    ] as const) {
+      const response = await link.open(target, { headers }).response;
+      expect(response.status, target).toBe(403);
+      expect(await response.json()).toMatchObject({ error: { code: "local_only" } });
+    }
+  } finally { clock.mockRestore(); }
+});
+
 test.each(["join_hold", "catching_up"] as const)("S25, T36-T40: a request at dispatch while %s cannot drive", async reason => {
   const { rows, request } = await listedDispatcher();
   if (reason === "catching_up") rows.staleness(Date.now() - STALE_READ_MS);
