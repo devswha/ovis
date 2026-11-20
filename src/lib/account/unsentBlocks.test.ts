@@ -134,6 +134,24 @@ it("S32-1: a block post refused 401 again after a refresh that worked leaves the
   expect((await store.get("session"))?.access_token).toBe("fresh");
 });
 
+it("S32-1: a redirect is no answer to any account call: a redirected /v1/pcs or /v1/token never ends a valid sign-in", async () => {
+  for (const [path, followed] of [
+    ["/v1/pcs", () => Response.json({ error: { code: "unauthorized" } }, { status: 401 })],
+    ["/v1/token", () => Response.json({ error: { code: "invalid_grant" } }, { status: 400 })],
+  ] as const) {
+    const store = memoryAccountStore();
+    // due for a refresh only where the refresh is the call under test
+    const start = { ...session, expires_at: path === "/v1/token" ? Date.now() : session.expires_at };
+    await store.set("session", start);
+    const service = new AccountService({ store, fetch: async (_input, init) => {
+      if (init?.redirect === "error") throw new TypeError("redirected");
+      return followed();
+    } });
+    await expect(service.listPcs()).rejects.toBeInstanceOf(AccountServiceUnreachableError);
+    expect((await store.get("session"))?.refresh_token).toBe(start.refresh_token);
+  }
+});
+
 it("S32-1: a record still waiting is never removed as a shown refusal", async () => {
   const store = memoryAccountStore();
   await store.set("session", session);
