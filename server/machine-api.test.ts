@@ -4,6 +4,31 @@ import { handleMachineRequest, machineEventsClock, machineEventsQueuedBytes } fr
 import type { MachineManager } from "./machines.ts";
 
 const STREAM_BYTES = 4 * 1024 * 1024;
+
+it("T60: the machine router forwards only the records POST with the target PC credential", async () => {
+  const calls: { method: string; path: string; authorization: string | null; body: unknown }[] = [];
+  using target = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    calls.push({ method: request.method, path: new URL(request.url).pathname, authorization: request.headers.get("authorization"), body: await request.json() });
+    return Response.json({ receipts: [] });
+  } });
+  const manager = {
+    endpoint: (id: string) => id === "desk" ? { url: target.url.origin, token: "target" } : undefined,
+    trackTerminal: () => () => {},
+  } as unknown as MachineManager;
+  const records = { records: [{ kind: "block", id: "signed-id" }] };
+  const send = (method: string, suffix = "account/records", origin = "https://app.example", readOnly = false) =>
+    handleMachineRequest(new Request(`https://app.example/api/machines/desk/${suffix}`, {
+      method, headers: { origin, "x-herdr-machine": "1", "content-type": "application/json", authorization: "Bearer caller" },
+      body: method === "GET" ? undefined : JSON.stringify(records),
+    }), manager, undefined, undefined, readOnly);
+
+  expect((await send("POST", "account/records", "https://other.example")).status).toBe(403);
+  expect((await send("POST", "account/records", "https://app.example", true)).status).toBe(403);
+  expect((await send("GET")).status).toBe(404);
+  expect((await send("POST", "account/records/extra")).status).toBe(403);
+  expect((await send("POST")).status).toBe(200);
+  expect(calls).toEqual([{ method: "POST", path: "/api/account/records", authorization: "Bearer target", body: records }]);
+});
 const TOTAL_BYTES = 32 * 1024 * 1024;
 const CEILING_BYTES = 64 * 1024 * 1024;
 const STALL_MS = 30_000;
