@@ -25,12 +25,16 @@ async function atCapacity() {
   return { ...pc, devices, time, row: held.row, notice: held.id };
 }
 
-test("P17/T53, G15: the ten-second hold ends at capacity without admitting a new row", async () => {
-  const { devices, time, row } = await atCapacity();
+test("P15/T57, P17/T53, G15: at capacity the timer releases the row and an elder can still answer its notice", async () => {
+  const { devices, time, row, notice, member } = await atCapacity();
   time.now += 9_999;
   expect(devices.sessionRow(row)).toBeNull();
   time.now++;
   expect(devices.sessionRow(row)).toMatchObject({ role: "drive" });
+  expect(devices.openNotices()).toHaveLength(64);
+  expect(devices.itsMe(member.id, notice, member.publicKey)).toBe(true);
+  expect(devices.openNotices()).toHaveLength(63);
+  expect(devices.openNotices().some(n => n.id === notice)).toBe(false);
 });
 
 test("P17/T53, G15: an eligible It's me settles its notice at capacity", async () => {
