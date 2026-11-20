@@ -42,7 +42,7 @@ describe("the built-in browser's MCP server", () => {
 
   it("offers only the Ovis-defined tools", async () => {
     const options = place();
-    expect(await handle({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } }, options)).toMatchObject({ id: 1, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} } } });
+    expect(await handle({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } }, options)).toMatchObject({ id: 1, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} } } });
     expect(await handle({ jsonrpc: "2.0", id: 2, method: "tools/list" }, options)).toEqual({ jsonrpc: "2.0", id: 2, result: { tools: BROWSER_TOOLS } });
     expect(await handle({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "evaluate", arguments: {} } }, options)).toMatchObject({ id: 3, error: { code: -32602 } });
     expect(await handle({ jsonrpc: "2.0", method: "notifications/initialized" }, options)).toBeNull();

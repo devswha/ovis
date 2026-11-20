@@ -75,7 +75,8 @@ export async function handle(message: Message, options: { socket: string; tokenF
   const reply = (result: object) => ({ jsonrpc: "2.0", id: message.id ?? null, result });
   switch (message.method) {
     case "initialize":
-      return reply({ protocolVersion: typeof message.params?.["protocolVersion"] === "string" ? message.params["protocolVersion"] : PROTOCOL, capabilities: { tools: {} }, serverInfo: { name: "ovis-browser", version: "1" } });
+      // the one version this server implements (2025-03-26 would need JSON-RPC batches): a client asking another gets it offered
+      return reply({ protocolVersion: PROTOCOL, capabilities: { tools: {} }, serverInfo: { name: "ovis-browser", version: "1" } });
     case "ping":
       return reply({});
     case "tools/list":

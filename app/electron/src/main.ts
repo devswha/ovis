@@ -127,6 +127,8 @@ function updateBrowser(): void {
     browser = null;
   } else if (browser) {
     browser.setPolicy(state.policy);
+    // a quit that did not happen (a refused update) stopped the socket: it listens again (start is a no-op when it does)
+    broker?.start().catch((error: unknown) => console.error(`The built-in browser's agent socket did not open: ${message(error)}`));
   } else {
     browser = new BrowserTabs(() => window, state.policy, join(app.getPath("userData"), "browser-downloads"), tellBrowser, () => ownAddresses(networkInterfaces()));
     broker?.start().catch((error: unknown) => console.error(`The built-in browser's agent socket did not open: ${message(error)}`));
