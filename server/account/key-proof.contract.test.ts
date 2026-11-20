@@ -263,6 +263,7 @@ test("S13-1: a code that ends after the proof is published, before the relay goe
   const made = await pc(true, "linux");
   const code = await made.offerCode();
   const sent: number[] = [];
+  const asks = spyOn(made.app.context.services, "askScreenForKey");
   const send = MuxEngine.prototype.sendSession;
   const outbound = spyOn(MuxEngine.prototype, "sendSession").mockImplementation(function (this: MuxEngine, frame) { sent.push(frame.type); return send.call(this, frame); });
   // the code ends two turns after the entry is published: after KeyProofPairings.prove has named it for the session
@@ -273,7 +274,8 @@ test("S13-1: a code that ends after the proof is published, before the relay goe
     const paired = await provingDevice(made, code);
     expect(await bounded(paired.link.serverError)).toBe("auth_failed");
     expect(sent).not.toContain(FrameType.KEY_PENDING);
+    expect(asks).not.toHaveBeenCalled();
     expect(made.screen.keyConfirm()).toBeUndefined();
     expect((await made.local("/api/devices/pending")).body.pending).toEqual([]);
-  } finally { outbound.mockRestore(); }
+  } finally { outbound.mockRestore(); asks.mockRestore(); }
 });
