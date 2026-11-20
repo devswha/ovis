@@ -4,6 +4,7 @@ import { parseNoticeAnswer, type DeviceNotice } from "../shared/account-devices-
 import { parseSafetyRecord, verifySafetyRecord, type BlockRecord } from "../shared/account-records.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import type { PendingKey } from "../shared/machines.ts";
+import type { DeviceRole } from "../shared/access.ts";
 import { App } from "./App.tsx";
 import { indexedAccountService } from "./lib/account/service.ts";
 import { indexedAccountStore, memoryAccountStore, newKey } from "./lib/account/store.ts";
@@ -14,7 +15,7 @@ import { SettingsProvider } from "./lib/settings.ts";
 import { storeSelection } from "./lib/useSplitView.ts";
 
 async function withDeviceNotices(
-  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly admission?: Pick<DeviceNotice, "method" | "two_step">; readonly decline?: () => Promise<Response> },
+  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly admission?: Pick<DeviceNotice, "method" | "two_step">; readonly decline?: () => Promise<Response>; readonly role?: () => DeviceRole },
   check: (fixture: { readonly tree: ReactTestRenderer; readonly laptop: DeviceNoticeWire; readonly desk: DeviceNoticeWire;
     readonly delivered: readonly BlockRecord[]; readonly servicePosts: readonly { readonly body: unknown; readonly status: number }[] }) => void | Promise<void>,
 ) {
@@ -91,7 +92,7 @@ async function withDeviceNotices(
     if (url.origin === "https://account.example" && pathname === "/v1/signout") return service.fetch(url, init);
     if (pathname === "/api/devices/pending/decline" && options.decline !== undefined) return options.decline();
     if (pathname === "/api/health") return Response.json({
-      auth: { required: false, authenticated: true, role: "drive" },
+      auth: { required: false, authenticated: true, role: options.role?.() ?? "drive" },
       web_ui: { boot_id: null, revision: null, server_id: options.laptopId },
     });
     if (pathname === "/api/machines") return Response.json({ machines: [
@@ -261,6 +262,25 @@ it("T71, T72: a delayed decline reply cannot restore a key removed by a newer PC
     await act(async () => { laptop.read({ type: "machine-event", event: { type: "pending-redemptions", pending: [] } }); });
     expect(declines()).toHaveLength(0);
     await act(async () => { reply.resolve(Response.json({ pending: [second] })); });
+    expect(declines()).toHaveLength(0);
+  });
+});
+
+it("T71, T72: losing drive clears the waiting keys without needing another PC event", async () => {
+  let role: DeviceRole = "drive";
+  await withDeviceNotices({ role: () => role }, async ({ tree, laptop }) => {
+    const pending: PendingKey = { id: "waiting", label: "Phone", fingerprint: "AB12-CD34", via: "relay", redeemed_at: "2026-11-20T04:00:00.000Z", slots: { used: 1, of: 5 } };
+    const declines = () => tree.root.findAllByType("button").filter((button) => button.children.includes("Decline"));
+    await act(async () => {
+      laptop.snapshot([DEVICE_NOTICE_FEATURE, "machine-events"]);
+      laptop.read({ type: "machine-event", event: { type: "pending-redemptions", pending: [pending] } });
+    });
+    expect(declines()).toHaveLength(1);
+
+    await act(async () => { role = "watch"; document.dispatchEvent(new Event("visibilitychange")); });
+    expect(declines()).toHaveLength(0);
+    await act(async () => { laptop.read({ type: "machine-event", event: { type: "pending-redemptions", pending: [pending] } }); });
+    await act(async () => { role = "drive"; document.dispatchEvent(new Event("visibilitychange")); });
     expect(declines()).toHaveLength(0);
   });
 });
