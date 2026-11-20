@@ -144,6 +144,20 @@ it("P18, T34: reloading after a lost registration reply opens the PC with the sa
   expect(run.registrationKeys).toEqual([pending.key.public_spki, pending.key.public_spki]);
 });
 
+it("P18, T34: refreshing the same shell after a lost registration reply opens the PC with the same key", async () => {
+  const run = await accountPc({ loseRegistrationReply: true, open: async (offer) => new class extends RelayTransport {
+    override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+  }(offer) });
+  const pending = await run.accountStore.get("signin_key");
+  if (pending === undefined) throw new TypeError("Missing pending registration");
+  expect(pending.no).toBeNull();
+
+  await run.current().onRefreshAccount?.();
+
+  expect(run.markup()).toContain('data-pc-action="open"');
+  expect(run.registrationKeys).toEqual([pending.key.public_spki, pending.key.public_spki]);
+});
+
 it.each([false, true])("G5: an old PC (provisional WELCOME: %s) gets no account AUTH and offers pairing", async (provisional) => {
   let auths = 0;
   const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
