@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { exportAccountKey, registerSigningBytes } from "../../../shared/account-records.ts";
 import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
-import { AccountService, AccountServiceError } from "./service.ts";
+import { AccountService, AccountServiceError, SignedOutError } from "./service.ts";
 import { signInKey } from "./signInKey.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "./signin.ts";
 import { memoryAccountStore, memoryLock } from "./store.ts";
@@ -119,6 +119,33 @@ describe("this sign-in's own key", () => {
     const before = await signInKey(store, await signedIn(withDeviceRoutes(fake, { opensAll: true }).fetch, fake, store));
     const after = await signInKey(store, await signedIn(withDeviceRoutes(fake, { opensAll: true }).fetch, fake, store));
     expect(after!.key.public_spki).not.toBe(before!.key.public_spki);
+  });
+
+  it("T34, P18: an old tab cannot overwrite the key registered by a newer sign-in", async () => {
+    const fake = new FakeAccountService();
+    const store = memoryAccountStore();
+    const oldService = await signedIn(withDeviceRoutes(fake, { opensAll: true }).fetch, fake, store);
+    const readKey = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const oldTab: typeof store = {
+      ...store,
+      async get(name) {
+        const value = await store.get(name);
+        if (name === "signin_key") {
+          readKey.resolve();
+          await resume.promise;
+        }
+        return value;
+      },
+    };
+    const stale = signInKey(oldTab, oldService).catch((error: unknown) => error);
+    await readKey.promise;
+    const newService = await signedIn(withDeviceRoutes(fake, { opensAll: true }).fetch, fake, store);
+    const newer = await signInKey(store, newService);
+    resume.resolve();
+    expect(await stale).toBeInstanceOf(SignedOutError);
+    expect(newer?.no).toBe(3);
+    expect(await store.get("signin_key")).toEqual(newer);
   });
 
   it("G5: with the release off nothing is made or kept", async () => {
