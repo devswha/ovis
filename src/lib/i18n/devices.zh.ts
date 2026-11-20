@@ -306,11 +306,12 @@ export const DEVICES_ZH: Record<string, string> = {
   "this PC's browser without proof": "未经确认的本机浏览器",
   "Only devices added on this PC's own screen or terminal can come in.": "只有在这台 PC 自己的屏幕或终端上添加的设备才能进入。",
   "This PC could not read its safety log, so it stays locked.": "这台 PC 无法读取其安全记录，因此保持锁定。",
-  "On since {time}.": "自 {time} 起开启。",
   "Turning it on ends:": "开启后会结束：",
   "It does not cover anyone signed in to this computer as you, and cannot stop an older Ovis installed by hand.": "它不涵盖以你的身份登录这台电脑的人，也无法阻止手动安装的旧版 Ovis。",
   "Turn on strict mode": "开启严格模式",
   "Turn off strict mode": "关闭严格模式",
   "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "严格模式需要在这台 PC 的屏幕上确认，目前只有 Linux 支持。",
   "While it is on, use this PC through the Ovis desktop app or a terminal on it.": "开启期间，请通过这台 PC 上的 Ovis 桌面应用或终端使用它。",
+  "Strict mode is not on yet: approve it on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "严格模式尚未开启：请在 {time} 前在这台 PC 的屏幕上批准。在这台 PC 上运行 ovis confirm 可打开批准页面。",
+  "Strict mode stays on until you approve turning it off on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "在 {time} 前于这台 PC 的屏幕上批准关闭之前，严格模式保持开启。在这台 PC 上运行 ovis confirm 可打开批准页面。",
 };

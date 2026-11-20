@@ -306,11 +306,12 @@ export const DEVICES_KO: Record<string, string> = {
   "this PC's browser without proof": "확인 안 된 이 PC의 브라우저",
   "Only devices added on this PC's own screen or terminal can come in.": "이 PC의 화면이나 터미널에서 추가한 기기만 들어올 수 있어요.",
   "This PC could not read its safety log, so it stays locked.": "이 PC가 안전 기록을 읽지 못해 잠긴 채로 있어요.",
-  "On since {time}.": "{time}부터 켜져 있어요.",
   "Turning it on ends:": "켜면 끝나는 것:",
   "It does not cover anyone signed in to this computer as you, and cannot stop an older Ovis installed by hand.": "이 컴퓨터에 내 계정으로 로그인한 사람은 막지 못하고, 손으로 설치한 이전 Ovis도 막지 못해요.",
   "Turn on strict mode": "엄격 모드 켜기",
   "Turn off strict mode": "엄격 모드 끄기",
   "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "엄격 모드는 이 PC 화면에서 확인해야 하는데, 지금은 Linux에서만 돼요.",
   "While it is on, use this PC through the Ovis desktop app or a terminal on it.": "켜져 있는 동안에는 이 PC의 Ovis 데스크톱 앱이나 터미널로 사용하세요.",
+  "Strict mode is not on yet: approve it on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "엄격 모드는 아직 켜지지 않았어요. {time}까지 이 PC 화면에서 승인하세요. 이 PC에서 ovis confirm을 실행하면 승인 페이지가 열려요.",
+  "Strict mode stays on until you approve turning it off on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "{time}까지 이 PC 화면에서 끄기를 승인할 때까지 엄격 모드는 켜져 있어요. 이 PC에서 ovis confirm을 실행하면 승인 페이지가 열려요.",
 };

@@ -7,6 +7,9 @@ import type { LockState } from "../../components/StrictModePanel.tsx";
 import { apiFetch } from "../api-request-id.ts";
 import { errorFrom } from "../api.ts";
 
+/** How long the PC's screen keeps an asked act open (CONFIRM_MS in server/account/local-confirm.ts). */
+export const CONFIRM_WINDOW_MS = 2 * 60_000;
+
 const LOCK = "/api/account/lock";
 const UNLOCK = "/api/account/unlock";
 

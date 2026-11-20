@@ -306,11 +306,12 @@ export const DEVICES_JA: Record<string, string> = {
   "this PC's browser without proof": "確認されていないこの PC のブラウザー",
   "Only devices added on this PC's own screen or terminal can come in.": "この PC の画面またはターミナルで追加したデバイスだけが入れます。",
   "This PC could not read its safety log, so it stays locked.": "この PC は安全ログを読めなかったため、ロックされたままです。",
-  "On since {time}.": "{time} からオンです。",
   "Turning it on ends:": "オンにすると終了するもの:",
   "It does not cover anyone signed in to this computer as you, and cannot stop an older Ovis installed by hand.": "このコンピューターにあなたとしてサインインしている人は対象外で、手動で入れた古い Ovis も止められません。",
   "Turn on strict mode": "厳格モードをオン",
   "Turn off strict mode": "厳格モードをオフ",
   "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "厳格モードにはこの PC の画面での確認が必要ですが、今のところ Linux だけが対応しています。",
   "While it is on, use this PC through the Ovis desktop app or a terminal on it.": "オンの間は、この PC の Ovis デスクトップアプリかターミナルから使ってください。",
+  "Strict mode is not on yet: approve it on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "厳格モードはまだオンではありません。{time} までにこの PC の画面で承認してください。この PC で ovis confirm を実行すると承認ページが開きます。",
+  "Strict mode stays on until you approve turning it off on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "{time} までにこの PC の画面でオフを承認するまで、厳格モードはオンのままです。この PC で ovis confirm を実行すると承認ページが開きます。",
 };

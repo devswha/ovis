@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { currentLocale, useT } from "../lib/i18n.ts";
-import { fetchLockState, requestLock, requestUnlock } from "../lib/account/lock.ts";
+import { CONFIRM_WINDOW_MS, fetchLockState, requestLock, requestUnlock } from "../lib/account/lock.ts";
 
-/** Track B's GET /api/account/lock (S2-18): `preview` is what turning it on ends (T46), only while unlocked and bound. */
+/** GET /api/account/lock (server/account/lock-routes.ts): `preview` is what turning it on ends (T46), only while unlocked and bound. */
 export interface LockState {
   readonly bound: boolean;
   /** whether this PC can confirm on its own screen; fixed by platform (Linux only this release) */
   readonly confirm: "available" | "unsupported";
-  readonly locked: { readonly id: string; readonly at: string; readonly by: "pc" } | null;
+  /** the lock in force, by its id */
+  readonly locked: string | null;
   readonly strict: boolean;
   readonly preview?: {
     readonly rows: readonly { readonly id: string; readonly label: string; readonly origin: { readonly from: string; readonly how: string } | null; readonly file: "devices" | "account" }[];
@@ -16,12 +17,15 @@ export interface LockState {
   };
 }
 
+/** An act this window asked for, waiting on this PC's screen until `until` (ms). */
+interface Asked { readonly kind: "lock" | "unlock"; readonly until: number }
+
 /**
  * Strict mode (device table P11, T46, T47, T49, N7, R10; hub rule: only on a PC bound to an account). The switch is
  * on this PC's own window only, and it only asks: the PC's screen confirms it. Before turning it on, every row and
  * grant it ends is named; once on, turning it off names that lock. What it cannot cover is said, not hidden.
  */
-export function StrictModePanel({ state, local, onTurnOn, onTurnOff }: { state: LockState; local: boolean; onTurnOn: () => void; onTurnOff: (lock: string) => void }) {
+export function StrictModePanel({ state, local, asked = null, onTurnOn, onTurnOff }: { state: LockState; local: boolean; asked?: Asked | null; onTurnOn: () => void; onTurnOff: (lock: string) => void }) {
   const t = useT();
   if (!state.bound) return <p className="settings-hint">{t("Strict mode needs this PC signed in to an Ovis account.")}</p>;
   if (state.confirm === "unsupported" && state.locked === null) return <p className="settings-hint">{t("Strict mode needs a confirmation on this PC's screen, which only Linux has for now.")}</p>;
@@ -30,7 +34,6 @@ export function StrictModePanel({ state, local, onTurnOn, onTurnOff }: { state: 
     <div className="strict-mode">
       <p className="settings-hint">{t("Only devices added on this PC's own screen or terminal can come in.")}</p>
       {state.strict && state.locked === null && <p className="settings-hint">{t("This PC could not read its safety log, so it stays locked.")}</p>}
-      {state.locked !== null && <p>{t("On since {time}.", { time: new Date(state.locked.at).toLocaleString(currentLocale(), { dateStyle: "medium", timeStyle: "short" }) })}</p>}
       {state.locked !== null && <p className="settings-hint">{t("While it is on, use this PC through the Ovis desktop app or a terminal on it.")}</p>}
       {state.locked === null && state.preview !== undefined && (state.preview.rows.length > 0 || state.preview.grants.length > 0) && (
         <>
@@ -44,7 +47,11 @@ export function StrictModePanel({ state, local, onTurnOn, onTurnOff }: { state: 
       <p className="settings-hint">{t("It does not cover anyone signed in to this computer as you, and cannot stop an older Ovis installed by hand.")}</p>
       {local && (state.locked === null
         ? <button type="button" className="btn" onClick={onTurnOn}>{t("Turn on strict mode")}</button>
-        : <button type="button" className="btn" onClick={() => onTurnOff(state.locked!.id)}>{t("Turn off strict mode")}</button>)}
+        : <button type="button" className="btn" onClick={() => onTurnOff(state.locked!)}>{t("Turn off strict mode")}</button>)}
+      {asked !== null && <p className="settings-hint" role="status">{t(asked.kind === "lock"
+        ? "Strict mode is not on yet: approve it on this PC's screen by {time}. Run ovis confirm on this PC to open that page."
+        : "Strict mode stays on until you approve turning it off on this PC's screen by {time}. Run ovis confirm on this PC to open that page.",
+      { time: new Date(asked.until).toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" }) })}</p>}
     </div>
   );
 }
@@ -52,12 +59,26 @@ export function StrictModePanel({ state, local, onTurnOn, onTurnOff }: { state: 
 /** Settings → Devices: strict mode on a PC that offers it (account-opens-all/1), read again after each request. */
 export function StrictModeSection({ offered, local }: { offered: boolean; local: boolean }) {
   const [state, setState] = useState<LockState | null>(null);
+  const [asked, setAsked] = useState<Asked | null>(null);
   const read = useCallback(() => fetchLockState().then(setState, (error: unknown) => {
     console.warn("Ovis: strict mode could not be read", error instanceof Error ? error.name : error);
     setState(null);
   }), []);
   useEffect(() => { if (offered) void read(); }, [offered, read]);
+  // the approval happens on another page: read again when this window comes back, and drop the line once it expires
+  useEffect(() => {
+    if (asked === null) return;
+    const back = () => { void read(); };
+    window.addEventListener("focus", back);
+    const timer = setTimeout(() => { setAsked(null); void read(); }, Math.max(0, asked.until - Date.now()));
+    return () => { window.removeEventListener("focus", back); clearTimeout(timer); };
+  }, [asked, read]);
+  const lock = state?.locked ?? null;
+  useEffect(() => { setAsked(null); }, [lock]);
   if (!offered || state === null) return null;
-  const ask = (request: Promise<string>) => { void request.then(read, (error: unknown) => console.warn("Ovis: strict mode was not asked for", error instanceof Error ? error.name : error)); };
-  return <StrictModePanel state={state} local={local} onTurnOn={() => ask(requestLock())} onTurnOff={(lock) => ask(requestUnlock(lock))} />;
+  const ask = (kind: Asked["kind"], request: Promise<string>) => {
+    void request.then(() => { setAsked({ kind, until: Date.now() + CONFIRM_WINDOW_MS }); return read(); },
+      (error: unknown) => console.warn("Ovis: strict mode was not asked for", error instanceof Error ? error.name : error));
+  };
+  return <StrictModePanel state={state} local={local} asked={asked} onTurnOn={() => ask("lock", requestLock())} onTurnOff={(id) => ask("unlock", requestUnlock(id))} />;
 }

@@ -987,7 +987,12 @@ answers one but these two:
   `local-confirm.json` in the state folder (readable by your user only). It is opened only on
   Linux, where the kernel names the user behind a connection, and answers only that user, with no
   proxy header, a Host of exactly its address and, for an answer, its own Origin and the one-time
-  value its page was given. On Windows neither path exists yet.
+  value its page was given. On Windows neither path exists yet. Run `ovis confirm` on the PC to
+  open it: as the user Ovis runs as, the command reads the port from that file (refusing a file
+  another account owns or can change), prints `http://127.0.0.1:<port>/` and opens it in a browser
+  where there is a desktop. It never opens an address the file names, only the one it builds.
+  Strict mode in Settings → Devices points there after you ask to turn it on or off: nothing changes
+  until the act is approved on that page, within its 2 minutes.
 
 Every route of the server refuses these answers (`local_required`), through the relay, the access
 token, a paired device, a loopback window or the bridge credential alike. A restart ends every

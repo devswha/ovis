@@ -18,7 +18,7 @@ export interface ConfirmIo {
 }
 
 /** The page's address from the file's text, or null unless the file is exactly `{ "port": <1..65535> }`. */
-export function confirmPageUrl(text: string): string | null {
+function confirmPageUrl(text: string): string | null {
   let value: unknown;
   try { value = JSON.parse(text); } catch { return null; }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
