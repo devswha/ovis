@@ -148,7 +148,7 @@ describe("one admission order per PC (origin and admit_no)", () => {
   });
 
   test("P22: with the release flag off no row gets an origin and no order file is written", async () => {
-    const fixture = relayFixture(false, {});
+    const fixture = relayFixture(false, { accountOpensAll: false });
     fixtures.push(fixture);
     const devices = fixture.app.context.services.devices;
     const id = devices.pairRelay(devices.startPairing().code, "Phone", await key())!.device.id;

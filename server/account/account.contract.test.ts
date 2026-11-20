@@ -939,7 +939,7 @@ async function mailboxService(f: Fixture) {
 
 async function accountPc() {
   let fetch = (_request: Request): Promise<Response> => Promise.reject(new Error("no account service yet"));
-  const made = await relayAccountFixture("drive", ACCOUNT, { accountService: { url: "https://account.test", fetch: (request) => fetch(request) } });
+  const made = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: false, accountService: { url: "https://account.test", fetch: (request) => fetch(request) } });
   fixtures.push(made.fixture);
   const { service, identity, leave } = await mailboxService(made.fixture);
   await made.fixture.app.context.services.accountMailbox.pull();

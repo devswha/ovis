@@ -28,8 +28,12 @@ describe("S2-25 the account-opens-all mux feature (S25)", () => {
     expect(await welcomeFeatures("1", [ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE])).toEqual([ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE]);
   });
 
+  test("S25: a PC selects the feature by default for an app that offers it", async () => {
+    expect(await welcomeFeatures(undefined, [ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE])).toEqual([ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE]);
+  });
+
   test("S25: an old app's hello, or a PC with the flag off, selects only today's features", async () => {
     expect(await welcomeFeatures("1", [ACCOUNT_FEATURE])).toEqual([ACCOUNT_FEATURE]);
-    expect(await welcomeFeatures(undefined, [ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE])).toEqual([ACCOUNT_FEATURE]);
+    expect(await welcomeFeatures("0", [ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE])).toEqual([ACCOUNT_FEATURE]);
   });
 });
