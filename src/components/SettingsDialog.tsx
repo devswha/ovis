@@ -29,6 +29,7 @@ import { OwnJoins } from "./OwnJoins.tsx";
 import { FileTextSizeRow } from "./FileTextSizeRow.tsx";
 import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
+import { LinkBrowserRow } from "./LinkBrowserRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
 import { ThemeFiles, themeLabel } from "./ThemeFiles.tsx";
 import { THEME_NAMES, ThemeCard } from "./ThemeCard.tsx";
@@ -52,6 +53,8 @@ import { useMachineApi } from "../lib/machineContext.tsx";
 import type { VoiceStatus } from "../../shared/voice.ts";
 import { dictationLocale, VOICE_CONFIG_EVENT } from "../lib/voice.ts";
 import { DevicesPanel } from "./DevicesPanel.tsx";
+import { StrictModeSection } from "./StrictModePanel.tsx";
+import { useMachineSessions } from "../lib/machineSessionContext.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { RuntimeMove } from "./RuntimeMove.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
@@ -85,6 +88,8 @@ import { canReuseExternalLinkTab, ExternalLink } from "../lib/externalLink.ts";
 
 export interface SettingsDialogProps {
   open: boolean;
+  /** this PC lists account-opens-all/1 now (its step-2 switch is on), from the local socket's features */
+  opensAll?: () => boolean;
   section?: "updates" | null;
   linkPage?: string | null;
   linkSection?: string | null;
@@ -615,6 +620,7 @@ function ChatPage() {
           condition={<span className="settings-condition">{t(filePanelAvailable ? "Only pages this PC serves can open beside the pane." : "Only pages this PC serves can open in the app.")}</span>} wide reset={["webLinks"]}>
           <Segmented label={t("Web links")} value={settings.webLinks} onChange={(webLinks) => update({ webLinks })} options={WEB_LINK_TARGETS.map((webLinks) => ({ value: webLinks, label: webLinks === "panel" ? t(filePanelAvailable ? "Beside the pane" : "In the app") : t("In a new tab") }))} />
         </SettingsRow>
+        <LinkBrowserRow />
       </SettingsGroup>
 
       <VoiceMain />
@@ -1162,10 +1168,12 @@ function deviceKind(label: string, t: ReturnType<typeof useT>): string | null {
 
 const groupedId = (id: string): string => id.match(/.{1,4}/g)?.join(" ") ?? id;
 
-function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSettings, pcSettingsError, onPcSettings, openAddPc, connectPc }: {
+function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSettings, pcSettingsError, onPcSettings, openAddPc, connectPc, opensAll }: {
+  opensAll?: (() => boolean) | undefined;
   auth: HealthAuth | null; security: SecurityFacts; onSignOut: (() => Promise<void>) | null; onRevokedAll: () => void;
   machines: readonly Machine[]; pcSettings: MachineSettings | null; pcSettingsError: string | null; onPcSettings: (patch: Partial<MachineSettings>) => void; openAddPc: (preset?: AddPcPreset) => void; connectPc: (machine: Machine) => void;
 }) {
+  const sessions = useMachineSessions();
   const { settings, update } = useSettings();
   const t = useT();
   const installPrompt = useInstallPrompt();
@@ -1188,6 +1196,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const [accountChecks, setAccountChecks] = useState(0);
   const searching = useContext(SettingsQuery).length > 0;
   const [devicesMore, setDevicesMore] = useState<HTMLDivElement | null>(null);
+  const [accountDelete, setAccountDelete] = useState<HTMLDivElement | null>(null);
   const [devicesCheck, setDevicesCheck] = useState<HTMLDivElement | null>(null);
   const closeConnect = useCallback(() => setConnecting(false), []);
   const pairingHeld = useRef(false);
@@ -1226,7 +1235,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   return (
     <>
       {/* the account first: the sign-in the relay depends on is not left in More settings */}
-      <AccountSection onAccount={setAccount} recheck={accountChecks} />
+      <AccountSection onAccount={setAccount} recheck={accountChecks} deleteSlot={accountDelete} {...(opensAll === undefined ? {} : { opensAll })} />
 
       {/* what is connected to this PC: its name atop one list of the other PCs, phones and browsers, the one in use first */}
       <SettingsGroup section="devices">
@@ -1234,6 +1243,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
         <div className="settings-item my-devices">
           <MyPcRows machines={machines} account={account.account} accountPcs={account.pcs} onAccountChanged={readAccountAgain} watching={auth?.role === "watch"} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} selfAction={setDevicesCheck}>
             <DevicesPanel onDevicePaired={closeConnectOnPair} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} checkSlot={devicesCheck} />
+            <StrictModeSection offered={sessions?.peek("local")?.socket.accountOpensAll() === true} auth={auth} />
           </MyPcRows>
           {account.noPcs && account.provider !== null && <NoAccountPcHint provider={account.provider} />}
         </div>
@@ -1297,6 +1307,9 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
         <AccessFacts facts={security} />
         <RemotePcsMore machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={onPcSettings} />
       </SettingsFold>
+
+      {/* Delete account sits last on the page, away from the account's everyday rows */}
+      <div className="account-delete-foot" ref={setAccountDelete} />
 
       {connecting && (
         <ConnectPhoneDialog plan={plan} pairUrl={pairUrl}
@@ -1671,7 +1684,7 @@ function matchedGroups(result: Element | null, words: readonly string[]): string
   return [...groups.filter(holdsAll), ...groups.filter((group) => !holdsAll(group))].map((group) => group.dataset["section"]).filter((name): name is string => name !== undefined);
 }
 
-function OpenSettingsDialog({ section = null, linkPage = null, linkSection = null, onPage, onClose, onUsageLogin, onOpenPane, actions, updates, auth, herdrVersion, herdrRuntime = null, herdrCore = null, herdrRuntimeFacts = null, picturesByDefault = false, bootId = null, onServerRestarted, security, onEnableNotifications, saveError, savePaused, saveRetrying, onRetrySave, overPreview = false, machines = [] }: SettingsDialogProps) {
+function OpenSettingsDialog({ section = null, linkPage = null, linkSection = null, onPage, onClose, onUsageLogin, onOpenPane, actions, updates, auth, herdrVersion, herdrRuntime = null, herdrCore = null, herdrRuntimeFacts = null, picturesByDefault = false, bootId = null, onServerRestarted, security, onEnableNotifications, saveError, savePaused, saveRetrying, onRetrySave, overPreview = false, machines = [], opensAll }: SettingsDialogProps) {
   const t = useT();
   const narrow = useNarrow();
   const pcExit = useMemo(() => pcListExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname }), []);
@@ -1852,7 +1865,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       case "agents": return <AgentsSettings watching={auth?.role === "watch"} onLocalLogin={onUsageLogin} onOpenPane={onOpenPane} onOpenGuide={onClose} />;
       case "shortcuts": return <ShortcutsPage />;
       // after every device went, its own pairing included, a browser asks the server where it stands: the roster answers, or the gate does
-      case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} openAddPc={actions.openAddPc} connectPc={actions.connectPc}
+      case "devices": return <DevicesPage opensAll={opensAll} auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} openAddPc={actions.openAddPc} connectPc={actions.connectPc}
         machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />;
       case "experimental": return <ExperimentalPage />;
       case "about": return <AboutPage updates={updates} herdrVersion={herdrVersion} herdrRuntime={herdrRuntime} herdrCore={herdrCore} herdrRuntimeFacts={herdrRuntimeFacts} bootId={bootId} onServerRestarted={onServerRestarted} onOpenPane={onOpenPane} bridgesFollow={pcSettings?.auto_update_bridges === true} />;

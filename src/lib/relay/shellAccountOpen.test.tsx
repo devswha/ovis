@@ -32,13 +32,14 @@ let browser: ReturnType<typeof createShellTestPage>;
 beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
 afterEach(() => { jest.useRealTimers(); setTransport(nativeTransport); browser.dispose(); });
 
-async function accountPc({ release = true, loseRegistrationReply = false, open }: {
+async function accountPc({ release = true, loseRegistrationReply = false, newUntil = null, open }: {
   release?: boolean; loseRegistrationReply?: boolean;
+  newUntil?: string | null;
   open: (...args: [...Parameters<NonNullable<RelayShellMount["open"]>>, ReturnType<typeof generateKeyPair>]) => Promise<RelayTransport>;
 }) {
   const identity = generateKeyPair();
   const serverId = deriveServerId(identity.publicKey);
-  const entry = { server_id: serverId, label: "Desk", public_key: Buffer.from(identity.publicKey).toString("hex"), relay: RELAY, added_at: new Date().toISOString(), last_seen_at: new Date().toISOString() };
+  const entry = { server_id: serverId, label: "Desk", public_key: Buffer.from(identity.publicKey).toString("hex"), relay: RELAY, added_at: new Date().toISOString(), last_seen_at: new Date().toISOString(), new_until: newUntil };
   const accountStore = memoryAccountStore();
   const service = new FakeAccountService();
   service.signInAs("github", "acct_1");
@@ -91,8 +92,37 @@ async function accountPc({ release = true, loseRegistrationReply = false, open }
     const rows = dashboardModel(dashboardPcs(state.account.pcs, [], directoryRelays), { label: "Device" }, RELAY).rows;
     return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(RelayPcTable, { rows, onSelect() {}, onOpenSheet() {} })));
   };
-  return { accountStore, serverId, requests, registrationKeys, navigations, navigated: navigated.promise, current, markup, apps: () => apps, reload: () => mountAt(`${APP}/`), openPage: () => mountAt(`${APP}/s/${serverId}/`) };
+  return { accountStore, serverId, requests, registrationKeys, navigations, navigated: navigated.promise, current, markup, apps: () => apps, reload: () => mountAt(`${APP}/`), openPage: () => mountAt(`${APP}/s/${serverId}/`), follow: (path: string) => mountAt(`${APP}${path}`) };
 }
+
+it("A3: a newly added account PC is marked New and its page waits for the Join press", async () => {
+  const attempts: boolean[] = [];
+  const pressed = Promise.withResolvers<void>();
+  const run = await accountPc({
+    newUntil: new Date(Date.now() + 23 * 60 * 60_000).toISOString(),
+    open: async (_offer, options) => {
+      attempts.push(options?.accountOpensAll === true);
+      pressed.resolve();
+      throw new RangeError("Stop after observing the requested connection");
+    },
+  });
+  const markup = run.markup();
+  await run.openPage();
+  expect(attempts).toEqual([]);
+  const path = run.navigations[0];
+  if (path === undefined) throw new TypeError("Missing the PC's join screen");
+  await run.follow(path);
+  expect(run.current().state.kind).toBe("confirm");
+  expect(attempts).toEqual([]);
+  expect(run.apps()).toBe(0);
+  run.current().onPair();
+  await pressed.promise;
+  expect(attempts).toEqual([false]);
+  // the overview shows nothing new (owner rule): no mark, and no quick Open
+  expect(markup).not.toMatch(/>New( PC)?<\//);
+  expect(markup).toContain('data-pc-action="join"');
+  expect(markup).not.toContain('data-pc-action="open"');
+});
 
 it("T34, P18: a normal sign-in opens a listed unpaired PC as its registered account row", async () => {
   const admissions: { feature: boolean | undefined; row: string | null | undefined; key: string | undefined }[] = [];
@@ -106,6 +136,7 @@ it("T34, P18: a normal sign-in opens a listed unpaired PC as its registered acco
   } });
   const key = await run.accountStore.get("signin_key");
   const markup = run.markup();
+  expect(markup).not.toContain(">New PC</");
   await run.openPage();
   expect({
     number: key?.no, open: markup.includes('data-pc-action="open"'), join: markup.includes('data-pc-action="join"'),
@@ -277,8 +308,33 @@ it("T53, P17 wire: a held refusal whose notice is not published yet reaches the 
   expect(run.current().state).toMatchObject({ kind: "connecting", hold: { reason: "join_hold", until: null } });
 });
 
+it("OD3, T53, P17 wire: a held device asks again within a second, so when the PC lets it in early (It's me) the app opens before the deadline", async () => {
+  class Admitted extends RelayTransport {
+    override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+  }
+  let attempts = 0;
+  let until = "";
+  const run = await accountPc({ open: async (offer, options, identity) => {
+    attempts++;
+    if (attempts > 1) return new Admitted(offer);
+    return openRelayTransport(offer, {
+      ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_FEATURE], provisional: true, auth: () => accountOpenRefusalFrame("held", "", { reason: "join_hold", until }) }),
+    });
+  } });
+  jest.useFakeTimers();
+  until = new Date(Date.now() + 10_000).toISOString();
+  await run.openPage();
+  expect({ attempts, apps: run.apps() }).toEqual({ attempts: 1, apps: 0 });
+  jest.advanceTimersByTime(999);
+  expect({ attempts, apps: run.apps() }).toEqual({ attempts: 1, apps: 0 });
+  jest.advanceTimersByTime(1);
+  // the retry's connect settles in microtasks: no timer is involved
+  for (let turn = 0; turn < 100 && run.apps() === 0; turn++) await Promise.resolve();
+  expect({ attempts, apps: run.apps(), navigations: run.navigations }).toEqual({ attempts: 2, apps: 1, navigations: [] });
+});
+
 it("T34 wire: the shell stays Connecting until the decoded hold deadline, then retries AUTH", async () => {
-  const delay = 4_321;
+  const delay = 900;
   let until = "";
   const rows: string[] = [];
   const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
