@@ -162,9 +162,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
         expect(reconnect.action_required ?? null).toBeNull();
         expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ state: "connected", runtime: "herdr", action_required: null });
       }
-      const added = await add({ destination: "fixture-added" });
-      expect(added).toMatchObject({ phase: "connected", runtime: "herdr" });
-      expect(added.action_required ?? null).toBeNull();
+      ownOvisAdded(await add({ destination: "fixture-added" }));
       expect(starts).toBe(0);
       return;
     }
@@ -184,8 +182,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
     if (bare) {
       const added = await add({ destination: "fixture-added" });
       if (outcome === "older peer, no bundle, bridged") {
-        expect(added).toMatchObject({ phase: "connected", runtime: "herdr" });
-        expect(added.action_required ?? null).toBeNull();
+        ownOvisAdded(added);
         expect(starts).toBe(0);
         return;
       }

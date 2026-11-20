@@ -26,14 +26,15 @@ export function testHerdrSession(name: string): boolean {
 }
 
 /**
- * A config root another process of this account runs herdr with that is a throwaway: under the account's cache folder,
- * or in a temp folder (the system's, or that process's own TMPDIR) the account's home is not inside. Test runs and
- * trial copies start herdr there (a mkdtemp XDG_CONFIG_HOME); their sessions are never the user's to connect to.
+ * A path in a throwaway folder: under the account's cache folder, or in a temp folder (the usual ones, or `temps`, as
+ * a TMPDIR) the account's home is not inside. Test runs and trial copies start herdr there (a mkdtemp
+ * XDG_CONFIG_HOME); their sessions are never the user's to connect to.
  */
-function throwawayRoot(root: string, home: string, tmp?: string): boolean {
-  const temp = [tmpdir(), tmp, "/tmp", "/var/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/dev/shm"]
-    .filter((dir): dir is string => !!dir?.startsWith("/") && !(home + "/").startsWith(dir.replace(/\/$/, "") + "/"));
-  return [join(home, ".cache"), ...temp].some((dir) => root.startsWith(dir.replace(/\/$/, "") + "/"));
+export function throwawayPath(path: string, home: string, ...temps: (string | undefined)[]): boolean {
+  const inside = (dir: string, at: string) => normalize(at + "/").startsWith(dir.replace(/\/+$/, "") + "/");
+  const temp = [...temps, "/tmp", "/var/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/dev/shm"]
+    .filter((dir): dir is string => !!dir?.startsWith("/") && !inside(dir, home));
+  return [join(home, ".cache"), ...temp].some((dir) => inside(dir, path));
 }
 
 function processSocket(args: string[], home: string, xdg?: string): string | null {
@@ -51,7 +52,7 @@ async function discoveryScope(host: HerdrDiscoveryHost): Promise<DiscoveryScope>
   const scope: DiscoveryScope = { dirs: new Set(), paths: new Set(), uid: host.uid ?? process.getuid?.() };
   const add = (path: string) => {
     const session = /\/herdr\/sessions\/([^/]+)\/herdr\.sock$/.exec(path)?.[1];
-    if (scope.paths.size < MAX_CANDIDATES && !(session && testHerdrSession(session)) && existsSync(path)) scope.paths.add(path);
+    if (scope.paths.size < MAX_CANDIDATES && !(session && testHerdrSession(session)) && !throwawayPath(path, host.home, tmpdir()) && existsSync(path)) scope.paths.add(path);
   };
   const allowRoot = (root: string | undefined) => {
     if (!root?.startsWith("/")) return;
@@ -60,7 +61,7 @@ async function discoveryScope(host: HerdrDiscoveryHost): Promise<DiscoveryScope>
   };
   allowRoot(join(host.home, ".config")); allowRoot(host.xdg);
   const server = (args: string[], home: string | undefined, xdg?: string, tmp?: string) => {
-    if (home !== host.home || xdg?.startsWith("/") && throwawayRoot(xdg, home, tmp)) return;
+    if (home !== host.home || xdg?.startsWith("/") && throwawayPath(xdg, home, tmpdir(), tmp)) return;
     const path = processSocket(args, home, xdg);
     if (!path) return;
     allowRoot(xdg?.startsWith("/") ? xdg : join(home, ".config"));
@@ -255,12 +256,13 @@ export function validHerdrSocket(value: unknown): value is string {
   return typeof value === "string" && value.length <= 4096 && value.startsWith("/") && value.endsWith("/herdr.sock") && !/[\0\r\n]/.test(value);
 }
 
-export function parseFoundHerdrSessions(value: unknown): FoundHerdrSession[] {
+/** `home`: the listing PC's home, whose throwaway folders (throwawayPath) are left out too. */
+export function parseFoundHerdrSessions(value: unknown, home?: string): FoundHerdrSession[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_CANDIDATES) throw new Error("The PC returned an invalid list of herdr sessions");
   return value.map((row: unknown) => {
     if (typeof row !== "object" || row === null || !("socket_path" in row) || !validHerdrSocket(row.socket_path)
       || !("label" in row) || typeof row.label !== "string" || row.label.length > 256
       || "session" in row && (typeof row.session !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(row.session))) throw new Error("The PC returned an invalid herdr session");
     return { socket_path: row.socket_path, label: row.label, ...("session" in row && typeof row.session === "string" ? { session: row.session } : {}) };
-  }).filter((row) => !row.session || !testHerdrSession(row.session));
+  }).filter((row) => !(row.session && testHerdrSession(row.session)) && !(home && throwawayPath(row.socket_path, home)));
 }

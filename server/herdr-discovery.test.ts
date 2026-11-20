@@ -111,8 +111,13 @@ describe("running herdr discovery", () => {
       writeFileSync(join(f.procRoot, `${100 + i}/environ`), `HOME=${f.home}\0XDG_CONFIG_HOME=${xdg}\0TMPDIR=${tmp}\0`);
     }
     expect(await discoverHerdrSessions(f)).toEqual([work]);
+    // nor when the throwaway root is the scanner's own
+    expect(await discoverHerdrSessions({ ...f, xdg: roots[0][1], procRoot: join(f.home, "missing") })).toEqual([work]);
     const listed = ["ovis-test", "ovis-test-gate", "check-873df7"].map((session) => ({ socket_path: `/h/.config/herdr/sessions/${session}/herdr.sock`, session, label: session }));
-    expect(parseFoundHerdrSessions([work, ...listed])).toEqual([work]);
+    const cached = { socket_path: "/h/.cache/ovis-tmp/trial/config/herdr/sessions/work/herdr.sock", session: "work", label: "work" };
+    const temp = { socket_path: "/tmp/x/config/herdr/herdr.sock", label: "Default session" };
+    const kept = { ...work, socket_path: "/h/.config/herdr/sessions/work/herdr.sock" };
+    expect(parseFoundHerdrSessions([kept, ...listed, cached, temp], "/h")).toEqual([kept]);
   });
 
   it("preserves whitespace in macOS process HOME and XDG values", async () => {

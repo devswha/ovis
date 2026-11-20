@@ -512,6 +512,12 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
 .machine-action-more { align-self: stretch; }
 .machine-action-more summary { cursor: pointer; color: var(--text-dim); }
 .machine-action-more[open] summary { margin-bottom: var(--space-2); }
+.machine-choice-path {
+  display: block;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
 
 .machine-action.is-updating {
   border-color: var(--border);

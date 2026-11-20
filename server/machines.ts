@@ -1356,7 +1356,7 @@ export class MachineManager {
           answered = true;
           const listed = proved.identity.found_herdr_sessions;
           if (listed === undefined) unlisted = true;
-          else { if (listed.length) for (const row of parseFoundHerdrSessions(listed)) sessions.set(row.socket_path, row); named = true; }
+          else { if (listed.length) for (const row of parseFoundHerdrSessions(listed, inspection.home)) sessions.set(row.socket_path, row); named = true; }
         } catch (error) {
           if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw error;
           // A stale or inaccessible registration grants no connection and no permission to start anything. A live one of
@@ -1376,30 +1376,25 @@ export class MachineManager {
         if (!found.length) throw await coreUnavailable();
         if (!answered) throw !job || job.auto ? new Error(OWN_OVIS_UNANSWERED) : await offer(OWN_OVIS_UNANSWERED);
         expectedSocket = target.own_ovis;
+      } else if (adding && answered && found.length === 1 && !session) {
+        // A PC added beside its one answering Ovis connects to it, whatever else runs there, with nothing to choose: a herdr
+        // session instead is named under the dialog's advanced settings
+        target.own_ovis = found[0]!.socket_path;
+        expectedSocket = target.own_ovis;
       } else if (found.length) {
         const choice = answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED;
         const served = adding && await servedAlready();
-        let ask = !served;
-        if (served) {
-          if (unlisted) { for (const row of await localSessions()) sessions.set(row.socket_path, row); unlisted = false; }
-          if (served === "socket" && !sessions.has(expectedSocket)) {
-            if (named) ask = true;
-            // Not beside an Ovis that does not answer: that PC connects as before. Nor for a session named in the dialog: only
-            // the default session's socket is saved as herdr to start (job.defaultSocket), so the named one's row would save
-            // the PC with that socket, and after that PC restarts its bridge would say the session no longer runs instead of
-            // starting it by its name
-            else if (!session && answered && !listedHere) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
-          }
-          if (sessions.has(expectedSocket)) ask = true;
+        if (!served) throw await offer(choice);
+        if (unlisted) { for (const row of await localSessions()) sessions.set(row.socket_path, row); unlisted = false; }
+        if (served === "socket" && !sessions.has(expectedSocket)) {
+          if (named) throw await offer(choice);
+          // Not beside an Ovis that does not answer: that PC connects as before. Nor for a session named in the dialog: only
+          // the default session's socket is saved as herdr to start (job.defaultSocket), so the named one's row would save
+          // the PC with that socket, and after that PC restarts its bridge would say the session no longer runs instead of
+          // starting it by its name
+          if (!session && answered && !listedHere) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
         }
-        if (ask) {
-          // A PC added beside its one answering Ovis connects to it, with nothing to choose: a herdr session instead is
-          // named under the dialog's advanced settings. Its sessions are offered only beside an Ovis that is not that
-          // clear (none answering, more than one) and on a saved PC's reconnect
-          if (!adding || !answered || found.length !== 1 || session) throw await offer(choice);
-          target.own_ovis = found[0]!.socket_path;
-          expectedSocket = target.own_ovis;
-        }
+        if (sessions.has(expectedSocket)) throw await offer(choice);
       }
     }
     const offered = { remote_ovis: runtime.machine.remote_ovis, installFix: runtime.installFix, remoteRevision: runtime.remoteRevision };
@@ -1566,7 +1561,8 @@ export class MachineManager {
           if (descriptor) break;
           const found = await host.foundSessions?.(ssh, inspection);
           if (found?.gone) throw new MachineActionRequired("The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.", "choose_herdr", false, found.sessions);
-          if (found?.sessions.length) throw new MachineActionRequired("A herdr session is already running on this PC. Choose it, or start a new one.", "choose_herdr", false, found.sessions);
+          // a startup the PC stopped for sessions found there: those it may offer (none, past the test sessions) or a new herdr
+          if (found) throw new MachineActionRequired("A herdr session is already running on this PC. Choose it, or start a new one.", "choose_herdr", false, found.sessions);
           if (!headless) notice = await host.startupNotice?.(ssh, session) ?? null;
           if (notice) break;
           await Bun.sleep(250);

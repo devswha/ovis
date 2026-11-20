@@ -36,6 +36,14 @@ it("offers each running session and a separate explicit new-start choice", async
       { session: undefined, herdr_socket: "/desktop/herdr/herdr.sock", start_new_herdr: undefined },
       { herdr_socket: undefined, start_new_herdr: true },
     ]);
+    expect(view.root.findAllByProps({ className: "machine-choice-path" })).toHaveLength(0);
+    // choices that would read the same name their socket
+    await act(async () => { view?.update(<SettingsProvider><FoundHerdrChoices sessions={[
+      { session: "work", label: "work", socket_path: "/a/herdr/sessions/work/herdr.sock" },
+      { session: "work", label: "work", socket_path: "/b/herdr/sessions/work/herdr.sock" },
+      { session: "solo", label: "solo", socket_path: "/a/herdr/sessions/solo/herdr.sock" },
+    ]} ownOvis={[{ socket_path: "/a/hc.sock", runtime: "herdr-core" }, { socket_path: "/b/hc.sock", runtime: "herdr-core" }]} error={null} busy={false} onChoose={() => {}} /></SettingsProvider>); });
+    expect(view.root.findAllByProps({ className: "machine-choice-path" }).map((path) => path.children.join(""))).toEqual(["/a/hc.sock", "/b/hc.sock", "/a/herdr/sessions/work/herdr.sock", "/b/herdr/sessions/work/herdr.sock"]);
     for (const reason of ["Start Ovis on that PC, or start a new herdr here", "The Ovis chosen on this PC serves herdr-core from a socket that is not this SSH account's own, so it was not used. Choose again, or start a new herdr here."]) {
       await act(async () => { view?.update(<SettingsProvider><FoundHerdrChoices sessions={[]} error={reason} busy onChoose={(choice) => choices.push(choice)} /></SettingsProvider>); });
       expect(view.root.findByType("strong").children.join("")).toBe(reason);
