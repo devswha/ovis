@@ -58,7 +58,7 @@ class FakeSocket implements RelaySocket {
 }
 
 async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account", onClose?: (error: Error) => void,
-  pc: { relay?: string; hints?: readonly string[]; features?: readonly string[]; wrap?: (store: MemoryDeviceStore, device: RelayDevice) => RelayDeviceStore } = {}, channel: Partial<RelayChannelOptions> = {}) {
+  pc: { relay?: string; hints?: readonly string[]; features?: readonly string[]; provisional?: boolean; wrap?: (store: MemoryDeviceStore, device: RelayDevice) => RelayDeviceStore } = {}, channel: Partial<RelayChannelOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const registry = new DeviceStore(dir);
@@ -79,6 +79,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
   const authSeen = Promise.withResolvers<void>();
   const allowAuth = Promise.withResolvers<void>();
   const httpSeen = Promise.withResolvers<string>();
+  const receiptSeen = Promise.withResolvers<MuxEngine["stats"]>();
   let secure: SecureChannel;
   let server: MuxEngine;
   let socket: FakeSocket;
@@ -104,7 +105,11 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
       const bytes = new Uint8Array(data);
       const frame = decodeFrame(bytes);
       trace.push(`client:${Object.entries(FrameType).find(([, value]) => value === frame.type)?.[0]}`);
-      incoming = incoming.then(async () => { await daemonOpening; server.receive(bytes); }).catch(fail);
+      incoming = incoming.then(async () => {
+        await daemonOpening;
+        server.receive(bytes);
+        if (frame.type === FrameType.RECEIVED) receiptSeen.resolve(server.stats);
+      }).catch(fail);
     } },
   }).then((channel) => {
     secure = channel;
@@ -117,7 +122,9 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
       onHttp: (stream) => { httpSeen.resolve(stream.request.target); stream.headers(200); stream.end(); },
       onSession: (frame) => { void handle(frame).catch(fail); },
     });
-    if (attack === "early-welcome") {
+    if (pc.provisional) {
+      server.sendSession({ type: FrameType.WELCOME, flags: 0, stream_id: 0, payload: { ...welcome(), features: [], provisional: true } });
+    } else if (attack === "early-welcome") {
       trace.push("server:WELCOME");
       server.sendSession({ type: FrameType.WELCOME, flags: 0, stream_id: 0, payload: welcome() });
     }
@@ -182,7 +189,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
     queueMicrotask(() => socket.deliver(JSON.stringify(attack === "assigned" ? { type: "wrong" } : { type: "assigned", connection_id: "ef".repeat(16) })));
     return socket;
   } });
-  return { opening, trace, authSeen, allowAuth, httpSeen, socket, store, offer, get offered() { return offered; } };
+  return { opening, trace, authSeen, allowAuth, httpSeen, receiptSeen, socket, store, offer, get offered() { return offered; } };
 }
 
 for (const pairing of [false, true]) {
@@ -471,6 +478,16 @@ it("T34, G5: offers the account-opens-all mux feature in HELLO only when asked, 
   expect(asking.offered).toContain(ACCOUNT_OPENS_ALL_MUX_FEATURE);
   asking.allowAuth.resolve();
   await asking.opening;
+});
+
+it("T34: an account open after a provisional WELCOME acknowledges every PC setup frame", async () => {
+  const f = await fixture(false, undefined, undefined, { provisional: true, features: [ACCOUNT_OPENS_ALL_MUX_FEATURE] }, { accountOpensAll: true });
+  f.allowAuth.resolve();
+  const channel = await f.opening;
+  await channel.mux.flush();
+  const { acknowledged, submitted } = await bounded(f.receiptSeen.promise);
+  expect(submitted).toBe(3n);
+  expect(acknowledged).toBe(submitted);
 });
 
 it("offers the account feature in HELLO and keeps what the PC selected, so an older PC can be told apart", async () => {
