@@ -3,7 +3,7 @@
  * reaches, and the temporary release of rows this PC already held from the wait for a whole read.
  */
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bounded } from "../relay/test-helpers.ts";
@@ -56,6 +56,22 @@ test.if(unix)("R11: a recovery folder that is a symlink is refused", () => {
   symlinkSync(elsewhere, join(dir, RECOVER_DIR));
   expect(openRecoverySocket({ stateDir: dir, handle: echo })).toHaveProperty("refused");
 });
+
+for (const { kind, create } of [
+  { kind: "directory", create: (path: string) => mkdirSync(path) },
+  { kind: "file", create: (path: string) => writeFileSync(path, "leave this alone") },
+]) {
+  test.if(unix)(`R11: an existing ${kind} at the socket path is refused and preserved`, () => {
+    const dir = stateDir();
+    mkdirSync(join(dir, RECOVER_DIR), { mode: 0o700 });
+    const path = join(dir, RECOVER_DIR, RECOVER_SOCKET);
+    create(path);
+    const result = openRecoverySocket({ stateDir: dir, handle: echo });
+    if ("stop" in result) ends.push(() => result.stop());
+    expect(result).toEqual({ refused: "socket_unsafe" });
+    expect(kind === "directory" ? statSync(path).isDirectory() : statSync(path).isFile()).toBe(true);
+  });
+}
 
 test.if(unix)("R11: a state folder others may write without the sticky bit is refused", () => {
   const dir = stateDir();
