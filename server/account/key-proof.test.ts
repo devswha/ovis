@@ -176,3 +176,14 @@ test("S13-1: a key that stopped waiting before the screen is asked (its code end
   expect(confirms.pending()).toEqual([]);
   expect(pairings.isWaiting(proved.pending.id)).toBe(false);
 });
+
+test("S13-1: a session that leaves while its proof is checked ends with nothing waiting", async () => {
+  const { pairings, pending } = setup();
+  const phone = await device();
+  const started = pairings.pair({ code: "123456", label: "Phone", publicKey: phone.spki, how: "code", via: "relay", keyProof: true });
+  if (!("session" in started)) throw new Error("Pairing did not start");
+  const proving = pairings.prove(started.session, await signPairProof(SERVER, started.challenge, phone.spki, phone.keys.privateKey));
+  pairings.leave(started.session);
+  expect(await proving).toEqual({ refuse: "auth_failed" });
+  expect(pending.list()).toEqual([]);
+});

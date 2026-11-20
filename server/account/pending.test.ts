@@ -6,7 +6,7 @@
 import { expect, test } from "bun:test";
 import { exportAccountKey } from "../../shared/account-records.ts";
 import { signPairProof } from "../../shared/pair-fingerprint.ts";
-import { PENDING_MS, PENDING_PER_CODE, PENDING_TOTAL, PendingRedemptions } from "./pending.ts";
+import { PENDING_MS, PENDING_PER_CODE, PENDING_TOTAL, PendingLimitError, PendingRedemptions } from "./pending.ts";
 
 const SERVER = "0123456789abcdef0123456789abcdef";
 
@@ -177,4 +177,16 @@ test("T71: a redemption that ends unapproved gives its code's use back, and an a
   now += PENDING_MS + 1;
   pending.list();
   expect(released).toEqual(["use-1", "use-3", "use-4"]);
+});
+
+test("T71: a proof being checked holds its slot, so a code's limit counts it", async () => {
+  const { pending } = store();
+  const phone = await device();
+  const { challenge } = pending.name("code1", "Phone", phone.spki, "relay", undefined, { codeId: "use-1" });
+  const proving = pending.prove(challenge, await signPairProof(SERVER, challenge, phone.spki, phone.keys.privateKey));
+  for (let i = 1; i < PENDING_PER_CODE; i++) pending.name("code1", `Phone ${i}`, (await device()).spki, "relay", undefined, { codeId: `use-${i + 1}` });
+  let refused = false;
+  try { pending.name("code1", "One more", (await device()).spki, "relay", undefined, { codeId: "use-x" }); } catch (error) { refused = error instanceof PendingLimitError; }
+  expect(refused).toBe(true);
+  await proving;
 });
