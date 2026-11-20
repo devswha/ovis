@@ -144,7 +144,8 @@ describe("this sign-in's own key", () => {
     const newer = await signInKey(store, newService);
     resume.resolve();
     expect(await stale).toBeInstanceOf(SignedOutError);
-    expect(newer?.no).toBe(3);
+    if (newer === null) throw new TypeError("The new sign-in did not register");
+    expect(newer.no).toBe(3);
     expect(await store.get("signin_key")).toEqual(newer);
   });
 
