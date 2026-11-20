@@ -1,4 +1,78 @@
 {
+  "0.5.8": {
+    "en": {
+      "new": [
+        "Desktop apps can open web links in a browser you pick.",
+        "Agents can get a browser tool, picked per agent in Settings.",
+        "Set OVIS_ACCOUNT_OPENS_ALL=1 on a PC to open it by signing in once."
+      ],
+      "improved": [
+        "app.ovis.sh and the phone apps open your PC, not a list of PCs.",
+        "Signing in on the PC's own page goes straight to your provider.",
+        "Adding a PC over Tailscale or SSH opens its own Ovis, no list.",
+        "Phone pairing opens on the Ovis relay, with a QR code in one press.",
+        "Settings' Account section is compact: one row, icon sign-in chips."
+      ],
+      "fixed": [
+        "Sign-in at app.ovis.sh offers Google and Apple, not GitHub alone.",
+        "A PC waiting to be added says how to finish with one device."
+      ]
+    },
+    "ko": {
+      "new": [
+        "데스크톱 앱에서 웹 링크를 고른 브라우저로 열 수 있어요.",
+        "설정에서 에이전트마다 브라우저 도구를 붙일 수 있어요.",
+        "PC에 OVIS_ACCOUNT_OPENS_ALL=1을 설정하면 로그인 한 번으로 그 PC가 열려요."
+      ],
+      "improved": [
+        "app.ovis.sh와 휴대폰 앱이 PC 목록 대신 내 PC를 바로 열어요.",
+        "PC 자체 화면에서 로그인하면 바로 로그인 서비스로 넘어가요.",
+        "Tailscale이나 SSH로 PC를 추가하면 목록 없이 그 PC의 Ovis가 열려요.",
+        "휴대폰 연결이 Ovis 릴레이로 열리고, 한 번 누르면 QR 코드가 떠요.",
+        "설정의 계정 섹션이 한 줄과 아이콘 로그인 버튼으로 간결해졌어요."
+      ],
+      "fixed": [
+        "app.ovis.sh 로그인에 GitHub뿐 아니라 Google과 Apple도 있어요.",
+        "추가를 기다리는 PC가 기기 하나로 끝내는 방법을 알려 줘요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "デスクトップアプリで、Web リンクを選んだブラウザで開けます。",
+        "設定でエージェントごとにブラウザツールを付けられます。",
+        "PC で OVIS_ACCOUNT_OPENS_ALL=1 にすると、一度のサインインでその PC が開きます。"
+      ],
+      "improved": [
+        "app.ovis.sh とスマホアプリは PC 一覧ではなく自分の PC を開きます。",
+        "PC 自身の画面でのサインインは、そのままプロバイダへ進みます。",
+        "Tailscale や SSH での PC 追加は、一覧なしでその PC の Ovis を開きます。",
+        "スマホの接続は Ovis リレーで開き、1 回押すと QR コードが出ます。",
+        "設定のアカウント欄が 1 行とアイコンのサインインボタンにまとまりました。"
+      ],
+      "fixed": [
+        "app.ovis.sh のサインインに GitHub だけでなく Google と Apple も。",
+        "追加待ちの PC が、端末 1 台で終える方法を案内します。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "桌面应用可以用你选择的浏览器打开网页链接。",
+        "可在设置中为每个代理添加浏览器工具。",
+        "在电脑上设置 OVIS_ACCOUNT_OPENS_ALL=1，登录一次即可打开这台电脑。"
+      ],
+      "improved": [
+        "app.ovis.sh 和手机应用直接打开你的电脑，而不是电脑列表。",
+        "在电脑自己的页面登录会直接跳到登录服务。",
+        "通过 Tailscale 或 SSH 添加电脑会直接打开它的 Ovis，无需列表。",
+        "手机配对从 Ovis 中继打开，按一下即显示二维码。",
+        "设置中的账户部分更紧凑：一行信息加图标登录按钮。"
+      ],
+      "fixed": [
+        "app.ovis.sh 登录除了 GitHub，还提供 Google 和 Apple。",
+        "等待添加的电脑会说明如何只用一台设备完成。"
+      ]
+    }
+  },
   "0.5.7": {
     "en": {
       "improved": [
