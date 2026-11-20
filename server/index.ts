@@ -447,18 +447,6 @@ export function createServer(
     };
   });
 
-  // with the flag on, the holds and the records waiting to apply are on hand before any listener opens, so no request is
-  // served on less (T41); with it off they open where main opens them
-  const openAccountQueues = () => {
-    const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
-    const accountMailbox = new AccountMailbox({
-      pendingPath: join(stateDir, "account-pending.json"), holds: accountHolds,
-      devices, identity: () => ovisRelay.currentIdentity(),
-      service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
-    });
-    return { accountHolds, accountMailbox };
-  };
-  const earlyQueues = opensAll ? openAccountQueues() : null;
 
   const envPort = process.env["PORT"];
   const clientConnectionLog = new ClientConnectionLog();
@@ -548,7 +536,6 @@ export function createServer(
     ? new KeyProofPairings({ pending: pendingRedemptions, seams: devices }) : undefined;
   devices.onKeyRemoved((key, cause) => pendingRedemptions?.dropKey(key, cause));
   const askScreen = localConfirms && keyProofPairings ? (entry: PendingRedemption) => askScreenForKey(localConfirms, keyProofPairings, entry) : undefined;
-  const { accountHolds, accountMailbox } = earlyQueues ?? openAccountQueues();
   const services: RequestServices = {
     runtimeMove: options.runtimeService ? moveService({
       stateDir, port: server.port ?? DEFAULT_PORT, serving: runtime, facts: () => options.runtimeService?.facts(),
