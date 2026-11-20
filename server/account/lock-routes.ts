@@ -21,6 +21,8 @@ export interface LockStore {
   preview(): LockPreview;
   lock(): void;
   unlock(lockId: string): void;
+  /** this run could not write the removals of a standing lock (Track A's pendingLockRemovals): no unlock until it can */
+  removalsPending(): boolean;
 }
 
 export function lockRoutes(options: { confirms: LocalConfirms; store: LockStore; platform?: NodeJS.Platform }) {
@@ -61,7 +63,10 @@ export function lockRoutes(options: { confirms: LocalConfirms; store: LockStore;
     }
     if (pathname === "/api/account/unlock") {
       if (lock === null || body.lock !== lock) return fail("not_locked", "That lock is not in force on this PC.", 409);
-      return onScreen({ kind: "unlock", lock }, "Unlock this PC", [], () => store.unlock(lock));
+      // an unlock is written only after the lock's removals are: else the rows it ended would come back
+      const removalsPending = "Repair this PC's state folder first: the devices this lock signs out are not written yet.";
+      if (store.removalsPending()) return fail("lock_removals_pending", removalsPending, 409);
+      return onScreen({ kind: "unlock", lock }, "Unlock this PC", [], () => { if (!store.removalsPending()) store.unlock(lock); });
     }
     return fail("not_found", "no such route", 404);
   };
