@@ -3,13 +3,14 @@
  * contract; this PC's user, not the request, is named in the journal. Removing keys, lifting blocks and admitting keys
  * come with the device and log changes they need.
  */
-import { AccountDevicesApiError, parseRecoveryAction } from "../../shared/account-devices-api.ts";
+import { AccountDevicesApiError, parseRecoveryAction, type RecoveryStanding } from "../../shared/account-devices-api.ts";
 import type { DeviceMatch } from "../devices.ts";
 import { AlreadyReleasedError, ReleaseJournalError, releaseRefusal, type RecoveryReleases } from "./recovery.ts";
 
 /** What this PC does for the acts beyond release and undo (Track A's devices.ts and safety-log.ts). */
 export interface RecoverySeams {
   pendingList(): { id: string; label: string; fingerprint: string }[];
+  standing(): readonly RecoveryStanding[];
   /**
    * Admits the waiting redemption `id` when `fingerprint` is its key's, through its own pairing (so its session is let
    * in too), with origin recover. A standing block or freeze targeting the key leaves the redemption waiting.
@@ -17,7 +18,7 @@ export interface RecoverySeams {
   admitPending(id: string, fingerprint: string): DeviceMatch | null | "unknown" | "mismatch" | { readonly refused: string };
   /** `user`: this PC's OS user, for the journal (P24) */
   removeKey(input: { target: string; by: "local"; user: string }): { removed: string[] } | { refused: string };
-  appendLift(blockId: string, forget: boolean, user: string): { outcome: string };
+  appendLift(id: string, forget: boolean, user: string): { outcome: string };
   revokeAll(user: string): string[];
 }
 
@@ -43,7 +44,7 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
           rows: releases.candidates().filter((row) => row.waiting !== null).map((row) => ({
             id: row.id, label: row.label, origin: row.origin, waiting: row.waiting, last_seen_at: row.lastSeenAt, refusal: releaseRefusal(row, pc),
           })),
-          ...(options.seams ? { pending: options.seams.pendingList() } : {}),
+          ...(options.seams ? { pending: options.seams.pendingList(), standing: pc.logReadable ? options.seams.standing() : [] } : {}),
         };
       case "release": {
         const candidates = releases.candidates();
@@ -80,9 +81,9 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
           return { removed };
         }
         if (action.act === "lift") {
-          for (const block of action.blocks) {
-            const done = acts.appendLift(block, false, options.user);
-            if (done.outcome !== "applied" && done.outcome !== "already_applied") return { error: `${block} was not lifted: ${done.outcome}` };
+          for (const id of action.blocks) {
+            const done = acts.appendLift(id, false, options.user);
+            if (done.outcome !== "applied" && done.outcome !== "already_applied") return { error: `${id} was not lifted: ${done.outcome}` };
           }
           return { lifted: [...action.blocks] };
         }

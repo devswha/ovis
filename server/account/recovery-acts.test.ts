@@ -82,6 +82,7 @@ function seams(options: { fingerprint?: string; admitted?: boolean } = {}) {
   const pending = { id: "0123456789abcdef0123456789abcdef", label: "Phone", fingerprint: options.fingerprint ?? "AB12-CD34" };
   const made: RecoverySeams = {
     pendingList: () => [{ id: pending.id, label: pending.label, fingerprint: pending.fingerprint }],
+    standing: () => [],
     admitPending: (id, fingerprint) => {
       if (id !== pending.id) return "unknown";
       if (fingerprint !== pending.fingerprint) return "mismatch";

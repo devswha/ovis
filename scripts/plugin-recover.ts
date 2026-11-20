@@ -3,7 +3,7 @@
  * talks to the server over its recovery socket only (server/account/recovery.ts). Confirmation takes place at a
  * terminal; input that is not a terminal answers nothing.
  */
-import type { RecoveryAction } from "../shared/account-devices-api.ts";
+import type { RecoveryAction, RecoveryStanding } from "../shared/account-devices-api.ts";
 
 export interface RecoverIo {
   out(text: string): void;
@@ -22,7 +22,7 @@ interface WaitingRow {
   refusal: string | null;
 }
 
-const USAGE = "usage: ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block id>... | --revoke-all]\n";
+const USAGE = "usage: ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block or freeze id>... | --revoke-all]\n";
 
 export async function runRecover(args: readonly string[], io: RecoverIo): Promise<number> {
   if (io.platform === "win32") {
@@ -48,7 +48,7 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
         if (answer !== "y" && answer !== "yes") return 0;
       } else {
         for (const id of ids) {
-          const action = flag === "--remove" ? `Remove ${id} from this PC?` : `Lift block ${id} on this PC?`;
+          const action = flag === "--remove" ? `Remove ${id} from this PC?` : `Lift ${id.startsWith("f:") ? "freeze" : "block"} ${id} on this PC?`;
           const answer = (await io.ask(`${action} [y/N] `)).trim().toLowerCase();
           if (answer === "y" || answer === "yes") confirmed.push(id);
         }
@@ -73,7 +73,7 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
       if (answer.warning !== undefined) { io.out(`${answer.warning}\n`); return 1; }
       return 0;
     }
-    const listed = await io.send({ act: "list" }) as { rows?: WaitingRow[]; pending?: { id: string; label: string; fingerprint: string }[]; error?: string };
+    const listed = await io.send({ act: "list" }) as { rows?: WaitingRow[]; pending?: { id: string; label: string; fingerprint: string }[]; standing?: readonly RecoveryStanding[]; error?: string };
     if (listed.error !== undefined) { io.out(`${listed.error}\n`); return 1; }
     const rows = listed.rows ?? [];
     if (flag === "--admit" && !admitWithoutId) {
@@ -98,6 +98,10 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
         else {
           for (const row of rows) io.out(`${describe(row)}\n`);
           io.out("Release one with: ovis recover --release <row id>\n");
+        }
+        // The start of an encoded account key is shared by keys of the same type.
+        for (const { kind, id, target, signer } of listed.standing ?? []) {
+          io.out(`${kind} ${id}  key ${target.slice(-12)}  signed by ${signer}  (ovis recover --lift ${id})\n`);
         }
       }
       for (const entry of listed.pending ?? []) io.out(`waiting: ${entry.id}  ${entry.label}  key ${entry.fingerprint}  (ovis recover --admit ${entry.id})\n`);
