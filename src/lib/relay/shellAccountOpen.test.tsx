@@ -5,7 +5,7 @@ import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-servic
 import type { HoldState } from "../../../shared/account-devices-api.ts";
 import { accountDeviceId } from "../../../shared/account-records.ts";
 import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
-import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
+import { encodeFrame, FrameType, MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayPcTable } from "../../components/RelayPcTable.tsx";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
@@ -14,10 +14,11 @@ import { memoryAccountStore } from "../account/store.ts";
 import { SettingsProvider } from "../settings.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import { dashboardModel, dashboardPcs } from "./dashboard.ts";
+import { accountOpenPeer } from "./accountOpenPeer.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { mountRelayShell, type RelayShellMount } from "./shell.tsx";
-import { RelayTransport } from "./transport.ts";
+import { openRelayTransport, RelayTransport } from "./transport.ts";
 
 const SERVICE = "https://account.ovis.sh";
 const APP = "https://app.ovis.sh";
@@ -31,7 +32,10 @@ let browser: ReturnType<typeof createShellTestPage>;
 beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
 afterEach(() => { jest.useRealTimers(); setTransport(nativeTransport); browser.dispose(); });
 
-async function accountPc({ release = true, loseRegistrationReply = false, open }: { release?: boolean; loseRegistrationReply?: boolean; open: NonNullable<RelayShellMount["open"]> }) {
+async function accountPc({ release = true, loseRegistrationReply = false, open }: {
+  release?: boolean; loseRegistrationReply?: boolean;
+  open: (...args: [...Parameters<NonNullable<RelayShellMount["open"]>>, ReturnType<typeof generateKeyPair>]) => Promise<RelayTransport>;
+}) {
   const identity = generateKeyPair();
   const serverId = deriveServerId(identity.publicKey);
   const entry = { server_id: serverId, label: "Desk", public_key: Buffer.from(identity.publicKey).toString("hex"), relay: RELAY, added_at: new Date().toISOString(), last_seen_at: new Date().toISOString() };
@@ -76,7 +80,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, open }
     pendingPush: { get: async () => undefined, clear: async () => {} },
     checkPc: async () => ({ kind: "offline", reason: "relay" }),
     navigate: (path) => { navigations.push(path); },
-    open,
+    open: (offer, options) => open(offer, options, identity),
   });
   await mountAt(`${APP}/${new URL(returned).hash}`);
   const current = (): RelayShellProps => { if (props === undefined) throw new TypeError("Missing shell props"); return props; };
@@ -136,6 +140,20 @@ it("P18, T34: reloading after a lost registration reply opens the PC with the sa
   await run.openPage();
   expect(run.apps()).toBe(1);
   expect(run.registrationKeys).toEqual([pending?.key.public_spki, pending?.key.public_spki]);
+});
+
+it.each([false, true])("G5: an old PC (provisional WELCOME: %s) gets no account AUTH and offers pairing", async (provisional) => {
+  let auths = 0;
+  const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
+    ...options, socket: () => accountOpenPeer(identity, { features: [], provisional, auth: () => {
+      auths++;
+      return encodeFrame({ type: FrameType.SESSION_ERROR, stream_id: 0, flags: 0, payload: { code: "auth_failed", message: "" } });
+    } }),
+  }) });
+  await run.openPage();
+  expect({ auths, navigation: run.navigations, state: run.current().state.kind }).toEqual({
+    auths: 0, navigation: [expect.stringContaining(`/s/${run.serverId}/#offer=`)], state: "connecting",
+  });
 });
 
 it.each([

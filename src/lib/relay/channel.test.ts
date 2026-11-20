@@ -453,6 +453,13 @@ it("stops at a PC of another relay protocol before any credential, as an update"
   expect(f.socket.closed).toBe(true);
 });
 
+it("G5: does not send account AUTH when WELCOME selects no account-open feature", async () => {
+  const old = await fixture(false, undefined, undefined, {}, { accountOpensAll: true });
+  old.allowAuth.resolve();
+  await expect(old.opening).rejects.toThrow();
+  expect(old.trace).toEqual(["client:HELLO", "server:WELCOME"]);
+});
+
 it("T34, G5: offers the account-opens-all mux feature in HELLO only when asked, so only a flag-on app hears an account refusal", async () => {
   const plain = await fixture(false);
   await plain.authSeen.promise;
