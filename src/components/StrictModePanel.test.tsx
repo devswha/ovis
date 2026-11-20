@@ -106,7 +106,7 @@ describe("the strict-mode section in Settings", () => {
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"] } });
     const events = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { origin: "http://127.0.0.1:7318", href: "http://127.0.0.1:7318/" }, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) } });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { origin: "http://127.0.0.1:7318", href: "http://127.0.0.1:7318/" }, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events) } });
     Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7318").pathname}`);
@@ -257,6 +257,44 @@ describe("the strict-mode section in Settings", () => {
       renderer = create(<SettingsProvider><AccessGate reason="locked" ownWindow={false} initialCode="" consumePairCode={() => ""} pairingUnconfirmed={false} onUnlocked={() => {}} /></SettingsProvider>);
     });
     expect(renderer!.toJSON()).toBeNull();
+  });
+
+  it("T47, N4: a window that is not this PC's own sees one static line on a locked PC: no form, no button, no request", async () => {
+    await act(async () => {
+      renderer = create(<SettingsProvider><AccessGate reason="locked" ownWindow={false} initialCode="123456" consumePairCode={() => "123456"} pairingUnconfirmed={false} onUnlocked={() => {}} /></SettingsProvider>);
+    });
+    expect(text(renderer!.root)).toContain("This PC is in strict mode.");
+    expect(renderer!.root.findAll((node) => node.type === "button" || node.type === "input" || node.type === "form")).toHaveLength(0);
+    expect(requests).toEqual([]);
+  });
+
+  it("T47, N4: a locked PC's own window opened from a pairing QR sends no pairing request", async () => {
+    answer = locked;
+    let claimed = 0;
+    await act(async () => {
+      renderer = create(<SettingsProvider><AccessGate reason="locked" ownWindow initialCode="123456" consumePairCode={() => { claimed++; return "123456"; }} pairingUnconfirmed={false} onUnlocked={() => {}} /></SettingsProvider>);
+    });
+    expect(requests.filter((request) => request.includes("/api/devices/pair"))).toEqual([]);
+    expect(claimed).toBe(0);
+  });
+
+  it("T47: the locked view reads the lock again when the window comes back", async () => {
+    answer = locked;
+    await act(async () => { renderer = create(<SettingsProvider><StrictUnlockAsk /></SettingsProvider>); });
+    expect(renderer!.root.findAll((node) => node.type === "button")).toHaveLength(1);
+    answer = unlocked;
+    const reads = requests.length;
+    await act(async () => { (globalThis.window as unknown as EventTarget).dispatchEvent(new Event("focus")); });
+    expect(requests.length).toBe(reads + 1);
+    expect(renderer!.toJSON()).toBeNull();
+  });
+
+  it("a refusal stays when the lock state is read again after it", async () => {
+    refuse = { status: 409, code: "already_locked" };
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>); });
+    answer = locked;
+    await act(async () => { renderer!.root.find((node) => node.type === "button").props.onClick(); });
+    expect(text(renderer!.root)).toContain("Strict mode changed already.");
   });
 
   it("T46, R10: reads the PC's state, and the switch only asks the PC's screen", async () => {

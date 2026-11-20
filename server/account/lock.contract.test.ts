@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { PcAccountState } from "./pc-binding.ts";
 import { LockSignal, untilLockFrom } from "../lock-boundary.ts";
 import { firstPairingRead, pairingPc, memberRow, signIn, type Pc } from "./pairing.test-helpers.ts";
-import { bounded, deferred } from "../relay/test-helpers.ts";
+import { bounded, deferred, relayFixture } from "../relay/test-helpers.ts";
+import { handleRequest } from "../dispatch.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -246,4 +247,58 @@ test("S36-1: a lock or unlock asked by a window that is not this PC's own is ref
     }
     expect(made.app.context.services.localConfirms!.pending()).toEqual([]);
   }
+});
+
+test("T46, t13r: a code a member started from afar ends with the screen-approved lock, and a device that brings it afterwards is refused", async () => {
+  const made = await screenedPc();
+  const code = made.devices.startPairing(Date.now(), { remote: true, startedBy: null, memberRequired: false }).code;
+  const asked = await made.local("/api/account/lock", { method: "POST", headers: { "x-herdr-machine": "1" }, body: {} });
+  expect(asked.status).toBe(202);
+  const answered = made.app.context.services.localConfirms!.answer(asked.body.confirm as string);
+  made.approve("lock");
+  expect(await bounded(answered)).toBe("approved");
+  expect(made.app.context.services.safetyLog!.state().locked).toBe(true);
+  expect(made.devices.activePairing()).toBeNull();
+  const before = made.stored().length;
+  const tried = await made.local("/api/devices/pair", { method: "POST", body: { code, label: "Intruder" } });
+  expect(tried.status).toBeGreaterThanOrEqual(400);
+  expect(made.stored().length).toBe(before);
+});
+
+test("S36-1: through dispatch, a Tailscale login, a token from another address, the open LAN and a gated LAN all get local_required for both requests, locked or not, and nothing reaches the screen", async () => {
+  for (const [via, token, gated] of [["tailscale", "", true], ["remote token", "owner-token", true], ["open LAN", "", false], ["gated LAN", "", true]] as const) {
+    const f = relayFixture(false, { accountOpensAll: true, token });
+    try {
+      const { devices, safetyLog, localConfirms } = f.app.context.services;
+      if (gated) devices.pairRelay(devices.startPairing().code, "Phone", "k".repeat(43));
+      const lan = via === "open LAN" || via === "gated LAN" || via === "remote token";
+      const context = {
+        ...f.app.context,
+        requestIP: () => ({ address: lan ? "192.168.1.20" : "127.0.0.1" }),
+        timeout: () => {},
+        services: { ...f.app.context.services, identityOf: async () => ({ owner: "owner@example.com", soleLogin: null, dnsName: null, tailnetIp: null, tagged: false }) },
+      };
+      const credentials: Record<string, string> = via === "tailscale" ? { "tailscale-user-login": "owner@example.com", "x-forwarded-for": "100.64.0.1" }
+        : via === "remote token" ? { authorization: "Bearer owner-token" } : {};
+      for (const locked of [false, true]) {
+        const lock = locked ? safetyLog!.appendLock({ account: "acct_1" }) : null;
+        for (const path of ["/api/account/lock", "/api/account/unlock"]) {
+          const answer = await handleRequest(new Request(`http://127.0.0.1${path}`, {
+            method: "POST", headers: { host: "127.0.0.1", origin: "http://127.0.0.1", "x-herdr-machine": "1", "content-type": "application/json", ...credentials },
+            body: JSON.stringify(lock === null ? {} : { lock: lock.id }),
+          }), context);
+          const body = await answer?.json() as { error?: { code: string } } | undefined;
+          expect({ via, locked, path, status: answer?.status, code: body?.error?.code }).toEqual({ via, locked, path, status: 403, code: "local_required" });
+        }
+        if (lock !== null) safetyLog!.appendUnlock(lock.id, { account: "acct_1" });
+      }
+      expect(localConfirms?.pending() ?? []).toEqual([]);
+    } finally { f.close(); }
+  }
+});
+
+test("T47, N4: a window that is not this PC's own gets health 'locked' on a locked PC, not a pairing prompt", async () => {
+  const made = await lockedPc();
+  const forwarded = await made.local("/api/health", { headers: { "x-forwarded-for": "100.64.0.9" } });
+  expect((forwarded.body.auth as { reason?: string } | undefined)?.reason).toBe("locked");
 });
