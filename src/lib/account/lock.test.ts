@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { ApiError } from "../api.ts";
-import { fetchLockState, requestLock, requestUnlock } from "./lock.ts";
+import { CONFIRM_WINDOW_MS, fetchLockState, requestLock, requestUnlock } from "./lock.ts";
+import { CONFIRM_MS } from "../../../server/account/local-confirm.ts";
 
 describe("strict mode through this PC's lock routes", () => {
   let requests: { path: string; method: string; body: unknown; machine: string | null }[];
@@ -39,4 +40,8 @@ describe("strict mode through this PC's lock routes", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ code: "local_required" });
   });
+});
+
+it("the app's approval deadline is the PC's own confirm window (CONFIRM_MS)", () => {
+  expect(CONFIRM_WINDOW_MS).toBe(CONFIRM_MS);
 });

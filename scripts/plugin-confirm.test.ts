@@ -4,7 +4,7 @@
  * an address it builds itself.
  */
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runConfirm, type ConfirmIo } from "./plugin-confirm.ts";
@@ -76,6 +76,19 @@ test("P11: on macOS and Windows there is no confirm page yet: it says so and ope
     const run = io(stateDir({ port: 41234 }), { platform });
     expect(await runConfirm(run.value)).toBe(1);
     expect(run.text()).toContain("Linux");
+    expect(run.opened).toEqual([]);
+  }
+});
+
+test("a file it cannot read, or a folder in its place, gets one plain line and exit 1, not a stack", async () => {
+  const folder = stateDir();
+  mkdirSync(join(folder, "local-confirm.json"));
+  const unreadable = stateDir({ port: 41234 });
+  chmodSync(join(unreadable, "local-confirm.json"), 0o000);
+  for (const dir of process.getuid?.() === 0 ? [folder] : [folder, unreadable]) {
+    const run = io(dir);
+    expect(await runConfirm(run.value)).toBe(1);
+    expect(run.text().trim().split("\n")).toHaveLength(1);
     expect(run.opened).toEqual([]);
   }
 });

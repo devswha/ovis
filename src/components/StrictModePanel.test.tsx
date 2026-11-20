@@ -90,11 +90,13 @@ describe("the strict-mode section in Settings", () => {
   let renderer: ReactTestRenderer | undefined;
   let requests: string[];
   let answer: LockState;
+  let refuse: { status: number; code: string } | null;
   const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
 
   beforeEach(() => {
     requests = [];
     answer = unlocked;
+    refuse = null;
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -104,6 +106,7 @@ describe("the strict-mode section in Settings", () => {
     Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7318").pathname}`);
+      if (init?.method === "POST" && refuse !== null) return Response.json({ error: { code: refuse.code, message: "refused" } }, { status: refuse.status });
       return init?.method === "POST" ? Response.json({ confirm: "c1" }, { status: 202 }) : Response.json(answer);
     };
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
@@ -120,13 +123,13 @@ describe("the strict-mode section in Settings", () => {
   });
 
   it("G5: on a PC that does not offer it, shows nothing and asks the PC nothing", async () => {
-    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered={false} local /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered={false} auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
     expect(renderer!.toJSON()).toBeNull();
     expect(requests).toEqual([]);
   });
 
   it("T46, R10, Q20: after asking, says strict mode is not on until approved on this PC's screen, by when, and how to open that page", async () => {
-    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered local /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
     const before = text(renderer!.root);
     expect(before).not.toContain("ovis confirm");
     const button = renderer!.root.find((node) => node.type === "button");
@@ -139,7 +142,7 @@ describe("the strict-mode section in Settings", () => {
 
   it("T47: asking to turn it off says it stays on until approved on this PC's screen", async () => {
     answer = locked;
-    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered local /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
     const button = renderer!.root.find((node) => node.type === "button");
     await act(async () => { button.props.onClick(); });
     expect(requests).toContain("POST /api/account/unlock");
@@ -148,8 +151,26 @@ describe("the strict-mode section in Settings", () => {
     expect(shown).toContain("ovis confirm");
   });
 
+  it("R10: a phone or laptop on this PC's address (Tailscale, a token, the open network) gets no switch: only a window the server says is on this PC", async () => {
+    for (const via of ["tailscale", "token", "open", "device", "portal", "relay"] as const) {
+      await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via, role: "drive" }} /></SettingsProvider>); });
+      expect({ via, buttons: renderer!.root.findAll((node) => node.type === "button").length }).toEqual({ via, buttons: 0 });
+      await act(async () => { renderer?.unmount(); });
+    }
+  });
+
+  it("R10: a request the PC refuses says why, here local_required", async () => {
+    refuse = { status: 403, code: "local_required" };
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
+    const button = renderer!.root.find((node) => node.type === "button");
+    await act(async () => { button.props.onClick(); });
+    const shown = text(renderer!.root);
+    expect(shown).toContain("Turn strict mode on or off in a browser on this PC itself.");
+    expect(shown).not.toContain("ovis confirm");
+  });
+
   it("T46, R10: reads the PC's state, and the switch only asks the PC's screen", async () => {
-    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered local /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><StrictModeSection offered auth={{ required: false, authenticated: true, via: "local", role: "drive" }} /></SettingsProvider>); });
     const button = renderer!.root.find((node) => node.type === "button");
     await act(async () => { button.props.onClick(); });
     expect(requests).toEqual(["GET /api/account/lock", "POST /api/account/lock", "GET /api/account/lock"]);
