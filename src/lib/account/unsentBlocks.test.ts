@@ -53,6 +53,26 @@ it("S32-1: a final refusal leaves the queue: target_removed reads as done, any o
   }
 });
 
+it("S32-1: a token refresh that fails in any way keeps the record: it was never sent, so nothing refused it", async () => {
+  const unreachable = async (): Promise<Response> => { throw new TypeError("down"); };
+  for (const token of [400, 401, 403, 404, 409, 429, 503].map((status) => async () => Response.json({ error: { code: "refused" } }, { status })).concat(unreachable)) {
+    const store = memoryAccountStore();
+    const expired = { ...session, expires_at: Date.now() };
+    await store.set("session", expired);
+    const record = await block();
+    await keepUnsent(store, expired, [record]);
+    const asked: string[] = [];
+    const service = new AccountService({ store, fetch: async (input) => {
+      const path = new URL(String(input)).pathname;
+      asked.push(path);
+      return path === "/v1/token" ? token() : Response.json({ id: record.id });
+    } });
+    await expect(postKept(store, expired, [record], (kept) => service.postSafetyRecord(kept))).rejects.toThrow();
+    expect(asked).toEqual(["/v1/token"]);
+    expect(Object.values(await store.get("unsent_blocks") ?? {}).flatMap((kept) => kept.records)).toEqual([record]);
+  }
+});
+
 it("S32-1: of a partly accepted set, only the records still unconfirmed stay", async () => {
   const store = memoryAccountStore();
   await store.set("session", session);

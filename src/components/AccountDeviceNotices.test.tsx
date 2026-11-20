@@ -506,8 +506,9 @@ it.each([
 });
 
 
-async function notMePage(options: { service: (record: BlockRecord) => Response | Promise<Response>; capable?: boolean; holdStore?: Promise<void>; failStore?: boolean }) {
-  const session = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "test", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3600_000 } as const;
+async function notMePage(options: { service: (record: BlockRecord) => Response | Promise<Response>; capable?: boolean; holdStore?: Promise<void>; failStore?: boolean; token?: () => Response }) {
+  // with a token answer, the access token is due for a refresh at the press
+  const session = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "test", access_token: "access", refresh_token: "refresh", expires_at: options.token === undefined ? Date.now() + 3600_000 : Date.now() } as const;
   const notice = deviceNotice({ key: (await newKey()).public_spki });
   const wire = new DeviceNoticeWire("ws://localhost/ws");
   const events = new EventTarget();
@@ -540,6 +541,7 @@ async function notMePage(options: { service: (record: BlockRecord) => Response |
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const url = String(input);
       if (url === `${session.service}/v1/pcs`) return Response.json({ pcs: [] });
+      if (url === `${session.service}/v1/token` && options.token !== undefined) { order.push("token"); return options.token(); }
       expect(url).toBe(`${session.service}/v1/safety-records`);
       const record = parseSafetyRecord(JSON.parse(String(init?.body)).record) as BlockRecord;
       order.push(`service ${record.id}`);
@@ -648,6 +650,19 @@ it("S32-1: a final refusal from the service shows the line once, with no Try aga
     expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
     expect(page.button("Try again")).toBeUndefined();
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
+  } finally { await page.restore(); }
+});
+
+it("S32-1: a refused token refresh is no refusal of the block: it stays stored and Try again stays", async () => {
+  const page = await notMePage({ token: () => Response.json({ error: { code: "forbidden", message: "x" } }, { status: 403 }), service: (record) => Response.json({ id: record.id }) });
+  try {
+    await page.mount();
+    await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
+    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    expect(page.order.filter((step) => step.startsWith("service "))).toEqual([]);
+    expect(page.order).toContain("token");
+    expect(page.button("Try again")).toBeDefined();
+    expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
   } finally { await page.restore(); }
 });
 
