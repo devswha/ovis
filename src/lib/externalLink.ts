@@ -4,7 +4,7 @@
  * The shell decides which browser shows it (a tab here; the system browser in the apps). `kind`
  * names what the address is, for the place that will route it: `link` a page on the web,
  * `sign-in` a sign-in page, `ovis` an Ovis page (another PC's, a file in a tab of its own).
- * In the desktop app a web `link` opens in the browser chosen in Settings (`linkBrowsers`); every
+ * In the desktop and Mac apps a web `link` opens in the browser chosen in Settings (`linkBrowsers`); every
  * other address keeps to the system browser. src/conventions.test.ts keeps every other file off
  * target="_blank" and window.open.
  */
@@ -21,7 +21,7 @@ export interface LinkBrowserChoices {
   chosen: string | null;
 }
 
-/** The desktop app's browsers for web links (app/electron/src/browsers.ts); a page names one by its id. */
+/** The desktop and Mac apps' browsers for web links (app/electron/src/browsers.ts, app/mac/.../LinkBrowsers.swift); a page names one by its id. */
 export interface LinkBrowsers {
   list(): Promise<LinkBrowserChoices | null>;
   choose(id: string | null): Promise<void>;

@@ -7,7 +7,7 @@ import { SettingsRow, SettingsSelect } from "./SettingsControls.tsx";
 
 const SYSTEM_DEFAULT = "";
 
-/** Settings → Chat → Files in the desktop app: the browser a web link opens in. Elsewhere the browser itself shows the link, so there is no row. */
+/** Settings → Chat → Files in the desktop and Mac apps: the browser a web link opens in. Elsewhere the browser itself shows the link, so there is no row. */
 export function LinkBrowserRow() {
   const t = useT();
   const [bridge] = useState(linkBrowsers);
