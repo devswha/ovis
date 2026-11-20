@@ -18,21 +18,25 @@ export interface NoticeSocket {
  * admission is not dismissed (it stays until its PC says it was decided).
  */
 export function useDeviceNotices(sockets: readonly { id: string; socket: NoticeSocket }[], selectedPcId: string) {
-  const [byPc, setByPc] = useState<ReadonlyMap<string, PcNotices>>(new Map());
+  const [retained, setRetained] = useState<ReadonlyMap<string, PcNotices>>(new Map());
   useEffect(() => {
     const offs = sockets.flatMap(({ id, socket }) => {
-      const clear = () => setByPc((current) => {
+      const hide = () => setRetained((current) => {
         const notices = current.get(id);
-        if (notices === undefined || (notices.notices.length === 0 && notices.cut === 0)) return current;
-        return new Map(current).set(id, { ...notices, notices: [], cut: 0 });
+        if (notices === undefined) return current;
+        return new Map(current).set(id, { ...notices, notices: notices.notices.filter((item) => item.kind === "admit" && item.open), cut: 0 });
       });
-      return [socket.onDisconnect(clear), socket.on((message) => {
+      return [socket.onDisconnect(hide), socket.on((message) => {
+        if (message.type === "features" || message.type === "snapshot") {
+          if (socket.accountOpensAll()) setRetained((current) => current.has(id) ? new Map(current) : current);
+          else hide();
+          return;
+        }
         if (!socket.accountOpensAll()) {
-          if (message.type === "features" || message.type === "snapshot") clear();
           return;
         }
         if (message.type !== "device-notice-replay" && message.type !== "device-notice") return;
-        setByPc((current) => {
+        setRetained((current) => {
           const was = current.get(id);
           const replay = message.type === "device-notice-replay" ? message.replay : { notices: [message.notice], cut: was?.cut ?? 0 };
           return new Map(current).set(id, withNoticeReplay(was, replay));
@@ -42,18 +46,23 @@ export function useDeviceNotices(sockets: readonly { id: string; socket: NoticeS
     return () => { for (const off of offs) off(); };
   }, [sockets]);
   const selectedSocket = sockets.find(({ id }) => id === selectedPcId)?.socket;
+  const byPc = new Map<string, PcNotices>();
+  for (const { id, socket } of sockets) {
+    const notices = retained.get(id);
+    if (notices !== undefined && socket.accountOpensAll()) byPc.set(id, notices);
+  }
   const shown = byPc.get(selectedPcId);
   const acknowledgeShown = useCallback((seq: number) => {
     const seen = shown === undefined ? null : noticeSeen(shown, seq);
     if (seen === null || !selectedSocket?.sendNotice(seen)) return;
-    setByPc((current) => {
+    setRetained((current) => {
       const notices = current.get(selectedPcId);
       if (notices === undefined) return current;
       return new Map(current).set(selectedPcId, withNoticeAcked(notices, seen.seq));
     });
   }, [shown, selectedPcId, selectedSocket]);
   const dismiss = useCallback((id: string, notice: DeviceNotice) => {
-    setByPc((current) => {
+    setRetained((current) => {
       const notices = current.get(id);
       if (notices === undefined || !notices.notices.some((item) => item.id === notice.id && !item.open)) return current;
       return new Map(current).set(id, withNoticeDecided(notices, notice.id));
