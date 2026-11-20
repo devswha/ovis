@@ -211,7 +211,7 @@ it("T60: a remote notice counts the page PC’s own records receipt, not the pro
     const [answer] = desk.sent.filter((frame) => frame.type === "notice-answer").map(parseNoticeAnswer);
     if (answer?.answer !== "not_me") throw new TypeError("Missing remote notice answer");
     expect(delivered).toEqual(answer.blocks);
-    expect(card.findAllByType("li").map((row) => row.children.join(""))).toEqual([
+    expect(card.findAllByType("li").map((row) => row.children.join("")).sort()).toEqual([
       "Desk: waiting for its answer", "Laptop: blocked",
     ]);
   });

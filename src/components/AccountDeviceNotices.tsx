@@ -53,6 +53,8 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own }: {
 
       const serverIdOf = (machine: Machine) =>
         (machine.id === LOCAL_MACHINE ? fleet.pageServerId : undefined) ?? machine.server_id ?? machine.relay?.server_id;
+      const pagePc = fleet.machines.find((machine) => machine.id === LOCAL_MACHINE);
+      const pageId = pagePc === undefined ? undefined : serverIdOf(pagePc);
       const ownServerId = serverIdOf(pc);
       const ownId = ownServerId ?? pc.id;
       const rows = new Map([[ownId, pc]]);
@@ -61,9 +63,7 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own }: {
         const key = serverId ?? machine.id;
         if (!rows.has(key)) rows.set(key, machine);
       }
-      const routes = notMeTransports(notice, ownId, [...rows.keys()], {
-        socket: () => socket,
-        post: (id) => (path, body) => {
+      const post = (id: string) => (path: string, body: unknown) => {
           const machine = rows.get(id);
           if (machine === undefined) return Promise.reject(new RangeError("Unknown block destination"));
           return apiFetch(machinePath(machine.id, path.slice("/api/".length)), {
@@ -72,7 +72,12 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own }: {
             body: JSON.stringify(body),
             signal: AbortSignal.timeout(ANSWER_TIMEOUT_MS),
           });
-        },
+      };
+      const routes = notMeTransports(notice, ownId, [...rows.keys()], {
+        socket: () => socket,
+        post,
+        // The page's carrier can authenticate its own records reply, not a roster PC's.
+        channel: (id) => id === pageId && rows.get(id)?.id === LOCAL_MACHINE ? post(id) : undefined,
         timeoutMs: ANSWER_TIMEOUT_MS,
       });
       // The app's one carrier (native or relay) is to the page's PC. Other roster sockets are proxied.
