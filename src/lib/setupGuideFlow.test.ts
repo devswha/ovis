@@ -456,4 +456,8 @@ describe("relayOnlyPc", () => {
     expect(relayOnlyPc(facts("loopback", "funnel"))).toBe(false);
     expect(relayOnlyPc(facts("loopback", "proxy"))).toBe(false);
   });
+
+  it("T70: an ingress the PC cannot name (a forwarding proxy that says nothing) is not taken as relay-only", () => {
+    expect(relayOnlyPc(facts("loopback", "unknown"))).toBe(false);
+  });
 });
