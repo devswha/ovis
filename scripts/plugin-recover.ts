@@ -82,7 +82,13 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
       const answer = (await io.ask(`${waiting.label} (the name it gives itself) waits with key fingerprint ${waiting.fingerprint}.\nCompare it with the characters the device shows. Admit this key? [y/N] `)).trim().toLowerCase();
       if (answer !== "y" && answer !== "yes") { io.out("Not admitted.\n"); return 0; }
       const admitted = await io.send({ act: "admit", pending: waiting.id, fingerprint: waiting.fingerprint }) as { admitted?: string; error?: string };
-      if (admitted.error !== undefined) { io.out(`${admitted.error}\n`); return 1; }
+      if (admitted.error !== undefined) {
+        io.out(`${admitted.error}\n`);
+        if (admitted.error.startsWith("This PC refused to admit the key")) {
+          io.out("If this key was revoked here, pair it again at this PC's screen.\n");
+        }
+        return 1;
+      }
       io.out(`Admitted ${waiting.label}.\n`);
       return 0;
     }
