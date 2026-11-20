@@ -3,6 +3,7 @@
  * read, releases the ones its user names one at a time at a terminal, and undoes releases.
  */
 import { expect, test } from "bun:test";
+import type { RecoveryAction } from "../shared/account-devices-api.ts";
 import { runRecover, type RecoverIo } from "./plugin-recover.ts";
 
 const rows = [
@@ -10,8 +11,8 @@ const rows = [
   { id: "b2", label: "Old laptop", origin: { from: "legacy", how: "legacy" }, waiting: "catching_up", last_seen_at: null, refusal: "frozen" },
 ];
 
-function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string } = {}) {
-  const sent: unknown[] = [];
+function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string } = {}) {
+  const sent: RecoveryAction[] = [];
   const out: string[] = [];
   const answers = [...(options.answers ?? [])];
   const value: RecoverIo = {
@@ -22,11 +23,15 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
     send: async (request) => {
       if (options.unreachable) throw new Error("ENOENT");
       sent.push(request);
-      if (request.act === "list") return { rows, pending: [{ id: "0123456789abcdef0123456789abcdef", label: "New phone", fingerprint: "AB12-CD34" }] };
-      if (request.act === "release") return { released: request.rows };
-      return { releases: ["r1"], ...(options.undoWarning ? { warning: options.undoWarning } : {}) };
-      if (request.act === "admit") return { admitted: "fedcba9876543210" };
-      return { releases: ["r1"] };
+      switch (request.act) {
+        case "list": return { rows, pending: [{ id: "0123456789abcdef0123456789abcdef", label: "New phone", fingerprint: "AB12-CD34" }] };
+        case "release": return { released: request.rows };
+        case "undo": return { releases: ["r1"], ...(options.undoWarning ? { warning: options.undoWarning } : {}) };
+        case "admit": return { admitted: "fedcba9876543210" };
+        case "remove": return options.writeError ? { error: options.writeError } : { removed: ["a1"] };
+        case "lift": return options.writeError ? { error: options.writeError } : { lifted: request.blocks };
+        case "revoke_all": return options.writeError ? { error: options.writeError } : { revoked: 2 };
+      }
     },
   };
   return { value, sent, text: () => out.join("") };
@@ -108,3 +113,39 @@ test("P22: admit answered with anything but yes sends nothing, and needs a termi
   expect(await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], piped.value)).toBe(1);
   expect(piped.sent).toEqual([]);
 });
+
+for (const { row, args, confirmed, answers, result } of [
+  { row: "T37", args: ["--remove", "key-a", "a1"], answers: ["", "y"], confirmed: { act: "remove", targets: ["a1"] }, result: /removed.*a1/i },
+  { row: "T69", args: ["--lift", "block-a", "block-b"], answers: ["n", "yes"], confirmed: { act: "lift", blocks: ["block-b"] }, result: /lifted.*block-b/i },
+  { row: "T70", args: ["--revoke-all"], answers: ["y"], confirmed: { act: "revoke_all" }, result: /revoked.*2/i },
+] as const) {
+  test(`${row}: ${args[0]} asks before sending only confirmed targets and shows the reply`, async () => {
+    const run = io({ answers: [...answers] });
+    expect(await runRecover(args, run.value)).toBe(0);
+    expect(run.sent).toEqual([confirmed]);
+    const prompts = run.text().split("\n").filter((line) => line.includes("[y/N]"));
+    expect(prompts).toHaveLength(answers.length);
+    if (args[0] === "--revoke-all") expect(prompts[0]).toMatch(/every device.*this PC.*signed out/i);
+    else for (const [index, target] of args.slice(1).entries()) expect(prompts[index]).toContain(target);
+    expect(run.text()).toMatch(result);
+  });
+
+  test(`${row}: ${args[0]} does not write without a terminal or confirmation`, async () => {
+    const piped = io({ terminal: false, answers: ["y", "y"] });
+    expect(await runRecover(args, piped.value)).toBe(1);
+    expect(piped.sent).toEqual([]);
+    expect(piped.text()).toContain("not run in a terminal");
+    expect(piped.text()).not.toContain("[y/N]");
+
+    const declined = io();
+    expect(await runRecover(args, declined.value)).toBe(0);
+    expect(declined.sent).toEqual([]);
+  });
+
+  test(`${row}: ${args[0]} prints a server error and exits 1`, async () => {
+    const run = io({ answers: [...answers], writeError: "log_unreadable" });
+    expect(await runRecover(args, run.value)).toBe(1);
+    expect(run.text()).toContain("log_unreadable");
+    expect(run.text()).not.toMatch(result);
+  });
+}
