@@ -1181,6 +1181,7 @@ export class DeviceStore {
    */
   endUnlockedRows(): string[] {
     if (this.evidence === null) return [];
+    for (const row of this.joinedRows?.rows() ?? []) this.closeAccountSessions(row.id);
     const gone = this.devices.filter((d) => d.origin?.from !== "pc");
     this.drop(gone, "pc", "locked");
     return gone.map((d) => d.id);
@@ -1611,7 +1612,7 @@ export class DeviceStore {
    */
   private assertHolder(id: string): void {
     if (!this.has(id)) throw new DeviceGoneError();
-    if (!this.canDrive(id)) throw new DeviceReadOnlyError();
+    if (!this.canHoldCode(id)) throw new DeviceReadOnlyError();
   }
 
   /**
@@ -1753,7 +1754,8 @@ export class DeviceStore {
     if (waiting) return { role: "watch", key: waiting.key, provisional: true };
     // an account-joined row serves while it is usable here: out of its hold and its waits, and not covered or frozen
     const row = this.joinedRows?.row(id) ?? null;
-    if (row === null || this.accountRowStale(row) || !("ok" in this.joinedRows!.access(id))) return null;
+    const access = row && this.listedAccess(row);
+    if (!row || !access || !("ok" in access)) return null;
     return { role: "drive", key: row.key, provisional: false };
   }
 
@@ -1770,9 +1772,17 @@ export class DeviceStore {
   }
 
   private accountRowStale(row: AccountRow): boolean {
-    if (this.evidence === null) return false;
     const stored = this.joinedAsStored(row);
-    return this.coveredByEvidence(stored) || this.frozen(stored);
+    const state = this.safety?.inForce;
+    return this.failsClosed || state?.locked === true || this.failedRows.has(row.id) || this.failedDenies.has(row.key)
+      || this.isTombstoned(row.key) || this.coveredByEvidence(stored) || this.frozen(stored)
+      || (state?.freezes.some(({ record }) => record.target === row.key || (record.kind === "freeze" &&
+        (this.accountOrder?.late(row.key) !== false || (this.accountOrder.no(row.key) ?? row.no) > record.after))) ?? false);
+  }
+
+  /** One standing verdict for a proved list sign-in and its HTTP and WebSocket sessions. */
+  private listedAccess(row: AccountRow): AccessAnswer | null {
+    return this.accountRowStale(row) ? null : this.joinedRows?.access(row.id) ?? null;
   }
 
   /** A row of either store by id, an account row as the order checks see it. */
@@ -1808,8 +1818,9 @@ export class DeviceStore {
     }
     // the row went, changed key or was covered while its signature was checked: the proof was for a row that is no more
     const current = this.joinedRows.row(deviceId);
-    if (!verified || current === null || current.key !== row.key || this.accountRowStale(current)) return null;
-    const answer = this.joinedRows.access(deviceId);
+    if (!verified || current === null || current.key !== row.key) return null;
+    const answer = this.listedAccess(current);
+    if (!answer) return null;
     return "ok" in answer ? { match: { id: current.id, label: current.label, role: "drive" } } : { refused: answer, holdUntil: current.hold_until };
   }
 
@@ -2476,7 +2487,10 @@ export class DeviceStore {
   has(id: string): boolean { return this.devices.some((device) => device.id === id) || (this.joinedRows?.row(id) ?? null) !== null; }
 
   /** Whether the device may answer a pane's prompt: paired to drive, not to watch. */
-  canDrive(id: string): boolean { return this.devices.some((device) => device.id === id && device.role === "drive"); }
+  canDrive(id: string): boolean { return this.sessionRow(id)?.role === "drive"; }
+
+  /** Holding a pairing code requires an ordinary paired member, not just a drive session. */
+  canHoldCode(id: string): boolean { return this.devices.some(device => device.id === id) && this.canDrive(id); }
 
   private pruneUnconfirmedFirstPairs(now: number): void {
     this.unconfirmedFirstPairs = this.unconfirmedFirstPairs.filter(({ expires }) => now <= expires);
