@@ -4,10 +4,14 @@
  * log cannot be read, the list still answers and nothing is released.
  */
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
+import { newRecordId, signSafetyRecord, type BlockRecord, type SafetyRecord } from "../../shared/account-records.ts";
 import { bounded } from "../relay/test-helpers.ts";
-import { memberRow, pairingPc, type Pc } from "./pairing.test-helpers.ts";
+import { JOURNAL_FILE } from "./device-journal.ts";
+import { memberRow, pairingPc, phone, provingDevice, type Pc } from "./pairing.test-helpers.ts";
+import { pcRecordId } from "./safety-log.ts";
 import { askRecovery, RECOVER_DIR, RECOVER_SOCKET } from "./recovery.ts";
 
 const pcs: Pc[] = [];
@@ -94,4 +98,63 @@ test.if(unix)("P22: admit of a device that does not wait here admits nobody", as
   const made = await pairingPc({ server: { accountOpensAll: true } });
   pcs.push(made);
   expect(await bounded(askRecovery(made.stateDir, { act: "admit", pending: "0123456789abcdef0123456789abcdef", fingerprint: "AB12-CD34" }))).toEqual({ error: "No such device waits here" });
+});
+
+const journal = (made: Pc) => (JSON.parse(readFileSync(join(made.stateDir, JOURNAL_FILE), "utf8")) as { entries: { kind: string; how: string; row: string | null; label: string; by: string | null }[] }).entries;
+
+async function waitingDevice(made: Pc) {
+  const paired = await provingDevice(made, await made.offerCode());
+  await paired.pending;
+  const listed = await bounded(askRecovery(made.stateDir, { act: "list" })) as { pending: { id: string; label: string; fingerprint: string }[] };
+  return { paired, waiting: listed.pending.find((entry) => entry.fingerprint === paired.fingerprint)! };
+}
+
+test.if(unix)("P22/T70: the fingerprint the terminal showed admits the waiting device once, with origin recover; a wrong one admits nobody", async () => {
+  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" } });
+  pcs.push(made);
+  const { paired, waiting } = await waitingDevice(made);
+  expect(waiting.label).toBe("New phone");
+  expect(await bounded(askRecovery(made.stateDir, { act: "admit", pending: waiting.id, fingerprint: `${waiting.fingerprint[0] === "0" ? "1" : "0"}${waiting.fingerprint.slice(1)}` }))).toEqual({ error: "The fingerprint does not match the waiting device" });
+  expect(made.stored().some((row) => row.relay_public_key === paired.device.spki)).toBe(false);
+  const admitted = await bounded(askRecovery(made.stateDir, { act: "admit", pending: waiting.id, fingerprint: waiting.fingerprint })) as { admitted: string };
+  const row = made.stored().find((stored) => stored.relay_public_key === paired.device.spki) as { id: string; origin?: { from: string } } | undefined;
+  expect(row?.id).toBe(admitted.admitted);
+  expect(row?.origin?.from).toBe("recover");
+  expect(await bounded(askRecovery(made.stateDir, { act: "admit", pending: waiting.id, fingerprint: waiting.fingerprint }))).toEqual({ error: "No such device waits here" });
+});
+
+test.if(unix)("P22: while the PC is locked, the right fingerprint admits nobody, and the waiting device is gone", async () => {
+  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" } });
+  pcs.push(made);
+  const { paired, waiting } = await waitingDevice(made);
+  made.app.context.services.safetyLog!.append({ record: { v: 1, id: pcRecordId(), kind: "lock", account: "acct_1", target: null, signer: "pc", signed_at: new Date().toISOString(), signature: "" } as SafetyRecord, got: "pc" });
+  expect(await bounded(askRecovery(made.stateDir, { act: "admit", pending: waiting.id, fingerprint: waiting.fingerprint }))).toEqual({ error: "This PC refused to admit the key (locked, frozen, or its log cannot be read)" });
+  expect(made.stored().some((row) => row.relay_public_key === paired.device.spki)).toBe(false);
+  expect((await bounded(askRecovery(made.stateDir, { act: "list" })) as { pending: unknown[] }).pending).toEqual([]);
+});
+
+test.if(unix)("T69/P24: a lift at the PC ends the block, and the journal says recover and this PC's user", async () => {
+  const made = await pairingPc({ server: { accountOpensAll: true } });
+  pcs.push(made);
+  const [signer, target] = [await phone(), await phone()];
+  for (const key of [signer, target]) {
+    const id = made.devices.pairRelay(made.devices.startPairing().code, "Phone", key.spki)!.device.id;
+    made.devices.linkAccountKey(id, key.spki, key.spki, "acct_1");
+  }
+  const block = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 9, signer: signer.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, signer.keys.privateKey) as BlockRecord;
+  await made.devices.applyBlock(block, "handed");
+  expect(await bounded(askRecovery(made.stateDir, { act: "lift", blocks: [block.id] }))).toEqual({ lifted: [block.id] });
+  expect(made.app.context.services.safetyLog!.state().blocks).toEqual([]);
+  expect(journal(made).filter((entry) => entry.kind === "lift")).toEqual([expect.objectContaining({ how: "recover", label: block.id, by: userInfo().username })]);
+});
+
+test.if(unix)("T37/P24: remove and revoke-all are journalled with recover and this PC's user", async () => {
+  const [first, second] = [await memberRow("acct_1"), await memberRow("acct_1")];
+  const made = await pairingPc({ rows: [first.row, second.row], server: { accountOpensAll: true } });
+  pcs.push(made);
+  await bounded(askRecovery(made.stateDir, { act: "remove", targets: [first.row.id] }));
+  await bounded(askRecovery(made.stateDir, { act: "revoke_all" }));
+  const lines = journal(made).filter((entry) => entry.kind === "remove");
+  expect(lines.map((entry) => entry.row)).toEqual(expect.arrayContaining([first.row.id, second.row.id]));
+  expect(lines.every((entry) => entry.how === "recover" && entry.by === userInfo().username)).toBe(true);
 });
