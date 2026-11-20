@@ -12,6 +12,7 @@ describe("account joins on the PC's own window", () => {
   let listAnswer: number;
   let lists: number;
   let typed: string[];
+  let approval: (() => Promise<Response>) | null;
   let warned: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
@@ -19,6 +20,7 @@ describe("account joins on the PC's own window", () => {
     listAnswer = 200;
     lists = 0;
     typed = [];
+    approval = null;
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -37,6 +39,7 @@ describe("account joins on the PC's own window", () => {
       if (path === "/api/relay/join") {
         const body = JSON.parse(String(init?.body)) as { id: string; digits: string };
         typed.push(body.digits);
+        if (approval !== null) return approval();
         joins = [];
         return body.digits === "482913" ? Response.json({ ok: true }) : Response.json({ error: { code: "wrong_digits", message: "no" } }, { status: 409 });
       }
@@ -91,6 +94,41 @@ describe("account joins on the PC's own window", () => {
     expect(typed).toEqual([]);
     expect(text(renderer!.root.findByProps({ role: "alert" }))).toBe("Type the six digits Galaxy S25 shows.");
     expect(renderer!.root.findAll((node) => node.type === "form")).toHaveLength(1);
+  });
+
+  it("keeps the field open and the join waiting when the PC could not be reached", async () => {
+    await mount();
+    approval = () => Promise.reject(new TypeError("Failed to fetch"));
+    await press("Type the number");
+    await submit("482913");
+    expect(text(renderer!.root.findByProps({ role: "alert" }))).toBe("Could not reach this PC. Try again.");
+    expect(renderer!.root.findAll((node) => node.type === "form")).toHaveLength(1);
+  });
+
+  it("closes only the field of the join that was answered, and Cancel clears what it said", async () => {
+    joins = [...joins, { id: "j2", label: "iPad", asked_at: new Date().toISOString(), left_ms: 60_000 }];
+    const answer = Promise.withResolvers<Response>();
+    approval = () => answer.promise;
+    await mount();
+    await press("Type the number");
+    await submit("482913");
+    await act(async () => { renderer!.root.findAll((node) => node.type === "button" && text(node) === "Cancel")[0]!.props.onClick(); });
+    await press("Type the number");
+    expect(renderer!.root.findByType("form").findAll((node) => node.type === "label").map(text)).toEqual(["Number on Galaxy S25"]);
+    await act(async () => { renderer!.root.findAll((node) => node.type === "button" && text(node) === "Cancel")[0]!.props.onClick(); });
+    const presses = renderer!.root.findAll((node) => node.type === "button" && text(node) === "Type the number");
+    await act(async () => { presses[1]!.props.onClick(); });
+    await act(async () => { answer.resolve(Response.json({ ok: true })); });
+    await settle();
+    expect(renderer!.root.findByType("form").findAll((node) => node.type === "label").map(text)).toEqual(["Number on iPad"]);
+  });
+
+  it("drops the length hint when its field is cancelled", async () => {
+    await mount();
+    await press("Type the number");
+    await submit("12 345");
+    await press("Cancel");
+    expect(renderer!.root.findAll((node) => node.props.role === "alert")).toHaveLength(0);
   });
 
   it("says a wrong number ended the join", async () => {

@@ -52,6 +52,7 @@ const BASE: Record<string, string> = {
   "{name} is no longer waiting.": "{name} はもう待っていません。",
   "Adding it to your account. Keep this open until it is done.": "アカウントに追加しています。終わるまで開いたままにしてください。",
   "Signed in. Close this tab and go back to Ovis.": "サインインしました。このタブを閉じて Ovis に戻ってください。",
+  "Could not reach this PC. Try again.": "この PC に接続できませんでした。もう一度試してください。",
   "Type the six digits {name} shows.": "{name} に表示された 6 桁の数字を入力してください。",
   "The Ovis tab that started this sign-in is gone. Close this tab and sign in again there.": "このサインインを始めた Ovis のタブが見つかりません。このタブを閉じて、そちらでもう一度サインインしてください。",
   "Nothing to finish here. Close this tab and go back to Ovis.": "ここで仕上げるサインインはありません。このタブを閉じて Ovis に戻ってください。",

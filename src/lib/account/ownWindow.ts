@@ -94,10 +94,10 @@ export function ownWindowSignIn(provider: AccountProvider, options: { readonly s
   return desktopSignIn(provider, ownWindowBridge(options.service, options.redirect, tab, options.signal, options.blocked), options.store);
 }
 
-/** The callback page's return, read once, with the code taken out of its address at once. */
 /** Whether a callback page's address carried a sign-in's return at all (a reloaded one no longer does). */
 export const carriesReturn = (params: string): boolean => stateOf(params) !== null;
 
+/** The callback page's return, read once, with the code taken out of its address at once. */
 export function takeReturn(location: Pick<Location, "search">, history: Pick<History, "replaceState">): string {
   const params = location.search;
   history.replaceState(null, "", CALLBACK_PATH);
@@ -115,6 +115,6 @@ export function handOverReturn(params: string, onTaken: () => void): () => void 
   channel.onmessage = (event: MessageEvent<Message>) => {
     if (event.data?.kind === "taken" && event.data.state === state) { channel.close(); onTaken(); }
   };
-  if (state !== null) channel.postMessage({ kind: "return", params } satisfies Message);
+  channel.postMessage({ kind: "return", params } satisfies Message);
   return () => channel.close();
 }
