@@ -12,7 +12,7 @@ export function holdWaitMs(hold: HoldState | undefined, now: number): number | n
   return Math.max(0, Date.parse(hold.until) - now);
 }
 
-export function itsMeAnswer(notice: DeviceNotice): NoticeAnswer {
+export function itsMeAnswer(notice: DeviceNotice): Extract<NoticeAnswer, { answer: "its_me" }> {
   return { type: "notice-answer", id: notice.id, answer: "its_me" };
 }
 

@@ -304,7 +304,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
           joinPc({ ...attempt.offer, join: attempt.offer }, { sheet: "join", alone: true });
           return;
         case "wait": {
-          if (shown?.kind !== "connecting") show({ kind: "connecting", name: attempt.offer.name ?? null });
+          show({ kind: "connecting", name: attempt.offer.name ?? null, hold: step.hold });
           const deadline = "until" in step.hold && step.hold.until !== null ? Date.parse(step.hold.until) : NaN;
           if (Number.isFinite(deadline)) {
             holdTimer = setTimeout(() => {

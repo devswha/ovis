@@ -1,4 +1,5 @@
 import type { Root } from "react-dom/client";
+import type { HoldState } from "../../../shared/account-devices-api.ts";
 import type { PendingPushStore } from "../push.ts";
 import type { AccountStore } from "../account/store.ts";
 import type { EnrollmentState, ShellDeviceStore } from "./device.ts";
@@ -93,9 +94,9 @@ export type RelayShellState =
   | { kind: "confirm"; offer: RelayOffer; account?: "checking" | "unlisted" | "listed"; pressed?: "unlisted" | "listed" | "own"; /** a join a PC's own page offers: its one press, drawn alone */ alone?: true }
   /**
    * `approved`: the PC accepted the pairing, and the account steps go on behind this screen; absent before that.
-   * `pairing`: a new pairing, not a saved PC opening again
+   * `hold`: the PC's structured account-open refusal; `pairing`: a new pairing, not a saved PC opening again
    */
-  | { kind: "connecting"; name: string | null; approved?: true; pairing?: true }
+  | { kind: "connecting"; name: string | null; approved?: true; pairing?: true; readonly hold?: HoldState }
   | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion }
   | { kind: "code-entry"; failure: TypedCodeFailure | null }
   | { kind: "code-looking" }

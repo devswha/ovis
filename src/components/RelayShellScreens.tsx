@@ -10,6 +10,7 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { describeUpdate } from "../lib/updateProgress.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { AccountSignIn, CheckPcsButton, PcStatusLine } from "./AccountPcs.tsx";
+import { JoinWait } from "./JoinWait.tsx";
 import { KeyId } from "./KeyId.tsx";
 import { relayFailureText } from "./relayFailureText.ts";
 import { CodeEntry, ReadyCheckpoint, type RelayShellProps } from "./RelayShell.tsx";
@@ -268,7 +269,7 @@ export function RelayShellCardContent({ props, view, signInFirst, addingPc, setS
       {state.kind === "connecting" && !state.pairing && (
         <>
           <h1 className="relay-shell-title">{t("Connecting to {name}…", { name: pc })}</h1>
-          <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /></div>
+          {state.hold === undefined ? <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /></div> : <JoinWait pc={pc} hold={state.hold} />}
           <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
         </>
       )}

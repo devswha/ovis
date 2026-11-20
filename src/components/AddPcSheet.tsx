@@ -15,6 +15,7 @@ import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { relayFailureText } from "./relayFailureText.ts";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
+import { JoinWait } from "./JoinWait.tsx";
 
 export type AddPcSheetMode = "new" | "join" | "add";
 export type AddPcPhase = "start" | "confirm" | "connecting" | "compare" | "wrong" | "approving" | "ready" | "failed";
@@ -161,7 +162,8 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
         actions = pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={onPair}>{t("Pair")}</button>);
         break;
       case "connecting":
-        body = <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{t("Connecting to {name}…", { name })}</p></div>;
+        body = state.kind === "connecting" && state.hold !== undefined ? <JoinWait pc={name} hold={state.hold} />
+          : <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{t("Connecting to {name}…", { name })}</p></div>;
         actions = cancel;
         break;
       case "compare": {
