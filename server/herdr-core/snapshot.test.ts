@@ -258,6 +258,16 @@ describe("buildSnapshot, terminals the app has not placed", () => {
     expect(snapshot.panes.filter((p) => p.tab_id === "ovis-tc").map((p) => p.pane_id)).toEqual(["t3", "t4"]);
   });
 
+  it("numbers an unnamed tab by its place among the tabs shown, past an app tab whose terminals are gone", () => {
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [
+      { id: "s1t1", name: "", root: block("t1") },
+      { id: "s1t2", name: "", root: block("t2") },
+      { id: "s1t3", name: "", root: block("t3") },
+    ] }] };
+    const snapshot = buildSnapshot([terminal("t1"), terminal("t3"), terminal("t4", { labels: { "herdr.space": "s1", "herdr.tab": "ovis-tb" } })], layout, "0.1.14");
+    expect(snapshot.tabs.map((t) => [t.tab_id, t.label, t.number])).toEqual([["s1t1", "1", 1], ["s1t3", "2", 2], ["ovis-tb", "3", 3]]);
+  });
+
   it("never makes one tab of two: a labeled id the app uses elsewhere gets an id of its own", () => {
     const layout = { spaces: [
       { id: "s1", name: "a", tabs: [{ id: "T", name: "", root: block("t1") }] },
