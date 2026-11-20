@@ -16,3 +16,14 @@
   grid-row: 1 / span 2;
   align-self: start;
 }
+
+/* a PC that took no It's me says so on a row of its own, under the notice's buttons */
+.device-paired-actions:has(> .its-me-refused) {
+  flex-wrap: wrap;
+}
+
+.its-me-refused {
+  order: 1;
+  flex-basis: 100%;
+  margin: 0;
+}

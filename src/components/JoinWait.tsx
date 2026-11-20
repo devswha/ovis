@@ -53,6 +53,6 @@ export function ItsMeButton({ sending, onPress, refusedBy = null }: { sending: b
   const t = useT();
   return <>
     <button type="button" className="btn" disabled={sending} onClick={onPress}>{t("It's me")}</button>
-    {refusedBy !== null && <p className="settings-hint" role="status">{t("{pc} did not accept It's me from this device.", { pc: refusedBy })}</p>}
+    {refusedBy !== null && <p className="settings-hint its-me-refused" role="status">{t("{pc} did not accept It's me from this device.", { pc: refusedBy })}</p>}
   </>;
 }
