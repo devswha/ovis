@@ -205,27 +205,32 @@ export class DeviceJournal {
     const closing = "close" in input;
     const entry: JournalEntry = closing ? { ...input.close, seq: this.doc.next_seq }
       : { ...input, seq: this.doc.next_seq, id: randomBytes(16).toString("hex"), at: new Date().toISOString() };
+    const closes = closing ? [entry] : [];
+    const remaining = this.doc.open.filter(notice => {
+      if (notice.id === decides) return false;
+      if (notice.how !== "list" || notice.key === null || notice.key !== entry.key) return true;
+      // Local recovery revokes the key on this PC. A row receipt ends only its numbered admission.
+      if (entry.kind === "remove" && entry.how === "recover") return false;
+      if (!drop || notice.row !== drop.row || notice.no !== drop.admit_no || notice.account !== entry.account) return true;
+      // The drop and the same-ID close must reach disk together; the row receipt still names the drop's sequence.
+      closes.push({ ...notice, seq: entry.seq + closes.length + 1 });
+      return false;
+    });
+    const next_seq = (closes.at(-1)?.seq ?? entry.seq) + 1;
     let entries = closing ? this.doc.entries : [...this.doc.entries, entry];
-    let closed = closing ? [...(this.doc.closed ?? []), entry] : this.doc.closed;
+    let closed = closes.length ? [...(this.doc.closed ?? []), ...closes] : this.doc.closed;
     let trimmed = this.doc.trimmed;
     if (entries.length + (closed?.length ?? 0) > JOURNAL_MAX) {
-      trimmed = Math.max(trimmed, entry.seq - JOURNAL_MAX);
+      trimmed = Math.max(trimmed, next_seq - 1 - JOURNAL_MAX);
       // An unpublished admission is pending work, not replay history. Keep only
       // the current admission for each row until activation moves it to open.
       const latest = new Map(entries.filter(n => n.kind === "admit" || n.kind === "promote" || n.kind === "drop").map(n => [n.row, n.seq]));
       entries = entries.filter(n => n.seq > trimmed || (n.awaitingListCheck && n.kind === "admit" && latest.get(n.row) === n.seq));
       closed = closed?.filter(n => n.seq > trimmed);
     }
-    const remaining = this.doc.open.filter(notice => {
-      if (notice.id === decides) return false;
-      if (notice.how !== "list" || notice.key === null || notice.key !== entry.key) return true;
-      // Local recovery revokes the key on this PC. A row receipt ends only its numbered admission.
-      if (entry.kind === "remove" && entry.how === "recover") return false;
-      return !drop || notice.row !== drop.row || notice.no !== drop.admit_no || notice.account !== entry.account;
-    });
     const open = !closing && entry.kind === "admit" && !entry.awaitingListCheck ? [...remaining, entry] : remaining;
     if (!this.exists) this.companions();
-    this.write({ ...this.doc, next_seq: entry.seq + 1, entries, open, trimmed, ...(closed && { closed }), ...(drop && { last_row_drop: { ...drop, journalled: entry.seq } }),
+    this.write({ ...this.doc, next_seq, entries, open, trimmed, ...(closed && { closed }), ...(drop && { last_row_drop: { ...drop, journalled: entry.seq } }),
       ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) });
     this.exists = true;
     return entry;
