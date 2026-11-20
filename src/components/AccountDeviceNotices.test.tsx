@@ -8,6 +8,7 @@ import { DeviceNoticeWire, deviceNotice } from "../lib/deviceNoticeWire.fixture.
 import { MachineSession, MachineSessionRegistry } from "../lib/machineSession.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { HerdrSocket } from "../lib/ws.ts";
+import { ACCOUNT_SIGN_OUT_EVENT } from "../lib/account/service.ts";
 import { useAccountDeviceNotices } from "./AccountDeviceNotices.tsx";
 
 it.each([
@@ -390,9 +391,9 @@ it("T53: an It's me refusal survives switching PCs and clears on the next press"
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(answers()).toHaveLength(2);
   expect(refusal()).toHaveLength(0);
-  await act(async () => { jest.advanceTimersByTime(5_000); });
-  expect(refusal()).toHaveLength(1);
+  // away to Lab while Desk still waits: Desk's last wait ends there, and its refusal is not Lab's
   await act(async () => { view.update(<SettingsProvider><Notices selected="lab" /></SettingsProvider>); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(button().props.disabled).toBe(false);
   expect(view.root.findAllByProps({ className: "settings-hint its-me-refused" })).toHaveLength(0);
   await act(async () => { view.update(<SettingsProvider><Notices selected="local" /></SettingsProvider>); });
@@ -409,3 +410,64 @@ it("T53: an It's me refusal survives switching PCs and clears on the next press"
   expect(refusal()).toHaveLength(0);
   expect(view.root.findAll((node) => node.type === "button" && node.children.includes("It's me"))).toHaveLength(0);
 });
+
+it.each([
+  ["a sign-out and a sign-in to the same account after the refusal", "after"],
+  ["a new sign-in that began while the request still waited", "during"],
+] as const)("T53: an It's me refusal belongs to its sign-in: %s shows none", async (_name, when) => {
+  jest.useFakeTimers();
+  const desk = new DeviceNoticeWire("ws://localhost/ws?pc=desk");
+  const lab = new DeviceNoticeWire("ws://localhost/ws?pc=lab");
+  for (const [key, value] of Object.entries({
+    window: Object.assign(new EventTarget(), { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
+    document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
+    navigator: { languages: ["en"] },
+    getComputedStyle: () => ({ getPropertyValue: () => "" }),
+    WebSocket: class { constructor(url: string) { return url === desk.url ? desk : lab; } },
+    IS_REACT_ACT_ENVIRONMENT: true,
+  })) {
+    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const store = memoryAccountStore();
+  await store.set("session", {
+    service: "https://account.ovis.sh", account: "acct", provider: "github",
+    access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 60_000, sign_in_id: "this-sign-in",
+  });
+  await store.set("signin_key", { account: "acct", sign_in_id: "this-sign-in", no: 1, key: await newKey() });
+  spyOn(indexedAccountStore, "get").mockImplementation(store.get);
+  const registry = new MachineSessionRegistry((id) => new MachineSession(id, { socket: new HerdrSocket(id === "local" ? desk.url : lab.url) }));
+  sessions = registry;
+  for (const machine of itsMeMachines) registry.get(machine.id).socket.connect();
+  desk.open();
+  lab.open();
+  function Notices({ selected }: { selected: string }) {
+    return useAccountDeviceNotices({ machines: itsMeMachines, machineSessions: registry, selectedMachineId: selected, pageServerId: undefined });
+  }
+  await act(async () => { itsMeRenderer = create(<SettingsProvider><Notices selected="local" /></SettingsProvider>); });
+  const view = itsMeRenderer;
+  if (view === undefined) throw new TypeError("Missing notice view");
+  const admission = deviceNotice({ row: "new-phone" });
+  const button = () => view.root.find((node) => node.type === "button" && node.children.includes("It's me"));
+  const refusal = () => view.root.findAll((node) => node.type === "p" && node.children.includes("Desk did not accept It's me from this device."));
+  await act(async () => {
+    desk.snapshot();
+    lab.snapshot();
+    desk.read({ type: "device-notice", notice: admission });
+    lab.read({ type: "device-notice", notice: admission });
+  });
+  const signInAgain = async () => {
+    await store.set("session", { ...(await store.get("session"))!, refresh_token: "refresh-2", sign_in_id: "a-later-sign-in" });
+    window.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+  };
+  await act(async () => { button().props.onClick(); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  if (when === "during") await act(async () => { await signInAgain(); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  if (when === "after") {
+    expect(refusal()).toHaveLength(1);
+    await act(async () => { await signInAgain(); });
+  }
+  expect(refusal()).toHaveLength(0);
+});
+
