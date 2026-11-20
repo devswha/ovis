@@ -9,6 +9,7 @@ import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
 
 const REFRESH_MS = 60_000;
+const QUIET_REFRESH_MS = 5 * 60_000;
 const READ_TIMEOUT_MS = 10_000;
 
 /** a PC still in its 24 hours, or one added under the first-PC exemption before this device joined (told once, with no end) */
@@ -27,7 +28,10 @@ export function NewPcNotices({ ownWindowOf, signIn, onRemoved }: {
     let pending: AbortController | undefined;
     /** the last read listed a PC to tell of: only then is the list read every minute (a new one rings this device anyway) */
     let telling = false;
+    /** when the list was last read: a focus or a page shown again reads it at most once a minute, unless a PC is told of */
+    let readAt = Number.NEGATIVE_INFINITY;
     const read = async () => {
+      readAt = Date.now();
       const mine = ++version;
       pending?.abort();
       const controller = new AbortController();
@@ -53,19 +57,21 @@ export function NewPcNotices({ ownWindowOf, signIn, onRemoved }: {
       }
     };
     const visibleRead = () => { if (document.visibilityState === "visible") void read(); };
+    const focusRead = () => { if (telling || Date.now() - readAt >= REFRESH_MS) visibleRead(); };
     const signInChanged = () => { setListing(null); void read(); };
     signInChanged();
-    const timer = setInterval(() => { if (telling) visibleRead(); }, REFRESH_MS);
-    document.addEventListener("visibilitychange", visibleRead);
-    window.addEventListener("focus", visibleRead);
+    // every minute while a PC is told of; otherwise every QUIET_REFRESH_MS, so a page left open hears of a new PC anyway
+    const timer = setInterval(() => { if (telling || Date.now() - readAt >= QUIET_REFRESH_MS) visibleRead(); }, REFRESH_MS);
+    document.addEventListener("visibilitychange", focusRead);
+    window.addEventListener("focus", focusRead);
     window.addEventListener(ACCOUNT_SIGN_OUT_EVENT, signInChanged);
     window.addEventListener(ACCOUNT_PCS_CHANGED_EVENT, visibleRead);
     return () => {
       version++;
       pending?.abort();
       clearInterval(timer);
-      document.removeEventListener("visibilitychange", visibleRead);
-      window.removeEventListener("focus", visibleRead);
+      document.removeEventListener("visibilitychange", focusRead);
+      window.removeEventListener("focus", focusRead);
       window.removeEventListener(ACCOUNT_SIGN_OUT_EVENT, signInChanged);
       window.removeEventListener(ACCOUNT_PCS_CHANGED_EVENT, visibleRead);
     };

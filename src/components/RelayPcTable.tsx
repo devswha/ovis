@@ -108,6 +108,7 @@ export function RelayPcTable({
         onClick={(event) => { event.stopPropagation(); if (onOpenPc) { event.preventDefault(); onOpenPc(row); } }}>{label}</a>
     );
     const detailsBtn = <button type="button" className="btn relay-pc-action-btn" data-pc-action="details" onClick={(e) => { stop(e); onSelect(row.server_id); }}>{t("Details")}</button>;
+    // a PC new to the account (one press) gets no quick Open here: it is opened from the PC's own page, on a press
     if (mode === "account" && row.accountOpen && !isNewAccountPc(row, now)) return openLink("open", t("Open"));
     switch (row.displayState) {
       case "paired": case "unchecked": return openLink("open", t("Open"));
@@ -185,7 +186,6 @@ export function RelayPcTable({
                     <span className="relay-dash-act relay-pc-act" onClick={(event) => event.stopPropagation()}>{renderAction(row)}</span>
                   </div>
                   <div className="relay-pc-phone-meta">
-                    {isNewAccountPc(row, now) && <><span>{t("New")}</span><span aria-hidden="true">·</span></>}
                     {stateWord(row, updating)}<span aria-hidden="true">·</span>
                     {renderRelay(row)}<span aria-hidden="true">·</span>
                     <span className="relay-pc-seen">{renderSeen(row)}</span>
@@ -226,7 +226,6 @@ export function RelayPcTable({
                   <td className="relay-dash-state-cell relay-pc-cell-state">
                     <div className="relay-pc-state-stack">
                       {stateWord(row, updating)}
-                      {isNewAccountPc(row, now) && <small className="relay-pc-probe-line">{t("New")}</small>}
                       {enrollment !== null && <small className="relay-pc-probe-line" data-pc-enrollment="">{enrollment}</small>}
                       {sub !== null && <small className="relay-pc-probe-line">{sub}</small>}
                     </div>

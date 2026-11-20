@@ -243,7 +243,7 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
             <li key={pc.server_id} className="relay-account-pc" data-pc-state={machine !== undefined ? "added" : state ?? "checking"}>
               <div className="connect-found-row">
                 <span className="connect-found-name">{pc.name}</span>
-                <span className="connect-found-detail">{isNewAccountPc(pc, Date.now()) ? `${t("New")} · ` : ""}{detail}</span>
+                <span className="connect-found-detail">{isNewAccountPc(pc, Date.now()) ? `${t("New PC")} · ` : ""}{detail}</span>
                 {machine !== undefined
                   ? <button type="button" className="btn" onClick={() => onConnectMachine(machine)}>{t("Connect")}</button>
                   : state === "ready" && (waiting

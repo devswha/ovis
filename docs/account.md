@@ -828,14 +828,17 @@ before this has no route), leaves the page on the wait above, unchanged.
 
 The account's other devices are told: the service sends them its usual push, and at the top of the
 opened Ovis a notice names the new PC, with **I didn't add this**, which removes it from the
-account's list at once (`DELETE /v1/pcs/{server_id}`); its close button only hides it. The
-overview page lists the PC with its mark and shows no notice. A PC added under the first-PC
-exception is told, once, to the first devices that join the account after it
-(`admitted_before_you` on its directory entry), however much later. For 24 hours
-(`new_until` on its directory entry) the PC is marked new on them: it is never selected or opened by
-itself and no device signs in to it on its own, while a press on it opens it as usual. A PC bound
-this way leaves the account as soon as a read of the snapshot finds the account no longer lists it
-(the binding is cleared as `unlisted`, and the account's devices with it).
+account's list at once (`DELETE /v1/pcs/{server_id}`); its close button only hides it. The overview
+page lists the PC with its mark and shows no notice. A PC added under the first-PC exception is
+told, once, to the first devices that join the account after it (`admitted_before_you` on its
+directory entry), however much later. For 24 hours (`new_until` on its directory entry) the PC is
+marked new on them: it is never selected or opened by itself and no device signs in to it on its
+own, while a press on it opens it as usual. The account service admits the PC before the PC is
+asked, so a press the PC then refuses (it restarted, was put in another account meanwhile, or was
+not this PC's own window) still told the account's other devices and marked the PC new; such a PC is
+in no account and the page waits for the digits as before, and its notice says what to do if nobody
+added it. A PC bound this way leaves the account as soon as a read of the snapshot finds the account
+no longer lists it (the binding is cleared as `unlisted`, and the account's devices with it).
 
 A wrong number ends that comparison; the person starts again from **Add** on the dashboard. A device without an account
 pairs with a QR code or pairing code behind **Start without signing in** on the sign-in screen, which

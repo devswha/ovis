@@ -1019,6 +1019,13 @@ describe("the hosted shell's front page", () => {
     };
 
     // security-triage ruling (a): a launch reopens only a pairing this device made by hand, whatever the account service says
+    it("C3: a launch never opens a PC that only an account introduction saved here, and still opens one paired by hand", async () => {
+      const [introduced, byHand] = await pcs("c".repeat(32), "d".repeat(32));
+      // the PC opened last is gone (forgotten): the fallback must not be the introduced one
+      expect(await signedInLaunch(deviceStore([{ ...introduced!, introduced_at: Date.now() }]), "e".repeat(32), async () => new Response(null, { status: 503 }))).toEqual([]);
+      expect(await signedInLaunch(deviceStore([{ ...introduced!, introduced_at: Date.now() }, byHand!]), "e".repeat(32), async () => new Response(null, { status: 503 }))).toEqual([`/s/${"d".repeat(32)}/`]);
+    });
+
     it("C3: a launch whose account list read fails still reopens the PC this device paired with by hand", async () => {
       const went = await signedInLaunch(deviceStore(await pcs("a".repeat(32))), "a".repeat(32), async () => new Response(null, { status: 503 }));
       expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
@@ -1099,6 +1106,32 @@ describe("the hosted shell's front page", () => {
       renderApp: () => ({ render() {}, unmount() {} }), pendingPush: { get: async () => undefined, clear: async () => {} } }));
     await mountRelayShell(front);
     expect(account().pcs?.[0]?.state).toBe("paired");
+    transport.close();
+  });
+
+  it("C3: a PC only an account introduction saved is never opened by a launch; opened here by hand once, the next launch reopens it", async () => {
+    const offer = { v: 1 as const, ...keyFor(), relay: AP };
+    const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const rows: RelayDevice[] = [{ ...offer, device_id: "introduced", private_key: key.privateKey, public_spki: "fixture", label: "Phone", introduced_at: Date.now() }];
+    const store = deviceStore(rows);
+    const launch = async (): Promise<string[]> => {
+      browser.sessionStore.delete("ovis-launched");
+      const went: string[] = [];
+      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); } }));
+      return went;
+    };
+    expect(await launch()).toEqual([]);
+    expect(last().state.kind).toBe("list");
+    class Admitted extends RelayTransport {
+      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+      override async fetch() { return Response.json({ managed: false }); }
+    }
+    const transport = new Admitted(offer);
+    // the person opens its page by hand (a tap on its row navigates there)
+    await mountRelayShell(mountFor({ store, entryUrl: `https://app.ovis.sh/s/${offer.server_id}/`, shellVersion: "1.0.0", open: async () => transport,
+      renderApp: () => ({ render() {}, unmount() {} }), pendingPush: { get: async () => undefined, clear: async () => {} } }));
+    await untilStored(() => rows[0]?.introduced_at === undefined);
+    expect(await launch()).toEqual([`/s/${offer.server_id}/`]);
     transport.close();
   });
 

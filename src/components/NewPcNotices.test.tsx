@@ -210,3 +210,28 @@ it("A2: with no PC to tell of, the account's list is not read every minute", asy
   await act(async () => { jest.advanceTimersByTime(180_000); });
   expect(reads()).toBe(before);
 });
+
+it("A2: a focus or a page shown again reads the list at most once a minute while no PC is told of", async () => {
+  listed = [{ server_id: PC, label: "Desk", added_at: new Date(0).toISOString(), last_seen_at: null, new_until: null, admitted_at: null, admitted_before_you: false }];
+  jest.useFakeTimers();
+  await mount();
+  const reads = () => (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit?][] } }).mock.calls.filter(([, init]) => init?.method === "GET").length;
+  const before = reads();
+  for (let tab = 0; tab < 5; tab++) await act(async () => { browser.dispatchEvent(new Event("focus")); });
+  expect(reads()).toBe(before);
+  await act(async () => { jest.advanceTimersByTime(60_000); });
+  await act(async () => { browser.dispatchEvent(new Event("focus")); });
+  expect(reads()).toBe(before + 1);
+});
+
+it("A2: a page left open with no PC to tell of still reads the list every five minutes, so it hears of a new PC", async () => {
+  listed = [];
+  jest.useFakeTimers();
+  await mount();
+  const reads = () => (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit?][] } }).mock.calls.filter(([, init]) => init?.method === "GET").length;
+  const before = reads();
+  await act(async () => { jest.advanceTimersByTime(4 * 60_000); });
+  expect(reads()).toBe(before);
+  await act(async () => { jest.advanceTimersByTime(60_000); });
+  expect(reads()).toBe(before + 1);
+});

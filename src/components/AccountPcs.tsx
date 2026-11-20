@@ -216,7 +216,7 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now
       {pcs.map((pc) => (
         <li key={pc.server_id} className={pc.state === "paired" || pc.state === "needs-approval" ? "devices-row" : "devices-row is-away"} data-pc-state={pc.state}>
           <div className="devices-name">
-            <span className="settings-label">{pc.name}<span className="devices-kind">{isNewAccountPc(pc, now) ? t("New") : "PC"}</span></span>
+            <span className="settings-label">{pc.name}<span className="devices-kind">{isNewAccountPc(pc, now) ? t("New PC") : "PC"}</span></span>
             <span className="settings-description">{listedPcStateText(pc, t)}</span>
           </div>
           {!watching && unusedPc(pc, now) && (

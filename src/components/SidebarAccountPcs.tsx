@@ -104,7 +104,7 @@ function AccountPcRow({ pc, hidden, pcs: { stateOf, pairing, failure, add, cance
         <div className="machine-title">
           <span className="sidebar-mark" aria-hidden="true"><Monitor /></span>
           <span className="machine-name" title={pc.name}>{pc.name}</span>
-          {newUntil !== expiredAt && isNewAccountPc(pc, Date.now()) && <span className="machine-state-word">{t("New")}</span>}
+          {newUntil !== expiredAt && isNewAccountPc(pc, Date.now()) && <span className="machine-state-word">{t("New PC")}</span>}
           <span className={`machine-dot is-${state === undefined ? "connecting" : state === "ready" ? "connected" : "disconnected"}`} aria-hidden="true" />
         </div>
       </header>

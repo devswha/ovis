@@ -161,7 +161,7 @@ describe("the account's PCs in the sidebar", () => {
       { ...AWAY, new_until: new Date(now - 1).toISOString() },
     ] });
     await act(async () => { renderer = create(tree(() => {}, [local])); });
-    const marks = () => renderer?.root.findAllByType("section").filter((group) => group.findAll((node) => node.type === "span" && node.children.includes("New")).length > 0);
+    const marks = () => renderer?.root.findAllByType("section").filter((group) => group.findAll((node) => node.type === "span" && node.children.includes("New PC")).length > 0);
     expect(marks()?.map((group) => group.props["aria-label"])).toEqual(["PC Desk"]);
     await act(async () => { jest.advanceTimersByTime(1_000); });
     expect(marks()).toHaveLength(0);

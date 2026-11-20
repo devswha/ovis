@@ -21,7 +21,7 @@ import { applyAccountRecords, stageMailboxAdds, type AddGates, type RecordOutcom
 
 /** The account service refused a PC route: its status and error code, when it named one. */
 export class AccountServiceRefusal extends Error {
-  constructor(readonly status: number, readonly code: string | null, path: string) {
+  constructor(readonly status: number, readonly code: string | null, readonly path: string) {
     super(`The account service answered ${status} to ${path}`);
     this.name = "AccountServiceRefusal";
   }
@@ -265,7 +265,7 @@ export class AccountMailbox {
         if (cursor.page === 0) staged = await stageMailboxAdds(this.pending);
         return await this.snapshotPage(account, cursor, used).catch((error: unknown) => {
           // 403 not_listed alone: a 404 (step 2 off for the account, an older service) never unbinds
-          if (error instanceof AccountServiceRefusal && error.status === 403 && error.code === "not_listed") unlisted = true;
+          if (error instanceof AccountServiceRefusal && error.path === "/v1/pc/snapshot" && error.status === 403 && error.code === "not_listed") unlisted = true;
           throw error;
         });
       }, { ...ports, scope: () => this.stopped ? null : ports.scope(), commit: (stage) => {

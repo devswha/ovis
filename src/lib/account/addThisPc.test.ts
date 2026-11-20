@@ -227,7 +227,7 @@ function onePress(answers: { admit?: () => Promise<unknown>; pc?: (path: string)
   const warn = spyOn(console, "warn").mockImplementation(() => {});
   const signedIn = { account: "acct_1" };
   const service = {
-    session: async () => ({ account: signedIn.account }),
+    session: async () => ({ account: signedIn.account, refresh_token: `refresh-${signedIn.account}` }),
     forSignIn: (session: { account: string }) => ({ admitPc: async (id: string) => { calls.push(`admit ${id} as ${session.account}`); return await (answers.admit?.() ?? Promise.resolve({ account: session.account, new_until: "x" })); } }),
   } as unknown as AccountService;
   return { calls, signedIn, service, restore: () => { fetchSpy.mockRestore(); warn.mockRestore(); } };
@@ -282,6 +282,8 @@ test("the PC's own window, as the server judges it: its owner socket, or the acc
   expect(ownWindowHere({ via: "local" }, "example.ts.net")).toBe(true);
   expect(ownWindowHere({ via: "token" }, "127.0.0.1")).toBe(true);
   expect(ownWindowHere({ via: "token" }, "[::1]")).toBe(true);
+  expect(ownWindowHere({ via: "token" }, "localhost")).toBe(true);
+  expect(ownWindowHere({ via: "token" }, "127.0.0.2")).toBe(true);
   expect(ownWindowHere({ via: "token" }, "192.168.1.10")).toBe(false);
   for (const via of ["device", "relay", "open", "portal"]) expect(ownWindowHere({ via }, "127.0.0.1")).toBe(false);
   expect(ownWindowHere(null, "127.0.0.1")).toBe(false);
@@ -291,5 +293,13 @@ test("a PC that cannot be reached after the account service admitted it is no on
   const f = onePress({ pc: () => { throw new TypeError("Disconnected"); } });
   try {
     expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe(false);
+  } finally { f.restore(); }
+});
+
+test("one press names this PC for nobody when another tab signed in to another account while the service answered", async () => {
+  const f = onePress({ admit: async () => { f.signedIn.account = "acct_2"; return { account: "acct_1", new_until: "x" }; } });
+  try {
+    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe(false);
+    expect(f.calls).toEqual([`admit ${PC_ID} as acct_1`]);
   } finally { f.restore(); }
 });

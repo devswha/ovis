@@ -274,3 +274,17 @@ test("a press whose PC the account removes during its first read answers no succ
   expect([pressed.status, pressed.body.error?.code]).toEqual([409, "not_listed"]);
   expect(f.devices.account()).toBeNull();
 });
+
+test("a not_listed refusal of anything but the snapshot route never unbinds a PC bound in one press", async () => {
+  let refuseChallenge = false;
+  const f = await pc({ accountFetch: async (request, service) => {
+    if (refuseChallenge && new URL(request.url).pathname === "/v1/pc/challenge") return Response.json({ error: { code: "not_listed", message: "x" } }, { status: 403 });
+    return await service.fetch(request);
+  } });
+  await setUpFor(f, "acct_1");
+  await admitAt(f, "acct_1");
+  expect((await press(f, "acct_1")).status).toBe(200);
+  refuseChallenge = true;
+  await f.app.context.services.accountMailbox.readSnapshot();
+  expect(f.devices.account()).toBe("acct_1");
+});

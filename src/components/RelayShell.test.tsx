@@ -355,7 +355,7 @@ describe("the dashboard", () => {
     const button = (label: string) => { const found = buttons(label); if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`); return found[0]!; };
     const rows = () => renderer!.root.findAll((node) => node.type === "tr" && node.props["data-pc-state"] !== undefined).map((row) => textOf(row.find((node) => node.props.className === "relay-pc-name-label")));
 
-    it("A2, A3: the overview lists a new PC as a row marked New and shows no notice card", async () => {
+    it("A2, A3: the overview, opened only on purpose, lists a new PC as a plain row: no notice card and no mark (owner rule)", async () => {
       window.history.replaceState(null, "", "/#pcs");
       Object.assign(window.location, { hash: "#pcs" });
       Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
@@ -391,9 +391,9 @@ describe("the dashboard", () => {
       try {
         await mount(draw(myPcs(directory, [], { now: Date.now() })));
         expect(rows()).toEqual(["New desk"]);
-        // the overview is a page its owner opens on purpose: the notice is shown in the opened Ovis, here only the row is marked
+        // the overview is a page its owner opens on purpose: nothing new appears there; the notice and the mark are in the opened Ovis
         expect(renderer!.root.findAll((instance) => instance.type === "div" && instance.props.role === "status" && textOf(instance).includes("New PC added to your account"))).toHaveLength(0);
-        expect(textOf(renderer!.root.findAll((node) => node.type === "tr" && node.props["data-pc-state"] !== undefined)[0]!)).toContain("New");
+        expect(textOf(renderer!.root.findAll((node) => node.type === "tr" && node.props["data-pc-state"] !== undefined)[0]!)).not.toContain("New PC");
         expect(deletes).toEqual([]);
       } finally {
         await act(async () => { renderer?.unmount(); });

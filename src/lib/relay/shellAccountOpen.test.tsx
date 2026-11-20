@@ -118,7 +118,8 @@ it("A3: a newly added account PC is marked New and its page waits for the Join p
   run.current().onPair();
   await pressed.promise;
   expect(attempts).toEqual([false]);
-  expect(markup).toContain(">New</");
+  // the overview shows nothing new (owner rule): no mark, and no quick Open
+  expect(markup).not.toContain(">New PC</");
   expect(markup).toContain('data-pc-action="join"');
   expect(markup).not.toContain('data-pc-action="open"');
 });
@@ -135,7 +136,7 @@ it("T34, P18: a normal sign-in opens a listed unpaired PC as its registered acco
   } });
   const key = await run.accountStore.get("signin_key");
   const markup = run.markup();
-  expect(markup).not.toContain(">New</");
+  expect(markup).not.toContain(">New PC</");
   await run.openPage();
   expect({
     number: key?.no, open: markup.includes('data-pc-action="open"'), join: markup.includes('data-pc-action="join"'),

@@ -122,7 +122,6 @@ export function dashboardModel(pcs: readonly DashboardPc[], me: DashboardViewer,
           name: pc.name,
           state: pc.displayState,
           last_seen_at: pc.last_seen_at,
-          ...(pc.new_until == null ? {} : { new_until: pc.new_until }),
           seen: pc.state === "offline" ? "stale" as const
             : pc.state === "paired" && pc.last_seen_at !== null ? "lately" as const : "unknown" as const,
           check: pc.check,

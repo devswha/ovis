@@ -8,18 +8,19 @@ import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { decodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
 import { closeRelayLink, fetchHealth, requestRelayLink } from "../api.ts";
 import { apiFetch } from "../api-request-id.ts";
+import { isLoopbackHost } from "../phone.ts";
 import { serverIdOfPath } from "../shellMode.ts";
 import { pcAccountStatus, within } from "./join.ts";
 import { NEW_PC_MS } from "./myPcs.ts";
-import type { AccountService } from "./service.ts";
+import { sameSignIn, type AccountService } from "./service.ts";
 
 /**
  * Whether this window is this PC's own window, as the server's ownWindow judges it (server/dispatch.ts): its owner
- * socket, or the access token on a loopback address. The server still decides; this only keeps a press it would refuse
+ * socket, or the access token on a loopback address (localhost and 127.x included, as the server sees a loopback peer). The server still decides; this only keeps a press it would refuse
  * from costing the account a daily add (one-press PC add, docs/account.md).
  */
 export function ownWindowHere(auth: { readonly via?: string } | null | undefined, hostname: string = typeof location === "undefined" ? "" : location.hostname): boolean {
-  return auth?.via === "local" || (auth?.via === "token" && ["127.0.0.1", "[::1]", "::1"].includes(hostname));
+  return auth?.via === "local" || (auth?.via === "token" && isLoopbackHost(hostname));
 }
 
 export async function thisPcAccount(): Promise<string | null> {
@@ -231,6 +232,9 @@ export async function addInOnePress(service: AccountService, serverId: string, a
     console.warn("Ovis: the account service did not add this PC in one press", error instanceof Error ? error.name : error);
     return false;
   }
+  // another tab signed in to another account while the service answered: this PC is named for nobody
+  const still = await service.session();
+  if (still === undefined || !sameSignIn(still, session) || !running()) return false;
   const post = (path: string) => apiFetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account }) });
   try {
     if (!running() || !(await post("/api/account/relay-account")).ok || !running()) return false;

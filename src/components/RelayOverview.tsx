@@ -9,7 +9,6 @@ import { DEVICE_PROVIDERS } from "../lib/account/service.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
-import { isNewAccountPc } from "../lib/account/myPcs.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import { dashboardModel, relayHost, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
@@ -314,7 +313,7 @@ export function RelayOverview(props: RelayOverviewProps) {
                 {attentionRows.map(({ pc, reason, expiresAt, why, joins }) => (
                   <li key={pc.server_id} className="relay-overview-attention-row" data-pc-state={reason}>
                     <StatusDot state={pcDotState(pc)} />
-                    <span className="relay-overview-attention-name" title={pc.name}>{pc.name}{isNewAccountPc(pc, now) ? ` · ${t("New")}` : ""}</span>
+                    <span className="relay-overview-attention-name" title={pc.name}>{pc.name}</span>
                     <span className="relay-overview-attention-why" {...(sharedReason === null && joins ? { "data-reason": "join" } : {})}>{sharedReason === null ? why : pc.relay !== null ? relayHost(pc.relay) : pc.last_seen_at !== null ? lastSeen(pc.last_seen_at, now) : "—"}</span>
                     <div className="relay-overview-attention-act">{rowAction(pc, expiresAt !== null, t, props)}</div>
                   </li>

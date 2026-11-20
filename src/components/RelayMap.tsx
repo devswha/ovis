@@ -3,7 +3,6 @@ import "./RelayMap.css";
 import { Lock, MonitorSmartphone, RadioTower } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { isNewAccountPc } from "../lib/account/myPcs.ts";
 import { inDashboardFilter, relayHost } from "../lib/relay/dashboard.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
 import type { Translate } from "../lib/i18n.ts";
@@ -52,7 +51,7 @@ function PcHop({ node, selected, onSelectPc, t }: { readonly node: RelayMapNode;
     <button type="button" className="relay-map-hop-btn" data-pc-id={node.server_id} data-selected={selected ? "" : undefined} aria-current={selected ? "true" : undefined} title={`${node.name} · ${detailWord} · ${seenTitleOf(node, t)}`} onClick={() => activatePc(node.server_id, onSelectPc)}>
       <StatusDot state={nodeStatusDotState(node)} />
       <span className="relay-map-hop-name" title={node.name}>{node.name}</span>
-      <small className="relay-map-hop-note">{mapStateWord(node, t)}{isNewAccountPc(node, Date.now()) ? ` · ${t("New")}` : ""}</small>
+      <small className="relay-map-hop-note">{mapStateWord(node, t)}</small>
       <NodeTooltip node={node} detail={detailWord} t={t} />
     </button>
   );
@@ -193,7 +192,7 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
                   <StatusDot state={nodeStatusDotState(pc.node)} />
                   <span className="relay-map-pc-body">
                     <span className="relay-map-name">{clip(pc.node.name)}</span>
-                    <span className="relay-map-word">{mapStateWord(pc.node, t)}{isNewAccountPc(pc.node, Date.now()) ? ` · ${t("New")}` : ""}</span>
+                    <span className="relay-map-word">{mapStateWord(pc.node, t)}</span>
                   </span>
                   <NodeTooltip node={pc.node} detail={detailWord} t={t} />
                 </button>
