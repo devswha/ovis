@@ -80,6 +80,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
         const receipt = safetyLog.append({ got: "snapshot", record: { v: 1, kind: "freeze", id, account: block.account,
           target: line.target, after: line.after, signer: "service", signed_at: block.signed_at, signature: "" } });
         if (receipt.outcome !== "applied") throw new Error("Cannot record the snapshot freeze line");
+        devices.recheckListedSessions();
         pc.raiseGen();
       }
       let restoreOrder: () => void;

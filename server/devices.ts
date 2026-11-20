@@ -1181,7 +1181,7 @@ export class DeviceStore {
    */
   endUnlockedRows(): string[] {
     if (this.evidence === null) return [];
-    for (const row of this.joinedRows?.rows() ?? []) this.closeAccountSessions(row.id);
+    this.recheckListedSessions();
     const gone = this.devices.filter((d) => d.origin?.from !== "pc");
     this.drop(gone, "pc", "locked");
     return gone.map((d) => d.id);
@@ -1783,6 +1783,13 @@ export class DeviceStore {
   /** One standing verdict for a proved list sign-in and its HTTP and WebSocket sessions. */
   private listedAccess(row: AccountRow): AccessAnswer | null {
     return this.accountRowStale(row) ? null : this.joinedRows?.access(row.id) ?? null;
+  }
+
+  /** A durable safety change can end a stream without a new request from its owner. */
+  recheckListedSessions(): void {
+    for (const row of this.joinedRows?.rows() ?? []) {
+      if (this.accountRowStale(row)) this.closeAccountSessions(row.id);
+    }
   }
 
   /** A row of either store by id, an account row as the order checks see it. */
@@ -2534,6 +2541,7 @@ export class DeviceStore {
    * account removal's rows are kept out by their key (failedDenies) alone, since which rows it covers is not known.
    */
   private keepOut(rows: readonly StoredDevice[], byRow = true): void {
+    if (this.failsClosed) this.recheckListedSessions();
     for (const device of rows) {
       if (byRow) this.failedRows.add(device.id);
       const listeners = this.revocations.get(device.id);
