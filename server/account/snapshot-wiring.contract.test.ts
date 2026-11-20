@@ -147,8 +147,8 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
       fetch: async (request) => {
         if (new URL(request.url).pathname !== "/v1/pc/mailbox") return service.fetch(request);
         const { ack } = await request.json();
-        if (ack === 1) acknowledged.push(services.safetyLog?.receipt(record.id));
-        return Response.json({ records: ack === null ? [{ seq: 1, record }] : [] });
+        if (ack === 2) acknowledged.push(services.safetyLog?.receipt(record.id));
+        return Response.json({ records: ack === null ? [{ seq: 1, record: { kind: "block" } }, { seq: 2, record }] : [] });
       },
     });
     await mailbox.pull();
