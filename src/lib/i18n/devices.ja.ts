@@ -312,6 +312,10 @@ export const DEVICES_JA: Record<string, string> = {
   "Turn off strict mode": "厳格モードをオフ",
   "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "厳格モードにはこの PC の画面での確認が必要ですが、今のところ Linux だけが対応しています。",
   "While it is on, use this PC through the Ovis desktop app or a terminal on it.": "オンの間は、この PC の Ovis デスクトップアプリかターミナルから使ってください。",
-  "Strict mode is not on yet: approve it on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "厳格モードはまだオンではありません。{time} までにこの PC の画面で承認してください。この PC で ovis confirm を実行すると承認ページが開きます。",
-  "Strict mode stays on until you approve turning it off on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "{time} までにこの PC の画面でオフを承認するまで、厳格モードはオンのままです。この PC で ovis confirm を実行すると承認ページが開きます。",
+  "Strict mode is not on yet. Approve it on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.": "厳格モードはまだオフです。{time} までにこの PC の画面で承認してください。その画面は、この PC で ovis confirm を実行すると開きます。",
+  "Strict mode stays on until you approve turning it off on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.": "{time} までにこの PC の画面でオフを承認すると、オフになります。その画面は、この PC で ovis confirm を実行すると開きます。",
+  "Turn strict mode on or off in a browser on this PC itself.": "厳格モードのオン・オフは、この PC 自身のブラウザーでのみできます。",
+  "Strict mode changed already. This shows it as it is now.": "厳格モードはすでに変わっています。今の状態を表示しています。",
+  "This PC has not finished signing out the devices strict mode ended, so it stays on. Check its state folder.": "厳格モードで切ったデバイスの整理が終わっていないため、オンのままです。この PC の状態フォルダーを確認してください。",
+  "This PC did not take the request. Try again.": "この PC は要求を受け付けませんでした。もう一度お試しください。",
 };

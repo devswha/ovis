@@ -1235,7 +1235,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
         <div className="settings-item my-devices">
           <MyPcRows machines={machines} account={account.account} accountPcs={account.pcs} onAccountChanged={readAccountAgain} watching={auth?.role === "watch"} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} selfAction={setDevicesCheck}>
             <DevicesPanel onDevicePaired={closeConnectOnPair} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} checkSlot={devicesCheck} />
-            <StrictModeSection offered={sessions?.peek("local")?.socket.accountOpensAll() === true} local={!inRelayShell()} />
+            <StrictModeSection offered={sessions?.peek("local")?.socket.accountOpensAll() === true} auth={auth} />
           </MyPcRows>
           {account.noPcs && account.provider !== null && <NoAccountPcHint provider={account.provider} />}
         </div>

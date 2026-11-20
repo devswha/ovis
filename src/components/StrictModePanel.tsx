@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { currentLocale, useT } from "../lib/i18n.ts";
+import type { HealthAuth } from "../../shared/access.ts";
+import { ApiError } from "../lib/api.ts";
 import { CONFIRM_WINDOW_MS, fetchLockState, requestLock, requestUnlock } from "../lib/account/lock.ts";
 
 /** GET /api/account/lock (server/account/lock-routes.ts): `preview` is what turning it on ends (T46), only while unlocked and bound. */
@@ -20,12 +22,21 @@ export interface LockState {
 /** An act this window asked for, waiting on this PC's screen until `until` (ms). */
 interface Asked { readonly kind: "lock" | "unlock"; readonly until: number }
 
+/** Why the PC refused a request (server/account/lock-routes.ts codes, folded). */
+type Refusal = "local_required" | "already" | "no_screen_proof" | "lock_removals_pending" | "other";
+
+function refusalOf(error: unknown): Refusal {
+  const code = error instanceof ApiError ? error.code : null;
+  if (code === "local_required" || code === "no_screen_proof" || code === "lock_removals_pending") return code;
+  return code === "already_locked" || code === "not_locked" ? "already" : "other";
+}
+
 /**
  * Strict mode (device table P11, T46, T47, T49, N7, R10; hub rule: only on a PC bound to an account). The switch is
  * on this PC's own window only, and it only asks: the PC's screen confirms it. Before turning it on, every row and
  * grant it ends is named; once on, turning it off names that lock. What it cannot cover is said, not hidden.
  */
-export function StrictModePanel({ state, local, asked = null, onTurnOn, onTurnOff }: { state: LockState; local: boolean; asked?: Asked | null; onTurnOn: () => void; onTurnOff: (lock: string) => void }) {
+export function StrictModePanel({ state, local, asked = null, refused = null, onTurnOn, onTurnOff }: { state: LockState; local: boolean; asked?: Asked | null; refused?: Refusal | null; onTurnOn: () => void; onTurnOff: (lock: string) => void }) {
   const t = useT();
   if (!state.bound) return <p className="settings-hint">{t("Strict mode needs this PC signed in to an Ovis account.")}</p>;
   if (state.confirm === "unsupported" && state.locked === null) return <p className="settings-hint">{t("Strict mode needs a confirmation on this PC's screen, which only Linux has for now.")}</p>;
@@ -48,18 +59,28 @@ export function StrictModePanel({ state, local, asked = null, onTurnOn, onTurnOf
       {local && (state.locked === null
         ? <button type="button" className="btn" onClick={onTurnOn}>{t("Turn on strict mode")}</button>
         : <button type="button" className="btn" onClick={() => onTurnOff(state.locked!)}>{t("Turn off strict mode")}</button>)}
+      {refused !== null && <p className="settings-hint" role="status">{{
+        local_required: t("Turn strict mode on or off in a browser on this PC itself."),
+        already: t("Strict mode changed already. This shows it as it is now."),
+        no_screen_proof: t("Strict mode needs a confirmation on this PC's screen, which only Linux has for now."),
+        lock_removals_pending: t("This PC has not finished signing out the devices strict mode ended, so it stays on. Check its state folder."),
+        other: t("This PC did not take the request. Try again."),
+      }[refused]}</p>}
       {asked !== null && <p className="settings-hint" role="status">{t(asked.kind === "lock"
-        ? "Strict mode is not on yet: approve it on this PC's screen by {time}. Run ovis confirm on this PC to open that page."
-        : "Strict mode stays on until you approve turning it off on this PC's screen by {time}. Run ovis confirm on this PC to open that page.",
+        ? "Strict mode is not on yet. Approve it on this PC's screen by {time}. To open that screen, run ovis confirm on this PC."
+        : "Strict mode stays on until you approve turning it off on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.",
       { time: new Date(asked.until).toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" }) })}</p>}
     </div>
   );
 }
 
 /** Settings → Devices: strict mode on a PC that offers it (account-opens-all/1), read again after each request. */
-export function StrictModeSection({ offered, local }: { offered: boolean; local: boolean }) {
+export function StrictModeSection({ offered, auth }: { offered: boolean; auth: HealthAuth | null }) {
   const [state, setState] = useState<LockState | null>(null);
   const [asked, setAsked] = useState<Asked | null>(null);
+  const [refused, setRefused] = useState<Refusal | null>(null);
+  // this PC's own window, as the server decided it for this request: loopback, no proxy (server/access.ts "local")
+  const local = auth?.via === "local";
   const read = useCallback(() => fetchLockState().then(setState, (error: unknown) => {
     console.warn("Ovis: strict mode could not be read", error instanceof Error ? error.name : error);
     setState(null);
@@ -76,9 +97,13 @@ export function StrictModeSection({ offered, local }: { offered: boolean; local:
   const lock = state?.locked ?? null;
   useEffect(() => { setAsked(null); }, [lock]);
   if (!offered || state === null) return null;
-  const ask = (kind: Asked["kind"], request: Promise<string>) => {
-    void request.then(() => { setAsked({ kind, until: Date.now() + CONFIRM_WINDOW_MS }); return read(); },
-      (error: unknown) => console.warn("Ovis: strict mode was not asked for", error instanceof Error ? error.name : error));
+  const ask = (kind: Asked["kind"], request: () => Promise<string>) => {
+    setRefused(null);
+    void request().then(() => { setAsked({ kind, until: Date.now() + CONFIRM_WINDOW_MS }); return read(); }, (error: unknown) => {
+      console.warn("Ovis: strict mode was not asked for", error instanceof Error ? error.name : error);
+      setRefused(refusalOf(error));
+      return read();
+    });
   };
-  return <StrictModePanel state={state} local={local} asked={asked} onTurnOn={() => ask("lock", requestLock())} onTurnOff={(id) => ask("unlock", requestUnlock(id))} />;
+  return <StrictModePanel state={state} local={local} asked={asked} refused={refused} onTurnOn={() => ask("lock", requestLock)} onTurnOff={(id) => ask("unlock", () => requestUnlock(id))} />;
 }

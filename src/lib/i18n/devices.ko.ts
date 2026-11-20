@@ -312,6 +312,10 @@ export const DEVICES_KO: Record<string, string> = {
   "Turn off strict mode": "엄격 모드 끄기",
   "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "엄격 모드는 이 PC 화면에서 확인해야 하는데, 지금은 Linux에서만 돼요.",
   "While it is on, use this PC through the Ovis desktop app or a terminal on it.": "켜져 있는 동안에는 이 PC의 Ovis 데스크톱 앱이나 터미널로 사용하세요.",
-  "Strict mode is not on yet: approve it on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "엄격 모드는 아직 켜지지 않았어요. {time}까지 이 PC 화면에서 승인하세요. 이 PC에서 ovis confirm을 실행하면 승인 페이지가 열려요.",
-  "Strict mode stays on until you approve turning it off on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "{time}까지 이 PC 화면에서 끄기를 승인할 때까지 엄격 모드는 켜져 있어요. 이 PC에서 ovis confirm을 실행하면 승인 페이지가 열려요.",
+  "Strict mode is not on yet. Approve it on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.": "엄격 모드는 아직 꺼져 있어요. {time}까지 이 PC 화면에서 승인하세요. 이 PC에서 ovis confirm을 실행하면 그 화면이 열려요.",
+  "Strict mode stays on until you approve turning it off on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.": "{time}까지 이 PC 화면에서 끄기를 승인해야 꺼져요. 이 PC에서 ovis confirm을 실행하면 그 화면이 열려요.",
+  "Turn strict mode on or off in a browser on this PC itself.": "엄격 모드는 이 PC의 브라우저에서만 켜고 끌 수 있어요.",
+  "Strict mode changed already. This shows it as it is now.": "엄격 모드가 이미 바뀌었어요. 지금 상태를 보여 드려요.",
+  "This PC has not finished signing out the devices strict mode ended, so it stays on. Check its state folder.": "엄격 모드로 끊은 기기 정리가 끝나지 않아 켜진 채로 있어요. 이 PC의 상태 폴더를 확인하세요.",
+  "This PC did not take the request. Try again.": "이 PC가 요청을 받지 않았어요. 다시 해 보세요.",
 };

@@ -312,6 +312,10 @@ export const DEVICES_ZH: Record<string, string> = {
   "Turn off strict mode": "关闭严格模式",
   "Strict mode needs a confirmation on this PC's screen, which only Linux has for now.": "严格模式需要在这台 PC 的屏幕上确认，目前只有 Linux 支持。",
   "While it is on, use this PC through the Ovis desktop app or a terminal on it.": "开启期间，请通过这台 PC 上的 Ovis 桌面应用或终端使用它。",
-  "Strict mode is not on yet: approve it on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "严格模式尚未开启：请在 {time} 前在这台 PC 的屏幕上批准。在这台 PC 上运行 ovis confirm 可打开批准页面。",
-  "Strict mode stays on until you approve turning it off on this PC's screen by {time}. Run ovis confirm on this PC to open that page.": "在 {time} 前于这台 PC 的屏幕上批准关闭之前，严格模式保持开启。在这台 PC 上运行 ovis confirm 可打开批准页面。",
+  "Strict mode is not on yet. Approve it on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.": "严格模式尚未开启。请在 {time} 前在这台 PC 的屏幕上批准。在这台 PC 上运行 ovis confirm 即可打开该屏幕。",
+  "Strict mode stays on until you approve turning it off on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.": "在 {time} 前于这台 PC 的屏幕上批准关闭后，严格模式才会关闭。在这台 PC 上运行 ovis confirm 即可打开该屏幕。",
+  "Turn strict mode on or off in a browser on this PC itself.": "只能在这台 PC 本身的浏览器中开启或关闭严格模式。",
+  "Strict mode changed already. This shows it as it is now.": "严格模式已经变了。这里显示的是当前状态。",
+  "This PC has not finished signing out the devices strict mode ended, so it stays on. Check its state folder.": "严格模式断开的设备尚未清理完，因此仍保持开启。请检查这台 PC 的状态文件夹。",
+  "This PC did not take the request. Try again.": "这台 PC 没有接受该请求。请重试。",
 };

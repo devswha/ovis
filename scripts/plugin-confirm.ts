@@ -42,8 +42,9 @@ export async function runConfirm(io: ConfirmIo): Promise<number> {
   let text: string;
   try { text = readFileSync(path, "utf8"); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    io.out("No confirm page is open: Ovis is not running on this PC with the account release on.\n");
+    const code = (error as NodeJS.ErrnoException).code;
+    io.out(code === "ENOENT" ? "No confirm page is open: Ovis is not running on this PC with the account release on.\n"
+      : `The confirm page was not opened: ${path} could not be read (${code ?? String(error)}).\n`);
     return 1;
   }
   const url = confirmPageUrl(text);
