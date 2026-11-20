@@ -758,11 +758,13 @@ const pcServiceHere = (): string | null => desktopAccount() === null && !inNativ
 
 export const accountServiceHere = (): string | null => desktopAccount()?.service ?? pcServiceHere();
 
-export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = null }: {
+export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, deleteSlot = null }: {
   onAccount?: (state: AccountState) => void;
   recheck?: number;
   /** this PC lists account-opens-all/1 now (App, from the local socket's features) */
   opensAll?: () => boolean;
+  /** this PC's last feature list lacked the account release (an explicit withdrawal, S32-1): no block goes to the service */
+  withdrawn?: () => boolean;
   /** where Delete account goes: the foot of the Devices and PCs page, below every other group; a row of the group without one */
   deleteSlot?: HTMLElement | null;
 } = {}) {
@@ -1168,10 +1170,12 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
     const session = await stillAsking();
     if (session === null) return;
     const service = indexedAccountService.forSignIn(session);
+    // asked right before each send, after any token refresh, as Not me's Try again asks
+    const ready = () => { if (withdrawn?.() === true) throw new RangeError("This PC does not offer account block delivery"); };
     let entries: UnsentBlocks[];
     try {
       for (const entry of await unsentBlocks(indexedAccountStore, session)) {
-        if (entry.refused !== true) await postKept(indexedAccountStore, session, entry.records, (record) => service.postSafetyRecord(record));
+        if (entry.refused !== true) await postKept(indexedAccountStore, session, entry.records, (record) => service.postSafetyRecord(record, ready));
       }
       entries = await unsentBlocks(indexedAccountStore, session);
     } catch (error) {

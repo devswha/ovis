@@ -496,7 +496,8 @@ export class AccountService {
    * sign-in made meanwhile is never the one deleted.
    */
   async deleteAccount(): Promise<void> {
-    await this.call("DELETE", "/v1/account");
+    // only the documented 204 is a completed deletion: a 202 pending, say, leaves the account (and what this device keeps) alone
+    await this.call("DELETE", "/v1/account", undefined, undefined, undefined, 204);
   }
 
   async postRecord(serverIds: readonly string[], record: AccountRecord): Promise<number> {

@@ -206,8 +206,6 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, changed, 
             error instanceof SyntaxError || (error instanceof DOMException && error.name === "TimeoutError")) return [];
         throw error;
       });
-      // an explicit withdrawal of the account release holds until the PC offers it again, through a disconnect too
-      let withdrawn = false;
       const [sent, roster] = await Promise.all([sendBlocks(blocks, {
         ...routes,
         service: async (records) => {
@@ -215,9 +213,8 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, changed, 
           // offers the account release, nothing goes and the block stays (a PC gone offline says nothing: the service decides)
           const ready = () => {
             const remote = fleet.machineSessions.peek(pc.id)?.socket;
-            // what the PC last listed, connected or not; while a reconnect has listed nothing yet, the last word stands
-            if (remote?.featuresListed()) withdrawn = !remote.accountOpensAllListed();
-            if (withdrawn) throw new RangeError("PC does not offer account block delivery");
+            // its last feature list's word, through a disconnect and a reconnect that has listed nothing yet
+            if (remote?.accountReleaseWithdrawn() === true) throw new RangeError("PC does not offer account block delivery");
           };
           if (await postKept(indexedAccountStore, session, records, (record) => service.postSafetyRecord(record, ready)) === "refused") delivery.refused = true;
         },
