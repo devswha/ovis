@@ -15,9 +15,9 @@ const METHOD_NAMES = { github: "GitHub", google: "Google", apple: "Apple" } as c
  * Two-step sign-in is said as the account record states it, never as used. An admission nobody decided has no
  * dismiss: it stays, row or not, until its PC says it was decided; `actions` adds that PC's answers to it.
  */
-export function DeviceNotices({ pc, notices, onDismiss, actions }: { pc: string; notices: readonly DeviceNotice[]; onDismiss: (notice: DeviceNotice) => void; actions?: (notice: DeviceNotice) => ReactNode }) {
+export function DeviceNotices({ pc, notices, cut = 0, onDismiss, actions }: { pc: string; notices: readonly DeviceNotice[]; cut?: number; onDismiss: (notice: DeviceNotice) => void; actions?: (notice: DeviceNotice) => ReactNode }) {
   const t = useT();
-  return <>{notices.filter((notice) => TOLD_KINDS.has(notice.kind)).map((notice) => {
+  return <>{cut > 0 && <p className="settings-hint">{t("Older notices from {pc} were cleared before this device saw them.", { pc })}</p>}{notices.filter((notice) => TOLD_KINDS.has(notice.kind)).map((notice) => {
     const time = new Date(notice.at).toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" });
     const method = notice.method === null ? null : METHOD_NAMES[notice.method];
     const headline = notice.kind === "method" ? t("A sign-in method was added to your account at {time}.", { time })

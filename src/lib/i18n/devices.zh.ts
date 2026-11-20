@@ -276,4 +276,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "{method} sign-in, two-step sign-in set on the account": "{method} 登录，账户已设置两步验证",
   "{method} sign-in, two-step sign-in not confirmed": "{method} 登录，两步验证未确认",
   "Key {fingerprint}": "密钥 {fingerprint}",
+  "Older notices from {pc} were cleared before this device saw them.": "{pc} 的部分较早通知在此设备看到之前已被清除。",
 };

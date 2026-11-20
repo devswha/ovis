@@ -1134,7 +1134,7 @@ export function App() {
         {relayPairings.length > 0 && <RelayPairingPrompt pairings={relayPairings} />}
         {remotePairings.length > 0 && <AccountApprovals pairings={remotePairings} />}
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
-        {selectedMachine && selectedNotices && <DeviceNotices key={selectedMachineId} pc={selectedMachine.name} notices={selectedNotices.notices} onDismiss={(notice) => deviceNotices.dismiss(selectedMachineId, notice)} />}
+        {selectedMachine && selectedNotices && <DeviceNotices key={selectedMachineId} pc={selectedMachine.name} notices={selectedNotices.notices} cut={deviceNotices.cut} onDismiss={(notice) => deviceNotices.dismiss(selectedMachineId, notice)} />}
         {removedNotices.length > 0 && <DeviceRemovedNotice events={removedNotices} onDismiss={dismissRemovedNotice} />}
         {setupGuide.guide === null && <FirstStartHints active={locked === false} />}
         {setupGuide.guide !== null && <MachineContext.Provider value="local"><SetupGuide auth={auth} security={security} onEnableAlerts={enableNotifications} settingsOpen={settingsOpen} pushOn={pushOn} sharedSettingsKnown={sharedSettingsKnown} notifications={notifications} hidden={setupGuide.paused} state={setupGuide.guide} dispatch={setupGuide.dispatch} onClose={setupGuide.close} onOpenSettings={(page) => { setSettingsLinkPage(page); setSettingsOpen(true); }}
