@@ -17,9 +17,10 @@ test("T56: a failed service past one hour closes account-only sessions and refus
   const pc = await createListedPc(close => closes.push(close));
   const { devices, accountMailbox } = pc.fixture.app.context.services;
   devices.useClock(clock);
-  // Refresh through the real mailbox with the PC clock installed, not by supplying staleness to the row store.
-  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   clock.advance(JOIN_HOLD_MS);
+  // Refresh through the real mailbox with the PC clock installed, not by supplying staleness to the row store: the
+  // hour below counts from this whole read
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   const session = await relayConnection(pc.fixture, { serverId: pc.serverId });
   await session.auth(pc.device, [ACCOUNT_OPENS_ALL_FEATURE]);
   expect((await ask(session, "/api/account/status")).status).toBe(200);

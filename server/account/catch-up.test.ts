@@ -45,7 +45,8 @@ describe("S2-27 account-joined rows wait for the catch-up (T41, T42, T56, T65, T
     expect(restarted.access(pc.live.id)).toEqual({ refused: "catching_up" });
     expect(restarted.access(pc.held.id)).toEqual({ refused: "catching_up" });
     // the wait has no time limit: only a whole read ends it
-    pc.clock.now += 365 * 24 * 60 * 60_000;
+    // no time ends the wait; past EXPIRY_DAYS the row would expire instead (T54), so stay short of it
+    pc.clock.now += 30 * 24 * 60 * 60_000;
     expect(restarted.access(pc.live.id)).toEqual({ refused: "catching_up" });
   });
 
