@@ -95,7 +95,6 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   /** `at`: when the account last answered; the rows of a failed read are aged to then, never past what it confirmed */
   let listedFor: { readonly epoch: number; readonly projection: { readonly accountKey: string; readonly account: string; readonly registered: boolean }; readonly at: number; readonly openKey: SignInKey | null } | undefined;
   let shownFor: AccountSession | undefined;
-  let registrationAttemptedFor: string | undefined;
   let generation = 0;
   let leaving = false;
   /**
@@ -106,7 +105,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let reading: { readonly epoch: number; readonly read: Promise<void> } | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   const changed = async (): Promise<void> => { await view.changed(); armRefresh(); };
-  const refresh = async (initial = false, forced = false): Promise<void> => {
+  const refresh = async (initial = false, forced = false, registrationJustTried?: AccountSession): Promise<void> => {
     if (reading?.epoch === generation || leaving || (deletion !== undefined && !initial && !forced) || accountService === null || (!initial && !forced && (!view.active() || accountView?.kind !== "signed-in"))) return;
     const epoch = generation;
     let current = accountView;
@@ -143,7 +142,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         const kept = await accountStore.get("signin_key");
         const openKey = kept === undefined || kept.account !== session.account || kept.sign_in_id !== session.sign_in_id ? null
           : kept.no !== null ? kept
-          : live() && registrationAttemptedFor !== kept.sign_in_id ? await registerSignIn(session) : null;
+          : live() && (registrationJustTried === undefined || !sameSignIn(registrationJustTried, session)) ? await registerSignIn(session) : null;
         const devices = await store.list();
         const key = await accountStore.key();
         if (!live()) return;
@@ -324,7 +323,6 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
 
 
   const registerSignIn = async (session: AccountSession): Promise<SignInKey | null> => {
-    registrationAttemptedFor = session.sign_in_id;
     try { return await signInKey(accountStore, account, session); }
     catch (error) {
       if (error instanceof AccountServiceError || error instanceof AccountServiceUnreachableError || error instanceof SignedOutError) return null;
@@ -344,7 +342,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const leave = mount.openSignIn ?? ((url: string) => window.location.assign(url));
     const unwanted = async (): Promise<void> => { accountView = { kind: "signed-out", error: null }; await changed(); };
     const native = (): Promise<void> => nativeSignIn(provider, { store: accountStore, service: accountService, ...(wanted ? { wanted } : {}) })
-      .then(async (session) => { if (pairing === undefined) await registerSignIn(session); await refresh(true); }, (error: unknown) => error instanceof SignInNotWanted ? unwanted() : Promise.reject(error));
+      .then(async (session) => { if (pairing === undefined) await registerSignIn(session); await refresh(true, false, pairing === undefined ? session : undefined); }, (error: unknown) => error instanceof SignInNotWanted ? unwanted() : Promise.reject(error));
     // a press starts as before; a start that asks `wanted` waits on it before it starts, and again before the page (or
     // the app's sheet) leaves for the provider (the link entry, shell.tsx)
     const started = nativeSignInAvailable()
@@ -365,6 +363,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    */
   const load = async (returned: SignInReturn | null, carried?: (pairing: PendingPairing) => void, ended?: (outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined) => void): Promise<void> => {
     let outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined;
+    let registrationJustTried: AccountSession | undefined;
     if (returned !== null && accountService !== null) {
       const pending = await takePendingSignIn(accountStore, returned.state);
       accountView = { kind: "signing-in", ...(pending ? { provider: pending.provider } : {}) };
@@ -373,7 +372,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       try {
         const session = await redeemSignIn(pending, returned, { store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
         if (pending?.pairing) outcome = { refused: null, provider: pending.provider };
-        else await registerSignIn(session);
+        else { registrationJustTried = session; await registerSignIn(session); }
       } catch (error) {
         accountView = { kind: "signed-out", error: signInFailure(error), ...(pending ? { provider: pending.provider } : {}) };
         if (pending?.pairing) outcome = { refused: signInFailure(error), provider: pending.provider };
@@ -381,7 +380,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       }
       ended?.(outcome);
     }
-    await refresh(true);
+    await refresh(true, false, registrationJustTried);
   };
   /**
    * `consent` null: the person confirmed a pairing with a key of this device's own, so no sign-in is read for it.
