@@ -150,9 +150,10 @@ export class PendingRedemptions {
     this.#drop((entry) => entry.id === id, "declined");
   }
 
-  /** A challenge whose device went away before answering: its slot and its held use come back. */
+  /** A challenge whose device went away before its proof was taken in: its slot and its held use come back. */
   forget(challenge: string): void {
     this.#forgetNamed(challenge);
+    this.#endProving((_named, at) => at === challenge);
   }
 
   /** A removal, block or Revoke of `key` drops its unanswered challenges and waiting entries. */
@@ -169,9 +170,9 @@ export class PendingRedemptions {
     this.#drop((entry) => entry.codeId === codeId, "code_ended");
   }
 
-  #endProving(which: (named: Named) => boolean): void {
+  #endProving(which: (named: Named, challenge: string) => boolean): void {
     for (const [challenge, named] of this.#proving) {
-      if (!which(named)) continue;
+      if (!which(named, challenge)) continue;
       this.#proving.delete(challenge);
       named.reservation?.release();
     }
