@@ -31,7 +31,7 @@ test("a same-account watch member cannot block a listed device or decide its not
 });
 
 test.each([
-  ["admitted device", true], ["different account", true], ["other same-account row", false],
+  ["admitted device", true], ["different account", true], ["other same-account row", false], ["other block target", true],
 ] as const)("G15/T57/P8: Not me from %s leaves open = %s", async (actor, staysOpen) => {
   const { fixture, device, member, serverId } = await createListedPc(close => closes.push(close));
   const { devices, core } = fixture.app.context.services;
@@ -61,7 +61,8 @@ test.each([
     const socket = link.openSocket();
     await socket.opened;
     socket.send({ type: "notice-answer", answer: "not_me", id: notice.id, blocks: [{
-      v: 1, kind: "block", id: "fixture", account: "acct_1", signer: caller.publicKey, target: device.publicKey,
+      v: 1, kind: "block", id: "fixture", account: "acct_1", signer: caller.publicKey,
+      target: actor === "other block target" ? "unrelated-fixture-key" : device.publicKey,
       target_no: 2, signer_no: 1, signed_at: new Date().toISOString(), nonce: "fixture", signature: "",
     }] });
     await socket.until(message => message.type === "notice-answer-result");
