@@ -79,9 +79,8 @@ test("T70: list says when this PC last saw each waiting row", async () => {
 
 function seams(options: { fingerprint?: string; admitted?: boolean } = {}) {
   const calls: string[] = [];
-  const pending = { id: "0123456789abcdef0123456789abcdef", key: "key-new", label: "Phone", fingerprint: options.fingerprint ?? "AB12-CD34", codeId: "code-1" };
+  const pending = { id: "0123456789abcdef0123456789abcdef", label: "Phone", fingerprint: options.fingerprint ?? "AB12-CD34" };
   const made: RecoverySeams = {
-    pendingOf: (id) => id === pending.id ? pending : null,
     pendingList: () => [{ id: pending.id, label: pending.label, fingerprint: pending.fingerprint }],
     admitPending: (id, fingerprint) => {
       if (id !== pending.id) return "unknown";

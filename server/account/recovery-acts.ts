@@ -9,13 +9,12 @@ import { AlreadyReleasedError, ReleaseJournalError, releaseRefusal, type Recover
 
 /** What this PC does for the acts beyond release and undo (Track A's devices.ts and safety-log.ts). */
 export interface RecoverySeams {
-  pendingOf(id: string): { id: string; key: string; label: string; fingerprint: string; codeId?: string } | null;
   pendingList(): { id: string; label: string; fingerprint: string }[];
   /**
    * Admits the waiting redemption `id` when `fingerprint` is its key's, through its own pairing (so its session is let
-   * in too), with origin recover; the redemption is used up whatever the PC answers.
+   * in too), with origin recover. A standing block or freeze targeting the key leaves the redemption waiting.
    */
-  admitPending(id: string, fingerprint: string): DeviceMatch | null | "unknown" | "mismatch";
+  admitPending(id: string, fingerprint: string): DeviceMatch | null | "unknown" | "mismatch" | { readonly refused: string };
   /** `user`: this PC's OS user, for the journal (P24) */
   removeKey(input: { target: string; by: "local"; user: string }): { removed: string[] } | { refused: string };
   appendLift(blockId: string, forget: boolean, user: string): { outcome: string };
@@ -90,7 +89,8 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
         const admitted = acts.admitPending(action.pending, action.fingerprint);
         if (admitted === "unknown") return { error: "No such device waits here" };
         if (admitted === "mismatch") return { error: "The fingerprint does not match the waiting device" };
-        return admitted === null ? { error: "This PC refused to admit the key (locked, frozen, or its log cannot be read)" } : { admitted: admitted.id };
+        if (admitted === null) return { error: "This PC refused to admit the key (locked, frozen, or its log cannot be read)" };
+        return "refused" in admitted ? { error: admitted.refused } : { admitted: admitted.id };
       }
     }
   };

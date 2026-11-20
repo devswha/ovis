@@ -62,9 +62,8 @@ import { DeviceJournal } from "./account/device-journal.ts";
 import { mergeAccountState } from "./account/account-merge.ts";
 import { AccountHolds } from "./account/holds.ts";
 import { AccountIntroductions } from "./account/introductions.ts";
-import { userInfo } from "node:os";
-import { openRecoverySocket, RecoveryReleases } from "./account/recovery.ts";
-import { recoveryActs, type RecoverySeams } from "./account/recovery-acts.ts";
+import { RecoveryReleases } from "./account/recovery.ts";
+import { openPcRecovery } from "./account/recovery-server.ts";
 import { PendingRedemptions, type PendingRedemption } from "./account/pending.ts";
 import { askScreenForKey, KeyProofPairings } from "./account/key-proof.ts";
 import { desktopOwnerChannel, desktopOwnerFdChannel, LOCAL_CONFIRM_FILE, LocalConfirms, openConfirmListener, takeDesktopOwnerFd } from "./account/local-confirm.ts";
@@ -550,31 +549,9 @@ export function createServer(
       }
     },
   }) : undefined;
-  const recoverySocket = recoveryReleases && journal && safetyLog ? (() => {
-    // the acts beyond release and undo, through this PC's own stores (Track A's devices.ts and safety-log.ts)
-    const seams: RecoverySeams = {
-      pendingOf: (id) => pendingRedemptions?.list().find((entry) => entry.id === id) ?? null,
-      pendingList: () => (pendingRedemptions?.list() ?? []).map(({ id, label, fingerprint }) => ({ id, label, fingerprint })),
-      admitPending: (id, fingerprint) => {
-        const waiting = pendingRedemptions?.list().find((entry) => entry.id === id);
-        if (waiting === undefined || keyProofPairings === undefined) return "unknown";
-        if (waiting.fingerprint !== fingerprint) return "mismatch";
-        return keyProofPairings.approve(id, fingerprint, "recover");
-      },
-      removeKey: (input) => devices.removeKey(input),
-      appendLift: (blockId, forget, user) => {
-        const block = safetyLog.state().blocks.find((entry) => entry.record.id === blockId);
-        const binding = block === undefined ? pcAccount?.binding() ?? null : { account: block.record.account };
-        const done = safetyLog.appendLift(blockId, binding, { cause: "recover", forget });
-        if (done.outcome === "applied") journal.append({ kind: "lift", how: "recover", key: null, no: null, row: null, label: blockId, by: user, account: binding?.account ?? null });
-        return done;
-      },
-      revokeAll: (user) => devices.revokeAll(user),
-    };
-    const opened = openRecoverySocket({ stateDir, handle: recoveryActs({ releases: recoveryReleases, logReadable: () => !devices.failsClosed && SafetyLog.open(stateDir).readable, user: userInfo().username, seams }) });
-    if ("refused" in opened) { if (opened.refused !== "windows") console.error(`ovis recover is not available: ${opened.refused}`); return null; }
-    return opened;
-  })() : null;
+  const recoverySocket = recoveryReleases && journal && safetyLog ? openPcRecovery({
+    stateDir, devices, pcAccount, journal, safetyLog, releases: recoveryReleases, pending: pendingRedemptions, pairings: keyProofPairings,
+  }) : null;
   const services: RequestServices = {
     runtimeMove: options.runtimeService ? moveService({
       stateDir, port: server.port ?? DEFAULT_PORT, serving: runtime, facts: () => options.runtimeService?.facts(),
