@@ -76,4 +76,18 @@ describe("S2-27 a devices.json row not paired at this PC waits for the first who
     expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     expect(devices.catchingUp(pc.member.id)).toBe(false);
   });
+
+  test("S22/P7: a legacy member has neither signer nor approval authority until judged", async () => {
+    const pc = await startedPc();
+    const { devices, accountMailbox } = pc.fixture.app.context.services;
+    const authority = () => [
+      devices.accountSigner(pc.member.publicKey, ACCOUNT)?.id,
+      devices.accountSigner(pc.member.publicKey, ACCOUNT, true)?.id,
+      devices.isAccountApproverSession(pc.member.id, pc.member.publicKey),
+    ];
+    expect(authority()).toEqual([undefined, undefined, false]);
+    pc.service.opensAll = true;
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(authority()).toEqual([pc.member.id, pc.member.id, true]);
+  });
 });

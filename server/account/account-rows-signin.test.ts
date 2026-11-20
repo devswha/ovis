@@ -211,7 +211,10 @@ describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", (
     expect(rows.rowsByKey(target.spki)).toHaveLength(1);
     clock.now += JOIN_HOLD_MS;
     expect(rows.access(accountDeviceId(SERVER, signer.spki))).toEqual({ ok: true });
-    expect((await pc(dir).devices.applyBlock(signed, "handed")).outcome).toBe("applied");
+    const restarted = pc(dir);
+    expect(restarted.devices.accountSigner(signer.spki, ACCOUNT, true)).toBeNull();
+    restarted.rows.commitList(listed(signer, target));
+    expect((await restarted.devices.applyBlock(signed, "handed")).outcome).toBe("applied");
   });
 
   test("T36, P5: an account-joined key signs no remove of another key, newer or not; a devices.json member still may", async () => {
