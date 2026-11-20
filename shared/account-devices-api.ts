@@ -29,12 +29,12 @@ function fail(message: string): never {
 /** Device table P15: the journal kinds a notice can carry; `release` and `admit` are the recovery's own (R11). */
 export type NoticeKind = "admit" | "drop" | "remove" | "block" | "lift" | "promote" | "confirm" | "lock" | "unlock" | "account" | "method" | "merge" | "release";
 
-/** Device table P18, T34, T58: the account sign-in a device was admitted by; null when no sign-in admitted it (screen, terminal, digits). */
+/** Device table P18, T34, T58: the registering sign-in provider for a list admission, if the snapshot still names it. */
 export type NoticeSignInMethod = "github" | "google" | "apple" | null;
 /**
  * Device table T34, T58, section 5b: two-step sign-in as the account record states it, never inferred by the app.
- * GitHub and Apple are `set` (set on the account, not proof this sign-in used it); Google is `verified` only when
- * the `amr` claim shows it, else `unknown`; null with no sign-in method.
+ * List admissions report `set` (not proof this sign-in used two-step) or `unknown`, even without a provider.
+ * Non-list admissions report null. `verified` remains a wire value but is not emitted for list admissions.
  */
 export type NoticeTwoStep = "verified" | "set" | "unknown" | null;
 

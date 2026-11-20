@@ -223,8 +223,10 @@ export class DeviceJournal {
   }
 
   notice(entry: JournalEntry): DeviceNotice {
-    const { undo: _undo, provider: _provider, two_step: _twoStep, ...fields } = entry;
-    return { ...fields, open: this.doc.open.some((open) => open.id === entry.id), method: null, two_step: null };
+    const { undo: _undo, provider, two_step, ...fields } = entry;
+    const listAdmission = entry.kind === "admit" && entry.how === "list";
+    return { ...fields, open: this.doc.open.some((open) => open.id === entry.id),
+      method: listAdmission ? provider ?? null : null, two_step: listAdmission ? two_step ?? "unknown" : null };
   }
 
   /** `row` saw everything up to `seq` (T57). Decides nothing. */
