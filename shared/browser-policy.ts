@@ -38,7 +38,13 @@ export interface Refused {
 
 export type BrowserDecision = Allowed | Refused;
 
-/** an Ovis server: a host by any of its names (`canonicalHost`) and the port it listens on */
+/**
+ * an Ovis server: a host by any of its names (`canonicalHost`) and the port it listens on. `ovisAt`
+ * on a resolved address finds a server only by an address listed here, so the caller lists the
+ * addresses a server is reached at as well as its names (this PC's own: loopback and each address of
+ * its interfaces). A server listed by name alone (a PC added by its https address) is found only by
+ * that name; reached under another, it treats the tab as a stranger and asks it to pair.
+ */
 export interface OvisEndpoint {
   host: string;
   port: number;
@@ -77,8 +83,10 @@ export function machineHost(host: string): string {
 export function blockedSite(entry: string): string | null {
   const text = entry.trim().replace(/^\*\./, "");
   if (text === "" || /\s/.test(text)) return null;
+  // a scheme, with or without `//` (`file:/x`, `mailto:a@b`), unless it is a host and its port (`localhost:5173`)
+  const schemed = /^[a-z][a-z0-9+.-]*:/i.test(text) && !/^[^/:@]+:\d+(?:[/?#]|$)/.test(text);
   try {
-    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text}`);
+    const url = new URL(schemed ? text : `http://${text}`);
     // another scheme leaves an international name as typed, which no web address would match
     if (!NETWORK.has(url.protocol)) return null;
     const host = canonicalHost(url.hostname);

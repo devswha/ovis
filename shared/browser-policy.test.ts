@@ -110,6 +110,10 @@ describe("a blocked site as typed", () => {
     ["two words", null],
     ["http://", null],
     ["custom://bücher.example/path", null],
+    ["file:/tmp/a", null],
+    ["mailto:reader@bücher.example", null],
+    ["localhost:5173", "localhost"],
+    ["bank.example:8443/login", "bank.example"],
     ["wss://bücher.example/", "xn--bcher-kva.example"],
   ])("keeps %j as %j", (entry, expected) => {
     expect(blockedSite(entry)).toBe(expected);
