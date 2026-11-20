@@ -352,7 +352,7 @@ describe("a safe PC state before any listener (T41, T48)", () => {
       got: "pc", cause: "screen",
     })).toMatchObject({ outcome: "applied" });
     other.close();
-    const snapshot = () => new Map(readdirSync(sibling, { recursive: true })
+    const snapshot = () => new Map(readdirSync(sibling, { encoding: "utf8", recursive: true })
       .filter((path) => statSync(join(sibling, path)).isFile())
       .map((path) => [path, readFileSync(join(sibling, path))]));
     const before = snapshot();
