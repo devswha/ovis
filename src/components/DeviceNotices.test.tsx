@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { DeviceNotice } from "../../shared/account-devices-api.ts";
@@ -59,13 +59,29 @@ describe("device notices", () => {
     expect(shown.toLowerCase()).not.toContain("used");
   });
 
-  it("T57: an undecided admission stays without a dismiss after its row is gone; a told one can be dismissed", async () => {
-    const dismissed: DeviceNotice[] = [];
-    const told = notice({ seq: 2, id: "2".padStart(32, "0"), kind: "method", open: false });
-    const cards = await mount([notice({ row: null }), told], dismissed);
-    expect(cards.map((card) => card.findAll((node) => node.type === "button" && node.props["aria-label"] === "Dismiss").length)).toEqual([0, 1]);
-    await act(async () => { cards[1]!.find((node) => node.type === "button").props.onClick(); });
-    expect(dismissed).toEqual([told]);
+  it("T57: hiding an undecided admission neither records a dismissal nor answers or acknowledges it again", async () => {
+    const onDismiss = mock();
+    const onShown = mock();
+    const answer = mock();
+    const told = notice({ kind: "method", open: false });
+    const open = notice({ seq: 2, id: "2".padStart(32, "0"), row: null });
+    await act(async () => {
+      renderer = create(<SettingsProvider><DeviceNotices pc="Desk" notices={[told, open]} onDismiss={onDismiss} onShown={onShown}
+        actions={() => <button type="button" onClick={answer}>Answer</button>} /></SettingsProvider>);
+    });
+    if (renderer === undefined) throw new Error("No device notices rendered");
+    const cards = () => renderer?.root.findAllByProps({ "data-testid": "device-notice" }) ?? [];
+    const dismiss = (card: ReactTestInstance) => card.find((node) => node.type === "button" && node.props["aria-label"] === "Dismiss");
+    const [closedCard, openCard] = cards();
+    if (closedCard === undefined || openCard === undefined) throw new Error("Expected two notices");
+    expect(onShown.mock.calls).toEqual([[2]]);
+    await act(async () => { dismiss(openCard).props.onClick(); });
+    expect(cards()).toEqual([closedCard]);
+    expect(onDismiss).not.toHaveBeenCalled();
+    expect(answer).not.toHaveBeenCalled();
+    expect(onShown.mock.calls).toEqual([[2]]);
+    await act(async () => { dismiss(closedCard).props.onClick(); });
+    expect(onDismiss.mock.calls).toEqual([[told]]);
   });
 
   it("G5: shows nothing for journal kinds this release does not tell here", async () => {
