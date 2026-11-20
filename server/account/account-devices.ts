@@ -1,18 +1,15 @@
-/**
- * Account-joined rows (Step 2, rows P1, S21, S23, T34, T35, T44, T49): devices the account's list admits, kept in
- * `account-devices.json` and never in devices.json, so an older Ovis that reads only devices.json never lets one in.
- * The list only admits what the guards admit and only drops what it no longer names; it writes no tombstone and no
- * marker. The commit journals an admission before its row write. Only rows that survive waiting blocks publish a join
- * notice; a drop closes sessions first, then journals, then writes.
- */
-import { existsSync, readFileSync } from "node:fs";
+/** Account-list admission lifecycle: durable holds, expiry, and guarded readmission. */
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { accountDeviceId } from "../../shared/account-records.ts";
-import { AccountSnapshotError, parseAccountDevicesFile, type AccountJoinedRow, type AccountSnapshot, type UsedReport, type AdmissionOrigin, type SnapshotDevice } from "../../shared/account-snapshot.ts";
+import type { SnapshotDevice, UsedReport } from "../../shared/account-snapshot.ts";
 import { writePrivateState } from "../private-state.ts";
 import type { RemovalEvidence } from "./removal-evidence.ts";
-import { rowDrop, type RowDrop } from "./row-drop-evidence.ts";
+import { rowDrop } from "./row-drop-evidence.ts";
 import { firstDevice, holdSecondsLeft, JOIN_HOLD_MS, mayEndHold, type Sayer } from "./join-hold.ts";
+import { CLEARED, loadAccountDevices, type DevicesFile, type AccountRow, type AccountRowPorts, type AccountRowSource, type AccessAnswer, type DropReason, type JournalEntry, type ListCommit } from "./account-device-state.ts";
+export type { AccountRow, AccountRowPorts, AccountRowSource, AccessAnswer, DropReason, JournalEntry, ListCommit } from "./account-device-state.ts";
+export { accountRowsFor } from "./account-row-source.ts";
 
 export const ACCOUNT_DEVICES_FILE = "account-devices.json";
 export const ACCOUNT_DEVICES_MAX = 100;
@@ -23,108 +20,6 @@ const DAY_MS = 24 * 60 * 60_000;
 const iso = (at: number): string => new Date(at).toISOString();
 const dayOf = (at: number): string => iso(at).slice(0, 10);
 
-export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke" | "expired";
-
-/**
- * What Track A's deny path (DeviceStore.attachAccountRows, set only with OVIS_ACCOUNT_OPENS_ALL=1) asks of the
- * account-joined rows: they are target and signer candidates of blocks, removes and Revokes like devices.json rows.
- * Removal detaches the whole batch before notifying session owners or writing the journal (P8 step 3).
- */
-export interface AccountRowSource {
-  /** Why `account-devices.json` cannot be used. A file that will not read is never empty (S19, T41). */
-  blocked(): string | null;
-  /** No `account-devices.json` on disk: no listed row is known here, which is not proof that none was. */
-  missing(): boolean;
-  rows(): readonly AccountRow[];
-  row(id: string): AccountRow | null;
-  promoted(id: string): void;
-  rowsByKey(key: string): readonly AccountRow[];
-  access(id: string): AccessAnswer;
-  pruneDenied(evidence: RemovalEvidence, legacyRevoke?: "revoke_all"): void;
-  removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void;
-  /** An eligible "It's me" answers the notice, ending the hold if one remains. */
-  itsMe(id: string, sayer: Sayer): boolean;
-  /** Authenticated use of the row on this PC (P9): a proved sign-in, or a request of its session. */
-  seen(id: string): void;
-}
-
-export type AccountRow = AccountJoinedRow;
-
-/** A whole read's list, as S2-24's commit hands it over. */
-export type ListCommit = Pick<AccountSnapshot, "account" | "snapshot" | "version" | "devices" | "removed">;
-
-export interface JournalEntry extends Pick<SnapshotDevice, "provider" | "two_step"> {
-  readonly kind: "admit" | "drop" | "its_me";
-  readonly key: string;
-  readonly row: string;
-  readonly account: string | null;
-  readonly drop?: RowDrop | undefined;
-  readonly no?: number;
-  readonly label?: string;
-  readonly reason?: DropReason;
-  readonly by?: string;
-}
-
-export type AccessAnswer = { readonly ok: true } | { readonly refused: "join_hold"; readonly seconds: number | null } | { readonly refused: "admission" | "not_listed" | "expired" };
-
-export interface AccountRowPorts {
-  readonly evidence?: RemovalEvidence;
-  /** On disk when it returns; a drop already recorded for this admission is not repeated. */
-  journal(entry: JournalEntry): void;
-  closeSessions(rowId: string, reason: DropReason): void;
-  /** P2: a key a devices.json row holds stays there. */
-  heldByDevicesJson(key: string): boolean;
-  hasNoticeSlot(): boolean;
-  settleNotices?(rows: readonly AccountRow[]): void;
-  /** Standing guards apply both to a new row and to release of an existing hold. */
-  admits(key: string, account: string): boolean;
-  admitListedRows(write: () => readonly string[]): string[];
-  /** Puts the admission's notice in the unseen set of every older row, on disk; throws when it could not. */
-  publish(entry: JournalEntry & { readonly accountNo: number }): void;
-  now(): number;
-  /**
-   * Numbers one admission on this PC and returns its origin (PcAccountState.admit in pc-binding.ts, P12, P22): its
-   * `admit_no` is the age every PC decision compares.
-   */
-  admitOrigin(at: number): AdmissionOrigin;
-  /** The first-device facts this PC keeps with its binding (account-pc.json, T67). */
-  firstDevice: {
-    othersEver(): boolean;
-    /** Set before the first row of the account that is not the binding row is written; nothing unsets it. */
-    setOthersEver(): void;
-    listKey(): string | null;
-    /** A row in devices.json other than the one that bound the PC. */
-    otherRows(): boolean;
-  };
-}
-
-/** The file in memory: `account` and `snapshot` are null only in the cleared state, which holds no rows. */
-interface DevicesFile {
-  account: string | null;
-  snapshot: string | null;
-  version: number;
-  devices: AccountRow[];
-}
-
-const CLEARED: DevicesFile = { account: null, snapshot: null, version: 1, devices: [] };
-
-function load(path: string, serverId: string): { file: DevicesFile; error: string | null; foreign?: true } {
-  let value: unknown;
-  try { value = JSON.parse(readFileSync(path, "utf8")); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { file: CLEARED, error: null };
-    return { file: CLEARED, error: `Cannot read ${path}: account-joined devices are refused until it is restored or fixed.` };
-  }
-  try {
-    const file = parseAccountDevicesFile(value);
-    // rows admitted under another relay identity name another PC: none of them is a row here
-    return { file: { account: file.account, snapshot: file.snapshot, version: file.version, devices: [...file.devices] }, error: null,
-      ...(file.server_id !== serverId ? { foreign: true } : {}) };
-  } catch (error) {
-    if (!(error instanceof AccountSnapshotError)) throw error;
-    return { file: CLEARED, error: `${path} is not an account devices file (${error.message}): account-joined devices are refused until it is fixed.` };
-  }
-}
-
 export class AccountDeviceStore implements AccountRowSource {
   readonly error: string | null;
   private readonly path: string;
@@ -133,7 +28,7 @@ export class AccountDeviceStore implements AccountRowSource {
 
   constructor(stateDir: string, private readonly serverId: string, private readonly ports: AccountRowPorts) {
     this.path = join(stateDir, ACCOUNT_DEVICES_FILE);
-    const { file, error, foreign } = load(this.path, serverId);
+    const { file, error, foreign } = loadAccountDevices(this.path, serverId);
     // restart: a promoted key's list row is finished (an interrupted promotion), and every hold waits for a fresh read (T42)
     this.file = foreign ? CLEARED : { ...file, devices: file.devices.filter((row) => !ports.heldByDevicesJson(row.key)).map((row) => row.state === "hold" ? { ...row, hold_until: null } : row) };
     this.error = error ?? (foreign ? ports.evidence?.strict ?? null : null);
@@ -209,6 +104,7 @@ export class AccountDeviceStore implements AccountRowSource {
 
   /** Whether row `id` may sign in now. A held row whose ten seconds are over passes the admission guard again first. */
   access(id: string): AccessAnswer {
+    if (this.error === null) this.expire();
     const row = this.rows().find((candidate) => candidate.id === id);
     if (!row) return { refused: "not_listed" };
     if (row.state === "expired") return { refused: "expired" };
@@ -394,38 +290,4 @@ export class AccountDeviceStore implements AccountRowSource {
       this.ports.settleNotices?.(this.file.devices);
     }
   }
-}
-
-/**
- * The account rows of whichever relay identity this PC has now: the store is opened for that identity's server id on
- * first use and opened again when the identity changes, so rows written for another identity are never rows here.
- */
-export function accountRowsFor(stateDir: string, serverId: () => string | null, ports: AccountRowPorts): AccountRowSource & { store(): AccountDeviceStore | null } {
-  let open: { serverId: string; store: AccountDeviceStore } | null = null;
-  const store = (): AccountDeviceStore | null => {
-    const id = serverId();
-    if (id === null) return null;
-    if (open?.serverId !== id) {
-      // the rows of the identity this PC had end here: their sessions close, and the file is the new identity's (T44)
-      if (open !== null) {
-        open.store.clear("identity_reset");
-      }
-      open = { serverId: id, store: new AccountDeviceStore(stateDir, id, ports) };
-    }
-    return open.store;
-  };
-  return {
-    store,
-    blocked: () => store()?.blocked() ?? null,
-    missing: () => store()?.missing() ?? true,
-    rows: () => store()?.rows() ?? [],
-    row: (id) => store()?.row(id) ?? null,
-    promoted: (id) => store()?.promoted(id),
-    rowsByKey: (key) => store()?.rowsByKey(key) ?? [],
-    access: (id) => store()?.access(id) ?? { refused: "not_listed" },
-    pruneDenied: (evidence, legacyRevoke) => { store()?.pruneDenied(evidence, legacyRevoke); },
-    removeRows: (ids, reason, close) => { store()?.removeRows(ids, reason, close); },
-    itsMe: (id, sayer) => store()?.itsMe(id, sayer) ?? false,
-    seen: (id) => { store()?.seen(id); },
-  };
 }
