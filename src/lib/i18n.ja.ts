@@ -70,7 +70,7 @@ const BASE: Record<string, string> = {
   "Open {provider}": "{provider} を開く",
   "{provider} refused the sign-in.": "{provider} でサインインが拒否されました。",
   "Your account already signs in with {provider}.": "このアカウントはすでに {provider} でサインインできます。",
-  "This {provider} sign-in already belongs to another Ovis account. Nothing was changed.": "この {provider} のサインインはすでに別の Ovis アカウントに使われています。何も変更されていません。",
+  "This {provider} account is linked to another Ovis account. To see that account, sign out and sign in with {provider}. To use both ways to sign in on one account, delete one of the two accounts, then add its way to sign in to the one you keep.": "この {provider} アカウントは別の Ovis アカウントに連携されています。そのアカウントを見るには、サインアウトして {provider} でサインインしてください。両方のサインイン方法を 1 つのアカウントで使うには、どちらかのアカウントを削除してから、残したアカウントにそのサインイン方法を追加してください。",
   "Add another way to sign in before removing this one.": "この方法を削除する前に、別のサインイン方法を追加してください。",
   "The sign-in method could not be removed. Try again.": "サインイン方法を削除できませんでした。もう一度お試しください。",
   "Ways to sign in": "サインイン方法",

@@ -68,7 +68,7 @@ const BASE: Record<string, string> = {
   "Open {provider}": "{provider} 열기",
   "{provider} refused the sign-in.": "{provider}에서 로그인을 거절했습니다.",
   "Your account already signs in with {provider}.": "이 계정은 이미 {provider}(으)로 로그인할 수 있습니다.",
-  "This {provider} sign-in already belongs to another Ovis account. Nothing was changed.": "이 {provider} 로그인은 이미 다른 Ovis 계정에 연결되어 있습니다. 아무것도 바뀌지 않았습니다.",
+  "This {provider} account is linked to another Ovis account. To see that account, sign out and sign in with {provider}. To use both ways to sign in on one account, delete one of the two accounts, then add its way to sign in to the one you keep.": "이 {provider} 계정은 다른 Ovis 계정에 연결돼 있어요. 그 계정을 보려면 로그아웃한 뒤 {provider}로 로그인하세요. 두 로그인 방법을 한 계정에서 쓰려면 둘 중 한 계정을 삭제한 뒤, 남긴 계정에 그 로그인 방법을 추가하세요.",
   "Add another way to sign in before removing this one.": "이 방법을 지우기 전에 다른 로그인 방법을 먼저 추가하세요.",
   "The sign-in method could not be removed. Try again.": "로그인 방법을 지우지 못했습니다. 다시 시도하세요.",
   "Ways to sign in": "로그인 방법",
