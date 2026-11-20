@@ -35,7 +35,19 @@ function lstatOrNull(path: string): Stats | null {
   try { return lstatSync(path); } catch { return null; }
 }
 
-interface Connection { buffered: string; answered: boolean }
+interface Connection { buffered: string; answered: boolean; reply?: Uint8Array }
+
+function writeReply(socket: Socket<Connection>): void {
+  const reply = socket.data.reply;
+  if (reply === undefined) return;
+  const written = socket.write(reply);
+  if (written >= 0 && written < reply.byteLength) {
+    socket.data.reply = reply.subarray(written);
+    return;
+  }
+  socket.data.reply = undefined;
+  socket.end();
+}
 
 /**
  * Opens `<stateDir>/recover/recover.sock`. Each connection sends one JSON line and gets one JSON line back from
@@ -78,6 +90,7 @@ export function openRecoverySocket(options: {
         socket.data.answered = true;
         void answer(socket, socket.data.buffered.slice(0, newline));
       },
+      drain: writeReply,
     } });
     chmodSync(path, 0o600);
   } finally {
@@ -97,8 +110,8 @@ export function openRecoverySocket(options: {
     let reply: unknown;
     try { reply = await options.handle(request); }
     catch (error) { reply = { error: error instanceof Error ? error.message : String(error) }; }
-    socket.write(`${JSON.stringify(reply)}\n`);
-    socket.end();
+    socket.data.reply = new TextEncoder().encode(`${JSON.stringify(reply)}\n`);
+    writeReply(socket);
   };
   return {
     path,
