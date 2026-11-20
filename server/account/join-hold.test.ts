@@ -42,6 +42,24 @@ function machine(over: Partial<AccountRowPorts> = {}, first: { othersEver?: bool
 const established = (over: Partial<Sayer> = {}): Sayer => ({ key: keyOf("k-old"), drives: true, state: "live", no: 1, late: false, admitNo: null, admittedAt: 0, ...over });
 
 describe("S2-29 the join hold and the first device (T34, T53, T67)", () => {
+  test("a whole read publishes an interrupted admission before restarting its hold", () => {
+    const { dir, ports } = machine();
+    const evidence = RemovalEvidence.open(dir, null);
+    const read = list(["k-held"]);
+    const first = new AccountDeviceStore(dir, SERVER, { ...ports, ...listNotices(DeviceJournal.open(dir), evidence, () => {}),
+      admitListedRows(write) { write(); throw new Error("stopped after row write"); },
+    });
+    expect(() => first.commitList(read)).toThrow("stopped after row write");
+    const journal = DeviceJournal.open(dir);
+    expect(journal.openNotices()).toEqual([]);
+    const restarted = new AccountDeviceStore(dir, SERVER, { ...ports, ...listNotices(journal, evidence, () => {}) });
+    const [held] = restarted.rows();
+    if (!held) throw new Error("Missing durable row");
+    expect(restarted.access(held.id)).toEqual({ refused: "join_hold", seconds: null });
+    restarted.commitList(read);
+    expect(DeviceJournal.open(dir).openNotices().map(entry => entry.row)).toEqual([held.id]);
+    expect(restarted.access(held.id)).toEqual({ refused: "join_hold", seconds: 10 });
+  });
   test("P17/T42: a fresh read replaces a pre-fix snapshot-numbered notice before restarting the hold", () => {
     const { dir, clock, ports } = machine();
     const journal = DeviceJournal.open(dir);
