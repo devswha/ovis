@@ -210,16 +210,21 @@ it("T34, T53, P17: the held device shows the PC's deadline and retries when it e
   expect(await expired.promise).toBe(true);
 });
 
-it("P7: catching up without a deadline stays in Connecting and does not retry on a client deadline", async () => {
+it.each<HoldState>([{ reason: "catching_up" }, { reason: "join_hold", until: null }])("P7, T53: a temporary hold without a deadline retries: $reason", async (hold) => {
   let attempts = 0;
-  const run = await accountPc({ open: async () => {
-    attempts++;
-    throw refused("held", { reason: "catching_up" });
+  const run = await accountPc({ open: async (offer) => {
+    if (++attempts === 1) throw refused("held", hold);
+    return new class extends RelayTransport {
+      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+    }(offer);
   } });
   jest.useFakeTimers();
   await run.openPage();
-  jest.advanceTimersByTime(60_000);
-  expect({ kind: run.current().state.kind, attempts, navigations: run.navigations }).toEqual({ kind: "connecting", attempts: 1, navigations: [] });
+  jest.advanceTimersByTime(999);
+  expect({ kind: run.current().state.kind, attempts }).toEqual({ kind: "connecting", attempts: 1 });
+  jest.advanceTimersByTime(1);
+  for (let turn = 0; turn < 100 && run.apps() === 0; turn++) await Promise.resolve();
+  expect({ attempts, apps: run.apps(), navigations: run.navigations }).toEqual({ attempts: 2, apps: 1, navigations: [] });
 });
 
 it.each([
