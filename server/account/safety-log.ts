@@ -354,7 +354,7 @@ export class SafetyLog {
   }
 
   /** Number a whole read's lifts together; no new receipt counts until the single replacement succeeds. */
-  commitLifts(lifts: readonly DeviceLiftRecord[]): { added: number; receipts: SafetyReceipt[] } {
+  commitLifts(lifts: readonly DeviceLiftRecord[], cause: Extract<LiftCause, "snapshot">): { added: number; receipts: SafetyReceipt[] } {
     if (lifts.length === 0) return { added: 0, receipts: [] };
     const unavailable = () => ({ added: 0, receipts: lifts.map((record): SafetyReceipt => ({ outcome: "refused", id: record?.id ?? "", code: "log_unavailable" })) });
     if (this.strict !== null || !this.load()) return unavailable();
@@ -379,6 +379,15 @@ export class SafetyLog {
         return unavailable();
       }
       this.inForce = this.state();
+      for (const { record } of next.entries.slice(-added)) {
+        const ended = next.entries.find(({ record: parent }) => parent.account === record.account &&
+          ((parent.kind === "block" && parent.id === record.target) || (parent.kind === "freeze" && parent.id === `f:${record.target}`)));
+        const target = ended?.record.target;
+        if (target == null) continue;
+        for (const listener of [...this.liftListeners]) {
+          try { listener(target, cause); } catch (error) { console.warn(`[account] a lift listener failed: ${error instanceof Error ? error.message : String(error)}`); }
+        }
+      }
     }
     return { added, receipts };
   }

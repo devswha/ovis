@@ -93,7 +93,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
           throw error;
         }
       }
-      const { receipts } = safetyLog.commitLifts(stage.lifts);
+      const { receipts } = safetyLog.commitLifts(stage.lifts, "snapshot");
       const refused = receipts.find((receipt) => receipt.outcome === "refused");
       if (refused) {
         restoreOrder(); // commitLifts published nothing, so the previous watermark still applies.
