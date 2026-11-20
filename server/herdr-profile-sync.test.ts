@@ -439,6 +439,7 @@ describe("automatic herdr machine inheritance", () => {
     expect(start).toHaveBeenCalledTimes(1);
     expect(new HerdrProfileState(dir).approved(profile.id, profile.target!)).toBe(false);
     manager.syncHerdrProfiles([profile]);
+    // fixed wait: a repeated sync of the same profile must not start another SSH
     await Bun.sleep(20);
     expect(start).toHaveBeenCalledTimes(1);
   });
@@ -457,5 +458,27 @@ describe("automatic herdr machine inheritance", () => {
     expect(row.retry).toBeUndefined();
     expect(row.machine.state).toBe("error");
     expect(new HerdrProfileState(dir).connectionApproved(profile.id, profile.target!)).toBe(false);
+  });
+
+  it("does not record connection consent when the first session read fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-profile-observe-"));
+    const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("offline"); });
+    const internals = manager as unknown as Internals;
+    const start = spyOn(SshConnection.prototype, "start").mockResolvedValue();
+    const prepare = spyOn(internals, "prepare").mockResolvedValue();
+    const observe = spyOn(internals, "observe").mockRejectedValue(new Error("session unread"));
+    cleanups.push(() => { manager.stop(); start.mockRestore(); prepare.mockRestore(); observe.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
+    manager.syncHerdrProfiles([profile]);
+    const id = manager.list()[1]!.id;
+    await until(() => manager.list()[1]?.action_required === "connect");
+    const row = internals.machines.get(id) as { retry?: ReturnType<typeof setTimeout>; machine: Machine };
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(row.retry).toBeUndefined();
+    expect(row.machine.state).toBe("error");
+    expect(new HerdrProfileState(dir).connectionApproved(profile.id, profile.target!)).toBe(false);
+    manager.syncHerdrProfiles([profile]);
+    expect(start).toHaveBeenCalledTimes(1);
   });
 });

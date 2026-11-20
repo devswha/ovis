@@ -123,7 +123,7 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *   only after a workspace move's receipt when a roster names another epoch (src/lib/workspaceOrder.ts).
  *   An older server ignores the query and sends no verified_source_boot, which proves nothing.
  * Machine action_required=connect: the first time this server sees an enabled herdr profile it attempts SSH.
- * A binding change still waits for POST /api/machines/setup. Connection permission is recorded only after SSH succeeds. Installation approval stays separate.
+ * A binding change still waits for POST /api/machines/setup. Connection permission is recorded only after the first session read succeeds. Installation approval stays separate.
  * SetupJob/Machine action_required=bridge_conflict: align app versions, then retry setup without update_remote.
  * POST /api/machines/setup -> SetupJob; GET/POST/DELETE /api/machines/setup/:job_id
  * PATCH /api/machines/:id { name?, enabled? }; DELETE /api/machines/:id

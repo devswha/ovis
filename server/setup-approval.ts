@@ -1,4 +1,4 @@
-import type { SshTarget } from "../shared/machines.ts";
+import type { MachineAction, SshTarget } from "../shared/machines.ts";
 
 /** The one install-list line that may skip the approval wait. Copy it from here; do not retype it. */
 export const START_BRIDGE_INSTALL = "Start the loopback bridge and, only if absent, the herdr daemon";
@@ -26,7 +26,7 @@ export function bridgeInstalls(input: {
 
 /** What sync should do with one enabled-or-not herdr profile after reconcile. */
 export function linkHerdrProfile(
-  machine: { action_required: string | null; error: string | null; state: string },
+  machine: { action_required?: MachineAction | null; error: string | null; state: string },
   flags: { enabled: boolean; firstSight: boolean; hasTarget: boolean; allowed: boolean; wantsReconnect: boolean },
   first: () => void,
   again: () => void,
@@ -57,7 +57,7 @@ export function acceptFirstSight(state: { allowConnection(id: string, target: Ss
 
 /** A failed first look must not keep the reconnect timer: consent was not recorded, so later calls would no-op. `lost()` already advanced generation by one. */
 export function releaseUnapprovedFirstSight(
-  runtime: { generation: number; retry?: ReturnType<typeof setTimeout>; machine: { enabled: boolean; state: string; action_required: string | null } },
+  runtime: { generation: number; retry?: ReturnType<typeof setTimeout>; machine: { enabled: boolean; state: string; action_required?: MachineAction | null } },
   generation: number,
   stopped: boolean,
   allowed: boolean,

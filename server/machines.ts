@@ -1468,7 +1468,7 @@ export class MachineManager {
       // an automatic bridge update was approved by the app update (or the tap that started it)
       if (!job.auto) { this.stage(job, "approval", "Review the changes on this PC"); await this.wait(job); }
       job.installationApproved = update || !descriptor;
-    } else if (installs.length && job) job.public.installations = installs; if (installs.length) {
+    } else if (installs.length && job) job.public.installations = installs; if (installs.length && job) {
       if (update || !descriptor && !hasBundle) { this.stage(job, "installing", `Installing verified ${platform} bundle…`); await host.installBundle(ssh, platform, job.abort.signal, { cacheDir: join(this.stateDir, "bundles"), owner: installLockOwner(this.stateDir, target), onProgress: (stage, done, total) => this.progress(job, stage, done, total) }); }
       if (!descriptor && !herdrPath && host.installHerdr) { this.stage(job, "installing", "Installing herdr with its own installer…"); herdrPath = await host.installHerdr(ssh); }
       if (ssh.usedSecret) {
@@ -2070,9 +2070,8 @@ export class MachineManager {
     }
     runtime.ssh = new SshConnection(runtime.machine.target!, this.sshDir, join(this.sshDir, runtime.machine.id));
     try {
-      await runtime.ssh.start(); await this.prepare(runtime);
-      if (generation !== runtime.generation || this.stopped) return; else if (options?.firstSight) acceptFirstSight(this.profileState, () => this.persist(), runtime.machine);
-      await this.observe(runtime); this.emit();
+      await runtime.ssh.start(); await this.prepare(runtime); if (generation !== runtime.generation || this.stopped) return;
+      await this.observe(runtime); if (options?.firstSight && generation === runtime.generation && !this.stopped) acceptFirstSight(this.profileState, () => this.persist(), runtime.machine); this.emit();
     } catch (e) { const before = runtime.generation; this.lost(runtime, generation, e); if (options?.firstSight && before === generation && releaseUnapprovedFirstSight(runtime, before, this.stopped, this.mayConnect(runtime))) this.emit(); }
   }
   private queueAutoUpdate(id: string): void {
