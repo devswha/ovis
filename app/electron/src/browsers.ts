@@ -77,11 +77,12 @@ export function parseDesktopEntry(text: string): DesktopEntry | null {
   };
 }
 
-/** an Exec line in arguments: double quotes group, and inside them a backslash keeps the next character */
-function execWords(exec: string): string[] | null {
-  const words: string[] = [];
+/** an Exec line in arguments, each with whether it was quoted: double quotes group, and inside them a backslash keeps the next character */
+function execWords(exec: string): { text: string; quoted: boolean }[] | null {
+  const words: { text: string; quoted: boolean }[] = [];
   let word = "";
   let quoted = false;
+  let wasQuoted = false;
   let started = false;
   for (let i = 0; i < exec.length; i++) {
     const char = exec[i]!;
@@ -91,10 +92,12 @@ function execWords(exec: string): string[] | null {
       else word += char;
     } else if (char === "\"") {
       quoted = true;
+      wasQuoted = true;
       started = true;
     } else if (char === " " || char === "\t") {
-      if (started) words.push(word);
+      if (started) words.push({ text: word, quoted: wasQuoted });
       word = "";
+      wasQuoted = false;
       started = false;
     } else {
       word += char;
@@ -102,21 +105,24 @@ function execWords(exec: string): string[] | null {
     }
   }
   if (quoted) return null;
-  if (started) words.push(word);
+  if (started) words.push({ text: word, quoted: wasQuoted });
   return words;
 }
 
 /**
  * The arguments an Exec line runs for `url`, its field codes filled in here and never by a shell:
  * %u %U %f %F take the address (one argument), %c the name, %i the icon, %% a percent sign; the
- * others are dropped. An Exec line with no field for the address gets it at the end.
+ * others are dropped. An Exec line with no field for the address gets it at the end. One that puts
+ * the address inside quotes (`sh -c "browser %u"`, which the spec forbids) is refused: a shell would
+ * read the address as its script.
  */
 export function desktopCommand(entry: Pick<DesktopEntry, "exec" | "name" | "icon">, url: string): string[] | null {
   const words = execWords(entry.exec);
   if (words === null || words.length === 0) return null;
+  if (words.some(({ text, quoted }) => quoted && /%[uUfF]/.test(text))) return null;
   const command: string[] = [];
   let given = false;
-  for (const word of words) {
+  for (const { text: word } of words) {
     if (word === "%i") {
       if (entry.icon !== null) command.push("--icon", entry.icon);
       continue;

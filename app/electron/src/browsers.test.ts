@@ -46,6 +46,13 @@ describe("desktopCommand", () => {
     expect(desktopCommand({ exec: "\"/opt/unclosed %U", name: "Web", icon: null }, ADDRESS)).toBeNull();
     expect(desktopCommand({ exec: "   ", name: "Web", icon: null }, ADDRESS)).toBeNull();
   });
+
+  it("refuses an Exec line that puts the address inside quotes, where a shell would run it", () => {
+    for (const exec of ["sh -c \"browser %u\"", "/bin/bash -c \"exec firefox '%U'\"", "web \"--url=%f\""]) {
+      expect(desktopCommand({ exec, name: "Web", icon: null }, webAddress("https://a.example/x$(id)?q=$(id)")!)).toBeNull();
+    }
+    expect(desktopCommand({ exec: "\"/opt/My Browser/run\" --class \"%c\" %u", name: "Web", icon: null }, ADDRESS)).toEqual(["/opt/My Browser/run", "--class", "Web", ADDRESS]);
+  });
 });
 
 describe("Linux browsers", () => {

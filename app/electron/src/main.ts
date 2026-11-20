@@ -272,7 +272,7 @@ function browsers(again = false): Promise<FoundBrowsers> {
 
 /**
  * A web link of the server's page, in the browser chosen in Settings. When that browser is gone or
- * cannot start (or quits at once with an error), the system browser opens it and a notification says so.
+ * cannot start (or quits within two seconds with an error), the system browser opens it and a notification says so.
  */
 async function openWebLink(url: string): Promise<void> {
   const address = webAddress(url);
@@ -291,7 +291,8 @@ async function openWebLink(url: string): Promise<void> {
   try {
     const child = spawn(program!, args, { detached: true, stdio: "ignore" });
     child.once("error", fail);
-    child.once("exit", (code) => { if (code !== 0 && code !== null && Date.now() - started < 10_000) fail(); });
+    // a launcher that hands the link to a running browser exits at once with 0; one that cannot start fails within a moment
+    child.once("exit", (code) => { if (code !== 0 && code !== null && Date.now() - started < 2_000) fail(); });
     child.unref();
   } catch {
     fail();
@@ -681,6 +682,8 @@ if (!app.requestSingleInstanceLock()) {
       app.setAsDefaultProtocolClient(LINK_SCHEME, process.execPath, ["--"]);
     }
     pendingLink ??= argvLinkQuery(process.argv);
+    // found before the first link: on Windows that takes several registry reads
+    if (linkBrowser !== null) void browsers();
     allowPermissions();
     createMenu();
     createWindow();
