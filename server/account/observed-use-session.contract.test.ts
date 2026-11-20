@@ -28,19 +28,24 @@ async function pc() {
     return found;
   };
   clock.advance(10_000);
-  const link = await relayConnection(listed.fixture, { serverId: listed.serverId });
+  const link = await relayConnection(listed.fixture, { serverId: listed.serverId, websocket: listed.fixture.app.context.services.core.socketHandlers });
   expect((await link.auth(listed.device, [ACCOUNT_OPENS_ALL_FEATURE])).role).toBe("drive");
   return { ...listed, clock, row, link };
 }
 
 test("P9/T54: the PC journals expiry and closes a silent session without a whole read", async () => {
   const machine = await pc();
+  const socket = machine.link.openSocket();
+  await socket.opened;
+  await socket.until(message => message.type === "features");
   machine.service.opensAll = false;
   machine.clock.advance(60 * 86_400_000);
   const drops = DeviceJournal.open(machine.fixture.stateDir).entries()
     .filter(entry => entry.row === machine.device.id && entry.kind === "drop");
   expect(drops.map(entry => entry.how)).toEqual(["expired"]);
   expect(machine.row().state).toBe("expired");
+  expect(machine.fixture.app.context.services.devices.canDrive(machine.device.id)).toBe(false);
+  expect(await bounded(socket.closed)).toMatchObject({ code: 1008 });
   expect(await bounded(machine.link.serverError)).toBe("auth_changed");
   await bounded(machine.link.closed);
 });
