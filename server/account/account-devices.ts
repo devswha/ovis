@@ -97,6 +97,7 @@ export class AccountDeviceStore implements AccountRowSource {
   readonly error: string | null;
   private readonly path: string;
   private file: DevicesFile;
+  private readonly pendingDrops: JournalEntry[] = [];
 
   constructor(stateDir: string, private readonly serverId: string, private readonly ports: AccountRowPorts) {
     this.path = join(stateDir, ACCOUNT_DEVICES_FILE);
@@ -196,10 +197,15 @@ export class AccountDeviceStore implements AccountRowSource {
     if (rows.length === 0) return [];
     const ids = new Set(rows.map((row) => row.id));
     this.file = { ...this.file, devices: this.file.devices.filter(row => !ids.has(row.id)) };
+    // A durable deny can finish these drops at startup. Until journalled, not even
+    // a later registry write in this process may erase the rows needed for replay.
+    const replayable = reason === "revoke" || reason === "remove" || reason === "block" || reason === "revoke_all";
+    const entries = rows.map(row => ({ kind: "drop", key: row.key, row: row.id, reason } as const));
+    if (replayable) this.pendingDrops.push(...entries);
     for (const row of rows) close?.(row.id, reason);
     let failure: Error | undefined;
-    for (const row of rows) {
-      try { this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason }); }
+    for (const entry of replayable ? [] : entries) {
+      try { this.ports.journal(entry); }
       catch (error) { failure ??= error instanceof Error ? error : new Error(String(error)); }
     }
     this.write(this.file);
@@ -212,6 +218,10 @@ export class AccountDeviceStore implements AccountRowSource {
   }
 
   private write(next: DevicesFile): void {
+    for (let entry = this.pendingDrops[0]; entry; entry = this.pendingDrops[0]) {
+      this.ports.journal(entry);
+      this.pendingDrops.shift();
+    }
     writePrivateState(this.path, { v: 1, server_id: this.serverId, ...next });
     this.file = next;
   }
