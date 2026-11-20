@@ -84,13 +84,21 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
         if (error instanceof Error) throw new SnapshotWriteRefused(error.message, { cause: error });
         throw error;
       }
-      const { added, receipts } = safetyLog.commitLifts(stage.lifts);
+      // P14: the generation is raised on disk before any lift counts, so no decision taken at the old generation stands
+      // beside a lift; if it cannot be written, nothing is lifted and the previous watermark still applies
+      if (stage.lifts.length > 0) {
+        try { pc.raiseGen(); } catch (error) {
+          restoreOrder();
+          if (error instanceof Error) throw new SnapshotWriteRefused(error.message, { cause: error });
+          throw error;
+        }
+      }
+      const { receipts } = safetyLog.commitLifts(stage.lifts);
       const refused = receipts.find((receipt) => receipt.outcome === "refused");
       if (refused) {
         restoreOrder(); // commitLifts published nothing, so the previous watermark still applies.
         throw new SnapshotWriteRefused(refused.code);
       }
-      if (added > 0) pc.raiseGen();
       journal.recordSnapshotLifts(safetyLog);
       devices.handedLifts.decide(stage.snapshot.lifts);
     },
