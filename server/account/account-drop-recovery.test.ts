@@ -54,7 +54,7 @@ async function revokeAllAcrossUnreadableRows() {
   const path = join(dir, ACCOUNT_DEVICES_FILE);
   fixture.app.stop();
   const file = parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8")));
-  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const })) });
+  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const, hold_until: null })) });
   const live = startOffline(dir).app;
   const fault = failReplacement(join(dir, REMOVAL_FILE), device.id);
   try { expect(() => live.context.services.devices.revokeAll()).toThrow("replacement failed"); } finally { fault.mockRestore(); live.stop(); }
