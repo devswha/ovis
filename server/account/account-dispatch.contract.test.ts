@@ -84,7 +84,7 @@ test("R5, R8, R9: PC maintenance and webhook require authority; push unsubscribe
   expect(accountRouteAction("DELETE", "/api/push/subscribe")).toEqual({ action: "push_subscribe" });
 });
 
-test("P5, R9: real relay AUTH carries account-only rights through HTTP dispatch", async () => {
+test("P5, R7, R9: signed-in account sees refusals instead of PC catalogs, remote routes or webhook writes", async () => {
   const { rows, device, fixture, serverId } = await listedDispatcher();
   const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
   try {
@@ -96,6 +96,12 @@ test("P5, R9: real relay AUTH carries account-only rights through HTTP dispatch"
       ["/api/unregistered", "GET", "account_route_denied"],
       ["/api/unregistered", "POST", "account_route_denied"],
       ["/api/alerts/webhook", "PUT", "member_required"],
+      ["/api/alerts/webhook", "DELETE", "member_required"],
+      ["/api/alerts/webhook", "POST", "member_required"],
+      ["/api/machines", "GET", "local_only"],
+      ["/api/machines/events", "GET", "local_only"],
+      ["/api/preferences?machine_id=other", "GET", "local_only"],
+      ["/ws?machine_id=other", "GET", "local_only"],
     ] as const) {
       const response = await ask(link, path, { method, ...(method === "GET" ? {} : { body: {} }) });
       expect({ status: response.status, code: response.body.error?.code }).toEqual({ status: 403, code });
