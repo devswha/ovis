@@ -140,7 +140,9 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   // its settings): the owner from any device he signed in or paired himself, from this app's own page. A PC's own
   // routes (its panes, workspaces and files, MACHINE_PROXY_PATH) are driven as this PC's are, and keep their rules
   const path = parts.slice(1).join("/");
-  const proxyPath = MACHINE_PROXY_PATH.test(path) || (request.method === "POST" && path === "account/records");
+  const accountRecords = request.method === "POST" && path === "account/records";
+  const proxyPath = MACHINE_PROXY_PATH.test(path) || accountRecords;
+  if (accountRecords && !owner) return fail("owner_only", "Manage the account from this PC itself, or from a paired device.", 403);
   const managing = !["GET", "HEAD", "OPTIONS"].includes(request.method) && !proxyPath;
   if (managing && !(owner && updateRequestAllowed(request))) return fail("forbidden", OWNER_ONLY, 403);
   try {
