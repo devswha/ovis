@@ -4,6 +4,7 @@ import { STALE_READ_MS, type accountRowsFor } from "./account-devices.ts";
 import { CatchUpGate } from "./catch-up-gate.ts";
 import type { PcAccountState } from "./pc-binding.ts";
 import type { Readmission } from "./readmission.ts";
+import { SnapshotWriteRefused } from "./snapshot-read.ts";
 
 /** The server's whole-read lifecycle: release judged rows, then bound how long that read keeps them usable. */
 export class AccountCatchUp {
@@ -44,6 +45,7 @@ export class AccountCatchUp {
     const store = this.rows?.store();
     try {
       store?.commitList(snapshot, readmission);
+      if (this.devices.failsClosed) throw new SnapshotWriteRefused(this.devices.accountError ?? "account_unavailable");
       store?.expire();
       this.gate?.wholeRead(this.devices.list(null).filter(row => !this.devices.admits(this.devices.relayKeyOf(row.id))).map(row => row.id));
     } catch (error) {
