@@ -200,6 +200,7 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
               <DirectTab found={found} machines={machines} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} />
             </div>
           )}
+          {tab === "devices" && relayPending && <p className="settings-hint" role="status" data-testid="connect-devices-pending">{t("Loading…")}</p>}
           {opened.current.has("devices") && !relayPending && (
             <div className="connect-tab" data-tab-panel="devices" hidden={tab !== "devices"}>
               <DevicesTab plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} relay={relayWay} way={devicesWay} onWay={setDevicesChosen} phone={phone} />
@@ -558,10 +559,15 @@ function TailscaleStep({ step }: { step: NonNullable<LocalWays["tailscaleStep"]>
 function CommandToCopy({ command }: { command: string }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
   return (
     <div className="connect-command">
       <code>{command}</code>
-      <button type="button" className="btn btn-ghost" onClick={() => void copyText(command).then((ok) => { if (ok) { setCopied(true); window.setTimeout(() => setCopied(false), 1600); } })}>{t(copied ? "Copied" : "Copy")}</button>
+      <button type="button" className="btn btn-ghost" onClick={() => void copyText(command).then((ok) => { if (ok) setCopied(true); })}>{t(copied ? "Copied" : "Copy")}</button>
     </div>
   );
 }
