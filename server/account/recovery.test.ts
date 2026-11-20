@@ -95,7 +95,7 @@ test.if(unix)("R11: a socket whose mode was widened after it was bound answers n
   const dir = stateDir();
   const socket = opened(dir);
   chmodSync(socket.path, 0o666);
-  await expect(bounded(askRecovery(dir, { act: "list" }))).rejects.toThrow();
+  await expect(bounded(askRecovery(dir, { act: "list" }))).rejects.toThrow("The server answered nothing on its recovery socket");
 });
 
 test.if(unix)("R11: a socket swapped for another after it was bound answers nothing", async () => {
@@ -109,14 +109,14 @@ test.if(unix)("R11: a socket swapped for another after it was bound answers noth
   ends.push(() => impostor.stop());
   rmSync(socket.path);
   renameSync(impostor.path, socket.path);
-  await expect(bounded(askRecovery(dir, { act: "list" }))).rejects.toThrow();
+  await expect(bounded(askRecovery(dir, { act: "list" }))).rejects.toThrow("The server answered nothing on its recovery socket");
 });
 
 test.if(unix)("R11: a recovery folder whose mode was widened after the socket was bound answers nothing", async () => {
   const dir = stateDir();
   opened(dir);
   chmodSync(join(dir, RECOVER_DIR), 0o711);
-  await expect(bounded(askRecovery(dir, { act: "list" }))).rejects.toThrow();
+  await expect(bounded(askRecovery(dir, { act: "list" }))).rejects.toThrow("The server answered nothing on its recovery socket");
 });
 
 test.skipIf(!unix || process.getuid?.() !== 0)("R11: another user cannot connect (needs root to switch user; skipped otherwise)", async () => {
