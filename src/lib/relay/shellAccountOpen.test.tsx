@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it, jest } from "bun:test";
 import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
+import type { HoldState } from "../../../shared/account-devices-api.ts";
 import { accountDeviceId } from "../../../shared/account-records.ts";
 import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
-import { RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
+import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayPcTable } from "../../components/RelayPcTable.tsx";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
@@ -28,7 +29,7 @@ const store: ShellDeviceStore = {
 
 let browser: ReturnType<typeof createShellTestPage>;
 beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
-afterEach(() => { setTransport(nativeTransport); browser.dispose(); });
+afterEach(() => { jest.useRealTimers(); setTransport(nativeTransport); browser.dispose(); });
 
 async function accountPc({ release = true, open }: { release?: boolean; open: NonNullable<RelayShellMount["open"]> }) {
   const identity = generateKeyPair();
@@ -112,4 +113,54 @@ it("P18: an account service without the release only receives the challenge prob
   expect(await run.accountStore.get("signin_key")).toBeUndefined();
   await run.openPage();
   expect(run.navigations).toEqual([expect.stringContaining(`/s/${run.serverId}/#`)]);
+});
+
+const refused = (code: string, hold?: HoldState) =>
+  Object.assign(new MuxProtocolError("protocol_error", "PC refused"), { code, ...(hold === undefined ? {} : { hold }) });
+
+it.each([
+  ["not_listed", [true, true]],
+  ["admission", [true]],
+] as const)("T34, G5: %s offers the same PC's pairing path after the allowed account attempts", async (code, expected) => {
+  const attempts: (boolean | undefined)[] = [];
+  const run = await accountPc({ open: async (_offer, options) => {
+    attempts.push(options?.accountOpensAll);
+    throw refused(code);
+  } });
+  await run.openPage();
+  expect({ attempts, navigation: run.navigations, apps: run.apps() }).toEqual({
+    attempts: expected, navigation: [expect.stringContaining(`/s/${run.serverId}/#offer=`)], apps: 0,
+  });
+});
+
+it("T34: a join hold waits in Connecting and retries at the PC's deadline", async () => {
+  const delay = 4_321;
+  const expired = Promise.withResolvers<boolean | undefined>();
+  let attempts = 0;
+  let until = "";
+  const run = await accountPc({ open: async (_offer, options) => {
+    if (++attempts === 1) throw refused("held", { reason: "join_hold", until });
+    expired.resolve(options?.accountOpensAll);
+    throw refused("admission");
+  } });
+  jest.useFakeTimers();
+  until = new Date(Date.now() + delay).toISOString();
+  await run.openPage();
+  expect(run.current().state.kind).toBe("connecting");
+  jest.advanceTimersByTime(delay - 1);
+  expect(attempts).toBe(1);
+  jest.advanceTimersByTime(1);
+  expect(await expired.promise).toBe(true);
+});
+
+it("P7: catching up without a deadline stays in Connecting and does not retry on a client deadline", async () => {
+  let attempts = 0;
+  const run = await accountPc({ open: async () => {
+    attempts++;
+    throw refused("held", { reason: "catching_up" });
+  } });
+  jest.useFakeTimers();
+  await run.openPage();
+  jest.advanceTimersByTime(60_000);
+  expect({ kind: run.current().state.kind, attempts, navigations: run.navigations }).toEqual({ kind: "connecting", attempts: 1, navigations: [] });
 });
