@@ -122,7 +122,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
           <label className="field"><span className="field-label">{t("SSH port")}</span><input className="input" type="number" min="1" max="65535" placeholder={t("From SSH config (default 22)")} value={port} onChange={(e) => editIdentity("port", e.target.value)} /></label>
           <label className="field"><span className="field-label">{t("Private key path on this web server")}</span><input className="input" value={key} placeholder={t("From SSH config")} onChange={(e) => setKey(e.target.value)} /></label>
           <label className="field"><span className="field-label">{t("herdr session name")}</span><input className="input" value={session} placeholder={t("Default session")} onChange={(e) => editIdentity("session", e.target.value)} /></label>
-          <label className="machine-check"><input type="checkbox" checked={herdrInstead} onChange={(e) => setHerdrInstead(e.target.checked)} />{t("Connect to herdr instead of Ovis")}</label>
+          <label className="machine-check"><input type="checkbox" checked={herdrInstead} onChange={(e) => { setHerdrInstead(e.target.checked); if (e.target.checked) { setOwnOvis(""); setHerdrSocket(""); } }} />{t("Connect to herdr instead of Ovis")}</label>
           {besideOvis && <HerdrSessionChoices sessions={job?.found_herdr_sessions ?? []} busy={pending} onChoose={(choice) => void begin(choice)} />}
           <p className="field-hint">{t("Uses the web server account’s SSH config and ssh-agent. Agent CLI tools and logins use the environment on the target PC.")}</p>
         </div></details>
