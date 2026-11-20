@@ -83,6 +83,29 @@ it("S32-1: a refusal shown while another account is the stored sign-in removes n
   expect(await unsentBlocks(store, session)).toHaveLength(1);
 });
 
+it("S32-1: only a 200 with the record's id confirms it: a 202 pending or another success keeps it", async () => {
+  for (const answer of [
+    (id: string) => Response.json({ id, status: "pending" }, { status: 202 }),
+    (id: string) => Response.json({ id }, { status: 201 }),
+    () => new Response(null, { status: 204 }),
+  ]) {
+    const store = memoryAccountStore();
+    await store.set("session", session);
+    const record = await block();
+    await keepUnsent(store, session, [record]);
+    const service = new AccountService({ store, fetch: async () => answer(record.id) });
+    await expect(postKept(store, session, [record], (kept) => service.postSafetyRecord(kept))).rejects.toThrow();
+    expect((await unsentBlocks(store, session)).flatMap((kept) => kept.records)).toEqual([record]);
+  }
+  const store = memoryAccountStore();
+  await store.set("session", session);
+  const record = await block();
+  await keepUnsent(store, session, [record]);
+  const service = new AccountService({ store, fetch: async () => Response.json({ id: record.id }) });
+  expect(await postKept(store, session, [record], (kept) => service.postSafetyRecord(kept))).toBe("sent");
+  expect(await unsentBlocks(store, session)).toEqual([]);
+});
+
 it("S32-1: a record still waiting is never removed as a shown refusal", async () => {
   const store = memoryAccountStore();
   await store.set("session", session);
