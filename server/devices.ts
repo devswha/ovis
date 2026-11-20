@@ -2139,9 +2139,8 @@ export class DeviceStore {
   /** A removal's journal entry, after its deny (P8 step 4). A journal that cannot be written stops no removal. */
   private journalRemoval(device: StoredDevice, by: DeviceRemovedEvent["by"], why?: string, user?: string): void {
     if (this.journal === null) return;
-    try {
-      this.publish(this.journal.append({ kind: "remove", how: why ?? (typeof by === "object" ? "member" : "pc"), key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: user ?? (typeof by === "object" ? by.device_id : null), account: device.account ?? null }));
-    } catch (error) { console.error(`[devices] the removal of ${device.id} could not be journalled: ${describe(error)}`); }
+    // the journal is first (P24): an entry that cannot be written throws, and the caller writes nothing after it
+    this.publish(this.journal.append({ kind: "remove", how: why ?? (typeof by === "object" ? "member" : "pc"), key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: user ?? (typeof by === "object" ? by.device_id : null), account: device.account ?? null }));
   }
 
   private publish(entry: JournalEntry): void {
@@ -2235,7 +2234,10 @@ export class DeviceStore {
     // a removal of a signer here, by its own key: the blocks it signed go with it (P23 way 3, T73)
     if (gone.length > 0) this.dropBeforeWrite(gone, "pc", "recover", input.user, { key });
     else {
-      this.journalEvent({ kind: "remove", how: "recover", key: key!, no: null, row: null, label: "", by: input.user ?? null, account: null });
+      try { this.journalEvent({ kind: "remove", how: "recover", key: key!, no: null, row: null, label: "", by: input.user ?? null, account: null }); } catch (error) {
+        this.denyProblem = `A removal could not be journalled (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until one is.`;
+        throw error;
+      }
       this.liftOrphanedBlocks(key!);
     }
     return { removed: gone.map((d) => d.id) };
@@ -2382,7 +2384,12 @@ export class DeviceStore {
       this.revocations.delete(device.id);
       for (const close of listeners ?? []) close();
     }
-    for (const device of gone) this.journalRemoval(device, by, why, user);
+    try { for (const device of gone) this.journalRemoval(device, by, why, user); } catch (error) {
+      // a removal its journal does not hold writes nothing more: its rows stay out by row and the PC closed (P24, P8)
+      for (const device of gone) this.failedRows.add(device.id);
+      this.denyProblem = `A removal could not be journalled (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until one is.`;
+      throw error;
+    }
     if (removedSigner !== undefined) this.liftOrphanedBlocks(removedSigner.key, removedSigner.account);
     // the registry write is these rows' own deny when they hold no key (cookie rows): one that fails keeps them out for
     // this run and the PC closed until a write lands (P8, S19); a removal is told once the write is tried (P8 step 5)
@@ -2431,10 +2438,13 @@ export class DeviceStore {
     // a gate that was open closes here, whatever the writes below do: what the open LAN let in ends (T3)
     if (gateWasOpen) this.tellGateClosed();
     if (denied !== null) throw denied;
-    for (const device of gone) this.announceRemoval(device, "pc");
-    for (const device of gone) this.journalRemoval(device, "pc", user === undefined ? undefined : "recover", user);
-    // its intent is on disk: any write after it that fails leaves the PC closed until a start finishes it (P8, T20)
-    try { this.finishRevokeAll(gone, gate); } catch (error) {
+    // its intent is on disk: the journal first, then the removals told, then the writes; any that fails leaves the PC
+    // closed until a start finishes it (P8, P24, T20)
+    try {
+      for (const device of gone) this.journalRemoval(device, "pc", user === undefined ? undefined : "recover", user);
+      for (const device of gone) this.announceRemoval(device, "pc");
+      this.finishRevokeAll(gone, gate);
+    } catch (error) {
       this.denyProblem = `Revoke all could not be finished (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until it is.`;
       this.pc?.unwritten(error, "Revoke all could not clear this PC's account");
       throw error;
