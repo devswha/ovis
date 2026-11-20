@@ -18,7 +18,7 @@ export interface RecoverySeams {
   admitPending(id: string, fingerprint: string): DeviceMatch | null | "unknown" | "mismatch" | { readonly refused: string };
   /** `user`: this PC's OS user, for the journal (P24) */
   removeKey(input: { target: string; by: "local"; user: string }): { removed: string[] } | { refused: string };
-  appendLift(id: string, forget: boolean, user: string): { outcome: string };
+  appendLift(id: string, forget: boolean, user: string): { readonly outcome: string; readonly journalWarning?: string };
   revokeAll(user: string): string[];
 }
 
@@ -86,6 +86,7 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
             const done = acts.appendLift(id, false, options.user);
             if (done.outcome !== "applied" && done.outcome !== "already_applied") return { lifted, error: `${id} was not lifted: ${done.outcome}` };
             lifted.push(id);
+            if (done.journalWarning !== undefined) return { lifted, error: `${id} was lifted, but could not be journalled: ${done.journalWarning}` };
           }
           return { lifted };
         }

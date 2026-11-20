@@ -54,7 +54,14 @@ export function openPcRecovery(options: {
           got: "pc", cause: "recover",
         })
         : safetyLog.appendLift(blockId, binding, { cause: "recover", forget });
-      if (done.outcome === "applied") journal.append({ kind: "lift", how: "recover", key: null, no: null, row: null, label: id, by: user, account: binding?.account ?? null });
+      if (done.outcome === "applied") {
+        try {
+          journal.append({ kind: "lift", how: "recover", key: null, no: null, row: null, label: id, by: user, account: binding?.account ?? null });
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          return { ...done, journalWarning: error.message };
+        }
+      }
       return done;
     },
     revokeAll: (user) => devices.revokeAll(user),
