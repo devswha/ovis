@@ -41,6 +41,13 @@ test.if(unix)("R11: the recovery socket is in a folder only this PC's user may e
   expect(await bounded(askRecovery(dir, { act: "list" }))).toEqual({ heard: { act: "list" } });
 });
 
+test.if(unix)("R11: the recovery socket delivers a complete reply larger than its send buffer", async () => {
+  const dir = stateDir();
+  const reply = { rows: "x".repeat(2 * 1024 * 1024) };
+  opened(dir, async () => reply);
+  expect(await bounded(askRecovery(dir, { act: "list" }))).toEqual(reply);
+});
+
 test.if(unix)("R11: a recovery folder another user may enter is refused", () => {
   const dir = stateDir();
   mkdirSync(join(dir, RECOVER_DIR), { mode: 0o700 });
