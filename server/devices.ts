@@ -1082,7 +1082,15 @@ export class DeviceStore {
 
   /** A held row is still a member (its existing blocks stand), but it cannot sign a new block or lift. */
   private signingRows(key: string, account: string): StoredDevice[] {
-    return this.memberRows(key, account).filter((row) => this.devices.includes(row) || this.joinedRows?.row(row.id)?.state === "live");
+    return this.memberRows(key, account).filter(row => this.canSpeak(row.id));
+  }
+
+  /** A join hold permits only the row's own leave; a catch-up wait permits no signature. */
+  private canSpeak(id: string, ownLeave = false): boolean {
+    const member = this.devices.find(row => row.id === id);
+    if (member) return !this.catchingUp(id) && (ownLeave || !this.promotedHolds.refusal(member, Date.now()));
+    const access = this.joinedRows?.access(id);
+    return access !== undefined && ("ok" in access || (ownLeave && access.refused === "join_hold"));
   }
 
   /**
@@ -1880,7 +1888,7 @@ export class DeviceStore {
     if (!key || row?.relay_public_key !== key || !row.origin || this.failsClosed) return null;
     const joined = this.joinedRows?.row(id);
     // a sayer whose own devices.json row still waits for the first whole read (S2-27) cannot vouch for another row
-    const live = joined ? joined.state === "live" && !this.accountRowStale(joined) : !this.stale(row) && !this.promotedHolds.refusal(row, Date.now()) && !this.catchingUp(id);
+    const live = this.canSpeak(id) && !(joined ? this.accountRowStale(joined) : this.stale(row));
     return { key, drives: row.role === "drive", state: live ? "live" : "waiting", no: this.accountOrder?.no(key) ?? null,
       late: this.accountOrder?.late(key) ?? false, admitNo: row.origin.admit_no, admittedAt: Date.parse(row.origin.at) };
   }
@@ -2262,7 +2270,7 @@ export class DeviceStore {
   /** A drive account member: the only device that may approve a pairing or start a code through the relay (docs/account.md). */
   isAccountApprover(id: string): boolean {
     const device = this.devices.find((d) => d.id === id);
-    return device !== undefined && device.role === "drive" && device.account !== undefined && device.relay_public_key !== undefined && !this.stale(device) && !this.promotedHolds.refusal(device, Date.now());
+    return device !== undefined && device.role === "drive" && device.account !== undefined && device.relay_public_key !== undefined && !this.stale(device) && this.canSpeak(id);
   }
 
   /** The account `id` may approve a pairing for (isAccountApprover), or null. */
@@ -2844,11 +2852,11 @@ export class DeviceStore {
   /** The drive member of `account` whose key is `key`, the only signer whose `add` or `remove` applies. */
   /** The member of `account` holding `key`: a drive one, unless `anyRole` (a device signing its own leave). */
   accountSigner(key: string, account: string, anyRole = false): DeviceMatch | null {
-    const device = this.devices.find((d) => d.relay_public_key === key && d.account === account && (anyRole || (d.role === "drive" && !this.promotedHolds.refusal(d, Date.now()))) && !this.stale(d));
+    const device = this.devices.find((d) => d.relay_public_key === key && d.account === account && (anyRole || d.role === "drive") && !this.stale(d) && this.canSpeak(d.id, anyRole));
     if (device) return { id: device.id, label: device.label, role: device.role };
     // an account-joined key signs its own leave, held or not (P5, S25); it signs nothing else here
     const joined = anyRole && account === this.account() ? this.joinedRows?.rowsByKey(key)[0] : undefined;
-    return joined ? { id: joined.id, label: joined.label, role: "drive" } : null;
+    return joined && this.canSpeak(joined.id, true) && !this.accountRowStale(joined) ? { id: joined.id, label: joined.label, role: "drive" } : null;
   }
 
   accountRows(): { members: number; unlinked: string[]; own_word: string[] } {
