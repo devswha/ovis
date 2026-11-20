@@ -36,6 +36,16 @@ describe("the relay-only warning", () => {
     expect(shown).toContain("older device");
   });
 
+  it("T70: the warning's only action dismisses the line", async () => {
+    await act(async () => { renderer = create(<SettingsProvider><RelayOnlyWarning opensAll /></SettingsProvider>); });
+    const view = renderer;
+    if (view === undefined) throw new Error("No relay warning rendered");
+    const dismiss = view.root.find((node) => node.type === "button" && node.props["aria-label"] === "Dismiss");
+    expect(view.root.findAllByType("button")).toEqual([dismiss]);
+    await act(async () => { dismiss.props.onClick(); });
+    expect(view.toJSON()).toBeNull();
+  });
+
   it("G5: says nothing on a PC with the release off", async () => {
     await act(async () => { renderer = create(<SettingsProvider><RelayOnlyWarning opensAll={false} /></SettingsProvider>); });
     expect(renderer!.toJSON()).toBeNull();
