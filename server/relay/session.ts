@@ -504,7 +504,8 @@ export class RelaySession {
     if (sas.approvedBy !== undefined) {
       const gates = accountMailbox.gates();
       const approverKey = devices.relayKeyOf(sas.approvedBy);
-      if (gates.held(sas.publicKey) || (devices.has(id) && (gates.enrolling() || !approverKey || gates.removing?.(approverKey)))) {
+      // the recheck of the approver's standing is account work (flag on); flag off keeps main's held check only
+      if (gates.held(sas.publicKey) || (devices.opensAll() && devices.has(id) && (gates.enrolling() || !approverKey || gates.removing?.(approverKey)))) {
         this.close("auth_failed"); return;
       }
     }
