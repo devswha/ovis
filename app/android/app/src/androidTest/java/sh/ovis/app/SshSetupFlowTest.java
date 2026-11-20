@@ -14,8 +14,10 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -69,6 +71,18 @@ public class SshSetupFlowTest {
     /** Taps Connect through the screen itself: on a phone-sized window it can sit under the keyboard's inset, where Espresso cannot scroll to it. */
     private static void connect(ActivityScenario<SshSetupActivity> screen) {
         screen.onActivity(activity -> activity.findViewById(R.id.ssh_connect).performClick());
+    }
+
+    /**
+     * The screen's worker waits on its dialogs and hands its result to this instance: turning the phone, or a theme
+     * or language change, must not recreate it, which would leave the worker waiting on a dialog that is gone.
+     */
+    @Test
+    public void theScreenIsNotRecreatedByARotationOrAThemeOrLanguageChange() throws Exception {
+        Context app = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        ActivityInfo info = app.getPackageManager().getActivityInfo(new ComponentName(app, SshSetupActivity.class), 0);
+        int needed = ActivityInfo.CONFIG_ORIENTATION | ActivityInfo.CONFIG_SCREEN_SIZE | ActivityInfo.CONFIG_UI_MODE | ActivityInfo.CONFIG_LOCALE;
+        assertEquals(needed, info.configChanges & needed);
     }
 
     @Test

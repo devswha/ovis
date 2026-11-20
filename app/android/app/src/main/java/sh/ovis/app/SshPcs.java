@@ -245,6 +245,24 @@ final class SshPcs {
         throw new IllegalStateException("No loopback address is left for another SSH PC");
     }
 
+    /**
+     * Whether `url` is on an SSH PC's loopback host (127.0.0.2 to 127.0.0.254) at a port other than its tunnel's:
+     * cookies are not kept apart by port, so a request there would carry that PC's gate to whatever else listens
+     * on it. The app neither opens nor loads such an address.
+     */
+    static boolean otherLoopbackPort(String url) {
+        java.net.URI uri;
+        try {
+            uri = java.net.URI.create(url);
+        } catch (IllegalArgumentException unreadable) {
+            return false;
+        }
+        String host = uri.getHost();
+        if (host == null || !host.matches("127\\.0\\.0\\.([2-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-4])")) return false;
+        int port = uri.getPort() != -1 ? uri.getPort() : "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+        return port != LOCAL_PORT || !"http".equalsIgnoreCase(uri.getScheme());
+    }
+
     static String newGate() {
         byte[] bytes = new byte[32];
         new SecureRandom().nextBytes(bytes);

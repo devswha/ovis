@@ -155,18 +155,20 @@ public class SshFixtureTest {
         String blob = line.split(" ")[1];
         // the same key with options goes too; a line that only mentions it in its comment stays
         String withOptions = "from=\"10.0.2.0/24\",no-pty ssh-ed25519 " + blob + " pasted-by-hand";
-        String mentions = testKey("ecdsa.pub").trim() + " note=" + blob;
+        // another key's line that names the phone's key as a whole word of its comment stays too
+        String mentions = testKey("ecdsa.pub").trim() + " " + blob;
         connection = connected(host(), port());
         try {
             SshLink.signIn(connection, user(), phone);
-            SshLink.runOk(connection, "printf '%s\\n%s\\n' '" + withOptions + "' '" + mentions + "' >> ~/.ssh/authorized_keys", 20_000);
+            // a mode other than 600 that sshd accepts is kept
+            SshLink.runOk(connection, "printf '%s\\n%s\\n' '" + withOptions + "' '" + mentions + "' >> ~/.ssh/authorized_keys; chmod 640 ~/.ssh/authorized_keys", 20_000);
             assertEquals("removed", SshLink.unauthorizeKey(connection, blob));
             String after = SshLink.run(connection, "cat ~/.ssh/authorized_keys; stat -c %a ~/.ssh/authorized_keys", 20_000);
             assertFalse(after, after.contains(" " + blob + " "));
             assertFalse(after, after.contains("pasted-by-hand"));
             assertTrue(after, after.contains(mentions));
             assertTrue(after, after.contains(testKey("ed25519.pub").trim()));
-            assertTrue(after, after.trim().endsWith("600"));
+            assertTrue(after, after.trim().endsWith("640"));
             assertEquals("absent", SshLink.unauthorizeKey(connection, blob));
         } finally {
             connection.close();

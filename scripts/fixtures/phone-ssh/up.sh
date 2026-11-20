@@ -27,7 +27,7 @@ install -m 755 "$(readlink -f "$(command -v bun)")" "$ctx/bin/bun"
 install -m 644 "$here/Dockerfile" "$here/sshd_config" "$here/claude-standin.py" "$here/entrypoint.sh" "$here/start-fixture.sh" "$ctx/"
 rsync -a --delete \
   --exclude=/.git --exclude=/app --exclude=/docs --exclude=/evidence --exclude=/site --exclude=/ovis-site \
-  --exclude=/crates --exclude=/scripts/fixtures/phone-ssh --exclude=node_modules/.cache \
+  --exclude=/crates --exclude=/scripts/fixtures/phone-ssh --exclude=node_modules/.cache --exclude='.env*' \
   "$repo/" "$ctx/ovis/"
 
 cpuset=()

@@ -77,6 +77,10 @@ public class SshSetupActivity extends Activity {
     private final AtomicBoolean busy = new AtomicBoolean();
     /** the PC being set up again, or null for a new one */
     private SshPcs.Pc editing;
+    /** the screen was left: its worker asks nothing more, saves nothing, and its SSH connection is closed */
+    private volatile boolean left;
+    private volatile Connection active;
+    private volatile CountDownLatch pending;
 
     private static void tell(String what) {
         Steps listening = steps;
@@ -175,6 +179,8 @@ public class SshSetupActivity extends Activity {
             @Override public void afterTextChanged(Editable s) { describeKey(s.toString()); }
         });
         passphrase = field(pastePanel, R.id.ssh_passphrase, R.string.ssh_passphrase_label, "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        // a secret is never kept in the screen's saved state, which is not sealed (only SshVault seals)
+        for (EditText secretField : new EditText[] { password, privateKey, passphrase }) secretField.setSaveEnabled(false);
         pastePanel.addView(note(getString(R.string.ssh_key_sealed_note)));
         importPanel = pastePanel;
         form.addView(pastePanel);
@@ -217,6 +223,17 @@ public class SshSetupActivity extends Activity {
             return WindowInsetsCompat.CONSUMED;
         });
         setContentView(scroll);
+    }
+
+    @Override
+    protected void onDestroy() {
+        left = true;
+        CountDownLatch waiting = pending;
+        if (waiting != null) waiting.countDown();
+        Connection open = active;
+        // closing it ends an install the person agreed to only while they stay (ssh_install_message)
+        if (open != null) new Thread(open::close, "ovis-ssh-leave").start();
+        super.onDestroy();
     }
 
     /** Shows this phone's key line; `renew` makes a new key first (the old one could no longer be read). */
@@ -433,9 +450,14 @@ public class SshSetupActivity extends Activity {
         String hostKey = SshHostKeys.encode(first.seenKey);
         SshPcs.Pc before = editing != null ? store.get(editing.origin) : store.find(address, sshPort, account);
         boolean known = before != null && SshHostKeys.judge(before.hostKeyAlgorithm, before.hostKey, algorithm, first.seenKey) == SshHostKeys.Verdict.SAME;
-        boolean differs = before != null && before.hasHostKey() && !known;
+        // a pinned key that differs stops here, before anything is sent: only Forget host key under Manage lets a new one in
+        if (before != null && before.hasHostKey() && !known) {
+            say(getString(R.string.ssh_fail_host_key_pinned, SshHostKeys.fingerprint(first.seenKey)), false);
+            tell("failed:host-key-changed");
+            return;
+        }
         // a key confirmed before and shown again is not asked about twice; any other is
-        if (!known && !confirm(getString(R.string.ssh_confirm_title, address), getString(R.string.ssh_confirm_message, algorithm, SshHostKeys.fingerprint(first.seenKey)) + (differs ? getString(R.string.ssh_confirm_differs) : ""), getString(R.string.ssh_trust), "confirm-host")) {
+        if (!known && !confirm(getString(R.string.ssh_confirm_title, address), getString(R.string.ssh_confirm_message, algorithm, SshHostKeys.fingerprint(first.seenKey)), getString(R.string.ssh_trust), "confirm-host")) {
             say(getString(R.string.ssh_not_confirmed), false);
             tell("failed:not-confirmed");
             return;
@@ -446,6 +468,7 @@ public class SshSetupActivity extends Activity {
             say(getString(R.string.ssh_signing_in, account), true);
             tell("signing-in");
             connection = SshLink.connect(address, sshPort, new SshLink.HostKeyCheck(algorithm, hostKey));
+            active = connection;
             String saveAs = how;
             if (how.equals("phone-key")) {
                 SshLink.signIn(connection, account, phoneKey(store));
@@ -459,6 +482,7 @@ public class SshSetupActivity extends Activity {
                 connection.close();
                 // the key, not the password, is what reconnects: prove it works before the password is gone
                 connection = SshLink.connect(address, sshPort, new SshLink.HostKeyCheck(algorithm, hostKey));
+            active = connection;
                 SshLink.signIn(connection, account, mine);
                 saveAs = "phone-key";
             }
@@ -467,6 +491,7 @@ public class SshSetupActivity extends Activity {
             int ovisPort = findOrInstall(connection, address, where);
             if (!SshLink.answersAsOvis(connection, ovisPort)) throw new SshFailure("not-ovis", "Not Ovis");
 
+            if (left) return;
             SshPcs.Pc pc = before != null ? before : new SshPcs.Pc();
             if (before == null) pc.origin = store.freeOrigin();
             pc.host = address;
@@ -529,9 +554,15 @@ public class SshSetupActivity extends Activity {
 
     /** Asks on the main thread, and waits for the answer: true for `yes`. */
     private boolean confirm(String title, String message, String yes, String step) {
+        if (left) return false;
         CountDownLatch answered = new CountDownLatch(1);
+        pending = answered;
         AtomicBoolean agreed = new AtomicBoolean();
         runOnUiThread(() -> {
+            if (left) {
+                answered.countDown();
+                return;
+            }
             new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setMessage(message)
@@ -549,7 +580,9 @@ public class SshSetupActivity extends Activity {
         } catch (InterruptedException stopped) {
             Thread.currentThread().interrupt();
             return false;
+        } finally {
+            pending = null;
         }
-        return agreed.get();
+        return agreed.get() && !left;
     }
 }

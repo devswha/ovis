@@ -297,4 +297,18 @@ public class SshPcsTest {
         assertEquals("me@studio:2222", read.label());
         assertEquals("127.0.0.2", read.loopbackHost());
     }
+
+    @Test
+    public void anSshPcsHostAtAnotherPortIsNeitherOpenedNorLoaded() {
+        assertFalse(SshPcs.otherLoopbackPort("http://127.0.0.2:" + SshPcs.LOCAL_PORT + "/"));
+        assertFalse(SshPcs.otherLoopbackPort("http://127.0.0.254:" + SshPcs.LOCAL_PORT + "/api/x"));
+        assertTrue(SshPcs.otherLoopbackPort("http://127.0.0.2:8080/"));
+        assertTrue(SshPcs.otherLoopbackPort("http://127.0.0.3/"));
+        assertTrue(SshPcs.otherLoopbackPort("https://127.0.0.2:" + SshPcs.LOCAL_PORT + "/"));
+        // 127.0.0.1 and every other host stay as they were
+        assertFalse(SshPcs.otherLoopbackPort("http://127.0.0.1:8080/"));
+        assertFalse(SshPcs.otherLoopbackPort("http://127.0.0.255:8080/"));
+        assertFalse(SshPcs.otherLoopbackPort("https://my-pc.tailnet.ts.net/"));
+        assertFalse(SshPcs.otherLoopbackPort("http://192.168.1.20:8080/"));
+    }
 }

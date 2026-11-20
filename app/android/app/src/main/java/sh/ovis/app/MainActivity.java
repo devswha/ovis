@@ -329,6 +329,10 @@ public class MainActivity extends BridgeActivity {
                     @Override
                     public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                         Uri url = request.getUrl();
+                        // an SSH PC's host at another port would get that PC's gate cookie (SshPcs.otherLoopbackPort)
+                        if (SshPcs.otherLoopbackPort(url.toString())) {
+                            return new WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", null, new ByteArrayInputStream(new byte[0]));
+                        }
                         if (
                             signingIn &&
                             request.isForMainFrame() &&
@@ -849,8 +853,13 @@ public class MainActivity extends BridgeActivity {
         return fresh && !fromRecents ? link : null;
     }
 
-    /** Whether `response` is an SSH PC tunnel's failure (SshTunnel.FAILURE_HEADER). */
+    /**
+     * Whether `response` is an SSH PC tunnel's failure (SshTunnel.FAILURE_HEADER) whose reason the tunnel already
+     * gave (OvisSshPlugin.failed). The header alone is not enough: the PC's own servers can send it through the tunnel.
+     */
     private static boolean sshFailure(WebResourceResponse response) {
+        String kind = PCStore.failureKind;
+        if (kind == null || !kind.startsWith("ssh-")) return false;
         Map<String, String> headers = response.getResponseHeaders();
         if (headers == null) return false;
         for (String name : headers.keySet()) if (SshTunnel.FAILURE_HEADER.equalsIgnoreCase(name)) return true;

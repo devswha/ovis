@@ -313,22 +313,23 @@ final class SshLink {
     }
 
     /**
-     * Takes every line whose key is `blob` (its Base64, a whole field of the line, so a line pasted with
-     * another comment or with options counts too, and a line that only mentions it does not) out of the
-     * account's authorized_keys, keeping every other line and the file's mode: "removed", or "absent"
-     * when none was there. A file that cannot be read whole is left as it is.
+     * Takes every line whose key is `blob` (its Base64: the field after the line's key type, so a line pasted
+     * with another comment or with options counts too, and a line that only mentions it, in its comment or
+     * anywhere else, does not) out of the account's authorized_keys, keeping every other line and the file's
+     * mode: "removed", or "absent" when none was there. A file that cannot be read whole is left as it is.
      */
     static String unauthorizeKey(Connection connection, String blob) throws SshFailure {
         if (!blob.matches("[A-Za-z0-9+/]{40,}={0,2}")) throw new SshFailure("internal", "Unexpected characters in the key");
-        String has = "{ for (i = 1; i <= NF; i++) if ($i == k) { found = 1; next } } ";
+        // the key field follows the first field that names a key type; options, if any, come before it
+        String has = "{ for (i = 1; i < NF; i++) if ($i ~ /^(ssh-|ecdsa-sha2-|sk-)/) { if ($(i + 1) == k) { found = 1; next } break } } ";
         String answer = runOk(
             connection,
             "set -eu; f=\"$HOME/.ssh/authorized_keys\"; key='" + blob + "'; " +
             "test -f \"$f\" || { echo absent; exit 0; }; " +
             "if ! awk -v k=\"$key\" '" + has + "END { exit !found }' \"$f\"; then echo absent; exit 0; fi; " +
-            "t=$(mktemp \"$f.XXXXXX\"); " +
+            "t=$(mktemp \"$f.XXXXXX\"); cp -p \"$f\" \"$t\"; " +
             "if ! awk -v k=\"$key\" '" + has.replace("found = 1; next", "next") + "{ print }' \"$f\" > \"$t\"; then rm -f \"$t\"; exit 1; fi; " +
-            "chmod 600 \"$t\"; mv \"$t\" \"$f\"; echo removed",
+            "mv \"$t\" \"$f\"; echo removed",
             20_000
         ).trim();
         if (!answer.equals("removed") && !answer.equals("absent")) throw new SshFailure("internal", "Unexpected answer: " + answer);
