@@ -170,3 +170,17 @@ test("S19/P11: an admission order that cannot be read refuses a loopback window 
   expect([tried.status, tried.body.error?.code]).toEqual([403, "strict"]);
   expect((await made.local("/api/account/lock")).body.strict).toBe(true);
 });
+
+test("P11/T47: an unlock the screen approves ends the lock it names, under the account that lock was taken in, whatever the binding is now", async () => {
+  const made = await screenedPc();
+  const log = made.app.context.services.safetyLog!;
+  const lock = log.appendLock({ account: "acct_old" });
+  expect(lock.outcome).toBe("applied");
+  const asked = await made.local("/api/account/unlock", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { lock: lock.id } });
+  expect(asked.status).toBe(202);
+  // the route's own continuation was registered on the answer first, so it has written by the time this await returns
+  const answered = made.app.context.services.localConfirms!.answer(asked.body.confirm as string);
+  made.approve("unlock");
+  expect(await bounded(answered)).toBe("approved");
+  expect(log.state().locked).toBe(false);
+});
