@@ -527,10 +527,11 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     };
     const signIn = async (page: Page): Promise<void> => {
       await page.getByRole("button", { name: "Continue with GitHub" }).click();
-      // a sign-in lands on Add a PC, never the dashboard: that opens only by its own address
-      await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add').waitFor();
+      // a sign-in lands on Add a PC, or on the join card of an account PC this device is not in yet, never the dashboard:
+      // that opens only by its own address
+      await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add, [data-add-pc-mode]').first().waitFor();
       assert.equal(await page.locator(".relay-dash").count(), 0, "the sign-in landed on the dashboard");
-      await page.evaluate(() => { location.hash = "#overview"; });
+      await page.goto(`${APP}/#overview`);
       await page.locator('.relay-dash[data-dashboard-mode="account"]').waitFor();
     };
     const row = (page: Page, name: string) => page.locator("[data-pc-list] [data-pc-id]", { hasText: name });
