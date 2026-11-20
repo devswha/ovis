@@ -228,3 +228,30 @@ for (const { row, args, confirmed, answers, result } of [
     expect(run.text()).not.toMatch(result);
   });
 }
+
+test("P22/T70: line and paragraph separators, zero-width space and BOM in a label are shown escaped", async () => {
+  const label = "Phone\u2028AB12-CD34\u2029\u200b\ufeff";
+  const sent: unknown[] = [];
+  const out: string[] = [];
+  const io: RecoverIo = {
+    out: (text) => { out.push(text); }, terminal: true, platform: "linux",
+    ask: async (question) => { out.push(question); return "n"; },
+    send: async (request) => { sent.push(request); return request.act === "list" ? { rows: [], pending: [{ id: "0123456789abcdef0123456789abcdef", label, fingerprint: "ZZ99-YY88" }] } : {}; },
+  };
+  await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], io);
+  const text = out.join("");
+  for (const char of ["\u2028", "\u2029", "\u200b", "\ufeff"]) expect(text.includes(char)).toBe(false);
+});
+
+test("P22/T70: in the plain list, a waiting device's fingerprint stands on its own line after its label", async () => {
+  const out: string[] = [];
+  const io: RecoverIo = {
+    out: (text) => { out.push(text); }, terminal: true, platform: "linux", ask: async () => "",
+    send: async (request) => request.act === "list" ? { rows: [], pending: [{ id: "0123456789abcdef0123456789abcdef", label: "Phone AB12-CD34", fingerprint: "ZZ99-YY88" }] } : {},
+  };
+  await runRecover([], io);
+  const lines = out.join("").split("\n");
+  const at = lines.findIndex((line) => line.includes("Phone AB12-CD34"));
+  expect(lines[at]!.includes("ZZ99-YY88")).toBe(false);
+  expect(lines.slice(at + 1).some((line) => line.trim().startsWith("key ZZ99-YY88"))).toBe(true);
+});
