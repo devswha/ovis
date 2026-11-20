@@ -7,12 +7,12 @@ import { accountLabel, accountOsOf, type AccountAsker, type AccountOs } from "..
 import type { AccountLimits } from "../../../shared/protocol.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
-import { newRecordId, registerSigningBytes, type AccountRecord } from "../../../shared/account-records.ts";
+import { newRecordId, registerSigningBytes, type AccountRecord, type DeviceSafetyRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
 import type { AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
-import { ACCOUNT_PROVIDERS, accountLock } from "./store.ts";
+import { ACCOUNT_PROVIDERS, accountLock, indexedAccountStore } from "./store.ts";
 
 /**
  * The account service this page signs in with, from `<meta name="ovis-account-service">`: an https
@@ -473,6 +473,10 @@ export class AccountService {
     return isRecord(body) && typeof body.queued === "number" ? body.queued : 0;
   }
 
+  async postSafetyRecord(record: DeviceSafetyRecord): Promise<void> {
+    await this.call("POST", "/v1/safety-records", { record }, AbortSignal.timeout(5_000));
+  }
+
   /**
    * Ends the sign-in on the service, then here. An expired access token is refreshed first, so the
    * service really ends the sign-in's tokens; the session goes here whatever the service answers, and
@@ -602,3 +606,6 @@ export class AccountService {
     }
   }
 }
+
+/** The browser's account client, shared by the sign-in surfaces and actions under that sign-in. */
+export const indexedAccountService = new AccountService({ store: indexedAccountStore });

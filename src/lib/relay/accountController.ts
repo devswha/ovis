@@ -4,7 +4,7 @@ import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { myPcs } from "../account/myPcs.ts";
 import { signInKey } from "../account/signInKey.ts";
-import { AccountService, AccountServiceError, AccountServiceUnreachableError, accountProvidersOf, offeredProviders, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
+import { AccountService, AccountServiceError, AccountServiceUnreachableError, accountProvidersOf, indexedAccountService, offeredProviders, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
 import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, redeemSignIn, SignInError, takePendingSignIn } from "../account/signin.ts";
@@ -74,7 +74,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const accountStore = mount.accountStore ?? indexedAccountStore;
   const accountService = mount.accountService === undefined ? shellAccountServiceOf(document, window.location.origin, nativeSignInAvailable()) : mount.accountService;
   const providers = mount.accountProviders ?? accountProvidersOf(document);
-  const account = new AccountService({ store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
+  const account = mount.accountStore === undefined && mount.accountFetch === undefined ? indexedAccountService
+    : new AccountService({ store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
   const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
   const open = mount.open ?? openRelayTransport;
   const forgotten = new Map<string, number>();

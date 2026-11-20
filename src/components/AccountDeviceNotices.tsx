@@ -4,7 +4,8 @@ import type { DeviceNotice } from "../../shared/account-devices-api.ts";
 import { LOCAL_MACHINE, machinePath, type Machine } from "../../shared/machines.ts";
 import { canBlockAdmission, notMeBlocks, sendBlocks, type FleetBlock, type OwnKey } from "../lib/account/fleet-block.ts";
 import { notMeTransports } from "../lib/account/noticeAnswer.ts";
-import { indexedAccountStore } from "../lib/account/store.ts";
+import { indexedAccountService } from "../lib/account/service.ts";
+import { indexedAccountStore, type AccountSession } from "../lib/account/store.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import type { MachineSessionRegistry } from "../lib/machineSession.ts";
 import { useDeviceNotices, type NoticeSocket } from "../lib/useDeviceNotices.ts";
@@ -13,9 +14,10 @@ import { DeviceNotices } from "./DevicePairedNotice.tsx";
 
 const ANSWER_TIMEOUT_MS = 5000;
 
-async function registeredKey(): Promise<(OwnKey & { readonly account: string }) | null> {
-  const [session, kept] = await Promise.all([indexedAccountStore.get("session"), indexedAccountStore.get("signin_key")]);
-  if (session === undefined || kept === undefined || kept.no === null ||
+async function registeredKey(session: AccountSession | undefined): Promise<(OwnKey & { readonly account: string }) | null> {
+  if (session === undefined) return null;
+  const kept = await indexedAccountStore.get("signin_key");
+  if (kept === undefined || kept.no === null ||
       session.account !== kept.account || session.sign_in_id !== kept.sign_in_id) return null;
   return { ...kept.key, no: kept.no, account: kept.account };
 }
@@ -42,7 +44,9 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own }: {
     inFlight.current = true;
     setSending(true);
     try {
-      const current = await registeredKey();
+      const session = await indexedAccountService.session();
+      if (session === undefined) return;
+      const current = await registeredKey(session);
       if (current === null || current.account !== notice.account || !socket.accountOpensAll()) return;
       const blocks = await notMeBlocks(notice, current);
       if (blocks.length === 0) return;
@@ -77,10 +81,10 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own }: {
         if (answer !== undefined) routes.relayed = new Map([[ownId, answer], ...routes.relayed]);
         routes.pcs.delete(ownId);
       }
+      const service = indexedAccountService.forSignIn(session);
       const sent = await sendBlocks(blocks, {
         ...routes,
-        // S2-21: use the account-service safety-records post once AccountService exposes it.
-        service: async () => {},
+        service: async (records) => { await Promise.all(records.map((record) => service.postSafetyRecord(record))); },
       });
       setResult({ fleet: sent, names: new Map([...rows].map(([id, machine]) => [id, machine.name])) });
     } catch (error) {
@@ -111,7 +115,7 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   useEffect(() => {
     if (!shown?.notices.some((notice) => notice.kind === "admit" && notice.open)) return;
     let live = true;
-    const read = () => { void registeredKey().then((key) => { if (live) setOwn(key); }, () => { if (live) setOwn(null); }); };
+    const read = () => { void indexedAccountStore.get("session").then(registeredKey).then((key) => { if (live) setOwn(key); }, () => { if (live) setOwn(null); }); };
     read();
     window.addEventListener("focus", read);
     return () => { live = false; window.removeEventListener("focus", read); };
