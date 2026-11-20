@@ -274,6 +274,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "{time}: a new device joined {pc}: {name}": "{time} 有新设备加入了 {pc}：{name}",
   "{method} sign-in, two-step sign-in verified": "{method} 登录，两步验证已确认",
   "{method} sign-in, two-step sign-in set on the account": "{method} 登录，账户已设置两步验证",
+  "Two-step sign-in set on the account": "账户已设置两步验证",
   "{method} sign-in, two-step sign-in not confirmed": "{method} 登录，两步验证未确认",
   "Two-step sign-in not confirmed": "两步验证未确认",
   "Key {fingerprint}": "密钥 {fingerprint}",

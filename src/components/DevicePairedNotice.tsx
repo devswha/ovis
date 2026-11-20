@@ -33,7 +33,7 @@ export function DeviceNotices({ pc, notices, cut = 0, onDismiss, onHide, onShown
         how = method === null ? null : t("{method} sign-in, two-step sign-in verified", { method });
         break;
       case "set":
-        how = method === null ? null : t("{method} sign-in, two-step sign-in set on the account", { method });
+        how = method === null ? t("Two-step sign-in set on the account") : t("{method} sign-in, two-step sign-in set on the account", { method });
         break;
       default:
         // Older or newer PC notices may omit the field or send an unrecognised wire value.

@@ -274,6 +274,7 @@ export const DEVICES_JA: Record<string, string> = {
   "{time}: a new device joined {pc}: {name}": "{time} {pc} に新しいデバイスが参加しました: {name}",
   "{method} sign-in, two-step sign-in verified": "{method} でサインイン、2 段階認証を確認済み",
   "{method} sign-in, two-step sign-in set on the account": "{method} でサインイン、アカウントに 2 段階認証を設定済み",
+  "Two-step sign-in set on the account": "アカウントに 2 段階認証を設定済み",
   "{method} sign-in, two-step sign-in not confirmed": "{method} でサインイン、2 段階認証は未確認",
   "Two-step sign-in not confirmed": "2 段階認証は未確認",
   "Key {fingerprint}": "キー {fingerprint}",
