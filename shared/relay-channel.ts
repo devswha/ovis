@@ -279,7 +279,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         if (frame.payload.features.some((feature) => !offered.includes(feature))) throw new MuxProtocolError("unsupported_extension", "Server selected unoffered features");
         if (options.accountOpensAll) {
           // Account AUTH is sent only after the PC's final, authenticated feature selection.
-          if (frame.payload.provisional) { provisionalNonce = frame.payload.nonce; return; }
+          if (frame.payload.provisional) { passed = bytes; provisionalNonce = frame.payload.nonce; return; }
           if (provisionalNonce !== undefined && provisionalNonce !== frame.payload.nonce) throw new MuxProtocolError("protocol_error", "The PC's answer to HELLO changed its WELCOME");
           if (!frame.payload.features.includes(ACCOUNT_OPENS_ALL_MUX_FEATURE)) throw new AccountOpenUnsupportedError();
         }
