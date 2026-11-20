@@ -50,7 +50,7 @@ test("S2P-11, T53: It's me ends the hold and replays the original admission's cl
     const socket = (await connect(sayer)).openSocket();
     await socket.opened;
 
-    const writes: DeviceNotice[][] = [];
+    const writes: (readonly DeviceNotice[])[] = [];
     const rename = privateStateFs.renameSync;
     const journalPath = join(fixture.stateDir, JOURNAL_FILE);
     const record = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
