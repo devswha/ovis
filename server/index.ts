@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { isLoopbackBind, lanExposed } from "./access.ts";
-import { DeviceStore, folderTombstones, mergeAccountTombstones, readDeviceRegistry } from "./devices.ts";
+import { DeviceStore, folderTombstones, mergeAccountTombstones, readDeviceRegistry, type StoredDevice } from "./devices.ts";
 import { PreferenceStore } from "./preferences.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
 import { SeenStore } from "./seen.ts";
@@ -295,8 +295,9 @@ export function createServer(
   if (!untouched) try { safetyLog?.fold(); } catch (error) { console.error(`[account] the safety log could not be folded: ${error instanceof Error ? error.message : String(error)}`); }
   // then its rows: none is imported while the merged log holds a lock, a block or a freeze in force, and a row whose
   // key differs between the two copies is dropped (T48, T27)
+  const conflicts: StoredDevice[] = [];
   const closure = safetyLog !== null && (safetyLog.strict !== null || safetyLog.state().locked || safetyLog.state().freezes.length > 0);
-  const merge = options.siblingStateDir && !untouched ? mergeSiblingState(stateDir, options.siblingStateDir, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true } : {}) : null;
+  const merge = options.siblingStateDir && !untouched ? mergeSiblingState(stateDir, options.siblingStateDir, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, onDropped: (device) => conflicts.push(device) } : {}) : null;
   let accountBlocked: string | null = accountMerge;
   if (options.siblingStateDir && !untouched && accountBlocked === null) {
     try { accountBlocked = mergeAccountTombstones(stateDir, options.siblingStateDir, opensAll); }
@@ -315,6 +316,8 @@ export function createServer(
     devices, identity: () => ovisRelay.currentIdentity(),
     service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
   });
+  // a row dropped because its copies held different keys is gone from both folders; the journal says so (T27, T48)
+  if (merge?.devicesBlocked === null) for (const device of conflicts) devices.journalEvent({ kind: "drop", how: "merge_conflict", key: device.relay_public_key ?? null, no: null, row: device.id, label: device.label, by: null, account: device.account ?? null });
   for (const strict of [safetyLog?.strict, pcAccount?.strict, removals?.strict, journal?.strict]) if (strict) console.error(strict);
   // the machine profile has no open install: from its first answer only the caller on its owner's socket and a device through the relay with its proof get in
   if (options.profile === "machine") devices.closeGate();

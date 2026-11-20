@@ -94,7 +94,7 @@ const earliest = (values: (string | null | undefined)[]): string | null =>
  * a freeze in force, so a row only the other dir holds is no import now and stays in that dir's file; and
  * `dropConflictingKeys`, so a row whose key differs between the two copies is dropped rather than given either key.
  */
-export interface MergeRules { readonly holdImports?: boolean; readonly dropConflictingKeys?: boolean }
+export interface MergeRules { readonly holdImports?: boolean; readonly dropConflictingKeys?: boolean; readonly onDropped?: (device: StoredDevice) => void }
 
 export function mergeRegistries(own: Registry | null, other: Registry | null,
   bases: { own: ReadonlySet<string> | null; other: ReadonlySet<string> | null },
@@ -113,7 +113,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
       devices.push(device);
       continue;
     }
-    if (rules.dropConflictingKeys && twin.relay_public_key !== device.relay_public_key) continue;
+    if (rules.dropConflictingKeys && twin.relay_public_key !== device.relay_public_key) { rules.onDropped?.(device); continue; }
     // the credential is chosen apart from the rest: whichever is kept, the role is never widened
     if (twin.token_hash !== device.token_hash) console.error(`Paired device ${device.id} has another credential in the other state dir; the one in use is kept`);
     // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
