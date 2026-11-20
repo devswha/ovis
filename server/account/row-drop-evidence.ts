@@ -24,7 +24,8 @@ export function isRowDrop(value: unknown): value is RowDrop {
 export function withRowDrop<T extends { row_drops?: readonly RowDrop[] }>(doc: T, drop: RowDrop | undefined): T {
   if (!drop) return doc;
   const prior = doc.row_drops?.find(item => item.row === drop.row);
+  // the same admission is replaced only to mark its own reason journalled: a later act never rewrites why it was dropped
   if (prior && (prior.admit_no > drop.admit_no || (prior.admit_no === drop.admit_no &&
-    (prior.journalled !== undefined || drop.journalled === undefined)))) return doc;
+    (prior.how !== drop.how || prior.journalled !== undefined || drop.journalled === undefined)))) return doc;
   return { ...doc, row_drops: [...doc.row_drops?.filter(item => item.row !== drop.row) ?? [], drop] };
 }
