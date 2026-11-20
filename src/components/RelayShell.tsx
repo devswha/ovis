@@ -274,7 +274,7 @@ export function RelayShell(props: RelayShellProps) {
         {addingPc && (
           <PairQrDialog state={state} onCodeStart={onCodeStart} onCodeSubmit={onCodeSubmit} onCodeMatch={onCodeMatch} onCancel={onCancel} onClose={() => {
             setAddingPc(false);
-            queueMicrotask(() => { if (document.activeElement === null || document.activeElement === document.body) [...document.querySelectorAll<HTMLElement>('[data-action="add-pc"], [data-action="add-qr"]')].find((el) => el.getClientRects().length > 0)?.focus({ preventScroll: true }); });
+            queueMicrotask(() => { if (document.activeElement === null || document.activeElement === document.body) [...document.querySelectorAll<HTMLElement>('[data-action="add-pc"], [data-action="add-code"], [data-action="add-qr"]')].find((el) => el.getClientRects().length > 0)?.focus({ preventScroll: true }); });
           }} />
         )}
       </Frame>
