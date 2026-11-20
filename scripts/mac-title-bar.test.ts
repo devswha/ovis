@@ -3,15 +3,18 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Ovis for Mac's header in the title bar's place (app/mac/Resources/title-bar.js), run as the app runs it in a page. */
-type Ask = "drag" | "zoom";
+type Ask = { ask: "drag"; x: number; y: number } | { ask: "zoom" };
 type TitleBar = (document: FakeDocument, height: number, inset: number, post: (ask: Ask) => void) => void;
 const source = readFileSync(join(import.meta.dir, "..", "app", "mac", "Resources", "title-bar.js"), "utf8");
 const titleBar = new Function(`${source}\nreturn ovisTitleBar;`)() as TitleBar;
 
-/** An element as the script reads it: its classes, and `matches` for a list of tags, `[attr]` and `[attr=value]`. */
+/** An element as the script reads it: its classes, its tab order, and `matches` for a list of tags, `[attr]` and `[attr=value]`. */
 class FakeElement {
   constructor(readonly tag: string, readonly attrs: Record<string, string> = {}, readonly parentElement: FakeElement | null = null) {}
   readonly classList = { contains: (name: string) => (this.attrs.class ?? "").split(" ").includes(name) };
+  get tabIndex(): number {
+    return this.attrs.tabindex === undefined ? (["button", "input", "select", "textarea"].includes(this.tag) ? 0 : -1) : Number(this.attrs.tabindex);
+  }
   matches(selectors: string): boolean {
     return selectors.split(",").map((one) => one.trim()).some((one) => {
       const attr = /^\[([\w-]+)(?:=([\w-]+))?\]$/.exec(one);
@@ -22,7 +25,8 @@ class FakeElement {
   }
 }
 
-type Listener = (event: { button: number; detail: number; target: FakeElement }) => void;
+type Press = { button: number; detail: number; clientX: number; clientY: number };
+type Listener = (event: Press & { target: FakeElement }) => void;
 class FakeDocument {
   readonly properties = new Map<string, string>();
   readonly documentElement = { dataset: {} as Record<string, string>, style: { setProperty: (name: string, value: string) => { this.properties.set(name, value); } } };
@@ -30,12 +34,15 @@ class FakeDocument {
   addEventListener(type: string, listener: Listener) {
     this.listeners.push({ type, listener });
   }
-  fire(type: string, target: FakeElement, event: { button?: number; detail?: number } = {}) {
-    for (const entry of this.listeners) if (entry.type === type) entry.listener({ button: 0, detail: type === "dblclick" ? 2 : 1, ...event, target });
+  fire(type: string, target: FakeElement, event: Partial<Press> = {}) {
+    for (const entry of this.listeners) if (entry.type === type) entry.listener({ button: 0, detail: type === "dblclick" ? 2 : 1, clientX: 300, clientY: 200, ...event, target });
   }
 }
 
-/** The page's header: a title on its bare surface, a button, an open menu and a focusable group in it, and the pane below. */
+/**
+ * The page's header: a title on its bare surface, a button, an open menu and a focusable group in it, and the pane
+ * below. Beside it, the inbox's top bars and rail, and a screen with no bar.
+ */
 function page() {
   const document = new FakeDocument();
   const app = new FakeElement("div", { class: "app", tabindex: "-1" });
@@ -45,28 +52,52 @@ function page() {
   const menu = new FakeElement("div", { class: "row-menu-header", role: "presentation" }, new FakeElement("div", { role: "menu" }, header));
   const switcher = new FakeElement("div", { class: "segmented", role: "group" }, header);
   const pane = new FakeElement("div", { class: "terminal-host" }, app);
+  const row = new FakeElement("span", {}, new FakeElement("div", { class: "agent-row", tabindex: "0" }, header));
+  const inboxTop = new FakeElement("div", { class: "inbox-top" }, app);
+  const search = new FakeElement("input", {}, inboxTop);
+  const threadTop = new FakeElement("span", { class: "thread-chip-name" }, new FakeElement("div", { class: "thread-top" }, app));
+  const rail = new FakeElement("nav", { class: "inbox-rail" }, app);
+  const screen = new FakeElement("main", { class: "access-gate-screen" });
   const asked: Ask[] = [];
   titleBar(document, 40, 72, (ask) => asked.push(ask));
-  return { document, header, title, button, menu, switcher, pane, asked };
+  return { document, header, title, button, menu, switcher, pane, row, inboxTop, search, threadTop, rail, screen, asked };
 }
 
+const drag = (x = 300, y = 200): Ask => ({ ask: "drag", x, y });
+
 describe("Mac app title bar", () => {
-  test("marks the page and hands it the bar's height and the traffic lights' right edge", () => {
+  test("marks the page and the lights' corner, and hands it the bar's height and the traffic lights' right edge", () => {
     const { document } = page();
-    expect(document.documentElement.dataset).toEqual({ macTitleBar: "" });
+    expect(document.documentElement.dataset).toEqual({ macTitleBar: "", windowControls: "" });
     expect(Object.fromEntries(document.properties)).toEqual({ "--mac-title-bar-h": "40px", "--mac-title-bar-inset": "72px" });
   });
 
-  test("asks to move the window from a press on the header's bare surface, even under a focusable app", () => {
+  test("asks to move the window from a press on the header's bare surface, even under a focusable app, with where it was", () => {
     const { document, header, title, asked } = page();
-    document.fire("mousedown", title);
-    document.fire("mousedown", header);
-    expect(asked).toEqual(["drag", "drag"]);
+    document.fire("mousedown", title, { clientX: 140, clientY: 18 });
+    document.fire("mousedown", header, { clientX: 600, clientY: 30 });
+    expect(asked).toEqual([drag(140, 18), drag(600, 30)]);
   });
 
-  test("leaves a press on a control, in an open menu, on a group of buttons or off the header to the page", () => {
-    const { document, button, menu, switcher, pane, asked } = page();
-    for (const target of [button, menu, switcher, pane]) document.fire("mousedown", target);
+  test("asks to move the window from the inbox's top bars, off their controls", () => {
+    const { document, inboxTop, search, threadTop, asked } = page();
+    for (const target of [inboxTop, threadTop, search]) document.fire("mousedown", target);
+    expect(asked).toEqual([drag(), drag()]);
+  });
+
+  test("asks to move the window from a press within the bar's height of the window's top where no bar is, as a title bar's", () => {
+    const { document, rail, screen, pane, asked } = page();
+    document.fire("mousedown", rail, { clientY: 39 });
+    document.fire("mousedown", screen, { clientY: 10 });
+    document.fire("mousedown", rail, { clientY: 40 });
+    document.fire("mousedown", pane, { clientY: 300 });
+    expect(asked).toEqual([drag(300, 39), drag(300, 10)]);
+  });
+
+  test("leaves a press on a control, a focusable row, in an open menu, on a group of buttons or off the bars to the page", () => {
+    const { document, button, row, menu, switcher, pane, asked } = page();
+    for (const target of [button, row, menu, switcher]) document.fire("mousedown", target, { clientY: 20 });
+    document.fire("mousedown", pane);
     expect(asked).toEqual([]);
   });
 
@@ -81,14 +112,14 @@ describe("Mac app title bar", () => {
     const { document, title, button, asked } = page();
     document.fire("dblclick", title);
     document.fire("dblclick", button);
-    expect(asked).toEqual(["zoom"]);
+    expect(asked).toEqual([{ ask: "zoom" }]);
   });
 
   test("runs once per page, as the app may run it again on the same page", () => {
     const { document, title, asked } = page();
     titleBar(document, 52, 90, (ask) => asked.push(ask));
     document.fire("mousedown", title);
-    expect(asked).toEqual(["drag"]);
+    expect(asked).toEqual([drag()]);
     expect(document.properties.get("--mac-title-bar-h")).toBe("40px");
   });
 });

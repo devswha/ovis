@@ -58,7 +58,7 @@ final class OvisWebView: WKWebView {
         if let window, newWindow !== window, titleBarScript != nil {
             windowWatch.forEach(NotificationCenter.default.removeObserver)
             windowWatch = []
-            TitleBar.unfold(window)
+            TitleBar.unfold(window, for: self)
             titleBarScript = nil
         }
         super.viewWillMove(toWindow: newWindow)
@@ -67,7 +67,7 @@ final class OvisWebView: WKWebView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.makeFirstResponder(self)
-        guard drawsTitleBar, let window, titleBarScript == nil, let script = TitleBar.fold(window) else { return }
+        guard drawsTitleBar, let window, titleBarScript == nil, let script = TitleBar.fold(window, for: self) else { return }
         titleBarScript = script
         let center = NotificationCenter.default
         windowWatch = [
@@ -89,10 +89,15 @@ final class OvisWebView: WKWebView {
         if let titleBarScript { evaluateJavaScript(titleBarScript) }
     }
 
-    /// The press under way may move the window. It does once the mouse moves, so a click or a double
-    /// click on the header stays the page's.
-    func armDrag() {
-        dragArmed = press != nil
+    /// The press under way may move the window, if it is the one the page found on a bar: its ask comes
+    /// after the press, and can come after a later one. It moves the window once the mouse moves, so a
+    /// click or a double click on the bar stays the page's. `point` is where the page saw the press, in
+    /// CSS pixels from the page's top left.
+    func armDrag(at point: CGPoint) {
+        guard let press else { return }
+        var at = convert(press.locationInWindow, from: nil)
+        if !isFlipped { at.y = bounds.height - at.y }
+        dragArmed = abs(at.x / pageZoom - point.x) <= 1.5 && abs(at.y / pageZoom - point.y) <= 1.5
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -114,6 +119,7 @@ final class OvisWebView: WKWebView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        press = nil
         dragArmed = false
         super.mouseUp(with: event)
     }

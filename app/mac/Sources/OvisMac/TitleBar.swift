@@ -10,18 +10,22 @@ import WebKit
 enum TitleBar {
     private static let source = Bundle.main.url(forResource: "title-bar", withExtension: "js")
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+    /// The page that folded each window's bar: when the server moves, the next page can join the window
+    /// before the last one leaves it, and only the one that folded the bar gives it back.
+    private static let folders = NSMapTable<NSWindow, NSView>.weakToWeakObjects()
 
-    /// Folds the window's bar away and returns the page's script for it; nil leaves the bar as it was
-    /// (a build without the script, or a bar AppKit did not lay out as expected).
-    static func fold(_ window: NSWindow) -> String? {
+    /// Folds the window's bar away for `page` and returns the page's script for it; nil leaves the bar as
+    /// it was (a build without the script, or a bar AppKit did not lay out as expected).
+    static func fold(_ window: NSWindow, for page: NSView) -> String? {
         guard let source else { return nil }
+        folders.setObject(page, forKey: window)
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         addToolbar(window)
         window.layoutIfNeeded()
         guard let zoom = window.standardWindowButton(.zoomButton), let bar = zoom.superview?.superview else {
-            unfold(window)
+            unfold(window, for: page)
             return nil
         }
         let post = "(ask) => window.webkit?.messageHandlers?.ovisTitleBar?.postMessage(ask)"
@@ -37,8 +41,10 @@ enum TitleBar {
         window.titlebarAppearsTransparent = true
     }
 
-    /// The window's own bar back, for the setup that takes the page's place.
-    static func unfold(_ window: NSWindow) {
+    /// The window's own bar back as `page` leaves it, for the setup that takes the page's place.
+    static func unfold(_ window: NSWindow, for page: NSView) {
+        guard folders.object(forKey: window) === page else { return }
+        folders.removeObject(forKey: window)
         window.toolbar = nil
         window.titlebarAppearsTransparent = false
         window.titleVisibility = .visible
@@ -74,8 +80,11 @@ final class TitleBarMessages: NSObject, WKScriptMessageHandler {
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         MainActor.assumeIsolated {
             guard let webView, message.webView === webView, message.frameInfo.isMainFrame, let window = webView.window else { return }
-            switch message.body as? String {
-            case "drag": webView.armDrag()
+            guard let body = message.body as? [String: Any] else { return }
+            switch body["ask"] as? String {
+            case "drag":
+                guard let x = body["x"] as? Double, let y = body["y"] as? Double else { return }
+                webView.armDrag(at: CGPoint(x: x, y: y))
             case "zoom": TitleBar.doubleClick(window)
             default: break
             }
