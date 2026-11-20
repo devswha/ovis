@@ -6,6 +6,28 @@ import { phone } from "./pairing.test-helpers.ts";
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 
+test.each([false, true])("S25/P17/T38: a member link retires the listing; established approver = %s", async established => {
+  const { fixture, service } = await createListedPc(close => closes.push(close));
+  const { devices, accountRows, accountMailbox } = fixture.app.context.services;
+  const member = await relayDevice(fixture);
+  devices.linkAccountKey(member.id, member.publicKey, member.publicKey, ACCOUNT);
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now() + (established ? 3_600_001 : 1));
+  try {
+    const { spki } = await phone();
+    service.registerDevice(ACCOUNT, spki, "Tablet");
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    const [listed] = accountRows?.rowsByKey(spki) ?? [];
+    if (!listed || listed.state !== "hold") throw new Error("Expected a held listing");
+    expect(devices.linkAccountKey(member.id, member.publicKey, spki, ACCOUNT)?.id).toBe(member.id);
+    expect(accountRows?.rowsByKey(spki)).toEqual([]);
+    expect(devices.sessionRow(member.id)).toEqual(established ? { role: "drive", key: spki, provisional: false } : null);
+    if (!established && listed.hold_until !== null) {
+      clock.mockReturnValue(Date.parse(listed.hold_until));
+      expect(devices.sessionRow(member.id)?.key).toBe(spki);
+    }
+  } finally { clock.mockRestore(); }
+});
+
 async function recentlyPromoted() {
   const { fixture, service, member: elder } = await createListedPc(close => closes.push(close));
   const time = { now: Date.now() + 3_600_001 };
