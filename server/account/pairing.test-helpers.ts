@@ -67,10 +67,11 @@ export async function memberRow(account: string) {
  * itself by default. `accountService`: OVIS_ACCOUNT_SERVICE_URL's value (`off` turns it off). `server`: further options
  * of createServer.
  */
-export async function pairingPc(options: { rows?: readonly { created_at: string }[]; accountFetch?: (request: Request, service: FakeAccountService) => Promise<Response>; accountService?: string; server?: Partial<Parameters<typeof createServer>[0]> } = {}) {
+export async function pairingPc(options: { rows?: readonly { created_at: string }[]; accountFetch?: (request: Request, service: FakeAccountService) => Promise<Response>; accountService?: string; server?: Partial<Parameters<typeof createServer>[0]>; prepare?: (stateDir: string) => void; startRelay?: boolean } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-pairing-"));
   const first = options.rows?.[0];
   if (first) writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ gate_closed_at: first.created_at, devices: options.rows }), { mode: 0o600 });
+  options.prepare?.(stateDir);
   const account = new FakeAccountService();
   const accountFetch = options.accountFetch;
   const service = new RelayService({ stateDir, relay: "wss://relay.test", connect: () => idleSocket() });
@@ -95,8 +96,10 @@ export async function pairingPc(options: { rows?: readonly { created_at: string 
     if (offer.status !== 200 || code === undefined) throw new Error(`The offer gave no code: ${offer.status} ${JSON.stringify(offer.body)}`);
     return code;
   };
-  const started = await relayControl("/api/relay/start");
-  if (started.status !== 200) throw new Error(`The relay did not start: ${JSON.stringify(started.body)}`);
+  if (options.startRelay !== false) {
+    const started = await relayControl("/api/relay/start");
+    if (started.status !== 200) throw new Error(`The relay did not start: ${JSON.stringify(started.body)}`);
+  }
   return {
     stateDir, app, closes, local, account,
     devices: app.context.services.devices,
