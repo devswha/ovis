@@ -1,0 +1,99 @@
+import { expect, it, spyOn } from "bun:test";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+
+import { LOCAL_MACHINE, type Machine } from "../../shared/machines.ts";
+import { parseSafetyRecord, type DeviceSafetyRecord } from "../../shared/account-records.ts";
+import { indexedAccountStore, memoryAccountStore, newKey } from "../lib/account/store.ts";
+import { DeviceNoticeWire, deviceNotice } from "../lib/deviceNoticeWire.fixture.ts";
+import { MachineSession, MachineSessionRegistry } from "../lib/machineSession.ts";
+import { SettingsProvider } from "../lib/settings.ts";
+import { HerdrSocket } from "../lib/ws.ts";
+import { useAccountDeviceNotices } from "./AccountDeviceNotices.tsx";
+
+it("T51, T60: a failed account delivery can retry the exact signed block without changing the PC receipt", async () => {
+  const notice = deviceNotice({ key: (await newKey()).public_spki });
+  const wire = new DeviceNoticeWire("ws://localhost/ws");
+  const events = new EventTarget();
+  const posted: DeviceSafetyRecord[] = [];
+  const onPc: string[] = [];
+  const serverId = "a".repeat(32);
+  const machines: readonly Machine[] = [{ id: LOCAL_MACHINE, name: "Desk", kind: "local", enabled: true, state: "connected", error: null, snapshot: null }];
+  const session = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "test", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3600_000 } as const;
+  const store = memoryAccountStore();
+  await store.set("session", session);
+  await store.set("signin_key", { account: session.account, sign_in_id: session.sign_in_id, no: 1, key: await newKey() });
+  const replaced = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({
+    window: Object.assign(events, { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
+    document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
+    navigator: { languages: ["en"] },
+    getComputedStyle: () => ({ getPropertyValue: () => "" }),
+    WebSocket: class { constructor() { return wire; } },
+    IS_REACT_ACT_ENVIRONMENT: true,
+  })) {
+    replaced.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const get = spyOn(indexedAccountStore, "get").mockImplementation(store.get);
+  const update = spyOn(indexedAccountStore, "update").mockImplementation(store.update);
+  const post = spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    expect(String(input)).toBe(`${session.service}/v1/safety-records`);
+    posted.push(parseSafetyRecord(JSON.parse(String(init?.body)).record));
+    if (posted.length === 1) throw new TypeError("The account response was lost");
+    return Response.json({});
+  });
+  const send = spyOn(wire, "send").mockImplementation((message) => {
+    DeviceNoticeWire.prototype.send.call(wire, message);
+    const outgoing = JSON.parse(message);
+    if (outgoing.type !== "notice-answer") return;
+    const record = parseSafetyRecord(outgoing.blocks[0]);
+    onPc.push(record.id);
+    wire.read({ type: "notice-answer-result", id: notice.id, receipts: [{ outcome: "applied", id: record.id, n: 2 }] });
+  });
+  const socket = new HerdrSocket(wire.url);
+  const machineSessions = new MachineSessionRegistry((id) => new MachineSession(id, { socket }));
+  function Probe() {
+    return useAccountDeviceNotices({ machines, machineSessions, selectedMachineId: LOCAL_MACHINE, pageServerId: serverId });
+  }
+  let renderer: ReactTestRenderer | undefined;
+  try {
+    machineSessions.get(LOCAL_MACHINE);
+    await act(async () => { renderer = create(<SettingsProvider><Probe /></SettingsProvider>); });
+    socket.connect();
+    wire.open();
+    await act(async () => { wire.snapshot(); wire.read({ type: "device-notice", notice }); });
+    const root = renderer?.root;
+    if (root === undefined) throw new TypeError("Missing notice view");
+    const button = (label: string) => root.findAllByType("button").find((node) => node.children.includes(label));
+
+    const notMe = button("Not me");
+    if (notMe === undefined) throw new TypeError("Missing Not me button");
+    await act(async () => { await notMe.props.onClick(); });
+    expect(root.findAllByProps({ "data-state": "applied" })).toHaveLength(1);
+    expect(root.findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
+
+    // The PC already applied the block. Its decision and a disconnected notice feed must not drop the account retry.
+    await act(async () => { wire.read({ type: "device-notice", notice: { ...notice, open: false } }); wire.close(); });
+    const retry = button("Try again");
+    if (retry === undefined) throw new TypeError("Missing account retry");
+    await act(async () => { await retry.props.onClick(); });
+
+    expect(posted.map((record) => record.id)).toEqual([onPc[0], onPc[0]]);
+    expect(posted[0]).toEqual(posted[1]);
+    expect(onPc).toHaveLength(1);
+    expect(root.findAllByProps({ "data-state": "applied" })).toHaveLength(1);
+    expect(root.findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    expect(button("Try again")).toBeUndefined();
+  } finally {
+    await act(async () => { renderer?.unmount(); });
+    machineSessions.closeAll();
+    send.mockRestore();
+    post.mockRestore();
+    update.mockRestore();
+    get.mockRestore();
+    for (const [key, descriptor] of replaced) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  }
+});
