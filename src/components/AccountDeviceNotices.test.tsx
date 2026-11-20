@@ -294,6 +294,7 @@ it("T53: an It's me the PC does not take says so after its one retry, and can be
     service: "https://account.ovis.sh", account: "acct", provider: "github",
     access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 60_000, sign_in_id: "this-sign-in",
   });
+  await store.set("signin_key", { account: "acct", sign_in_id: "this-sign-in", no: 1, key: await newKey() });
   spyOn(indexedAccountStore, "get").mockImplementation(store.get);
   const registry = new MachineSessionRegistry((id) => new MachineSession(id, { socket: new HerdrSocket(desk.url) }));
   sessions = registry;
@@ -311,14 +312,18 @@ it("T53: an It's me the PC does not take says so after its one retry, and can be
   const button = () => view.root.find((node) => node.type === "button" && node.children.includes("It's me"));
   const refusal = () => view.root.findAll((node) => node.type === "p" && node.children.includes("Desk did not accept It's me from this device."));
   await act(async () => { desk.snapshot(); desk.read({ type: "device-notice", notice: admission }); });
+  const notMe = () => view.root.find((node) => node.type === "button" && node.children.includes("Not me"));
   await act(async () => { button().props.onClick(); });
   expect(refusal()).toHaveLength(0);
+  // one answer at a time per notice: Not me waits while It's me is out
+  expect(notMe().props.disabled).toBe(true);
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(answers()).toHaveLength(2);
   expect(refusal()).toHaveLength(0);
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(refusal()).toHaveLength(1);
   expect(button().props.disabled).toBe(false);
+  expect(notMe().props.disabled).toBe(false);
   await act(async () => { button().props.onClick(); });
   expect(refusal()).toHaveLength(0);
   expect(answers()).toHaveLength(3);
