@@ -566,7 +566,11 @@ export class AccountMailbox {
           if (this.options.devices.opensAll() && typeof record === "object" && record !== null && "kind" in record && record.kind === "block") {
             // applyBlock owns parseSafetyRecord and signature verification. Never ack an unwritten deny.
             const receipt = await this.options.devices.applyBlock(record, "mailbox");
-            if (receipt.outcome === "refused") throw new Error(`Mailbox block not applied: ${receipt.reason}`);
+            if (receipt.outcome === "refused") {
+              // Disk/queue failures also return record_invalid, but leave the PC strict.
+              if (receipt.reason === "record_invalid" && !this.options.devices.failsClosed) continue;
+              throw new Error(`Mailbox block not applied: ${receipt.reason}`);
+            }
             if (receipt.outcome === "applied") applied++;
             continue;
           }
