@@ -2,10 +2,11 @@ import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
+import { newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { bounded, deferred, relayConnection, TestClock } from "../relay/test-helpers.ts";
-import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
-import { createListedPc } from "./listed-pc.test-helpers.ts";
+import { ACCOUNT_DEVICES_FILE, AccountDeviceStore } from "./account-devices.ts";
+import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
 import { DeviceJournal } from "./device-journal.ts";
 
@@ -18,6 +19,7 @@ async function pc() {
   const time = spyOn(Date, "now").mockImplementation(() => clock.now());
   closes.push(() => time.mockRestore());
   const listed = await createListedPc(close => closes.push(close), clock);
+  expect(listed.fixture.app.context.services.devices.accountError).toBeNull();
   const row = () => {
     const found = parseAccountDevicesFile(JSON.parse(readFileSync(join(listed.fixture.stateDir, ACCOUNT_DEVICES_FILE), "utf8")))
       .devices.find(candidate => candidate.id === listed.device.id);
@@ -110,6 +112,25 @@ test("T55/S27: only the expired device's proved attempt gets a new admission, no
   const ready = await relayConnection(machine.fixture, { serverId: machine.serverId });
   expect((await ready.auth(machine.device, [ACCOUNT_OPENS_ALL_FEATURE])).role).toBe("drive");
   expect((await ask(ready, "/api/devices")).status).toBe(200);
+});
+
+test("a returning expired key with a waiting block is refused and the list reports no readmission", async () => {
+  const machine = await pc();
+  const { devices, safetyLog } = machine.fixture.app.context.services;
+  machine.clock.advance(60 * 86_400_000);
+  expect(machine.row().state).toBe("expired");
+  const target = machine.device.publicKey;
+  const record = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target, target_no: 2,
+    signer: machine.member.publicKey, signer_no: 1, signed_at: new Date(machine.clock.now()).toISOString(), nonce: newRecordId() }, machine.member.keys.privateKey);
+  expect(safetyLog?.wait({ record, got: "mailbox", signer_removed: false })).toBe(true);
+  const commits = spyOn(AccountDeviceStore.prototype, "commitList");
+  try {
+    const returning = await relayConnection(machine.fixture, { serverId: machine.serverId });
+    expect(await bounded(Promise.race([returning.auth(machine.device, [ACCOUNT_OPENS_ALL_FEATURE]), returning.serverError]))).toBe("auth_failed");
+    expect(devices.removedByAccount(target)).toBe(true);
+    expect(devices.openNotices().some(notice => notice.key === target)).toBe(false);
+    expect(commits.mock.results.map(result => result.value)).toEqual([{ admitted: [], dropped: [] }]);
+  } finally { commits.mockRestore(); }
 });
 
 test.each(["wrong proof", "failed read"] as const)("T55/S27: %s cannot authorize later background readmission", async failure => {
