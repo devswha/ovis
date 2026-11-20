@@ -211,12 +211,15 @@ export function RelayShell(props: RelayShellProps) {
           if (account?.kind === "signed-in") setAddingPc(true); else setSignedOutView("pair");
           onCodeStart();
         }} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />} />
+      {/* signed in, the account's own page (its PCs, this device, sign-out) is one deliberate press away */}
+      {account?.kind === "signed-in" && <a className="account-link relay-add-manage" href="#overview">{t("Relayed connections")}</a>}
     </div>
   );
 
   // Add a PC asked for by its address stands alone over the front page; its Back goes back to where it was asked from
   // Add a PC hands over to a screen of its own (a code to type): coming back from there lands on the front page
-  if (addOpen && state.kind !== "list" && state.kind !== "empty") setAddOpen(false);
+  // so does a dashboard's address taken since: that page is asked for on purpose
+  if (addOpen && (manage || (state.kind !== "list" && state.kind !== "empty"))) setAddOpen(false);
   if (addOpen && (state.kind === "list" || state.kind === "empty")) {
     return (
       <main className="relay-shell-screen relay-add-screen" data-relay-state={stateName} {...(account ? { "data-account-state": account.kind } : {})}>

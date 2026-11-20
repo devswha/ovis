@@ -5083,7 +5083,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   connecting card meanwhile); none answering, a later visit, Back, a sign-in's return or the phone app's own row
   (`#pcs` inside the app) shows Add a PC, whose list says Off or Needs approval beside a PC, as the Claude and
   ChatGPT apps open on the last conversation and keep account pages behind Settings. The dashboard opens only by
-  its own addresses (`#overview`, `#pcs`, `#devices`, `#relay`, `#settings`).
+  its own addresses (`#overview`, `#pcs`, `#devices`, `#relay`, `#settings`), which a signed-in Add a PC offers as
+  one `.account-link` under its list (**Relayed connections**: the account's sign-out and device removal live there).
+  A launch is asked once a page; an address taken while it waits wins over it, and a page Back restores whole from
+  the browser's cache loads again rather than keep the launch's wait.
 - Portal, in Add a connection's Phones and devices tab where the server offers it: while it runs,
   the address and QR code as the Tailscale way draws them over a Relay row with Stop; otherwise one
   hint for what blocks it (no token, serve-only, no `portal` or an old one, with a link to get it)

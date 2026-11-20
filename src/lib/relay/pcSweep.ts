@@ -34,6 +34,8 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
   let deferred: ReturnType<typeof setTimeout> | undefined;
   let sweeping: Promise<void> | undefined;
   const queue: QueuedCheck[] = [];
+  /** each PC's check queued or under way, until it settles: a check asked for meanwhile waits for that one */
+  const running = new Map<string, Promise<void>>();
   let workers = 0;
   /** PCs whose last check the relay turned away (a 429, a dropped socket): the next sweep checks them first */
   const refused = new Set<string>();
@@ -49,6 +51,8 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     // a re-check keeps what the last one found on screen until it finishes: an off PC must not read Ready meanwhile
     pcStatus.set(device.server_id, before === undefined ? { kind: "checking" } : { kind: "checking", previous: before });
     if (where === "front") queue.unshift(entry); else queue.push(entry);
+    running.set(device.server_id, entry.settled.promise);
+    void entry.settled.promise.then(() => { if (running.get(device.server_id) === entry.settled.promise) running.delete(device.server_id); });
     return entry.settled.promise;
   };
   let stopped = false;
@@ -144,7 +148,8 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
       const [entry] = queue.splice(waiting, 1);
       if (entry) { queue.unshift(entry); drain(); return entry.settled.promise; }
     }
-    if (pcStatus.get(serverId)?.kind === "checking") return;
+    const under = running.get(serverId);
+    if (under !== undefined) return under;
     const device = await store.get(serverId);
     if (device === undefined || stopped) return;
     const settled = enqueue(device, "front");

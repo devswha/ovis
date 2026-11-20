@@ -738,6 +738,7 @@ describe("the dashboard", () => {
     });
 
     it("takes Pair with a code from Add a PC opened by its address to the code field alone, signed out", async () => {
+      (window.location as { hash?: string }).hash = "#add";
       const shown = { ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, addEntry: true };
       await mount(shown);
       await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "add-qr").props.onClick(); });
@@ -748,6 +749,7 @@ describe("the dashboard", () => {
     });
 
     it("takes Pair with a code from Add a PC opened by its address to the code field, signed in too", async () => {
+      (window.location as { hash?: string }).hash = "#add";
       const shown = { ...signedIn(four()), addEntry: true };
       await mount(shown);
       await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "add-qr").props.onClick(); });
@@ -757,10 +759,23 @@ describe("the dashboard", () => {
     });
 
     it("opens on Add a PC when asked by its address, signed in too, and its Back leaves it", async () => {
+      (window.location as { hash?: string }).hash = "#add";
       await mount({ ...signedIn(four()), addEntry: true });
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Add a PC");
       expect(renderer!.root.findAll((node) => node.props.className === "relay-dash")).toHaveLength(0);
       await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Back").props.onClick(); });
+      // the front page it leaves for is Add a PC itself, with no Back, and never the dashboard
+      expect(renderer!.root.findAll((node) => node.props.className === "relay-dash")).toHaveLength(0);
+      expect(renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back")).toHaveLength(0);
+      expect(textOf(renderer!.root.findByType("h1"))).toBe("Add a PC");
+    });
+
+    it("leaves Add a PC for the dashboard when its address is taken on purpose", async () => {
+      (window.location as { hash?: string }).hash = "#add";
+      await mount({ ...signedIn(four()), addEntry: true });
+      const manage = renderer!.root.find((node) => node.type === "a" && node.props.className === "account-link relay-add-manage");
+      expect(manage.props.href).toBe("#overview");
+      await act(async () => { (window.location as { hash?: string }).hash = "#overview"; window.dispatchEvent(new Event("hashchange")); });
       expect(renderer!.root.findAll((node) => node.props.className === "relay-dash")).toHaveLength(1);
     });
 

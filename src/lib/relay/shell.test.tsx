@@ -996,13 +996,40 @@ describe("the hosted shell's front page", () => {
       expect(went).toEqual([]);
     });
 
+    it("lets an address taken while the launch waits (the dashboard's) win over the PC that answers", async () => {
+      const went: string[] = [];
+      let navigated = false;
+      const answer = Promise.withResolvers<void>();
+      launch();
+      const mounted = mountRelayShell(mountFor({
+        store: deviceStore(await pcs("a".repeat(32))), navigate: (path) => { went.push(path); }, navigatedSinceEntry: () => navigated,
+        checkPc: async () => { await answer.promise; return { kind: "answered", route: "relay", relay: AP, rttMs: 20 }; },
+      }));
+      await until(() => rendered.length > 0 && last().state.kind === "connecting", "the launch's wait");
+      navigated = true;
+      answer.resolve();
+      await mounted;
+      expect(went).toEqual([]);
+      expect(last().state.kind).toBe("list");
+    });
+
+    it("draws the front page again, not the launch's wait, when Back restores it whole from the browser's cache", async () => {
+      const reloads: string[] = [];
+      const location = window.location as unknown as { reload: () => void };
+      location.reload = () => { reloads.push("reload"); };
+      launch();
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs("a".repeat(32))), navigate: () => {}, checkPc: answering() }));
+      window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+      expect(reloads).toEqual(["reload"]);
+    });
+
     // the page a sign-in returns to (#code=…) opens the saved PC once its sign-in is read, as the launch it continues would
-    const returned = async (store: ShellDeviceStore, went: string[], listed: unknown[] = []): Promise<void> => {
+    const returned = async (store: ShellDeviceStore, went: string[], listed: unknown[] = [], checkPc: RelayShellMount["checkPc"] = answering()): Promise<void> => {
       const accountStore = memoryAccountStore();
       await accountStore.set("pending", { "state-1": { service: SERVICE, provider: "github", state: "state-1", verifier: "verifier-123", redirect_uri: "https://app.ovis.sh/", started_at: Date.now() } });
       let exchanged = 0;
       await mountRelayShell(mountFor({
-        entryUrl: "https://app.ovis.sh/#code=good-code&state=state-1", store, navigate: (path) => { went.push(path); }, checkPc: answering(),
+        entryUrl: "https://app.ovis.sh/#code=good-code&state=state-1", store, navigate: (path) => { went.push(path); }, checkPc,
         accountStore, accountService: SERVICE, accountProviders: ["github"],
         accountFetch: async (input) => {
           if (new URL(String(input)).pathname === "/v1/pcs") return Response.json({ pcs: listed });
@@ -1024,6 +1051,31 @@ describe("the hosted shell's front page", () => {
       expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
       await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); }, checkPc: answering() }));
       expect(went).toHaveLength(1);
+    });
+
+    it("opens the saved PC that answers a check already under way when a sign-in returns, and asks it once", async () => {
+      const went: string[] = [];
+      const asked: string[] = [];
+      const answers: (() => void)[] = [];
+      const store = deviceStore(await pcs("a".repeat(32)));
+      const checkPc: RelayShellMount["checkPc"] = (device) => { asked.push(device.server_id); return new Promise((resolve) => { answers.push(() => resolve({ kind: "answered", route: "relay", relay: AP, rttMs: 20 })); }); };
+      const mounted = returned(store, went, [], checkPc);
+      await until(() => answers.length > 0, "the PC's check");
+      for (const answer of answers.splice(0)) answer();
+      await mounted;
+      await until(() => went.length > 0, "the PC opened");
+      expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
+      expect(asked).toHaveLength(1);
+    });
+
+    it("asks the saved PCs once a page: a sign-in landing after a launch that found none answering asks none again", async () => {
+      const went: string[] = [];
+      const asked: string[] = [];
+      const store = deviceStore(await pcs("a".repeat(32)));
+      await returned(store, went, [], async (device) => { asked.push(device.server_id); return { kind: "offline", reason: "pc" }; });
+      expect(went).toEqual([]);
+      expect(asked).toHaveLength(1);
+      expect(last().state.kind).toBe("list");
     });
 
     it("opens nothing after a sign-in's return with no saved pairing, though the account lists PCs", async () => {

@@ -99,7 +99,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // app's way to its front page, never a visit to the dashboard, which only its own address in a browser or Settings opens
   if (!scoped && entryHash === "#pcs" && inNativeApp()) window.history.replaceState(null, "", "/");
   // `left`: the launch sent this page to a PC: nothing more is drawn or probed on the way out
-  let launching = !scoped && entryHash === "", signedInNow = false, left = false;
+  let launching = !scoped && entryHash === "", signedInNow = false, left = false, launched = false;
+  // Back to a front page the browser kept whole (its back/forward cache) finds it as it left it, on the way to a PC: it
+  // loads again, past this tab's launch, so it draws the front page
+  window.addEventListener("pageshow", (event) => { if (event.persisted && left) window.location.reload(); });
   if (scoped) markLaunched();
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
@@ -277,12 +280,17 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // saved pairing (a page scoped to it connects with the key it holds; nothing is paired here), or, when that one does
     // not answer, the first other saved PC that does. None answering: Add a PC, which lists them
     // nothing moved since the entry was read (a link, Back, a sheet's route): the page stays where it was taken
-    const order = left || navigatedSinceEntry() || entries !== 0 ? [] : launchOrder(devices, launching, signedInNow);
+    // one launch a page: a sign-in that lands after a launch found no PC answering asks none of them again
+    const order = left || launched || navigatedSinceEntry() || entries !== 0 ? [] : launchOrder(devices, launching, signedInNow);
     if (order.length > 0) {
+      launched = true;
+      const loaded = entries, asking: RelayShellState = { kind: "connecting", name: order[0]?.name ?? null };
+      show(asking);
       const pc = await reachable(order);
-      // a Cancel, a link or Back meanwhile owns the page
-      if (pc === undefined) return;
-      if (pc !== null) { left = true; navigate(serverScopePath(pc)); }
+      // a Cancel or a link meanwhile owns the page
+      if (entries !== loaded || shown !== asking) return;
+      // an address taken meanwhile (the dashboard's, Back) wins over the launch: the front page draws it
+      if (pc !== null && !navigatedSinceEntry()) { left = true; navigate(serverScopePath(pc)); }
     }
     if (left) return;
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
@@ -290,12 +298,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   /**
    * The first of `order` that answers its check, in that order, waiting on each one before it until it answers or the
-   * launch's wait is over; null when none does. Undefined when anything took the page meanwhile.
+   * launch's wait is over; null when none does.
    */
-  const reachable = async (order: readonly RelayDevice[]): Promise<string | null | undefined> => {
-    const loaded = entries;
-    const asking: RelayShellState = { kind: "connecting", name: order[0]?.name ?? null };
-    show(asking);
+  const reachable = async (order: readonly RelayDevice[]): Promise<string | null> => {
     const checks = order.map((pc) => sweep.checkOne(pc.server_id).then(() => sweep.status.get(pc.server_id)?.kind === "answered"));
     let timer: ReturnType<typeof setTimeout> | undefined;
     // fixed wait: a PC that has not answered by then is not opened; Add a PC lists it, and its check goes on there
@@ -305,7 +310,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (await Promise.race([check, late])) { found = order[index]?.server_id ?? null; break; }
     }
     clearTimeout(timer);
-    return entries !== loaded || shown !== asking ? undefined : found;
+    return found;
   };
   const joinPc = (pc: Pick<MyPc, "server_id" | "join"> & { readonly name?: string }, options: { typed?: boolean; sheet?: "new" | "join"; alone?: true } = {}): void => {
     if (!pc.join) return;
