@@ -7,7 +7,7 @@ import { GLOBAL_RELAY } from "../../../shared/relay-regions.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
 import { nextOpenStep, openRefusalOf } from "../account/openPc.ts";
-import { isNewAccountPc, type MyPc } from "../account/myPcs.ts";
+import { isNewAccountPc, newPcs, type MyPc } from "../account/myPcs.ts";
 import { sameSignIn, SignedOutError } from "../account/service.ts";
 import type { AccountProvider, AccountSession, PendingPairing } from "../account/store.ts";
 import { SIGN_IN_MS, signInReturn } from "../account/signin.ts";
@@ -151,6 +151,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let launching = !scoped && entryHash === "", signedInNow = false, left = false, launched = false, accountLaunch = false;
   // the card a launch waits on for the account's PCs: only while it is the screen does a read of them go on with the launch
   let launchCard: RelayShellState | null = null, accountTried = false;
+  let launchWait: ReturnType<typeof setTimeout> | undefined;
   // Back to a front page the browser kept whole (its back/forward cache) finds it as it left it, on the way to a PC: it
   // loads again, past this tab's launch, so it draws the front page
   if (restored !== null) window.removeEventListener("pageshow", restored);
@@ -374,7 +375,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         const card = launchCard;
         // fixed wait: a sign-in or a directory that has not answered by then opens no PC; the front page draws what is known
         // and it ends this launch: a sign-in or directory answering later does not take the page from what the person does next
-        setTimeout(() => { if (shown === card && launchCard === card) { accountLaunch = false; accountTried = true; launchCard = null; void showFront(); } }, ACCOUNT_READ_WAIT_MS);
+        clearTimeout(launchWait);
+        launchWait = setTimeout(() => { if (shown === card && launchCard === card) { accountLaunch = false; accountTried = true; launchCard = null; void showFront(); } }, ACCOUNT_READ_WAIT_MS);
         return;
       }
       if (unread && shown === launchCard) return;
@@ -836,7 +838,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const cancel = (): void => {
     if (entry.serverId !== null && launchJoinFor(entry.serverId)) keepLaunchJoin(null);
     // whatever this page's own load is still waiting for (its saved pairing, the account, a launch) is no longer wanted
-    entries++; accountLaunch = false; launchCard = null;
+    entries++; accountLaunch = false; launchCard = null; clearTimeout(launchWait);
     if (shown?.kind === "ready") { toFront(); return; }
     cancelAttempt(); keepTypedJoin(null); codeOffer = null;
     if (scoped) toFront(); else void showFront();
@@ -917,7 +919,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       // a join card a launch put up and nobody pressed yet asks again on a reload: it never opens the PC by itself
       if (joinable?.join && joinable.accountOpen && openKey !== null && !isNewAccountPc(joinable, Date.now()) && !launchJoinFor(joinable.server_id)) {
         await connect({ offer: { v: 1, server_id: joinable.server_id, ...joinable.join, name: joinable.name }, code: false, paired: true, accountOpen: openKey });
-      } else if (joinable !== undefined) joinPc(joinable, { sheet: "join", alone: true });
+      } else if (joinable !== undefined) {
+        // a PC new in the account that no device is in yet takes the number its own screen shows, as the dashboard's Add
+        // does; any other asks a device already in to approve
+        const fresh = newPcs([joinable], Date.now()).length > 0;
+        joinPc(joinable, { sheet: fresh ? "new" : "join", alone: true, ...(fresh ? { typed: true } : {}) });
+      }
       else show({ kind: "empty" });
     }
     // a key saved from a forged link (an earlier build saved before admission): Forget removes it

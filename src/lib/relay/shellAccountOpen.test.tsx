@@ -32,14 +32,14 @@ let browser: ReturnType<typeof createShellTestPage>;
 beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
 afterEach(() => { jest.useRealTimers(); setTransport(nativeTransport); browser.dispose(); });
 
-async function accountPc({ release = true, loseRegistrationReply = false, newUntil = null, open }: {
-  release?: boolean; loseRegistrationReply?: boolean;
+async function accountPc({ release = true, loseRegistrationReply = false, newUntil = null, seen = true, open }: {
+  release?: boolean; loseRegistrationReply?: boolean; seen?: boolean;
   newUntil?: string | null;
   open: (...args: [...Parameters<NonNullable<RelayShellMount["open"]>>, ReturnType<typeof generateKeyPair>]) => Promise<RelayTransport>;
 }) {
   const identity = generateKeyPair();
   const serverId = deriveServerId(identity.publicKey);
-  const entry = { server_id: serverId, label: "Desk", public_key: Buffer.from(identity.publicKey).toString("hex"), relay: RELAY, added_at: new Date().toISOString(), last_seen_at: new Date().toISOString(), new_until: newUntil };
+  const entry = { server_id: serverId, label: "Desk", public_key: Buffer.from(identity.publicKey).toString("hex"), relay: RELAY, added_at: new Date().toISOString(), last_seen_at: seen ? new Date().toISOString() : null, new_until: newUntil };
   const accountStore = memoryAccountStore();
   const service = new FakeAccountService();
   service.signInAs("github", "acct_1");
@@ -163,6 +163,14 @@ it("C3: a reload of the join card a launch put up, not pressed yet, asks again a
   Object.defineProperty(click, "target", { value: { closest: () => ({ getAttribute: () => `/s/${run.serverId}/` }) } });
   browser.page.dispatchEvent(click);
   expect(browser.sessionStore.has("ovis-launch-join")).toBe(false);
+});
+
+it("a PC just added to the account that no device is in yet opens on its own page as a new PC, typing the number it shows", async () => {
+  const run = await accountPc({ release: false, seen: false, open: () => { throw new TypeError("nothing opens before the number"); } });
+  await run.openPage();
+  expect(run.navigations).toEqual([expect.stringContaining(`/s/${run.serverId}/#offer=`)]);
+  expect(JSON.parse(browser.sessionStore.get("ovis-add-pc-sheet") ?? "null")).toMatchObject({ mode: "new", server_id: run.serverId, alone: true });
+  expect(browser.sessionStore.get("ovis-typed-join")).toBe(run.serverId);
 });
 
 it("P18: an account service without the release only receives the challenge probe and still offers Join", async () => {
