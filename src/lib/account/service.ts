@@ -120,6 +120,17 @@ export class AccountServiceError extends Error {
 }
 
 /**
+ * The access token's refresh failed before the request it was for went out: the service has not answered that
+ * request, so its error is no refusal of it (a refused refresh that ends the sign-in is a SignedOutError instead).
+ */
+export class AccountRefreshError extends AccountServiceError {
+  constructor(from: AccountServiceError) {
+    super(from.status, from.code, from.message, from.retryAfterMs);
+    this.name = "AccountRefreshError";
+  }
+}
+
+/**
  * A request to the account service got no answer at all: the connection dropped under it, or the network was down or
  * changed. Any HTTP answer is an AccountServiceError (or a sign-out) instead. Still a TypeError, as fetch's own failure is.
  */
@@ -543,7 +554,7 @@ export class AccountService {
       next = await requestToken(from.service, { grant_type: "refresh_token", refresh_token: from.refresh_token }, { fetch: this.fetch, now: this.now });
     } catch (error) {
       if (error instanceof AccountServiceError && (error.status === 400 || error.status === 401)) return this.signedOut(from);
-      throw error;
+      throw error instanceof AccountServiceError ? new AccountRefreshError(error) : error;
     }
     const carried: AccountSession = from.sign_in_id === undefined ? next : { ...next, sign_in_id: from.sign_in_id };
     let kept = false;

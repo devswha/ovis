@@ -2,10 +2,11 @@
  * Not me's signed blocks on their way to the account service (ledger S32-1, device table T51, T60): kept in this
  * device's account store before any PC or the service is sent one, and until the service has answered for each, so a
  * closed tab or a reload loses no block. A later attempt sends the same signed records again (the service takes a
- * record id once). Only an answer a retry can change keeps a record: no answer, a 5xx, 401, 408 or 429.
+ * record id once). Only the service's answer to the record itself removes it: no answer, a 5xx, 401, 408 or 429 keeps
+ * it, and so does any failure before it went out (a refused token refresh, a sign-out).
  */
 import type { BlockRecord } from "../../../shared/account-records.ts";
-import { AccountServiceError } from "./service.ts";
+import { AccountRefreshError, AccountServiceError } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
 
 export interface UnsentBlocks {
@@ -60,9 +61,9 @@ export async function postKept(store: AccountStore, session: AccountSession, rec
   return refusals.length > 0 ? "done" : "sent";
 }
 
-/** A refusal no retry can change: a 4xx other than 401, 408 and 429. */
+/** The service's refusal of the record itself that no retry can change: a 4xx other than 401, 408 and 429. */
 function final(error: unknown): boolean {
-  return error instanceof AccountServiceError && error.status >= 400 && error.status < 500 && !RETRIED.has(error.status);
+  return error instanceof AccountServiceError && !(error instanceof AccountRefreshError) && error.status >= 400 && error.status < 500 && !RETRIED.has(error.status);
 }
 
 /**
