@@ -306,8 +306,8 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
     let tabId = labeled && !(ids.has(labeled) && !group.tabs.some((candidate) => candidate.id === labeled)) ? labeled : `${spaceId}:${terminal.address}`;
     for (let n = 2; tabId !== labeled && ids.has(tabId) && !group.tabs.some((candidate) => candidate.id === tabId); n++) tabId = `${spaceId}:${terminal.address}:${n}`;
     const tab = group.tabs.find((candidate) => candidate.id === tabId);
-    if (tab && !tab.label) {
-      const name = where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "";
+    if (tab) {
+      const name = tab.label || where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "";
       tab.label = namedAfterAgent(name, [...tab.terminals, terminal]) ? "" : name;
     }
     if (tab) {
@@ -315,7 +315,8 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
       tab.terminals.push(terminal);
     } else {
       ids.add(tabId);
-      group.tabs.push({ id: tabId, label: where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "", terminals: [terminal], root: null, kept: own && tabId === labeled });
+      const name = where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "";
+      group.tabs.push({ id: tabId, label: namedAfterAgent(name, [terminal]) ? "" : name, terminals: [terminal], root: null, kept: own && tabId === labeled });
     }
   }
   const tabOf = new Map<string, { group: Group; tab: Group["tabs"][number] }>();

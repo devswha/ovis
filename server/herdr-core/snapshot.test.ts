@@ -87,6 +87,20 @@ describe("buildSnapshot", () => {
     expect(snapshot.tabs.map((t) => [t.tab_id, t.label, t.pane_count])).toEqual([["s1t1", "1", 2]]);
   });
 
+  it("keeps a tab named after its agent unnamed when only terminals the app has not placed fill it, in an app tab with none left or a tab of their own", () => {
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [
+      { id: "s1t1", name: "Claude Code", root: block("t1") },
+      { id: "s1t2", name: "fix login", root: block("t2") },
+    ] }] };
+    const claude = (address: string, labels: Record<string, string>) => terminal(address, { status: { app: "claude-code", state: "idle" }, labels });
+    const snapshot = buildSnapshot([
+      claude("t3", { "herdr.space": "s1", "herdr.tab": "s1t1" }),
+      claude("t4", { "herdr.space": "s1", "herdr.tab": "s1t2" }),
+      claude("t5", { "herdr.space": "s1", "herdr.tab": "ovis-tb", where: "api / Claude Code" }),
+    ], layout, "0.1.14");
+    expect(snapshot.tabs.map((t) => [t.tab_id, t.label])).toEqual([["s1t1", "1"], ["s1t2", "fix login"], ["ovis-tb", "3"]]);
+  });
+
   const named = (cwd: string, folder?: string) => buildSnapshot([terminal("t1", { cwd })], {
     spaces: [{ id: "s1", name: "", ...(folder === undefined ? {} : { folder }), tabs: [{ id: "s1t1", name: "", root: block("t1") }] }],
   }, "0.1.17").workspaces[0]!.label;
