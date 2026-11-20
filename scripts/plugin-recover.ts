@@ -31,10 +31,12 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
   }
   const [flag, ...ids] = args;
   const targetAction = flag === "--remove" || flag === "--lift";
+  const admitWithoutId = flag === "--admit" && ids.length === 0;
   if (flag !== undefined && flag !== "--release" && flag !== "--undo" && flag !== "--admit" && flag !== "--revoke-all" && !targetAction) { io.out(USAGE); return 2; }
-  if (flag === "--admit" && ids.length !== 1) { io.out(USAGE); return 2; }
+  if (flag === "--admit" && ids.length > 1) { io.out(USAGE); return 2; }
+  if (admitWithoutId) io.out(USAGE);
   if (((flag === "--release" || targetAction) && ids.length === 0) || (flag === "--revoke-all" && ids.length !== 0)) { io.out(USAGE); return 2; }
-  if ((flag === "--release" || flag === "--admit" || flag === "--revoke-all" || targetAction) && !io.terminal) {
+  if ((flag === "--release" || (flag === "--admit" && !admitWithoutId) || flag === "--revoke-all" || targetAction) && !io.terminal) {
     io.out("This is not run in a terminal, so nothing can be released here. Run it in a terminal on this PC (over ssh, run ssh -t).\n");
     return 1;
   }
@@ -74,7 +76,7 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
     const listed = await io.send({ act: "list" }) as { rows?: WaitingRow[]; pending?: { id: string; label: string; fingerprint: string }[]; error?: string };
     if (listed.error !== undefined) { io.out(`${listed.error}\n`); return 1; }
     const rows = listed.rows ?? [];
-    if (flag === "--admit") {
+    if (flag === "--admit" && !admitWithoutId) {
       const waiting = (listed.pending ?? []).find((entry) => entry.id === ids[0]);
       if (waiting === undefined) { io.out(`${ids[0]}: no such device waits here.\n`); return 1; }
       const answer = (await io.ask(`${waiting.label} (the name it gives itself) waits with key fingerprint ${waiting.fingerprint}.\nCompare it with the characters the device shows. Admit this key? [y/N] `)).trim().toLowerCase();
@@ -84,12 +86,16 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
       io.out(`Admitted ${waiting.label}.\n`);
       return 0;
     }
-    if (flag === undefined) {
-      if (rows.length === 0) { io.out("No device waits for this PC's account to be read.\n"); return 0; }
-      for (const row of rows) io.out(`${describe(row)}\n`);
-      io.out("Release one with: ovis recover --release <row id>\n");
+    if (flag === undefined || admitWithoutId) {
+      if (flag === undefined) {
+        if (rows.length === 0) io.out("No device waits for this PC's account to be read.\n");
+        else {
+          for (const row of rows) io.out(`${describe(row)}\n`);
+          io.out("Release one with: ovis recover --release <row id>\n");
+        }
+      }
       for (const entry of listed.pending ?? []) io.out(`waiting: ${entry.id}  ${entry.label}  key ${entry.fingerprint}  (ovis recover --admit ${entry.id})\n`);
-      return 0;
+      return admitWithoutId ? 2 : 0;
     }
     let failed = false;
     for (const id of ids) {
