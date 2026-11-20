@@ -58,7 +58,7 @@ function noticeSocket(devices: DeviceStore, deviceId: string, submit = (value: u
     herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
     accountEnabled: true,
     notices: { replay: (id) => devices.noticeReplay(id), seen: (id, seq) => devices.noticeSeen(id, seq), block: submit, decide: (id) => devices.decideNotice(id), itsMe: () => false,
-      open: id => devices.openNotices().some(entry => entry.id === id), mayAnswer: (caller, id) => devices.mayAnswerNotice(caller, id) },
+      open: id => devices.openNotices().find(entry => entry.id === id), mayAnswer: (caller, id) => devices.mayAnswerNotice(caller, id) },
   });
   const replies: ServerMessage[] = [];
   const client: Client = {
