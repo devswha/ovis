@@ -297,7 +297,9 @@ export function createServer(
   // key differs between the two copies is dropped (T48, T27)
   const conflicts: StoredDevice[] = [];
   const closure = safetyLog !== null && (safetyLog.strict !== null || safetyLog.state().locked || safetyLog.state().freezes.length > 0);
-  const merge = options.siblingStateDir && !untouched ? mergeSiblingState(stateDir, options.siblingStateDir, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, onDropped: (device) => conflicts.push(device) } : {}) : null;
+  // a folder of another relay identity is another PC: none of its rows is this PC's to let in (T48)
+  const foreignSibling = opensAll && typeof options.siblingStateDir === "string" && !sameIdentity(options.siblingStateDir);
+  const merge = options.siblingStateDir && !untouched && !foreignSibling ? mergeSiblingState(stateDir, options.siblingStateDir, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, onDropped: (device) => conflicts.push(device) } : {}) : null;
   let accountBlocked: string | null = accountMerge;
   if (options.siblingStateDir && !untouched && accountBlocked === null) {
     try { accountBlocked = mergeAccountTombstones(stateDir, options.siblingStateDir, opensAll); }
