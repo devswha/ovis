@@ -82,7 +82,8 @@ export interface SignInKey {
   readonly account: string;
   readonly sign_in_id: string;
   readonly key: AccountKey;
-  readonly no: number;
+  /** its place in the account's order; null while the service has not confirmed the registration */
+  readonly no: number | null;
 }
 
 export interface PlannedEnroll {
