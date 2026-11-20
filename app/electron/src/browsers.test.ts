@@ -143,6 +143,12 @@ describe("Windows browsers", () => {
     expect(windowsCommandWords("\"C:\\a b\\x.exe\" -osint -url \"%1\"")).toEqual(["C:\\a b\\x.exe", "-osint", "-url", "%1"]);
     expect(windowsCommandWords("x.exe --name=\"a \\\"b\\\" c\" C:\\dir\\ end")).toEqual(["x.exe", "--name=a \"b\" c", "C:\\dir\\", "end"]);
     expect(windowsCommandWords("firefox.exe -P \"\"\"Work\"\"\" -osint -url \"%1\"")).toEqual(["firefox.exe", "-P", "\"Work\"", "-osint", "-url", "%1"]);
+    // shell32's CommandLineToArgvW on Windows 11 (winvm): "" in quotes is a quote, and the quotes end
+    expect(windowsCommandWords("firefox.exe -P \"\\\"Work\"\" -no-remote")).toEqual(["firefox.exe", "-P", "\"Work\"", "-no-remote"]);
+    // the program is read as it stands, backslashes and inner quotes included
+    expect(windowsCommandWords("\"C:\\a\\\"b.exe\" x")).toEqual(["C:\\a\\", "b.exe x"]);
+    expect(windowsCommandWords("C:\\a\"b c\".exe y")).toEqual(["C:\\a\"b", "c.exe y"]);
+    expect(windowsCommandWords("\"C:\\dir\\\\\" z")).toEqual(["C:\\dir\\\\", "z"]);
   });
 
   it("puts the address where %1 stands, at the end without one, and refuses what would not keep it an argument", () => {

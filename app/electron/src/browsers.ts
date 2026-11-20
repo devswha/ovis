@@ -228,11 +228,19 @@ export function parseRegQuery(output: string): Map<string, Map<string, string>> 
 
 /** a command line of the registry in arguments, as Windows splits it (CommandLineToArgvW): a quote may sit inside a word */
 export function windowsCommandWords(line: string): string[] {
-  const words: string[] = [];
+  // the program comes first and is read as it stands, backslashes and all: to the next quote when it
+  // starts with one, else to the first space or tab
+  if (line.length === 0) return [];
+  const close = line.indexOf("\"", 1);
+  const quotedProgram = line.startsWith("\"");
+  const program = quotedProgram ? line.slice(1, close === -1 ? line.length : close) : /^[^ \t]*/.exec(line)![0];
+  let i = quotedProgram ? (close === -1 ? line.length : close + 1) : program.length;
+  const words: string[] = [program];
+  while (line[i] === " " || line[i] === "\t") i++;
   let word = "";
   let quoted = false;
   let started = false;
-  for (let i = 0; i < line.length;) {
+  while (i < line.length) {
     const char = line[i]!;
     if (char === "\\") {
       let count = 0;
@@ -244,9 +252,10 @@ export function windowsCommandWords(line: string): string[] {
       } else word += "\\".repeat(count);
       started = true;
     } else if (char === "\"") {
-      // inside quotes, "" is a quote of its own and the quotes go on
+      // inside quotes, "" is a quote of its own and ends the quotes, as shell32 reads it
       if (quoted && line[i + 1] === "\"") {
         word += "\"";
+        quoted = false;
         i += 2;
       } else {
         quoted = !quoted;
