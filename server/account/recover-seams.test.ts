@@ -108,4 +108,16 @@ describe("ovis recover acts on this PC's own state (T70, T73, T69)", () => {
     devices.revokeAll("alice");
     expect(journal(dir).filter((entry) => entry.kind === "remove" && entry.key !== first.spki && entry.key !== stranger.spki).map((entry) => [entry.key, entry.how, entry.by])).toEqual([[second.spki, "recover", "alice"], [third.spki, "recover", "alice"]]);
   });
+
+  test("P23 way 2: ovis recover lifts a service freeze this PC holds without its block, by the freeze's own id", async () => {
+    const { devices, log } = pc();
+    const blockId = "a".repeat(64);
+    const freezeId = `f:${blockId}`;
+    log.append({ record: { v: 1, id: freezeId, kind: "freeze", account: ACCOUNT, target: (await member(devices)).spki, after: 2, signer: "service", signed_at: new Date().toISOString(), signature: "" } as SafetyRecord, got: "snapshot" });
+    expect(log.state().freezes).toHaveLength(1);
+    expect(log.appendLift(freezeId, { account: ACCOUNT }, { cause: "recover" })).toMatchObject({ outcome: "applied" });
+    expect(log.state().freezes).toHaveLength(0);
+    // a freeze of another account, or an id this PC holds nothing for, is still refused
+    expect(log.appendLift(`f:${"b".repeat(64)}`, { account: ACCOUNT }, { cause: "recover" })).toMatchObject({ outcome: "refused", code: "record_invalid" });
+  });
 });
