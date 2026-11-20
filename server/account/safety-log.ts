@@ -270,10 +270,11 @@ export class SafetyLog {
 
   /**
    * The receipts of every block `key` signed that this log holds whole (T60 (2)): a refused sign-in of that key carries
-   * them. A folded line keeps no signer, so a block folded here is no longer named this way.
+   * them. A folded line keeps no signer, so a block folded here is no longer named this way. Only blocks signed under
+   * `account`, the PC's binding: one signed under an earlier binding is no receipt of this account (seam for S2-24).
    */
-  receiptsBySigner(key: string): SafetyReceipt[] {
-    return this.file.entries.filter((entry) => entry.record.kind === "block" && entry.record.signer === key).map((entry) => ({ outcome: "applied", id: entry.record.id, n: entry.n }));
+  receiptsBySigner(key: string, account: string): SafetyReceipt[] {
+    return this.file.entries.filter((entry) => entry.record.kind === "block" && entry.record.signer === key && entry.record.account === account).map((entry) => ({ outcome: "applied", id: entry.record.id, n: entry.n }));
   }
 
   /** Every block id this log knows, whole or folded: a snapshot's blocks this PC already holds. */
