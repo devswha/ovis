@@ -78,6 +78,51 @@ describe("device notices on the real PC socket", () => {
     await act(async () => { wire.read(replay); });
     expect(cards()).toEqual([admission]);
   });
+
+  it("T57, G5: the capability snapshot acknowledges offered replay, never a subsequent dismiss", async () => {
+    const { wire, socket } = await connect();
+    await act(async () => {
+      wire.read({ type: "features", herdr_lifetime: "new", features: [DEVICE_NOTICE_FEATURE] });
+      wire.read({ type: "device-notice-replay", replay: { notices: [deviceNotice(), method], cut: 0 } });
+    });
+    expect(socket.accountOpensAll()).toBe(false);
+    expect(wire.seen()).toEqual([]);
+    const beforeSnapshot = cards();
+    await act(async () => { wire.snapshot(); });
+    const afterSnapshot = [...wire.seen()];
+    const beforeDismiss = [...wire.sent];
+    await act(async () => { result?.dismiss("desk", method); });
+    expect({ beforeSnapshot, afterSnapshot, dismissSent: wire.sent.slice(beforeDismiss.length) }).toEqual({
+      beforeSnapshot: [], afterSnapshot: [{ type: "notice-seen", seq: 2 }], dismissSent: [],
+    });
+    expect(cards()).toEqual([deviceNotice()]);
+  });
+
+  it("G5: ignores unadvertised notice frames even if the socket later offers the feature", async () => {
+    const { wire } = await connect();
+    await act(async () => {
+      wire.read({ type: "device-notice-replay", replay: { notices: [deviceNotice()], cut: 7 } });
+      wire.snapshot([]);
+      wire.read({ type: "device-notice", notice: method });
+    });
+    const beforeOffer = result?.byPc.has("desk");
+    await act(async () => { wire.snapshot(); });
+    expect({ beforeOffer, afterOffer: result?.byPc.has("desk"), acknowledged: wire.seen() }).toEqual({
+      beforeOffer: false, afterOffer: false, acknowledged: [],
+    });
+  });
+
+  it("G5: withdrawing the capability clears cards and ignores later frames", async () => {
+    const { wire } = await connect();
+    await act(async () => { wire.snapshot(); wire.read({ type: "device-notice", notice: deviceNotice() }); });
+    expect(cards()).toHaveLength(1);
+    await act(async () => { wire.snapshot([]); });
+    const withdrawn = cards();
+    await act(async () => { wire.read({ type: "device-notice", notice: method }); wire.snapshot(); });
+    expect({ withdrawn, restored: cards(), acknowledged: wire.seen() }).toEqual({
+      withdrawn: [], restored: [], acknowledged: [{ type: "notice-seen", seq: 1 }],
+    });
+  });
 });
 
 class FakeSocket implements NoticeSocket {
