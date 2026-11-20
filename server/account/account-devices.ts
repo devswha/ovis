@@ -252,7 +252,7 @@ export class AccountDeviceStore implements AccountRowSource {
       && today - Date.parse(row.last_signin_day ?? row.origin.at.slice(0, 10)) >= EXPIRY_DAYS * DAY_MS);
     for (const row of idle) {
       this.ports.closeSessions(row.id, "expired");
-      this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason: "expired", account: this.file.account });
+      this.ports.journal({ kind: "drop", key: row.key, row: row.id, account: this.file.account, reason: "expired" });
     }
     const ids = new Set(idle.map((row) => row.id));
     if (ids.size > 0) this.write({ ...this.file, devices: this.file.devices.map((row) => ids.has(row.id) ? { ...row, state: "expired", hold_until: null } : row) });
