@@ -602,6 +602,8 @@ export class DeviceStore {
     if (this.error === null && this.accountProblem === null && this.pc?.strict == null) {
       if (this.evidence !== null) {
         this.finishJournalledRemovals();
+        // a lock standing at open whose removals never ran ends its rows now, journalled, before anything is served
+        if (this.safety?.strict === null && this.safety.inForce.locked === true) this.endUnlockedRows();
         this.takeInEvidence([...tombstones ?? [], ...pending]);
         // the log is the truth (P24): a block in force whose marker never reached the disk gets it before anything is served
         this.markBlockTargets();
@@ -612,6 +614,11 @@ export class DeviceStore {
         }
         this.finishInterruptedWrites();
       }
+    }
+    // a start that cannot write still knows which rows a standing lock ended: they stay out for this whole run, also
+    // after an unlock, and an unlock waits until they are written (pendingLockRemovals, S2-18)
+    if (this.evidence !== null && this.safety?.strict === null && this.safety.inForce.locked === true) {
+      for (const device of this.devices) if (device.origin?.from !== "pc") this.lockHeld.add(device.id);
     }
     // the one-time legacy pass asks only whether the registry could be read: nothing is admitted before it (T50)
     if (this.error === null) this.migrate();
@@ -625,6 +632,13 @@ export class DeviceStore {
    * anything is coalesced; the tombstone file is written again from the evidence; the pending file goes; and every row
    * the evidence covers goes. Nothing of it is told to anyone: no session is open yet.
    */
+  /**
+   * The rows a lock standing at open ended but this start could not write out (S2-18): refused for the whole run, and
+   * an unlock is refused while any is left, so a later start without the lock cannot bring them back.
+   */
+  pendingLockRemovals(): string[] { return [...this.lockHeld]; }
+  private readonly lockHeld = new Set<string>();
+
   /** Whether the last journal entry naming row `id` removed it (P24): read once, at open, from the journal on disk. */
   private journalEnded(id: string): boolean {
     if (this.journalEndedRows === null) {
@@ -746,7 +760,7 @@ export class DeviceStore {
     // the evidence in or skipped it (P13, rule 1)
     const tombstoned = device.relay_public_key !== undefined
       && this.tombstones.some((t) => t.key === device.relay_public_key && (!pairedHere(device) || this.later(t.removed_at, device.created_at, true)));
-    return tombstoned || (this.evidence !== null && (this.journalEnded(device.id) || this.coveredByEvidence(device) || this.frozen(device) || (this.safety?.inForce.locked === true && device.origin?.from !== "pc")));
+    return tombstoned || (this.evidence !== null && (this.lockHeld.has(device.id) || this.journalEnded(device.id) || this.coveredByEvidence(device) || this.frozen(device) || (this.safety?.inForce.locked === true && device.origin?.from !== "pc")));
   }
 
   get accountError(): string | null {
