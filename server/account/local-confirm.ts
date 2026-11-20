@@ -11,9 +11,10 @@
  */
 import { dlopen, FFIType } from "bun:ffi";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, fstatSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, fstatSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { machineForwardingHeaders } from "../access.ts";
+import { writePrivateState } from "../private-state.ts";
 
 export type ScreenAction =
   | { kind: "lock" }
@@ -387,8 +388,7 @@ export function openConfirmListener(confirms: LocalConfirms, options: {
   });
   const file = join(options.stateDir, LOCAL_CONFIRM_FILE);
   try {
-    writeFileSync(file, JSON.stringify({ port: server.port }), { mode: 0o600 });
-    chmodSync(file, 0o600);
+    writePrivateState(file, { port: server.port });
   } catch (error) {
     server.stop(true);
     throw error;
