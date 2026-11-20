@@ -27,3 +27,19 @@ export function lockBoundary(access: Access, scope: LockScope, request: {
     && request.originOf(access.device.id)?.from === "pc";
   return rowFromScreen ? access : { level: "none", reason };
 }
+
+/**
+ * The lock taking effect (T46, S24): what a lock no longer lets in ends in the turn the screen's approval writes it.
+ * Rows end through the store (endUnlockedRows); a connection or stream let in on another grant (the access token, a
+ * loopback window, Portal, a Tailscale login, the open LAN) listens here.
+ */
+export class LockSignal {
+  readonly #listeners = new Set<() => void>();
+  on(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => { this.#listeners.delete(listener); };
+  }
+  fire(): void {
+    for (const listener of [...this.#listeners]) listener();
+  }
+}

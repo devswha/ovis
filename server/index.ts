@@ -67,6 +67,7 @@ import { openPcRecovery } from "./account/recovery-server.ts";
 import { PendingRedemptions, type PendingRedemption } from "./account/pending.ts";
 import { askScreenForKey, KeyProofPairings } from "./account/key-proof.ts";
 import { lockRoutes } from "./account/lock-routes.ts";
+import { LockSignal } from "./lock-boundary.ts";
 import { desktopOwnerChannel, desktopOwnerFdChannel, LOCAL_CONFIRM_FILE, LocalConfirms, openConfirmListener, takeDesktopOwnerFd } from "./account/local-confirm.ts";
 import { Telemetry } from "./telemetry.ts";
 import { UsageService } from "./usage.ts";
@@ -554,11 +555,16 @@ export function createServer(
     stateDir, devices, pcAccount, journal, safetyLog, releases: recoveryReleases, pending: pendingRedemptions, pairings: keyProofPairings,
   }) : null;
   // the lock is written only after this PC's screen approves it, then the rows it does not let in end (T46)
+  const lockSignal = safetyLog ? new LockSignal() : undefined;
   const lockHandler = localConfirms && safetyLog && pcAccount ? lockRoutes({ confirms: localConfirms, store: {
     bound: () => pcAccount.binding() !== null,
-    state: () => ({ lock: safetyLog.state().locks.at(-1)?.record.id ?? null, strict: safetyLog.strict !== null }),
+    state: () => ({ lock: safetyLog.state().locks.at(-1)?.record.id ?? null, strict: devices.failsClosed }),
     preview: () => ({ rows: devices.list(null).filter((row) => devices.originOf(row.id)?.from !== "pc").map((row) => ({ id: row.id, label: row.label, origin: devices.originOf(row.id), file: "devices" as const })), grants: ["token", "portal", "tailscale", "open_lan", "loopback"] }),
-    lock: () => { if (safetyLog.appendLock(pcAccount.binding()).outcome === "applied") devices.endUnlockedRows(); },
+    lock: () => {
+      if (safetyLog.appendLock(pcAccount.binding()).outcome !== "applied") return;
+      devices.endUnlockedRows();
+      lockSignal?.fire();
+    },
     unlock: (lockId) => { safetyLog.appendUnlock(lockId, pcAccount.binding()); },
   } }) : undefined;
   const services: RequestServices = {
@@ -575,7 +581,7 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    recoveryReleases, lockRoutes: lockHandler,
+    recoveryReleases, lockRoutes: lockHandler, lockSignal,
     options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, localConfirms, pendingRedemptions, keyProofPairings, askScreenForKey: askScreen,
     get portalStartupResult() { return portalStartupResult; },
   };

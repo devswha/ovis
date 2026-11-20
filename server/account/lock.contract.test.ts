@@ -162,7 +162,7 @@ test("T46/S24: the screen's approval of a lock ends a connection already open on
 
 test("S19/P11: an admission order that cannot be read refuses a loopback window as an unreadable log does, and the lock says strict", async () => {
   const member = await memberRow("acct_1");
-  const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true },
+  const made = await pairingPc({ rows: [member.row], startRelay: false, server: { accountOpensAll: true },
     prepare: (dir) => { writeFileSync(join(dir, "account-pc.json"), "not json", { mode: 0o600 }); } });
   pcs.push(made);
   expect(made.devices.failsClosed).toBe(true);
