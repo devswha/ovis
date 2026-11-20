@@ -4,7 +4,7 @@
  * log cannot be read, the list still answers and nothing is released.
  */
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { newRecordId, signSafetyRecord, type BlockRecord, type SafetyRecord } from "../../shared/account-records.ts";
@@ -98,6 +98,25 @@ test.if(unix)("T69: a lift of a block this log does not hold is refused, and cha
   pcs.push(made);
   const answer = await bounded(askRecovery(made.stateDir, { act: "lift", blocks: ["a".repeat(64)] })) as { error?: string };
   expect(answer.error).toContain("was not lifted");
+});
+
+test.if(unix)("T69: a lift recorded in the safety log is reported even if its journal write fails", async () => {
+  const member = await memberRow("acct_1");
+  const target = await phone();
+  const made = await pairingPc({ rows: [member.row], startRelay: false, server: { accountOpensAll: true } });
+  pcs.push(made);
+  const log = made.app.context.services.safetyLog;
+  if (log === null) throw new Error("Expected a safety log");
+  const id = `f:${"a".repeat(64)}`;
+  const receipt = log.append({ record: { v: 1, id, kind: "freeze", account: "acct_1", target: target.spki, after: 9, signer: "service", signed_at: new Date().toISOString(), signature: "" }, got: "snapshot" });
+  expect(receipt.outcome).toBe("applied");
+  const path = join(made.stateDir, JOURNAL_FILE);
+  if (existsSync(path)) renameSync(path, `${path}.saved`);
+  mkdirSync(path);
+
+  const result = await bounded(askRecovery(made.stateDir, { act: "lift", blocks: [id] }));
+  expect(log.state().freezes).toEqual([]);
+  expect(result).toMatchObject({ lifted: [id], error: expect.stringContaining("could not be journalled") });
 });
 
 test.if(unix)("T70: revoke-all over the socket ends every row", async () => {
