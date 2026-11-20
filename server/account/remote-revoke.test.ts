@@ -1,9 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import type { DeviceStore } from "../devices.ts";
 import { relayConnection, relayFixture } from "../relay/test-helpers.ts";
 import { applyAccountRecords } from "./records.ts";
-import { handleRelayRequest } from "../relay/routes.ts";
 
 const ACCOUNT = "acct_1";
 const SERVER_ID = "0123456789abcdef0123456789abcdef";
@@ -16,8 +15,8 @@ async function key(): Promise<Key> {
   return { keys, spki: await exportAccountKey(keys.publicKey) };
 }
 
-function pc() {
-  const f = relayFixture(false, { accountOpensAll: true });
+function pc(token = "") {
+  const f = relayFixture(false, { accountOpensAll: true, token });
   fixtures.push(f);
   return { f, devices: f.app.context.services.devices };
 }
@@ -80,7 +79,7 @@ describe("remote Revokes reach the caller itself and the rows that joined after 
     expect(devices.has(first) && devices.has(second)).toBe(true);
   });
 
-  test("T20: every remote grant is refused Revoke all and a verified local caller can do it", async () => {
+  test("T20: relay Revoke all is refused, but PC-local loopback Revoke all is allowed", async () => {
     const { f, devices } = pc();
     const [oldest] = [await member(devices), await member(devices)];
     const refused = await (await remote(f, oldest))("POST", "/api/devices/revoke-all");
@@ -89,6 +88,67 @@ describe("remote Revokes reach the caller itself and the rows that joined after 
     expect(devices.list(null)).toHaveLength(2);
     expect((await local(f)("POST", "/api/devices/revoke-all")).status).toBe(200);
     expect(devices.list(null)).toHaveLength(0);
+  });
+
+  test("R1/T19: self-Revoke does not extend to an older twin", async () => {
+    const { devices } = pc();
+    const older = await member(devices);
+    const later = devices.pairRelayApproved("Later", older.spki, { path: "account", addedBy: older.id });
+    if (later === null) throw new Error("Could not set up duplicate rows");
+
+    expect(devices.remoteRevoke(later.device.id, later.device.id)).toBe("older");
+  });
+
+  test("R1/T19: self-Revoke does not silently remove a newer twin either", async () => {
+    const { devices } = pc();
+    const older = await member(devices);
+    const later = devices.pairRelayApproved("Later", older.spki, { path: "account", addedBy: older.id });
+    if (later === null) throw new Error("Could not set up duplicate rows");
+
+    expect(devices.remoteRevoke(older.id, older.id)).toBe("unorderable");
+  });
+
+  test("T19: a watch caller sees read_only for every row it cannot Revoke", async () => {
+    const { f, devices } = pc();
+    const [watch, newer] = [await member(devices), await member(devices)];
+    devices.update(watch.id, { role: "watch" });
+    const ask = await remote(f, watch);
+
+    const list = await ask("GET", "/api/devices");
+    const refused = await ask("DELETE", `/api/devices/${newer.id}`);
+    expect(list.status).toBe(200);
+    expect(refused).toMatchObject({ status: 403, body: { error: { code: "read_only" } } });
+    expect(list.body.devices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: watch.id, remote_revoke: "read_only" }),
+      expect.objectContaining({ id: newer.id, remote_revoke: "read_only" }),
+    ]));
+  });
+
+  test("P21/T36: a member cannot sign a remove when the target has no known admission age", async () => {
+    const { devices } = pc();
+    const signer = await member(devices);
+    const target = await key();
+
+    expect(devices.removeAuthority(signer.spki, target.spki, ACCOUNT)).toBe(false);
+  });
+
+  test.each(["a newer key", "its own key"])("T36: a mailbox-held member cannot sign a remove for %s", async (targetKind) => {
+    const { f, devices } = pc();
+    const signer = await member(devices);
+    const target = targetKind === "its own key" ? signer : await member(devices);
+    f.app.context.services.accountHolds.hold([signer.spki]);
+    const gates = f.app.context.services.accountMailbox.gates();
+    expect(gates.held(signer.spki)).toBe(true);
+    const record = await signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: target.spki, issued_at: new Date().toISOString(), id: newRecordId(), signer: signer.spki }, signer.keys.privateKey);
+    const write = spyOn(devices, "removeAccountKey").mockReturnValue(false);
+    try {
+      expect(await applyAccountRecords(devices, [record], SERVER_ID, Date.now(), gates)).toEqual([
+        { id: record.id, outcome: "refused", code: "removal_pending" },
+      ]);
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      write.mockRestore();
+    }
   });
 
   test("T36: signed leave or an older member's authorized remove can commit, with all duplicates checked", async () => {
@@ -126,13 +186,16 @@ describe("remote Revokes reach the caller itself and the rows that joined after 
     expect(devices.has(first.id)).toBe(true);
   });
 
-  test("T20: resetting the relay identity, which ends every relay row, is done at the PC only", async () => {
-    const { f, devices } = pc();
+  test("T20: a valid non-local reset request reaches the reset authorization check", async () => {
+    const token = "test-reset-drive-token";
+    const { f, devices } = pc(token);
     await member(devices);
-    const refused = await handleRelayRequest(new Request("http://127.0.0.1/api/relay/reset-identity", { method: "POST", headers: { origin: "http://127.0.0.1", "x-herdr-update": "1" } }), "/api/relay/reset-identity", f.app.context, null, false);
+    const origin = `http://127.0.0.1:${f.app.port}`;
+    const refused = await fetch(`${origin}/api/relay/reset-identity`, {
+      method: "POST", headers: { origin, "x-herdr-update": "1", authorization: `Bearer ${token}` },
+    });
     expect(refused.status).toBe(403);
-    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("local_required");
+    expect(await refused.json()).toEqual({ error: { code: "local_required", message: "Resetting the relay identity is done at that PC" } });
     expect(devices.list(null)).toHaveLength(1);
   });
 });
-
