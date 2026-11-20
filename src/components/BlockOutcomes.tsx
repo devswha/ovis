@@ -14,10 +14,12 @@ export function NotMeButton({ sending, onPress }: { sending: boolean; onPress: (
  * Each PC's own answer to a block (device table T51, T60, T65): blocked only on that PC's receipt; a refusal
  * says why by that PC's own order; a PC not reached applies it at its next check, with no time promised.
  */
-export function BlockOutcomes({ outcomes, names, accountRetry }: {
+export function BlockOutcomes({ outcomes, names, accountRetry, accountFailed = false }: {
   readonly outcomes: readonly PcBlockOutcome[];
   readonly names: ReadonlyMap<string, string>;
   readonly accountRetry?: () => Promise<void>;
+  /** the account service refused the block for good (S32-1): said once, with nothing to retry */
+  readonly accountFailed?: boolean;
 }) {
   const t = useT();
   const [retrying, setRetrying] = useState(false);
@@ -39,6 +41,7 @@ export function BlockOutcomes({ outcomes, names, accountRetry }: {
           : t("{pc}: needs an Ovis update to block", { pc });
         return <li key={outcome.server_id} className="settings-hint" data-state={outcome.state}>{line}</li>;
       })}
+      {accountRetry === undefined && accountFailed && <li className="settings-hint" data-account-delivery="failed">{t("The block did not go through yet.")}</li>}
       {accountRetry !== undefined && (
         <li className="settings-hint" data-account-delivery="failed">
           {t("The block did not go through yet.")}{" "}

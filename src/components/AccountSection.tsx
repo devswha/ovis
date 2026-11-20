@@ -20,6 +20,7 @@ import { ownWindowSignIn, useOwnWindowRedirect } from "../lib/account/ownWindow.
 import { AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, pcAccountServiceOf, sameSignIn, SignedOutError, type AccountIdentity, type AccountService, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
+import { postKept, unsentBlocks } from "../lib/account/unsentBlocks.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
@@ -1131,7 +1132,59 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
     });
   };
 
+  // S32-1: a sign-out drops its sign-in's unsent blocks, so it asks first while any wait, or while that cannot be read.
+  // The question belongs to the sign-in that asked: a switch to another one voids it.
+  const [unsentAsked, setUnsentAsked] = useState<{ readonly session: AccountSession; readonly state: "waiting" | "unknown" | "retry" | "refused" } | null>(null);
   const signOut = (): void => {
+    void indexedAccountStore.get("session").then(async (session) => {
+      if (session === undefined) { endSignIn(); return; }
+      let waiting: number;
+      try { waiting = (await unsentBlocks(indexedAccountStore, session)).length; }
+      catch (error) {
+        console.warn("Ovis: the unsent blocks could not be read", error instanceof Error ? error.name : error);
+        setUnsentAsked({ session, state: "unknown" });
+        return;
+      }
+      if (waiting > 0) setUnsentAsked({ session, state: "waiting" }); else endSignIn(session);
+    }, () => endSignIn());
+  };
+  /** The asking sign-in, while it is still the stored one; otherwise the question goes and nothing happens. */
+  const stillAsking = async (): Promise<AccountSession | null> => {
+    const asking = unsentAsked?.session;
+    const stored = await indexedAccountStore.get("session");
+    if (asking === undefined || stored === undefined || !sameSignIn(asking, stored)) { setUnsentAsked(null); return null; }
+    return asking;
+  };
+  const sendUnsentThenSignOut = async (): Promise<void> => {
+    const session = await stillAsking();
+    if (session === null) return;
+    const service = indexedAccountService.forSignIn(session);
+    let refused = false;
+    try {
+      for (const entry of await unsentBlocks(indexedAccountStore, session)) {
+        if (await postKept(indexedAccountStore, session, entry.records, (record) => service.postSafetyRecord(record)) === "refused") refused = true;
+      }
+    } catch (error) {
+      console.warn("Ovis: the account service did not confirm the block", error instanceof Error ? error.name : error);
+      setUnsentAsked({ session, state: "retry" });
+      return;
+    }
+    // a final refusal is said; the person decides whether to sign out anyway
+    if (refused) setUnsentAsked({ session, state: "refused" });
+    else endSignIn(session);
+  };
+  const checkAgain = async (): Promise<void> => {
+    if (await stillAsking() === null) return;
+    setUnsentAsked(null);
+    signOut();
+  };
+  const signOutAnyway = async (): Promise<void> => {
+    const session = await stillAsking();
+    if (session !== null) endSignIn(session);
+  };
+  /** Ends `asked`'s sign-in (the stored one when none is named): another sign-in that took its place stays. */
+  const endSignIn = (asked?: AccountSession): void => {
+    setUnsentAsked(null);
     deletion.current = null;
     setDeleteAsked(null);
     setDeleteFailed(null);
@@ -1141,7 +1194,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
     keepAddPcWaiting(null);
     signedInHere.current = null;
     loads.current++;
-    void indexedAccountService.signOut()
+    void (asked === undefined ? indexedAccountService : indexedAccountService.forSignIn(asked)).signOut()
       .catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error))
       .finally(() => setView({ kind: "signed-out", error: null }));
   };
@@ -1280,6 +1333,16 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
                 <button type="button" className="btn account-head-btn" aria-label={t("Sign out of {provider}", { provider: PROVIDER_NAMES[view.provider] })} onClick={signOut}>{t("Sign out")}</button>
               </div>
             )}
+          {unsentAsked !== null && (
+            <div className="settings-item" role="status">
+              <p className="settings-hint">{unsentAsked.state === "unknown" ? t("Could not check whether a block still waits to reach the account.")
+                : unsentAsked.state === "waiting" ? t("A block has not reached the account yet.") : t("The block did not go through yet.")}</p>
+              {unsentAsked.state === "unknown" && <button type="button" className="btn" onClick={() => { void checkAgain(); }}>{t("Check again")}</button>}
+              {unsentAsked.state === "waiting" && <button type="button" className="btn" onClick={() => { void sendUnsentThenSignOut(); }}>{t("Send it now")}</button>}
+              {unsentAsked.state === "retry" && <button type="button" className="btn" onClick={() => { void sendUnsentThenSignOut(); }}>{t("Try again")}</button>}
+              <button type="button" className="btn" onClick={() => { void signOutAnyway(); }}>{t("Sign out anyway")}</button>
+            </div>
+          )}
           {view.methods !== null && (
             <div className="settings-item account-methods">
               <div className="account-method-row" title={bridge === null ? t("Add another way to sign in from the Ovis desktop app.") : undefined}>

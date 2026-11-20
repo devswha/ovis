@@ -523,6 +523,7 @@ export class AccountService {
       } finally {
         if (!replaced) {
           await this.options.store.update("session", (current) => current?.refresh_token === session.refresh_token || current?.refresh_token === live.refresh_token ? undefined : current);
+          // its unsent blocks stay: only the service's answer takes one away, and a later sign-in to this account sends them (S32-1)
           if (this.options.store === indexedAccountStore) globalThis.window?.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
         }
       }
