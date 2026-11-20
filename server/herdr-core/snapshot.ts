@@ -237,6 +237,14 @@ function besides(root: LayoutNode | null, count: number, address: string): Layou
   return root && { split: "right", ratio: clampRatio(count / (count + 1)), first: root, second: { leaf: address } };
 }
 
+/**
+ * A terminal's `where` label from the Herdr app. An unnamed tab's part is its number in the app's own list
+ * (herdr-app src/model.rs `tab_name`), which counts tabs whose terminals are gone: no name.
+ */
+function whereOf(terminal: HcTerminal): string[] | undefined {
+  return terminal.labels?.["where"]?.split(" / ").map((part) => part.trim()).map((part, index) => index === 1 && /^\d+$/.test(part) ? "" : part);
+}
+
 // the Herdr app labels its terminals `where`: `<space> / <tab>`
 function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
   const own = layout === null || layout === undefined;
@@ -264,7 +272,7 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
       const tabName = tab["name"];
       if (held.length === 0) { group.tabs.push({ id: tab["id"], label: typeof tabName === "string" ? tabName : "", terminals: [], root: null, kept: false }); continue; }
       const first = held[0]!;
-      const where = first.labels?.["where"]?.split(" / ").map((part) => part.trim());
+      const where = whereOf(first);
       const name = typeof tabName === "string" && tabName ? tabName : where?.[1] || first.labels?.[TAB_NAME_LABEL] || "";
       group.tabs.push({ id: tab["id"], label: namedAfterAgent(name, held) ? "" : name, terminals: held, root: tree && resolve(tree, LAYOUT_AREA), kept: false });
       if (!group.label) {
@@ -282,7 +290,7 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
   // its own (an agent's worker, a terminal Ovis started): in that space, as the app will adopt it
   const rest: HcTerminal[] = [];
   for (const terminal of [...live.values()].filter((candidate) => !placed.has(candidate.address))) {
-    const where = terminal.labels?.["where"]?.split(" / ").map((part) => part.trim());
+    const where = whereOf(terminal);
     const spaceId = terminal.labels?.[SPACE_LABEL];
     let group = spaceId ? result.find((candidate) => candidate.id === spaceId) : undefined;
     if (!spaceId || (!group && ids.has(spaceId))) { rest.push(terminal); continue; }

@@ -53,11 +53,11 @@ describe("buildSnapshot", () => {
     expect(since.panes.map((pane) => [pane.pane_id, pane.agent_status])).toEqual([["t6", "done"], ["t9", "idle"]]);
   });
 
-  it("names an unnamed space and tab as the app labels their terminals", () => {
+  it("names an unnamed space as the app labels its terminals, and numbers an unnamed tab by its place, not the app's", () => {
     const layout = { spaces: [{ id: "s1", name: "", tabs: [{ id: "s1t1", name: "", root: block("t1") }] }] };
     const snapshot = buildSnapshot([terminal("t1", { labels: { where: "tmp / 3" } })], layout, "0.1.14");
     expect(snapshot.workspaces[0]!.label).toBe("tmp");
-    expect(snapshot.tabs[0]!.label).toBe("3");
+    expect(snapshot.tabs[0]!.label).toBe("1");
   });
 
   it("takes a tab the app named after its agent's program for an unnamed one, as the app does, and keeps a name someone gave", () => {
@@ -291,8 +291,21 @@ describe("buildSnapshot, terminals the app has not placed", () => {
       { id: "s1t2", name: "", root: block("t2") },
       { id: "s1t3", name: "", root: block("t3") },
     ] }] };
-    const snapshot = buildSnapshot([terminal("t1"), terminal("t3"), terminal("t4", { labels: { "herdr.space": "s1", "herdr.tab": "ovis-tb" } })], layout, "0.1.14");
+    const snapshot = buildSnapshot([terminal("t1", { labels: { where: "api / 1" } }), terminal("t3", { labels: { where: "api / 3" } }), terminal("t4", { labels: { "herdr.space": "s1", "herdr.tab": "ovis-tb" } })], layout, "0.1.14");
     expect(snapshot.tabs.map((t) => [t.tab_id, t.label, t.number])).toEqual([["s1t1", "1", 1], ["s1t3", "2", 2], ["ovis-tb", "3", 3]]);
+  });
+
+  it("numbers a tab the app has not placed by its place among the tabs shown, not by the app's number in its `where` label", () => {
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [
+      { id: "s1t1", name: "", root: block("t1") },
+      { id: "s1t2", name: "", root: block("t2") },
+    ] }] };
+    const snapshot = buildSnapshot([
+      terminal("t2"),
+      terminal("t3", { labels: { "herdr.space": "s1", "herdr.tab": "s1t2", where: "api / 2" } }),
+      terminal("t4", { labels: { "herdr.space": "s1", "herdr.tab": "s1t3", where: "api / 3" } }),
+    ], layout, "0.1.14");
+    expect(snapshot.tabs.map((t) => [t.tab_id, t.label, t.number])).toEqual([["s1t2", "1", 1], ["s1t3", "2", 2]]);
   });
 
   it("never makes one tab of two: a labeled id the app uses elsewhere gets an id of its own", () => {
