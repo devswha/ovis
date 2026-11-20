@@ -23,6 +23,7 @@ function machine() {
     closeSessions: (rowId, reason) => { events.push(`close ${rowId} ${reason}`); },
     heldByDevicesJson: () => false,
     admits: () => guard.admits,
+    hasNoticeSlot: () => true,
     publish: (entry) => { events.push(`publish ${nameOf(entry.key)}`); },
     now: () => clock.now,
     admitOrigin: listOrigins(),
