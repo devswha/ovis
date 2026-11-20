@@ -22,9 +22,11 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
     send: async (request) => {
       if (options.unreachable) throw new Error("ENOENT");
       sent.push(request);
-      if (request.act === "list") return { rows };
+      if (request.act === "list") return { rows, pending: [{ id: "0123456789abcdef0123456789abcdef", label: "New phone", fingerprint: "AB12-CD34" }] };
       if (request.act === "release") return { released: request.rows };
       return { releases: ["r1"], ...(options.undoWarning ? { warning: options.undoWarning } : {}) };
+      if (request.act === "admit") return { admitted: "fedcba9876543210" };
+      return { releases: ["r1"] };
     },
   };
   return { value, sent, text: () => out.join("") };
@@ -88,4 +90,21 @@ test("T70: an undo whose journal entry could not be written says so, and fails",
   const run = io({ undoWarning: "The undo was not journalled: disk full" });
   expect(await runRecover(["--undo"], run.value)).toBe(1);
   expect(run.text()).toContain("The undo was not journalled: disk full");
+});
+
+test("P22/T70: admit shows the waiting device's fingerprint and sends it only after the terminal confirms it", async () => {
+  const run = io({ answers: ["y"] });
+  expect(await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], run.value)).toBe(0);
+  expect(run.text()).toContain("AB12-CD34");
+  expect(run.text()).toContain("New phone");
+  expect(run.sent.at(-1)).toEqual({ act: "admit", pending: "0123456789abcdef0123456789abcdef", fingerprint: "AB12-CD34" });
+});
+
+test("P22: admit answered with anything but yes sends nothing, and needs a terminal", async () => {
+  const declined = io({ answers: ["n"] });
+  expect(await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], declined.value)).toBe(0);
+  expect(declined.sent.some((request) => (request as { act: string }).act === "admit")).toBe(false);
+  const piped = io({ terminal: false, answers: ["y"] });
+  expect(await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], piped.value)).toBe(1);
+  expect(piped.sent).toEqual([]);
 });
