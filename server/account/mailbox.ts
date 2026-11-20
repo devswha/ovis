@@ -256,6 +256,8 @@ export class AccountMailbox {
     if (account === null || ports === null) return empty;
     let adds = 0;
     const used = snapshot.used?.();
+    // the binding this read is for: a refusal answers for it alone, never for one made after it to the same account
+    const binding = this.options.devices.serviceBinding();
     let unlisted = false;
     try {
       let staged: Awaited<ReturnType<typeof stageMailboxAdds>> = [];
@@ -285,7 +287,7 @@ export class AccountMailbox {
         return committedLifts;
       } });
       // a PC bound in one press stands on the account's listing alone: once the account stops listing it, it leaves
-      if (unlisted && this.options.devices.boundByService() && this.options.devices.account() === account) this.options.devices.clearAccountBinding("unlisted", "account");
+      if (unlisted && binding !== null && this.options.devices.serviceBinding() === binding) this.options.devices.clearAccountBinding("unlisted", "account");
       return { outcome, adds };
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);

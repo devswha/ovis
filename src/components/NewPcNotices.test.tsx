@@ -83,21 +83,23 @@ afterEach(async () => {
   globals.clear();
 });
 
-async function mount(pageServerId: string | undefined = OTHER, onRemoved?: () => void) {
+async function mount(ownWindowOf: string | undefined = OTHER, onRemoved?: () => void) {
   await act(async () => {
     renderer?.unmount();
-    renderer = create(<SettingsProvider><NewPcNotices pageServerId={pageServerId} onRemoved={onRemoved} /></SettingsProvider>);
+    renderer = create(<SettingsProvider><NewPcNotices ownWindowOf={ownWindowOf} onRemoved={onRemoved} /></SettingsProvider>);
   });
   if (renderer === undefined) throw new TypeError("Notice did not mount");
   return renderer.root;
 }
 
-it("A2: a new PC is announced on another PC's page, not on its own relay page", async () => {
+it("A2: a new PC is announced in every window but the PC's own local window, a window into that PC through the relay included", async () => {
   const other = await mount();
   expect(other.findByProps({ role: "status" }).findAllByType("span").some(({ children }) => children.includes("New PC added to your account: Desk"))).toBe(true);
+  // a phone that opened the new PC through the relay is another device: it is told
   Object.defineProperty(globalThis, "location", { value: new URL(`https://app.ovis.sh/s/${PC}/`), configurable: true });
-  const own = await mount();
-  expect(own.findAllByProps({ role: "status" })).toHaveLength(0);
+  expect((await mount(undefined)).findAllByProps({ role: "status" })).toHaveLength(1);
+  // the PC's own local window added it
+  expect((await mount(PC)).findAllByProps({ role: "status" })).toHaveLength(0);
 });
 
 it("A2: Not me deletes the PC once, clears the card, and refreshes the account list", async () => {

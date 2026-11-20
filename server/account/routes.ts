@@ -85,6 +85,9 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (admitted === null) return fail("no_admission", "The account service did not admit this PC in one press", 404);
       // the service's word counts only for the account named here (G1)
       if (admitted.account !== account) return fail("account_mismatch", "The account service answered for another account", 502);
+      // what the PC was named for, or its account, may have changed while the service answered: decided again now
+      if (context.services.relay.savedRelayAccount() !== account) return fail("account_mismatch", "This PC was set up for another account. Sign in to that one, or add this PC again.", 409);
+      if (devices.account() !== null) return fail("in_account", "This PC is already in an account", 409);
       devices.bindByService(account);
       await context.services.accountMailbox.readSnapshot();
       return reply({ account });

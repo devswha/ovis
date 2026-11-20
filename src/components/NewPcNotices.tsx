@@ -1,6 +1,5 @@
 import { Monitor, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { pagePc } from "../lib/account/addThisPc.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, sameSignIn, SignedOutError, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
@@ -16,8 +15,9 @@ const READ_TIMEOUT_MS = 10_000;
 type NewPc = DirectoryPc;
 type Listing = { readonly session: AccountSession; readonly pcs: readonly NewPc[] };
 
-export function NewPcNotices({ pageServerId, signIn, onRemoved }: {
-  readonly pageServerId?: string | undefined;
+export function NewPcNotices({ ownWindowOf, signIn, onRemoved }: {
+  /** the PC this window is the own local window of: it added itself, so it is not told; every other window is, the relay's included */
+  readonly ownWindowOf?: string | undefined;
   readonly signIn?: string | undefined;
   readonly onRemoved?: (() => void) | undefined;
 }) {
@@ -70,8 +70,7 @@ export function NewPcNotices({ pageServerId, signIn, onRemoved }: {
   }, [signIn]);
 
   if (listing === null) return null;
-  const own = pagePc() ?? pageServerId;
-  return listing.pcs.filter((pc) => pc.server_id !== own).map((pc) => {
+  return listing.pcs.filter((pc) => pc.server_id !== ownWindowOf).map((pc) => {
     const dismissalKey = `ovis:new-pc:${JSON.stringify([listing.session.account, pc.server_id, pc.admitted_at ?? pc.new_until])}`;
     return <NewPcNotice key={`${listing.session.sign_in_id}:${dismissalKey}`} pc={pc} session={listing.session} dismissalKey={dismissalKey} onRemoved={onRemoved} />;
   });

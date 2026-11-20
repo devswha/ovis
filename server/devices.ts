@@ -1260,8 +1260,8 @@ export class DeviceStore {
     this.pc.bindByService(account);
   }
 
-  /** Whether this PC's binding stands on the account service's word alone (bindByService). */
-  boundByService(): boolean { return this.pc?.binding()?.service === true; }
+  /** The id of this PC's binding when it stands on the account service's word alone (bindByService), else null. */
+  serviceBinding(): string | null { const binding = this.pc?.binding(); return binding?.service === true ? binding.bind_id : null; }
 
   /** The PC leaves its account, for one of the named reasons (P12); nothing else clears the binding. */
   clearAccountBinding(reason: ClearReason, by: string): boolean {

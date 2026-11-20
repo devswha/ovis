@@ -1006,6 +1006,37 @@ describe("the hosted shell's front page", () => {
       expect(last().state.kind).toBe("empty");
     });
 
+    const directoryRow = (server_id: string, newFor: number | null) => ({ server_id, label: "Desk PC", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: AP,
+      new_until: newFor === null ? null : new Date(Date.now() + newFor).toISOString() });
+
+    it("A3: a sign-in's return does not open a saved PC the account marks new, and still opens an older one", async () => {
+      browser.setVisibility("hidden");
+      const went: string[] = [];
+      const store = deviceStore(await pcs("a".repeat(32)));
+      await returned(store, went, [directoryRow("a".repeat(32), 3_600_000)]);
+      expect(went).toEqual([]);
+      const older: string[] = [];
+      await returned(store, older, [directoryRow("a".repeat(32), null)]);
+      expect(older).toEqual([`/s/${"a".repeat(32)}/`]);
+    });
+
+    it("A3: a signed-in launch does not open the saved PC the account marks new, and opens it once the mark has passed", async () => {
+      const signedIn = async (newFor: number | null): Promise<string[]> => {
+        launch();
+        localStorage.setItem("ovis-last-pc", "a".repeat(32));
+        const accountStore = memoryAccountStore();
+        await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000, sign_in_id: "launch-test" });
+        const went: string[] = [];
+        await mountRelayShell(mountFor({
+          store: deviceStore(await pcs("a".repeat(32))), navigate: (path) => { went.push(path); }, accountStore, accountService: SERVICE, accountProviders: ["github"],
+          accountFetch: async (input) => new URL(String(input)).pathname === "/v1/pcs" ? Response.json({ pcs: [directoryRow("a".repeat(32), newFor)] }) : new Response(null, { status: 404 }),
+        }));
+        return went;
+      };
+      expect(await signedIn(3_600_000)).toEqual([]);
+      expect(await signedIn(null)).toEqual([`/s/${"a".repeat(32)}/`]);
+    });
+
     it("opens nothing after a refused or cancelled sign-in, whose reason the sign-in screen says", async () => {
       browser.setVisibility("hidden");
       const went: string[] = [];

@@ -188,3 +188,71 @@ test("first-PC exemption: an account that ever had a device key (revoked include
   await expect(admitAt(f, "acct_used", null)).rejects.toThrow("two_step_required");
   expect([(await press(f, "acct_used")).status, f.devices.account()]).toEqual([404, null]);
 });
+
+test("a LAN window holding the access token, or any window that is not this PC's own, cannot press", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-one-press-token-"));
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "secret-token", tailscaleOwner: null, machines: false, sidecar: false, accountOpensAll: true });
+  try {
+    const base = `http://192.168.1.10:${app.port}`;
+    const ctx: ServerContext = { ...app.context, requestIP: () => ({ address: "192.168.1.50" }), timeout: () => {}, upgrade: () => false };
+    const response = await handleRequest(new Request(`${base}/api/account/one-press`, {
+      method: "POST", headers: { host: `192.168.1.10:${app.port}`, origin: base, authorization: "Bearer secret-token", "x-herdr-machine": "1", "content-type": "application/json" },
+      body: JSON.stringify({ account: "acct_1" }),
+    }), ctx);
+    expect(response?.status).toBe(403);
+    expect(((await response!.json()) as { error: { code: string } }).error.code).toBe("owner_only");
+    expect(app.context.services.devices.account()).toBeNull();
+  } finally {
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("a press whose PC is named for another account while the service answers binds nothing", async () => {
+  let rename: (() => Promise<void>) | null = null;
+  const f = await pc({ accountFetch: async (request, service) => {
+    if (new URL(request.url).pathname === "/v1/pc/admission" && rename !== null) { const now = rename; rename = null; await now(); }
+    return await service.fetch(request);
+  } });
+  await setUpFor(f, "acct_a");
+  await admitAt(f, "acct_a");
+  rename = () => setUpFor(f, "acct_b");
+  const pressed = await press(f, "acct_a");
+  expect([pressed.status, pressed.body.error?.code]).toEqual([409, "account_mismatch"]);
+  expect(f.devices.account()).toBeNull();
+});
+
+test("a not_listed that answers a read begun under an earlier binding never clears a binding made since", async () => {
+  let rebind = false;
+  const f = await pc({ accountFetch: async (request, service) => {
+    if (rebind && new URL(request.url).pathname === "/v1/pc/snapshot") {
+      rebind = false;
+      // the PC left and was added again in one press while this read was on its way
+      f.devices.clearAccountBinding("unlisted", "test");
+      f.devices.bindByService("acct_1");
+      return Response.json({ error: { code: "not_listed", message: "gone" } }, { status: 403 });
+    }
+    return await service.fetch(request);
+  } });
+  await setUpFor(f, "acct_1");
+  await admitAt(f, "acct_1");
+  expect((await press(f, "acct_1")).status).toBe(200);
+  const first = f.devices.serviceBinding();
+  rebind = true;
+  await f.app.context.services.accountMailbox.readSnapshot();
+  expect(f.devices.account()).toBe("acct_1");
+  expect(f.devices.serviceBinding()).not.toBe(first);
+});
+
+test("first-PC exemption: a device key the admitting sign-in registered itself does not count as the account being used", async () => {
+  const f = await pc();
+  await setUpFor(f, "acct_own");
+  const identity = f.app.context.services.relay.currentIdentity()!;
+  const token = f.account.issueToken("acct_own", { twoStep: null });
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  f.account.registerSessionKey(token, await exportAccountKey(keys.publicKey), "This browser");
+  const call = (path: string, method: string, body: unknown) => f.account.fetch(new Request(`https://account.test${path}`, { method, headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) }));
+  expect((await call(`/v1/pcs/${identity.server_id}`, "PUT", { label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" })).ok).toBe(true);
+  expect((await call(`/v1/pcs/${identity.server_id}/admit`, "POST", {})).status).toBe(200);
+  expect((await press(f, "acct_own")).status).toBe(200);
+});

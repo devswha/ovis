@@ -517,6 +517,8 @@ export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }
       if (!current()) return null;
       // in one press when the account service admits it; the window this listing opened is then needed no more
       if (account !== null && await addInOnePress(accountService(), serverId, account, current)) {
+        // an attempt given up or replaced meanwhile clears nothing that a newer one owns
+        if (!current()) return null;
         keepAddPcWaiting(null);
         closeAddWindow().catch(warned("Ovis: this PC's pairing window could not be closed"));
         return await joinedAs(account, false);

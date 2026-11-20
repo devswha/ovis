@@ -117,6 +117,8 @@ export class FakeAccountService {
   private readonly usedAccounts = new Set<string>();
   /** by refresh family: when that sign-in registered its own account device key (registerSessionKey) */
   private readonly keyRegisteredAt = new Map<string, number>();
+  /** by key: the refresh family that registered it with registerSessionKey */
+  private readonly keyFamily = new Map<string, string>();
   private offered: { providers: SignInProvider[]; device: SignInProvider[]; device_page?: SignInProvider[] } = { providers: ["github", "google", "apple"], device: ["github", "google"] };
   private readonly pushes = new Map<string, { account: string; endpoint: string }>();
   private readonly counters = new Map<string, { start: number; count: number }>();
@@ -354,13 +356,16 @@ export class FakeAccountService {
     const session = this.tokens.get(token);
     if (session === undefined) throw new Error("no such token");
     this.keyRegisteredAt.set(session.family, this.now());
+    this.keyFamily.set(key, session.family);
     return this.registerDevice(session.account, key, label);
   }
 
   /** Whether the account was ever used: another PC listed, a one-press admit or removal, or any device key ever, revoked ones included. */
-  private everUsed(account: string, serverId: string): boolean {
+  private everUsed(account: string, serverId: string, family: string): boolean {
     const others = [...(this.directories.get(account)?.keys() ?? [])].some((id) => id !== serverId);
-    return others || this.usedAccounts.has(account) || (this.registries.get(account)?.devices.size ?? 0) > 0;
+    // a key the admitting sign-in registered itself is no other device
+    const keys = [...(this.registries.get(account)?.devices.keys() ?? [])].filter((key) => this.keyFamily.get(key) !== family);
+    return others || this.usedAccounts.has(account) || keys.length > 0;
   }
 
   registerDevice(account: string, key: string, label: string, eligible = true): number {
@@ -538,7 +543,7 @@ export class FakeAccountService {
       if (this.now() - (this.signedInAt.get(session.family) ?? Number.NEGATIVE_INFINITY) > REAUTH_MS) return problem(403, "session_not_fresh", "Sign in again on this device first");
       // the first-PC exemption: an account never used (no other PC, no admit or removal, no device key ever) waives two-step
       const exempt = this.twoStep.get(session.family) !== true;
-      if (exempt && this.everUsed(account, admitted)) return problem(403, "two_step_required", "Set up two-step sign-in first");
+      if (exempt && this.everUsed(account, admitted, session.family)) return problem(403, "two_step_required", "Set up two-step sign-in first");
       const entry = directory.get(admitted);
       if (entry === undefined) return problem(400, "unknown_pc", "List PCs of this account only");
       const open = this.pcAdmissions.get(box(admitted, account));
