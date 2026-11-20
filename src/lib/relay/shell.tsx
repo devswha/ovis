@@ -248,7 +248,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const signInShown = signInFirst || ((state.kind === "list" || state.kind === "empty") && state.account?.kind === "signed-out");
     if (signInShown && offered === null && account.enabled) {
       offered = account.providers;
-      void account.offered().then((list) => { offered = list; if (app === null && !left && shown !== null) show(shown); });
+      void account.offered().then((list) => { offered = list; if (shell !== null && app === null && !left && shown !== null) show(shown); });
     }
     shell ??= (mount.createRoot ?? createRoot)(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null, createElement(RelayShell, {
