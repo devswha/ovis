@@ -3,6 +3,24 @@ import { jsonResponse } from "../http.ts";
 import { dispatchMutationRegistered } from "../dispatch-routes.ts";
 import { accountReadAllowed, accountRouteAction, accountRouteGuard, accountRowMay } from "./account-row-rights.ts";
 
+// A local alias is scoped exactly once. No catalog, nested machine route, or
+// selector in either transport may widen it (including a second selector).
+function localAccountPath(request: Request): string | null {
+  const { pathname, searchParams } = new URL(request.url);
+  const local = pathname.replace(/^\/api\/machines\/local\//, "/api/");
+  if (/^\/api\/machines(?:\/|$)/.test(local)) return null;
+  const selector = /(?:^|[-_])(?:machine|pc)(?:[-_]?id)?$/i;
+  for (const [name, value] of searchParams) {
+    if (selector.test(name.replace(/([a-z])([A-Z])/g, "$1-$2")) && value !== "local") return null;
+  }
+  for (const [name, value] of request.headers) {
+    // This header's "1" is the app's same-origin control marker, not an ID.
+    if (name === "x-herdr-machine" && value === "1") continue;
+    if (selector.test(name) && value !== "local") return null;
+  }
+  return local;
+}
+
 /** The account-session gate runs before a handler or a cross-PC forward can act. */
 export function accountDispatchRefusal(request: Request, ctx: ServerContext): Response | null {
   if (ctx.peer.kind !== "relay" || !ctx.services.devices.isAccountRow(ctx.peer.device.id)) return null;
@@ -14,12 +32,8 @@ export function accountDispatchRefusal(request: Request, ctx: ServerContext): Re
   if (access === undefined || row === null || row === undefined || row.key !== key) return fail("not_listed");
   if ("refused" in access) return fail(access.refused);
 
-  const { pathname, searchParams } = new URL(request.url);
-  // A socket can forward to another PC or carry the multi-PC event stream.
-  if (pathname === "/api/machines" || pathname === "/api/machines/events") return fail("local_only");
-  if (searchParams.has("machine_id") && searchParams.get("machine_id") !== "local") return fail("local_only");
-  const localPath = pathname.replace(/^\/api\/machines\/local\//, "/api/");
-  if (localPath.startsWith("/api/machines/")) return fail("local_only");
+  const localPath = localAccountPath(request);
+  if (localPath === null) return fail("local_only");
   if (request.method !== "GET" && !dispatchMutationRegistered(request.method, localPath)) return fail("account_route_denied");
   if (accountRouteGuard(request.method, localPath)) return null;
   const action = accountRouteAction(request.method, localPath)
