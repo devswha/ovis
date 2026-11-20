@@ -44,7 +44,7 @@ export type BrowserDecision = Allowed | Refused;
  * addresses a server is reached at as well as its names (this PC's own: loopback and each address of
  * its interfaces). A server listed by name alone (a PC added by its https address) is protected only
  * under that name: reached at an address not listed, what the tab may do there is that server's own
- * access policy (server/access.ts), which lets in any client of a LAN-bound server nobody paired.
+ * access policy (server/access.ts).
  */
 export interface OvisEndpoint {
   host: string;
