@@ -29,6 +29,10 @@ export class PromotedHolds {
   forget(notice: string): void { this.deadlines.delete(notice); }
 
   refusal(row: StoredDevice, now: number) {
+    if ((row.held || row.carried_notice) && row.origin?.from === "pc" && ["code", "digits", "qr", "confirmed"].includes(row.origin.how)) {
+      this.release(row);
+      return null;
+    }
     if (!row.held) return null;
     const until = this.deadlines.get(row.held) ?? null;
     const seconds = holdSecondsLeft(until, now);

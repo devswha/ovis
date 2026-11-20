@@ -955,9 +955,9 @@ export class DeviceStore {
     const origin = this.pc.admit(confirm.source === "screen" ? "pc" : "recover", reserved.how, null, now);
     const existing = this.devices.find((d) => d.relay_public_key === confirm.key);
     if (existing !== undefined) {
-      const confirmed = { ...existing, origin };
-      if (confirm.source === "screen") { delete confirmed.held; delete confirmed.carried_notice; }
-      this.replaceDevice(existing, confirmed);
+      const next = this.devices.map((d) => d === existing ? { ...d, origin } : d);
+      this.save(next);
+      this.devices = next;
       this.voidPending();
       return { id: existing.id, label: existing.label, role: existing.role };
     }
@@ -1877,8 +1877,9 @@ export class DeviceStore {
   resumePromotedHolds(): void { this.promotedHolds.resume(this.devices, Date.now()); }
 
   private releasePromoted(row: StoredDevice): void {
-    const { held, ...live } = row;
-    if (held) this.replaceDevice(row, { ...live, carried_notice: held });
+    const { held, carried_notice: carried, ...live } = row;
+    if (row.origin?.from === "pc" && (held || carried)) this.replaceDevice(row, live);
+    else if (held) this.replaceDevice(row, { ...live, carried_notice: held });
   }
 
   private replaceDevice(row: StoredDevice, updated: StoredDevice): void {
