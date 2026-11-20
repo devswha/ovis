@@ -3,9 +3,11 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { bounded, relayConnection } from "../relay/test-helpers.ts";
+import { legacyOrigin } from "./admission-order.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT, createListedPc, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { ask, memberRow, pairingPc } from "./pairing.test-helpers.ts";
+import { PcAccountState } from "./pc-binding.ts";
 
 const closes: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); });
@@ -14,9 +16,10 @@ async function legacyPc(options: { tombstone?: boolean; failure?: () => Response
   const good = await memberRow(ACCOUNT);
   const gone = options.tombstone ? await memberRow(ACCOUNT) : null;
   const pc = await pairingPc({
-    rows: gone ? [good.row, gone.row] : [good.row],
+    rows: (gone ? [good.row, gone.row] : [good.row]).map(row => ({ ...row, origin: legacyOrigin(row.created_at) })),
     server: { accountOpensAll: true },
     prepare(dir) {
+      PcAccountState.open(dir).migrate(ACCOUNT, true);
       if (gone) writeFileSync(join(dir, "account-tombstones.json"), JSON.stringify({
         v: 1, tombstones: [{ key: gone.key.spki, account: ACCOUNT, record_id: "local", removed_at: new Date(Date.now() + 1_000).toISOString() }],
       }), { mode: 0o600 });
@@ -97,6 +100,8 @@ test("a whole snapshot after step2_off restores an account-joined phone's access
   const { devices, accountMailbox } = fixture.app.context.services;
   const wall = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS + 1);
   closes.push(() => wall.mockRestore());
+  // Establish a live row, not one whose pending join hold a whole read must restart.
+  expect(devices.sessionRow(device.id)?.key).toBe(device.publicKey);
   service.opensAll = false;
   service.reportsStep2Off = true;
   await accountMailbox.readSnapshot();

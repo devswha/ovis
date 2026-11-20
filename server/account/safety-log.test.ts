@@ -244,9 +244,9 @@ describe("the PC safety log (account-log.json)", () => {
     expect(fixture.app.context.services.safetyLog!.entries()).toHaveLength(0);
   });
 
-  test("P24: missing release flag leaves the existing PC path and files untouched", () => {
+  test("P24: only an explicit opt-out leaves the existing PC path and files untouched", () => {
     const previous = process.env["OVIS_ACCOUNT_OPENS_ALL"];
-    delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+    process.env["OVIS_ACCOUNT_OPENS_ALL"] = "0";
     try {
       // a log that would fail closed, beside a journal: with the flag off nobody reads it, and nothing is written
       const dir = stateDir();
@@ -255,7 +255,7 @@ describe("the PC safety log (account-log.json)", () => {
       const pairing = new DeviceStore(dir);
       const { token } = pairing.pair(pairing.startPairing().code, "Phone", "drive")!;
       expect(pairing.match(token)).not.toBeNull();
-      const fixture = relayFixture(false, { stateDir: dir });
+      const fixture = relayFixture(false, { stateDir: dir, accountOpensAll: undefined });
       fixtures.push(fixture);
       dirs.splice(dirs.indexOf(dir), 1);
       expect(fixture.app.context.services.safetyLog).toBeNull();
@@ -264,16 +264,16 @@ describe("the PC safety log (account-log.json)", () => {
       expect(readFileSync(join(dir, SAFETY_LOG_FILE), "utf8")).toBe("{not json");
 
       // a PC with no log gets none
-      const empty = relayFixture(false, {});
+      const empty = relayFixture(false, { accountOpensAll: undefined });
       fixtures.push(empty);
       expect(empty.app.context.services.safetyLog).toBeNull();
       expect(existsSync(join(empty.stateDir, SAFETY_LOG_FILE))).toBe(false);
 
-      // only "1" turns it on
+      // Any value other than "0" leaves Step 2 on.
       process.env["OVIS_ACCOUNT_OPENS_ALL"] = "true";
-      const other = relayFixture(false, {});
+      const other = relayFixture(false, { accountOpensAll: undefined });
       fixtures.push(other);
-      expect(other.app.context.services.safetyLog).toBeNull();
+      expect(other.app.context.services.safetyLog).toBeInstanceOf(SafetyLog);
     } finally {
       if (previous === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
       else process.env["OVIS_ACCOUNT_OPENS_ALL"] = previous;
