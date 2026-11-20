@@ -561,14 +561,14 @@ export function createServer(
         if (waiting.fingerprint !== fingerprint) return "mismatch";
         return keyProofPairings.approve(id, fingerprint, "recover");
       },
-      removeKey: ({ target, by }) => devices.removeKey({ target, by }),
+      removeKey: (input) => devices.removeKey(input),
       appendLift: (blockId, forget, user) => {
         const binding = pcAccount?.binding() ?? null;
         const done = safetyLog!.appendLift(blockId, binding, { forget });
         if (done.outcome === "applied") journal.append({ kind: "lift", how: "recover", key: null, no: null, row: null, label: blockId, by: user, account: binding?.account ?? null });
         return done;
       },
-      revokeAll: () => devices.revokeAll(),
+      revokeAll: (user) => devices.revokeAll(user),
     };
     const opened = openRecoverySocket({ stateDir, handle: recoveryActs({ releases: recoveryReleases, logReadable: () => !devices.failsClosed && SafetyLog.open(stateDir).readable, user: userInfo().username, seams }) });
     if ("refused" in opened) { if (opened.refused !== "windows") console.error(`ovis recover is not available: ${opened.refused}`); return null; }
