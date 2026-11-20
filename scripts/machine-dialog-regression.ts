@@ -91,7 +91,7 @@ try {
           assert.equal(await port.evaluate((input: HTMLInputElement) => input.validity.rangeOverflow), true);
           assert.equal(requests.length, 1, "update click obeys the SSH port range");
           await port.fill("2222");
-          const herdr = dialog.getByRole("checkbox", { name: "Connect to herdr instead of Ovis", exact: true });
+          const herdr = dialog.getByRole("checkbox", { name: "Use the default herdr session instead of Ovis", exact: true });
           assert.equal(await herdr.isChecked(), false, "Ovis is the default");
           await destination.press("Enter");
           const approve = dialog.getByRole("button", { name: "Install and connect", exact: true });
@@ -277,7 +277,7 @@ try {
             });
             await reload(); await advanced();
             // ticked first: editing the address or port afterwards keeps it
-            await dialog.getByRole("checkbox", { name: "Connect to herdr instead of Ovis", exact: true }).check();
+            await dialog.getByRole("checkbox", { name: "Use the default herdr session instead of Ovis", exact: true }).check();
             await destination.fill("fixture-only");
             await dialog.getByRole("spinbutton", { name: "SSH port", exact: true }).fill("");
             await destination.press("Enter");
