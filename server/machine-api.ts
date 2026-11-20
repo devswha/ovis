@@ -483,8 +483,9 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       if (contentType) headers.set("content-type", contentType);
       const ifNoneMatch = request.headers.get("if-none-match");
       if (ifNoneMatch) headers.set("if-none-match", ifNoneMatch);
-      // what that PC asks of a move from its own page; this server's own guards already passed it here
+      // The receiver's app mutation markers; this server has already checked the caller.
       if (movePath) headers.set("x-herdr-update", "1");
+      if (accountRecords) headers.set("x-herdr-machine", "1");
       const abort = new AbortController();
       if (path === "fs/file") {
         // a file (a video, say) streams through, with its ranges, never held here; it can
