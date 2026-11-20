@@ -129,6 +129,8 @@ test("P5, R7, R9: signed-in account sees refusals instead of PC catalogs, remote
     const link = await relayConnection(fixture, { serverId });
     await link.auth(device);
     expect((await ask(link, "/api/preferences")).status).toBe(200);
+    // P5: an ordinary drive read stays; Settings and the Setup Guide read where this PC answers
+    expect((await ask(link, "/api/access")).status).toBe(200);
     for (const [path, method, code] of [
       ["/api/unregistered", "GET", "account_route_denied"],
       ["/api/unregistered", "POST", "account_route_denied"],
