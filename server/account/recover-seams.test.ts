@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord, type SafetyRecord } from "../../shared/account-records.ts";
@@ -119,5 +119,28 @@ describe("ovis recover acts on this PC's own state (T70, T73, T69)", () => {
     expect(log.state().freezes).toHaveLength(0);
     // a freeze of another account, or an id this PC holds nothing for, is still refused
     expect(log.appendLift(`f:${"b".repeat(64)}`, { account: ACCOUNT }, { cause: "recover" })).toMatchObject({ outcome: "refused", code: "record_invalid" });
+  });
+
+  test("P24: a recover removal whose journal entry cannot be written writes no registry change, keeps the row out and fails closed", async () => {
+    const { dir, devices } = pc();
+    const kept = await member(devices);
+    rmSync(join(dir, JOURNAL_FILE));
+    mkdirSync(join(dir, JOURNAL_FILE));
+    expect(() => devices.removeKey({ target: kept.id, by: "local", user: "alice" })).toThrow();
+    const rows = JSON.parse(readFileSync(join(dir, "devices.json"), "utf8")) as { devices: { id: string }[] };
+    expect(rows.devices.some((row) => row.id === kept.id)).toBe(true);
+    expect(devices.has(kept.id)).toBe(false);
+    expect(devices.failsClosed).toBe(true);
+  });
+
+  test("P24: a Revoke all whose journal entries cannot be written fails closed and finishes at the next start", async () => {
+    const { dir, devices } = pc();
+    const kept = await member(devices);
+    rmSync(join(dir, JOURNAL_FILE));
+    mkdirSync(join(dir, JOURNAL_FILE));
+    expect(() => devices.revokeAll()).toThrow();
+    expect(devices.failsClosed).toBe(true);
+    rmSync(join(dir, JOURNAL_FILE), { recursive: true });
+    expect(open(dir).devices.has(kept.id)).toBe(false);
   });
 });
