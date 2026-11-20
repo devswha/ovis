@@ -179,8 +179,10 @@ let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc>
  * The relay is never turned on without a press. Nothing else is listed or opened without one. A device that only
  * watches this PC can list nothing, and is shown nothing.
  */
-export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }: {
+export function AddThisPc({ relayAbove = true, gateNote = true, service, signedInHere, onListed }: {
   relayAbove?: boolean;
+  /** false where the relay's own switch beside it already says that turning it on closes the device gate (the relay tab) */
+  gateNote?: boolean;
   onListed?: () => void;
   service?: () => AccountService;
   /**
@@ -631,7 +633,7 @@ export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }
         <>
           <p className="settings-description">{t("Add this PC to your account, so every device of your account can use it with one approval.")}</p>
           <p className="settings-description">{t("The Ovis relay lets your devices reach this PC from anywhere.")}</p>
-          {closesGate && <p className="settings-condition">{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
+          {closesGate && gateNote && <p className="settings-condition">{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
           <button type="button" className="btn btn-primary" onClick={() => startRelayAndAdd(state.account)}>{t("Turn on the relay and add this PC")}</button>
           {state.error !== null && <p className="settings-condition" role="alert">{state.error}</p>}
         </>
