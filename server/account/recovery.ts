@@ -127,6 +127,7 @@ export function openRecoverySocket(options: {
 export function askRecovery(stateDir: string, request: unknown): Promise<unknown> {
   const path = join(stateDir, RECOVER_DIR, RECOVER_SOCKET);
   return new Promise((resolve, reject) => {
+    const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
     let buffered = "";
     let settled = false;
     const settle = (error: Error | null, value?: unknown) => {
@@ -138,7 +139,8 @@ export function askRecovery(stateDir: string, request: unknown): Promise<unknown
     Bun.connect({ unix: path, socket: {
       open(socket) { socket.write(`${JSON.stringify(request)}\n`); },
       data(_socket, chunk) {
-        buffered += chunk.toString();
+        if (settled) return;
+        buffered += decoder.decode(chunk, { stream: true });
         const newline = buffered.indexOf("\n");
         if (newline < 0) return;
         try { settle(null, JSON.parse(buffered.slice(0, newline))); } catch (error) { settle(error as Error); }
