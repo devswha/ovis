@@ -68,13 +68,19 @@ export class RevokeAllIntent {
 
 /** An intent written before `listed` existed names none; one that will not read names some, so it stays. */
 function coverage(path: string) {
+  const unknown = { listed: 1, before: null, listedOnly: false };
   try {
-    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    const doc = typeof value === "object" && value !== null ? value : {};
-    return {
-      listed: "listed" in doc && typeof doc.listed === "number" ? doc.listed : 0,
-      before: "before" in doc && typeof doc.before === "number" && Number.isSafeInteger(doc.before) && doc.before > 0 ? doc.before : null,
-      listedOnly: "listedOnly" in doc && doc.listedOnly === true,
-    };
-  } catch { return { listed: 1, before: null, listedOnly: false }; }
+    const doc: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!doc || typeof doc !== "object" || !("by" in doc) || doc.by !== "pc" ||
+      !("id" in doc) || typeof doc.id !== "string" || !("at" in doc) || typeof doc.at !== "string" ||
+      !Number.isFinite(Date.parse(doc.at))) return unknown;
+    if (!("listed" in doc) && ("before" in doc || "listedOnly" in doc)) return unknown;
+    const listed = "listed" in doc ? doc.listed : 0;
+    const before = "before" in doc ? doc.before : null;
+    const listedOnly = "listedOnly" in doc ? doc.listedOnly : false;
+    if (typeof listed !== "number" || !Number.isSafeInteger(listed) || listed < 0 ||
+      (before !== null && (typeof before !== "number" || !Number.isSafeInteger(before) || before <= 0)) ||
+      typeof listedOnly !== "boolean" || (listedOnly && listed === 0)) return unknown;
+    return { listed, before, listedOnly };
+  } catch { return unknown; }
 }
