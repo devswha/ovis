@@ -1014,6 +1014,9 @@ Off unless `OVIS_ACCOUNT_OPENS_ALL=1`, like everything in this part.
 - **Strict mode and key confirmations are Linux only for now.** Turning strict mode on or off,
   and approving a new key on the PC's screen, need the PC's own screen, which this release has
   only on Linux. On macOS and Windows neither is available yet; pairing works as before.
+- **A clock that ran ahead keeps the PC closed.** If this PC's clock ran more than a day ahead, it
+  stays closed to account devices until real time comes within a day of the times it wrote and Ovis
+  is restarted; there is no repair command yet.
 - **A locked PC is driven only from the PC itself.** While strict mode is on, the PC takes its
   orders only from the desktop app that started it (its owner channel) or from the confirm page
   on its own screen. No other device, browser window, access token or relay connection can change
