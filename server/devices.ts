@@ -493,7 +493,7 @@ export class DeviceStore {
   private readonly revocations = new Map<string, Set<(waiting?: true) => void>>();
   private readonly relinks = new Map<string, Set<(sessionId: string) => void>>();
   /** keys waiting to replace a screen-approved key, by row (T72): in memory only, so a restart drops them (P22) */
-  private readonly replacements = new Map<string, { key: string; account: string; at: number; sessionId: string; vouched: boolean; ownWord: boolean }>();
+  private readonly replacements = new Map<string, { key: string; account: string; at: number; challenge: string; sessionId: string; vouched: boolean; ownWord: boolean }>();
   private readonly revokeAllListeners = new Set<() => void>();
   private readonly gateListeners = new Set<() => void>();
   private readonly pairings = new Set<(event: DevicePairedEvent, origin: readonly string[]) => void>();
@@ -2605,7 +2605,8 @@ export class DeviceStore {
     // a key approved on this PC's screen is never replaced by a link alone: the new key waits for a confirm of its own
     // there, and nothing changes until then (P22, T7, T72)
     if (this.pc !== null && key !== oldKey && device.origin?.from === "pc") {
-      this.replacements.set(deviceId, { key, account, at: Date.now(), sessionId, vouched, ownWord });
+      // the challenge the confirm's fingerprint is made over: this PC's own, new with each link, so none can be chosen
+      this.replacements.set(deviceId, { key, account, at: Date.now(), challenge: randomBytes(32).toString("base64url"), sessionId, vouched, ownWord });
       return this.list(null).find((d) => d.id === deviceId) ?? null;
     }
     const linked: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved, ...(ownWord ? { joined_by: vouched ? "service" as const : "word" as const } : {}) };
@@ -2627,11 +2628,11 @@ export class DeviceStore {
   }
 
   /** The key waiting to replace the screen-approved key of row `id` (T72), or null: dropped after five minutes. */
-  pendingReplacement(id: string, now = Date.now()): { readonly key: string; readonly account: string; readonly at: number } | null {
+  pendingReplacement(id: string, now = Date.now()): { readonly key: string; readonly account: string; readonly at: number; readonly challenge: string } | null {
     const waiting = this.replacements.get(id);
     if (waiting === undefined) return null;
     if (now - waiting.at > REPLACEMENT_TTL_MS) { this.replacements.delete(id); return null; }
-    return { key: waiting.key, account: waiting.account, at: waiting.at };
+    return { key: waiting.key, account: waiting.account, at: waiting.at, challenge: waiting.challenge };
   }
 
   /** The replacement of row `id` was declined on this PC's screen: the approved key stays. */
