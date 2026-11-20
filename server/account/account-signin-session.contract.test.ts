@@ -13,7 +13,8 @@ import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { ask, phone } from "./pairing.test-helpers.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { FrameType, type MuxFrame, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
-import { bounded, relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
+import { bounded, relayConnection, relayDevice, relayFixture, TestClock } from "../relay/test-helpers.ts";
+import { JOIN_HOLD_MS } from "./join-hold.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
@@ -30,6 +31,27 @@ async function refusal(pc: Pick<Awaited<ReturnType<typeof listedPc>>, "fixture" 
 }
 
 describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
+  test("flag off: relay AUTH for a listed-only row bypasses account matching", async () => {
+    const clock = new TestClock();
+    const epoch = Date.now();
+    const time = spyOn(Date, "now").mockImplementation(() => epoch + clock.now());
+    closes.push(() => time.mockRestore());
+    const { fixture, device, serverId } = await createListedPc(close => closes.push(close), clock);
+    clock.advance(JOIN_HOLD_MS);
+    const live = await relayConnection(fixture, { serverId });
+    expect(await live.auth(device, [ACCOUNT_OPENS_ALL_FEATURE])).toMatchObject({ device_id: device.id });
+    live.channel.close(1000);
+    fixture.app.stop();
+
+    const rolledBack = relayFixture(false, { stateDir: fixture.stateDir, accountOpensAll: false, accountService: { url: "off" } });
+    const match = spyOn(rolledBack.app.context.services.devices, "matchAccountRelay");
+    try {
+      const link = await relayConnection(rolledBack, { serverId });
+      expect(await bounded(Promise.race([link.auth(device, [ACCOUNT_OPENS_ALL_FEATURE]), link.serverError]))).toBe("auth_failed");
+      expect(match).not.toHaveBeenCalled();
+    } finally { match.mockRestore(); rolledBack.close(); }
+  });
+
   test("T59/T67: a first link without a proved list key leaves the sole listed device in join_hold", async () => {
     const service = new FakeAccountService();
     service.opensAll = true;
