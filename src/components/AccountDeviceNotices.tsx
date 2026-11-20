@@ -24,6 +24,7 @@ async function registeredKey(session: AccountSession | undefined): Promise<(OwnK
 
 type NoticeFleet = {
   readonly machines: readonly Machine[];
+  readonly machineSessions: MachineSessionRegistry;
   readonly pageServerId: string | undefined;
 };
 
@@ -69,13 +70,16 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, onResult 
       const ownId = ownServerId ?? pc.id;
       const rows = new Map([[ownId, pc]]);
       for (const machine of fleet.machines) {
+        if (!fleet.machineSessions.peek(machine.id)?.socket.accountOpensAll()) continue;
         const serverId = serverIdOf(machine);
         const key = serverId ?? machine.id;
         if (!rows.has(key)) rows.set(key, machine);
       }
       const post = (id: string) => (path: string, body: unknown) => {
           const machine = rows.get(id);
-          if (machine === undefined) return Promise.reject(new RangeError("Unknown block destination"));
+          if (machine === undefined || !fleet.machineSessions.peek(machine.id)?.socket.accountOpensAll()) {
+            return Promise.reject(new RangeError("PC does not offer account block delivery"));
+          }
           return apiFetch(machinePath(machine.id, path.slice("/api/".length)), {
             method: "POST",
             headers: { "content-type": "application/json", "x-herdr-machine": "1" },
@@ -116,7 +120,6 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, onResult 
 
 /** Subscribe alongside the App's roster hooks so opening the pane does not miss a notice replay. */
 export function useAccountDeviceNotices({ machines, machineSessions, selectedMachineId, pageServerId }: NoticeFleet & {
-  readonly machineSessions: MachineSessionRegistry;
   readonly selectedMachineId: string;
 }) {
   const sockets = machines.flatMap(({ id }) => {
@@ -186,7 +189,7 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
             },
           })} />;
         }
-        return socket === undefined ? null : <BlockNoticeAction notice={notice} pc={pc} socket={socket} fleet={{ machines, pageServerId }} own={own} inFlight={sending.current}
+        return socket === undefined ? null : <BlockNoticeAction notice={notice} pc={pc} socket={socket} fleet={{ machines, machineSessions, pageServerId }} own={own} inFlight={sending.current}
           onResult={(result) => setResults((current) => new Map(current).set(id, result))} />;
       }}
     />
