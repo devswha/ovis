@@ -2131,7 +2131,7 @@ export class DeviceStore {
     const standing = this.admitListedRows(() => {
       entry = this.journalAdmission(device, joined, notice, path.by);
       const next = path.replaces ? this.devices.map(row => row === path.replaces ? device : row) : [...this.devices, device];
-      const gate = this.gateClosedAt ?? device.created_at;
+      const gate = path.replaces && !this.opensAll() ? this.gateClosedAt : this.gateClosedAt ?? device.created_at;
       this.save(next, gate);
       this.devices = next;
       this.gateClosedAt = gate;
