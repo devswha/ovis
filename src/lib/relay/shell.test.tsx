@@ -1057,14 +1057,18 @@ describe("the hosted shell's front page", () => {
       const went: string[] = [];
       const asked: string[] = [];
       const answers: (() => void)[] = [];
-      const store = deviceStore(await pcs("a".repeat(32)));
+      // a key that names its id, as a real pairing's does: the regular sweep checks it too, so its check is under way first
+      const { server_id, server_public_key } = keyFor();
+      const [saved] = await pcs(server_id);
+      const store = deviceStore([{ ...saved!, server_public_key }]);
       const checkPc: RelayShellMount["checkPc"] = (device) => { asked.push(device.server_id); return new Promise((resolve) => { answers.push(() => resolve({ kind: "answered", route: "relay", relay: AP, rttMs: 20 })); }); };
       const mounted = returned(store, went, [], checkPc);
-      await until(() => answers.length > 0, "the PC's check");
+      // the launch waits on the check the sweep started before it, which answers only now
+      await until(() => answers.length > 0 && rendered.length > 0 && last().state.kind === "connecting", "the launch's wait on the PC's check");
       for (const answer of answers.splice(0)) answer();
       await mounted;
       await until(() => went.length > 0, "the PC opened");
-      expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
+      expect(went).toEqual([`/s/${server_id}/`]);
       expect(asked).toHaveLength(1);
     });
 

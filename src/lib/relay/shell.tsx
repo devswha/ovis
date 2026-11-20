@@ -301,7 +301,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    * launch's wait is over; null when none does.
    */
   const reachable = async (order: readonly RelayDevice[]): Promise<string | null> => {
-    const checks = order.map((pc) => sweep.checkOne(pc.server_id).then(() => sweep.status.get(pc.server_id)?.kind === "answered"));
+    // an answer the sweep already holds (it lapses with OFFLINE_AFTER_MS) counts: that PC is not asked again
+    const checks = order.map((pc) => sweep.status.get(pc.server_id)?.kind === "answered" ? Promise.resolve(true)
+      : sweep.checkOne(pc.server_id).then(() => sweep.status.get(pc.server_id)?.kind === "answered"));
     let timer: ReturnType<typeof setTimeout> | undefined;
     // fixed wait: a PC that has not answered by then is not opened; Add a PC lists it, and its check goes on there
     const late = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), LAUNCH_WAIT_MS); });
