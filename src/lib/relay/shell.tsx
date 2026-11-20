@@ -66,6 +66,18 @@ function launchJoinFor(serverId: string): boolean {
   try { return sessionStorage.getItem(LAUNCH_JOIN) === serverId; } catch { return false; }
 }
 
+/**
+ * A launch whose saved PC turned out off on its own page goes on at the front page with the account's PCs, as it would
+ * have had the check said so in time: one mark in this tab, taken by the front page that follows.
+ */
+const LAUNCH_ACCOUNT = "ovis-launch-account";
+function keepLaunchAccount(): void {
+  try { sessionStorage.setItem(LAUNCH_ACCOUNT, "1"); } catch { /* the front page draws Add a PC */ }
+}
+function takeLaunchAccount(): boolean {
+  try { const kept = sessionStorage.getItem(LAUNCH_ACCOUNT) !== null; sessionStorage.removeItem(LAUNCH_ACCOUNT); return kept; } catch { return false; }
+}
+
 /** the shell's one listener for a press on a PC's link, which ends a launch's join card for that PC */
 let pressedJoin: ((event: MouseEvent) => void) | null = null;
 
@@ -152,6 +164,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // the card a launch waits on for the account's PCs: only while it is the screen does a read of them go on with the launch
   let launchCard: RelayShellState | null = null, accountTried = false;
   let launchWait: ReturnType<typeof setTimeout> | undefined;
+  // taken by every page as it loads, acted on by a front page alone: the launch goes on with the account's PCs
+  if (takeLaunchAccount() && !scoped && entryHash === "") { accountLaunch = true; launched = true; }
   // Back to a front page the browser kept whole (its back/forward cache) finds it as it left it, on the way to a PC: it
   // loads again, past this tab's launch, so it draws the front page
   if (restored !== null) window.removeEventListener("pageshow", restored);
@@ -515,7 +529,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // would have, on the front page (Add a PC), once; a PC opened by a person keeps its card and its Try again
     if (launchedHere && attempt.paired && attempt.fresh !== true && app === null && (failure === "pc-offline" || failure === "pc-unresponsive") && refused === undefined && !navigatedSinceEntry() && entries === 0) {
       // left: Back restoring this page from the browser's cache loads it again (the pageshow below)
-      cancelAttempt(); left = true; navigate("/"); return;
+      cancelAttempt(); left = true; keepLaunchAccount(); navigate("/"); return;
     }
     show({ kind: "failed", ...(attempt.paired && attempt.fresh !== true ? {} : { pairing: true as const }), failure: (refused === undefined ? null : refusalOf(refused)) ?? failure, name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id, ...(mismatch ? { mismatch } : {})  });
   };
