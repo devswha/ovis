@@ -125,6 +125,22 @@ describe("the device journal (P10, P15)", () => {
     expect(heard).toHaveLength(1);
   });
 
+  test("G14: with the flag on, a listener that throws a value with no message skips nobody either", async () => {
+    const devices = store(stateDir());
+    const heard: string[] = [];
+    devices.onPaired(() => { throw { toString() { throw new Error("no message"); } }; });
+    devices.onPaired((event) => { heard.push(event.device_id); });
+    const paired = devices.pairRelay(devices.startPairing().code, "Phone", await key())!;
+    expect(heard).toEqual([paired.device.id]);
+  });
+
+  test("with the flag off, a pairing listener that throws fails the pairing, as on main", async () => {
+    const devices = new DeviceStore(stateDir());
+    devices.onPaired(() => { throw new Error("a listener that fails"); });
+    const k = await key();
+    expect(() => devices.pairRelay(devices.startPairing().code, "Phone", k)).toThrow("a listener that fails");
+  });
+
   test("G15: unanswered notice cap stops new list admissions without trimming open notices", () => {
     const dir = stateDir();
     const journal = DeviceJournal.open(dir);
