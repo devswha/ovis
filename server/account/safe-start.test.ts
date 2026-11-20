@@ -301,4 +301,20 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     dirs.splice(dirs.indexOf(dir), 1);
     expect(f.app.context.services.devices.failsClosed).toBe(true);
   });
+
+  test("S19: each state file that cannot be read, on its own, fails the PC closed, as account records are refused", async () => {
+    for (const file of ["account-log.json", "account-pc.json", "account-removed.json", "device-journal.json", "account-tombstones.json", "account-tombstones.pending.json"]) {
+      const dir = stateDir();
+      const first = relayFixture(false, { stateDir: dir, accountOpensAll: true });
+      await relayDevice(first);
+      first.app.stop();
+      writeFileSync(join(dir, file), "not json", { mode: 0o600 });
+      const f = relayFixture(false, { stateDir: dir, accountOpensAll: true });
+      fixtures.push(f);
+      dirs.splice(dirs.indexOf(dir), 1);
+      const devices = f.app.context.services.devices;
+      expect([file, devices.failsClosed]).toEqual([file, true]);
+      expect(devices.accountError).not.toBeNull();
+    }
+  });
 });
