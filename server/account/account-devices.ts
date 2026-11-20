@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { accountDeviceId } from "../../shared/account-records.ts";
+import { accountLabel } from "../../shared/account-asker.ts";
 import type { SnapshotDevice, UsedReport } from "../../shared/account-snapshot.ts";
 import { writePrivateState } from "../private-state.ts";
 import type { RemovalEvidence } from "./removal-evidence.ts";
@@ -63,6 +64,14 @@ export class AccountDeviceStore implements AccountRowSource {
 
   row(id: string): AccountRow | null {
     return this.rows().find((row) => row.id === id) ?? null;
+  }
+
+  rename(id: string, label: string): AccountRow | null {
+    const row = this.row(id);
+    if (!row) return null;
+    const renamed = { ...row, label: accountLabel(label) || "Device" };
+    this.write({ ...this.file, devices: this.file.devices.map(candidate => candidate === row ? renamed : candidate) });
+    return renamed;
   }
 
   rowsByKey(key: string): readonly AccountRow[] {

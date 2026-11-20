@@ -19,6 +19,7 @@ export interface AccountRowSource {
   missing(): boolean;
   rows(): readonly AccountRow[];
   row(id: string): AccountRow | null;
+  rename(id: string, label: string): AccountRow | null;
   rowsByKey(key: string): readonly AccountRow[];
   access(id: string): AccessAnswer;
   pruneDenied(evidence: RemovalEvidence, legacyRevoke?: "revoke_all"): void;

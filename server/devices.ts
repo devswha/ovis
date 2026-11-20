@@ -2425,7 +2425,11 @@ export class DeviceStore {
   update(id: string, patch: { label?: string; role?: DeviceRole }): PairedDevice | null {
     this.assertWritable();
     const device = this.devices.find((d) => d.id === id);
-    if (!device) return null;
+    if (!device) {
+      if (patch.label === undefined || patch.role !== undefined) return null;
+      const row = this.joinedRows?.rename(id, patch.label);
+      return row ? { id, label: row.label, role: "drive", created_at: row.confirmed_at, last_seen_at: null, current: false, via_relay: true } : null;
+    }
     const updated = { ...device, ...(patch.label === undefined ? {} : { label: patch.label }), ...(patch.role === undefined ? {} : { role: patch.role }) };
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);
