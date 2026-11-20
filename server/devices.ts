@@ -494,7 +494,7 @@ export class DeviceStore {
   private readonly gateListeners = new Set<() => void>();
   private readonly pairings = new Set<(event: DevicePairedEvent, origin: readonly string[]) => void>();
   private readonly codeStarts = new Set<() => void>();
-  private readonly removals = new Set<(event: DeviceRemovedEvent) => void>();
+  private readonly removals = new Set<(event: DeviceRemovedEvent, key: string | undefined) => void>();
   private readonly tombstonePath: string;
   private readonly pendingTombstonePath: string;
   /** Keys removed through the account (docs/account.md, rule 5); only a pairing on this PC clears one. */
@@ -2007,16 +2007,16 @@ export class DeviceStore {
   }
 
   /** Hears of every device that lost its access, after the write that took it (DeviceRemovedEvent). */
-  onRemoved(listener: (event: DeviceRemovedEvent) => void): () => void {
+  onRemoved(listener: (event: DeviceRemovedEvent, key: string | undefined) => void): () => void {
     this.removals.add(listener);
     return () => { this.removals.delete(listener); };
   }
 
   private announceRemoval(device: StoredDevice, by: DeviceRemovedEvent["by"]): void {
     const event: DeviceRemovedEvent = { type: "device-removed", event_id: randomBytes(8).toString("hex"), device_id: device.id, label: device.label, removed_at: new Date().toISOString(), ...(by === undefined ? {} : { by }) };
-    if (this.safety === null) { for (const listener of [...this.removals]) listener(event); return; }
+    if (this.safety === null) { for (const listener of [...this.removals]) listener(event, device.relay_public_key); return; }
     for (const listener of [...this.removals]) {
-      try { listener(event); } catch (error) { console.warn(`[devices] a removal listener failed: ${describe(error)}`); }
+      try { listener(event, device.relay_public_key); } catch (error) { console.warn(`[devices] a removal listener failed: ${describe(error)}`); }
     }
   }
 
