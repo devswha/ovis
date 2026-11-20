@@ -118,7 +118,8 @@ export async function readSnapshot(
     if (error instanceof SnapshotWriteRefused) return refused("commit_failed");
     throw error;
   }
-  ports.commitList?.(snapshot);
   if (ports.methodsVersion() !== snapshot.methods_version) ports.journalMethod(snapshot.methods_version);
+  // Publishing list access also renews freshness; no durable operation may follow it.
+  ports.commitList?.(snapshot);
   return { committed: true, snapshot: snapshot.snapshot, denials, liftsRefused: snapshot.lifts.length - authorized.length };
 }
