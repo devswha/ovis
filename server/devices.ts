@@ -3019,7 +3019,7 @@ export class DeviceStore {
   private enrollApproved(device: StoredDevice, signerKey: string | undefined, now: number): boolean {
     const listed = device.relay_public_key && this.joinedRows?.rowsByKey(device.relay_public_key).length;
     const approved = listed && this.pc ? { ...device, origin: this.pc.admit("remote", "promoted", signerKey ?? null, now) } : device;
-    return this.enroll(approved, now, [], false, undefined, device.account_add === undefined ? undefined : signerKey);
+    return this.enroll(approved, now, [], false, undefined, signerKey);
   }
 
   /**
