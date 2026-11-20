@@ -71,14 +71,12 @@ it.each(["paired owner", "tailscale owner", "open LAN visitor", "watching device
       expect([401, 403]).toContain(response?.status ?? 0);
       expect(discover).not.toHaveBeenCalled();
     }
-    // the bridge token's path is unchanged
     expect((await get("/api/bridge?discover=herdr", { authorization: "Bearer bridge-token" }))?.status).toBe(200);
   } finally { app.stop(); identity.mockRestore(); discover.mockRestore(); tailnet.mockRestore(); proof.mockRestore(); role.mockRestore(); rmSync(stateDir, { recursive: true, force: true }); }
 });
 
 for (const [path, status, expectedTimeouts] of [["/api/health", 200, [60]], ["/api/nope", 404, [60]]] as const) {
   it(`dispatches GET ${path} with a fake socket context`, async () => {
-    // Given: isolated server services and a transport that never uses a Bun request socket.
     const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-"));
     const ping = spyOn(herdr, "ping").mockResolvedValue({ version: "fixture", protocol: 22, terminal_attach: false, terminal_mirror: true });
     let app: ReturnType<typeof createServer> | undefined;
@@ -92,9 +90,7 @@ for (const [path, status, expectedTimeouts] of [["/api/health", 200, [60]], ["/a
         timeout: (request, seconds) => { timeouts.push({ request, seconds }); },
         upgrade: () => { throw new Error("Unexpected WebSocket upgrade"); },
       };
-      // When
       const response = await handleRequest(request, ctx);
-      // Then
       expect(response?.status).toBe(status);
       expect(timeouts).toEqual(expectedTimeouts.map((seconds) => ({ request, seconds })));
       expect(response?.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/);
@@ -189,7 +185,6 @@ it("scopes a remote PC's receipt identity to the Portal user, not only to a brow
       "x-portal-proof": "valid-portal-proof", "x-portal-user": user, "x-portal-auth": "credential",
     } }), ctx);
     expect(response).toBeUndefined();
-    // one attach at a time: each comes over its own upstream socket, so arrival order is not send order
     const arrived = new Promise<void>((resolve) => { heard = resolve; });
     relays.at(-1)!.message(JSON.stringify({ type: "attach", pane_id: "p", cols: 80, rows: 24, receipt_resume_id: browser }));
     await arrived;
@@ -287,10 +282,58 @@ it("marks a socket that only the open LAN let in, one relayed to another PC too,
     const bridgedRelay = await upgrade(lan, "/ws?machine_id=remote", { authorization: "Bearer bridge-token" });
     expect([bridgedRelay.open, bridgedRelay.relay !== undefined]).toEqual([true, true]);
     bridgedRelay.relay!.close();
-    // this PC itself
     expect((await upgrade(from("127.0.0.1"), "/ws")).open).toBeUndefined();
   } finally {
     app.stop(); endpoint.mockRestore(); upstream.stop(true);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("names a visit's way in from what the server knows, its relay session or Portal's proof, never from forwarding headers alone", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-visit-ingress-"));
+  const portal = new PortalService({ stateDir });
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, portal, token: "", bridgeToken: "bridge-token", tailscaleOwner: null, machines: false, sidecar: false });
+  const proof = spyOn(portal, "vouches").mockImplementation((value) => value === "valid-portal-proof");
+  const role = spyOn(portal, "roleFor").mockReturnValue("drive");
+  const taken: (string | undefined)[] = [];
+  const local: ServerContext = {
+    ...app.context, requestIP: () => ({ address: "127.0.0.1" }), timeout: () => {},
+    upgrade: (_request, options) => { taken.push(options.data.ingress); return true; },
+  };
+  const relay: ServerContext = { ...local, requestIP: () => null,
+    peer: { kind: "relay", device: { id: "0123456789abcdef", label: "Relay phone", role: "drive" }, sessionId: "session-a", serverId: "0123456789abcdef0123456789abcdef", key: "" } };
+  const visit = async (ctx: ServerContext, origin: string, headers: Record<string, string> = {}) => {
+    const response = await handleRequest(new Request(`${origin}/ws?surface=browser`, { headers: { host: new URL(origin).host, origin, ...headers } }), ctx);
+    expect(response).toBeUndefined();
+    return taken.at(-1);
+  };
+  const here = `http://127.0.0.1:${app.port}`;
+  // what Portal forwards: a page it served over HTTPS, under this PC's address
+  const forwarded = { "x-forwarded-for": "203.0.113.7", "x-forwarded-proto": "https", origin: `https://127.0.0.1:${app.port}` };
+  const portalHeaders = { "x-portal-user": "owner", "x-portal-auth": "credential" };
+  try {
+    expect(await visit(relay, "https://relay.ovis.invalid", { ...forwarded, origin: "https://relay.ovis.invalid" })).toBe("relay");
+    expect(await visit(local, here, { ...forwarded, ...portalHeaders, "x-portal-proof": "valid-portal-proof" })).toBe("portal");
+    // Portal's headers without its proof are any proxy's
+    expect(await visit(local, here, { ...forwarded, ...portalHeaders, "x-portal-proof": "forged" })).toBe("proxy");
+    // a Portal with no sign-in sends no proof: /api/health takes its shape (from this PC, over HTTPS, to an address
+    // Portal serves) as Portal's, but that shape is headers, so a visit counts it as any proxy
+    const serves = spyOn(portal, "serves").mockReturnValue(true);
+    const ping = spyOn(herdr, "ping").mockResolvedValue({ version: "fixture", protocol: 22, terminal_attach: false, terminal_mirror: true });
+    try {
+      expect(await visit(local, here, forwarded)).toBe("proxy");
+      const health = await handleRequest(new Request(`${here}/api/health`, { headers: { host: new URL(here).host, ...forwarded } }), local);
+      expect(await health?.json()).toMatchObject({ security: { observed_ingress: "portal" } });
+      // another server's bridge is not a visit: nothing is worked out for it
+      serves.mockClear();
+      expect(await visit(local, here, { ...forwarded, authorization: "Bearer bridge-token" })).toBeUndefined();
+      expect(serves).not.toHaveBeenCalled();
+    } finally { serves.mockRestore(); ping.mockRestore(); }
+    expect(await visit(local, here)).toBe("local");
+  } finally {
+    proof.mockRestore(); role.mockRestore();
+    await portal.shutdown();
+    app.stop();
     rmSync(stateDir, { recursive: true, force: true });
   }
 });

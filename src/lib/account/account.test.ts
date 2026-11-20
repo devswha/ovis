@@ -2,12 +2,13 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEVICE_CODE_TTL_S, FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
+import { newRecordId, signSafetyRecord } from "../../../shared/account-records.ts";
 import { startDeviceSignIn, startLinkPageSignIn } from "./deviceSignIn.ts";
 import type { RelayDevice } from "../relay/device.ts";
 import { myPcs, OFFLINE_AFTER_MS } from "./myPcs.ts";
 import { accountProvidersOf, AccountService, AccountServiceError, accountServiceOf, pcAccountServiceOf, shellAccountServiceOf, SignedOutError } from "./service.ts";
 import { beginSignIn, finishOwnSignIn, finishSignIn, SignInError, signInReturn } from "./signin.ts";
-import { memoryAccountStore, memoryLock } from "./store.ts";
+import { memoryAccountStore, memoryLock, newKey } from "./store.ts";
 import { desktopProviders } from "./desktop.ts";
 
 const SERVICE = "https://account.example";
@@ -108,6 +109,31 @@ describe("signing in", () => {
   });
 });
 
+it("T60: posts a safety record to the account service that retains the signed block", async () => {
+  const service = serviceWithSignIn();
+  service.fake.opensAll = true;
+  const { store, session } = await signIn(service);
+  const [older, newer] = await Promise.all([newKey(), newKey()]);
+  const signerNo = service.fake.registerDevice(session.account, older.public_spki, "Phone");
+  const targetNo = service.fake.registerDevice(session.account, newer.public_spki, "Laptop");
+  const signed = { v: 1 as const, account: session.account, signer: older.public_spki, signer_no: signerNo, signed_at: new Date().toISOString() };
+  const block = await signSafetyRecord({
+    ...signed, kind: "block", target: newer.public_spki, target_no: targetNo, nonce: newRecordId(),
+  }, older.private_key);
+  const client = new AccountService({ store, fetch: service.fetch });
+
+  await client.postSafetyRecord(block);
+
+  // Only a block the fake kept under this id can be lifted.
+  const lift = await signSafetyRecord({ ...signed, kind: "lift", target: block.id }, older.private_key);
+  const lifted = await service.fetch(new URL("/v1/safety-records", SERVICE), {
+    method: "POST",
+    headers: { authorization: `Bearer ${session.access_token}`, "content-type": "application/json" },
+    body: JSON.stringify({ record: lift }),
+  });
+  expect({ status: lifted.status, body: await lifted.json() }).toEqual({ status: 200, body: { id: lift.id } });
+});
+
 describe("a sign-in shared by tabs", () => {
   it("refreshes once when two tabs find the access token run out together, and stays signed in", async () => {
     const service = serviceWithSignIn();
@@ -121,18 +147,39 @@ describe("a sign-in shared by tabs", () => {
     expect(await store.get("session")).toBeDefined();
   });
 
+  it("ends a call's wait for the lock between tabs at its signal, and begins nothing of that call once the lock is free", async () => {
+    const service = serviceWithSignIn();
+    let now = Date.now();
+    const { store, session } = await signIn(service, memoryAccountStore(), () => now);
+    const lock = memoryLock();
+    // another tab holds the lock, as a refresh of its own does
+    const holding = Promise.withResolvers<void>();
+    const held = lock(() => holding.promise);
+    const account = new AccountService({ store, fetch: service.fetch, now: () => now, lock });
+    // the access token ran out: the call must take the lock to refresh it
+    now = session.expires_at;
+    const before = service.fake.requests.length;
+    const controller = new AbortController();
+    const call = account.listPcs(controller.signal);
+    controller.abort(new DOMException("The pairing's bound was reached", "TimeoutError"));
+    await expect(call).rejects.toThrow("The pairing's bound was reached");
+    holding.resolve();
+    await held;
+    // whatever waited behind the lock has run by the time a next call takes it
+    await lock(async () => undefined);
+    expect(service.fake.requests.slice(before)).toEqual([]);
+  });
+
   it("keeps a sign-in saved without an id the same one across its first refresh, for a call bound to a copy read before it", async () => {
     const service = serviceWithSignIn();
     let now = Date.now();
     const { store, session } = await signIn(service, memoryAccountStore(), () => now);
-    // as a build from before sign-ins had an id stored it
     const { sign_in_id: _later, ...old } = session;
     await store.set("session", old);
     const account = new AccountService({ store, fetch: service.fetch, now: () => now, lock: memoryLock() });
     const read = await account.session();
     expect(read?.sign_in_id).toBeDefined();
     expect((await store.get("session"))?.sign_in_id).toBe(read!.sign_in_id);
-    // two readers agree on the id
     expect((await account.session())?.sign_in_id).toBe(read!.sign_in_id);
     // the access token runs out: any call refreshes it, which changes the refresh token
     now = session.expires_at;
@@ -151,7 +198,6 @@ describe("a sign-in shared by tabs", () => {
     now = session.expires_at;
     const lock = memoryLock();
     const other = new AccountService({ store: inner, fetch: service.fetch, now: () => now, lock });
-    // a store that would let another tab name and refresh the session after any plain read of it
     let reads = 0;
     const store: typeof inner = { ...inner, get: (async (name: Parameters<typeof inner.get>[0]) => {
       const value = await inner.get(name);
@@ -160,7 +206,6 @@ describe("a sign-in shared by tabs", () => {
     }) as typeof inner.get };
     const tab = new AccountService({ store, fetch: service.fetch, now: () => now, lock });
     const read = await tab.session();
-    // no plain read came first, and what this tab holds is the session as the store has it, id and all
     expect(reads).toBe(0);
     expect(read!.sign_in_id).toBeDefined();
     expect(read).toEqual((await inner.get("session"))!);
@@ -376,7 +421,7 @@ describe("signing in on a PC's own page, with the Ovis link page", () => {
 
   it("starts without the name on an account service that does not take one yet", async () => {
     const { fake, options } = setup();
-    fake.linkPageTakesRequester = false;
+    fake.linkPageAcceptsLabelAndOs = false;
     const started = await startDeviceSignIn({ ...options, requester: { label: "Desk", os: "linux" } });
     expect(started.verificationUri).toBe(`${SERVICE}/link`);
     expect(fake.linkRequester(started.userCode)).toEqual({ label: null, os: null });
@@ -507,7 +552,6 @@ describe("which account service a page signs in with", () => {
     expect(desktopProviders(bridge())).toEqual(["github"]);
     expect(desktopProviders(bridge(["apple", "github"]))).toEqual(["github", "apple"]);
   });
-
 
 });
 

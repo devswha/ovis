@@ -1,13 +1,12 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SIGN_IN, APP_ORIGIN, localize, openFailure, parseAddress, publicHttp, relayLink, shell, sshDetails, t } from "./shell.js";
+import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, sshDetails, t } from "./shell.js";
 
 localize();
+followScheme();
 
-// only iOS opens a plain http PC slower (docs/native-app.md, The app); Android shows no such delay
-if (window.Capacitor?.getPlatform?.() !== "ios") document.querySelector(".hint")?.remove();
-
+const feedback = document.getElementById("feedback");
 const form = document.getElementById("connect");
 const input = document.getElementById("address");
 const error = document.getElementById("error");
@@ -15,9 +14,7 @@ const spinner = document.getElementById("spinner");
 const statusText = document.getElementById("status-text");
 const cancel = document.getElementById("cancel");
 const android = window.Capacitor?.getPlatform?.() === "android";
-/** Counts the opens of a PC's own address, so one cancelled or replaced says nothing when it ends. */
 let attempt = 0;
-/** Whether an open is waiting for its check (the status shows). */
 let pending = false;
 
 /**
@@ -31,11 +28,11 @@ function showStatus(text) {
   cancel.hidden = !pending;
 }
 
-/** Stops waiting for an open still being checked: it ends without a word, and the app does not open it. */
 function stopPending() {
   if (!pending) return;
   attempt++;
   showStatus("");
+  barsForScreen();
   if (android) void shell("cancelOpen");
 }
 /** PCs that loaded before (an origin, or a relay PC's scope), and the public http address the user was just warned about. */
@@ -66,8 +63,9 @@ const relayErrors = {
 };
 
 async function open(text) {
-  // another address, or the same again: an open still being checked gives way, whatever this one does
   stopPending();
+  // the bundled demo (build-web.ts), for a store review without a PC: the address "demo" opens it, with no button for it
+  if (String(text).trim().toLowerCase() === "demo") { location.href = "demo/index.html"; return; }
   // an SSH PC whose host key was forgotten on purpose opens only through the setup screen, which shows the key to confirm
   const sshPc = sshPcs[text];
   if (sshPc && !sshDetails(sshPc).confirmed) {
@@ -77,10 +75,19 @@ async function open(text) {
     return;
   }
   const url = parseAddress(text);
-  if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); input.focus(); return; }
+  if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); if (!addressScreen.hidden) input.focus(); return; }
+  // the hosted app itself, saved once it loaded (a sign-in opens it): picked from this list, it opens on its list of PCs
+  // (#pcs), not straight into the PC it opened last as a launch does (src/lib/relay/shell.tsx, launchPc): a new web view
+  // starts a new session, so a bare address would count as a launch and loop back to the PC just left
+  if (url.origin === new URL(APP_ORIGIN).origin && url.pathname === "/" && url.hash === "") {
+    error.textContent = "";
+    try { await shell("open", { url: `${APP_ORIGIN}/#pcs`, name: "Ovis" }); }
+    catch (err) { error.textContent = String(err?.message ?? err); }
+    return;
+  }
   // a PC paired over the Ovis relay opens at its scope on the app's origin, saved under that scope
   const relay = relayLink(url);
-  if (relay?.error) { error.textContent = relayErrors[relay.error](); input.focus(); return; }
+  if (relay?.error) { error.textContent = relayErrors[relay.error](); if (!addressScreen.hidden) input.focus(); return; }
   if (relay) {
     error.textContent = "";
     try { await shell("open", { url: relay.url, scope: relay.scope, ...(relay.name ? { name: relay.name } : {}) }); }
@@ -105,32 +112,86 @@ async function open(text) {
   finally { if (mine === attempt) showStatus(""); }
 }
 
+const screens = { "sign-in": document.getElementById("sign-in"), add: document.getElementById("add"), address: document.getElementById("address-screen") };
+const addressScreen = screens.address;
+// a build without the account (OVIS_APP_ACCOUNT=0, build-web.ts) starts on Add a PC, with nothing to go back to
+const first = ACCOUNT_SIGN_IN ? "sign-in" : "add";
+
+/**
+ * One screen at a time; what an open says goes with the screen that is up, above the PCs opened before so a long list
+ * never pushes it out of sight. `focus`: what gets the focus on it, none for false.
+ */
+function show(name, focus) {
+  stopPending();
+  error.textContent = "";
+  for (const [key, screen] of Object.entries(screens)) screen.hidden = key !== name;
+  screens[name].insertBefore(feedback, screens[name].querySelector("#saved-section"));
+  if (focus !== false) (focus ?? screens[name].querySelector("button:not([hidden])"))?.focus();
+}
+
+/**
+ * A step forward is an entry of the page's history, so the phone's own Back steps back as the round Back does (Android
+ * gives Back to a page with history of the app's own, MainActivity.syncBack).
+ */
+function go(name, focus) {
+  history.pushState({ screen: name }, "", `#${name}`);
+  show(name, focus);
+}
+
+history.replaceState({ screen: first }, "", location.pathname);
+addEventListener("popstate", (event) => { show(screens[event.state?.screen] ? event.state.screen : first); });
+for (const screen of [screens.add, screens.address]) screen.querySelector("[data-back]").addEventListener("click", () => history.back());
+document.getElementById("no-account").addEventListener("click", () => go("add"));
+document.getElementById("address-way").addEventListener("click", () => go("address", input));
+
+// a machine reached over SSH from this phone: Android's OvisSsh plugin asks the rest on a screen of its own. An app
+// without it (iOS, or an Android build before it) has no SSH to offer, so the way is left out rather than drawn dead
+const sshWay = document.getElementById("ssh-way");
+// the plugins the app announces to the page before its first script runs (src/lib/nativeApp.ts, hasNativePlugin)
+if ((window.Capacitor?.PluginHeaders ?? []).some((header) => header.name === "OvisSsh")) sshWay.addEventListener("click", async () => {
+  error.textContent = "";
+  try { await ssh("add"); }
+  catch (err) { error.textContent = String(err?.message ?? err); }
+});
+else sshWay.hidden = true;
+
 cancel.addEventListener("click", () => {
   stopPending();
-  input.focus();
+  if (!addressScreen.hidden) input.focus();
 });
 
 form.addEventListener("submit", (event) => { event.preventDefault(); void open(input.value); });
 
-// the hosted shell's front page: sign in there, and every PC of the account shows (src/components/AccountPcs.tsx)
 const account = document.getElementById("account");
-if (ACCOUNT_SIGN_IN) {
-  account.hidden = false;
-  account.addEventListener("click", async () => {
-    error.textContent = "";
-    try { await shell("open", { url: `${APP_ORIGIN}/`, name: t("Your PCs", "내 PC") }); }
-    catch (err) { error.textContent = String(err?.message ?? err); }
-  });
+/** Draws a button for each sign-in named, in the build's order. */
+function showProviders(providers) {
+  for (const button of account.querySelectorAll("[data-provider]")) button.hidden = !providers.includes(button.dataset.provider);
 }
 
-// a machine reached over SSH (Android's OvisSshPlugin): its own screen asks the rest
-const addSsh = document.getElementById("ssh");
-if (android) {
-  addSsh.hidden = false;
-  addSsh.addEventListener("click", async () => {
+if (!ACCOUNT_SIGN_IN) {
+  screens.add.querySelector("[data-back]").hidden = true;
+  show("add", false);
+}
+else {
+  show("sign-in", false);
+  // the service names its sign-ins (GET /v1/providers), as the hosted app reads them; until it answers, GitHub alone
+  // (the markup's), the hosted app's own fallback, so no button opens a sign-in the hosted app would not start
+  fetch(new URL("/v1/providers", ACCOUNT_SERVICE)).then((response) => response.ok ? response.json() : null).then((body) => {
+    const listed = listedProviders(body);
+    if (listed !== null) showProviders(listed);
+  }, () => undefined);
+  // the sign-in itself runs on the hosted app, which this opens on that provider's sign-in (#sign-in=, boot.ts). One
+  // press at a time, and none after one that went (Android answers before the page is replaced): a second open would
+  // race the first for the page the app keeps
+  const buttons = [...account.querySelectorAll("[data-provider]")];
+  for (const button of buttons) button.addEventListener("click", async () => {
     error.textContent = "";
-    try { await ssh("add"); }
-    catch (err) { error.textContent = String(err?.message ?? err); }
+    for (const each of buttons) each.disabled = true;
+    try { await shell("open", { url: `${APP_ORIGIN}/#sign-in=${button.dataset.provider}`, name: "Ovis" }); }
+    catch (err) {
+      error.textContent = String(err?.message ?? err);
+      for (const each of buttons) each.disabled = false;
+    }
   });
 }
 
@@ -198,7 +259,8 @@ function managePanel(origin, label) {
       code.className = "key";
       code.textContent = line;
       const copy = button(t("Copy", "복사"), async () => { await ssh("copy", { text: line }); say(t("Copied.", "복사했습니다.")); });
-      extra.replaceChildren(paragraph(t("This phone signs in with this key. It goes in ~/.ssh/authorized_keys on the PC:", "이 휴대폰은 이 키로 로그인합니다. PC의 ~/.ssh/authorized_keys에 들어갑니다:")), code, copy);
+      const share = button(t("Share", "공유"), async () => { await ssh("share", { text: line }); });
+      extra.replaceChildren(paragraph(t("This phone signs in with this key. It goes in ~/.ssh/authorized_keys on the PC:", "이 휴대폰은 이 키로 로그인합니다. PC의 ~/.ssh/authorized_keys에 들어갑니다:")), code, copy, share);
     } catch (err) { fail(err); }
   });
   const setUp = button(t("Set up again", "다시 설정"), async () => {
@@ -298,6 +360,7 @@ async function openAppLink() {
   if (window.Capacitor?.getPlatform?.() !== "android") return;
   const { url } = await shell("takeLink");
   if (!url) return;
+  go("address", false);
   input.value = url;
   await open(url);
 }

@@ -35,7 +35,6 @@ export const SETUP_KO: Record<string, string> = {
   "It took too long. Try again.": "너무 오래 걸려요. 다시 시도해 주세요.",
   "{agent} did not install. {reason}": "{agent} 설치를 마치지 못했어요. {reason}",
   "Accounts are read on the PC Ovis runs on: they are under Other accounts.": "계정은 Ovis가 실행되는 PC에서 읽으며, 다른 계정 아래에 있습니다.",
-  "Install another agent ({count})": "다른 에이전트 설치 ({count})",
   "Not signed in": "로그인 안 됨",
   "Sign-in unreadable: {command} is not installed": "로그인 정보를 읽을 수 없음: {command} 미설치",
   "Ovis reads {agent}'s sign-in from the desktop keyring with {command}, which this PC does not have. Install it (the libsecret-tools package on Debian and Ubuntu, libsecret on Fedora and Arch), then open this page again.": "Ovis는 {agent}의 로그인 정보를 데스크톱 키링에서 {command}로 읽는데, 이 PC에는 없습니다. 설치한 뒤(Debian과 Ubuntu는 libsecret-tools 패키지, Fedora와 Arch는 libsecret) 이 페이지를 다시 여세요.",
@@ -85,4 +84,7 @@ export const SETUP_KO: Record<string, string> = {
   "Opens the first-run guide again, from its first step, to install coding agents on this PC and connect them. What was set up before stays as it is.": "처음 실행 때의 설정 안내를 첫 단계부터 다시 엽니다. 이 PC에 코딩 에이전트를 설치하고 연결하는 과정이며, 이미 해 둔 설정은 그대로 둡니다.",
   "Accounts of providers that none of the agents listed above signs in to, such as Cursor or an agent this PC does not have.": "위 목록의 어느 에이전트도 로그인하지 않는 서비스의 계정입니다. 예를 들어 Cursor나 이 PC에 없는 에이전트의 계정입니다.",
   "Old record": "오래된 기록",
+  "Install another agent ({count})": "다른 에이전트 설치 ({count})",
+  "None": "없음",
+  "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "에이전트가 다룰 수 있는 브라우저입니다. Ovis가 이 에이전트를 띄울 때 버전을 고정한 MCP 서버를 붙입니다. 그 브라우저는 따로 만든 프로필을 써서 내 로그인은 쓰지 않고, Ovis가 지켜보거나 막지 않습니다. 다음에 띄울 때부터 적용되고, 터미널에서 직접 띄운 에이전트는 바뀌지 않습니다.",
 };

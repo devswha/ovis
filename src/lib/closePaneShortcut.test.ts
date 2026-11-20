@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
@@ -7,7 +7,6 @@ import { SettingsProvider } from "./settings.ts";
 import { useShortcuts } from "./shortcuts.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
 
-/** an element as the key handler reads it: what its nearest dialog, sheet or menu ancestor would match */
 const element = (within: string | null = null, expanded = false) => ({ tagName: "TEXTAREA", classList: { contains: () => false }, closest: (selector: string) => within !== null && selector.includes(within) ? {} : null, getAttribute: (name: string) => name === "aria-expanded" ? String(expanded) : null });
 
 describe("the Close pane shortcut", () => {
@@ -24,7 +23,6 @@ describe("the Close pane shortcut", () => {
     closes = 0;
     tabCloses = 0;
     modalOpen = false;
-    // Settings gives it its key: it has none until one is chosen there
     const stored = new Map<string, string>([[SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { "close-pane": "ctrl+alt+x", "close-tab": "ctrl+alt+t" } })]]);
     const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
     const media = { matches: false, addEventListener() {}, removeEventListener() {} };
@@ -62,7 +60,6 @@ describe("the Close pane shortcut", () => {
   async function mount(closePane: AppActions["closePane"] = () => { closes += 1; }, closeTab: AppActions["closeTab"] = () => { tabCloses += 1; }): Promise<void> {
     await act(async () => { renderer = create(createElement(SettingsProvider, null, createElement(Shortcuts, { actions: { closePane, closeTab } as AppActions }))); });
   }
-  /** one keydown of Ctrl+Alt+X; true when the app took it from the browser and the page */
   function press({ repeat = false, target = element() as unknown, key = "x" } = {}): boolean {
     let prevented = false;
     const event = { key, code: `Key${key.toUpperCase()}`, ctrlKey: true, altKey: true, shiftKey: false, metaKey: false, repeat, target, preventDefault: () => { prevented = true; } };
@@ -135,5 +132,23 @@ describe("the Close pane shortcut", () => {
     await mount(undefined, null);
     expect(() => press({ key: "t" })).not.toThrow();
     expect(tabCloses).toBe(1);
+  });
+
+  it("is counted as the shortcut way to close a pane, once a press, and not when the key is passed on", async () => {
+    const counted: string[] = [];
+    await act(async () => { renderer = create(createElement(SettingsProvider, null, createElement(Shortcuts, { actions: { closePane: () => { closes += 1; }, closeTab: () => { tabCloses += 1; }, counted: (action, source) => { counted.push(`${action}:${source}`); } } as AppActions }))); });
+    press();
+    press({ target: element("[role='dialog']") });
+    expect(closes).toBe(1);
+    expect(counted).toEqual(["close_pane:shortcut"]);
+  });
+
+  it("still closes the pane when its count fails", async () => {
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await act(async () => { renderer = create(createElement(SettingsProvider, null, createElement(Shortcuts, { actions: { closePane: () => { closes += 1; }, closeTab: () => { tabCloses += 1; }, counted: () => { throw new Error("storage full"); } } as Partial<AppActions> as AppActions }))); });
+      press();
+    } finally { logged.mockRestore(); }
+    expect(closes).toBe(1);
   });
 });

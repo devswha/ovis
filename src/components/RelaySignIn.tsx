@@ -4,10 +4,10 @@ import { useT } from "../lib/i18n.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useLinkPageSignIn } from "../lib/account/useLinkPageSignIn.ts";
+import { ExternalLink } from "../lib/externalLink.ts";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
 import { linkAddress } from "./AccountSection.tsx";
 
-/** what a sign-in that ended without a session says, as Settings' does; the link page named no provider */
 function failureText(t: ReturnType<typeof useT>, error: unknown): string {
   if (!(error instanceof SignInError)) return t("The sign-in did not finish. Try again.");
   switch (error.code) {
@@ -19,12 +19,6 @@ function failureText(t: ReturnType<typeof useT>, error: unknown): string {
   }
 }
 
-/**
- * The relay tab's sign-in, signed out: Sign in opens the Ovis link page in a new tab and this sheet
- * waits for it, showing the code the page carries, and says it is signed in once the person
- * confirmed there; `onSignedIn` then lets the page read the account again (the tab moves on to how
- * this PC joins). A blocked tab leaves the page's link and code here, as Settings shows them.
- */
 export function RelaySignIn({ service, onSignedIn, onOpenAccount }: { service: string; onSignedIn: (session: AccountSession) => void; onOpenAccount: () => void }) {
   const t = useT();
   const { state, ready, start, cancel } = useLinkPageSignIn(service, onSignedIn, onOpenAccount);
@@ -59,9 +53,9 @@ export function RelaySignIn({ service, onSignedIn, onOpenAccount }: { service: s
         <output className="account-device-code" aria-live="polite">{userCode}</output>
         <p className="settings-description" role="status">{provider === "ovis" ? t("Waiting for the sign-in…") : t("Waiting for {provider}…", { provider: PROVIDER_NAMES[provider] })}</p>
         <div className="account-device-actions">
-          <a ref={signInPage} className={state.opened ? "btn" : "btn btn-primary"} href={page} target="_blank" rel="noopener noreferrer">
+          <ExternalLink kind="sign-in" ref={signInPage} className={state.opened ? "btn" : "btn btn-primary"} href={page}>
             {provider === "ovis" ? t("Open the sign-in page") : t("Open {provider}", { provider: PROVIDER_NAMES[provider] })}
-          </a>
+          </ExternalLink>
           <button type="button" className="btn" onClick={cancel}>{t("Cancel")}</button>
         </div>
       </div>

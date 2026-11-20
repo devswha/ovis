@@ -27,8 +27,8 @@ describe("the account's PCs in the relay tab", () => {
   let admitted: [string, string, string][];
   let source: AccountPcsSource;
   let refuseCheck: boolean;
-  /** PCs whose entry this PC's server refuses (account_pc_invalid), and PCs whose answer waits until released */
   let invalid: Set<string>;
+  let failing: Set<string>;
   let slow: Map<string, { promise: Promise<void> }>;
 
   beforeEach(() => {
@@ -37,8 +37,9 @@ describe("the account's PCs in the relay tab", () => {
     pairLines = undefined;
     refuseCheck = false;
     invalid = new Set();
+    failing = new Set();
     slow = new Map();
-    source = { list: async () => [OWN, DESK, LAB, OLD, AWAY], admit: async (...args) => { admitted.push(args); } };
+    source = { account: async () => "acct", list: async () => ({ account: "acct", pcs: [OWN, DESK, LAB, OLD, AWAY] }), admit: async (...args) => { admitted.push(args); } };
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -57,7 +58,7 @@ describe("the account's PCs in the relay tab", () => {
       if (path === "/api/machines/relay/account/check" && refuseCheck) return Response.json({ error: { code: "owner_only", message: "no" } }, { status: 403 });
       if (path === "/api/machines/relay/account/check") {
         const asked = (body as { pcs: AccountPcEntry[] }).pcs;
-        // the server refuses the whole batch for one entry it cannot use, and answers once every PC in it did
+        if (asked.some((entry) => failing.has(entry.server_id))) return Response.json({ error: { code: "relay_unavailable", message: "The relay did not answer." } }, { status: 503 });
         if (asked.some((entry) => invalid.has(entry.server_id))) return Response.json({ error: { code: "account_pc_invalid", message: "no" } }, { status: 400 });
         for (const entry of asked) await slow.get(entry.server_id)?.promise;
         const states: Record<string, string> = { [DESK.server_id]: "ready", [LAB.server_id]: "ready", [OLD.server_id]: "outdated", [AWAY.server_id]: "offline" };
@@ -99,7 +100,6 @@ describe("the account's PCs in the relay tab", () => {
     expect(rows()).toEqual([
       ["Desk", "Online", "Add"], ["Lab", "In this app", "Connect"], ["Old box", "Update Ovis on that PC", ""], ["Away", "Offline", ""],
     ]);
-    // the PC already in the list is not asked whether it would pair
     expect(requests.filter((request) => request.path.endsWith("/check")).map((request) => request.body)).toEqual([{ pcs: [DESK] }, { pcs: [OLD] }, { pcs: [AWAY] }]);
     await act(async () => { button("Connect").props.onClick(); });
     expect(connected).toEqual([lab]);
@@ -172,9 +172,20 @@ describe("the account's PCs in the relay tab", () => {
   });
 
   it("shows nothing when this page is not signed in", async () => {
-    source = { list: async () => null, admit: async () => { throw new Error("not signed in"); } };
+    source = { account: async () => null, list: async () => null, admit: async () => { throw new Error("not signed in"); } };
     await mount();
     expect(renderer!.toJSON()).toBeNull();
     expect(requests).toEqual([]);
+  });
+  it("lists the account's PCs before this PC's own entry is in the roster, as before", async () => {
+    await mount(() => {}, [lab]);
+    expect(rows().map(([name]) => name)).toContain("Desk");
+  });
+  it("shows a PC whose check fails as offline and keeps the other rows (a window it will not answer still gets no list)", async () => {
+    failing.add(AWAY.server_id);
+    await mount();
+    expect(rows()).toEqual([
+      ["Desk", "Online", "Add"], ["Lab", "In this app", "Connect"], ["Old box", "Update Ovis on that PC", ""], ["Away", "Offline", ""],
+    ]);
   });
 });

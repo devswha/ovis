@@ -1,19 +1,20 @@
-// Shared by the app's own pages: the native plugin (ios/App/App/HerdrShellPlugin.swift) and
-// what an address typed or scanned becomes.
-
-/**
- * The hosted shell's origin (app.ovis.sh), where a PC paired over the Ovis relay opens, at its scope
- * `/s/<server_id>/`. app/scripts/build-web.ts puts in another for a test build (OVIS_APP_URL).
- */
 export const APP_ORIGIN = "https://app.ovis.sh";
 
-/** Whether the connect screen offers signing in to the account (the hosted shell's front page); app/scripts/build-web.ts turns it on with OVIS_APP_ACCOUNT=1. */
-export const ACCOUNT_SIGN_IN = false;
+export const ACCOUNT_SIGN_IN = true;
 
-/** Whether the phone's first language is Korean, the one language the app's own pages have besides English. */
+/** The account service, which names the sign-ins it offers (`GET /v1/providers`), and those the app can draw, in its order. */
+export const ACCOUNT_SERVICE = "https://account.ovis.sh";
+export const ACCOUNT_PROVIDERS = ["github", "google", "apple"];
+
+/** The sign-ins a `/v1/providers` answer names, in the app's order, or null for an answer that names nothing readable. */
+export function listedProviders(body) {
+  // the hosted app's own reading (src/lib/account/store.ts): an answer without both lists names nothing
+  if (typeof body !== "object" || body === null || !Array.isArray(body.providers) || !Array.isArray(body.device)) return null;
+  return ACCOUNT_PROVIDERS.filter((provider) => body.providers.includes(provider));
+}
+
 export const korean = /^ko\b/i.test(navigator.language ?? "");
 
-/** The text in the phone's language. */
 export function t(en, ko) {
   return korean ? ko : en;
 }
@@ -23,11 +24,45 @@ export function localize() {
   if (!korean) return;
   document.documentElement.lang = "ko";
   for (const element of document.querySelectorAll("[data-ko]")) element.textContent = element.dataset.ko;
+  for (const element of document.querySelectorAll("[data-ko-label]")) element.setAttribute("aria-label", element.dataset.koLabel);
 }
 
-/** Calls the native HerdrShell plugin through Capacitor's bridge. */
 export function shell(method, options = {}) {
-  return window.Capacitor.nativePromise("HerdrShell", method, options);
+  const call = window.Capacitor.nativePromise("HerdrShell", method, options);
+  if (method !== "open") return call;
+  // a PC's page draws its own bars, on the app's dark start: they go back to light icons before it opens, and follow
+  // this screen again when it did not open (refused, cancelled), as the screen stays
+  barsFor(false);
+  return call.catch((err) => { barsForScreen(); throw err; });
+}
+
+/** The bars back to this screen's colours: an open that did not happen (refused, or cancelled before it answered). */
+export function barsForScreen() {
+  if (LIGHT !== null) barsFor(LIGHT.matches);
+}
+
+const LIGHT = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : null;
+
+/**
+ * The system bars' icons for the screen's colours: Android takes them from the page's theme-color (MainActivity,
+ * BAR_COLOR_SCRIPT), iOS from Capacitor's SystemBars, set to light icons for the app (capacitor.config.json). Only the
+ * app's own screens are ever light (shell.css), so only they ask for dark icons, and every PC opens with light ones.
+ */
+function barsFor(light) {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = light ? "#eeeae2" : "#12100e";
+  // on iOS a call to a plugin the app lacks never settles (src/lib/nativeApp.ts, hasNativePlugin): asked only when announced
+  if (window.Capacitor?.getPlatform?.() === "ios" && (window.Capacitor.PluginHeaders ?? []).some((header) => header.name === "SystemBars")) {
+    window.Capacitor.nativePromise("SystemBars", "setStyle", { style: light ? "LIGHT" : "DARK" }).catch(() => undefined);
+  }
+}
+
+/** The app's own screens follow the phone's light or dark mode, the system bars with them. */
+export function followScheme() {
+  if (LIGHT === null) return;
+  const apply = () => barsFor(LIGHT.matches);
+  LIGHT.addEventListener("change", apply);
+  apply();
 }
 
 /**
@@ -48,7 +83,9 @@ export function sshDetails(pc) {
 
 /**
  * Whether opening url sends a pairing code and everything typed over the internet unencrypted:
- * plain http to an address outside a tailnet, a home network and this phone. The apps allow
+ * plain http to an address that does not look like a tailnet's, a home network's or this phone's.
+ * homeHost judges by the name or address alone: a dotless or .local name counts as home even if DNS
+ * sends it to a public server, so this is a heuristic, not proof. The apps allow
  * cleartext to any host, as Android cannot limit it to address ranges.
  */
 export function publicHttp(url) {
@@ -89,14 +126,8 @@ export function homeHost(hostname) {
   return !host.includes(".") || /\.(local|lan|home\.arpa|internal)$/.test(host);
 }
 
-/** How long the Android app waits for an address to answer before it says so (PCStore.ANSWER_SECONDS), as the iOS app's cover waits. */
 export const ANSWER_SECONDS = 20;
 
-/**
- * Why `url` did not open, for the connect screen, from the HerdrShell open's refusal: its `code`
- * (PCStore.check's kind) and `message` (the answer that was not Ovis, or the error). "" for a
- * cancelled open.
- */
 export function openFailure(url, code, message) {
   const host = url.host;
   const tailscale = tailnetHost(url.hostname) ? " " + t(
@@ -132,7 +163,6 @@ export function openFailure(url, code, message) {
   }
 }
 
-/** What a refused connection means: nothing listens on that address and port. */
 function refusedHelp(url, host) {
   const text = t(
     `${host} refused the connection: nothing listens there. Ovis has to run on the PC (herdr alone is not enough), and by default it listens only on the PC itself (127.0.0.1). Open the address Ovis shows under Settings → Phone & devices on the PC.`,
@@ -183,7 +213,6 @@ export function relayLink(url, appOrigin = APP_ORIGIN) {
   return { url: scope + url.hash, scope, name: offer.name };
 }
 
-/** The offer's `server_id` and `name` from its base64url JSON, or null when it is none. */
 function offerOf(payload) {
   if (!/^[A-Za-z0-9_-]{1,2048}$/.test(payload) || payload.length % 4 === 1) return null;
   let offer;

@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { reserveTab } from "../externalLink.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignIn } from "./deviceSignIn.ts";
 import { offeredProviders, type OfferedProviders } from "./service.ts";
@@ -32,7 +33,6 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
   useEffect(() => {
     let live = true;
     setOffer(null);
-    // Discover before the click: a desktop-only offer opens Settings without opening a blank tab.
     void offeredProviders(service, ["github"]).then((next) => { if (live) setOffer(next); });
     return () => { live = false; };
   }, [service]);
@@ -47,10 +47,7 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
     if (offer === null) return;
     if (offer.page.length === 0 && offer.device.length === 0) { onOpenAccount(); return; }
     running.current?.abort();
-    // in the click, before anything is awaited: a tab opened later is a popup the browser blocks
-    const tab = window.open("about:blank", "_blank");
-    // the sign-in page gets no handle on this one
-    if (tab !== null) tab.opener = null;
+    const tab = reserveTab();
     const controller = new AbortController();
     let sent = false;
     controller.signal.addEventListener("abort", () => { if (!sent) tab?.close(); }, { once: true });
@@ -68,13 +65,10 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       sent = true;
       setState({ kind: "waiting", started, opened: tab !== null });
       const session = await started.finish(controller.signal);
-      // finish owns cancellation under the store lock. A returned session is already committed.
-      // The account re-read may unmount us inside the callback; a finished page stays open.
       running.current = null;
       setState({ kind: "signed-in", session });
       signedIn.current(session);
     })().catch((error: unknown) => {
-      // cancelled, or the sheet closed: it already moved on
       if (controller.signal.aborted) return;
       if (!sent) tab?.close();
       console.warn("Ovis: the sign-in did not finish", error instanceof Error ? error.name : error);

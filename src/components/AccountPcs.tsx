@@ -1,4 +1,3 @@
-// the list's rows are the relay shell's (.relay-shell-pc*), also in Settings, where RelayShell.tsx is not loaded
 import "./RelayShell.css";
 import "./AccountPcs.css";
 
@@ -13,8 +12,10 @@ import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
+import { ExternalLink } from "../lib/externalLink.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { ConnectionLine } from "./ConnectionLine.tsx";
+import { outOfReachReason, outOfReachWord } from "./relayPcState.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
 export const PROVIDER_NAMES: Record<AccountProvider, string> = { github: "GitHub", google: "Google", apple: "Apple" };
@@ -55,11 +56,6 @@ function providerLabel(provider: AccountProvider, t: ReturnType<typeof useT>): s
   }
 }
 
-/**
- * Sign in with GitHub, Google or Apple: equal neutral outlined buttons at 44px with the brand mark
- * at a fixed --space-4 inset and the label centered. When a sign-in is under way, the tapped
- * button swaps its brand mark for a spinner in the same 18px slot, keeps its box and disables peers.
- */
 export function AccountSignIn({
   onSignIn,
   error,
@@ -68,15 +64,17 @@ export function AccountSignIn({
   busy = false,
   busyProvider = null,
   failedProvider = null,
+  nameOnly = false,
 }: {
   readonly onSignIn: (provider: AccountProvider) => void;
   readonly error: string | null;
-  /** something that went as asked and left the person signed out (the account was deleted): said plainly, with nothing to try again */
   readonly notice?: string | null;
   readonly providers?: readonly AccountProvider[];
   readonly busy?: boolean;
   readonly busyProvider?: AccountProvider | null;
   readonly failedProvider?: AccountProvider | null;
+  /** each button names only its provider ("GitHub"), for a screen whose title already says what it is for */
+  readonly nameOnly?: boolean;
 }) {
   const t = useT();
   const [lastProvider, setLastProvider] = useState<AccountProvider | null>(null);
@@ -106,7 +104,7 @@ export function AccountSignIn({
               {isBusy
                 ? <span className="boot-spinner account-provider-mark account-provider-spinner" aria-hidden="true" />
                 : <ProviderMark provider={provider} />}
-              {providerLabel(provider, t)}
+              {nameOnly ? PROVIDER_NAMES[provider] : providerLabel(provider, t)}
             </button>
           );
         })}
@@ -130,13 +128,7 @@ export function AccountSignIn({
   );
 }
 
-/** One line at the sign-in column's foot: what the account service sees. */
-export function AccountFinePrint() {
-  const t = useT();
-  return <p className="account-fineprint">{t("The account only lists your PCs. Sessions stay end-to-end encrypted.")}</p>;
-}
 
-/** A PC's state in a word or two, as the dashboard's rows and counts say it beside its dot. */
 export function pcStateWord(state: MyPcState, t: ReturnType<typeof useT>): string {
   switch (state) {
     case "paired": return t("Ready");
@@ -199,8 +191,6 @@ export async function removePcFromAccount(service: Pick<AccountService, "session
 }
 
 /**
- * The account's PCs this app has not added, as rows of a PC's own Settings list (`.devices-list`),
- * and under them one link to the hosted app, where a browser opens them (`HOSTED_APP_URL`).
  * A PC the account has not heard from for two days (`unusedPc`: reinstalled, given away, never
  * enrolled) can be taken off the list; the confirm says that this revokes nothing and that the PC
  * is listed again if it is used again. A watching device is offered no removal.
@@ -210,12 +200,10 @@ export async function removePcFromAccount(service: Pick<AccountService, "session
 export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now() }: {
   readonly pcs: readonly MyPc[]; readonly watching: boolean;
   readonly remove: (serverId: string) => Promise<void>; readonly onRemoved: () => void;
-  /** the time the rows are drawn at; the clock's when left out */
   readonly now?: number;
 }) {
   const t = useT();
   const [removing, setRemoving] = useState<MyPc | null>(null);
-  /** the list's group, which takes the focus once a removed row is gone with its button */
   const group = useRef<HTMLElement | null>(null);
   return (
     <>
@@ -236,7 +224,7 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now
       {pcs.length > 0 && (
         <li className="devices-row account-pcs-open">
           <span className="settings-description">{t("To open a PC of your account in a browser, sign in to this account at app.ovis.sh.")}</span>
-          <a className="btn" href={HOSTED_APP_URL} target="_blank" rel="noreferrer">{t("Open app.ovis.sh")}</a>
+          <ExternalLink kind="ovis" className="btn" href={HOSTED_APP_URL}>{t("Open app.ovis.sh")}</ExternalLink>
         </li>
       )}
       {removing !== null && (
@@ -249,12 +237,10 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now
               // the sign-in ended or another took its place (revoked elsewhere, another tab): no retry can succeed, and
               // these rows are no longer this browser's account. The page reads the stored sign-in again and says so.
               if (error instanceof SignedOutError) { setRemoving(null); onRemoved(); group.current?.focus(); return; }
-              // the dialog shows what it is thrown: the service's own words say nothing a person can act on
               throw new Error(t("{name} could not be removed. Try again.", { name: removing.name }));
             }
             setRemoving(null);
             onRemoved();
-            // the row and its button go with the list read again: the focus would drop to the page
             group.current?.focus();
           }} />
       )}
@@ -262,7 +248,6 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now
   );
 }
 
-/** Signed in, and the account lists no PC: says so, and why a PC added under another sign-in is not here. */
 export function NoAccountPcHint({ provider }: { readonly provider: AccountProvider }) {
   const t = useT();
   return <p className="settings-hint account-no-pc" role="note">{t("No PC in this account yet. Signed in with {provider}: each way of signing in is a separate Ovis account until you link them.", { provider: PROVIDER_NAMES[provider] })}</p>;
@@ -277,16 +262,14 @@ function statusDotOf(state: MyPcState): StatusDotState {
   }
 }
 
-/** How a saved PC answered the latest check (pcStatus.ts): its way and round trip, or why it did not. */
 export function PcStatusLine({ status, lastSeenAt = null }: { readonly status: PcStatus; readonly lastSeenAt?: string | null }) {
   const t = useT();
   if (status.kind === "answered") return <ConnectionLine state={{ kind: "answered", route: status.route, ...(status.relay === undefined ? {} : { relay: status.relay }), rttMs: status.rttMs }} />;
   if (status.kind === "checking") return <ConnectionLine state={{ kind: "checking" }} />;
-  return <ConnectionLine state={{ kind: "offline", text: lastSeenAt === null ? t("Offline") : t("Offline · {when}", { when: lastSeen(lastSeenAt) }) }}
-    reason={status.reason === "pc" ? t("The PC is off, or Ovis is not running on it.") : t("The relay did not answer. Check this device's network.")} />;
+  const away = status.reason === "pc" ? "offline" : "unreachable";
+  return <ConnectionLine state={{ kind: "offline", text: outOfReachWord(away, t) }} reason={outOfReachReason({ displayState: away, last_seen_at: lastSeenAt, check: status }, t)} />;
 }
 
-/** Check now, beside a list of PCs: probes each saved one again. */
 export function CheckPcsButton({ status, onCheck }: { readonly status: ReadonlyMap<string, PcStatus>; readonly onCheck: () => void }) {
   const t = useT();
   const checking = [...status.values()].some((one) => one.kind === "checking");
@@ -305,7 +288,6 @@ export function CheckPcsButton({ status, onCheck }: { readonly status: ReadonlyM
   );
 }
 
-/** The account's PCs: a paired one opens and says how it answered the latest check; the others say what they wait for. */
 export function AccountPcList({ pcs, onJoin, status }: { readonly pcs: readonly MyPc[]; readonly onJoin?: (pc: MyPc) => void; readonly status?: ReadonlyMap<string, PcStatus> }) {
   const t = useT();
   return (

@@ -66,8 +66,8 @@ keytool -printcert -jarfile app/build/outputs/bundle/release/app-release.aab   #
 | Field | Now | Rule |
 |---|---|---|
 | `applicationId` | `sh.ovis.app` | never changes once uploaded |
-| `versionCode` | `8` | raise it by one for every upload, test tracks included (`defaultConfig` in `app/android/app/build.gradle`); the last upload is 1.0 (7), public in production since 2026-11-13 |
-| `versionName` | `1.0.1` | what people see; raise it for each public release |
+| `versionCode` | `13` | raise it by one for every upload, test tracks included (`defaultConfig` in `app/android/app/build.gradle`); the last upload is 1.0.5 (13), built from main at `d30527fd`, published to internal testing and sent to Google Play's production review on 2026-11-20: the scanned QR code lands on its PC (#4231), the app opens on the account sign-in (#4256), and, over 1.0.5 (12) from `0c4f0673` just before it, the app's list opens the hosted app on its PCs (#4266); 1.0.4 (11), sent to production review on 2026-11-19, is the version live on Google Play |
+| `versionName` | `1.0.5` | what people see; raise it for each public release |
 | `targetSdkVersion` | 36 | Play asks new apps for a recent target |
 
 ## 3. Store listing
@@ -94,7 +94,7 @@ presence > Main store listing > Manage translations.
 > - The app connects only to your own PC: over Tailscale or your own network, or, once you turn it
 >   on on the PC, through the Ovis relay, end-to-end encrypted.
 >
-> No account, no ads, no tracking. Try the demo on the first screen to look around without a PC.
+> Sign in with GitHub, Google or Apple, or start without an account. No ads, no tracking.
 >
 > Ovis is open source: https://github.com/devswha/ovis
 
@@ -117,7 +117,7 @@ emulator; no real PC or session is in them.
 | Section | Answer |
 |---|---|
 | Privacy policy | `https://ovis.sh/privacy/` |
-| App access | "All or some functionality is restricted". Instructions: *No account is needed. The app opens a computer that runs the Ovis server (open source, ovis.sh). Without one, tap "Try the demo" on the first screen: it shows the whole app with made-up agents and terminals, on the phone only.* No login details. |
+| App access | "All or some functionality is restricted". Instructions: *Signing in is optional; no account is needed to review. The app opens a computer that runs the Ovis server (open source, ovis.sh). Without one, tap "Start without signing in", then "Enter an address", type demo and tap Open: it shows the whole app with made-up agents and terminals, on the phone only.* No login details. |
 | Ads | No, the app has no ads |
 | Content rating | Category "All other app types" (utility). Every question No: no violence, sexual content, profanity, drugs, gambling; no user-to-user chat or sharing between users; no location sharing; no digital purchases. Expected rating: Everyone / PEGI 3 |
 | Target audience | 18 and over only (a developer tool; the privacy policy says it is not for children) |
@@ -162,6 +162,16 @@ accesses" that data, and Ovis shows it, so it does not apply. Three routes leave
   phone opens tells the PC its settings (`TelemetryNotice` in
   `src/components/TelemetryControls.tsx`), and the PC puts the settings of the last browser or
   phone that told it into those counts. Details below.
+- **To the developer's account service, from the phone**: only once the user signs in (signing
+  in is optional), the app signs in with `account.ovis.sh` (`docs/account.md`), which keeps a random
+  account ID and, for each sign-in method added, a one-way hash of that provider's ID for the user
+  (never the email, name or the provider's tokens); one-way hashes of each signed-in device's
+  tokens and the push subscription it registered; for each PC added, its name, relay ID and public
+  key; and, for a join or link-page request, the device's name and public key and the country and
+  city Cloudflare saw it come from, deleted within about a day. The device and PC names the user
+  types and the system a device reports (such as iOS or Linux) are labels for the approval card,
+  not personal info or a device identifier, so they add no data type. The app offers **Delete account** (Devices > Account), which erases them at
+  once; `https://ovis.sh/privacy/#account` says how.
 - **To the developer's push relay, from the phone**: once alerts are turned on, the app registers
   its FCM push token with `push.ovis.sh` (`push-relay/`), which keeps it to forward the PC's
   end-to-end encrypted alerts through FCM.
@@ -172,9 +182,11 @@ Answers:
 - *Is all of the user data collected by your app encrypted in transit?* **No** (a plain `http`
   address on a home network is allowed; over Tailscale, `https` and the Ovis relay it is
   encrypted; the usage counts go to the developer over `https`).
-- *Do you provide a way for users to request that their data is deleted?* **No** (what goes to the
-  PC is kept on the user's own computer; the usage counts hold no account or contact to find a
-  person by).
+- *Do you provide a way for users to request that their data is deleted?* **Yes**: Delete account
+  in the app (Devices > Account) erases the account and everything the account service keeps under
+  it; the delete-account URL Play asks for is `https://ovis.sh/privacy/#account`. What goes to the
+  PC is kept on the user's own computer, and the usage counts hold no account or contact to find
+  a person by.
 - Data types, each **collected, not shared, not processed ephemerally**:
 
 | Data type | What it is in Ovis | Required or optional | Purpose |
@@ -185,33 +197,39 @@ Answers:
 | Audio > Music files, Other audio files | audio files the user attaches in the composer | optional, user-initiated | App functionality |
 | Files and docs | files the user attaches in the composer, and files opened in the file viewer | optional, user-initiated | App functionality |
 | App activity > Other user-generated content | what is typed into terminals | required | App functionality |
-| App activity > App interactions | the app settings the user chose (theme, font sizes, language, alert and voice options and the like), in the PC's usage counts to the developer | optional (can be turned off) | Analytics |
-| Device or other IDs | the sign-in cookie a PC gives the phone when it is paired, or for a PC paired through the Ovis relay the public half of the key the phone makes for it (to the PC); that PC's relay ID, in the requests to the developer's `relay.ovis.sh` (or `relay-ap.ovis.sh`) and `app.ovis.sh` that open it; the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on | required (cookie); optional (ID, push token) | App functionality (cookie, push token); Analytics (ID) |
-| Location > Approximate location | the country (two letters) the developer's receiver reads from the address the usage counts come from; the address is not stored | optional (can be turned off) | Analytics |
+| App activity > App interactions | the app settings the user chose (theme, font sizes, language, alert and voice options and the like), the kinds of screen the app was opened on and how they reached the PC, how many prompt answers were sent and alerts delivered and tapped, and how often the app's buttons were used each day, whether by button, menu, shortcut or palette, and which of these controls were shown (counts as ranges and a list of control names, never what was typed), in the PC's usage counts to the developer | optional (can be turned off) | Analytics |
+| Device or other IDs | the sign-in cookie a PC gives the phone when it is paired, or for a PC paired through the Ovis relay the public half of the key the phone makes for it (to the PC); that PC's relay ID, in the requests to the developer's `relay.ovis.sh` (or `relay-ap.ovis.sh`) and `app.ovis.sh` that open it; the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on; once signed in, the push subscription each device registers with the developer's account service and the relay ID and public key of each PC added | required (cookie); optional (ID, push token, account service) | App functionality (cookie, push token, account service); Account management (account service); Analytics (ID) |
+| Personal info > User IDs | the random account ID the developer's account service makes when the user signs in, and a one-way hash of the sign-in provider's ID for the user (GitHub, Google or Apple) | optional (only when signed in) | App functionality, Account management |
+| Location > Approximate location | the country (two letters) the developer's receiver reads from the address the usage counts come from; once signed in, the country and city the developer's account service keeps with a join or link-page request for about a day, so an approval shows roughly where it came from; the address is never stored | optional (counts can be turned off; signing in is optional) | Analytics (counts); App functionality, Account management (account service) |
 | App info and performance > Diagnostics | connection traces the page reports to the PC for troubleshooting | required | Analytics |
 
 The composer's attachment picker takes any file (`src/components/Composer.tsx`,
 `uploadPaneImage` in `src/lib/api.ts`), so every file-like type above is listed as optional and
 user-initiated: nothing is sent unless the user picks it. None of it is "shared": the PC is the
 user's own, the transcription provider is one the user chose and is sent to on the user's own
-action, and the developer's receiver, push relay, Ovis relay and `app.ovis.sh` run on
+action, and the developer's receiver, push relay, Ovis relay, account service (`account.ovis.sh`) and
+`app.ovis.sh` run on
 Cloudflare (the regional relay endpoint `relay-ap.ovis.sh` on a server rented from a hosting
 provider), and FCM carries the encrypted alerts, as service providers.
 
-**The usage counts, in full** (with the push token above, the only data that reaches the
-developer):
+**The usage counts, in full** (with the push token above and, once signed in, the account
+service's records, the only data that reaches the developer):
 
 - **When**: one event when the server is installed and one per new version, plus one message per
-  UTC day it is in use. Nothing goes out before the client has shown its one-line notice ("Ovis
-  sends anonymous usage counts"), and the first event waits 10 minutes after that, so it can be
-  turned off first.
+  UTC day it is in use and, once that day has ended, one with how often the app's buttons were
+  used that day. Nothing goes out before the client has shown its one-line notice ("Button use
+  and other anonymous usage counts are sent to improve Ovis"), and the first event waits 10
+  minutes after that, so it can be turned off first.
 - **On or off**: **on by default (opt-out)**. The switch is under Settings > About > Anonymous
   usage counts, in the PC's browser and in the app alike, next to the exact messages. The PC's
   owner can also block it with `OVIS_TELEMETRY=0` or `DO_NOT_TRACK=1`.
-- **What they hold**: a random ID made on the PC, the Ovis version, the PC's operating system and
+- **What they hold**: a random ID made on the PC, the Ovis version (and the one an update replaced, left out of an update still owed across an off and on or made while off, and of a new state's first message; other updates name it), the terminal
+  runtime it serves (herdr or herdr-core), the PC's operating system and
   CPU type, how Ovis was installed, the allowlisted settings snapshot of the last browser or phone
-  that opened it (no free-form text, paths or account names), and the kinds of coding agents
-  running (such as `claude`). The receiver adds the country and never stores the address. Never
+  that opened it (no free-form text, paths or account names), the kinds of coding agents
+  running (such as `claude`), the kinds of screen the app was opened on and how they reached the PC,
+  how many prompt answers were sent and alerts delivered and tapped, and how often the app's buttons were used each day (fixed names such
+  as `chat_send`, each count only a range such as 3-9, narrow and wide screens apart, with whether a button, menu, shortcut or palette was used for a few actions (also a range) and the list of which of these controls were shown). The receiver adds the country and never stores the address. Never
   included: pane names, paths, terminal content, code or messages.
 
 `https://ovis.sh/privacy/` (and `/ko/privacy/`) says the same.

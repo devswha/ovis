@@ -19,6 +19,7 @@ import { UPDATES_ZH } from "./i18n/updates.zh.ts";
 import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 import { RELAY_ZH } from "./i18n/relay.zh.ts";
 import { DASHBOARD_ZH } from "./i18n/dashboard.zh.ts";
+import { MY_MACHINES_ZH } from "./i18n/my-machines.zh.ts";
 import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
 
 /**
@@ -35,6 +36,7 @@ import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "A key may not have reached the terminal: the connection ended before it was confirmed.": "按键可能未送达终端：确认之前连接已断开。",
   "Open PC": "打开 PC",
   "View only": "仅查看",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "未粘贴：文件路径中含有换行，终端会将其当作 Enter。",
@@ -80,7 +82,8 @@ const BASE: Record<string, string> = {
   "This account service can't sign in a browser on this PC yet.": "此账户服务暂不支持在这台 PC 的浏览器中登录。",
   "Your sign-in ended. Sign in again to see every PC of your account.": "登录已失效。请重新登录以查看账户中的所有 PC。",
   "The account service could not be reached. The PCs this device is paired with still work.": "无法连接账户服务。已与此设备配对的 PC 仍可正常使用。",
-  "Add {device}?": "添加 {device}？",
+  "Add a new device?": "要添加新设备吗？",
+  "Check the number, then approve": "核对数字后再批准",
   "Through {pc} · joins your {n} PCs": "经由 {pc} · 将加入你的 {n} 台 PC",
   "Pick the number on {device}": "选择 {device} 上显示的数字",
   "Approve only if you started this yourself just now. Didn't ask for it? Deny it.": "仅在你刚刚亲自发起时才批准。如果不是你发起的，请拒绝。",
@@ -115,15 +118,15 @@ const BASE: Record<string, string> = {
   "Recent folders": "最近的文件夹",
   "Dismiss": "关闭",
   "Input line": "输入框",
-  // ---- settings ----
   "Settings": "设置",
   "PCs": "PC",
+  "PC {name}": "PC {name}",
+  "PCs, {n} of {m} connected": "{m} 台 PC 中已连接 {n} 台",
   "Chat": "聊天",
   "Agent default": "Agent 默认",
   "Devices and PCs": "设备和电脑",
   "Access token": "访问 Token",
 
-  // ---- shortcuts (lib/shortcuts.ts labels) ----
   "Command palette": "搜索窗格和命令",
   "Switch chat / terminal": "切换聊天 / 终端",
   "Focus pane input": "聚焦面板输入框",
@@ -136,7 +139,6 @@ const BASE: Record<string, string> = {
   "Previous workspace": "上一个工作区",
   "Next workspace": "下一个工作区",
 
-  // ---- agent status words (lib/status.ts) ----
   "READY": "就绪",
   "RUN": "运行",
   "INPUT": "需回应",
@@ -144,7 +146,6 @@ const BASE: Record<string, string> = {
   "BG": "后台",
   "—": "—",
 
-  // ---- app header and shell ----
   "Opening link…": "正在打开链接…",
   "Connecting to Ovis…": "正在连接 Ovis…",
   "Close workspace list": "关闭工作区列表",
@@ -219,7 +220,6 @@ const BASE: Record<string, string> = {
   "Alerts on in the app. Tap to turn them off": "应用内提醒已开启。点按可关闭",
   "Alerts on while this tab is open (closed-app alerts need https, and on iPhone the home-screen app). Tap to turn them off": "此标签页打开期间会收到提醒（关闭应用后的提醒需要 https，在 iPhone 上还需使用主屏幕应用）。点按可关闭",
 
-  // ---- sidebar ----
   "Rename pane": "重命名窗格",
   "Branch": "分支",
   "Opening…": "正在打开…",
@@ -228,7 +228,6 @@ const BASE: Record<string, string> = {
   "Close": "关闭",
   "Rename failed: {reason}": "重命名失败：{reason}",
 
-  // ---- PCs sidebar ----
   "Filter workspaces and agents": "筛选工作区和 Agent",
   "Connecting…": "正在连接…",
   "Connected": "已连接",
@@ -241,6 +240,9 @@ const BASE: Record<string, string> = {
   "{n} ms": "{n} ms",
   "Check now": "立即检查",
   "Check again": "重新检查",
+  "Other PCs": "其他电脑",
+  "Unnamed PC": "未命名的电脑",
+  "Off|pc state": "已关闭",
   "Checking…": "正在检查…",
   "relay": "中继",
   "direct": "直连",
@@ -265,12 +267,10 @@ const BASE: Record<string, string> = {
   "Step {n} of {total}": "第 {n} 步，共 {total} 步",
   "{done} of {total}": "{done} / {total}",
 
-  // ---- command palette ----
   "Refresh": "刷新",
   "Search panes and actions": "搜索窗格和命令",
   "Search conversation": "搜索对话",
 
-  // ---- new workspace ----
   "Browse": "浏览",
   "Cancel": "取消",
   "Install": "安装",
@@ -279,29 +279,22 @@ const BASE: Record<string, string> = {
   "Sign in": "登录",
   "Starting…": "正在启动…",
   "Start": "启动",
-  // the launch's model, effort, first message and skills (lib/agentLaunchMode.ts, lib/newSession.ts)
-
-  // ---- folder browser ----
   "No matching folders": "没有匹配的文件夹",
   "This folder cannot be opened.": "无法打开此文件夹。",
   "Folders could not be loaded.": "无法加载文件夹。",
   "Unlock agent": "解锁 Agent",
 
-  // ---- files ----
   "Files": "文件",
   "This image is {size}; download it to view.": "此图片大小为 {size}；请下载后查看。",
   "Download": "下载",
   "Open {path}": "打开 {path}",
 
-  // ---- PC dialog ----
   "Continue": "继续",
 
-  // ---- updates ----
   "Reload app": "重新加载应用",
   "Details": "详情",
 
 
-  // ---- prompt card ----
   "Submit": "提交",
   "Recommended": "推荐",
   "Agents": "Agent",
@@ -311,15 +304,14 @@ const BASE: Record<string, string> = {
   "Paired: {name}.": "已配对：{name}。",
   "QR code that pairs a phone with code {code}": "使用代码 {code} 配对手机的二维码",
   "Pairing code": "配对码",
+  "Needs HTTPS or localhost.": "需要 HTTPS 或 localhost。",
   "{agent} is ready": "{agent} 已就绪",
 
 
-  // ---- composer ----
   "Drag to resize · double-click to reset": "拖动以调整大小 · 双击重置",
   "Failed": "失败",
   "Send now": "立即发送",
 
-  // ---- chat view ----
   "Copied": "已复制",
   "Worked for {duration}": "工作了 {duration}",
   "Copy message": "复制消息",
@@ -327,7 +319,6 @@ const BASE: Record<string, string> = {
   "{m}m": "{m} 分钟",
   "{h}h {m}m": "{h} 小时 {m} 分",
 
-  // ---- terminal ----
   "The question on screen changed; check it and answer again.": "屏幕上的问题已变化。请查看后重新回答。",
   "Reconnect": "重新连接",
   "Discard": "丢弃",
@@ -335,11 +326,9 @@ const BASE: Record<string, string> = {
   "Held message — review and send": "保留的消息。请检查后发送",
 
 
-  // ---- voice input ----
   "Dictate (hold)": "听写（按住）",
   "Hold message in chat": "在聊天中暂存消息",
   "Voice input needs HTTPS": "语音输入需要 HTTPS",
-  // ---- errors (lib/userError.ts) ----
   "This browser is not signed in to this PC any more. Pair it again in Settings → Devices and PCs.": "此浏览器已不再登录此电脑。请在设置 → 设备和电脑中重新配对。",
   "That item no longer exists on the PC. Refresh and try again.": "该项目在电脑上已不存在。请刷新后重试。",
   "It changed on the PC while you were acting. Check it and try again.": "你操作期间电脑上的内容已更改。请检查后重试。",
@@ -363,19 +352,16 @@ const BASE: Record<string, string> = {
   "The server cannot save settings: check that its state folder is writable.": "服务器无法保存设置：请检查其状态文件夹是否可写。",
 
 
-  // ---- devices ----
   "Loading…": "正在加载…",
   "Done": "完成",
   "Name": "名称",
   "Recent": "最近",
   "Needs you": "需回应",
 
-  // ---- phone ----
   "Copy": "复制",
   "…": "…",
   "Alerts": "提醒",
   "Sending…": "正在发送…",
-  // the alerts health notice over the pane and Settings → Alerts say these alike (lib/pushHealth.ts)
   "This device's push subscription is missing. Turn alerts on again.": "此设备的推送订阅不存在。请重新开启提醒。",
   "The push service retired this device's subscription. Turn alerts on again to make a new one.": "此设备的提醒连接已失效。请重新开启提醒以重新连接。",
   "Turn alerts on again": "重新开启提醒",
@@ -396,7 +382,6 @@ const BASE: Record<string, string> = {
   "Queued messages": "排队的消息",
   "Not confirmed. Check the terminal before sending again.": "未确认。重新发送前请检查终端。",
   "Too large to attach: {name} ({size}). A file can be up to {limit}.": "文件过大，无法附加：{name}（{size}）。单个文件最大为 {limit}。",
-  // ---- subscription usage ----
   "Move {name} up": "将 {name} 上移",
   "Move {name} down": "将 {name} 下移",
   "Subscription usage": "订阅用量",
@@ -404,9 +389,7 @@ const BASE: Record<string, string> = {
   "{n} background task": "{n} 个后台任务",
   "{n} background tasks": "{n} 个后台任务",
   "Try again": "重试",
-  "The relay did not start: {message}": "中继未能启动：{message}",
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "开启中继后将关闭设备门槛：此后新的浏览器需要配对码或访问令牌。",
-  // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新建标签页",
   "New tab with agent…": "用 Agent 新建标签页…",
   "New worktree": "新建工作树",
@@ -442,7 +425,6 @@ const BASE: Record<string, string> = {
   "Change PC": "切换电脑",
   "Forget this PC": "忘记这台电脑",
   "Selected": "已选择",
-  // Recover unsent text (components/UnsentText.tsx)
   "Unsent text · {destination}": "未发送的文本 · {destination}",
   "Put in message box adds this text to {destination}. Nothing is sent.": "点击“放入输入框”会将此文本放入 {destination}。不会发送。",
   "Text you had not sent before herdr restarted. Copy it and paste it where you need it. Nothing here is sent.": "这是重启前未发送的文本。复制后粘贴到需要的地方。不会自动发送。",
@@ -493,6 +475,7 @@ const BASE: Record<string, string> = {
   "Model": "模型",
   "One model name, without spaces.": "填写一个不含空格的模型名称。",
   "Effort": "推理强度",
+  "Browser tool": "浏览器工具",
   "Sandbox and approvals": "沙箱与审批",
   "Add this PC to my account": "将此电脑添加到我的账号",
   "Signed in. Adding this PC to your account…": "已登录。正在将此电脑添加到你的账号…",
@@ -502,7 +485,7 @@ const BASE: Record<string, string> = {
   "Sign in and add this PC": "登录并添加此电脑",
   "Add this PC to your account, so every device of your account can use it with one approval.": "将此电脑添加到账号后，只需批准一次，账号的所有设备都能使用它。",
   "Every device of your account can use this PC after that.": "之后，账号的所有设备都能使用此电脑。",
-  "On a device already signed in to this account (the Ovis app or app.ovis.sh), choose Add on {name}. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.": "在已登录此账号的设备上（Ovis 应用或 app.ovis.sh），选择 {name} 的“添加”。随后此屏幕会显示六位数字：在那台设备上输入，然后在这里按“批准”。请保持此页面打开。",
+  "On a device already signed in to this account (the Ovis app or app.ovis.sh), choose Add on {name}. If it shows Join there instead, choose Join, then Type the number. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.": "在已登录此账号的设备上（Ovis 应用或 app.ovis.sh），选择 {name} 的“添加”。如果那里显示的是“加入”，请选择“加入”，再选择“输入数字”。随后此屏幕会显示六位数字：在那台设备上输入，然后在这里按“批准”。请保持此页面打开。",
   "Waiting. The window reopens by itself if Ovis restarts.": "正在等待。即使 Ovis 重启，也会自动重新开放。",
   "Stop waiting": "停止等待",
   "This PC stopped waiting after 30 minutes.": "已过 30 分钟，此电脑已停止等待。",
@@ -528,8 +511,6 @@ const BASE: Record<string, string> = {
   "Paste and send": "粘贴并发送",
   "Conversation": "对话",
   "Off": "关闭",
-  "Not now": "暂不",
-  "Pair with a QR or code": "使用二维码或配对码配对",
   "Add this PC": "添加此电脑",
   "Pair with {name}?": "与 {name} 配对？",
   "Pair": "配对",
@@ -545,6 +526,7 @@ const BASE: Record<string, string> = {
   "Offline": "离线",
   "Update Ovis on it": "需要更新 Ovis",
   "Open": "打开",
+  "Add a PC": "添加电脑",
   "Relay": "中继",
   "Add": "添加",
   "Update": "更新",
@@ -552,6 +534,7 @@ const BASE: Record<string, string> = {
   "Search": "搜索",
   "Choose one from the list to open its chat here.": "从列表中选择一项，它的聊天会在这里打开。",
   "Agent inbox": "Agent 收件箱",
+  "Inbox mode": "收件箱模式",
   "Open agent inbox": "打开 Agent 收件箱",
   "Back to Ovis": "返回 Ovis",
   "Remove PC": "移除 PC",
@@ -559,7 +542,6 @@ const BASE: Record<string, string> = {
   "Removes this registration. Remote sessions keep running.": "仅移除此注册。远程会话会继续运行。",
   "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "仅从这台 PC 移除。要同时取消它的访问权限，请在那台 PC 的 手机和设备 中撤销。",
   "Added": "新增",
-  "Sign in to Ovis": "登录 Ovis",
   "Theme": "主题",
   "Dark": "深色",
   "Light": "浅色",
@@ -574,10 +556,15 @@ const BASE: Record<string, string> = {
   "Forget this PC?": "忘记这台电脑？",
   "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "此手机上的对应密钥将被删除；在电脑上撤销之前，它仍会列出这部手机。重新配对需要电脑上新的二维码。",
   "Forget": "忘记",
-  "Offline · {when}": "离线 · {when}",
-  "The PC is off, or Ovis is not running on it.": "电脑已关机，或其上的 Ovis 未运行。",
-  "The relay did not answer. Check this device's network.": "中继没有响应。请检查此设备的网络。",
+  "No answer": "无响应",
   "Ready · not in the account yet": "就绪 · 尚未加入账户",
+  "Machine offline": "机器离线",
+  "Could not reach this machine": "无法连接此机器",
+  "Switched off": "已关机",
+  "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name} 有响应，但没有及时完成连接。它可能正忙或正在重启。请重试；如果一直这样，请在 {name} 上重启 Ovis。",
+  "Last seen {when}.": "上次在线：{when}。",
+  "It is off, has no network, or Ovis is not running on it.": "它已关机、没有网络，或者其上的 Ovis 没有运行。",
+  "This device could not reach the relay. Check this device's network.": "此设备无法连接中继。请检查此设备的网络。",
   "Account setup is incomplete.": "账户设置尚未完成。",
   "Adding it to your account…": "正在添加到账户…",
   "{name} is ready to open on this device.": "此设备已准备好打开 {name}。",
@@ -586,9 +573,58 @@ const BASE: Record<string, string> = {
   "Plan · {plan}": "方案 · {plan}",
   "{used}/{max} PCs": "{used}/{max} 台电脑",
   "{used} / {cap} relay data": "中继流量 {used} / {cap}",
+  "Agent": "Agent",
+  "Dark theme": "深色主题",
+  "Light theme": "浅色主题",
+  "Charcoal": "炭灰",
+  "Codex": "Codex",
+  "Amber": "琥珀",
+  "Catppuccin": "Catppuccin",
+  "Catppuccin Latte": "Catppuccin Latte",
+  "Tokyo Night": "Tokyo Night",
+  "Black": "黑色",
+  "Tokyo Night Day": "Tokyo Night Day",
+  "Gruvbox": "Gruvbox",
+  "Gruvbox Light": "Gruvbox Light",
+  "One Dark": "One Dark",
+  "One Light": "One Light",
+  "Solarized": "Solarized",
+  "Solarized Light": "Solarized Light",
+  "Kanagawa": "Kanagawa",
+  "Kanagawa Lotus": "Kanagawa Lotus",
+  "Rosé Pine": "Rosé Pine",
+  "Rosé Pine Dawn": "Rosé Pine Dawn",
+  "Dracula": "Dracula",
+  "Nord": "Nord",
+  "Vesper": "Vesper",
+  "Preview": "预览",
+  "Alerts off": "提醒已关闭",
+  "Send test": "发送测试",
+  "Needs input": "需回应",
+  "Phone": "手机",
+  "An agent asks you something": "代理向你提问时",
+  "An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input.": "代理在运行命令或修改文件前请求许可时。不说明在等待什么的代理按“需要输入”提醒。",
+  "Long turns: only work that took a minute or more": "长任务：仅限耗时 1 分钟或以上的工作",
+  "Alert me when": "提醒我",
+  "Long turn finished": "长回合完成",
+  "Any turn finished": "每回合完成",
+  "Any turn finished takes in the long ones.": "开启每回合完成后，长回合也会一并提醒。",
+  "Stopped on an error": "因错误停止",
+  "A turn that ended on an error, as OmO and GJC report it": "OmO 和 GJC 报告的因错误结束的回合",
+  "Next": "下一个",
+  "Setup: {count} left": "剩余设置 {count} 项",
+  "Hide setup reminder": "隐藏设置提醒",
+  "Start another agent": "再启动一个代理",
+  "Optional": "可选",
+  "Couldn't check alerts.": "无法检查提醒。",
+  "Chat or Terminal": "聊天或终端",
+  "Same agent, two views.": "同一个代理，两种视图。",
+  "Waiting agents first": "等待中的代理在前",
+  "From every workspace.": "来自所有工作区。",
+  "Pick a folder to start in.": "选择要启动的文件夹。",
+  "Show QR code": "显示二维码",
 };
 
-/** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const ZH_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
   settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH, ...SETTINGS_COMPOSER_ZH, ...SETTINGS_LAYOUT_ZH, ...SETTINGS_AGENTS_ZH, ...SETTINGS_HELP_ZH },
@@ -607,6 +643,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   palette: PALETTE_ZH,
   relay: RELAY_ZH,
   dashboard: DASHBOARD_ZH,
+  "my-machines": MY_MACHINES_ZH,
   "runtime-move": RUNTIME_MOVE_ZH,
 };
 

@@ -7,6 +7,7 @@
  */
 import { exportAccountKey } from "../../../shared/account-records.ts";
 import type { AddRecord, RemoveRecord } from "../../../shared/account-records.ts";
+import type { RelayOffer } from "../../../shared/relay-offer.ts";
 
 export interface AccountKey {
   readonly private_key: CryptoKey;
@@ -18,7 +19,6 @@ export const ACCOUNT_PROVIDERS = ["github", "google", "apple"] as const;
 export type AccountProvider = (typeof ACCOUNT_PROVIDERS)[number];
 
 export interface AccountSession {
-  /** the account service's origin this sign-in is with */
   readonly service: string;
   readonly account: string;
   readonly provider: AccountProvider;
@@ -38,6 +38,14 @@ export interface PendingSignIn {
   readonly verifier: string;
   readonly redirect_uri: string;
   readonly started_at: number;
+  /** the marked pairing this sign-in was started for (relay/shell.tsx): it goes with the sign-in, whatever its end */
+  readonly pairing?: PendingPairing;
+}
+
+/** A scanned offer waiting on a sign-in; `at`: when the code was scanned, which bounds how long it is tried. */
+export interface PendingPairing {
+  readonly offer: RelayOffer;
+  readonly at: number;
 }
 
 interface Records {
@@ -58,7 +66,6 @@ interface Records {
    * checked (account/join.ts, keepRemovals), kept verbatim to relay to a PC it brings into the account
    */
   removals: Readonly<Record<string, RemoveRecord>>;
-  /** by server_id: a PC this device brought into the account, and the records whose outcome it read there */
   enrolls: Readonly<Record<string, PlannedEnroll>>;
   /**
    * By leave id: the account key a leave of this device started for (account/leave.ts). It outlives
@@ -67,25 +74,29 @@ interface Records {
   leaving: Readonly<Record<string, string>>;
   /** by link id: the PC a link of this device's account key may be on its way to, read by a leave's snapshot */
   linking: Readonly<Record<string, string>>;
+  /** the key this sign-in registered with the account service (account/signInKey.ts) and its place in the account's order */
+  signin_key: SignInKey;
+}
+
+export interface SignInKey {
+  readonly account: string;
+  readonly sign_in_id: string;
+  readonly key: AccountKey;
+  /** its place in the account's order; null while the service has not confirmed the registration */
+  readonly no: number | null;
 }
 
 export interface PlannedEnroll {
   readonly account: string;
-  /** ids of the records the PC answered with a final outcome */
   readonly done: readonly string[];
   /** keys an earlier, unfinished attempt let in, to be introduced once the enrollment ends */
   readonly admitted?: readonly string[];
-  /**
-   * Once enrolled: the devices it let in, the new PC as this device checked it, and the other PCs
-   * (by server_id) still to tell those devices about it (account/join.ts, introductions)
-   */
   readonly introduce?: { readonly keys: readonly string[]; readonly pc: { readonly server_id: string; readonly server_public_key: string; readonly relay: string; readonly name: string }; readonly to: readonly string[] };
 }
 
 export interface QueuedAdd {
   readonly account: string;
   readonly record: AddRecord;
-  /** the PCs whose mailbox it has not reached */
   readonly to: readonly string[];
 }
 type Name = keyof Records;
@@ -98,7 +109,6 @@ export interface AccountStore {
   set<N extends Exclude<Name, "key">>(name: N, value: Records[N] | undefined): Promise<void>;
   /** Reads and writes `name` in one transaction; `change` runs synchronously inside it. */
   update<N extends Exclude<Name, "key">>(name: N, change: (current: Records[N] | undefined) => Records[N] | undefined): Promise<void>;
-  /** Reads and writes several `names` in one transaction; a name `change` leaves out, or sets undefined, is deleted. */
   updateMany<N extends Exclude<Name, "key">>(names: readonly N[], change: (current: Many<N>) => Many<N>): Promise<void>;
   /**
    * Forgets the key, the sign-in and every record but `leaving`, in one transaction: a new key is made
@@ -109,7 +119,7 @@ export interface AccountStore {
   clear(keep?: (session: AccountSession) => boolean, options?: { readonly only?: (session: AccountSession | undefined) => boolean; readonly spare?: readonly Exclude<Name, "key" | "session">[] }): Promise<void>;
 }
 
-async function newKey(): Promise<AccountKey> {
+export async function newKey(): Promise<AccountKey> {
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
   return { private_key: pair.privateKey, public_spki: await exportAccountKey(pair.publicKey) };
 }
@@ -155,7 +165,6 @@ export const accountLock: AccountLock = (work) => {
   return locks ? locks.request("ovis-account-session", work) : work();
 };
 
-/** One lock for every AccountService that shares a memory store, as tabs share the browser's. */
 export function memoryLock(): AccountLock {
   let tail: Promise<unknown> = Promise.resolve();
   return (work) => {

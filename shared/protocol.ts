@@ -1,4 +1,5 @@
 import type { HerdrKeys } from "./herdr-keys.ts";
+import type { ACCOUNT_OPENS_ALL_CAPABILITY, BlockReceipt, DeviceNotice, NoticeAnswer, NoticeReplay, NoticeSeen } from "./account-devices-api.ts";
 import type { MachineEvent } from "./machines.ts";
 /**
  * Ovis's own HTTP/WebSocket contract, shared by the Bun server and the React client.
@@ -42,9 +43,11 @@ export interface HerdrUiConfig {
   keys?: HerdrKeys;
 }
 
-/** Friendly aliases used across the UI. */
 export type HerdrWorkspace = WorkspaceInfo;
 export type HerdrTab = TabInfo;
+/** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
+export type PaneContext = { used: number; window: number | null };
+
 /**
  * `background_tasks`: an OmO pane's `task` children, a Claude Code or OpenCode pane's subagents and background commands, or an agy or grok pane's background tasks, still running, counted by the server; absent when none.
  * `background_wait`: the pane is at rest while work its turn started still runs, and the turn goes on when it ends (server/background-wait.ts); absent when not.
@@ -60,9 +63,6 @@ export type HerdrTab = TabInfo;
  * agent waits for (`permission`, `question`, `auth`), its message in its own words (never
  * translated), and how far it is, 0 to 100.
  */
-/** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
-export type PaneContext = { used: number; window: number | null };
-
 export type HerdrPane = PaneInfo & {
   background_tasks?: number; background_wait?: true; plan?: PlanSummary; context?: PaneContext;
   parent_pane_id?: string;
@@ -102,7 +102,7 @@ export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
 };
 export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 
-export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
+export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, PendingKey, PendingRedemptionsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
@@ -143,7 +143,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *                                          security?: SecuritySummary (authenticated only, no-store),
  *                                          herdr_core?: HerdrCoreFacts (shared/machines.ts; authenticated only, absent until
  *                                          the server's first look for hc has ended), herdr_runtime?: HerdrRuntimeFacts (a driving owner
- *                                          only: which runtime this server serves and what Settings may switch it to) } (boot_id: this server
+ *                                          only: which runtime this server serves and what Settings may switch it to),
+ *                                          account_devices?: { unlinked: { id, label }[], own_word: { id, label }[] } (a driving
+ *                                          owner only: docs/account.md, "How a device joined") } (boot_id: this server
  *                                          lifetime's id, the supervisor's when managed; older servers sent null unmanaged)
  *  GET    /api/session                   -> { snapshot: SessionSnapshot }
  *  POST   /api/runtime                   -> 202 { accepted: true }; body { runtime: "herdr" | "herdr-core" | "alt-runtime" }, X-Herdr-Update: 1,
@@ -175,9 +177,20 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  POST   /api/relay/start               -> RelayStatus; closes an ungated tokenless device gate first
  *  POST   /api/relay/stop                -> RelayStatus; closes sessions with shutdown and WS 1001
  *  POST   /api/relay/offer               -> { url, expires_at }; an offer carrying the active one-time pairing code
- *         (the one Devices shows, else a new one); with x-ovis-no-account-only: 1, a code of its own made only
- *         while the PC is in no account (409 in_account otherwise), ended when the PC joins one; 409 relay_off
- *         while off, relay_offline in error
+ *         (the one Devices shows, else a new one, which replaces the code of the header that follows: no other
+ *         offer carries that one); with x-ovis-no-account-only: 1, a code of its own made only
+ *         while the PC is in no account (409 in_account otherwise) and an account is named for it (409
+ *         no_account_named otherwise: RelayStatus.account_named), ended when the PC joins one; a device that
+ *         pairs with that code through the relay waits to link (docs/account.md, "Who may admit a device"):
+ *         403 link_required for all but its account status and its link, gone after 30 s; 409 relay_off
+ *         while off, relay_offline in error. With x-ovis-expect-account: <account id> (on POST /api/relay/code
+ *         too), such a code made for that account, whose waiting devices are taken into it alone, answered
+ *         with AccountPairing beside the fields above; the offer carries the code pending for the same account,
+ *         else one of its own; 400 invalid_account, 409 in_account (docs/account.md, "A code made for an account").
+ *         Either kind of code is made only with an account service (409 account_service_off), its offer carries
+ *         `admission: 1`, and a link while it lives needs the account's admission (docs/account.md, "The account's word")
+ *  POST   /api/relay/offer/keep          -> AccountPairingState; JSON { id }: such a code read by its pairing.id;
+ *         400 invalid_body without one
  *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
  *         digits (docs/relay.md); 409 relay_off while off
  *  POST   /api/relay/link/close          -> { ok: true }; ends that link's pairing window and declines the
@@ -488,7 +501,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  POST   /api/devices/pair/start        -> PairingCode: a six-digit code good for ten minutes, replacing any pending one
  *         (X-Herdr-Machine: 1 + same origin, from a client with full access)
  *  POST   /api/devices/pair { code, label? } -> 204 + Set-Cookie ovis_device (public, like /api/auth;
- *         401 invalid_code when the code is wrong, spent after five tries, or expired). With
+ *         401 invalid_code when the code is wrong, spent after five tries, or expired, and for the code of an
+ *         offer asked for with x-ovis-no-account-only, which is redeemed through the relay only). With
  *         `Accept: application/json` (a script, never the browser app): 200 DevicePairToken + the same
  *         Set-Cookie; the script then sends `Authorization: Device <token>` in place of the cookie,
  *         under the same role, last-seen and revocation
@@ -538,7 +552,7 @@ export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProb
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
-export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, DirectExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, DeviceConnection, DeviceRoute, PairingCode, PortalLogin, TailscaleAccess } from "./access.ts";
+export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, DirectExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, DeviceConnection, DeviceRoute, PairingCode, AccountPairing, AccountPairingEnd, AccountPairingLink, AccountPairingState, AccountPairingTurnedAway, PortalLogin, TailscaleAccess } from "./access.ts";
 /** Older servers and the Tailscale-only builder omit relay state. */
 export type RemoteAccess = import("./access.ts").RemoteAccess & { readonly relay?: RelayStatus };
 
@@ -599,6 +613,12 @@ export interface RelayStatus {
   readonly error: string | null;
   /** why, as a fixed code, whenever `error` says something (null otherwise); absent from an older server */
   readonly error_code?: RelayErrorCode | null;
+  /**
+   * Whether an account was named for this PC (`POST /api/account/relay-account`: its signed-in owner added it on
+   * its own page, or ran `ovis add`). The relay tab's QR code is made only once one is (`POST /api/relay/offer`
+   * with `x-ovis-no-account-only`). Absent from an older server.
+   */
+  readonly account_named?: boolean;
   /**
    * Direct connections on this PC's networks (docs/relay.md): whether they are on, and the carriers
    * listened on now (none while the relay is off). Absent from a server without them.
@@ -703,7 +723,8 @@ export type ConversationPart =
      * What the transcript itself records of the call's outcome, never guessed from its output text.
      * Claude: `pending` until its tool_result, then `ok`, or `error` when the result is flagged so.
      * Codex: `pending` until its output record, then absent (it records no failure flag: done, outcome
-     * unknown). Absent for other agents and older servers.
+     * unknown). OpenCode: `pending` while waiting or running, then `ok` or `error` as it records the call.
+     * Absent for other agents and older servers.
      */
     state?: "pending" | "ok" | "error";
   }
@@ -833,9 +854,10 @@ export interface ConversationResponse {
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
   /**
-   * `metadata` was read off the agent's own screen: a conversation not begun, or a Codex that has
-   * reported no session (whose scrollback answer carries `metadata` only so). No file records it
-   * and the pane's output can change it, so the chat re-reads on terminal output.
+   * `metadata` was read off the agent's own screen: a conversation not begun, a Codex that has
+   * reported no session (whose scrollback answer carries `metadata` only so), or an Antigravity
+   * conversation, whose ledger never records the model. No file records it and the pane's output
+   * can change it, so the chat re-reads on terminal output.
    */
   screen?: true;
   /**
@@ -1195,7 +1217,7 @@ export interface PendingMessage {
 
 export type ClientMessage =
   /** Subscribe to this connection server's authorized machine document; requires machine-events. */
-  | { type: "machine-events"; enabled: boolean }
+  | { type: "machine-events"; enabled: boolean; compact_agents?: boolean }
   /** keep_size: the grid is covered (the chat lens), so the attach leaves the shared pty's size as it is */
   | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
   | { type: "detach"; pane_id: string }
@@ -1304,7 +1326,11 @@ export type ClientMessage =
    * client sends it when the page comes back, the network changes or nothing arrived for a while,
    * and drops a socket that stays silent: a half-open one still reads OPEN in the browser. A remote
    * PC's socket relays it unchanged, so the remote server's snapshot decides whether it is sent. */
-  | { type: "ping"; id: number };
+  | { type: "ping"; id: number }
+  /** device table T57 (feature "account-opens-all/1"): this row has seen the notices up to `seq`; it decides nothing */
+  | NoticeSeen
+  /** device table T51, T53 (feature "account-opens-all/1"): "It's me", or "Not me" with its signed blocks, for one notice */
+  | NoticeAnswer;
 
 /** Local-only diagnostic metadata. This contract never contains a message, URL or credential. */
 export type ClientConnectionEventKind = "connect" | "open" | "connect_timeout" | "close" | "socket_error"
@@ -1341,6 +1367,10 @@ export interface ClientConnectionTrace {
  * `terminal-history` (herdr-core, which has no viewport to scroll): each attach clears the client's scrollback and replays
  * the pane's last TERMINAL_HISTORY_LINES lines, so the client keeps the scrollback and scrolls it itself. Without it herdr
  * owns the scrollback and the client keeps none.
+ * `terminal-modes` (herdr-core, whose attach stream carries the program's modes, application cursor keys included): the
+ * client's own terminal knows how the program reads a plain arrow, so the browser types it as xterm encodes it (`input`),
+ * in order with the keys typed around it. Without it the attach never says (herdr), and a plain arrow is a named key
+ * (`keys`) herdr encodes for the program.
  * `conversation-search`: GET /api/pane/conversation/search answers; without it the browser offers no conversation search.
  * `conversation-watch-detached` and `prompt-watch`: a client may follow a pane's conversation and prompt without
  * attaching it (the `conversation-watch` and `prompt-watch` frames).
@@ -1349,8 +1379,11 @@ export interface ClientConnectionTrace {
  * sign-in, sudo in any language, passwd, mysql, gpg, openssl too). A bridge answers `invalid_secret` at a prompt
  * outside what it lists, so the browser types that secret as direct input instead (`input`, never kept), while
  * its own screen still shows the prompt.
+ * `account-opens-all/1` (ACCOUNT_OPENS_ALL_CAPABILITY): listed only while OVIS_ACCOUNT_OPENS_ALL is on at the PC (device
+ * table P10, P15, T57). Only then may the server send `device-notice` and `device-notice-replay`, and only then does a
+ * client send `notice-seen` and `notice-answer`.
  */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch" | "secret-prompts-2" | "secret-prompts-3";
+export type ServerFeature = typeof ACCOUNT_OPENS_ALL_CAPABILITY | "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "terminal-modes" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch" | "secret-prompts-2" | "secret-prompts-3";
 
 export type ServerMessage =
   | { type: "machine-event"; event: MachineEvent }
@@ -1445,6 +1478,16 @@ export type ServerMessage =
   | { type: "watch-end"; pane_id: string }
   /** the answer to a `ping`, with its id; only this frame, for a ping in flight, ends the client's liveness probe */
   | { type: "pong"; id: number }
+  /** device table P15, T57 (feature "account-opens-all/1"): one new journal entry, sent only by the server and only with the flag on */
+  | { type: "device-notice"; notice: DeviceNotice }
+  /** device table T57 (feature "account-opens-all/1"): the unseen notices. Sent right after the `features` frame and before
+   * any other frame (the snapshot included), never first, so the client already knows account-opens-all/1 when it arrives */
+  | { type: "device-notice-replay"; replay: NoticeReplay }
+  /**
+   * account-opens-all/1: the answer to a `notice-answer` "Not me", one receipt per block it carried, in its order
+   * (device table T51, T60). Only `applied` and `already_applied` are done
+   */
+  | { type: "notice-answer-result"; id: string; receipts: readonly BlockReceipt[] }
   /** `pane_id` names the pane an error is about, when it is about one (`attach_held`) */
   | { type: "error"; code: string; message: string; pane_id?: string };
 

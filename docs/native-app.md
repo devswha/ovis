@@ -7,7 +7,8 @@ Status: Phase 1 step 2 built for iOS (checked in a simulator) and Android (check
 (FCM), and deployed at `push.ovis.sh` on 2026-10-24, where its APNs and FCM credentials passed
 their authentication tests. Steps 4 and 5, the client's push through the app and the iOS
 Notification Service Extension, are built, 2026-10-24 (see [Push in the app](#push-in-the-app));
-a push received on a real device is still to be checked. iOS 1.0 (build 2) is in App Review.
+a push received on a real device is still to be checked. iOS 1.0 (build 8) is on the App Store
+since 2026-11-15 (<https://apps.apple.com/app/id6824664162>), and Android 1.0.1 (8) on Google Play.
 
 Ovis ships as a store app for iOS first, Android later. The goal is reach: the app is
 found in the App Store and installs in one tap, where the web app needs "Add to Home Screen". It
@@ -96,7 +97,7 @@ relay's FCM credentials are a service account key of the app's Firebase project,
 5. Notification Service Extension that decrypts. Built 2026-10-24 (`OvisNotifications`), see
    [Push in the app](#push-in-the-app).
 6. App Store listing, privacy answers, review notes pointing at the demo mode. Version 1.0
-   (build 2) was submitted for review on 2026-10-24, to be released by hand once approved.
+   (build 8) was submitted for review on 2026-11-08 and released on the App Store on 2026-11-15.
 
 ## Phase 2 and later
 
@@ -175,8 +176,12 @@ To repeat it:
 
 What is there:
 
-- `app/web`: the app's own pages. `index.html` is the connect screen: an address field, Scan QR
-  code, the PCs opened before, and Try the demo. `error.html` is shown when a PC cannot be
+- `app/web`: the app's own pages. `index.html` opens on the account's sign-in (the buttons the
+  account service names at `/v1/providers`; a press opens the hosted app on that sign-in,
+  `#sign-in=<provider>`), with Start without signing in below it. That and a build with
+  `OVIS_APP_ACCOUNT=0` lead to Add a PC: Scan a QR code, Enter an address (Tailscale or Wi-Fi),
+  SSH (only in an app that announces the `OvisSsh` plugin), and the PCs opened before. The address `demo` opens the bundled demo, which has no button
+  of its own: the store review notes (app/store) send reviewers there. `error.html` is shown when a PC cannot be
   reached or answers with an HTTP error (a 502 from `tailscale serve` while Ovis is stopped), with the
   reason, Try again and Change PC. Both are in English and Korean: an element's
   `data-ko` attribute holds its Korean text, put in when the phone's first language is Korean
@@ -351,7 +356,18 @@ one more browser's and is unchanged.
   plugin the app lacks would never settle.
 - Turning alerts on asks for notifications (the phone's own prompt), then subscribes, and the PC
   sends its confirmation push, as in a browser. The app shows an alert that arrives while it is
-  open too. Tapping one opens the app, not yet the pane as a browser's does.
+  open too. On Android, tapping a pane's alert opens the PC that sent it on that pane's chat, as a
+  browser's does: the PC names the endpoint it pushed to and its relay ID inside the encrypted alert
+  (`shared/push.ts`), and the app finds the saved PC by them (`PCStore.alertLink`). A tap for the
+  PC already open selects the pane in its page without reloading the page (over a reader or a file
+  page, or before that page is up, the alert's address opens instead). An alert for another
+  saved PC opens that PC, as switching PC does, without asking: unsent text the open page kept in
+  memory alone (the panes of a PC whose server names no herdr lifetime) is not lost but waits in
+  Recover unsent text for that PC and pane, never sent. An alert too long to carry the endpoint and relay
+  ID is sent without them, and its tap just opens the app, as does an alert from an older PC or
+  from one the phone no longer keeps. A tap for the open PC only brings the app forward when that
+  PC's page is from an Ovis older than this hand-over and is served over plain http, where a page
+  has no service worker. On iOS a tap still only opens the app.
 - The plugin is `app/ios/App/App/OvisPushPlugin.swift` on iOS and
   [`app/android/ovis-push`](../app/android/ovis-push/README.md) on Android, with the same calls:
   `checkPermissions()` and `requestPermissions()` (`{ notifications }`, Capacitor's permission
@@ -398,7 +414,20 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   so another server on that host (a dev server's port) would otherwise replace Ovis in the WebView
   (`PCStore.sameOrigin`). A sign-in's steps and the redirects of the first load are judged before it.
   Opening or leaving a PC starts the activity again, so the next page is a first load and the
-  old WebView goes with the old activity.
+  old WebView goes with the old activity. Just before, the page shown hears `ovis-page-leaving`
+  (waited for up to a second): the client leaves the pane state it keeps in memory alone (for a PC
+  whose server names no herdr lifetime, or typed before that PC's herdr was proven) in storage, and
+  that PC's next page takes it once and puts
+  its text in Recover unsent text, never back into a pane: nothing proves the herdr it comes back to
+  is the one it was typed under, and a replaced herdr gives the same pane IDs to other programs
+  (`src/lib/paneLifetime.ts`, `carry`). Held input older than a day is dropped, as it is from an
+  open page. A terminal line that looks like a key and a secret prompt's input are never written
+  down (#2532), and unsaved edits in the file editor are not carried, so they still go with the
+  page, as does an edit that storage refused. A page served directly by a PC on an Ovis release
+  before this one has no hand-over listener, so what it held in memory alone is not carried: on any
+  release, an edit its storage refused, and from 0.4.19 also text typed while that PC's herdr was not
+  proven (before its first snapshot, or for a PC, such as a remote one on an older bridge, that names
+  no herdr lifetime); its stored drafts stay in storage, as before.
 - Until the PC's page shows, a native cover over the WebView says which PC is opening and offers
   Change PC, as on iOS. When the PC's page has not answered after 20 seconds (`PCStore.ANSWER_SECONDS`,
   counted from Open on the connect screen when it checked the address first, with at least 5 s left

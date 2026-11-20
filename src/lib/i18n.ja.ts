@@ -19,6 +19,7 @@ import { UPDATES_JA } from "./i18n/updates.ja.ts";
 import { PALETTE_JA } from "./i18n/palette.ja.ts";
 import { RELAY_JA } from "./i18n/relay.ja.ts";
 import { DASHBOARD_JA } from "./i18n/dashboard.ja.ts";
+import { MY_MACHINES_JA } from "./i18n/my-machines.ja.ts";
 import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
 
 /**
@@ -33,6 +34,7 @@ import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "A key may not have reached the terminal: the connection ended before it was confirmed.": "キーがターミナルに届いていない可能性があります: 確認される前に接続が切れました。",
   "Open PC": "PC を開く",
   "View only": "表示のみ",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "貼り付けていません: ファイルのパスに改行があり、ターミナルが Enter として受け取ります。",
@@ -78,7 +80,8 @@ const BASE: Record<string, string> = {
   "This account service can't sign in a browser on this PC yet.": "このアカウントサービスは、この PC のブラウザーでのサインインにまだ対応していません。",
   "Your sign-in ended. Sign in again to see every PC of your account.": "サインインが終了しました。アカウントのすべての PC を表示するには、もう一度サインインしてください。",
   "The account service could not be reached. The PCs this device is paired with still work.": "アカウントサービスに接続できません。このデバイスとペアリング済みの PC はそのまま使えます。",
-  "Add {device}?": "{device} を追加しますか？",
+  "Add a new device?": "新しいデバイスを追加しますか？",
+  "Check the number, then approve": "番号を確かめてから承認してください",
   "Through {pc} · joins your {n} PCs": "{pc} 経由 · {n} 台の PC に参加します",
   "Pick the number on {device}": "{device} に表示されている数字を選んでください",
   "Approve only if you started this yourself just now. Didn't ask for it? Deny it.": "今ご自身で始めた場合だけ承認してください。心当たりがなければ拒否してください。",
@@ -113,15 +116,15 @@ const BASE: Record<string, string> = {
   "Recent folders": "最近のフォルダー",
   "Dismiss": "閉じる",
   "Input line": "入力欄",
-  // ---- settings ----
   "Settings": "設定",
   "PCs": "PC",
+  "PC {name}": "PC {name}",
+  "PCs, {n} of {m} connected": "PC {m} 台のうち {n} 台が接続済み",
   "Chat": "チャット",
   "Agent default": "エージェントの既定",
   "Devices and PCs": "デバイスと PC",
   "Access token": "アクセストークン",
 
-  // ---- shortcuts (lib/shortcuts.ts labels) ----
   "Command palette": "ペインとコマンドを検索",
   "Switch chat / terminal": "チャット / ターミナルを切り替え",
   "Focus pane input": "ペインの入力欄にフォーカス",
@@ -134,7 +137,6 @@ const BASE: Record<string, string> = {
   "Previous workspace": "前のワークスペース",
   "Next workspace": "次のワークスペース",
 
-  // ---- agent status words (lib/status.ts) ----
   "READY": "準備完了",
   "RUN": "実行中",
   "INPUT": "応答待ち",
@@ -142,7 +144,6 @@ const BASE: Record<string, string> = {
   "BG": "BG待ち",
   "—": "—",
 
-  // ---- app header and shell ----
   "Opening link…": "リンクを開いています…",
   "Connecting to Ovis…": "Ovis に接続しています…",
   "Close workspace list": "ワークスペース一覧を閉じる",
@@ -217,7 +218,6 @@ const BASE: Record<string, string> = {
   "Alerts on in the app. Tap to turn them off": "アプリ内の通知はオンです。タップするとオフになります",
   "Alerts on while this tab is open (closed-app alerts need https, and on iPhone the home-screen app). Tap to turn them off": "このタブを開いている間は通知が届きます (アプリを閉じた後の通知には https が必要で、iPhone ではホーム画面のアプリである必要があります)。タップするとオフになります",
 
-  // ---- sidebar ----
   "Rename pane": "ペインの名前を変更",
   "Branch": "ブランチ",
   "Opening…": "開いています…",
@@ -226,7 +226,6 @@ const BASE: Record<string, string> = {
   "Close": "閉じる",
   "Rename failed: {reason}": "名前を変更できませんでした: {reason}",
 
-  // ---- PCs sidebar ----
   "Filter workspaces and agents": "ワークスペースとエージェントを絞り込む",
   "Connecting…": "接続しています…",
   "Connected": "接続済み",
@@ -239,6 +238,9 @@ const BASE: Record<string, string> = {
   "{n} ms": "{n} ms",
   "Check now": "今すぐ確認",
   "Check again": "再確認",
+  "Other PCs": "ほかの PC",
+  "Unnamed PC": "名前のないPC",
+  "Off|pc state": "オフ",
   "Checking…": "確認しています…",
   "relay": "リレー",
   "direct": "直接",
@@ -263,12 +265,10 @@ const BASE: Record<string, string> = {
   "Step {n} of {total}": "ステップ {n} / {total}",
   "{done} of {total}": "{done} / {total}",
 
-  // ---- command palette ----
   "Refresh": "更新",
   "Search panes and actions": "ペインとコマンドを検索",
   "Search conversation": "会話を検索",
 
-  // ---- new workspace ----
   "Browse": "参照",
   "Cancel": "キャンセル",
   "Install": "インストール",
@@ -277,29 +277,22 @@ const BASE: Record<string, string> = {
   "Sign in": "ログイン",
   "Starting…": "起動しています…",
   "Start": "開始",
-  // the launch's model, effort, first message and skills (lib/agentLaunchMode.ts, lib/newSession.ts)
 
-  // ---- folder browser ----
   "No matching folders": "一致するフォルダーはありません",
   "This folder cannot be opened.": "このフォルダーは開けません。",
   "Folders could not be loaded.": "フォルダーを読み込めませんでした。",
   "Unlock agent": "エージェントのロックを解除",
 
-  // ---- files ----
   "Files": "ファイル",
   "This image is {size}; download it to view.": "この画像は {size} です。表示するにはダウンロードしてください。",
   "Download": "ダウンロード",
   "Open {path}": "{path} を開く",
 
-  // ---- PC dialog ----
   "Continue": "続行",
 
-  // ---- updates ----
   "Reload app": "アプリを再読み込み",
   "Details": "詳細",
 
-
-  // ---- prompt card ----
   "Submit": "送信",
   "Recommended": "推奨",
   "Agents": "エージェント",
@@ -309,15 +302,13 @@ const BASE: Record<string, string> = {
   "Paired: {name}.": "ペアリングしました: {name}。",
   "QR code that pairs a phone with code {code}": "コード {code} でスマートフォンをペアリングする QR コード",
   "Pairing code": "ペアリングコード",
+  "Needs HTTPS or localhost.": "HTTPS または localhost が必要です。",
   "{agent} is ready": "{agent} の準備ができました",
 
-
-  // ---- composer ----
   "Drag to resize · double-click to reset": "ドラッグでサイズ変更 · ダブルクリックでリセット",
   "Failed": "失敗",
   "Send now": "今すぐ送信",
 
-  // ---- chat view ----
   "Copied": "コピーしました",
   "Worked for {duration}": "{duration} 作業しました",
   "Copy message": "メッセージをコピー",
@@ -325,19 +316,15 @@ const BASE: Record<string, string> = {
   "{m}m": "{m}分",
   "{h}h {m}m": "{h}時間 {m}分",
 
-  // ---- terminal ----
   "The question on screen changed; check it and answer again.": "画面上の質問が変わりました。確認してもう一度回答してください。",
   "Reconnect": "再接続",
   "Discard": "破棄",
   "Undo": "元に戻す",
   "Held message — review and send": "保持中のメッセージ。確認して送信してください",
 
-
-  // ---- voice input ----
   "Dictate (hold)": "音声入力（長押し）",
   "Hold message in chat": "チャットでメッセージを保留",
   "Voice input needs HTTPS": "音声入力には HTTPS が必要です",
-  // ---- errors (lib/userError.ts) ----
   "This browser is not signed in to this PC any more. Pair it again in Settings → Devices and PCs.": "このブラウザーはもうこの PC にサインインしていません。設定 → デバイスと PCでもう一度ペアリングしてください。",
   "That item no longer exists on the PC. Refresh and try again.": "その項目は PC にもうありません。更新してからもう一度お試しください。",
   "It changed on the PC while you were acting. Check it and try again.": "操作中に PC 側で変更されました。確認してからもう一度お試しください。",
@@ -360,20 +347,16 @@ const BASE: Record<string, string> = {
   "Try again; if it keeps failing, restart Ovis on the PC.": "もう一度お試しください。失敗が続く場合は PC で Ovis を再起動してください。",
   "The server cannot save settings: check that its state folder is writable.": "サーバーが設定を保存できません。サーバーの状態フォルダーに書き込めるか確認してください。",
 
-
-  // ---- devices ----
   "Loading…": "読み込んでいます…",
   "Done": "完了",
   "Name": "名前",
   "Recent": "最近",
   "Needs you": "応答待ち",
 
-  // ---- phone ----
   "Copy": "コピー",
   "…": "…",
   "Alerts": "通知",
   "Sending…": "送信中…",
-  // the alerts health notice over the pane and Settings → Alerts say these alike (lib/pushHealth.ts)
   "This device's push subscription is missing. Turn alerts on again.": "このデバイスのプッシュ通知の登録がありません。通知をもう一度オンにしてください。",
   "The push service retired this device's subscription. Turn alerts on again to make a new one.": "このデバイスの通知の接続が切れました。通知をもう一度オンにして、接続し直してください。",
   "Turn alerts on again": "通知をもう一度オンにする",
@@ -394,7 +377,6 @@ const BASE: Record<string, string> = {
   "Queued messages": "キュー内のメッセージ",
   "Not confirmed. Check the terminal before sending again.": "送信を確認できませんでした。再送信する前にターミナルを確認してください。",
   "Too large to attach: {name} ({size}). A file can be up to {limit}.": "添付するには大きすぎます: {name}（{size}）。ファイルは {limit} まで添付できます。",
-  // ---- subscription usage ----
   "Move {name} up": "{name} を上へ移動",
   "Move {name} down": "{name} を下へ移動",
   "Subscription usage": "サブスクリプション使用量",
@@ -402,9 +384,7 @@ const BASE: Record<string, string> = {
   "{n} background task": "バックグラウンドタスク {n} 件",
   "{n} background tasks": "バックグラウンドタスク {n} 件",
   "Try again": "再試行",
-  "The relay did not start: {message}": "リレーを開始できませんでした: {message}",
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "リレーをオンにするとデバイスゲートが閉じます。以後、新しいブラウザーにはペアリングコードかアクセストークンが必要です。",
-  // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新しいタブ",
   "New tab with agent…": "エージェントで新しいタブ…",
   "New worktree": "新しいワークツリー",
@@ -440,7 +420,6 @@ const BASE: Record<string, string> = {
   "Change PC": "PCを切り替え",
   "Forget this PC": "このPCを削除",
   "Selected": "選択中",
-  // Recover unsent text (components/UnsentText.tsx)
   "Unsent text · {destination}": "未送信のテキスト · {destination}",
   "Text you had not sent before herdr restarted. Copy it and paste it where you need it. Nothing here is sent.": "再起動前に送信されなかったテキストです。コピーして必要な場所に貼り付けてください。自動では送信されません。",
   "Put in message box adds this text to {destination}. Nothing is sent.": "「入力欄に入れる」を押すと {destination} にテキストが入ります。送信はしません。",
@@ -491,6 +470,7 @@ const BASE: Record<string, string> = {
   "Model": "モデル",
   "One model name, without spaces.": "空白を含まないモデル名を一つ指定してください。",
   "Effort": "推論レベル",
+  "Browser tool": "ブラウザツール",
   "Sandbox and approvals": "サンドボックスと承認",
   "Add this PC to my account": "このPCをアカウントに追加",
   "Signed in. Adding this PC to your account…": "サインインしました。このPCをアカウントに追加しています…",
@@ -500,7 +480,7 @@ const BASE: Record<string, string> = {
   "Sign in and add this PC": "サインインしてこのPCを追加",
   "Add this PC to your account, so every device of your account can use it with one approval.": "このPCをアカウントに追加すると、一度の承認でアカウントのすべてのデバイスから使えます。",
   "Every device of your account can use this PC after that.": "その後は、アカウントのすべてのデバイスからこのPCを使えます。",
-  "On a device already signed in to this account (the Ovis app or app.ovis.sh), choose Add on {name}. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.": "すでにこのアカウントにサインインしているデバイス（Ovisアプリまたは app.ovis.sh）で、{name} の「追加」を選んでください。するとこの画面に6桁の数字が表示されます。それをそのデバイスに入力し、ここで「承認」を押してください。このページは開いたままにしてください。",
+  "On a device already signed in to this account (the Ovis app or app.ovis.sh), choose Add on {name}. If it shows Join there instead, choose Join, then Type the number. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.": "すでにこのアカウントにサインインしているデバイス（Ovisアプリまたは app.ovis.sh）で、{name} の「追加」を選んでください。「追加」ではなく「参加」が表示されている場合は、「参加」を選んでから「番号を入力」を選んでください。するとこの画面に6桁の数字が表示されます。それをそのデバイスに入力し、ここで「承認」を押してください。このページは開いたままにしてください。",
   "Waiting. The window reopens by itself if Ovis restarts.": "待機中です。Ovisが再起動しても自動的に受け付けを再開します。",
   "Stop waiting": "待機をやめる",
   "This PC stopped waiting after 30 minutes.": "30分が過ぎたため、このPCは待機を終了しました。",
@@ -526,8 +506,6 @@ const BASE: Record<string, string> = {
   "Paste and send": "貼り付けて送信",
   "Conversation": "会話",
   "Off": "オフ",
-  "Not now": "今はしない",
-  "Pair with a QR or code": "QR またはコードでペアリング",
   "Add this PC": "このPCを追加",
   "Pair with {name}?": "{name}とペアリングしますか？",
   "Pair": "ペアリング",
@@ -543,6 +521,7 @@ const BASE: Record<string, string> = {
   "Offline": "オフライン",
   "Update Ovis on it": "Ovis の更新が必要",
   "Open": "開く",
+  "Add a PC": "PC を追加",
   "Relay": "リレー",
   "Add": "追加",
   "Update": "更新",
@@ -550,6 +529,7 @@ const BASE: Record<string, string> = {
   "Search": "検索",
   "Choose one from the list to open its chat here.": "リストから選ぶと、チャットがここに開きます。",
   "Agent inbox": "エージェント受信トレイ",
+  "Inbox mode": "受信トレイモード",
   "Open agent inbox": "エージェント受信トレイを開く",
   "Back to Ovis": "Ovis に戻る",
   "Remove PC": "PC を削除",
@@ -557,7 +537,6 @@ const BASE: Record<string, string> = {
   "Removes this registration. Remote sessions keep running.": "この登録のみを削除します。リモートのセッションは実行されたままです。",
   "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "この PC からだけ削除します。アクセスも止めるには、その PC の スマートフォンとデバイス で取り消してください。",
   "Added": "追加",
-  "Sign in to Ovis": "Ovis にサインイン",
   "Theme": "テーマ",
   "Dark": "ダーク",
   "Light": "ライト",
@@ -572,10 +551,15 @@ const BASE: Record<string, string> = {
   "Forget this PC?": "このPCを削除しますか？",
   "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "このスマホ側のキーを削除します。PC側ではそこで取り消すまでこのスマホが一覧に残ります。再度ペアリングするにはPCの新しいQRコードが必要です。",
   "Forget": "削除",
-  "Offline · {when}": "オフライン · {when}",
-  "The PC is off, or Ovis is not running on it.": "PCの電源が切れているか、Ovisが動いていません。",
-  "The relay did not answer. Check this device's network.": "リレーが応答しません。このデバイスのネットワークを確認してください。",
+  "No answer": "応答なし",
   "Ready · not in the account yet": "準備完了 · まだアカウント外",
+  "Machine offline": "マシンがオフライン",
+  "Could not reach this machine": "このマシンに接続できません",
+  "Switched off": "電源オフ",
+  "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name}は応答しましたが、時間内に接続を完了できませんでした。ビジー状態か、再起動中の可能性があります。もう一度お試しください。繰り返す場合は{name}で Ovis を再起動してください。",
+  "Last seen {when}.": "最終確認: {when}。",
+  "It is off, has no network, or Ovis is not running on it.": "電源が切れているか、ネットワークがないか、Ovis が実行されていません。",
+  "This device could not reach the relay. Check this device's network.": "このデバイスからリレーに接続できませんでした。このデバイスのネットワークを確認してください。",
   "Account setup is incomplete.": "アカウントの設定が完了していません。",
   "Adding it to your account…": "アカウントに追加中…",
   "{name} is ready to open on this device.": "このデバイスで {name} を開く準備ができました。",
@@ -584,9 +568,58 @@ const BASE: Record<string, string> = {
   "Plan · {plan}": "プラン · {plan}",
   "{used}/{max} PCs": "PC {used}/{max}台",
   "{used} / {cap} relay data": "リレーデータ {used} / {cap}",
+  "Agent": "エージェント",
+  "Dark theme": "ダークテーマ",
+  "Light theme": "ライトテーマ",
+  "Charcoal": "チャコール",
+  "Codex": "Codex",
+  "Amber": "アンバー",
+  "Catppuccin": "Catppuccin",
+  "Catppuccin Latte": "Catppuccin Latte",
+  "Tokyo Night": "Tokyo Night",
+  "Black": "ブラック",
+  "Tokyo Night Day": "Tokyo Night Day",
+  "Gruvbox": "Gruvbox",
+  "Gruvbox Light": "Gruvbox Light",
+  "One Dark": "One Dark",
+  "One Light": "One Light",
+  "Solarized": "Solarized",
+  "Solarized Light": "Solarized Light",
+  "Kanagawa": "Kanagawa",
+  "Kanagawa Lotus": "Kanagawa Lotus",
+  "Rosé Pine": "Rosé Pine",
+  "Rosé Pine Dawn": "Rosé Pine Dawn",
+  "Dracula": "Dracula",
+  "Nord": "Nord",
+  "Vesper": "Vesper",
+  "Preview": "プレビュー",
+  "Needs input": "応答待ち",
+  "Phone": "スマートフォン",
+  "An agent asks you something": "エージェントが何かを尋ねたとき",
+  "An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input.": "エージェントがコマンドを実行したりファイルを変更したりする前に許可を求めたとき。何を待っているかを伝えないエージェントは「入力が必要」として通知します。",
+  "Long turns: only work that took a minute or more": "長いターン: 1 分以上かかった作業のみ",
+  "Alerts off": "通知オフ",
+  "Send test": "テスト送信",
+  "Alert me when": "通知するとき",
+  "Long turn finished": "長いターンの完了",
+  "Any turn finished": "毎ターンの完了",
+  "Any turn finished takes in the long ones.": "毎ターンの完了をオンにすると、長いターンも含めて通知します。",
+  "Stopped on an error": "エラーで停止",
+  "A turn that ended on an error, as OmO and GJC report it": "OmO と GJC が報告する、エラーで終わったターン",
+  "Next": "次へ",
+  "Setup: {count} left": "残りの設定 {count}",
+  "Hide setup reminder": "残りの設定を隠す",
+  "Start another agent": "エージェントをもう一つ",
+  "Optional": "任意",
+  "Couldn't check alerts.": "通知の状態を確認できませんでした。",
+  "Chat or Terminal": "チャットかターミナル",
+  "Same agent, two views.": "同じエージェントを二つの見方で。",
+  "Waiting agents first": "待っているエージェントが先",
+  "From every workspace.": "すべてのワークスペースから。",
+  "Pick a folder to start in.": "始めるフォルダーを選びます。",
+  "Show QR code": "QR コードを表示",
 };
 
-/** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const JA_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
   settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA, ...SETTINGS_COMPOSER_JA, ...SETTINGS_LAYOUT_JA, ...SETTINGS_AGENTS_JA, ...SETTINGS_HELP_JA },
@@ -605,6 +638,7 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   palette: PALETTE_JA,
   relay: RELAY_JA,
   dashboard: DASHBOARD_JA,
+  "my-machines": MY_MACHINES_JA,
   "runtime-move": RUNTIME_MOVE_JA,
 };
 

@@ -9,6 +9,7 @@ import { formatDashboardHash, isDashboardHash, parseDashboardHash, type Dashboar
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import type { ObservedVersion } from "../lib/relay/updateFlow.ts";
 import { uiFontSize, useSettings } from "../lib/settings.ts";
+import { sheetBackLanded, sheetBackOnto } from "../lib/sheetHistory.ts";
 import { UI_FONT_MAX, UI_FONT_MIN } from "../lib/typography.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
@@ -26,9 +27,7 @@ export interface RelayDashboardProps {
   onCheckPcs?: () => void; onCheckPc?: (serverId: string) => void; onRefreshAccount?: () => void | Promise<void>; onAddPc: () => void; onPairByQr?: () => void;
   onOpenSheet: (pc: MyPc, mode: "new" | "join") => void; onForgetPc?: (serverId: string) => Promise<void> | void;
   onSignIn?: () => void; onSignOut?: () => void; onLeave?: () => void;
-  /** deletes the signed-in account at the account service, after the person confirmed it here */
   onDeleteAccount?: () => void;
-  /** why Delete account was refused, said on Devices alone (`error` is the directory's) */
   deleteError?: string;
   /** which sign-in `account` is (its sign_in_id): Devices' questions asked under one are dropped under the next */
   signedInAs?: string;
@@ -78,13 +77,11 @@ function DevicesSection({ meLabel, account, deleteError, onSignIn, onSignOut, on
             </div>
             {onDeleteAccount && (
               <>
-                {/* what goes and what stays, before the press that does it (the same button, as Remove this device) */}
                 {deleting && <p className="account-fineprint" role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</p>}
                 <div className="relay-dash-account-actions">
                   <button type="button" className={deleting ? "btn btn-danger" : "btn"} data-action="delete-account" data-confirm={deleting ? "delete-account" : undefined} onClick={() => { if (deleting) { setDeleting(false); onDeleteAccount(); } else setDeleting(true); }}>{deleting ? t("Delete account for good?") : t("Delete account")}</button>
                   {deleting && <button type="button" className="btn btn-ghost" onClick={() => setDeleting(false)}>{t("Cancel")}</button>}
                 </div>
-                {/* why the last delete was refused (reauth_required, subscription_active), where it was pressed */}
                 {deleteError !== undefined && <p className="account-error" role="alert">{deleteError}</p>}
               </>
             )}
@@ -114,22 +111,54 @@ function SettingsSection() {
   );
 }
 
+/**
+ * The dashboard's addresses written while a closed sheet's Back (sheetHistory) is still on its way, in order. That Back
+ * lands on the entry under the sheet's, so a push made now would sit under it and the address would follow the Back
+ * there; they are pushed once it lands, over the entry it landed on. Kept outside the dashboard, so a dashboard mounted
+ * meanwhile shows them, and settled by the first popstate whether one is mounted or not.
+ */
+const held: string[] = [];
+/**
+ * Holds `hash` while that Back is on its way and sheetHistory names the entry it lands on (where the browser tells its
+ * entries, the Navigation API), so its landing is told from any other traversal; otherwise nothing is held and the
+ * address is written at once.
+ */
+function holdHash(hash: string): boolean {
+  if (held.length === 0) {
+    if (sheetBackOnto() === null) return false;
+    window.addEventListener("popstate", settleHeld);
+  }
+  held.push(hash);
+  return true;
+}
+/** at a popstate: the held Back's landing writes them over it; any other traversal (the user's own Back or Forward) wins, and they go */
+function settleHeld(event: Event): void {
+  if (held.length === 0) return;
+  const landed = sheetBackLanded(event);
+  const hashes = held.splice(0);
+  window.removeEventListener("popstate", settleHeld);
+  if (landed) for (const hash of hashes) if (window.location.hash !== hash) window.history.pushState(null, "", `${window.location.pathname}${window.location.search}${hash}`);
+}
+
 export function RelayDashboard({
   pcs, account, defaultRelay, meLabel, error = null, pcStatus, observedVersions,
   onCheckPcs, onCheckPc, onRefreshAccount, onAddPc, onPairByQr, onOpenSheet, onForgetPc, onSignIn, onSignOut, onLeave, onDeleteAccount, signedInAs, deleteError,
 }: RelayDashboardProps) {
   const t = useT(), phone = useMediaQuery(PHONE_QUERY), narrow = useMediaQuery(NARROW_DETAILS_QUERY), narrowSplitTable = useMediaQuery(NARROW_SPLIT_TABLE_QUERY);
   const mode: "account" | "local" = account ? "account" : "local";
-  const [route, setRoute] = useState<DashboardRoute>(() => typeof window === "undefined" ? { view: "overview", filter: "all", relay: null, pc: null } : parseDashboardHash(window.location.hash));
+  const [route, setRoute] = useState<DashboardRoute>(() => typeof window === "undefined" ? { view: "overview", filter: "all", relay: null, pc: null } : parseDashboardHash(held.at(-1) ?? window.location.hash));
   const [localFilter, setLocalFilter] = useState<DashboardFilter>("all");
   const [checkedByUser, setCheckedByUser] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null), prevViewRef = useRef<DashboardView>(route.view);
   const splitRef = useRef<HTMLDivElement>(null), prevPcRef = useRef<string | null>(route.pc);
-  /** the PC whose details Back, Close or Escape just left: below 1100px its row takes the focus back */
   const closedPcRef = useRef<string | null>(null), peersRef = useRef<readonly string[]>([]);
 
   useEffect(() => {
-    const sync = () => { if (!window.location.hash || window.location.hash === "#" || isDashboardHash(window.location.hash)) setRoute(parseDashboardHash(window.location.hash)); };
+    const sync = (event: Event) => {
+      if (event.type === "popstate") settleHeld(event);
+      else if (held.length > 0) return;
+      if (!window.location.hash || window.location.hash === "#" || isDashboardHash(window.location.hash)) setRoute(parseDashboardHash(window.location.hash));
+    };
     window.addEventListener("hashchange", sync); window.addEventListener("popstate", sync);
     return () => { window.removeEventListener("hashchange", sync); window.removeEventListener("popstate", sync); };
   }, []);
@@ -138,7 +167,9 @@ export function RelayDashboard({
 
   const navigateTo = (nextHash: string) => {
     setRoute(parseDashboardHash(nextHash));
-    if (typeof window !== "undefined" && window.location.hash !== nextHash) window.history.pushState(null, "", `${window.location.pathname}${window.location.search}${nextHash}`);
+    if (typeof window === "undefined") return;
+    if (holdHash(nextHash)) return;
+    if (window.location.hash !== nextHash) window.history.pushState(null, "", `${window.location.pathname}${window.location.search}${nextHash}`);
   };
   const activeFilter: DashboardFilter = route.view === "pcs" ? route.filter : localFilter;
   const setFilter = (next: DashboardFilter) => route.view === "pcs" ? navigateTo(formatDashboardHash({ view: "pcs", filter: next, relay: route.relay, pc: route.pc })) : setLocalFilter(next);
@@ -150,10 +181,6 @@ export function RelayDashboard({
   const selectPc = (serverId: string) => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: serverId }));
   const closeDetails = () => { closedPcRef.current = route.pc; navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: null })); };
 
-  // Below 1100px the details replace the list as a full view (IS-TABLE-08), so the view starts at the top,
-  // the details heading takes the focus (ringless, RelayDashboard.css), and leaving them (Back, Escape, or browser Back)
-  // focuses the row again. From 1100px the side panel opens beside the list and the focus stays where the click put it.
-  // When an unlisted pairing is forgotten, its row is gone: focus its next row, else its previous row, else the view heading.
   const selectedPcId = selectedRow?.server_id ?? null;
   useEffect(() => {
     const prevPc = prevPcRef.current;
@@ -191,13 +218,12 @@ export function RelayDashboard({
   const renderTableSection = (relayFilter: string | null) => model && (
     <section className="relay-dash-pcs" id="relay-dash-pcs" aria-label={t("PCs")}>
       <div ref={splitRef} className={selectedRow ? "relay-dash-pcs-split is-selected" : "relay-dash-pcs-split"}>
-        {/* below 1100px (IS-TABLE-08) the details replace the list as a full view until Back */}
         {!(narrow && selectedRow) && (
           <div className="relay-dash-pcs-list">
             <RelayPcTable rows={model.rows} attention={model.attention} filters={model.filters} filter={activeFilter} onFilter={setFilter}
               relayFilter={relayFilter} onClearRelayFilter={() => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: null, pc: route.pc }))}
               selectedPcId={selectedRow?.server_id ?? null} onSelect={selectPc} onOpenSheet={onOpenSheet} showLastSeen={selectedRow === null} narrow={selectedRow !== null && narrowSplitTable}
-              {...(pcStatus ? { pcStatus } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} checkedByUser={checkedByUser} mode={mode} />
+              {...(pcStatus ? { pcStatus } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} {...(onCheckPc ? { onCheckPc } : {})} checkedByUser={checkedByUser} mode={mode} />
           </div>
         )}
         {selectedRow && (
@@ -253,7 +279,7 @@ export function RelayDashboard({
         onSelectFilter={(f) => navigateTo(formatDashboardHash({ view: "pcs", filter: f }))}
         onOpenRelay={(origin) => navigateTo(origin ? formatDashboardHash({ view: "pcs", relay: relayHost(origin) }) : "#relay")}
         {...(onRefreshAccount ? { onRetryError: onRefreshAccount, onRefreshAccount } : {})} onAddPc={onAddPc} {...(onPairByQr ? { onPairByQr } : {})}
-        onOpenSheet={onOpenSheet} onSelectPc={selectPc}>
+        onOpenSheet={onOpenSheet} onSelectPc={selectPc} {...(onCheckPc ? { onCheckPc } : {})}>
         {pcs !== null && pcs.length > 0 && renderTableSection(null)}
       </RelayOverview>
     );
