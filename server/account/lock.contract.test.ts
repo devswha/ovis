@@ -3,18 +3,27 @@
  * row not approved at this PC's screen, a loopback window without screen proof and every grant that is not a row are
  * refused, while this PC's own programs keep working. A PC in no account offers no lock.
  */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PcAccountState } from "./pc-binding.ts";
 import { LockSignal, untilLockFrom } from "../lock-boundary.ts";
-import { pairingPc, memberRow, signIn, ask, type Pc } from "./pairing.test-helpers.ts";
+import { pairingPc, memberRow, signIn, type Pc } from "./pairing.test-helpers.ts";
 import { bounded, deferred } from "../relay/test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
 
 const BRIDGE_TOKEN = "b".repeat(64);
+
+async function expectLocalSnapshot(pc: Pc) {
+  const snapshot = { version: "fixture", protocol: 22, agents: [], layouts: [], panes: [], tabs: [], workspaces: [] };
+  const read = spyOn(pc.app.context.services.core, "clientSnapshot").mockResolvedValue(snapshot);
+  try {
+    const tried = await pc.local("/api/session", { headers: { authorization: `Bearer ${BRIDGE_TOKEN}` } });
+    expect([tried.status, tried.body]).toEqual([200, { snapshot }]);
+  } finally { read.mockRestore(); }
+}
 
 async function lockedPc() {
   const member = await memberRow("acct_1");
@@ -45,8 +54,7 @@ test("N4: a locked PC refuses a loopback window that gave no screen proof", asyn
 
 test("N6: this PC's own programs keep working while it is locked", async () => {
   const made = await lockedPc();
-  const tried = await made.local("/api/session", { headers: { authorization: `Bearer ${BRIDGE_TOKEN}` } });
-  expect(tried.status).not.toBe(403);
+  await expectLocalSnapshot(made);
 });
 
 test("T46: an unlocked PC is as before", async () => {
@@ -96,7 +104,7 @@ test("S19: a log that cannot be read is stricter than locked: no window without 
   pcs.push(made);
   expect((await made.local("/api/devices")).body.error?.code).toBe("strict");
   expect((await made.local("/api/account/lock")).body.strict).toBe(true);
-  expect((await made.local("/api/session", { headers: { authorization: `Bearer ${BRIDGE_TOKEN}` } })).status).not.toBe(403);
+  await expectLocalSnapshot(made);
 });
 
 test("P11: a lock taken under the PC's account holds after that binding is cleared and the PC bound to another account", async () => {
