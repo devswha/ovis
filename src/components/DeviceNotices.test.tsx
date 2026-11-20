@@ -72,11 +72,9 @@ describe("device notices", () => {
     expect(await mount([notice({ kind: "merge", open: false })])).toEqual([]);
   });
 
-  it("P15: when the PC trimmed older notices, one line says so, even with no card left", async () => {
-    await mount([], [], 3);
-    const shown = text(renderer!.root);
-    expect(shown).toContain("Desk");
-    expect(shown.toLowerCase()).toContain("older");
+  it("P15: the PC's trimmed line shows the count even with no card left", async () => {
+    await mount([], [], 12);
+    expect(text(renderer!.root)).toBe("12 older notices from Desk were cleared before this device saw them.");
     await mount([], [], 0);
     expect(text(renderer!.root)).toBe("");
   });
