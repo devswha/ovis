@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { accountDeviceId, exportAccountKey } from "../../../shared/account-records.ts";
 import type { RelayDevice } from "../relay/device.ts";
 import { MemoryDeviceStore } from "../relay/device.test.ts";
-import { accountDevice, withAccountDevice } from "./accountDevice.ts";
+import { accountDevice, AccountRowImmutableError, withAccountDevice } from "./accountDevice.ts";
 
 const SERVER = "a".repeat(32);
 const offer = { v: 1 as const, server_id: SERVER, server_public_key: "pc-key", relay: "wss://relay.ovis.example", name: "Desk" };
@@ -38,6 +38,13 @@ describe("signing in to a PC as the account's device", () => {
     expect(updated.relay).toBe("wss://relay2.ovis.example");
     expect((await store.get(SERVER))?.relay).toBe("wss://relay2.ovis.example");
     expect((await store.get(SERVER))?.public_spki).toBe(key.public_spki);
+  });
+
+  it("T40: an update cannot move the account row to another server ID", async () => {
+    const row = accountDevice(offer, await signIn());
+    const store = withAccountDevice(new MemoryDeviceStore(), row);
+    await expect(store.update(SERVER, () => ({ ...row, server_id: "b".repeat(32) }))).rejects.toBeInstanceOf(AccountRowImmutableError);
+    expect(await store.get(SERVER)).toEqual(row);
   });
 
   it("T34: other PCs keep this browser's own pairings untouched", async () => {
