@@ -545,7 +545,9 @@ export class DeviceStore {
   private accountOrder: AccountOrder | null = null;
   readonly handedLifts: HandedLifts;
   private joinedRows: AccountRowSource | null = null;
-  private readonly promotedHolds = new PromotedHolds((key) => this.admits(key), (row) => this.releasePromoted(row));
+  private readonly promotedHolds = new PromotedHolds((key) => this.admits(key), (row) => {
+    if (this.opensAll()) this.releasePromoted(row);
+  });
   private catchUp: CatchUpGate | null = null;
   private releases?: RecoveryReleases;
   private readonly pc: PcAccountState | null;

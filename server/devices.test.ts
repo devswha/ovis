@@ -68,6 +68,19 @@ describe("regression: a registry another account could write", () => {
   });
 });
 
+it("flag off: reading a PC-confirmed row leaves its carried notice on disk", () => {
+  const root = mkdtempSync(join(dir, "carried-notice-"));
+  const path = join(root, "devices.json");
+  const at = "2026-10-01T00:00:00.000Z";
+  const row = { id: "0011223344556677", label: "Phone", role: "watch", token_hash: "a".repeat(64),
+    created_at: at, last_seen_at: null, carried_notice: "b".repeat(32),
+    origin: { from: "pc", how: "confirmed", by: null, admit_no: 1, at } };
+  const bytes = JSON.stringify({ gate_closed_at: at, devices: [row] });
+  writeFileSync(path, bytes, { mode: 0o600 });
+  expect(new DeviceStore(root).sessionRow(row.id)?.role).toBe("watch");
+  expect(readFileSync(path, "utf8")).toBe(bytes);
+});
+
 describe("the gate closing", () => {
   it("is told once, when the first device's cookie came back or the relay closed it, never for a later device or a revoke", async () => {
     const store = new DeviceStore(mkdtempSync(join(dir, "gate-closed-")));
