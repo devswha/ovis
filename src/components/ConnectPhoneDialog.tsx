@@ -203,7 +203,7 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
           {tab === "devices" && relayPending && <p className="settings-hint" role="status" data-testid="connect-devices-pending">{t("Loading…")}</p>}
           {opened.current.has("devices") && !relayPending && (
             <div className="connect-tab" data-tab-panel="devices" hidden={tab !== "devices"}>
-              <DevicesTab plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} relay={relayWay} way={devicesWay} onWay={setDevicesChosen} phone={phone} />
+              <DevicesTab plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} relay={relayWay} way={devicesWay} onWay={setDevicesChosen} phone={phone} shown={tab === "devices"} />
             </div>
           )}
           {opened.current.has("relay") && tabs.includes("relay") && (
@@ -468,8 +468,10 @@ export function devicesWayOf({ relay, local, chosen }: { relay: boolean; local: 
   return local ? "local" : null;
 }
 
-function DevicesTab({ plan, pairUrl, readOnly, local, relay, way, onWay, phone }: {
+function DevicesTab({ plan, pairUrl, readOnly, local, relay, way, onWay, phone, shown }: {
   plan: PhonePlan; pairUrl: string | null; readOnly: boolean; local: LocalWays; relay: boolean; way: DevicesWay | null; onWay: (way: DevicesWay) => void; phone: boolean;
+  /** the panel is on screen: a code is made only for a way someone is looking at */
+  shown: boolean;
 }) {
   const t = useT();
   // kept once opened, as the tabs are: its pairing code stays the same when the relay way is looked at in between
@@ -484,12 +486,12 @@ function DevicesTab({ plan, pairUrl, readOnly, local, relay, way, onWay, phone }
           {(["relay", "local"] as const).map((each) => <button key={each} type="button" aria-pressed={way === each} data-way={each} onClick={() => onWay(each)}>{names[each]}</button>)}
         </div>
       ) : <p className="settings-label" data-way={way}>{names[way]}</p>}
-      {localOpened.current && <div className="connect-devices-local" hidden={way !== "local"}><LocalWay plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} phone={phone} /></div>}
+      {localOpened.current && <div className="connect-devices-local" hidden={way !== "local"}><LocalWay plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} phone={phone} shown={shown && way === "local"} /></div>}
     </>
   );
 }
 
-function LocalWay({ plan, pairUrl, readOnly, local, phone }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; local: LocalWays; phone: boolean }) {
+function LocalWay({ plan, pairUrl, readOnly, local, phone, shown }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; local: LocalWays; phone: boolean; shown: boolean }) {
   const t = useT();
   const needsTailscale = <p className="settings-hint">{t("The phone needs the Tailscale app turned on too.")}</p>;
   // the hosted shell's page is no address of this PC: its code is typed, as before
@@ -514,7 +516,8 @@ function LocalWay({ plan, pairUrl, readOnly, local, phone }: { plan: PhonePlan; 
         <section className="connect-section" aria-label={t("Pairing code")}>
           <p className="settings-label">{t("Pairing code")}</p>
           {codeUrl === null && <p className="settings-description">{t("Type it on the other device where it opens this PC's Ovis: at its Portal address, through a proxy, or from another PC adding this one by its address.")}</p>}
-          <CodeRoute pairUrl={codeUrl} startAtOnce phone={phone} compact />
+          {/* the hosted shell makes its code on a press: opening the sheet there asks the PC for nothing */}
+          <CodeRoute pairUrl={codeUrl} startAtOnce={shown && !inRelayShell()} phone={phone} compact />
         </section>
       )}
       {local.portal && (
@@ -1282,6 +1285,12 @@ export function CodeRoute({ pairUrl, startAtOnce, phone = false, compact = false
   const spaced = code ? `${code.code.slice(0, 3)} ${code.code.slice(3)}` : "";
   const qrValue = code && pairUrl ? `${pairUrl.replace(/\/$/, "")}/?pair=${code.code}` : null;
   const newCode = <button type="button" className="btn" disabled={busy} aria-busy={busy || undefined} onClick={() => void pair()}><RefreshCw aria-hidden="true" />{t("New code")}</button>;
+  if (compact && code === null && !busy && !started.current) return (
+    <div className="connect-phone-code">
+      <div className="phone-actions"><button type="button" className="btn" onClick={() => { started.current = true; void pair(); }}>{t("Get a pairing code")}</button></div>
+      {error !== null && <p className="settings-hint" role="alert">{error}</p>}
+    </div>
+  );
   if (compact) return (
     <div className="connect-phone-code" role="status">
       <CompactPair qr={qrValue} qrLabel={code === null ? t("Pairing code") : t("QR code that pairs a phone with code {code}", { code: code.code })}

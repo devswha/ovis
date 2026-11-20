@@ -228,6 +228,19 @@ describe("Connect a phone on a phone", () => {
     expect(shown()).toEqual(["222 222"]);
   });
 
+  it("asks the PC for no code until it is pressed, and shows that code alone where no address is known", async () => {
+    const starts = () => requests.filter((path) => path === "/api/devices/pair/start").length;
+    await mount(<CodeRoute pairUrl={null} startAtOnce={false} compact />);
+    expect(starts()).toBe(0);
+    expect(buttons()).toContain("Get a pairing code");
+    await act(async () => { button("Get a pairing code").props.onClick(); });
+    for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
+    expect(starts()).toBe(1);
+    // with no address, the code stands alone: no QR code and no empty box beside it
+    expect(qrCodes()).toHaveLength(0);
+    expect(renderer!.root.findAll((node) => node.props.className === "compact-pair-qr-empty")).toHaveLength(0);
+  });
+
   it("keeps the desktop's pairing code QR code up front", async () => {
     await mount(<CodeRoute pairUrl="https://workstation.example.ts.net" startAtOnce />);
     expect(qrCodes()).toHaveLength(1);
