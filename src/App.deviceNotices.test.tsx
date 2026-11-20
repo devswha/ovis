@@ -231,3 +231,11 @@ it("T51: signing out hides Not me on an open admission without a fresh notice", 
     expect(actions()).toHaveLength(0);
   });
 });
+
+it("T53: an open admission offers Not me but does not offer early approval", async () => {
+  await withDeviceNotices({ no: 3 }, ({ tree }) => {
+    const card = tree.root.findByProps({ "data-testid": "device-notice" });
+    const actionLabels = card.findAllByType("button").flatMap((button) => button.children.filter((child) => typeof child === "string"));
+    expect(actionLabels).toEqual([translate("en", "Not me")]);
+  });
+});
