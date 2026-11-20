@@ -125,7 +125,7 @@ test("R11: no recovery socket opens on Windows", () => {
 
 const waiting = (id: string, extra: Partial<RecoveryCandidate> = {}): RecoveryCandidate => ({
   id, key: `key-${id}`, label: id, origin: { from: "remote", how: "list" }, waiting: "catching_up",
-  joinHold: false, held: false, openNotice: false, expired: false, covered: false, frozen: false, ...extra,
+  joinHold: false, held: false, openNotice: false, expired: false, covered: false, frozen: false, lastSeenAt: null, ...extra,
 });
 
 test("T70: only a row that waits for a whole read, with an origin written here and nothing else against it, is releasable", () => {

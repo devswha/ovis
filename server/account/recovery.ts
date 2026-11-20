@@ -150,6 +150,8 @@ export interface RecoveryCandidate {
   covered: boolean;
   /** a block or a freeze in force freezes its key */
   frozen: boolean;
+  /** when this PC last saw the row, as its store keeps it */
+  lastSeenAt: string | null;
 }
 
 export type ReleaseRefusal = "log_unreadable" | "not_waiting" | "no_origin" | "join_hold" | "held" | "notice_open" | "expired" | "removed" | "frozen";
@@ -173,6 +175,9 @@ export type RecoveryJournalEntry =
   | { kind: "undo"; releases: string[]; rows: string[]; by: string };
 
 export class ReleaseJournalError extends Error {}
+
+/** A row under a release is not released again: the release it is under holds its sessions, and an undo ends them. */
+export class AlreadyReleasedError extends Error {}
 
 /** The releases `ovis recover` made since this start. */
 export class RecoveryReleases {
@@ -205,6 +210,8 @@ export class RecoveryReleases {
 
   /** Releases `rows`, each already judged releasable; the journal entry is on disk first, or nobody is released. */
   release(rows: readonly Pick<RecoveryCandidate, "id" | "key">[], by: string): string {
+    const again = rows.find((row) => this.#byRow.has(row.id));
+    if (again !== undefined) throw new AlreadyReleasedError(`${again.id} is released already`);
     const release = randomBytes(8).toString("hex");
     try { this.#journal({ kind: "release", release, rows: rows.map(({ id, key }) => ({ id, key })), by }); }
     catch (error) { throw new ReleaseJournalError(`The release could not be journalled, so nothing was released: ${error instanceof Error ? error.message : String(error)}`); }

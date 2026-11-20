@@ -1258,6 +1258,12 @@ async function status(): Promise<number> {
   return 0;
 }
 
+/**
+ * The release flag, read as shared/account-devices-api.ts accountOpensAll() reads it: this script loads in a checkout
+ * whose packages are not installed, so it imports nothing the contract module pulls in.
+ */
+const accountOpensAll = (): boolean => process.env["OVIS_ACCOUNT_OPENS_ALL"] === "1";
+
 /** `ovis recover` (scripts/plugin-recover.ts), over the server's recovery socket in this PC's state folder. */
 async function recover(): Promise<number> {
   const { runRecover } = await import("./plugin-recover.ts");
@@ -1283,7 +1289,7 @@ export async function runPlugin(): Promise<void> {
   else if (command === "status") process.exit(await status());
   else if (command === "pair") process.exit(await pair());
   else if (command === "link") process.exit(await linkCommand());
-  else if (command === "recover") process.exit(await recover());
+  else if (command === "recover" && accountOpensAll()) process.exit(await recover());
   else if (command === "phone") process.exit(await phone());
   else if (command === "phone-setup") process.exit(await phoneSetup());
   else if (command === "tui") process.exit(await runTui(process.argv.slice(3), { platform: platform(), where: { root: ROOT, home: homedir() }, caller: process.env, settings: env, err: (text) => process.stderr.write(text), on: (signal, handler) => { process.on(signal, handler); return () => process.off(signal, handler); } }));
@@ -1291,11 +1297,11 @@ export async function runPlugin(): Promise<void> {
     const active = activePluginScript(ROOT, port, APP_STATE_DIR);
     if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) process.exit(await handOn(active, process.argv.slice(2)));
     process.stderr.write([
-      "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|recover|phone|phone-setup|tui>",
+      `usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|${accountOpensAll() ? "recover|" : ""}phone|phone-setup|tui>`,
       "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
       "link --code: show a code and a QR code to pair one device instead.",
       "tui: herdr-core's terminals in this terminal, as herdr shows them.",
-      "recover: list the devices that wait for this PC's account to be read; --release <id>... lets them in until then, --undo ends that.",
+      ...(accountOpensAll() ? ["recover: list the devices that wait for this PC's account to be read; --release <id>... lets them in until then, --undo ends that."] : []),
       "",
     ].join("\n"));
     process.exit(2);

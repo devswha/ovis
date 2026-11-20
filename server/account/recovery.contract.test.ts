@@ -32,7 +32,7 @@ test.if(unix)("P23: while the log cannot be read, ovis recover still lists, and 
   pcs.push(made);
   made.app.context.services.recoveryReleases!.registerRecoverySource(() => [{
     id: "0123456789abcdef", key: "key-a", label: "Phone", origin: { from: "remote", how: "list" }, waiting: "catching_up",
-    joinHold: false, held: false, openNotice: false, expired: false, covered: false, frozen: false,
+    joinHold: false, held: false, openNotice: false, expired: false, covered: false, frozen: false, lastSeenAt: null,
   }]);
   const listed = await bounded(askRecovery(made.stateDir, { act: "list" })) as { rows: { id: string; refusal: string | null }[] };
   expect(listed.rows.map((row) => [row.id, row.refusal])).toEqual([["0123456789abcdef", "log_unreadable"]]);

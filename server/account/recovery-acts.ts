@@ -4,7 +4,7 @@
  * come with the device and log changes they need.
  */
 import { AccountDevicesApiError, parseRecoveryAction } from "../../shared/account-devices-api.ts";
-import { ReleaseJournalError, releaseRefusal, type RecoveryReleases } from "./recovery.ts";
+import { AlreadyReleasedError, ReleaseJournalError, releaseRefusal, type RecoveryReleases } from "./recovery.ts";
 
 export function recoveryActs(options: { releases: RecoveryReleases; logReadable(): boolean; user: string }): (request: unknown) => Promise<unknown> {
   const { releases } = options;
@@ -20,7 +20,7 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
       case "list":
         return {
           rows: releases.candidates().filter((row) => row.waiting !== null).map((row) => ({
-            id: row.id, label: row.label, origin: row.origin, waiting: row.waiting, refusal: releaseRefusal(row, pc),
+            id: row.id, label: row.label, origin: row.origin, waiting: row.waiting, last_seen_at: row.lastSeenAt, refusal: releaseRefusal(row, pc),
           })),
         };
       case "release": {
@@ -35,7 +35,7 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
         }
         try { releases.release(chosen, options.user); }
         catch (error) {
-          if (error instanceof ReleaseJournalError) return { error: error.message };
+          if (error instanceof ReleaseJournalError || error instanceof AlreadyReleasedError) return { error: error.message };
           throw error;
         }
         return { released: chosen.map((row) => row.id) };
