@@ -779,9 +779,9 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
   const fallback: AccountProvider[] = bridge ? desktopProviders(bridge) : ["github"];
   const [offer, setOffer] = useState<OfferedProviders | null>(null);
   const [unreachable, setUnreachable] = useState(false);
-  /** a change to the ways in that waits for a fresh sign-in (403 reauth_required) */
   /** the in_use line addMethod showed: its steps link shows only while that exact line is the error */
   const [inUseShown, setInUseShown] = useState<string | null>(null);
+  /** a change to the ways in that waits for a fresh sign-in (403 reauth_required) */
   const [reauth, setReauth] = useState<{ action: "add" | "remove"; provider: AccountProvider } | { action: "delete"; provider: AccountProvider; deletion: Deletion } | null>(null);
   /**
    * Delete account was pressed once, for this sign-in: the same button now asks, says what goes, and its second press
