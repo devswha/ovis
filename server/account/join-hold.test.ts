@@ -93,7 +93,8 @@ describe("S2-29 the join hold and the first device (T34, T53, T67)", () => {
     if (!row) throw new Error("Missing held row");
     clock.now += JOIN_HOLD_MS * 2;
     const reopened = new AccountDeviceStore(dir, SERVER, ports);
-    expect(reopened.access(row.id)).toEqual({ refused: "join_hold", seconds: null });
+    // after a start the row first waits for a whole read (S2-27), whatever its hold says
+    expect(reopened.access(row.id)).toEqual({ refused: "catching_up" });
     reopened.commitList(read);
     expect(reopened.access(row.id)).toEqual({ refused: "join_hold", seconds: 10 });
     clock.now += JOIN_HOLD_MS - 1;
