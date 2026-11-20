@@ -5079,7 +5079,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   deletes this phone's key for the PC and leaves for the front page). Neither is destructive on the
   PC, which keeps listing the phone until it is revoked there, so neither is a `.btn-danger`.
 - The hosted shell's front page is never the dashboard. A launch opens the PC this device opened last, or the
-  next saved PC that answers its check (`launchOrder`, at most four asked at once, four seconds at most, the
+  next saved PC that answers its check (`launchOrder`, at most four, two at a time, four seconds at most, the
   connecting card meanwhile); none answering, a later visit, Back, a sign-in's return or the phone app's own row
   (`#pcs` inside the app) shows Add a PC, whose list says Off or Needs approval beside a PC, as the Claude and
   ChatGPT apps open on the last conversation and keep account pages behind Settings. The dashboard opens only by

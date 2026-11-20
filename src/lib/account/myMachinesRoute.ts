@@ -28,8 +28,3 @@ function subscribe(changed: () => void): () => void {
 export function useLocationHash(): string {
   return useSyncExternalStore(subscribe, () => window.location.hash, () => typeof window === "undefined" ? "" : window.location.hash ?? "");
 }
-
-/** The address's route, kept up with Back, Forward and links; null on any other address. */
-export function useMyMachinesRoute(): MyMachinesRoute | null {
-  return parseMyMachinesHash(useLocationHash());
-}

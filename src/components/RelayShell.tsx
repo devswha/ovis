@@ -199,7 +199,8 @@ export function RelayShell(props: RelayShellProps) {
   const offOf = (serverId: string): boolean => { const now = pcStatus?.get(serverId); const shown = now?.kind === "checking" ? now.previous : now; return shown?.kind === "offline" && shown.reason === "pc"; };
   const addPcs = [
     ...devices.map((device) => ({ server_id: device.server_id, name: device.name, ...(offOf(device.server_id) ? { note: t("Off|pc state") } : {}) })),
-    ...(account?.kind === "signed-in" ? account.pcs ?? [] : []).filter((row) => !row.paired && !devices.some((device) => device.server_id === row.server_id))
+    // only a row its own page can join: one with no way to join would open on nothing
+    ...(account?.kind === "signed-in" ? account.pcs ?? [] : []).filter((row) => !row.paired && row.join !== undefined && !devices.some((device) => device.server_id === row.server_id))
       .map((row) => ({ server_id: row.server_id, name: row.name, ...(row.state === "offline" ? { note: t("Off|pc state") } : row.state === "needs-approval" ? { note: t("Needs approval") } : {}) })),
   ];
   const addPc = (onAddBack?: () => void) => (
@@ -211,6 +212,9 @@ export function RelayShell(props: RelayShellProps) {
           if (account?.kind === "signed-in") setAddingPc(true); else setSignedOutView("pair");
           onCodeStart();
         }} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />} />
+      {account?.kind === "signed-in" && account.error !== null && (
+        <p className="account-error relay-add-directory-error" role="alert">{account.error}{onRefreshAccount && <> <button type="button" className="account-link" onClick={() => { void onRefreshAccount(); }}>{t("Try again")}</button></>}</p>
+      )}
       {/* signed in, the account's own page (its PCs, this device, sign-out) is one deliberate press away */}
       {account?.kind === "signed-in" && <a className="account-link relay-add-manage" href="#overview">{t("Relayed connections")}</a>}
     </div>
@@ -270,7 +274,7 @@ export function RelayShell(props: RelayShellProps) {
         {addingPc && (
           <PairQrDialog state={state} onCodeStart={onCodeStart} onCodeSubmit={onCodeSubmit} onCodeMatch={onCodeMatch} onCancel={onCancel} onClose={() => {
             setAddingPc(false);
-            queueMicrotask(() => { if (document.activeElement === null || document.activeElement === document.body) [...document.querySelectorAll<HTMLElement>('[data-action="add-pc"]')].find((el) => el.getClientRects().length > 0)?.focus({ preventScroll: true }); });
+            queueMicrotask(() => { if (document.activeElement === null || document.activeElement === document.body) [...document.querySelectorAll<HTMLElement>('[data-action="add-pc"], [data-action="add-qr"]')].find((el) => el.getClientRects().length > 0)?.focus({ preventScroll: true }); });
           }} />
         )}
       </Frame>

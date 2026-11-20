@@ -83,8 +83,13 @@ describe("the front page's account part", () => {
     Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } });
     const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
     const pcStatus = new Map([["b".repeat(32), { kind: "offline", reason: "pc" }]] as const);
-    const account = { kind: "signed-in" as const, provider: "github" as const, error: null, pcs: [pc("a".repeat(32), "p620", "paired"), pc("c".repeat(32), "desk", "needs-approval"), pc("d".repeat(32), "attic", "offline")] };
+    const join = { server_public_key: "k", relay: "wss://relay.example" };
+    // a row with no way to join (no key or relay in the directory) is no link: its page would open on nothing
+    const account = { kind: "signed-in" as const, provider: "github" as const, error: null, pcs: [pc("a".repeat(32), "p620", "paired"), { ...pc("c".repeat(32), "desk", "needs-approval"), join }, { ...pc("d".repeat(32), "attic", "offline"), join }, pc("e".repeat(32), "keyless", "needs-approval")] };
     const html = render({ ...props({ kind: "list", devices, account }), scoped: false, onSignIn: none, onSignOut: none, pcStatus });
+    expect(html).not.toContain("keyless");
+    const failed = render({ ...props({ kind: "list", devices, account: { ...account, error: "The account service did not answer." } }), scoped: false, onSignIn: none, onSignOut: none, onRefreshAccount: none });
+    expect(failed).toMatch(/role="alert">The account service did not answer\. <button[^>]*>Try again<\/button>/);
     expect(html).toContain('data-account-state="signed-in"');
     expect(html).not.toContain("relay-dash");
     const rows = [...html.matchAll(/<a class="relay-add-saved-pc" href="([^"]+)">([\s\S]*?)<\/a>/g)].map(([, href, inner]) => [href, inner!.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, " ").trim().replace(/\s+/g, " ")]);
