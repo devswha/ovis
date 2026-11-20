@@ -26,6 +26,8 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const [herdrSocket, setHerdrSocket] = useState(machine?.target?.herdr_socket ?? "");
   const [ownOvis, setOwnOvis] = useState(machine?.target?.own_ovis ?? "");
   const [startNewHerdr, setStartNewHerdr] = useState(machine?.target?.start_new_herdr === true);
+  // Advanced settings' own choice: kept through edits of the address, unlike a choice answered for one address
+  const [herdrInstead, setHerdrInstead] = useState(false);
   const [job, setJob] = useState<SetupJob | null>(null);
   const mounted = useRef(true);
   const jobRef = useRef(job); jobRef.current = job;
@@ -88,7 +90,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     if (choice && machine?.herdr_profile_id) choice = { ...choice, session: machine.target?.session };
     if (choice) { if ("session" in choice) setSession(choice.session ?? ""); setHerdrSocket(choice.herdr_socket ?? ""); setStartNewHerdr(choice.start_new_herdr === true); setOwnOvis(choice.own_ovis ?? ""); }
     const sentFor = [destination.trim(), port, choice && "session" in choice ? choice.session ?? "" : session].join("\0");
-    try { const next = await startMachineSetup({ destination: destination.trim(), ...(name.trim() && !machine?.herdr_profile_id ? { name: name.trim() } : {}), ...(port ? { port: Number(port) } : {}), ...(key.trim() ? { identity_file: key.trim() } : {}), ...(session.trim() ? { session: session.trim() } : {}), ...(herdrSocket ? { herdr_socket: herdrSocket } : {}), ...(startNewHerdr ? { start_new_herdr: true } : {}), ...(ownOvis ? { own_ovis: ownOvis } : {}), ...choice, ...(machine ? { machine_id: machine.id } : {}), ...(needsBridgeUpdate || updateRemote ? { update_remote: true } : {}) });
+    try { const next = await startMachineSetup({ destination: destination.trim(), ...(name.trim() && !machine?.herdr_profile_id ? { name: name.trim() } : {}), ...(port ? { port: Number(port) } : {}), ...(key.trim() ? { identity_file: key.trim() } : {}), ...(session.trim() ? { session: session.trim() } : {}), ...(herdrSocket ? { herdr_socket: herdrSocket } : {}), ...(startNewHerdr || herdrInstead && !herdrSocket && !ownOvis ? { start_new_herdr: true } : {}), ...(ownOvis ? { own_ovis: ownOvis } : {}), ...choice, ...(machine ? { machine_id: machine.id } : {}), ...(needsBridgeUpdate || updateRemote ? { update_remote: true } : {}) });
       // the address, port or session edited while it was in flight: that PC's sessions are never offered for this one
       if (mounted.current) setJob(next.action_required === "choose_herdr" && sentFor !== identityRef.current ? { ...next, action_required: null, found_herdr_sessions: undefined } : next);
       else if (!["connected", "failed", "cancelled"].includes(next.phase) && (next.windows_startup || !["installing", "starting"].includes(next.phase))) await answerMachineSetup(next.id, { action: "cancel" });
@@ -118,9 +120,9 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
         <label className="field"><span className="field-label">{t("PC name")}</span><input className="input" maxLength={100} value={name} placeholder={destination || t("Filled from the SSH address")} onChange={(e) => setName(e.target.value)} /></label>
         <details><summary>{t("Advanced settings")}</summary><div className="machine-advanced">
           <label className="field"><span className="field-label">{t("SSH port")}</span><input className="input" type="number" min="1" max="65535" placeholder={t("From SSH config (default 22)")} value={port} onChange={(e) => editIdentity("port", e.target.value)} /></label>
-          <label className="field"><span className="field-label">{t("Private key path on this web server")}</span><input className="input" value={key} placeholder="~/.ssh/id_ed25519" onChange={(e) => setKey(e.target.value)} /></label>
+          <label className="field"><span className="field-label">{t("Private key path on this web server")}</span><input className="input" value={key} placeholder={t("From SSH config")} onChange={(e) => setKey(e.target.value)} /></label>
           <label className="field"><span className="field-label">{t("herdr session name")}</span><input className="input" value={session} placeholder={t("Default session")} onChange={(e) => editIdentity("session", e.target.value)} /></label>
-          <label className="machine-check"><input type="checkbox" checked={startNewHerdr} onChange={(e) => { setStartNewHerdr(e.target.checked); setHerdrSocket(""); setOwnOvis(""); }} />{t("Connect to herdr instead of Ovis")}</label>
+          <label className="machine-check"><input type="checkbox" checked={herdrInstead} onChange={(e) => setHerdrInstead(e.target.checked)} />{t("Connect to herdr instead of Ovis")}</label>
           {besideOvis && <HerdrSessionChoices sessions={job?.found_herdr_sessions ?? []} busy={pending} onChoose={(choice) => void begin(choice)} />}
           <p className="field-hint">{t("Uses the web server account’s SSH config and ssh-agent. Agent CLI tools and logins use the environment on the target PC.")}</p>
         </div></details>

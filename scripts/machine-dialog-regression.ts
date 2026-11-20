@@ -275,8 +275,11 @@ try {
               }
               await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
             });
-            await reload(); await destination.fill("fixture-only"); await advanced();
+            await reload(); await advanced();
+            // ticked first: editing the address or port afterwards keeps it
             await dialog.getByRole("checkbox", { name: "Connect to herdr instead of Ovis", exact: true }).check();
+            await destination.fill("fixture-only");
+            await dialog.getByRole("spinbutton", { name: "SSH port", exact: true }).fill("");
             await destination.press("Enter");
             await dialog.getByRole("button", { name: "Open PC", exact: true }).waitFor();
             assert.deepEqual(sent, [{ destination: "fixture-only", start_new_herdr: true }]);

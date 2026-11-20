@@ -131,7 +131,8 @@ describe("running herdr discovery", () => {
     const other = tempRoot("hd-other-");
     listening(join(order.home, ".config/herdr/sessions/work/herdr.sock"));
     listening(join(other, "config/herdr/sessions/scratch/herdr.sock"));
-    for (const [pid, args, environ] of [["100", ["/usr/bin/make"], `HOME=${order.home}\0TMPDIR=${order.home}/.config\0`], ["98", ["/usr/local/bin/herdr", "--session", "work", "server"], `HOME=${order.home}\0TMPDIR=${order.home}/.config\0`], ["101", ["/usr/local/bin/herdr", "--session", "work", "server"], `HOME=${order.home}\0`], ["99", ["/usr/local/bin/herdr", "--session", "scratch", "server"], `HOME=${order.home}\0XDG_CONFIG_HOME=${join(other, "config")}\0`], ["102", ["/usr/local/bin/herdr", "server"], `HOME=${order.home}\0TMPDIR=${other}\0`]] as const) {
+    listening(join(order.home, "tmp/x/herdr/sessions/trial/herdr.sock"));
+    for (const [pid, args, environ] of [["100", ["/usr/bin/make"], `HOME=${order.home}\0TMPDIR=${order.home}/.config\0`], ["98", ["/usr/local/bin/herdr", "--session", "work", "server"], `HOME=${order.home}\0TMPDIR=${order.home}/.config\0`], ["97", ["/usr/local/bin/herdr", "--session", "trial", "server"], `HOME=${order.home}\0TMPDIR=${order.home}/tmp\0XDG_CONFIG_HOME=${order.home}/tmp/x\0`], ["101", ["/usr/local/bin/herdr", "--session", "work", "server"], `HOME=${order.home}\0`], ["99", ["/usr/local/bin/herdr", "--session", "scratch", "server"], `HOME=${order.home}\0XDG_CONFIG_HOME=${join(other, "config")}\0`], ["102", ["/usr/local/bin/herdr", "server"], `HOME=${order.home}\0TMPDIR=${other}\0`]] as const) {
       mkdirSync(join(order.procRoot, pid));
       writeFileSync(join(order.procRoot, pid, "cmdline"), [...args, ""].join("\0"));
       writeFileSync(join(order.procRoot, pid, "environ"), environ);

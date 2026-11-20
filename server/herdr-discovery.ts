@@ -34,7 +34,8 @@ export function throwawayPath(path: string, home: string, ...temps: (string | un
   // herdr sockets are POSIX paths, whatever this app's own platform
   const inside = (dir: string, at: string) => posix.normalize(at + "/").startsWith(dir.replace(/\/+$/, "") + "/");
   const temp = [...temps, "/tmp", "/var/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/dev/shm"]
-    .filter((dir): dir is string => !!dir?.startsWith("/") && !inside(dir, home));
+    // a temp folder holding the home, or its .config, would be everything: such a TMPDIR is no throwaway folder
+    .filter((dir): dir is string => !!dir?.startsWith("/") && !inside(dir, home) && !inside(dir, posix.join(home, ".config")));
   return [posix.join(home, ".cache"), ...temp].some((dir) => inside(dir, path));
 }
 
@@ -74,8 +75,7 @@ async function discoveryScope(host: HerdrDiscoveryHost): Promise<DiscoveryScope>
     if (home !== host.home) return;
     const path = processSocket(args, home, xdg);
     if (!path) return;
-    // a TMPDIR inside the home is no throwaway folder (the home's .cache already is one)
-    if (tmp?.startsWith("/") && !posix.normalize(tmp + "/").startsWith(home + "/") && !scope.temps.includes(tmp)) scope.temps.push(tmp);
+    if (tmp?.startsWith("/") && !scope.temps.includes(tmp)) scope.temps.push(tmp);
     servers.push({ path, xdg });
   };
   if (host.platform === "linux" && host.procRoot) {

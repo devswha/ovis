@@ -19,6 +19,7 @@ export const MACHINES_JA: Record<string, string> = {
   "Choose the session to use, or start a new herdr here.": "使用するセッションを選ぶか、ここで新しい herdr を起動してください。",
   "Use {label}": "{label} を使用",
   "Connect to herdr instead of Ovis": "Ovis の代わりに herdr に接続",
+  "From SSH config": "SSH 設定に従う",
   "Start a new herdr here": "ここで新しい herdr を起動",
   "Use Ovis on this PC (herdr-core)": "この PC の Ovis (herdr-core) を使用",
   "Choose what to connect to": "接続先を選んでください",

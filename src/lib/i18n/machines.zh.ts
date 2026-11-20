@@ -19,6 +19,7 @@ export const MACHINES_ZH: Record<string, string> = {
   "Choose the session to use, or start a new herdr here.": "选择要使用的会话，或在此启动新的 herdr。",
   "Use {label}": "使用 {label}",
   "Connect to herdr instead of Ovis": "连接 herdr 而不是 Ovis",
+  "From SSH config": "遵循 SSH 配置",
   "Start a new herdr here": "在此启动新的 herdr",
   "Use Ovis on this PC (herdr-core)": "使用此 PC 上的 Ovis (herdr-core)",
   "Choose what to connect to": "请选择要连接的对象",
