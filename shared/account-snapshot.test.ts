@@ -27,10 +27,19 @@ const expected = { account: "acct_1", server_id: serverId, lastApplied: 7 };
 describe("account snapshot pages (device table P6, G1)", () => {
   test("a page survives JSON and one page is a whole read", () => {
     const read = parseSnapshotPage(JSON.parse(JSON.stringify(page())));
-    expect(read).toEqual(page());
+    expect(read).toEqual({ ...page(), devices: page().devices.map((device) => ({ ...device, two_step: "unknown" })) });
     const whole = assembleSnapshot([read], expected);
     expect({ snapshot: whole.snapshot, version: whole.version, methods_version: whole.methods_version, devices: whole.devices.map((d) => d.no), removed: whole.removed.map((r) => r.no), blocks: whole.blocks.map((b) => b.id) })
       .toEqual({ snapshot: "a".repeat(32), version: 7, methods_version: 2, devices: [1, 2], removed: [3], blocks: [block.id] });
+  });
+
+  test.each([
+    ["recognized values", { two_step: "set", provider: "google" }, { two_step: "set", provider: "google" }],
+    ["missing values", {}, { two_step: "unknown" }],
+    ["unrecognized values", { two_step: "garbage", provider: "garbage" }, { two_step: "unknown" }],
+  ] as const)("a device entry normalizes %s without refusing the page", (_scenario, fields, normalized) => {
+    const device = { key: older.spki, no: 1, eligible: true, label: "Phone" };
+    expect(parseSnapshotPage({ ...page(), devices: [{ ...device, ...fields }] }).devices).toEqual([{ ...device, ...normalized }]);
   });
 
   test("pages of one snapshot join in order", () => {

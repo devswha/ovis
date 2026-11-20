@@ -68,6 +68,16 @@ async function signIn(devices: DeviceStore, id: string, signer: Key, serverId = 
 }
 
 describe("S2-25 an account-joined row signs in by relay AUTH (S21, S25, T35)", () => {
+  test("T34: a list admission durably records its registering sign-in claims", async () => {
+    const { devices, rows, dir } = pc();
+    await member(devices);
+    const phone = await key();
+    const list = listed(phone);
+    rows.commitList({ ...list, devices: list.devices.map((device) => ({ ...device, provider: "google", two_step: "set" } as const)) });
+    const entry = DeviceJournal.open(dir).entries().find((record) => record.kind === "admit" && record.key === phone.spki);
+    expect(entry).toMatchObject({ how: "list", provider: "google", two_step: "set" });
+  });
+
   test("S25: a proved sign-in of a held row is refused with its reason, and a wrong key learns nothing", async () => {
     const { devices, rows } = pc();
     await member(devices);
