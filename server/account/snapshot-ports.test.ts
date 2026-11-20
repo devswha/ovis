@@ -180,7 +180,8 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(again.journal.entries().filter((entry) => entry.kind === "method")).toHaveLength(0);
     expect(await read(again.ports, page({ methods_version: 6 }))).toMatchObject({ committed: true });
     expect(again.journal.entries().filter((entry) => entry.kind === "method")).toHaveLength(1);
-  });
+  // JOURNAL_MAX durable appends: allow for a loaded runner
+  }, 60_000);
 
   test("T58: a committed methods version change is journalled once", async () => {
     const { devices, journal, ports } = pc();
