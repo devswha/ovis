@@ -905,7 +905,7 @@ export class DeviceStore {
   /** The commit turn of a verified block, in P8's order, with no wait inside. */
   private commitBlock(record: BlockRecord, got: SafetyGot): BlockReceipt {
     const refused = (reason: Extract<BlockReceipt, { outcome: "refused" }>["reason"]): BlockReceipt => ({ outcome: "refused", id: record.id, reason });
-    if (this.safety === null || this.evidence === null || this.failsClosed() || record.account !== this.account()) return refused("record_invalid");
+    if (this.safety === null || this.evidence === null || this.failsClosed || record.account !== this.account()) return refused("record_invalid");
     const signers = this.devices.filter((d) => d.relay_public_key === record.signer && d.role === "drive" && d.account === record.account && d.origin !== undefined && !this.coveredByEvidence(d));
     if (signers.length === 0) return refused("signer_not_member");
     if (signers.some((d) => this.frozen(d))) return refused("frozen");
