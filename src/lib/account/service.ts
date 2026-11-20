@@ -505,10 +505,13 @@ export class AccountService {
     return isRecord(body) && typeof body.queued === "number" ? body.queued : 0;
   }
 
-  /** `ready` runs right before each send, after any token refresh, and stops it by throwing. */
+  /**
+   * Confirmed only by the committed receipt, a 200 naming the record's id: any other success (a 202 pending, say) is no
+   * confirmation and throws. `ready` runs right before each send, after any token refresh, and stops it by throwing.
+   */
   async postSafetyRecord(record: DeviceSafetyRecord, ready?: () => void): Promise<void> {
     const again: SendAgain | undefined = ready === undefined ? undefined : { sends: 2, before: async () => ready(), wait: async () => false };
-    const body = await this.call("POST", "/v1/safety-records", { record }, AbortSignal.timeout(5_000), again);
+    const body = await this.call("POST", "/v1/safety-records", { record }, AbortSignal.timeout(5_000), again, 200);
     if (!isRecord(body) || body.id !== record.id) throw new AccountServiceError(502, "invalid_answer", "The account service did not confirm this record");
   }
 
@@ -608,7 +611,7 @@ export class AccountService {
    * request, and only it, is sent again after no answer or a 429 (a token refresh under it never is), within
    * `again.sends` HTTP sends in all, a send after a 401 included. Without it a 401 is sent again once, as always.
    */
-  private async call(method: string, path: string, body?: unknown, signal?: AbortSignal, again?: SendAgain): Promise<unknown> {
+  private async call(method: string, path: string, body?: unknown, signal?: AbortSignal, again?: SendAgain, only?: number): Promise<unknown> {
     let stale: string | undefined;
     let refreshed = false;
     const sends = again?.sends ?? 2;
@@ -641,6 +644,8 @@ export class AccountService {
         if (again !== undefined && refusal.status === 429 && sent < sends && await again.wait(refusal, sent)) continue;
         throw refusal;
       }
+      // `only`: the one success status that counts; another is no answer to rely on
+      if (only !== undefined && response.status !== only) throw new AccountServiceError(response.status, "unconfirmed", `The account service answered ${response.status}, not ${only}`);
       return response.status === 204 ? null : response.json();
     }
   }

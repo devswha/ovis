@@ -14,7 +14,7 @@ import type { AccountSession, AccountStore } from "./store.ts";
 
 export interface UnsentBlocks {
   readonly account: string;
-  /** the sign-in that signed them (absent on a sign-in from before ids were kept, which then matches only itself) */
+  /** the sign-in that signed them, for the record: entries are matched by `account`, so any sign-in to it sends them */
   readonly sign_in_id: string | undefined;
   readonly records: readonly BlockRecord[];
   /** the service refused them for good; they stay until that was shown to the account's owner */
