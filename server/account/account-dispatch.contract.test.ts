@@ -165,6 +165,31 @@ test("R7: a local terminal upgrade grants no multi-PC event document", async () 
   } finally { clock.mockRestore(); }
 });
 
+test("R7: a listed event socket receives only this PC's roster, never its sibling or pairing prompts", async () => {
+  const { fixture, serverId, device } = await listedDispatcher();
+  const { core } = fixture.app.context.services;
+  const local = core.machines?.list().find(machine => machine.id === "local");
+  if (!core.machines || !local) throw new Error("Missing local machine");
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
+  const subscription = spyOn(core.machines, "subscribe").mockImplementation(listener => {
+    listener({ type: "remote-pairings", pairings: [] });
+    listener({ type: "machines", machines: [local, { ...local, id: "other-pc" }] });
+    return () => {};
+  });
+  try {
+    const link = await relayConnection(fixture, { serverId, websocket: core.socketHandlers });
+    await link.auth(device);
+    const ws = link.openSocket();
+    await ws.opened;
+    const features = await ws.until(frame => frame.type === "features");
+    expect(features.type === "features" && features.features.includes("machine-events")).toBe(true);
+    ws.send({ type: "machine-events", enabled: true });
+    const frame = await ws.until(message => message.type === "machine-event" && message.event.type === "machines");
+    expect(frame.type === "machine-event" && frame.event.type === "machines" && frame.event.machines.map(machine => machine.id)).toEqual(["local"]);
+    expect(ws.messages.some(message => message.type === "machine-event" && message.event.type === "remote-pairings")).toBe(false);
+  } finally { subscription.mockRestore(); clock.mockRestore(); }
+});
+
 test("R7: every machine selector must name this PC before HTTP or WS dispatch", async () => {
   const { fixture, serverId, device } = await listedDispatcher();
   const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
