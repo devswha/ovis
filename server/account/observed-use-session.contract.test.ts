@@ -118,3 +118,26 @@ test.each(["wrong proof", "failed read"] as const)("T55/S27: %s cannot authorize
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   expect(machine.row()).toMatchObject({ state: "expired", origin: { admit_no: previous } });
 });
+
+test("T55/S27: a failed readmission journal keeps the expired row barred from background reads", async () => {
+  const machine = await pc();
+  const { accountMailbox } = machine.fixture.app.context.services;
+  const previous = machine.row().origin.admit_no;
+  machine.clock.advance(60 * 86_400_000);
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const append = DeviceJournal.prototype.append;
+  const fault = spyOn(DeviceJournal.prototype, "append").mockImplementation(function (this: DeviceJournal, entry, ...rest) {
+    if (entry.kind === "admit" && entry.key === machine.device.publicKey) throw new Error("readmission journal unavailable");
+    return append.call(this, entry, ...rest);
+  });
+  try {
+    const returning = await relayConnection(machine.fixture, { serverId: machine.serverId });
+    await bounded(Promise.race([
+      returning.auth(machine.device, [ACCOUNT_OPENS_ALL_FEATURE]).then(() => "authenticated", () => returning.serverError),
+      returning.serverError,
+    ]));
+    expect(accountMailbox.error).toBe("readmission journal unavailable");
+  } finally { fault.mockRestore(); }
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(machine.row()).toMatchObject({ state: "expired", origin: { admit_no: previous } });
+});
