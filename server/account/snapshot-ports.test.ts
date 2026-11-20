@@ -236,6 +236,29 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(reopened.safetyLog.entries().map(({ record }) => record.signature)).toEqual([a.signature]);
   });
 
+  test("P14: a failed generation write leaves the block standing, and no lift counts at an unraised generation", async () => {
+    const first = pc();
+    const signer = await member(first.devices);
+    const target = await member(first.devices);
+    const blocked = await block(target.spki, signer);
+    expect((await first.devices.applyBlock(blocked, "handed")).outcome).toBe("applied");
+    await read(first.ports, page({ version: 1 }));
+    const gen = first.devices.gen();
+    const record = await lift(blocked.id, signer);
+    const snapshot = page({ version: 2, lifts: [record] }).page;
+    const rename = privateStateFs.renameSync;
+    const fault = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (String(to).endsWith("account-pc.json")) throw new Error("generation unavailable");
+      rename(from, to);
+    });
+    try { expect(() => first.ports.commit({ snapshot, lifts: [record] })).toThrow(); }
+    finally { fault.mockRestore(); }
+    const again = pc(first.dir);
+    expect(again.safetyLog.receipt(record.id)).toBeNull();
+    expect(again.safetyLog.state().blocks.map(({ record }) => record.id)).toEqual([blocked.id]);
+    expect(again.devices.gen()).toBe(gen);
+  });
+
   test("P6, P14: a failed watermark replacement leaves the freeze in force after restart", async () => {
     const first = pc();
     const signer = await member(first.devices);
