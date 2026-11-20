@@ -2601,7 +2601,6 @@ export class DeviceStore {
     for (const listener of [...this.revokeAllListeners]) listener();
     // a gate that was open closes here, whatever the writes below do: what the open LAN let in ends (T3)
     if (gateWasOpen) this.tellGateClosed();
-    if (denied !== null) throw denied;
     // its intent is on disk: the journal first, then the removals told, then the writes; any that fails leaves the PC
     // closed until a start finishes it (P8, P24, T20)
     try {
@@ -2611,7 +2610,6 @@ export class DeviceStore {
       this.settleDenies();
     } catch (error) {
       this.denyProblem = `Revoke all could not be finished (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until it is.`;
-      this.pc?.unwritten(error, "Revoke all could not clear this PC's account");
       throw error;
     }
     return gone.map((device) => device.id);
@@ -2619,10 +2617,10 @@ export class DeviceStore {
 
   private resumeRevokeAll(): void {
     const intent = this.revokeAllIntent;
-    intent?.finish(rows => {
+    if (intent?.finish(rows => {
       this.pc?.raiseGen();
       this.completeRevokeAll(intent, rows, this.gateClosedAt ?? new Date().toISOString());
-    });
+    })) this.settleDenies();
   }
 
   /**
@@ -2645,7 +2643,10 @@ export class DeviceStore {
     this.gateClosedAt = gate;
     // the file goes only once the PC has left its account: a binding that cannot be read keeps it (P12)
     if (this.pc?.strict != null) throw new Error(this.pc.strict);
-    this.clearAccountBinding("revoke_all", "pc");
+    try { this.clearAccountBinding("revoke_all", "pc"); } catch (error) {
+      this.pc?.unwritten(error, "Revoke all could not clear this PC's account");
+      throw error;
+    }
     // every row and key it covered is revoked on disk now: their earlier failures end
     for (const row of rows) {
       this.failedRows.delete(row.id);

@@ -28,13 +28,14 @@ export class RevokeAllIntent {
     this.listedRows = listed;
   }
 
-  finish(write: (rows: readonly StoredDevice[]) => void): void {
-    if (this.targets === null) return;
+  finish(write: (rows: readonly StoredDevice[]) => void): boolean {
+    if (this.targets === null) return false;
     try {
       write(this.targets);
       rmSync(this.path);
       this.targets = null;
       this.problem = null;
+      return true;
     } catch (error) {
       this.problem = `Revoke all could not be finished (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until it is.`;
       throw error;
