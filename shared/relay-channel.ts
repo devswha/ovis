@@ -3,7 +3,7 @@
  * (docs/relay.md).
  */
 import { ACCOUNT_OPENS_ALL_MUX_FEATURE } from "./account-devices-api.ts";
-import { pairFingerprint, signPairProof } from "./pair-fingerprint.ts";
+import { PENDING_MS, pairFingerprint, signPairProof } from "./pair-fingerprint.ts";
 import { channelBinding, openClientSecureChannel } from "./relay-e2ee.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
@@ -336,14 +336,18 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       if (phase === "auth" && frame.type === FrameType.KEY_CHALLENGE && offer.code !== undefined && options.keyProof !== undefined && keyProof === undefined) {
         const fingerprint = await pairFingerprint(offer.server_id, frame.payload.challenge, device.public_spki);
         const signature = await signPairProof(offer.server_id, frame.payload.challenge, device.public_spki, device.private_key);
-        expect(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS, () => new RelayAdmissionTimeoutError("auth"));
-        mux?.extendSetup(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS);
+        expect(PENDING_MS + PAIR_APPROVAL_GRACE_MS, () => new RelayAdmissionTimeoutError("auth"));
+        mux?.extendSetup(PENDING_MS + PAIR_APPROVAL_GRACE_MS);
         await send({ type: FrameType.KEY_PROVE, flags: 0, stream_id: 0, payload: { signature } });
         keyProof = { fingerprint, shown: false };
         return;
       }
       if (phase === "auth" && frame.type === FrameType.KEY_PENDING && keyProof !== undefined) {
-        if (!keyProof.shown) options.keyProof?.(keyProof.fingerprint);
+        if (!keyProof.shown) {
+          expect(PENDING_MS + PAIR_APPROVAL_GRACE_MS, () => new RelayAdmissionTimeoutError("auth"));
+          mux?.extendSetup(PENDING_MS + PAIR_APPROVAL_GRACE_MS);
+          options.keyProof?.(keyProof.fingerprint);
+        }
         keyProof = { ...keyProof, shown: true };
         return;
       }
