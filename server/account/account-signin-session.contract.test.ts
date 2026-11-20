@@ -8,16 +8,19 @@ import { keyOf } from "./account-devices.test-helpers.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { accountDeviceId, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
 import { applyAccountRecords } from "./records.ts";
-import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
+import { ACCOUNT, createListedPc, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
+import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { ask, phone } from "./pairing.test-helpers.ts";
+import { PcAccountState } from "./pc-binding.ts";
 import { FrameType, type MuxFrame, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
-import { bounded, relayConnection, relayFixture } from "../relay/test-helpers.ts";
+import { bounded, relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 
 const listedPc = () => createListedPc(close => closes.push(close));
 
-async function refusal(pc: Awaited<ReturnType<typeof listedPc>>, features: readonly string[]) {
+async function refusal(pc: Pick<Awaited<ReturnType<typeof listedPc>>, "fixture" | "device" | "serverId">, features: readonly string[]) {
   const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
   let failed: Extract<MuxFrame, { type: typeof FrameType.SESSION_ERROR }>["payload"] | undefined;
   link.onFrame = (frame) => { if (frame.type === FrameType.SESSION_ERROR) failed = frame.payload; };
@@ -27,6 +30,31 @@ async function refusal(pc: Awaited<ReturnType<typeof listedPc>>, features: reado
 }
 
 describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
+  test("T59/T67: a first link without a proved list key leaves the sole listed device in join_hold", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const fixture = relayFixture(false, { accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
+    closes.push(() => fixture.close());
+    const serverId = await registerSnapshotPc(service, fixture);
+    const paired = await relayDevice(fixture);
+    const member = await phone();
+    const link = await relayConnection(fixture, { serverId });
+    await link.auth(paired);
+    const record = await signAccountRecord({ v: 1, kind: "link", account: ACCOUNT, key: member.spki, server_id: serverId, device_id: paired.id,
+      old_key: paired.publicKey, issued_at: new Date().toISOString(), id: newRecordId(), signer: member.spki }, member.keys.privateKey);
+    expect((await ask(link, "/api/account/link", { method: "POST", body: { record } })).status).toBe(200);
+    const enrolled = await relayConnection(fixture, { serverId });
+    await enrolled.auth({ id: paired.id, keys: member.keys, publicKey: member.spki });
+    expect((await ask(enrolled, "/api/account/enroll", { method: "POST", body: { account: ACCOUNT, records: [], last: true } })).status).toBe(200);
+    const binding = PcAccountState.open(fixture.stateDir);
+    expect(binding.first()).toEqual({ key: member.spki, list_key: null });
+    expect(binding.othersEver()).toBe(false);
+
+    service.registerDevice(ACCOUNT, paired.publicKey, "First phone");
+    expect(await fixture.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    const device = { ...paired, id: accountDeviceId(serverId, paired.publicKey) };
+    expect(await refusal({ fixture, serverId, device }, [ACCOUNT_OPENS_ALL_FEATURE])).toMatchObject({ code: "held", hold: { reason: "join_hold" } });
+  });
   test.each([
     ["revoke", JOURNAL_FILE], ["remove", JOURNAL_FILE], ["remove", ACCOUNT_DEVICES_FILE],
     ["block", JOURNAL_FILE], ["block", ACCOUNT_DEVICES_FILE], ["revoke_all", ACCOUNT_DEVICES_FILE],
