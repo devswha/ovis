@@ -57,9 +57,8 @@ irm https://ovis.sh/install.ps1 | iex
 
 Sign in to your Ovis account with GitHub, Google or Apple (your first sign-in makes it), and the computers in it show up on your other devices: the desktop app on Mac, Windows or Linux, the iPhone and Android apps, and any browser at [app.ovis.sh](https://app.ovis.sh). They connect through the Ovis relay, end-to-end encrypted, with nothing to set up on your network. [How accounts work →](docs/guide.md#through-an-account)
 
-- **Add a computer.** On it, open **Settings → Devices and PCs → Account**, sign in and add this PC. A new account's first computer, or one added right after a two-step sign-in, goes in with that one press; any other you confirm from a device you already use.
-- **Add a phone or another device.** Sign in to the same account on it. A computer that does not know the device yet asks you to approve it once on a device you already use.
-- **Pair a phone by QR code.** On a computer that is in no account yet, open **Settings → Devices and PCs → Add a connection → Phones and devices**, sign in, choose **Show the QR code** and scan it with a phone signed in to the same account.
+- **Add a computer.** On it, open **Settings → Devices and PCs → Account**, sign in and add this PC. A new account's first computer, or one added right after a two-step sign-in, can go in with that one press. Otherwise, finish from a phone signed in to the same account: on the computer, open **Add a connection → Phones and devices**, turn the relay on, choose **Show the QR code** and scan it.
+- **Add a phone or another device.** Sign in to the same account on it and open the computer. If the computer asks, approve the device on that computer or on a device that already uses it.
 - **Without an account.** Tailscale, your Wi-Fi or SSH work too: **Start without signing in** on the phone, or **Add a connection → Tailscale** or **Direct** on the desktop. The Android app reaches a computer over SSH by itself, and can install Ovis there. [Remote PCs →](docs/remote-pcs.md)
 
 ## Features
