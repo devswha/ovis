@@ -185,7 +185,12 @@ async function walkOne(browser: Browser, site: PagesSite, run: Run, arriveHere: 
   await context.route(/^https:\/\/app\.ovis\.sh\//, whileOpen(context, async (route) => {
     const url = new URL(route.request().url());
     // answered in this process: route.fetch's pooled sockets to a local server can hang up mid-load and leave the page waiting
-    const answer = await pagesResponse(site, new Request(url));
+    let answer = await pagesResponse(site, new Request(url));
+    // a redirect within the shell (`/s/<id>` to `/s/<id>/`) is followed here too, as route.fetch followed it: fulfilled as
+    // a 3xx, the browser would follow it past this route to the real host
+    for (let location = answer.headers.get("location"); answer.status >= 300 && answer.status < 400 && location?.startsWith("/"); location = answer.headers.get("location")) {
+      answer = await pagesResponse(site, new Request(new URL(location, url)));
+    }
     await route.fulfill({ status: answer.status, headers: Object.fromEntries(answer.headers), body: Buffer.from(await answer.arrayBuffer()) });
   }));
   await context.route(/^https:\/\/account\.ovis\.sh\//, async (route) => {
