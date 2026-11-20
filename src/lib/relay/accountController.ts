@@ -94,6 +94,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   /** `at`: when the account last answered; the rows of a failed read are aged to then, never past what it confirmed */
   let listedFor: { readonly epoch: number; readonly projection: { readonly accountKey: string; readonly account: string; readonly registered: boolean }; readonly at: number; readonly openKey: SignInKey | null } | undefined;
   let shownFor: AccountSession | undefined;
+  let registrationAttemptedFor: string | undefined;
   let generation = 0;
   let leaving = false;
   /**
@@ -139,7 +140,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         shownFor = session;
         const listed = await account.forSignIn(session).listPcs();
         const kept = await accountStore.get("signin_key");
-        const openKey = kept !== undefined && kept.no !== null && kept.account === session.account && kept.sign_in_id === session.sign_in_id ? kept : null;
+        const openKey = kept === undefined || kept.account !== session.account || kept.sign_in_id !== session.sign_in_id ? null
+          : kept.no !== null ? kept
+          : live() && registrationAttemptedFor !== kept.sign_in_id ? await registerSignIn(session) : null;
         const devices = await store.list();
         const key = await accountStore.key();
         if (!live()) return;
@@ -319,10 +322,12 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
 
 
-  const registerSignIn = async (session: AccountSession): Promise<void> => {
-    try { await signInKey(accountStore, account.forSignIn(session)); }
+  const registerSignIn = async (session: AccountSession): Promise<SignInKey | null> => {
+    registrationAttemptedFor = session.sign_in_id;
+    try { return await signInKey(accountStore, account, session); }
     catch (error) {
-      if (!(error instanceof AccountServiceError || error instanceof AccountServiceUnreachableError || error instanceof SignedOutError)) throw error;
+      if (error instanceof AccountServiceError || error instanceof AccountServiceUnreachableError || error instanceof SignedOutError) return null;
+      throw error;
     }
   };
   /** `pairing`: a web sign-in leaves the page, so the pairing it is for waits in its pending record (load hands it back) */

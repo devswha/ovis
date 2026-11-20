@@ -5,13 +5,13 @@
  * never a second one. Its number in the account's order only fills a block's signer_no and decides whether "Not me" is
  * offered.
  */
-import { newKey, type AccountStore, type SignInKey } from "./store.ts";
-import { SignedOutError, type AccountService } from "./service.ts";
+import { newKey, type AccountSession, type AccountStore, type SignInKey } from "./store.ts";
+import { sameSignIn, SignedOutError, type AccountService } from "./service.ts";
 
 /** This sign-in's registered key; null when the service has no release (G5), and nothing is kept then. */
-export async function signInKey(store: AccountStore, service: AccountService): Promise<(SignInKey & { readonly no: number }) | null> {
+export async function signInKey(store: AccountStore, service: AccountService, expected?: AccountSession): Promise<(SignInKey & { readonly no: number }) | null> {
   const session = await service.session();
-  if (session === undefined || session.sign_in_id === undefined) throw new SignedOutError();
+  if (session === undefined || session.sign_in_id === undefined || (expected !== undefined && !sameSignIn(session, expected))) throw new SignedOutError();
   const ours = (kept: SignInKey | undefined): kept is SignInKey => kept !== undefined && kept.account === session.account && kept.sign_in_id === session.sign_in_id;
   const kept = await store.get("signin_key");
   if (ours(kept) && kept.no !== null) return kept as SignInKey & { readonly no: number };
