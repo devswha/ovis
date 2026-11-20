@@ -72,6 +72,22 @@ test("T47: an unlock names the lock it ends and is written only after the screen
   expect(writes).toEqual(["unlock lock-1"]);
 });
 
+test("T46: approving two outstanding lock prompts writes only one lock", async () => {
+  const { handle, confirms, writes, approve, stop } = routes();
+  try {
+    const first = await ask(handle, "POST", "/api/account/lock", local, {});
+    const second = await ask(handle, "POST", "/api/account/lock", local, {});
+    expect([first.status, second.status]).toEqual([202, 202]);
+    for (const response of [first, second]) {
+      const { confirm } = await response.json() as { confirm: string };
+      const answered = confirms.answer(confirm);
+      approve(confirm);
+      expect(await bounded(answered)).toBe("approved");
+    }
+    expect(writes).toEqual(["lock"]);
+  } finally { stop(); }
+});
+
 test("R10: nothing from afar locks or unlocks, even a device that drives this PC", async () => {
   const { handle, confirms } = routes({ store: store({ locked: "lock-1" }) });
   for (const path of ["/api/account/lock", "/api/account/unlock"]) {
