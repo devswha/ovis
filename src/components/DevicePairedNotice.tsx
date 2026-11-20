@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Smartphone, SmartphoneNfc, X } from "lucide-react";
 
 import "./DevicePairedNotice.css";
@@ -12,15 +12,16 @@ const METHOD_NAMES = { github: "GitHub", google: "Google", apple: "Apple" } as c
 
 /**
  * One PC's journal notices (device table P10, T34, T57, T58): who joined, how they signed in, and their key.
- * Two-step sign-in is said as the account record states it, never as used. An admission nobody decided has no
- * dismiss: it stays, row or not, until its PC says it was decided; `actions` adds that PC's answers to it.
+ * Two-step sign-in is said as the account record states it, never as used. Hiding an undecided admission
+ * leaves its PC's decision untouched; `actions` adds that PC's answers to it.
  */
 export function DeviceNotices({ pc, notices, cut = 0, onDismiss, onShown, actions }: { pc: string; notices: readonly DeviceNotice[]; cut?: number; onDismiss: (notice: DeviceNotice) => void; onShown?: (seq: number) => void; actions?: (notice: DeviceNotice) => ReactNode }) {
   const t = useT();
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
   const shown = notices.filter((notice) => TOLD_KINDS.has(notice.kind));
   const newest = shown.reduce((seq, notice) => Math.max(seq, notice.seq), 0);
   useEffect(() => { if (newest > 0) onShown?.(newest); }, [newest, onShown]);
-  return <>{cut > 0 && <p className="settings-hint">{cut === 1 ? t("An older notice from {pc} was cleared before this device saw it.", { pc }) : t("{count} older notices from {pc} were cleared before this device saw them.", { count: cut, pc })}</p>}{shown.map((notice) => {
+  return <>{cut > 0 && <p className="settings-hint">{cut === 1 ? t("An older notice from {pc} was cleared before this device saw it.", { pc }) : t("{count} older notices from {pc} were cleared before this device saw them.", { count: cut, pc })}</p>}{shown.filter((notice) => !hidden.has(notice.id)).map((notice) => {
     const time = new Date(notice.at).toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" });
     const method = notice.method === null ? null : METHOD_NAMES[notice.method];
     const headline = notice.kind === "method" ? t("A sign-in method was added to your account at {time}.", { time })
@@ -40,7 +41,10 @@ export function DeviceNotices({ pc, notices, cut = 0, onDismiss, onShown, action
         </span>
         <div className="device-paired-actions">
           {actions?.(notice)}
-          {!notice.open && <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => onDismiss(notice)}><X /></button>}
+          <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => {
+            if (notice.open) setHidden((previous) => new Set([...previous, notice.id]));
+            else onDismiss(notice);
+          }}><X /></button>
         </div>
       </div>
     );
