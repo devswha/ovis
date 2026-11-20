@@ -16,7 +16,7 @@ import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
 import type { RelayChannelOptions } from "../../../shared/relay-channel.ts";
 import { withAccountDevice } from "../account/accountDevice.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
-import { ACCOUNT_OPENS_ALL_MUX_FEATURE } from "../../../shared/account-devices-api.ts";
+import { ACCOUNT_OPENS_ALL_FEATURE } from "../../../shared/relay-mux.ts";
 import { pairFingerprint, verifyPairProof } from "../../../shared/pair-fingerprint.ts";
 import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
 import { probePc } from "../../../shared/relay-channel.ts";
@@ -490,18 +490,18 @@ it("G5: does not send account AUTH when WELCOME selects no account-open feature"
 it("T34, G5: offers the account-opens-all mux feature in HELLO only when asked, so only a flag-on app hears an account refusal", async () => {
   const plain = await fixture(false);
   await plain.authSeen.promise;
-  expect(plain.offered).not.toContain(ACCOUNT_OPENS_ALL_MUX_FEATURE);
+  expect(plain.offered).not.toContain(ACCOUNT_OPENS_ALL_FEATURE);
   plain.allowAuth.resolve();
   await plain.opening;
-  const asking = await fixture(false, undefined, undefined, { features: [ACCOUNT_OPENS_ALL_MUX_FEATURE] }, { accountOpensAll: true });
+  const asking = await fixture(false, undefined, undefined, { features: [ACCOUNT_OPENS_ALL_FEATURE] }, { accountOpensAll: true });
   await asking.authSeen.promise;
-  expect(asking.offered).toContain(ACCOUNT_OPENS_ALL_MUX_FEATURE);
+  expect(asking.offered).toContain(ACCOUNT_OPENS_ALL_FEATURE);
   asking.allowAuth.resolve();
   await asking.opening;
 });
 
 it("T34: an account open after a provisional WELCOME acknowledges every PC setup frame", async () => {
-  const f = await fixture(false, undefined, undefined, { provisional: true, features: [ACCOUNT_OPENS_ALL_MUX_FEATURE] }, { accountOpensAll: true });
+  const f = await fixture(false, undefined, undefined, { provisional: true, features: [ACCOUNT_OPENS_ALL_FEATURE] }, { accountOpensAll: true });
   f.allowAuth.resolve();
   const channel = await f.opening;
   await channel.mux.flush();

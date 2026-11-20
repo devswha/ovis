@@ -2,12 +2,11 @@
  * A relay client's side of a connection to a PC: Noise NK to its key, then Ovis Mux v1 admission with a device key
  * (docs/relay.md).
  */
-import { ACCOUNT_OPENS_ALL_MUX_FEATURE } from "./account-devices-api.ts";
 import { PENDING_MS, pairFingerprint, signPairProof } from "./pair-fingerprint.ts";
 import { channelBinding, openClientSecureChannel } from "./relay-e2ee.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
-import { ACCOUNT_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
 import { hintedRelay } from "./relay-regions.ts";
 import { MuxEngine, MUX_SETUP_MS } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
@@ -140,7 +139,7 @@ export interface RelayChannelOptions {
    */
   readonly direct?: string;
   /**
-   * Offer ACCOUNT_OPENS_ALL_MUX_FEATURE in HELLO (device table T34, G5): a client signing in with its registered sign-in
+   * Offer ACCOUNT_OPENS_ALL_FEATURE in HELLO (device table T34, G5): a client signing in with its registered sign-in
    * key, so a PC with the release on may answer held, not_listed or admission instead of a bare auth failure.
    */
   readonly accountOpensAll?: boolean;
@@ -212,7 +211,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     // an older PC selects none of these; a comparison names what it asks for, so the PC's prompt can say it
     const offered: readonly string[] = comparing
       ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : options.intent === "vouched" ? PAIR_INTENT_VOUCHED : PAIR_INTENT_PC]
-      : [ACCOUNT_FEATURE, ...options.accountOpensAll === true ? [ACCOUNT_OPENS_ALL_MUX_FEATURE] : [], ...options.keyProof !== undefined && offer.code !== undefined ? [KEY_PROOF_FEATURE] : []];
+      : [ACCOUNT_FEATURE, ...options.accountOpensAll === true ? [ACCOUNT_OPENS_ALL_FEATURE] : [], ...options.keyProof !== undefined && offer.code !== undefined ? [KEY_PROOF_FEATURE] : []];
     const hinted: readonly string[] = [RELAY_HINTS, ...options.offerDirect ? [DIRECT_CARRIER, ...options.offerTailnet ? [DIRECT_TAILNET] : []] : []];
     let phoneNonce: Uint8Array | undefined;
     let binding: Uint8Array | undefined;
@@ -289,7 +288,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           // Account AUTH is sent only after the PC's final, authenticated feature selection.
           if (frame.payload.provisional) { passed = bytes; provisionalNonce = frame.payload.nonce; return; }
           if (provisionalNonce !== undefined && provisionalNonce !== frame.payload.nonce) throw new MuxProtocolError("protocol_error", "The PC's answer to HELLO changed its WELCOME");
-          if (!frame.payload.features.includes(ACCOUNT_OPENS_ALL_MUX_FEATURE)) throw new AccountOpenUnsupportedError();
+          if (!frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE)) throw new AccountOpenUnsupportedError();
         }
         phase = "auth";
         Object.assign(limits, frame.payload.limits);
@@ -466,7 +465,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         });
         mux.receiveLargeMessages();
         await send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
-          payload: { protocol: "ovis-mux", versions: [1], features: [...hinted, LARGE_WS_MESSAGES, SERVER_TIME_HEADER, ...offered], required_features: options.accountOpensAll ? [ACCOUNT_OPENS_ALL_MUX_FEATURE] : [] } });
+          payload: { protocol: "ovis-mux", versions: [1], features: [...hinted, LARGE_WS_MESSAGES, SERVER_TIME_HEADER, ...offered], required_features: options.accountOpensAll ? [ACCOUNT_OPENS_ALL_FEATURE] : [] } });
       }).catch(failed);
     };
   });
