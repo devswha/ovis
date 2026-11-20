@@ -151,6 +151,19 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(await pending).toBe(false);
   });
 
+  test("T52/P14: a commit with a new service line drops a staged lift with no current authority", async () => {
+    const { devices, ports, safetyLog } = pc();
+    const owner = await member(devices);
+    const target = await key();
+    const line = await block(target.spki, owner);
+    // Exercise the commit boundary alone. No denial exists for this staged lift to end.
+    const orphan = await lift("a".repeat(64), owner);
+    const snapshot = page({ blocks: [line], freezes: [{ block: line.id, target: target.spki, after: 9 }], lifts: [orphan] }).page;
+    ports.commit({ snapshot, lifts: [orphan] });
+    expect(safetyLog.state().freezes).toHaveLength(1);
+    expect(safetyLog.receipt(orphan.id)).toBeNull();
+  });
+
   test("P14: an unfenced service freeze invalidates read scope until generation repair", async () => {
     const { dir, devices, ports, safetyLog } = pc();
     const owner = await member(devices);
@@ -158,6 +171,12 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     const record = await block(target.spki, owner);
     const snapshot = page({ blocks: [record], freezes: [{ block: record.id, target: target.spki, after: 9 }] }).page;
     const before = ports.scope();
+    const observed: boolean[] = [];
+    const recheck = devices.recheckListedSessions.bind(devices);
+    spyOn(devices, "recheckListedSessions").mockImplementation(() => {
+      observed.push(devices.failsClosed);
+      recheck();
+    });
     const rename = privateStateFs.renameSync;
     const fault = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
       if (String(to).endsWith("/account-pc.json")) throw new Error("generation unavailable");
@@ -167,6 +186,7 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
       expect(() => ports.commit({ snapshot, lifts: [] })).toThrow();
       expect(safetyLog.state().freezes).toHaveLength(1);
       expect(devices.failsClosed).toBe(true);
+      expect(observed).toContain(true);
       expect(ports.scope()).toBeNull();
     } finally { fault.mockRestore(); }
     const reopened = pc(dir);

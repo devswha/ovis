@@ -69,6 +69,16 @@ describe("regression: a registry another account could write", () => {
   });
 });
 
+it("flag off: canDrive finds a non-held drive row after a watch row with the same id", () => {
+  const root = mkdtempSync(join(dir, "duplicate-id-"));
+  const watch = { id: "0011223344556677", label: "Phone", role: "watch", token_hash: "a".repeat(64), created_at: "2026-10-10", last_seen_at: null };
+  writeFileSync(join(root, "devices.json"), JSON.stringify({ gate_closed_at: watch.created_at,
+    devices: [watch, { ...watch, role: "drive", token_hash: "b".repeat(64) }] }), { mode: 0o600 });
+  const store = new DeviceStore(root);
+  expect(store.error).toBeNull();
+  expect(store.canDrive(watch.id)).toBe(true);
+});
+
 it("flag off: reading a PC-confirmed row leaves its carried notice on disk", () => {
   const root = mkdtempSync(join(dir, "carried-notice-"));
   const path = join(root, "devices.json");

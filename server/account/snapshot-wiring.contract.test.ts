@@ -35,6 +35,18 @@ async function server(accountOpensAll: boolean) {
 }
 
 describe("S2-24 the server wires the whole read only under the release flag (G1, P24)", () => {
+  test("flag off: a null mailbox challenge reports the native property-read error", async () => {
+    const { services, identity } = await server(false);
+    const mailbox = new AccountMailbox({ devices: services.devices, identity: () => identity, service: "https://account.test",
+      fetch: async () => Response.json(null) });
+    const challenge = JSON.parse("null") as Record<string, unknown>;
+    let expected: string;
+    try { void challenge.challenge_id; throw new Error("expected a null challenge"); }
+    catch (error) { if (!(error instanceof TypeError)) throw error; expected = error.message; }
+    expect(await mailbox.pull()).toBe(0);
+    expect(mailbox.error).toBe(expected);
+  });
+
   test("H1/T38/T42: a recent member's signed add promotes without shedding the hold on restart", async () => {
     const { services, service, member, identity, fixture } = await server(true);
     let now = Date.now();
