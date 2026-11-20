@@ -1,6 +1,6 @@
 import "./BlockOutcomes.css";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { BlockRefusal, PcBlockOutcome } from "../../shared/account-devices-api.ts";
 import { useT } from "../lib/i18n.ts";
 
@@ -8,27 +8,6 @@ import { useT } from "../lib/i18n.ts";
 export function NotMeButton({ sending, onPress }: { sending: boolean; onPress: () => void }) {
   const t = useT();
   return <button type="button" className="btn" disabled={sending} onClick={onPress}>{t("Not me")}</button>;
-}
-
-/**
- * Drawn beside a final refusal the account service gave (S32-1): calls `onShown` once, when this is on a page that is
- * seen. Only what is drawn mounts it, so a page behind its access gate or a tab in the background says nothing yet.
- */
-export function RefusalSeen({ onShown }: { readonly onShown: () => void }) {
-  const shown = useRef(onShown);
-  shown.current = onShown;
-  useEffect(() => {
-    let done = false;
-    const look = (): void => {
-      if (done || document.visibilityState === "hidden") return;
-      done = true;
-      shown.current();
-    };
-    look();
-    document.addEventListener("visibilitychange", look);
-    return () => document.removeEventListener("visibilitychange", look);
-  }, []);
-  return null;
 }
 
 /**
@@ -41,7 +20,7 @@ export function BlockOutcomes({ outcomes, names, accountRetry, accountFailed = f
   readonly accountRetry?: () => Promise<void>;
   /** the account service refused the block for good (S32-1): said once, with nothing to retry */
   readonly accountFailed?: boolean;
-  /** once that refusal is on a page that is seen (RefusalSeen) */
+  /** its owner's OK on that refusal (S32-1): only this lets the refused block leave the queue */
   readonly onRefusalShown?: () => void;
 }) {
   const t = useT();
@@ -65,7 +44,7 @@ export function BlockOutcomes({ outcomes, names, accountRetry, accountFailed = f
         return <li key={outcome.server_id} className="settings-hint" data-state={outcome.state}>{line}</li>;
       })}
       {accountRetry === undefined && accountFailed && <li className="settings-hint" data-account-delivery="failed">{t("The block was refused. Block it again from this device.")}
-        {onRefusalShown !== undefined && <RefusalSeen onShown={onRefusalShown} />}</li>}
+        {onRefusalShown !== undefined && <>{" "}<button type="button" className="btn" onClick={onRefusalShown}>{t("OK")}</button></>}</li>}
       {accountRetry !== undefined && (
         <li className="settings-hint" data-account-delivery="failed">
           {t("The block did not go through yet.")}{" "}

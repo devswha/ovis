@@ -561,6 +561,8 @@ export class AccountService {
       if (error instanceof AccountServiceError && (error.status === 400 || error.status === 401)) return this.signedOut(from);
       throw error instanceof AccountServiceError ? new AccountRefreshError(error) : error;
     }
+    // a refresh answers for the sign-in it was asked for: tokens naming another account are no answer, and are not kept
+    if (next.account !== from.account) throw new AccountRefreshError(new AccountServiceError(502, "account_changed", "The account service answered a refresh for another account"));
     const carried: AccountSession = from.sign_in_id === undefined ? next : { ...next, sign_in_id: from.sign_in_id };
     let kept = false;
     await this.options.store.update("session", (current) => {

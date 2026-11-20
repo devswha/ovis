@@ -257,6 +257,7 @@ const BASE: Record<string, string> = {
   "Check again": "다시 확인",
   "The block did not go through yet.": "차단이 아직 전달되지 않았어요.",
   "The block was refused. Block it again from this device.": "차단이 거절됐어요. 이 기기에서 다시 막아 주세요.",
+  "OK": "확인",
   "The block was not sent. Try again.": "차단을 보내지 못했어요. 다시 해 보세요.",
   "Other PCs": "다른 PC",
   "Unnamed PC": "이름 없는 PC",

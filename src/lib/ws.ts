@@ -961,6 +961,11 @@ export class HerdrSocket {
     return this.connected && this.features.has(ACCOUNT_OPENS_ALL_CAPABILITY);
   }
 
+  /** Whether the features this PC last listed (featuresListed) offered it, also after the connection dropped. */
+  accountOpensAllListed(): boolean {
+    return this.features.has(ACCOUNT_OPENS_ALL_CAPABILITY);
+  }
+
   /** Device table T57: says what was seen, or answers one notice; only to a PC that offers it. True when sent. */
   sendNotice(message: NoticeSeen | NoticeAnswer): boolean {
     if (!this.accountOpensAll()) return false;

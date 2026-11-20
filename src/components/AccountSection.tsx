@@ -27,7 +27,6 @@ import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { deviceLabel, deviceOs } from "../lib/phone.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { AccountPcList, AccountSignIn, HOSTED_APP_URL, PROVIDER_NAMES, ProviderMark, providerChoice } from "./AccountPcs.tsx";
-import { RefusalSeen } from "./BlockOutcomes.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { statusText } from "./RelayPanel.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
@@ -1355,10 +1354,13 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
               {unsentAsked.state === "waiting" && <button type="button" className="btn" onClick={() => { void sendUnsentThenSignOut(); }}>{t("Send it now")}</button>}
               {unsentAsked.state === "retry" && <button type="button" className="btn" onClick={() => { void sendUnsentThenSignOut(); }}>{t("Try again")}</button>}
               <button type="button" className="btn" onClick={() => { void signOutAnyway(); }}>{t("Sign out anyway")}</button>
-              {unsentAsked.state === "refused" && unsentAsked.refused !== undefined && <RefusalSeen onShown={() => {
-                void refusalShown(indexedAccountStore, unsentAsked.session.account, unsentAsked.refused ?? [])
+              {/* the refused block leaves the queue only on its owner's OK (S32-1) */}
+              {unsentAsked.state === "refused" && unsentAsked.refused !== undefined && <button type="button" className="btn" onClick={() => {
+                const asked = unsentAsked;
+                void refusalShown(indexedAccountStore, asked.session.account, asked.refused ?? [])
+                  .then(() => setUnsentAsked((now) => now === asked ? null : now))
                   .catch((error: unknown) => console.warn("Ovis: a shown refusal could not be cleared", error instanceof Error ? error.name : error));
-              }} />}
+              }}>{t("OK")}</button>}
             </div>
           )}
           {view.methods !== null && (
