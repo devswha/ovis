@@ -8,8 +8,7 @@ import { relayAccountFixture, relayFixture, type TestClock } from "../relay/test
 
 export const ACCOUNT = "acct_1";
 
-export async function registerSnapshotPc(service: FakeAccountService, fixture: { readonly stateDir: string }) {
-  const identity = rotateRelayIdentity(fixture.stateDir);
+export async function registerSnapshotPc(service: FakeAccountService, fixture: { readonly stateDir: string }, identity = rotateRelayIdentity(fixture.stateDir)) {
   await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${service.issueToken(ACCOUNT)}` },
     body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
   return identity.server_id;
