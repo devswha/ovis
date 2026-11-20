@@ -11,7 +11,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.concurrent.TimeUnit;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 /** What SshLink reads from a machine's answers, and the cleanup it runs there (with this machine's sh), without a machine. */
 public class SshLinkTest {
@@ -118,6 +120,9 @@ public class SshLinkTest {
         assertTrue(SshLink.unreachable(new java.net.ConnectException("Connection refused")).getMessage().contains("Connection refused"));
     }
 
+    @Rule
+    public final TemporaryFolder homes = new TemporaryFolder();
+
     private static final String PHONE = "AAAAC3NzaC1lZDI1NTE5AAAAIPhoneKeyBlob0123456789abcdefghijklmnopqrstuv";
     private static final String OTHER = "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYOtherKey0123456789abcdefghijklmnop";
 
@@ -133,8 +138,8 @@ public class SshLinkTest {
         return answer.trim();
     }
 
-    private static Path keys(String... lines) throws IOException {
-        Path home = Files.createTempDirectory("ovis-unauthorize");
+    private Path keys(String... lines) throws IOException {
+        Path home = homes.newFolder().toPath();
         Files.createDirectories(home.resolve(".ssh"));
         Path file = home.resolve(".ssh/authorized_keys");
         Files.write(file, (String.join("\n", lines) + "\n").getBytes(StandardCharsets.UTF_8));

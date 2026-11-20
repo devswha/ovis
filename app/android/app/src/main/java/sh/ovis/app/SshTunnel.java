@@ -327,6 +327,13 @@ final class SshTunnel {
             byte[] answer;
             try {
                 answer = readHead(fromPc);
+                // an interim answer (100 Continue, 103 Early Hints) goes to the page as it is, and the next head is checked too
+                while (answer != null && interim(answer)) {
+                    if (redirectsAway(answer, "http://" + bindHost.getHostAddress() + ":" + client.getLocalPort() + "/")) break;
+                    toPage.write(answer);
+                    toPage.flush();
+                    answer = readHead(fromPc);
+                }
             } catch (IOException dropped) {
                 // the link went down before the PC answered
                 answer = null;
@@ -379,6 +386,12 @@ final class SshTunnel {
             if (matched == 4) return head.toByteArray();
         }
         return null;
+    }
+
+    /** Whether a response head is an interim one (1xx), after which the real answer comes; 101 (an upgrade) is final. */
+    static boolean interim(byte[] head) {
+        String status = new String(head, 0, Math.min(head.length, 16), StandardCharsets.ISO_8859_1);
+        return status.matches("HTTP/1\\.[01] 1[0-9][0-9][\\s\\S]*") && !status.startsWith("101", 9);
     }
 
     /**

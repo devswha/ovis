@@ -310,5 +310,11 @@ public class SshPcsTest {
         assertFalse(SshPcs.otherLoopbackPort("http://127.0.0.255:8080/"));
         assertFalse(SshPcs.otherLoopbackPort("https://my-pc.tailnet.ts.net/"));
         assertFalse(SshPcs.otherLoopbackPort("http://192.168.1.20:8080/"));
+        // every spelling a browser reads as 127.0.0.2
+        for (String host : new String[] { "127.2", "2130706434", "0x7f.0.0.2", "0177.0.0.2", "127.000.000.002", "127.0.0.2.", "127.0.0.%32", "0x7F000002", "user@127.0.0.2" }) {
+            assertTrue(host, SshPcs.otherLoopbackPort("http://" + host + ":8080/x"));
+        }
+        assertFalse(SshPcs.otherLoopbackPort("http://2130706434:" + SshPcs.LOCAL_PORT + "/"));
+        assertFalse(SshPcs.otherLoopbackPort("http://my-pc.local:8080/"));
     }
 }

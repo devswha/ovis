@@ -236,6 +236,10 @@ public class SshTunnelTest {
         assertTrue(gated().startsWith("HTTP/1.1 403 "));
         ovis.answer = "HTTP/1.1 302 Found\r\nLocation: //127.0.0.3/x\r\nContent-Length: 0\r\n\r\n";
         assertTrue(gated().startsWith("HTTP/1.1 403 "));
+        // after an interim answer, and in a spelling the WebView reads as 127.0.0.2
+        ovis.answer = "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 302 Found\r\nLocation: http://0x7f.0.0.2:8080/\r\nContent-Length: 0\r\n\r\n";
+        String afterInterim = gated();
+        assertTrue(afterInterim, afterInterim.startsWith("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 403 "));
         // its own pages, and another SSH PC's tunnel, are redirected to as they were
         for (String location : new String[] { "/next", "http://127.0.0.2:" + SshPcs.LOCAL_PORT + "/", "https://example.com/" }) {
             ovis.answer = "HTTP/1.1 302 Found\r\nLocation: " + location + "\r\nContent-Length: 0\r\n\r\n";

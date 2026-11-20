@@ -445,6 +445,12 @@ public class SshSetupActivity extends Activity {
             tell("failed:no-host-key");
             return;
         } catch (SshFailure failed) {
+            if (pinned && failed.kind.equals("host-key-changed")) {
+                // the PC no longer offers the kind of key confirmed for it: the same stop as a different key
+                say(getString(R.string.ssh_fail_host_key_pinned, failed.getMessage()), false);
+                tell("failed:host-key-changed");
+                return;
+            }
             if (!failed.kind.equals("host-key-unknown")) {
                 fail(where, failed, how, publicLine);
                 return;
@@ -486,8 +492,8 @@ public class SshSetupActivity extends Activity {
                 connection.close();
                 // the key, not the password, is what reconnects: prove it works before the password is gone
                 connection = SshLink.connect(address, sshPort, new SshLink.HostKeyCheck(algorithm, hostKey));
-            active = connection;
-            if (left) throw new SshFailure("internal", "The screen was closed");
+                active = connection;
+                if (left) throw new SshFailure("internal", "The screen was closed");
                 SshLink.signIn(connection, account, mine);
                 saveAs = "phone-key";
             }

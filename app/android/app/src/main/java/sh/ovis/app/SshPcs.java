@@ -251,16 +251,83 @@ final class SshPcs {
      * on it. The app neither opens nor loads such an address.
      */
     static boolean otherLoopbackPort(String url) {
-        java.net.URI uri;
-        try {
-            uri = java.net.URI.create(url);
-        } catch (IllegalArgumentException unreadable) {
-            return false;
+        int colon = url.indexOf("://");
+        if (colon <= 0) return false;
+        String scheme = url.substring(0, colon).toLowerCase(Locale.ROOT);
+        String rest = url.substring(colon + 3);
+        int end = rest.length();
+        for (char stop : new char[] { '/', '?', '#', '\\' }) {
+            int at = rest.indexOf(stop);
+            if (at >= 0 && at < end) end = at;
         }
-        String host = uri.getHost();
-        if (host == null || !host.matches("127\\.0\\.0\\.([2-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-4])")) return false;
-        int port = uri.getPort() != -1 ? uri.getPort() : "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
-        return port != LOCAL_PORT || !"http".equalsIgnoreCase(uri.getScheme());
+        String authority = rest.substring(0, end);
+        authority = authority.substring(authority.lastIndexOf('@') + 1);
+        String hostPart = authority;
+        int port = "https".equals(scheme) ? 443 : 80;
+        int portAt = authority.lastIndexOf(':');
+        if (portAt >= 0 && !authority.startsWith("[")) {
+            hostPart = authority.substring(0, portAt);
+            String digits = authority.substring(portAt + 1);
+            if (!digits.isEmpty()) {
+                try {
+                    port = Integer.parseInt(digits);
+                } catch (NumberFormatException unreadable) {
+                    return false;
+                }
+            }
+        }
+        long address = ipv4(hostPart);
+        // 127.0.0.2 to 127.0.0.254, as the WebView reads the host (any spelling of it)
+        if (address < 0x7f000002L || address > 0x7f0000feL) return false;
+        return port != LOCAL_PORT || !"http".equals(scheme);
+    }
+
+    /**
+     * The IPv4 address a host names as a browser reads it (the WHATWG URL rules: percent-escapes, a trailing
+     * dot, one to four parts in decimal, octal or hex), or -1 for a host that is not one.
+     */
+    static long ipv4(String host) {
+        String text;
+        try {
+            text = java.net.URLDecoder.decode(host.replace("+", "%2B"), "UTF-8").toLowerCase(Locale.ROOT);
+        } catch (java.io.UnsupportedEncodingException | IllegalArgumentException unreadable) {
+            return -1;
+        }
+        if (text.endsWith(".")) text = text.substring(0, text.length() - 1);
+        String[] parts = text.split("\\.", -1);
+        if (parts.length == 0 || parts.length > 4) return -1;
+        long[] numbers = new long[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            String part = parts[i];
+            int radix = 10;
+            if (part.startsWith("0x")) {
+                radix = 16;
+                part = part.substring(2);
+            } else if (part.length() > 1 && part.startsWith("0")) {
+                radix = 8;
+                part = part.substring(1);
+            }
+            if (part.isEmpty()) {
+                if (radix != 16) return -1;
+                numbers[i] = 0;
+                continue;
+            }
+            try {
+                numbers[i] = Long.parseLong(part, radix);
+            } catch (NumberFormatException notANumber) {
+                return -1;
+            }
+            if (numbers[i] < 0) return -1;
+        }
+        long address = 0;
+        for (int i = 0; i < parts.length - 1; i++) {
+            if (numbers[i] > 255) return -1;
+            address = address * 256 + numbers[i];
+        }
+        long last = numbers[parts.length - 1];
+        int left = 5 - parts.length;
+        if (last >= (1L << (8 * left))) return -1;
+        return (address << (8 * left)) + last;
     }
 
     static String newGate() {

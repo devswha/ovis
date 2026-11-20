@@ -73,11 +73,21 @@ final class SshLink {
             connection.close();
             if (check.verdict == SshHostKeys.Verdict.CHANGED) throw new SshFailure("host-key-changed", "The host key changed");
             if (check.verdict == SshHostKeys.Verdict.UNKNOWN) throw new SshFailure("host-key-unknown", "The host key is not confirmed");
-            if (check.seenKey == null && pinned && String.valueOf(failed.getMessage()).contains("host key")) {
+            // the PC no longer offers the kind of key that was confirmed: sshlib says the proposals do not match
+            if (check.seenKey == null && pinned && offersOtherKinds(failed)) {
                 throw new SshFailure("host-key-changed", "The machine no longer offers the host key type confirmed before");
             }
             throw unreachable(failed);
         }
+    }
+
+    private static boolean offersOtherKinds(Throwable failed) {
+        for (Throwable cause = failed; cause != null; cause = cause.getCause()) {
+            String message = String.valueOf(cause.getMessage());
+            if (message.contains("host key") || message.contains("proposals do not match") || message.contains("Cannot negotiate")) return true;
+            if (cause == cause.getCause()) break;
+        }
+        return false;
     }
 
     /** A connection that failed before or after signing in, in words a person can act on. */
