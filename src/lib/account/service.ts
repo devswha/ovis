@@ -499,7 +499,10 @@ export class AccountService {
       } catch (error) {
         if (!(error instanceof SignedOutError)) throw error;
       } finally {
-        if (!replaced) await this.options.store.update("session", (current) => current?.refresh_token === session.refresh_token || current?.refresh_token === live.refresh_token ? undefined : current);
+        if (!replaced) {
+          await this.options.store.update("session", (current) => current?.refresh_token === session.refresh_token || current?.refresh_token === live.refresh_token ? undefined : current);
+          if (this.options.store === indexedAccountStore) globalThis.window?.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+        }
       }
     });
   }
@@ -609,3 +612,4 @@ export class AccountService {
 
 /** The browser's account client, shared by the sign-in surfaces and actions under that sign-in. */
 export const indexedAccountService = new AccountService({ store: indexedAccountStore });
+export const ACCOUNT_SIGN_OUT_EVENT = "ovis:account-sign-out";

@@ -4,7 +4,7 @@ import type { DeviceNotice } from "../../shared/account-devices-api.ts";
 import { LOCAL_MACHINE, machinePath, type Machine } from "../../shared/machines.ts";
 import { canBlockAdmission, notMeBlocks, sendBlocks, type FleetBlock, type OwnKey } from "../lib/account/fleet-block.ts";
 import { notMeTransports } from "../lib/account/noticeAnswer.ts";
-import { indexedAccountService } from "../lib/account/service.ts";
+import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService } from "../lib/account/service.ts";
 import { indexedAccountStore, type AccountSession } from "../lib/account/store.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import type { MachineSessionRegistry } from "../lib/machineSession.ts";
@@ -120,10 +120,22 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   useEffect(() => {
     if (!shown?.notices.some((notice) => notice.kind === "admit" && notice.open)) return;
     let live = true;
-    const read = () => { void indexedAccountStore.get("session").then(registeredKey).then((key) => { if (live) setOwn(key); }, () => { if (live) setOwn(null); }); };
+    let readVersion = 0;
+    const read = () => {
+      const version = ++readVersion;
+      void indexedAccountStore.get("session").then(registeredKey).then(
+        (key) => { if (live && version === readVersion) setOwn(key); },
+        () => { if (live && version === readVersion) setOwn(null); },
+      );
+    };
     read();
     window.addEventListener("focus", read);
-    return () => { live = false; window.removeEventListener("focus", read); };
+    window.addEventListener(ACCOUNT_SIGN_OUT_EVENT, read);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", read);
+      window.removeEventListener(ACCOUNT_SIGN_OUT_EVENT, read);
+    };
   }, [shown?.notices]);
 
   const pc = machines.find((machine) => machine.id === selectedMachineId);
