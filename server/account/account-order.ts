@@ -128,8 +128,8 @@ export class AccountOrder {
     this.prepare(read, bindId)();
   }
 
-  /** Validate before any widening; persist the watermark only after the other commit writes succeed. */
-  prepare(read: OrderedRead, bindId: string): () => void {
+  /** Validate before any widening. Publishing the watermark returns its undo for a refused lift batch. */
+  prepare(read: OrderedRead, bindId: string): () => () => void {
     if (this.problem !== null) throw new Error(this.problem);
     const base = this.doc.account === read.account ? this.doc : { ...EMPTY, account: read.account };
     const keys: Record<string, OrderEntry> = { ...base.keys };
@@ -147,8 +147,13 @@ export class AccountOrder {
     }
     const next: OrderDoc = { ...base, bind_id: bindId, server_id: read.server_id, last_version: read.version, max_no: max, keys };
     return () => {
+      const previous = this.doc;
       writePrivateState(this.path, next);
       this.doc = next;
+      return () => {
+        writePrivateState(this.path, previous);
+        this.doc = previous;
+      };
     };
   }
 }

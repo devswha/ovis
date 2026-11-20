@@ -54,7 +54,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
     commit(stage: StagedRead) {
       const binding = pc.binding();
       if (binding === null) throw new Error("Snapshot commit requires a current binding");
-      let recordOrder: () => void;
+      let recordOrder: () => () => void;
       try { recordOrder = deps.order.prepare(stage.snapshot, binding.bind_id); } catch (error) {
         if (error instanceof OrderConflict) journal.append({ kind: "account", how: "order_conflict", key: error.key, no: null, row: null, label: error.message, by: null, account: binding.account });
         throw error;
@@ -70,11 +70,18 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
         if (receipt.outcome !== "applied") throw new Error("Cannot record the snapshot freeze line");
         pc.raiseGen();
       }
+      let restoreOrder: () => void;
+      try { restoreOrder = recordOrder(); } catch (error) {
+        if (error instanceof Error) throw new SnapshotWriteRefused(error.message, { cause: error });
+        throw error;
+      }
       const { added, receipts } = safetyLog.commitLifts(stage.lifts);
       const refused = receipts.find((receipt) => receipt.outcome === "refused");
-      if (refused) throw new SnapshotWriteRefused(refused.code);
+      if (refused) {
+        restoreOrder(); // commitLifts published nothing, so the previous watermark still applies.
+        throw new SnapshotWriteRefused(refused.code);
+      }
       if (added > 0) pc.raiseGen();
-      recordOrder();
       devices.handedLifts.decide(stage.snapshot.lifts);
     },
     methodsVersion: () => deps.order.methodsVersion(),
