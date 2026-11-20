@@ -250,8 +250,11 @@ describe("remote Revokes reach the caller itself and the rows that joined after 
   });
 
   test("T37: account-joined row Revoke of a newer row grants no signed remove authority", async () => {
-    const { f, devices } = pc();
+    const { fixture: f, firstRead } = memberSnapshotPc();
+    fixtures.push(f);
+    const { devices } = f.app.context.services;
     const [first, caller] = [await member(devices), await member(devices)];
+    await firstRead();
     const added = devices.pairRelayApproved("Added", (await key()).spki, { path: "account", addedBy: first.id })!.device.id;
     // the caller may Revoke the row that joined after it, from afar
     expect((await (await remote(f, caller))("DELETE", `/api/devices/${added}`)).status).toBe(204);
