@@ -1933,7 +1933,7 @@ export class DeviceStore {
   listedRecoveryCandidate(row: AccountRow): RecoveryCandidate {
     const stored = this.joinedAsStored(row);
     return { id: row.id, key: row.key, label: row.label, origin: row.origin, waiting: "catching_up",
-      joinHold: row.state === "hold", expired: row.state === "expired", openNotice: this.listNotice(row.id) !== undefined,
+      joinHold: row.state === "hold", expired: row.state === "expired", openNotice: this.listNotice(row) !== undefined,
       covered: this.isTombstoned(row.key) || this.coveredByEvidence(stored),
       held: this.accountHeld?.(row.key) === true || this.safety?.inForce.locked === true,
       frozen: this.accountRowStale(row) || !this.admitsFromList(row.key, this.account() ?? ""),
