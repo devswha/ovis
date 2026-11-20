@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountDeviceId, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
@@ -36,7 +36,35 @@ async function leave({ fixture, device, serverId }: Awaited<ReturnType<typeof li
 function restartOffline(dir: string) {
   const restarted = relayFixture(false, { stateDir: dir, accountOpensAll: true, accountService: { url: "off" } });
   restarted.app.stop();
+  return restarted.app.context.services.devices;
 }
+
+test.each(["unallocated sequence", "transfer points to admission"] as const)("T41/S19/P8/P10: a contradictory drop receipt preserves the registry (%s)", async damage => {
+  const { fixture, device } = await listedPc();
+  const dir = fixture.stateDir;
+  const journalPath = join(dir, JOURNAL_FILE);
+  const evidencePath = join(dir, REMOVAL_FILE);
+  const fault = damage === "unallocated sequence" ? failReplacement(journalPath) : failReplacement(evidencePath, '"journalled"');
+  try { expect(() => fixture.app.context.services.devices.revoke(device.id)).toThrow("replacement failed"); } finally { fault.mockRestore(); }
+  fixture.app.stop();
+  const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+  if (damage === "unallocated sequence") {
+    const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+    expect(evidence.row_drops).toMatchObject([{ row: device.id, how: "revoke" }]);
+    evidence.row_drops[0].journalled = journal.next_seq;
+    writeFileSync(evidencePath, JSON.stringify(evidence));
+  } else {
+    expect(journal.last_row_drop).toMatchObject({ row: device.id, how: "revoke" });
+    const admit = DeviceJournal.open(dir).entries().find(event => event.kind === "admit" && event.row === device.id);
+    if (!admit) throw new Error("missing listed admission");
+    journal.last_row_drop.journalled = admit.seq;
+    writeFileSync(journalPath, JSON.stringify(journal));
+  }
+  const before = readFileSync(evidencePath, "utf8");
+  expect(restartOffline(dir).failsClosed).toBe(true);
+  expect(rows(dir).map(row => row.id)).toEqual([device.id]);
+  expect(JSON.parse(readFileSync(evidencePath, "utf8"))).toEqual(JSON.parse(before));
+});
 
 test.each(["identity reset", "local Revoke"] as const)("P8/T41/P10: pending Revoke-all owns the listed row before %s", async action => {
   const { fixture, device } = await listedPc();
