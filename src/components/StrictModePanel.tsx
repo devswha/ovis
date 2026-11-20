@@ -64,12 +64,13 @@ export function StrictUnlockAsk() {
 }
 
 /** Why the PC refused a request (server/account/lock-routes.ts codes, folded). */
-type Refusal = "local_required" | "already" | "no_screen_proof" | "lock_removals_pending" | "other";
+interface Refusal { readonly kind: "local_required" | "already" | "no_screen_proof" | "lock_removals_pending" | "other"; readonly detail: string | null }
 
 function refusalOf(error: unknown): Refusal {
   const code = error instanceof ApiError ? error.code : null;
-  if (code === "local_required" || code === "no_screen_proof" || code === "lock_removals_pending") return code;
-  return code === "already_locked" || code === "not_locked" ? "already" : "other";
+  const detail = error instanceof ApiError ? error.detail : null;
+  if (code === "local_required" || code === "no_screen_proof" || code === "lock_removals_pending") return { kind: code, detail };
+  return { kind: code === "already_locked" || code === "not_locked" ? "already" : "other", detail };
 }
 
 /**
@@ -105,8 +106,9 @@ export function StrictModePanel({ state, local, asked = null, refused = null, on
         already: t("Strict mode changed already. This shows it as it is now."),
         no_screen_proof: t("Strict mode needs a confirmation on this PC's screen, which only Linux has for now."),
         lock_removals_pending: t("Strict mode stays on until this PC finishes signing out the devices it ended. Try again shortly."),
+        // the PC's own words come after: a state folder it cannot write does not get better by trying again
         other: t("This PC did not take the request. Try again."),
-      }[refused]}</p>}
+      }[refused.kind]}{refused.kind === "lock_removals_pending" && refused.detail !== null && <> {refused.detail}</>}</p>}
       {asked !== null && <AskedLine asked={asked} />}
     </div>
   );
