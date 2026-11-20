@@ -1,11 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import type { DeviceNotice } from "../../../shared/account-devices-api.ts";
 import { noticeSeen, withNoticeReplay } from "../deviceNotices.ts";
-import { holdWaitMs, itsMeAnswer, withItsMeSent, withItsMeAnswered } from "./joinHold.ts";
+import { holdWaitMs, itsMeAnswer } from "./joinHold.ts";
 
 const NOW = Date.parse("2026-11-20T04:00:00.000Z");
-const A = "a".repeat(32);
-const B = "b".repeat(32);
 const ID = "c".repeat(32);
 
 describe("the ten-second wait", () => {
@@ -37,10 +35,4 @@ describe("It's me", () => {
     expect(noticeSeen(shown, 3)).toEqual({ type: "notice-seen", seq: 3 });
   });
 
-  it("T53: goes to each PC reached and stays to retry on the ones that have not answered", () => {
-    const sent = withItsMeSent(new Map(), ID, [A, B]);
-    const one = withItsMeAnswered(sent, ID, A);
-    expect([...one.get(ID)!]).toEqual([B]);
-    expect(withItsMeAnswered(one, ID, B).has(ID)).toBe(false);
-  });
 });

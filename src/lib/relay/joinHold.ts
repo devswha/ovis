@@ -16,17 +16,3 @@ export function itsMeAnswer(notice: DeviceNotice): Extract<NoticeAnswer, { answe
   return { type: "notice-answer", id: notice.id, answer: "its_me" };
 }
 
-/** Notice id to the PCs an "It's me" for it still waits on. */
-export type ItsMeWaiting = ReadonlyMap<string, ReadonlySet<string>>;
-
-export function withItsMeSent(waiting: ItsMeWaiting, id: string, serverIds: readonly string[]): ItsMeWaiting {
-  return new Map(waiting).set(id, new Set([...(waiting.get(id) ?? []), ...serverIds]));
-}
-
-export function withItsMeAnswered(waiting: ItsMeWaiting, id: string, serverId: string): ItsMeWaiting {
-  const left = new Set(waiting.get(id));
-  left.delete(serverId);
-  const next = new Map(waiting);
-  if (left.size === 0) next.delete(id); else next.set(id, left);
-  return next;
-}

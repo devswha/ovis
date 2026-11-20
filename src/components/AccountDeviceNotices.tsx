@@ -11,7 +11,7 @@ import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, AccountServiceUnreachableE
 import { indexedAccountStore, type AccountSession } from "../lib/account/store.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import type { MachineSessionRegistry } from "../lib/machineSession.ts";
-import { itsMeAnswer, withItsMeAnswered, withItsMeSent, type ItsMeWaiting } from "../lib/relay/joinHold.ts";
+import { itsMeAnswer } from "../lib/relay/joinHold.ts";
 import { useDeviceNotices, type NoticeSocket } from "../lib/useDeviceNotices.ts";
 import { BlockOutcomes, NotMeButton } from "./BlockOutcomes.tsx";
 import { DeviceNotices } from "./DevicePairedNotice.tsx";
@@ -47,12 +47,10 @@ function ItsMeAction({ notice, pc, socket, own, held, onSending }: {
   const inFlight = useRef(false);
   const [sending, setSending] = useState(false);
   const [refused, setRefused] = useState(false);
-  const waiting = useRef<ItsMeWaiting>(new Map());
   const canAnswer = own !== null && notice.account === own.account && notice.kind === "admit" && notice.open && socket.accountOpensAll();
 
   const confirm = async () => {
     if (!canAnswer || inFlight.current || held) return;
-    const pcId = pc.server_id ?? pc.relay?.server_id ?? pc.id;
     inFlight.current = true;
     setSending(true);
     onSending(true);
@@ -60,16 +58,17 @@ function ItsMeAction({ notice, pc, socket, own, held, onSending }: {
     try {
       const started = await indexedAccountStore.get("session");
       if (started === undefined || started.account !== notice.account) return;
-      waiting.current = withItsMeSent(waiting.current, notice.id, [pcId]);
       // The notice ID is PC-local. Never send it to another PC or via the block records route.
-      for (let tries = 0; tries < 2 && waiting.current.get(notice.id)?.has(pcId); tries++) {
+      let unanswered = 0;
+      for (let tries = 0; tries < 2; tries++) {
         const current = await indexedAccountStore.get("session");
         if (current === undefined || current.account !== notice.account || !sameSignIn(started, current) || !socket.accountOpensAll()) break;
         const [outcome] = await Promise.allSettled([answerOnPc(socket, { notice, answer: itsMeAnswer(notice) }, ANSWER_TIMEOUT_MS)]);
-        if (outcome.status === "fulfilled") waiting.current = withItsMeAnswered(waiting.current, notice.id, pcId);
+        if (outcome.status === "fulfilled") break;
+        unanswered++;
       }
       // The PC answers a refused It's me with nothing (too new, held or not caught up): say so rather than go quiet.
-      if (waiting.current.get(notice.id)?.has(pcId)) setRefused(true);
+      if (unanswered === 2) setRefused(true);
     } catch (error) {
       if (!(error instanceof DOMException)) throw error;
       console.warn("Ovis: could not read the sign-in for an admission answer", error.name);
