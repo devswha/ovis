@@ -3,25 +3,23 @@ import { useEffect, useRef, useState } from "react";
 import type { DeviceNotice } from "../../shared/account-devices-api.ts";
 import { LOCAL_MACHINE, machinePath, type Machine } from "../../shared/machines.ts";
 import { canBlockAdmission, notMeBlocks, sendBlocks, type FleetBlock, type OwnKey } from "../lib/account/fleet-block.ts";
-import { answerOnPc, notMeTransports } from "../lib/account/noticeAnswer.ts";
-import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, sameSignIn } from "../lib/account/service.ts";
+import { notMeTransports } from "../lib/account/noticeAnswer.ts";
+import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService } from "../lib/account/service.ts";
 import { indexedAccountStore, type AccountSession } from "../lib/account/store.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import type { MachineSessionRegistry } from "../lib/machineSession.ts";
-import { itsMeAnswer, withItsMeAnswered, withItsMeSent, type ItsMeWaiting } from "../lib/relay/joinHold.ts";
 import { useDeviceNotices, type NoticeSocket } from "../lib/useDeviceNotices.ts";
 import { BlockOutcomes, NotMeButton } from "./BlockOutcomes.tsx";
 import { DeviceNotices } from "./DevicePairedNotice.tsx";
-import { ItsMeButton } from "./JoinWait.tsx";
 
 const ANSWER_TIMEOUT_MS = 5000;
 
-async function noticeIdentity(session: AccountSession | undefined): Promise<{ readonly account: string; readonly key: OwnKey | null } | null> {
+async function registeredKey(session: AccountSession | undefined): Promise<(OwnKey & { readonly account: string }) | null> {
   if (session === undefined) return null;
   const kept = await indexedAccountStore.get("signin_key");
-  const key = kept !== undefined && kept.no !== null && session.account === kept.account && session.sign_in_id === kept.sign_in_id
-    ? { ...kept.key, no: kept.no } : null;
-  return { account: session.account, key };
+  if (kept === undefined || kept.no === null ||
+      session.account !== kept.account || session.sign_in_id !== kept.sign_in_id) return null;
+  return { ...kept.key, no: kept.no, account: kept.account };
 }
 
 type NoticeFleet = {
@@ -29,55 +27,28 @@ type NoticeFleet = {
   readonly pageServerId: string | undefined;
 };
 
-function AdmissionActions({ notice, pc, socket, fleet, own }: {
+function BlockNoticeAction({ notice, pc, socket, fleet, own }: {
   readonly notice: DeviceNotice;
   readonly pc: Machine;
   readonly socket: NoticeSocket;
   readonly fleet: NoticeFleet;
-  readonly own: Awaited<ReturnType<typeof noticeIdentity>>;
+  readonly own: Awaited<ReturnType<typeof registeredKey>>;
 }) {
   const inFlight = useRef(false);
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{ readonly fleet: FleetBlock; readonly names: ReadonlyMap<string, string> } | null>(null);
-  const canAnswer = own !== null && notice.account === own.account && notice.kind === "admit" && notice.open && socket.accountOpensAll();
-  const canBlock = canAnswer && own.key !== null && canBlockAdmission(notice, own.key);
-  const waiting = useRef<ItsMeWaiting>(new Map());
-
-  const confirm = async () => {
-    if (!canAnswer || inFlight.current || result !== null) return;
-    const pcId = pc.server_id ?? pc.relay?.server_id ?? pc.id;
-    inFlight.current = true;
-    setSending(true);
-    try {
-      const started = await indexedAccountStore.get("session");
-      if (started === undefined || started.account !== notice.account) return;
-      waiting.current = withItsMeSent(waiting.current, notice.id, [pcId]);
-      // The notice ID is PC-local. Never send it to another PC or via the block records route.
-      for (let tries = 0; tries < 2 && waiting.current.get(notice.id)?.has(pcId); tries++) {
-        const current = await indexedAccountStore.get("session");
-        if (current === undefined || current.account !== notice.account || !sameSignIn(started, current) || !socket.accountOpensAll()) break;
-        const [outcome] = await Promise.allSettled([answerOnPc(socket, { notice, answer: itsMeAnswer(notice) }, ANSWER_TIMEOUT_MS)]);
-        if (outcome.status === "fulfilled") waiting.current = withItsMeAnswered(waiting.current, notice.id, pcId);
-      }
-    } catch (error) {
-      if (!(error instanceof DOMException)) throw error;
-      console.warn("Ovis: could not read the sign-in for an admission answer", error.name);
-    } finally {
-      inFlight.current = false;
-      setSending(false);
-    }
-  };
+  const canAnswer = own !== null && notice.account === own.account && canBlockAdmission(notice, own) && socket.accountOpensAll();
 
   const press = async () => {
-    if (!canBlock || inFlight.current || result !== null) return;
+    if (!canAnswer || inFlight.current || result !== null) return;
     inFlight.current = true;
     setSending(true);
     try {
       const session = await indexedAccountService.session();
       if (session === undefined) return;
-      const current = await noticeIdentity(session);
-      if (current === null || current.key === null || current.account !== notice.account || !socket.accountOpensAll()) return;
-      const blocks = await notMeBlocks(notice, current.key);
+      const current = await registeredKey(session);
+      if (current === null || current.account !== notice.account || !socket.accountOpensAll()) return;
+      const blocks = await notMeBlocks(notice, current);
       if (blocks.length === 0) return;
 
       const serverIdOf = (machine: Machine) =>
@@ -131,10 +102,7 @@ function AdmissionActions({ notice, pc, socket, fleet, own }: {
   };
 
   if (result !== null) return <BlockOutcomes outcomes={[...result.fleet.outcomes.values()]} names={result.names} />;
-  return canAnswer ? <>
-    <ItsMeButton sending={sending} onPress={confirm} />
-    {canBlock && <NotMeButton sending={sending} onPress={press} />}
-  </> : null;
+  return canAnswer ? <NotMeButton sending={sending} onPress={press} /> : null;
 }
 
 /** Subscribe alongside the App's roster hooks so opening the pane does not miss a notice replay. */
@@ -148,14 +116,14 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   });
   const feed = useDeviceNotices(sockets, selectedMachineId);
   const shown = feed.byPc.get(selectedMachineId);
-  const [own, setOwn] = useState<Awaited<ReturnType<typeof noticeIdentity>>>(null);
+  const [own, setOwn] = useState<Awaited<ReturnType<typeof registeredKey>>>(null);
   useEffect(() => {
     if (!shown?.notices.some((notice) => notice.kind === "admit" && notice.open)) return;
     let live = true;
     let readVersion = 0;
     const read = () => {
       const version = ++readVersion;
-      void indexedAccountStore.get("session").then(noticeIdentity).then(
+      void indexedAccountStore.get("session").then(registeredKey).then(
         (key) => { if (live && version === readVersion) setOwn(key); },
         () => { if (live && version === readVersion) setOwn(null); },
       );
@@ -176,7 +144,7 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   return (
     <DeviceNotices key={pc.id} pc={pc.name} notices={shown.notices} cut={feed.cut}
       onDismiss={(notice) => feed.dismiss(pc.id, notice)} onShown={feed.acknowledgeShown}
-      actions={(notice) => socket === undefined ? null : <AdmissionActions notice={notice} pc={pc} socket={socket} fleet={{ machines, pageServerId }} own={own} />}
+      actions={(notice) => socket === undefined ? null : <BlockNoticeAction notice={notice} pc={pc} socket={socket} fleet={{ machines, pageServerId }} own={own} />}
     />
   );
 }
