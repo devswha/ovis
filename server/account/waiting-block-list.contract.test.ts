@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { accountDeviceId, newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { bounded, relayConnection } from "../relay/test-helpers.ts";
+import { DeviceJournal } from "./device-journal.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { phone } from "./pairing.test-helpers.ts";
 
@@ -32,11 +33,17 @@ test("P19/T51: a waiting block applies when a whole read lists its key; the key 
   const record = await block(pc.member, spki);
   expect(await devices.applyBlock(record, "mailbox")).toMatchObject({ outcome: "refused", reason: "unknown_target" });
   expect(safetyLog?.waitingBlocks().map(entry => entry.record.id)).toEqual([record.id]);
+  const slots = devices.openNotices().map(entry => entry.id);
 
   pc.service.registerDevice(ACCOUNT, spki, "Phone");
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   await expectBlocked(pc, { keys, publicKey: spki, id: accountDeviceId(pc.serverId, spki) });
   expect(safetyLog?.waitingBlocks()).toHaveLength(0);
+  const journal = DeviceJournal.open(pc.fixture.stateDir);
+  expect(journal.entries().filter(entry => entry.key === spki && (entry.kind === "admit" || entry.kind === "drop"))
+    .map(entry => [entry.kind, entry.how])).toEqual([["admit", "list"], ["drop", "block"]]);
+  expect(journal.openNotices().map(entry => entry.id)).toEqual(slots);
+  expect(journal.openNotices().some(entry => entry.key === spki)).toBe(false);
 });
 
 test("P19/T51: a block for a listed key's account arriving after the listing applies on arrival; the key is refused", async () => {
