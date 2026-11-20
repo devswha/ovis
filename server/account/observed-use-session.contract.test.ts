@@ -1,7 +1,7 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
+import { parseAccountDevicesFile, parseSnapshotPage } from "../../shared/account-snapshot.ts";
 import { newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { ACCOUNT_OPENS_ALL_FEATURE, FrameType } from "../../shared/relay-mux.ts";
 import { bounded, deferred, relayConnection, relayDevice, TestClock } from "../relay/test-helpers.ts";
@@ -13,6 +13,25 @@ import { RemovalEvidence } from "./removal-evidence.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
+
+test("T55: temporary list ineligibility preserves an expired admission", async () => {
+  const machine = await pc();
+  const { accountMailbox } = machine.fixture.app.context.services;
+  const original = machine.row().origin;
+  machine.clock.advance(60 * 86_400_000);
+  expect(machine.row().state).toBe("expired");
+  const fetchPage = accountMailbox.snapshotPage.bind(accountMailbox);
+  const restricted = spyOn(accountMailbox, "snapshotPage").mockImplementation(async (...args) => {
+    const answer = await fetchPage(...args);
+    if (!("page" in answer)) return answer;
+    const page = parseSnapshotPage(answer.page);
+    return { page: { ...page, devices: page.devices.map(d => d.key === machine.device.publicKey ? { ...d, eligible: false } : d) } };
+  });
+  try { expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true }); }
+  finally { restricted.mockRestore(); }
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(machine.row()).toMatchObject({ state: "expired", origin: original });
+});
 
 async function pc() {
   const clock = new TestClock();
