@@ -21,6 +21,7 @@ export class AccountCatchUp {
     devices.attachCatchUp(this.gate);
   }
 
+  /** `readmission`: the proved returning device a sign-in's own pull may readmit (S2-28, T55). */
   commitList(snapshot: AccountSnapshot, readmission?: Readmission): void {
     const store = this.rows?.store();
     try {
