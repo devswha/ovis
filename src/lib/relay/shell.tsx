@@ -5,6 +5,7 @@ import { encodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
 import { GLOBAL_RELAY } from "../../../shared/relay-regions.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
+import { nextOpenStep, openRefusalOf } from "../account/openPc.ts";
 import type { MyPc } from "../account/myPcs.ts";
 import { sameSignIn, SignedOutError } from "../account/service.ts";
 import type { AccountProvider, AccountSession, PendingPairing } from "../account/store.ts";
@@ -92,6 +93,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
   let last: Attempt | null = null, opening: AbortController | null = null;
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
   let shown: RelayShellState | null = null, sheetJoin: SheetJoin | null = null, codeOffer: RelayOffer | null = null;
   let comparison: { name: string | null; digits: string; matched: () => void; typed: boolean } | null = null;
   let challenge = 0, checked = false;
@@ -267,9 +269,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
     if (devices.length && !checked) { checked = true; void sweep.check(); }
   };
-  const joinPc = (pc: MyPc, options: { typed?: boolean; sheet?: "new" | "join"; alone?: true } = {}): void => {
+  const joinPc = (pc: Pick<MyPc, "server_id" | "join"> & { readonly name?: string }, options: { typed?: boolean; sheet?: "new" | "join"; alone?: true } = {}): void => {
     if (!pc.join) return;
-    const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, ...pc.join, name: pc.name }, window.location.origin));
+    const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, ...pc.join, ...(pc.name === undefined ? {} : { name: pc.name }) }, window.location.origin));
     keepTypedJoin(options.typed ? pc.server_id : null);
     if (options.sheet) {
       keepSheetContext({ mode: options.sheet, server_id: pc.server_id, returnHash: returnHash(window.location.hash), ...(options.alone ? { alone: true } : {}) });
@@ -290,6 +292,31 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const failed = async (error: unknown, attempt: Attempt): Promise<void> => {
     if (last !== attempt) return;
     comparison = null;
+    const refusal = attempt.accountOpen === undefined ? null : openRefusalOf(error);
+    if (refusal !== null) {
+      const step = nextOpenStep(refusal, attempt.retriedAccountOpen === true);
+      switch (step.kind) {
+        case "retry": await connect({ ...attempt, retriedAccountOpen: true }); return;
+        case "pair":
+          cancelAttempt();
+          joinPc({ ...attempt.offer, join: attempt.offer }, { sheet: "join", alone: true });
+          return;
+        case "wait": {
+          if (shown?.kind !== "connecting") show({ kind: "connecting", name: attempt.offer.name ?? null });
+          const deadline = "until" in step.hold && step.hold.until !== null ? Date.parse(step.hold.until) : NaN;
+          if (Number.isFinite(deadline)) {
+            holdTimer = setTimeout(() => {
+              if (last === attempt) void connect({ ...attempt });
+            }, Math.max(0, deadline - Date.now()));
+          }
+          return;
+        }
+        default: {
+          const exhaustive: never = step;
+          return exhaustive;
+        }
+      }
+    }
     if (pairsAgainWithoutKey(error, { ...attempt, codeless: attempt.codeless === true })) {
       await forgetRow(attempt);
       if (last !== attempt) return;
@@ -339,6 +366,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
 
   const connect = async (attempt: Attempt): Promise<void> => {
+    clearTimeout(holdTimer);
     if (!attempt.paired && codeLapsed(attempt.offer)) { askNewScan(attempt.offer); return; }
     attempt.compared = false;
     // nor does a link refused before a new pairing
@@ -425,7 +453,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the update screen included) signs with the saved device key instead of pairing again
     const { code, ...saved } = attempt.offer;
     const fresh = !attempt.paired || attempt.fresh === true;
-    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}), ...(attempt.accountOpen ? { accountOpen: attempt.accountOpen } : {}) };
+    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}), ...(attempt.accountOpen ? { accountOpen: attempt.accountOpen } : {}), ...(attempt.retriedAccountOpen ? { retriedAccountOpen: true } : {}) };
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;
@@ -597,7 +625,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     entry = { ...entry, offer: kept.offer, damaged: false };
     arrived();
   };
-  const cancelAttempt = (): void => { signInFor = null; press++; confirming = false; comparison = null; last = null; opening?.abort(); opening = null; frontSteps?.abort(); frontSteps = null; updates.cancel(); if (transport && !enrolling.has(transport)) transport.close(); transport = null; };
+  const cancelAttempt = (): void => { signInFor = null; press++; confirming = false; comparison = null; last = null; clearTimeout(holdTimer); opening?.abort(); opening = null; frontSteps?.abort(); frontSteps = null; updates.cancel(); if (transport && !enrolling.has(transport)) transport.close(); transport = null; };
   const retry = (): void => {
     if (shown?.kind === "ready" && shown.enrollment === "failed" && transport && last) { show({ ...shown, enrollment: "pending" }); enroll(transport, last); return; }
     if (last === null || !(shown?.kind === "failed" || shown?.kind === "outdated" || shown?.kind === "compare" && shown.wrong)) return;

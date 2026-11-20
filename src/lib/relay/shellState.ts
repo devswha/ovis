@@ -245,6 +245,7 @@ export interface Attempt {
   /** the sign-in the confirm before this pairing was drawn for: the pairing uses its account key and joins its account, and no other's */
   signIn?: AccountSession;
   readonly accountOpen?: SignInKey;
+  readonly retriedAccountOpen?: true;
   retryEnrollment?: boolean;
   retriedPending?: boolean;
   /**

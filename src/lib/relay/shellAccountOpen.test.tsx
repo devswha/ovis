@@ -129,7 +129,7 @@ it.each([
   } });
   await run.openPage();
   expect({ attempts, navigation: run.navigations, apps: run.apps() }).toEqual({
-    attempts: expected, navigation: [expect.stringContaining(`/s/${run.serverId}/#offer=`)], apps: 0,
+    attempts: [...expected], navigation: [expect.stringContaining(`/s/${run.serverId}/#offer=`)], apps: 0,
   });
 });
 
