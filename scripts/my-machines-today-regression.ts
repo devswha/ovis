@@ -196,8 +196,8 @@ const relayOpens = (width: number): number => pageLog.filter((line) => line.star
 async function signIn(page: Page): Promise<void> {
   await page.goto(APP);
   await page.locator(".account-provider").first().click();
-  // the dashboard too: baseline mode runs this against a shell from before the change, which landed there
-  await page.locator('.app, [data-add-pc-mode], main.relay-add-screen[data-account-state="signed-in"], [data-dashboard-mode="account"]').first().waitFor();
+  // the dashboard only in baseline mode, which runs this against a shell from before the change, which landed there
+  await page.locator(`.app, [data-add-pc-mode], main.relay-add-screen[data-account-state="signed-in"]${baseline === undefined ? "" : ', [data-dashboard-mode="account"]'}`).first().waitFor();
 }
 /** Every string a person can read on the page now: its text and its labels. */
 const rendered = (page: Page): Promise<string> => page.evaluate(() => [document.body.innerText,

@@ -150,6 +150,14 @@ it("T34, P18: a normal sign-in opens a listed unpaired PC as its registered acco
   });
 });
 
+it("C3: a reload of the join card a launch put up, not pressed yet, asks again and opens nothing by the account's key", async () => {
+  const run = await accountPc({ open: () => { throw new TypeError("nothing may open before the press"); } });
+  browser.sessionStore.set("ovis-launch-join", run.serverId);
+  await run.openPage();
+  expect({ apps: run.apps(), navigations: run.navigations }).toEqual({ apps: 0, navigations: [expect.stringContaining(`/s/${run.serverId}/#offer=`)] });
+  expect(browser.sessionStore.get("ovis-launch-join")).toBe(run.serverId);
+});
+
 it("P18: an account service without the release only receives the challenge probe and still offers Join", async () => {
   const run = await accountPc({ release: false, open: () => { throw new TypeError("Join must wait for confirmation"); } });
   expect(run.markup()).toContain('data-pc-action="join"');

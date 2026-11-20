@@ -53,6 +53,19 @@ function rememberPc(serverId: string): void {
   try { localStorage.setItem(LAST_PC, serverId); } catch { /* a page without storage opens on the front page */ }
 }
 
+/**
+ * The account PC whose join card a launch put up, waiting for the person's press: kept in this tab until that press opens
+ * the PC (enterApp) or a Cancel ends it, so a reload of the card asks again rather than opening the PC by the account's
+ * own way in (security-triage condition 3: nothing this device did not choose opens without a press).
+ */
+const LAUNCH_JOIN = "ovis-launch-join";
+function keepLaunchJoin(serverId: string | null): void {
+  try { if (serverId === null) sessionStorage.removeItem(LAUNCH_JOIN); else sessionStorage.setItem(LAUNCH_JOIN, serverId); } catch { /* the card asks once */ }
+}
+function launchJoinFor(serverId: string): boolean {
+  try { return sessionStorage.getItem(LAUNCH_JOIN) === serverId; } catch { return false; }
+}
+
 /** The PC a launch sent this tab to, for that PC's page alone: taken as it loads. */
 const LAUNCHED_PC = "ovis-launched-pc";
 function keepLaunchedPc(serverId: string): void {
@@ -359,7 +372,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const pc = view?.kind === "signed-in" ? accountLaunchPc(view.pcs ?? [], Date.now()) : null;
       // its join card, waiting for the person's press: never the PC's bare page, which opens a PC the account lets this
       // device into by itself (security-triage condition 3: nothing this device did not choose opens without a press)
-      if (pc !== null) { left = true; joinPc(pc, { sheet: "join", alone: true }); return; }
+      if (pc !== null) { left = true; keepLaunchJoin(pc.server_id); joinPc(pc, { sheet: "join", alone: true }); return; }
     }
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
     if (devices.length && !checked) { checked = true; void sweep.check(); }
@@ -594,6 +607,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
 
 
   const enterApp = (opened: RelayTransport, attempt: Attempt): void => {
+    if (launchJoinFor(attempt.offer.server_id)) keepLaunchJoin(null);
     rememberPc(attempt.offer.server_id);
     // opened here: a PC an introduction alone saved is now one this device chose, which a later launch may reopen
     void store.get(attempt.offer.server_id).then((saved) => saved?.introduced_at === undefined ? undefined
@@ -807,6 +821,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const codeMatch = (): void => { const offer = codeOffer; codeOffer = null; if (offer) { keepConfirmedPc(offer.server_id); navigate(encodeOffer(offer, window.location.origin)); } };
   const cancel = (): void => {
+    if (entry.serverId !== null && launchJoinFor(entry.serverId)) keepLaunchJoin(null);
     // whatever this page's own load is still waiting for (its saved pairing, the account, a launch) is no longer wanted
     entries++; accountLaunch = false; launchCard = null;
     if (shown?.kind === "ready") { toFront(); return; }
@@ -886,7 +901,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       // a PC added in one press is new to the account for 24 hours: on its own page, a PC this device never paired with
       // by hand opens only on a press meanwhile (security-triage, condition 3); once that has passed it opens as before.
       // A launch never comes here: it reopens only a pairing made on this device by hand.
-      if (joinable?.join && joinable.accountOpen && openKey !== null && !isNewAccountPc(joinable, Date.now())) {
+      // a join card a launch put up and nobody pressed yet asks again on a reload: it never opens the PC by itself
+      if (joinable?.join && joinable.accountOpen && openKey !== null && !isNewAccountPc(joinable, Date.now()) && !launchJoinFor(joinable.server_id)) {
         await connect({ offer: { v: 1, server_id: joinable.server_id, ...joinable.join, name: joinable.name }, code: false, paired: true, accountOpen: openKey });
       } else if (joinable !== undefined) joinPc(joinable, { sheet: "join", alone: true });
       else show({ kind: "empty" });
