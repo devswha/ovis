@@ -2361,12 +2361,12 @@ export class DeviceStore {
       // login started stays: the request that brings the first cookie back may be the one that redeems it.
       if (this.pending?.open) this.endPairing();
       this.announce(confirmed, now, origin);
-      return { id: confirmed.id, label: confirmed.label, role: confirmed.role };
+      return this.catchingUp(confirmed.id) ? null : { id: confirmed.id, label: confirmed.label, role: confirmed.role };
     }
     for (const device of this.devices) {
       if (!same(digest, device.token_hash)) continue;
       // a row its evidence covers or a block freezes opens nothing, whichever way it signs in (S14, S22)
-      if ((this.evidence !== null && this.stale(device)) || this.promotedHolds.refusal(device, now)) return null;
+      if (this.catchingUp(device.id) || (this.evidence !== null && this.stale(device)) || this.promotedHolds.refusal(device, now)) return null;
       this.noteSeen(device, now);
       return { id: device.id, label: device.label, role: device.role };
     }
