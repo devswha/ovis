@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeviceNotice, NoticeReplay } from "../../shared/account-devices-api.ts";
@@ -139,6 +139,28 @@ describe("the device journal (P10, P15)", () => {
     devices.onPaired(() => { throw new Error("a listener that fails"); });
     const k = await key();
     expect(() => devices.pairRelay(devices.startPairing().code, "Phone", k)).toThrow("a listener that fails");
+  });
+
+  test("S19: a journal whose entries, open notices or seen values are malformed is strict, never read", () => {
+    for (const bad of [
+      { v: 1, next_seq: 2, entries: [null], seen: {}, open: [], trimmed: 0 },
+      { v: 1, next_seq: 2, entries: [], seen: {}, open: [{ seq: "x" }], trimmed: 0 },
+      { v: 1, next_seq: 2, entries: [], seen: { row: "one" }, open: [], trimmed: 0 },
+      { v: 1, next_seq: 1, entries: [{ seq: 5, id: "a", at: "2026-10-01T00:00:00.000Z", kind: "admit", how: "code", key: null, no: null, row: "r", label: "", by: null, account: null }], seen: {}, open: [], trimmed: 0 },
+    ]) {
+      const dir = stateDir();
+      writeFileSync(join(dir, JOURNAL_FILE), JSON.stringify(bad), { mode: 0o600 });
+      expect(DeviceJournal.open(dir).strict).not.toBeNull();
+    }
+  });
+
+  test("P10: a notice listener that throws a value with no message skips no other listener", async () => {
+    const devices = store(stateDir());
+    const heard: number[] = [];
+    devices.onNotice(() => { throw { toString() { throw new Error("no message"); } }; });
+    devices.onNotice((entry) => { heard.push(entry.seq); });
+    devices.pairRelay(devices.startPairing().code, "Phone", await key());
+    expect(heard).toHaveLength(1);
   });
 
   test("G15: unanswered notice cap stops new list admissions without trimming open notices", () => {
