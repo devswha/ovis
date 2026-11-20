@@ -127,6 +127,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   if (!scoped && entryHash === "#pcs" && inNativeApp()) window.history.replaceState(null, "", "/");
   // `left`: the launch sent this page to a PC: nothing more is drawn or probed on the way out
   let launching = !scoped && entryHash === "", signedInNow = false, left = false, launched = false, accountLaunch = false;
+  // the card a launch waits on for the account's PCs: only while it is the screen does a read of them go on with the launch
+  let launchCard: RelayShellState | null = null;
   // Back to a front page the browser kept whole (its back/forward cache) finds it as it left it, on the way to a PC: it
   // loads again, past this tab's launch, so it draws the front page
   if (restored !== null) window.removeEventListener("pageshow", restored);
@@ -210,7 +212,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     }
     if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
     // a launch waiting on its card for the account's PCs goes on once they are read
-    else if (frontUp() || (accountLaunch && app === null && !left && shown?.kind === "connecting")) { if (sheetJoin && shown) show(shown); else await showFront(); }
+    else if (frontUp() || (accountLaunch && app === null && !left && launchCard !== null && shown === launchCard)) { if (sheetJoin && shown) show(shown); else await showFront(); }
     signedInNow = false;
   };
   /**
@@ -322,17 +324,18 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       show(asking);
       const pc = await reachable(order);
       // a Cancel or a link meanwhile owns the page
-      if (entries !== loaded || shown !== asking) return;
+      if (entries !== loaded || shown !== asking) { accountLaunch = false; return; }
       // an address taken meanwhile (the dashboard's, Back) wins over the launch: the front page draws it
       if (pc !== null && !navigatedSinceEntry()) { left = true; keepLaunchedPc(pc); navigate(serverScopePath(pc)); }
     }
     if (left) return;
     launched = launched || order !== null;
-    if (accountLaunch && !navigatedSinceEntry() && entries === 0) {
+    if (accountLaunch && (navigatedSinceEntry() || entries !== 0)) accountLaunch = false;
+    if (accountLaunch) {
       const view = account.state;
       // signed in and the directory not read yet: the launch waits for it on its card (accountChanged draws this again)
-      if (view?.kind === "signed-in" && view.pcs === null && view.error === null) { show({ kind: "connecting", name: null }); return; }
-      accountLaunch = false;
+      if (view?.kind === "signed-in" && view.pcs === null && view.error === null) { launchCard = { kind: "connecting", name: null }; show(launchCard); return; }
+      accountLaunch = false; launchCard = null;
       const pc = view?.kind === "signed-in" ? accountLaunchPc(view.pcs ?? []) : null;
       if (pc !== null) { left = true; navigate(serverScopePath(pc)); return; }
     }
@@ -776,8 +779,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const codeMatch = (): void => { const offer = codeOffer; codeOffer = null; if (offer) { keepConfirmedPc(offer.server_id); navigate(encodeOffer(offer, window.location.origin)); } };
   const cancel = (): void => {
-    // whatever this page's own load is still waiting for (its saved pairing, the account) is no longer wanted
-    entries++;
+    // whatever this page's own load is still waiting for (its saved pairing, the account, a launch) is no longer wanted
+    entries++; accountLaunch = false; launchCard = null;
     if (shown?.kind === "ready") { toFront(); return; }
     cancelAttempt(); keepTypedJoin(null); codeOffer = null;
     if (scoped) toFront(); else void showFront();
