@@ -36,10 +36,11 @@ export const WAITING_HINT_MS = 5_000;
 
 /**
  * Only what the terminal is known to do to a sent message: CRLF line ends, a space closing a final
- * @mention (server/core/composer.ts closeMention), whitespace at the ends of lines and around it.
- * Spaces inside a line stay: "change a b" and "change ab" are two messages.
+ * @mention (server/core/composer.ts closeMention), a tab as four spaces (Pi's record, piRecordText),
+ * whitespace at the ends of lines and around it. Spaces inside a line stay: "change a b" and
+ * "change ab" are two messages.
  */
-const said = (text: string): string => text.replace(/\r\n?/gu, "\n").split("\n").map((line) => line.trimEnd()).join("\n").trim();
+const said = (text: string): string => text.replace(/\r\n?/gu, "\n").replace(/\t/gu, "    ").split("\n").map((line) => line.trimEnd()).join("\n").trim();
 
 const becomesTurn = (text: string): boolean => !/^\s*[/!]/u.test(text);
 
