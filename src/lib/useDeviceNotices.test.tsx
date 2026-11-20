@@ -3,11 +3,81 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { DeviceNotice, NoticeAnswer, NoticeSeen } from "../../shared/account-devices-api.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
+import { DEVICE_NOTICE_FEATURE, DeviceNoticeWire, deviceNotice } from "./deviceNoticeWire.fixture.ts";
 import { useDeviceNotices, type NoticeSocket } from "./useDeviceNotices.ts";
+import { HerdrSocket } from "./ws.ts";
 
 const notice = (seq: number, open = true): DeviceNotice => ({
   seq, id: seq.toString(16).padStart(32, "0"), at: "2026-11-20T04:00:00.000Z", kind: open ? "admit" : "method", how: "list", key: "k".repeat(43), no: 4,
   row: "r1", label: "Galaxy S30", by: null, account: "acct", open, method: "github", two_step: "set",
+});
+
+describe("device notices on the real PC socket", () => {
+  let renderer: ReactTestRenderer | undefined;
+  const restorations = new Map<string, PropertyDescriptor | undefined>();
+  const sockets: HerdrSocket[] = [];
+  let result: ReturnType<typeof useDeviceNotices> | undefined;
+
+  function Probe({ socket }: { socket: HerdrSocket }) {
+    result = useDeviceNotices([{ id: "desk", socket }]);
+    return null;
+  }
+
+  async function connect() {
+    const wire = new DeviceNoticeWire("ws://localhost/ws");
+    for (const [key, value] of Object.entries({
+      window: Object.assign(new EventTarget(), { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
+      document: Object.assign(new EventTarget(), { visibilityState: "visible" }),
+      WebSocket: class { constructor() { return wire; } },
+      IS_REACT_ACT_ENVIRONMENT: true,
+    })) {
+      restorations.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+      Object.defineProperty(globalThis, key, { configurable: true, value });
+    }
+    const socket = new HerdrSocket(wire.url);
+    sockets.push(socket);
+    await act(async () => { renderer = create(<Probe socket={socket} />); });
+    socket.connect();
+    wire.open();
+    return { wire, socket };
+  }
+
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    result = undefined;
+    for (const socket of sockets.splice(0)) socket.close();
+    for (const [key, original] of restorations) {
+      if (original) Object.defineProperty(globalThis, key, original);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    restorations.clear();
+  });
+
+  const cards = () => result?.byPc.get("desk")?.notices ?? [];
+  const method = deviceNotice({ id: "b".repeat(32), seq: 2, kind: "method", open: false });
+
+  it("T57, P15: a later decision replaces the open admission and makes it dismissible", async () => {
+    const { wire } = await connect();
+    const admission = deviceNotice({ row: "row-1" });
+    const decided = { ...admission, open: false };
+    await act(async () => { wire.snapshot(); wire.read({ type: "device-notice", notice: admission }); });
+    await act(async () => { wire.read({ type: "device-notice", notice: decided }); });
+    expect(cards()).toEqual([decided]);
+    await act(async () => { result?.dismiss("desk", decided); });
+    expect(cards()).toEqual([]);
+  });
+
+  it("T57: replay cannot resurrect a dismissed method notice, and a rowless open admission stays", async () => {
+    const { wire } = await connect();
+    const admission = deviceNotice();
+    const replay = { type: "device-notice-replay", replay: { notices: [admission, method], cut: 0 } } as const;
+    await act(async () => { wire.snapshot(); wire.read(replay); });
+    await act(async () => { result?.dismiss("desk", admission); result?.dismiss("desk", method); });
+    expect(cards()).toEqual([admission]);
+    await act(async () => { wire.read(replay); });
+    expect(cards()).toEqual([admission]);
+  });
 });
 
 class FakeSocket implements NoticeSocket {
