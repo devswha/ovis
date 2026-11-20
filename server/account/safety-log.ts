@@ -302,8 +302,11 @@ export class SafetyLog {
    * ends that block and its freeze only; `forget` also ends its marker. Refused with no binding, as a lock is.
    */
   appendLift(blockId: string, binding: { readonly account: string } | null, options: { readonly cause: LiftCause; readonly forget?: boolean }): SafetyReceipt {
-    if (binding === null || !this.blockIds().includes(blockId)) return { outcome: "refused", id: "", code: "record_invalid" };
-    return this.append({ record: { v: 1, id: pcRecordId(), kind: "lift", account: binding.account, target: blockId, signer: "pc", signed_at: new Date().toISOString(), forget: options.forget === true, signature: "" }, got: "pc", cause: options.cause });
+    // a service freeze this PC holds without its block is lifted by its own id, `f:` and that block's id (P23 way 2)
+    const freeze = this.inForce.freezes.find((entry) => entry.record.kind === "freeze" && entry.record.id === blockId && entry.record.account === binding?.account);
+    const target = freeze !== undefined ? blockId.slice(2) : blockId;
+    if (binding === null || (freeze === undefined && !this.blockIds().includes(blockId))) return { outcome: "refused", id: "", code: "record_invalid" };
+    return this.append({ record: { v: 1, id: pcRecordId(), kind: "lift", account: binding.account, target, signer: "pc", signed_at: new Date().toISOString(), forget: options.forget === true, signature: "" }, got: "pc", cause: options.cause });
   }
 
   /** The receipt of a record this log holds (T51): the same `applied` as often as it is asked, until it is folded. */
