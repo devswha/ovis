@@ -218,4 +218,20 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     expect(f.app.context.services.accountHolds.enrolling()).toBe(false);
     expect(DeviceJournal.open(f.stateDir).entries().filter((entry) => entry.kind === "account").map((entry) => [entry.how, entry.row])).toEqual([["enrolled", firstId]]);
   });
+
+  test("P24, T46: a removal the journal holds but devices.json never got ends at the next start, before anything is served", async () => {
+    const dir = stateDir();
+    const devices = store(dir);
+    const row = await member(devices);
+    const kept = readFileSync(join(dir, "devices.json"));
+    // the lock's drop is journalled, then the stop comes before devices.json is written
+    devices.endUnlockedRows();
+    writeFileSync(join(dir, "devices.json"), kept, { mode: 0o600 });
+    const reopened = store(dir);
+    expect(reopened.has(row.id)).toBe(false);
+    expect(rowIds(dir)).not.toContain(row.id);
+    // nothing written by the finisher is journalled twice
+    const journal = JSON.parse(readFileSync(join(dir, "device-journal.json"), "utf8")) as { entries: { kind: string; row: string | null }[] };
+    expect(journal.entries.filter((entry) => entry.kind === "drop" && entry.row === row.id)).toHaveLength(1);
+  });
 });
