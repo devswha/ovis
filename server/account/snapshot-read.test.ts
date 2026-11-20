@@ -64,6 +64,13 @@ function serve(answers: readonly (PageAnswer | Error)[]) {
 }
 
 describe("S2-24 whole account reads (G1, T15, T52, T58, T60)", () => {
+  test("G1: a whole read commits known device fields despite service extensions", async () => {
+    const machine = pc();
+    const device = { key: older.spki, no: 1, label: "Phone", eligible: true, provider: "google", two_step: "set" } as const;
+    const wire = { ...page(), future_page: 2, devices: [{ ...device, two_step_set: true, future: 1 }] };
+    expect(await readSnapshot(serve([{ page: wire }]).fetchPage, machine.ports)).toMatchObject({ committed: true });
+    expect(machine.committed.map(stage => stage.snapshot.devices)).toEqual([[device]]);
+  });
   test("G1: partial, mixed or stale snapshots commit no widening or list drop", async () => {
     const first = answer({ last: false, blocks: [block] });
     const cases: { name: string; answers: (PageAnswer | Error)[]; reason: string; lastVersion?: number }[] = [

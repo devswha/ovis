@@ -76,11 +76,16 @@ const isIso = (v: unknown): v is string => typeof v === "string" && ISO_MS.test(
 const isLabel = (v: unknown): v is string => typeof v === "string" && v.length >= 1 && v.length <= 48 && !/[\p{Cc}\p{Cs}]/u.test(v);
 const isDay = (v: unknown): v is string => typeof v === "string" && DAY.test(v) && isIso(`${v}T00:00:00.000Z`);
 
-function object(value: unknown, fields: readonly string[], what: string, optional: readonly string[] = []): Record<string, unknown> {
+/** With a projection, keep only declared wire fields. Safety and on-disk objects remain exact. */
+function object(value: unknown, fields: readonly string[], what: string, projection?: { optional: readonly string[] }): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) fail(`${what} is a JSON object`);
   const record = value as Record<string, unknown>;
-  for (const name of Object.keys(record)) if (!fields.includes(name) && !optional.includes(name)) fail(`Unexpected field ${name} in ${what}`);
-  for (const name of fields) if (!(name in record)) fail(`${what} has no ${name}`);
+  for (const name of fields) if (!Object.hasOwn(record, name)) fail(`${what} has no ${name}`);
+  if (projection) {
+    const names = [...fields, ...projection.optional.filter(name => Object.hasOwn(record, name))];
+    return Object.fromEntries(names.map(name => [name, record[name]]));
+  }
+  for (const name of Object.keys(record)) if (!fields.includes(name)) fail(`Unexpected field ${name} in ${what}`);
   return record;
 }
 
@@ -109,9 +114,9 @@ function check(ok: boolean, message: string): void {
 
 const PAGE_FIELDS = ["v", "snapshot", "account", "server_id", "version", "methods_version", "page", "last", "devices", "removed", "blocks", "lifts", "freezes"];
 
-/** One page from the wire, every field checked and nothing extra; throws AccountSnapshotError. A missing part is not an empty one. */
+/** Unknown page and device fields are extensions. A missing required part is not an empty one. */
 export function parseSnapshotPage(value: unknown): AccountSnapshotPage {
-  const page = object(value, PAGE_FIELDS, "A snapshot page");
+  const page = object(value, PAGE_FIELDS, "A snapshot page", { optional: [] });
   check(page.v === ACCOUNT_SNAPSHOT_V, "Unknown snapshot version");
   check(typeof page.snapshot === "string" && SNAPSHOT_ID.test(page.snapshot), "Invalid snapshot id");
   check(typeof page.account === "string" && ACCOUNT.test(page.account), "Invalid account");
@@ -121,7 +126,7 @@ export function parseSnapshotPage(value: unknown): AccountSnapshotPage {
   check(Number.isSafeInteger(page.page) && (page.page as number) >= 0, "Invalid page");
   check(typeof page.last === "boolean", "Invalid last");
   const devices = list(page.devices, "devices", SNAPSHOT_PAGE_MAX, (entry): SnapshotDevice => {
-    const { key, no, eligible, label, provider, two_step } = object(entry, ["key", "no", "eligible", "label"], "A device", ["two_step", "provider"]);
+    const { key, no, eligible, label, provider, two_step } = object(entry, ["key", "no", "eligible", "label"], "A device", { optional: ["two_step", "provider"] });
     if (!isAccountKeyEncoding(key) || !isOrder(no) || typeof eligible !== "boolean" || !isLabel(label)) fail("Invalid device");
     return { key, no, eligible, label, two_step: two_step === "set" ? "set" : "unknown",
       ...(provider === "google" || provider === "github" || provider === "apple" ? { provider } : {}) };

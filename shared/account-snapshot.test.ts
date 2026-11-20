@@ -26,7 +26,7 @@ const expected = { account: "acct_1", server_id: serverId, lastApplied: 7 };
 
 describe("account snapshot pages (device table P6, G1)", () => {
   test("a page survives JSON and one page is a whole read", () => {
-    const read = parseSnapshotPage(JSON.parse(JSON.stringify(page())));
+    const read = parseSnapshotPage(JSON.parse(JSON.stringify({ ...page(), extra: 1 })));
     expect(read).toEqual({ ...page(), devices: page().devices.map((device) => ({ ...device, two_step: "unknown" })) });
     const whole = assembleSnapshot([read], expected);
     expect({ snapshot: whole.snapshot, version: whole.version, methods_version: whole.methods_version, devices: whole.devices.map((d) => d.no), removed: whole.removed.map((r) => r.no), blocks: whole.blocks.map((b) => b.id) })
@@ -71,7 +71,7 @@ describe("account snapshot pages (device table P6, G1)", () => {
   test("malformed pages are refused, and a missing part is not an empty one", () => {
     const { removed: _removed, ...noRemoved } = page();
     const bad: unknown[] = [
-      null, noRemoved, { ...page(), v: 2 }, { ...page(), extra: 1 }, { ...page(), snapshot: "A".repeat(32) }, { ...page(), version: 0 }, { ...page(), methods_version: -1 }, { ...page(), methods_version: 1.5 },
+      null, noRemoved, { ...page(), v: 2 }, { ...page(), snapshot: "A".repeat(32) }, { ...page(), version: 0 }, { ...page(), methods_version: -1 }, { ...page(), methods_version: 1.5 },
       { ...page(), page: -1 }, { ...page(), devices: [{ key: older.spki, no: 0, eligible: true, label: "Phone" }] },
       { ...page(), devices: [{ key: "nope", no: 1, eligible: true, label: "Phone" }] }, { ...page(), blocks: [lift] }, { ...page(), lifts: [block] },
       { ...page(), freezes: [{ block: block.id, target: newer.spki, after: 0 }] }, { ...page(), blocks: [{ ...block, id: "c".repeat(64) }] },
