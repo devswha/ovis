@@ -264,6 +264,10 @@ export function createServer(
   /** paired devices (server/devices.ts) and the PC's Tailscale login: the two ways in besides the token and this PC itself */
   const ovisRelay = options.relay ?? new RelayService({ stateDir, accountService: passAccountService(options.accountService?.url), ...(options.accountService?.fetch ? { accountFetch: options.accountService.fetch } : {}) });
   const opensAll = provided.accountOpensAll ?? accountOpensAll();
+  // A folder of another relay identity is another PC, not a source of rows or account state (P12, T48).
+  const sameIdentity = (other: string) => { const [mine, theirs] = [savedServerId(stateDir), savedServerId(other)]; return mine === undefined || theirs === undefined || mine === theirs; };
+  const foreignSibling = opensAll && typeof options.siblingStateDir === "string" && !sameIdentity(options.siblingStateDir);
+  const sibling = foreignSibling ? null : options.siblingStateDir;
   // the order is checked against this folder's own rows before the sibling merge, which may remove some (P21, S29)
   const checkedOrder = (dir: string) => {
     const state = PcAccountState.open(dir);
@@ -276,20 +280,18 @@ export function createServer(
   // behind the rows it numbered, the start is blocked as a merge that could not be made blocks it, and writes nothing
   // to either folder (no merge, fold, repair or legacy pass) until the damage is repaired (S19, S29)
   const damage = (dir: string) => checkedOrder(dir).strict;
-  const blocked = pcAccount?.strict ?? damage(stateDir) ?? (options.siblingStateDir ? damage(options.siblingStateDir) : null);
+  const blocked = pcAccount?.strict ?? damage(stateDir) ?? (sibling ? damage(sibling) : null);
   if (blocked !== null) console.error(blocked);
   const untouched = blocked !== null;
   // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
-  // and only a folder of this PC's own relay identity is its sibling there: another identity is another PC (P12)
-  const sameIdentity = (other: string) => { const [mine, theirs] = [savedServerId(stateDir), savedServerId(other)]; return mine === undefined || theirs === undefined || mine === theirs; };
-  if (pcAccount !== null && options.siblingStateDir && !untouched && sameIdentity(options.siblingStateDir)) pcAccount.takeSibling(options.siblingStateDir);
+  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling);
   // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
-  const carried = opensAll && options.siblingStateDir && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(options.siblingStateDir)] : [];
+  const carried = opensAll && sibling && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(sibling)] : [];
   // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)
   // a sibling folder's log is merged into both before this one is read: nothing in force is lost, nothing ended comes back (T48)
-  const logMerge = opensAll && options.siblingStateDir && !untouched ? mergeSafetyLogs(stateDir, options.siblingStateDir) : null;
+  const logMerge = opensAll && sibling && !untouched ? mergeSafetyLogs(stateDir, sibling) : null;
   // a sibling dir's account state is merged too; one that cannot be fails this PC closed like a damaged log (S19)
-  const accountMerge = opensAll && options.siblingStateDir && !untouched ? mergeAccountState(stateDir, options.siblingStateDir) : null;
+  const accountMerge = opensAll && sibling && !untouched ? mergeAccountState(stateDir, sibling) : null;
   const safetyLog = opensAll ? SafetyLog.open(stateDir, logMerge ?? accountMerge) : null;
   // what nothing rests on any more is folded once replayed; a fold that cannot be written leaves the log whole
   if (!untouched) try { safetyLog?.fold(); } catch (error) { console.error(`[account] the safety log could not be folded: ${error instanceof Error ? error.message : String(error)}`); }
@@ -297,13 +299,11 @@ export function createServer(
   // key differs between the two copies is dropped (T48, T27)
   const conflicts: StoredDevice[] = [];
   const closure = safetyLog !== null && (safetyLog.strict !== null || safetyLog.state().locked || safetyLog.state().freezes.length > 0);
-  // a folder of another relay identity is another PC: none of its rows is this PC's to let in (T48)
-  const foreignSibling = opensAll && typeof options.siblingStateDir === "string" && !sameIdentity(options.siblingStateDir);
-  const merge = options.siblingStateDir && !untouched && !foreignSibling ? mergeSiblingState(stateDir, options.siblingStateDir, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, onDropped: (device) => conflicts.push(device) } : {}) : null;
+  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, onDropped: (device) => conflicts.push(device) } : {}) : null;
   let accountBlocked: string | null = accountMerge;
-  if (options.siblingStateDir && !untouched && accountBlocked === null) {
-    try { accountBlocked = mergeAccountTombstones(stateDir, options.siblingStateDir, opensAll); }
-    catch (error) { accountBlocked = `cannot merge the account tombstones of ${options.siblingStateDir}: ${error instanceof Error ? error.message : String(error)}`; }
+  if (sibling && !untouched && accountBlocked === null) {
+    try { accountBlocked = mergeAccountTombstones(stateDir, sibling, opensAll); }
+    catch (error) { accountBlocked = `cannot merge the account tombstones of ${sibling}: ${error instanceof Error ? error.message : String(error)}`; }
     if (accountBlocked !== null) console.error(accountBlocked);
   }
   const removals = opensAll ? RemovalEvidence.open(stateDir, safetyLog) : null;
