@@ -46,6 +46,24 @@ async function listedDispatcher() {
   return { rows, device, request, fixture, serverId, ctx };
 }
 
+test("R3: a signed-in account row renames only itself on this PC", async () => {
+  const { fixture, device, member, serverId } = await createListedPc(close => closes.push(close));
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
+  try {
+    const link = await relayConnection(fixture, { serverId });
+    await link.auth(device);
+    const rename = (id: string) => ask(link, `/api/devices/${id}`, { method: "PATCH", body: { label: "Work laptop" } });
+    const other = await rename(member.id);
+    expect([other.status, other.body.error?.code]).toEqual([403, "not_yours"]);
+    const own = await rename(device.id);
+    expect(own.status).toBe(200);
+    expect(own.body).toMatchObject({ id: device.id, label: "Work laptop", role: "drive" });
+    const { accountMailbox, accountRows } = fixture.app.context.services;
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(accountRows?.row(device.id)?.label).toBe("Work laptop");
+  } finally { clock.mockRestore(); }
+});
+
 test("R1-R10: only registered methods and explicitly allowed reads reach dispatch", async () => {
   const { rows, device, request } = await listedDispatcher();
   const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
