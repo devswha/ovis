@@ -83,8 +83,12 @@ function seams(options: { fingerprint?: string; admitted?: boolean } = {}) {
   const made: RecoverySeams = {
     pendingOf: (id) => id === pending.id ? pending : null,
     pendingList: () => [{ id: pending.id, label: pending.label, fingerprint: pending.fingerprint }],
-    takePending: (id, fingerprint) => { calls.push(`take ${id} ${fingerprint}`); return fingerprint === pending.fingerprint ? pending : null; },
-    admitConfirmed: (confirm) => { calls.push(`admit ${confirm.codeId} ${confirm.key} ${confirm.source}`); return options.admitted === false ? null : { id: "fedcba9876543210", label: "Phone", role: "drive" }; },
+    admitPending: (id, fingerprint) => {
+      if (id !== pending.id) return "unknown";
+      if (fingerprint !== pending.fingerprint) return "mismatch";
+      calls.push(`admit ${id} recover`);
+      return options.admitted === false ? null : { id: "fedcba9876543210", label: "Phone", role: "drive" };
+    },
     removeKey: ({ target }) => { calls.push(`remove ${target}`); return { removed: [target] }; },
     appendLift: (block, forget) => { calls.push(`lift ${block} ${forget}`); return { outcome: "applied" }; },
     revokeAll: () => { calls.push("revoke_all"); return ["a", "b"]; },
@@ -104,7 +108,7 @@ test("P22/T70: admit lets in the waiting key only when the fingerprint the termi
   expect(await acts({ act: "admit", pending: pending.id, fingerprint: "ZZ99-ZZ99" })).toEqual({ error: "The fingerprint does not match the waiting device" });
   expect(calls.filter((call) => call.startsWith("admit"))).toEqual([]);
   expect(await acts({ act: "admit", pending: pending.id, fingerprint: "AB12-CD34" })).toEqual({ admitted: "fedcba9876543210" });
-  expect(calls.at(-1)).toBe("admit code-1 key-new recover");
+  expect(calls.at(-1)).toBe(`admit ${pending.id} recover`);
 });
 
 test("P22: an admission the PC refuses (locked, strict, frozen) admits nobody", async () => {
