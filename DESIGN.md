@@ -3453,8 +3453,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   chip's own read). A file row shows it in its folder; nothing is opened. Each row: icon,
   name, `kind · size · time` in `--fs-xs` `--text-dim`.
 - **Tabs the agents use** (`에이전트가 쓰는 탭`): one card per agent-profile tab, title and **x**
-  (closes the tab), a 96px picture main takes when the page settles and keeps nowhere, then
-  `<agent> · using it`, or **You have control** in `--accent` while a person holds the tab.
+  (closes the tab), a 96px picture main takes on request when the page settles (only of a tab it
+  draws) and keeps nowhere, then `<agent> is using it` (the agent of the pane that opened it), or
+  **You have control** in `--accent` while a person holds the tab.
 - Empty sections say what will show there in one dim line. The panel never polls the browser:
   it follows main's change events.
 

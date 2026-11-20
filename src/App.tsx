@@ -1329,7 +1329,8 @@ export function App() {
         {webPage !== null && !(viewing !== null && fileDocked) &&
           <WebPanel key={webPage} url={webPage} docked={filePanelAvailable} covered={webDialogCover} onClose={closeWebPage} panelStart={filePanelAvailable ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined} />}
         {desktopBrowser !== null && wideScreen && !inMode && <MachineContext.Provider value={selectedMachineId}>
-          <BrowserSidePanel browser={desktopBrowser} pane={selectedPane ? { id: selectedPane.pane_id, agent: selectedAgent, status: selectedPane.agent_status } : null} />
+          <BrowserSidePanel browser={desktopBrowser} pane={selectedPane ? { id: selectedPane.pane_id, agent: selectedAgent, status: selectedPane.agent_status } : null}
+            agentOf={(paneId) => machines.find((machine) => machine.id === "local")?.snapshot?.panes.find((pane) => pane.pane_id === paneId)?.agent ?? null} />
         </MachineContext.Provider>}
       </div>
       </PanePressContext.Provider>

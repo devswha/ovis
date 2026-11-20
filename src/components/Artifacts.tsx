@@ -24,9 +24,10 @@ export function Artifacts(props: { paneId: string; status: AgentStatus | undefin
 
 /**
  * The pages a Claude Code pane published, read again whenever `refresh` changes (its status, a list
- * opening); empty for another pane until its own answer comes, and with no pane.
+ * opening); empty for another pane until its own answer comes, and with no pane. `retryEmpty` asks
+ * again every 3 s while the answer is empty, for a chip that has nothing to reopen.
  */
-export function usePaneArtifacts(paneId: string | null, refresh: unknown): ClaudeArtifact[] {
+export function usePaneArtifacts(paneId: string | null, refresh: unknown, retryEmpty: boolean): ClaudeArtifact[] {
   const { fetchPaneArtifacts } = useMachineApi();
   const machineId = useMachineId();
   const [artifacts, setArtifacts] = useState<ClaudeArtifact[]>([]);
@@ -41,12 +42,12 @@ export function usePaneArtifacts(paneId: string | null, refresh: unknown): Claud
       fetchPaneArtifacts(paneId).then((found) => {
         if (!alive) return;
         setArtifacts(found);
-        if (found.length === 0) timer = setTimeout(load, 3000);
+        if (found.length === 0 && retryEmpty) timer = setTimeout(load, 3000);
       }, () => undefined);
     };
     load();
     return () => { alive = false; clearTimeout(timer); };
-  }, [fetchPaneArtifacts, paneId, refresh]);
+  }, [fetchPaneArtifacts, paneId, refresh, retryEmpty]);
   return artifacts;
 }
 
@@ -55,7 +56,7 @@ function ArtifactsChip({ paneId, status }: { paneId: string; status: AgentStatus
   const locale = useLocale();
   const machineId = useMachineId();
   const [open, setOpen] = useState(false);
-  const artifacts = usePaneArtifacts(paneId, `${status ?? ""}:${open}`);
+  const artifacts = usePaneArtifacts(paneId, `${status ?? ""}:${open}`, true);
   const root = useRef<HTMLSpanElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const id = useId();

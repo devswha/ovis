@@ -17,8 +17,8 @@ export interface DesktopBrowserTab {
   loading: boolean;
   /** an agent tab a person holds: the agent's tools wait */
   held: boolean;
-  /** the pane whose agent drives an agent tab, once main knows it */
-  owner: { paneId: string; agent: string } | null;
+  /** the pane (on this PC) whose agent opened an agent tab; null for a person's own tab */
+  owner: string | null;
 }
 
 export interface DesktopBrowserResult {
@@ -42,7 +42,7 @@ interface Bridge {
   current(): Promise<unknown>;
   onChange(listener: (browser: unknown) => void): () => void;
   close(id: number): void;
-  preview?(id: number): Promise<unknown>;
+  thumbnail?(id: number): Promise<unknown>;
   reveal?(id: string): void;
 }
 
@@ -58,7 +58,6 @@ function tab(value: unknown): DesktopBrowserTab | null {
   const row = record(value);
   const kind = profile(row?.["profile"]);
   if (!row || kind === null || typeof row["id"] !== "number" || typeof row["address"] !== "string") return null;
-  const owner = record(row["owner"]);
   return {
     id: row["id"],
     profile: kind,
@@ -66,21 +65,23 @@ function tab(value: unknown): DesktopBrowserTab | null {
     title: typeof row["title"] === "string" ? row["title"] : "",
     loading: row["loading"] === true,
     held: row["held"] === true,
-    owner: owner && typeof owner["paneId"] === "string" && typeof owner["agent"] === "string" ? { paneId: owner["paneId"], agent: owner["agent"] } : null,
+    owner: typeof row["owner"] === "string" ? row["owner"] : null,
   };
 }
+
+const validTime = (value: unknown): value is number => typeof value === "number" && !Number.isNaN(new Date(value).getTime());
 
 function result(value: unknown): DesktopBrowserResult | null {
   const row = record(value);
   const kind = row?.["kind"];
   const owner = profile(row?.["profile"]);
-  if (!row || (kind !== "download" && kind !== "screenshot") || owner === null || typeof row["id"] !== "string" || typeof row["name"] !== "string" || typeof row["at"] !== "number") return null;
+  if (!row || (kind !== "download" && kind !== "screenshot") || owner === null || typeof row["id"] !== "string" || typeof row["name"] !== "string" || !validTime(row["at"])) return null;
   return {
     id: row["id"],
     kind,
     name: row["name"],
     at: row["at"],
-    bytes: typeof row["bytes"] === "number" ? row["bytes"] : null,
+    bytes: typeof row["bytes"] === "number" && Number.isFinite(row["bytes"]) && row["bytes"] >= 0 ? row["bytes"] : null,
     done: row["done"] === true,
     tab: typeof row["tab"] === "number" ? row["tab"] : null,
     profile: owner,
@@ -102,8 +103,13 @@ export function useDesktopBrowser(): DesktopBrowser | null {
     const found = bridge();
     if (!found) return;
     let alive = true;
-    const stop = found.onChange((next) => { if (alive) setBrowser(desktopBrowserView(next)); });
-    found.current().then((next) => { if (alive) setBrowser((heard) => heard ?? desktopBrowserView(next)); }, () => undefined);
+    // a change main sent (off included) is newer than any answer still on its way
+    let changed = false;
+    const stop = found.onChange((next) => {
+      changed = true;
+      if (alive) setBrowser(desktopBrowserView(next));
+    });
+    found.current().then((next) => { if (alive && !changed) setBrowser(desktopBrowserView(next)); }, () => undefined);
     return () => { alive = false; stop(); };
   }, []);
   return browser;
@@ -121,10 +127,10 @@ export function revealBrowserResult(id: string): boolean {
   return true;
 }
 
-/** A small picture of an allowed tab, taken by main when asked and kept nowhere, or null. */
-export async function browserTabPreview(id: number): Promise<string | null> {
-  const preview = bridge()?.preview;
-  if (typeof preview !== "function") return null;
-  const picture = await preview(id).catch(() => null);
+/** A small picture of an allowed tab, taken by main when asked and kept nowhere; null while main draws none of it. */
+export async function browserTabThumbnail(id: number): Promise<string | null> {
+  const thumbnail = bridge()?.thumbnail;
+  if (typeof thumbnail !== "function") return null;
+  const picture = await thumbnail(id).catch(() => null);
   return typeof picture === "string" && picture.startsWith("data:image/") ? picture : null;
 }

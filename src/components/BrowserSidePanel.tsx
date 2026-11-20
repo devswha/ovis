@@ -6,7 +6,7 @@ import "./BrowserSidePanel.css";
 import { usePaneArtifacts } from "./Artifacts.tsx";
 import { formatBytes } from "../lib/bridgeProgress.ts";
 import { formatChatTimestamp } from "../lib/chatTimestamp.ts";
-import { browserTabPreview, closeBrowserTab, revealBrowserResult, type DesktopBrowser, type DesktopBrowserResult, type DesktopBrowserTab } from "../lib/desktopBrowser.ts";
+import { browserTabThumbnail, closeBrowserTab, revealBrowserResult, type DesktopBrowser, type DesktopBrowserResult, type DesktopBrowserTab } from "../lib/desktopBrowser.ts";
 import { useLocale, useT } from "../lib/i18n.ts";
 import { agentName } from "../lib/runtimeMove.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
@@ -24,10 +24,10 @@ export interface BrowserSidePanelPane {
  * Claude Code pane published) and the tabs the agents drive, as small cards. Like the Claude and
  * Codex apps' artifact rail, it lists outputs beside the conversation rather than inside it.
  */
-export function BrowserSidePanel({ browser, pane }: { browser: DesktopBrowser; pane: BrowserSidePanelPane | null }) {
+export function BrowserSidePanel({ browser, pane, agentOf }: { browser: DesktopBrowser; pane: BrowserSidePanelPane | null; agentOf: (paneId: string) => string | null }) {
   const t = useT();
   const locale = useLocale();
-  const artifacts = usePaneArtifacts(pane?.agent === "claude" ? pane.id : null, pane?.status);
+  const artifacts = usePaneArtifacts(pane?.agent === "claude" ? pane.id : null, pane?.status, false);
   const agentTabs = browser.tabs.filter((tab) => tab.profile === "agent");
   const results = artifacts.length + browser.results.length;
   const now = Date.now();
@@ -58,7 +58,7 @@ export function BrowserSidePanel({ browser, pane }: { browser: DesktopBrowser; p
         <h2 className="browser-side-heading" id="browser-side-tabs"><span>{t("Tabs the agents use")}</span><span className="browser-side-count">{agentTabs.length}</span></h2>
         {agentTabs.length === 0
           ? <p className="browser-side-empty">{t("No agent is using a tab.")}</p>
-          : agentTabs.map((tab) => <TabCard key={tab.id} tab={tab} />)}
+          : agentTabs.map((tab) => <TabCard key={tab.id} tab={tab} agent={tab.owner === null ? null : agentOf(tab.owner)} />)}
       </section>
     </aside>
   );
@@ -83,18 +83,18 @@ function ResultRow({ result, time }: { result: DesktopBrowserResult; time: Retur
   </li>;
 }
 
-function TabCard({ tab }: { tab: DesktopBrowserTab }) {
+function TabCard({ tab, agent }: { tab: DesktopBrowserTab; agent: string | null }) {
   const t = useT();
   const [picture, setPicture] = useState<string | null>(null);
   // a new picture each time the page settles; main takes it on request and keeps none
   useEffect(() => {
     if (tab.loading) return;
     let alive = true;
-    void browserTabPreview(tab.id).then((next) => { if (alive) setPicture(next); });
+    void browserTabThumbnail(tab.id).then((next) => { if (alive) setPicture(next); });
     return () => { alive = false; };
   }, [tab.id, tab.loading, tab.address]);
   const name = tab.title || tab.address;
-  const who = tab.held ? t("You have control") : tab.owner ? t("{agent} is using it", { agent: agentName(tab.owner.agent) }) : t("An agent is using it");
+  const who = tab.held ? t("You have control") : agent ? t("{agent} is using it", { agent: agentName(agent) }) : t("An agent is using it");
   return (
     <article className="browser-side-card" aria-label={name}>
       <header className="browser-side-card-head">
