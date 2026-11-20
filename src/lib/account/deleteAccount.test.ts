@@ -46,6 +46,16 @@ describe("deleting the account", () => {
     await expect(service.listPcs()).rejects.toBeInstanceOf(SignedOutError);
   });
 
+  it("S32-1: forgets the deleted account's unsent blocks and keeps another account's", async () => {
+    const { store, session, service } = await signedIn();
+    await store.set("unsent_blocks", {
+      mine: { account: session.account, sign_in_id: session.sign_in_id, records: [] },
+      theirs: { account: "acct_2", sign_in_id: "another-sign-in", records: [] },
+    });
+    await deleteAccount({ service, accountStore: store, session });
+    expect(Object.keys(await store.get("unsent_blocks") ?? {})).toEqual(["theirs"]);
+  });
+
   it("ends the account's other sign-ins too", async () => {
     const { fake, store, session, service } = await signedIn();
     const elsewhere = memoryAccountStore();
