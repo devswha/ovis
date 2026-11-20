@@ -236,15 +236,16 @@ it("T53, T57: It's me uses only the admission PC's socket and retries only until
     access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 60_000, sign_in_id: "this-sign-in",
   });
   spyOn(indexedAccountStore, "get").mockImplementation(store.get);
+  const fetched = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response(null, { status: 500 }), { preconnect: fetch.preconnect }));
   const registry = new MachineSessionRegistry((id) => new MachineSession(id, { socket: new HerdrSocket(id === "local" ? desk.url : lab.url) }));
   sessions = registry;
   for (const machine of itsMeMachines) registry.get(machine.id).socket.connect();
   desk.open();
   lab.open();
-  function Notices() {
-    return useAccountDeviceNotices({ machines: itsMeMachines, machineSessions: registry, selectedMachineId: "local", pageServerId: undefined });
+  function Notices({ selected }: { selected: string }) {
+    return useAccountDeviceNotices({ machines: itsMeMachines, machineSessions: registry, selectedMachineId: selected, pageServerId: undefined });
   }
-  await act(async () => { itsMeRenderer = create(<SettingsProvider><Notices /></SettingsProvider>); });
+  await act(async () => { itsMeRenderer = create(<SettingsProvider><Notices selected="local" /></SettingsProvider>); });
   const view = itsMeRenderer;
   if (view === undefined) throw new TypeError("Missing notice view");
   const admission = deviceNotice({ row: "new-phone" });
@@ -266,6 +267,13 @@ it("T53, T57: It's me uses only the admission PC's socket and retries only until
   await act(async () => { button.props.onClick(); });
   expect(button.props.disabled).toBe(true);
   expect(answers(desk)).toEqual([answer]);
+  // away to Lab and back while it is out: still one answer out for this PC's notice
+  await act(async () => { view.update(<SettingsProvider><Notices selected="lab" /></SettingsProvider>); });
+  await act(async () => { view.update(<SettingsProvider><Notices selected="local" /></SettingsProvider>); });
+  const [again] = actions();
+  expect(again?.props.disabled).toBe(true);
+  await act(async () => { again?.props.onClick(); });
+  expect(answers(desk)).toEqual([answer]);
   await act(async () => { lab.read({ type: "device-notice", notice: confirmation }); jest.advanceTimersByTime(5_000); });
   expect(answers(desk)).toEqual([answer, answer]);
   expect(answers(lab)).toEqual([]);
@@ -273,6 +281,7 @@ it("T53, T57: It's me uses only the admission PC's socket and retries only until
   expect(actions()).toHaveLength(0);
   await act(async () => { jest.advanceTimersByTime(10_000); });
   expect(answers(desk)).toEqual([answer, answer]);
+  expect(fetched.mock.calls.map(([input]) => String(input)).filter((url) => url.includes("records"))).toEqual([]);
 });
 
 it.each([
@@ -320,7 +329,9 @@ it.each([
   await act(async () => { jest.advanceTimersByTime(5_000); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(answers()).toHaveLength(sentTimes);
-  expect(fetched.mock.calls.map(([input]) => String(input)).filter((url) => url.includes("records"))).toEqual([]);
+  // another admission's confirm leaves this card where it was; this one's own closes it
+  expect(view.root.findAllByProps({ "data-testid": "device-notice" })).toHaveLength(reply === "other" ? 1 : 0);
+  fetched.mockRestore();
 });
 
 it("T53: an It's me the PC does not take says so after its one retry, and can be pressed again", async () => {
@@ -375,8 +386,10 @@ it("T53: an It's me the PC does not take says so after its one retry, and can be
   await act(async () => { button().props.onClick(); });
   expect(refusal()).toHaveLength(0);
   expect(answers()).toHaveLength(3);
-  // decided on that PC another way meanwhile: its silence is no refusal
+  // decided on that PC another way meanwhile: its silence is no refusal, through both waits
   await act(async () => { desk.read({ type: "device-notice", notice: { ...admission, open: false } }); });
-  await act(async () => { jest.advanceTimersByTime(10_000); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(refusal()).toHaveLength(0);
+  expect(view.root.findAll((node) => node.type === "button" && node.children.includes("It's me"))).toHaveLength(0);
 });
