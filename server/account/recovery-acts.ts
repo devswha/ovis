@@ -81,11 +81,13 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
           return { removed };
         }
         if (action.act === "lift") {
+          const lifted: string[] = [];
           for (const id of action.blocks) {
             const done = acts.appendLift(id, false, options.user);
-            if (done.outcome !== "applied" && done.outcome !== "already_applied") return { error: `${id} was not lifted: ${done.outcome}` };
+            if (done.outcome !== "applied" && done.outcome !== "already_applied") return { lifted, error: `${id} was not lifted: ${done.outcome}` };
+            lifted.push(id);
           }
-          return { lifted: [...action.blocks] };
+          return { lifted };
         }
         const admitted = acts.admitPending(action.pending, action.fingerprint);
         if (admitted === "unknown") return { error: "No such device waits here" };

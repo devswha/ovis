@@ -64,9 +64,12 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
       const reply = await io.send(flag === "--remove" ? { act: "remove", targets: confirmed }
         : flag === "--lift" ? { act: "lift", blocks: confirmed } : { act: "revoke_all" });
       if (typeof reply === "object" && reply !== null) {
-        if ("error" in reply && typeof reply.error === "string") { io.out(`${terminalText(reply.error)}\n`); return 1; }
+        const lifted = "lifted" in reply && Array.isArray(reply.lifted) ? reply.lifted : undefined;
+        const error = "error" in reply && typeof reply.error === "string" ? reply.error : undefined;
+        if (lifted !== undefined && (lifted.length > 0 || error === undefined)) io.out(`Lifted: ${terminalText(lifted.join(", "))}\n`);
+        if (error !== undefined) { io.out(`${terminalText(error)}\n`); return 1; }
         if ("removed" in reply && Array.isArray(reply.removed)) { io.out(`Removed: ${terminalText(reply.removed.join(", "))}\n`); return 0; }
-        if ("lifted" in reply && Array.isArray(reply.lifted)) { io.out(`Lifted: ${terminalText(reply.lifted.join(", "))}\n`); return 0; }
+        if (lifted !== undefined) return 0;
         if ("revoked" in reply && typeof reply.revoked === "number") { io.out(`Revoked ${reply.revoked} device(s).\n`); return 0; }
       }
       io.out("Ovis did not return a recovery result.\n");
