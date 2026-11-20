@@ -3,10 +3,13 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
+import type { ServerMessage } from "../../shared/protocol.ts";
+import { connectionData, type Client } from "../core/connections.ts";
+import { createSocket } from "../core/socket.ts";
 import { DeviceStore } from "../devices.ts";
-import { relayConnection, relayFixture } from "../relay/test-helpers.ts";
+import { bounded, deferred, relayConnection, relayFixture } from "../relay/test-helpers.ts";
 import { ADMISSION_FILE } from "./admission-order.ts";
-import { DeviceJournal } from "./device-journal.ts";
+import { DeviceJournal, JOURNAL_FILE } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
 import { SafetyLog } from "./safety-log.ts";
@@ -77,7 +80,105 @@ async function signIn(devices: DeviceStore, row: Key & { id: string }, serverId 
   return devices.matchRelay(row.id, nonce, signature, serverId);
 }
 
+function noticeSocket(devices: DeviceStore, submit = (value: unknown) => devices.applyBlock(value, "session")) {
+  const handler = createSocket({
+    clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {},
+    watchable: () => false, terminalHistory: () => false, terminalModes: () => false, watchPane() {}, unwatchPane() {},
+    end() {}, holdPending() {}, attachments: new Map(), clientSnapshot: async () => { throw new Error("Snapshot not used"); },
+    herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
+    accountEnabled: true,
+    notices: { replay: (id) => devices.noticeReplay(id), seen: (id, seq) => devices.noticeSeen(id, seq), block: submit, decide: (id) => devices.decideNotice(id) },
+  });
+  const replies: ServerMessage[] = [];
+  const client: Client = {
+    data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0,
+    send: (raw) => { replies.push(JSON.parse(String(raw))); return 1; }, close() {},
+  };
+  return { send: (frame: unknown) => handler.message(client, JSON.stringify(frame)), replies };
+}
+
 describe("blocks and freezes on the PC (P16, P21, T51)", () => {
+  test("T51: a stored block receipt does not authenticate a different signature", async () => {
+    const { devices } = pc();
+    const signer = await member(devices);
+    const target = await member(devices);
+    const record = await block(target.spki, signer);
+    expect(await devices.applyBlock(record, "handed")).toMatchObject({ outcome: "applied" });
+    const other = await block(target.spki, signer);
+
+    expect(await devices.applyBlock({ ...record, signature: other.signature }, "handed"))
+      .toEqual({ outcome: "refused", id: record.id, reason: "record_invalid" });
+  });
+
+  test("T51: concurrent deliveries of one verified block share one receipt and one commit", async () => {
+    const { devices, log } = pc();
+    const signer = await member(devices);
+    const target = await member(devices);
+    const record = await block(target.spki, signer);
+    const gen = devices.gen();
+    const verifying = deferred<void>();
+    const release = deferred<void>();
+    const verify = crypto.subtle.verify.bind(crypto.subtle);
+    let started = 0;
+    const spy = spyOn(crypto.subtle, "verify").mockImplementation(async (...args) => {
+      if (++started === 2) verifying.resolve();
+      await release.promise;
+      return verify(...args);
+    });
+    const delivered = Promise.all([devices.applyBlock(record, "handed"), devices.applyBlock(record, "mailbox")]);
+    try {
+      await bounded(verifying.promise, 1000);
+      release.resolve();
+      const receipt = { outcome: "applied", id: record.id, n: 1 };
+      expect(await delivered).toEqual([receipt, receipt]);
+      expect(log.entries()).toHaveLength(1);
+      expect(devices.gen()).toBe(gen + 1);
+    } finally {
+      release.resolve();
+      spy.mockRestore();
+      await delivered;
+    }
+  });
+
+  test("T51: a notice rewrite failure keeps the notice open and reports the committed block", async () => {
+    const { dir, devices } = pc();
+    const signer = await member(devices);
+    const target = await member(devices);
+    const notice = devices.openNotices().find((entry) => entry.row === target.id);
+    if (!notice) throw new Error("Missing target admission notice");
+    const record = await block(target.spki, signer);
+    const socket = noticeSocket(devices, async (value) => {
+      const receipt = await devices.applyBlock(value, "session");
+      const path = join(dir, JOURNAL_FILE);
+      renameSync(path, `${path}.saved`);
+      mkdirSync(path);
+      return receipt;
+    });
+
+    await socket.send({ type: "notice-answer", id: notice.id, answer: "not_me", blocks: [record] });
+    await socket.send({ type: "ping", id: 51 });
+
+    expect(socket.replies).toContainEqual({ type: "notice-answer-result", id: notice.id, receipts: [{ outcome: "applied", id: record.id, n: 1 }] });
+    expect(socket.replies).toContainEqual(expect.objectContaining({ type: "error", code: "notice_decision_failed" }));
+    expect(socket.replies).toContainEqual({ type: "pong", id: 51 });
+    expect(devices.openNotices().some((entry) => entry.id === notice.id)).toBe(true);
+    expect(devices.failsClosed).toBe(true);
+    expect(await signIn(devices, signer)).toBeNull();
+  });
+
+  test("T51: a non-string notice ID neither applies blocks nor sends a result", async () => {
+    const { devices } = pc();
+    const signer = await member(devices);
+    const target = await member(devices);
+    const record = await block(target.spki, signer);
+    const socket = noticeSocket(devices);
+
+    await socket.send({ type: "notice-answer", id: 51, answer: "not_me", blocks: [record] });
+
+    expect(socket.replies).toEqual([]);
+    expect(devices.has(target.id)).toBe(true);
+  });
+
   test("P16: blocking the middle migrated row closes the newer relay session and refuses sign-in", async () => {
     const { dir, devices, older, target, newer } = await migratedMembers();
     expect(await signIn(devices, newer)).not.toBeNull();
