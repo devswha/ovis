@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
@@ -61,5 +61,19 @@ describe("S2-27 a devices.json row not paired at this PC waits for the first who
     pc.service.opensAll = true;
     expect(await pc.fixture.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     expect(await signIn(pc, [ACCOUNT_OPENS_ALL_FEATURE])).toBe("ok");
+  });
+
+  test("T42: a changed admission decision takes effect at the next whole read", async () => {
+    const pc = await startedPc();
+    const { devices, accountMailbox } = pc.fixture.app.context.services;
+    await accountMailbox.pull();
+    pc.service.opensAll = true;
+    const frozen = spyOn(devices, "admits").mockReturnValue(false);
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(devices.catchingUp(pc.member.id)).toBe(true);
+    frozen.mockRestore();
+    expect(devices.catchingUp(pc.member.id)).toBe(true);
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(devices.catchingUp(pc.member.id)).toBe(false);
   });
 });
