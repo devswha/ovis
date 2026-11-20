@@ -57,7 +57,7 @@ irm https://ovis.sh/install.ps1 | iex
 
 ## 随时随地访问你的电脑
 
-用 GitHub、Google 或 Apple 登录你的 Ovis 账户（第一次登录即创建账户），账户里的电脑就会出现在你的其他设备上：Mac、Windows、Linux 上的桌面应用，iPhone 和 Android 应用，以及任意打开 [app.ovis.sh](https://app.ovis.sh) 的浏览器。它们通过端到端加密的 Ovis 中继连接，网络上无需任何设置。[账户如何工作 →](docs/guide.md#through-an-account)
+用 GitHub、Google 或 Apple 登录你的 Ovis 账户（第一次登录即创建账户），账户里的电脑就会出现在你的其他设备上：Mac、Windows、Linux 上的桌面应用，iPhone 和 Android 应用，以及任意打开 [app.ovis.sh](https://app.ovis.sh) 的浏览器。应用与电脑在同一 Wi-Fi 或 Tailscale 上时直接连接；否则以及在浏览器中，通过端到端加密的 Ovis 中继连接，网络上无需任何设置。[账户如何工作 →](docs/guide.md#through-an-account)
 
 - **添加电脑。** 在这台电脑上打开 **设置 → 设备和电脑 → 账户**，登录并添加此电脑。新账户的第一台电脑，或刚完成两步登录后添加的电脑，可以一键加入。否则，用登录了同一账户的手机完成：在电脑上打开 **添加连接 → 手机和设备**，开启中继，点击 **显示这个二维码** 并扫描。
 - **添加手机或其他设备。** 在该设备上登录同一账户并打开电脑。如果电脑要求批准，就在这台电脑上，或在已经在用它的设备上批准。
