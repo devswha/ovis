@@ -11,6 +11,7 @@ import { accountDeviceId } from "../../shared/account-records.ts";
 import { AccountSnapshotError, parseAccountDevicesFile, type AccountJoinedRow, type AccountSnapshot, type AdmissionOrigin, type SnapshotDevice } from "../../shared/account-snapshot.ts";
 import { writePrivateState } from "../private-state.ts";
 import type { RemovalEvidence } from "./removal-evidence.ts";
+import { rowDrop, type RowDrop } from "./row-drop-evidence.ts";
 
 export const ACCOUNT_DEVICES_FILE = "account-devices.json";
 export const ACCOUNT_DEVICES_MAX = 100;
@@ -29,7 +30,7 @@ export interface AccountRowSource {
   row(id: string): AccountRow | null;
   rowsByKey(key: string): readonly AccountRow[];
   access(id: string): AccessAnswer;
-  pruneDenied(evidence: RemovalEvidence): void;
+  pruneDenied(evidence: RemovalEvidence, legacyRevoke?: "revoke_all"): void;
   removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void;
 }
 
@@ -42,6 +43,8 @@ export interface JournalEntry {
   readonly kind: "admit" | "drop";
   readonly key: string;
   readonly row: string;
+  readonly account: string | null;
+  readonly drop?: RowDrop | undefined;
   readonly no?: number;
   readonly label?: string;
   readonly reason?: DropReason;
@@ -50,6 +53,7 @@ export interface JournalEntry {
 export type AccessAnswer = { readonly ok: true } | { readonly refused: "join_hold"; readonly seconds: number | null } | { readonly refused: "not_listed" };
 
 export interface AccountRowPorts {
+  readonly evidence?: RemovalEvidence;
   /** On disk when it returns; a drop already recorded for this admission is not repeated. */
   journal(entry: JournalEntry): void;
   closeSessions(rowId: string, reason: DropReason): void;
@@ -84,8 +88,8 @@ function load(path: string, serverId: string): { file: DevicesFile; error: strin
   try {
     const file = parseAccountDevicesFile(value);
     // rows admitted under another relay identity name another PC: none of them is a row here
-    if (file.server_id !== serverId) return { file: CLEARED, error: null, foreign: true };
-    return { file: { account: file.account, snapshot: file.snapshot, version: file.version, devices: [...file.devices] }, error: null };
+    return { file: { account: file.account, snapshot: file.snapshot, version: file.version, devices: [...file.devices] }, error: null,
+      ...(file.server_id !== serverId ? { foreign: true } : {}) };
   } catch (error) {
     if (!(error instanceof AccountSnapshotError)) throw error;
     return { file: CLEARED, error: `${path} is not an account devices file (${error.message}): account-joined devices are refused until it is fixed.` };
@@ -101,10 +105,16 @@ export class AccountDeviceStore implements AccountRowSource {
   constructor(stateDir: string, private readonly serverId: string, private readonly ports: AccountRowPorts) {
     this.path = join(stateDir, ACCOUNT_DEVICES_FILE);
     const { file, error, foreign } = load(this.path, serverId);
-    this.file = file;
-    this.error = error;
-    // the rows of another identity leave the file now, not at the next write (T44)
-    if (foreign) writePrivateState(this.path, { v: 1, server_id: serverId, ...CLEARED });
+    this.file = foreign ? CLEARED : file;
+    this.error = error ?? (foreign ? ports.evidence?.strict ?? null : null);
+    // Never serve a foreign row. Finish its old admission before replacing the only copy on disk.
+    if (foreign && this.error === null) {
+      for (const row of file.devices) {
+        const reason = this.recoveryReason(row, file.account, ports.evidence);
+        if (reason !== null) ports.journal(this.dropEntry(row, file.account, reason));
+      }
+      this.write(CLEARED);
+    }
   }
 
   rows(): readonly AccountRow[] { return this.error === null ? this.file.devices : []; }
@@ -118,16 +128,28 @@ export class AccountDeviceStore implements AccountRowSource {
   }
 
   /** Startup replay: finish the journal before the registry. There are no sessions to close yet. */
-  pruneDenied(evidence: RemovalEvidence): void {
+  pruneDenied(evidence: RemovalEvidence, legacyRevoke?: "revoke_all"): void {
     const { account, devices } = this.file;
     if (account === null) return;
     const kept = devices.filter(row => {
-      const reason = evidence.accountRowDrop(row.key, account);
+      const reason = this.recoveryReason(row, account, evidence, legacyRevoke);
       if (reason === null) return true;
-      this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason });
+      this.ports.journal(this.dropEntry(row, account, reason));
       return false;
     });
     if (kept.length !== devices.length) this.write({ ...this.file, devices: kept });
+  }
+
+  private recoveryReason(row: AccountRow, account: string | null, evidence?: RemovalEvidence, legacyRevoke?: "revoke_all") {
+    const own = evidence?.dropFor(row.id, row.origin.admit_no);
+    if (own) return own.how;
+    const reason = account === null ? null : evidence?.accountRowDrop(row.key, account) ?? null;
+    return reason === "revoke" ? legacyRevoke ?? reason : reason;
+  }
+
+  private dropEntry(row: AccountRow, account: string | null, reason: DropReason): JournalEntry {
+    const drop = reason === "remove" || reason === "block" || reason === "revoke" || reason === "revoke_all" ? rowDrop(row, reason) : undefined;
+    return { kind: "drop", row: row.id, key: row.key, account, reason, drop };
   }
 
   removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void {
@@ -183,7 +205,7 @@ export class AccountDeviceStore implements AccountRowSource {
       origin: this.ports.admitOrigin(now),
       confirmed_at: iso(now), last_signin_day: null, state: "hold", hold_until: null,
     };
-    this.ports.journal({ kind: "admit", key: row.key, row: row.id, no: row.no, label: row.label });
+    this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.no, label: row.label });
     this.write({ ...this.file, devices: [...this.file.devices, row] });
   }
 
@@ -194,7 +216,7 @@ export class AccountDeviceStore implements AccountRowSource {
     // A durable deny can finish these drops at startup. Until journalled, not even
     // a later registry write in this process may erase the rows needed for replay.
     const replayable = reason === "revoke" || reason === "remove" || reason === "block" || reason === "revoke_all";
-    const entries = rows.map(row => ({ kind: "drop", key: row.key, row: row.id, reason } as const));
+    const entries = rows.map(row => this.dropEntry(row, this.file.account, reason));
     if (replayable) this.pendingDrops.push(...entries);
     for (const row of rows) close?.(row.id, reason);
     let failure: Error | undefined;
@@ -233,8 +255,7 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
     if (open?.serverId !== id) {
       // the rows of the identity this PC had end here: their sessions close, and the file is the new identity's (T44)
       if (open !== null) {
-        const gone = open.store.rows().map((row) => row.id);
-        open.store.removeRows(gone, "identity_reset", id => ports.closeSessions(id, "identity_reset"));
+        open.store.clear("identity_reset");
       }
       open = { serverId: id, store: new AccountDeviceStore(stateDir, id, ports) };
     }
@@ -246,7 +267,7 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
     row: (id) => store()?.row(id) ?? null,
     rowsByKey: (key) => store()?.rowsByKey(key) ?? [],
     access: (id) => store()?.access(id) ?? { refused: "not_listed" },
-    pruneDenied: (evidence) => { store()?.pruneDenied(evidence); },
+    pruneDenied: (evidence, legacyRevoke) => { store()?.pruneDenied(evidence, legacyRevoke); },
     removeRows: (ids, reason, close) => { store()?.removeRows(ids, reason, close); },
   };
 }

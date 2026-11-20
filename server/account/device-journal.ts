@@ -13,6 +13,8 @@ import type { DeviceNotice, NoticeKind, NoticeReplay } from "../../shared/accoun
 import { writePrivateState } from "../private-state.ts";
 import { DEVICE_JOURNAL_FILE, type SafetyLog } from "./safety-log.ts";
 import type { JournalEntry as AccountRowEntry } from "./account-devices.ts";
+import type { RemovalEvidence } from "./removal-evidence.ts";
+import { isRowDrop, type RowDrop } from "./row-drop-evidence.ts";
 
 export const JOURNAL_FILE = DEVICE_JOURNAL_FILE;
 export const JOURNAL_MAX = 1_000;
@@ -46,6 +48,8 @@ interface Doc {
   trimmed: number;
   /** Safety-log number of the last snapshot lift journalled, even after its notice is trimmed. */
   snapshot_lift_n?: number;
+  /** Transfer slot: written with the notice, retained until its evidence receipt is durable. */
+  last_row_drop?: RowDrop & { readonly journalled: number };
 }
 
 const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
@@ -88,7 +92,9 @@ export class DeviceJournal {
     try {
       const doc = JSON.parse(text) as Partial<Doc>;
       if (!isDoc(doc)) journal.problem = `${journal.path} is not this PC's device journal`;
-      else if (doc.snapshot_lift_n !== undefined && (!Number.isSafeInteger(doc.snapshot_lift_n) || doc.snapshot_lift_n < 1)) {
+      else if (doc.last_row_drop !== undefined && (!isRowDrop(doc.last_row_drop) || doc.last_row_drop.journalled === undefined || doc.last_row_drop.journalled >= Number(doc.next_seq))) {
+        journal.problem = `${journal.path} has an invalid account row receipt`;
+      } else if (doc.snapshot_lift_n !== undefined && (!Number.isSafeInteger(doc.snapshot_lift_n) || doc.snapshot_lift_n < 1)) {
         journal.problem = `${journal.path} has an invalid snapshot lift number`;
       } else { journal.doc = doc; journal.exists = true; }
     } catch { journal.problem = `${journal.path} is not JSON`; }
@@ -107,18 +113,28 @@ export class DeviceJournal {
   admitsFromList(): boolean { return this.problem === null && this.doc.open.length < OPEN_NOTICES_MAX; }
 
   /** Appends one entry, on disk when this returns; throws when it cannot be written, so what it records does not happen. */
-  append(input: JournalInput): JournalEntry {
-    return this.appendEntry(input);
+  append(input: JournalInput, drop?: RowDrop): JournalEntry {
+    return this.appendEntry(input, undefined, drop);
   }
 
   /** A registry write may be replayed. Row IDs are reused, so a new admission reopens the row's history. */
-  recordAccountRow(entry: AccountRowEntry, account: string | null): void {
+  recordAccountRow(entry: AccountRowEntry, evidence: RemovalEvidence): void {
+    // If the process stopped between the two replacements, finish the earlier receipt before reusing its slot.
+    const prior = this.doc.last_row_drop;
+    if (prior) evidence.markJournalled(prior, prior.journalled);
+    const drop = entry.drop && (evidence.dropFor(entry.row, entry.drop.admit_no) ?? entry.drop);
+    if (drop?.journalled !== undefined) return;
     if (entry.kind === "drop") {
+      // Older journals and interrupted upgrades have no receipt; migrate a still-retained drop once.
       const last = this.doc.entries.filter(event => event.row === entry.row && (event.kind === "admit" || event.kind === "drop")).at(-1);
-      if (last?.kind === "drop") return;
+      if (last?.kind === "drop") {
+        if (drop) evidence.markJournalled(drop, last.seq);
+        return;
+      }
     }
-    this.append({ kind: entry.kind, how: entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
-      row: entry.row, label: entry.label ?? "", by: null, account });
+    const written = this.append({ kind: entry.kind, how: drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
+      row: entry.row, label: entry.label ?? "", by: null, account: entry.account }, drop);
+    if (drop) evidence.markJournalled(drop, written.seq);
   }
 
   /** Catch up after a committed batch or interrupted journal write. Each notice and its cursor share one write. */
@@ -134,7 +150,7 @@ export class DeviceJournal {
     }
   }
 
-  private appendEntry(input: JournalInput, liftNumber?: number): JournalEntry {
+  private appendEntry(input: JournalInput, liftNumber?: number, drop?: RowDrop): JournalEntry {
     if (this.problem !== null) throw new Error(this.strict!);
     const entry: JournalEntry = { ...input, seq: this.doc.next_seq, id: randomBytes(16).toString("hex"), at: new Date().toISOString() };
     let entries = [...this.doc.entries, entry];
@@ -146,7 +162,8 @@ export class DeviceJournal {
     }
     const open = entry.kind === "admit" ? [...this.doc.open, entry] : this.doc.open;
     if (!this.exists) this.companions();
-    this.write({ ...this.doc, next_seq: entry.seq + 1, entries, open, trimmed, ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) });
+    this.write({ ...this.doc, next_seq: entry.seq + 1, entries, open, trimmed, ...(drop && { last_row_drop: { ...drop, journalled: entry.seq } }),
+      ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) });
     this.exists = true;
     return entry;
   }

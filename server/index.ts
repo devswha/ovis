@@ -317,8 +317,9 @@ export function createServer(
   // Step 2 (S2-24): with the release flag on, each pull is followed by a whole read applied to this PC's log and rows
   const serverIdNow = () => ovisRelay.currentIdentity()?.server_id ?? null;
   // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
-  const accountRows = safetyLog !== null && pcAccount !== null && journal !== null ? accountRowsFor(stateDir, serverIdNow, {
-    journal: (entry) => journal.recordAccountRow(entry, pcAccount.account()),
+  const accountRows = safetyLog !== null && pcAccount !== null && journal !== null && removals !== null ? accountRowsFor(stateDir, serverIdNow, {
+    evidence: removals,
+    journal: (entry) => journal.recordAccountRow(entry, removals),
     closeSessions: (id) => { devices.closeAccountSessions(id); },
     heldByDevicesJson: (key) => devices.hasKey(key),
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),

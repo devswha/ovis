@@ -17,6 +17,7 @@ import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOr
 import { type ClearReason, PcAccountState } from "./account/pc-binding.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
+import { rowDrop } from "./account/row-drop-evidence.ts";
 import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device-journal.ts";
 import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
@@ -590,7 +591,11 @@ export class DeviceStore {
     if (this.error === null && this.evidence !== null && existsSync(this.revokeAllPath)) {
       const gate = this.gateClosedAt ?? new Date().toISOString();
       // a deny recovered at start raises the generation, as the live path does (P8, T41)
-      try { this.pc?.raiseGen(); this.finishRevokeAll(this.revokeAllRows(), gate); } catch (error) {
+      try {
+        this.pc?.raiseGen();
+        this.joinedRows?.pruneDenied(this.evidence, "revoke_all");
+        this.finishRevokeAll(this.revokeAllRows(), gate);
+      } catch (error) {
         // what could not be finished on disk is finished in memory, and the PC fails closed until a start finishes it
         this.devices = [];
         this.gateClosedAt = gate;
@@ -1021,7 +1026,7 @@ export class DeviceStore {
       const appended = safety.append({ record, got, asof });
       if (appended.outcome !== "applied") throw new Error(`Block log append did not apply: ${appended.outcome}`);
       receipt = appended;
-      evidence.addRemoval(record.target, record.account, { id: record.id, at: new Date().toISOString(), records: [record] });
+      evidence.addRemoval(record.target, record.account, { id: record.id, at: new Date().toISOString(), records: [record], drop: rowDrop(this.joinedRows?.rowsByKey(record.target)[0], "block") });
       this.refreshTombstones();
     }, { genFirst: true });
     if (denied !== null) {
@@ -2601,7 +2606,7 @@ export class DeviceStore {
   /** The writes of a Revoke all whose file is on disk: its Revokes, the empty registry, the PC's account; then the file goes. */
   private finishRevokeAll(rows: readonly StoredDevice[], gate: string): void {
     const joined = this.joinedRows?.rows() ?? [];
-    this.tombstone([...rows, ...joined.map((row) => this.joinedAsStored(row))], Date.now());
+    this.tombstone([...rows, ...joined.map((row) => this.joinedAsStored(row))], Date.now(), "revoke_all");
     this.endAccountRows("revoke_all");
     this.save([], gate);
     this.devices = [];
@@ -2772,7 +2777,8 @@ export class DeviceStore {
       // it covers goes, row by row, and a Revoke this PC made is never coalesced into it (T22)
       let added = false;
       const denied = this.deny([key], () => {
-        added = this.evidence!.addRemoval(key, account, { id: record.id, at: new Date(now).toISOString(), ...(record.signed ? { records: [record.signed] } : {}) });
+        const drop = this.account() === account ? rowDrop(this.joinedRows?.rowsByKey(key)[0], "remove") : undefined;
+        added = this.evidence!.addRemoval(key, account, { id: record.id, at: new Date(now).toISOString(), drop, ...(record.signed ? { records: [record.signed] } : {}) });
         this.refreshTombstones();
       });
       this.dropWaiting([key]);
@@ -2925,18 +2931,18 @@ export class DeviceStore {
    * Tombstones for the relay keys of rows this PC revokes, written before the revoke itself. The rows that wait to
    * link with one of those keys go next, before the revoke as well (dropWaiting).
    */
-  private tombstone(rows: readonly StoredDevice[], now: number): void {
+  private tombstone(rows: readonly StoredDevice[], now: number, how: "revoke" | "revoke_all" = "revoke"): void {
     // each Revoke is its own evidence, also of a key that already has a tombstone, and also while the tombstone files
     // cannot be read, so it outlives their repair (P13)
     // a Revoke is stamped after every row this store holds, whatever the wall clock says (P13)
     if (this.evidence !== null) now = Date.parse(this.nextStamp(now));
     if (this.evidence !== null && this.evidence.strict === null) {
-      for (const key of new Set(rows.flatMap((d) => d.relay_public_key ?? []))) this.evidence.addRevoke(key, rows.find((d) => d.relay_public_key === key)?.account ?? null, now);
+      for (const key of new Set(rows.flatMap((d) => d.relay_public_key ?? []))) this.evidence.addRevoke(key, rows.find((d) => d.relay_public_key === key)?.account ?? null, now, rowDrop(this.joinedRows?.rowsByKey(key)[0], how));
     }
     // the evidence holds the Revoke when it is sound; a tombstone file that cannot be read is left as it is (S19)
     if (this.evidence !== null && this.evidence.strict === null) {
       if (this.accountError === null) this.refreshTombstones();
-      this.dropWaiting(rows.flatMap((d) => d.relay_public_key ?? []));
+      this.dropWaiting(rows.flatMap((d) => d.relay_public_key ?? []), "revoke");
       return;
     }
     // evidence that cannot be trusted holds nothing: the Revoke leaves main's tombstone, which keeps the key out at once
