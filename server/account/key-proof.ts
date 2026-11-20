@@ -14,6 +14,8 @@ import { PendingLimitError } from "./pending.ts";
 export interface RedeemSeams {
   redeemCode(code: string, how: "code" | "qr", key: string): { ok: true; codeId: string; origin: "pc" | "relay" } | { ok: false; reason: string };
   releaseRedemption(codeId: string, key: string): void;
+  /** whether the code `codeId` is still in force, even before its expiry timer has run (S13-1) */
+  codeLive(codeId: string): boolean;
   admitConfirmed(confirm: { codeId: string; key: string; label: string; source: "screen" | "recover" }): DeviceMatch | null;
 }
 
@@ -58,6 +60,7 @@ export class KeyProofPairings {
       named = this.#pending.name(request.code, request.label, request.publicKey, request.via, undefined, {
         codeId: redeemed.codeId, ...(request.serverId === undefined ? {} : { serverId: request.serverId }),
         release: () => this.#finish(session, null),
+        live: () => this.#seams.codeLive(redeemed.codeId),
       });
     }
     catch (error) {
@@ -75,9 +78,8 @@ export class KeyProofPairings {
     const session = this.#sessions.get(sessionId);
     if (session === undefined || session.pendingId !== undefined) return this.#end(sessionId);
     const entry = await this.#pending.prove(session.challenge, signature);
+    // a session that left while its proof was checked ended it there (leave -> forget): `entry` is null then
     if (entry === null) return this.#end(sessionId);
-    // the session ended while the proof was checked: what it proved waits for nobody
-    if (!this.#sessions.has(sessionId)) { this.#pending.decline(entry.id); return { refuse: "auth_failed" }; }
     session.pendingId = entry.id;
     this.#byPending.set(entry.id, sessionId);
     return { pending: entry };
@@ -162,6 +164,8 @@ export class KeyProofPairings {
  * a decline, or a confirm that runs out, ends the wait.
  */
 export function askScreenForKey(confirms: LocalConfirms, pairings: KeyProofPairings, entry: PendingRedemption): void {
+  // ended between the proof and this call (its code, key or session): nothing goes on the screen
+  if (!pairings.isWaiting(entry.id)) return;
   const action = { kind: "approve_key" as const, pending: entry.id, fingerprint: entry.fingerprint };
   let id: string;
   try {
