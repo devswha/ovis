@@ -82,6 +82,25 @@ describe("device notices on the real PC socket", () => {
     }
   });
 
+  it("a list admission with two-step unknown says so even without its sign-in method (T57)", async () => {
+    const { wire } = await connect();
+    const twoStepValues = ["unknown", null, "set", "verified", undefined, "bogus"] as const;
+    await act(async () => {
+      wire.snapshot();
+      for (const [index, two_step] of twoStepValues.entries()) {
+        const payload = { ...notice(index + 1), label: `Phone ${index + 1}`, method: null, two_step };
+        wire.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "device-notice", notice: payload }) }));
+      }
+    });
+    const rendered = renderer?.root.findAllByProps({ "data-testid": "device-notice" }) ?? [];
+    expect(rendered).toHaveLength(twoStepValues.length);
+    const expected = translate("en", "Two-step sign-in not confirmed");
+    const labels = rendered.map((card) => card.findAllByProps({ className: "settings-hint" })
+      .flatMap((line) => line.children)
+      .filter((line) => typeof line === "string" && line.toLowerCase().includes("two-step sign-in")));
+    expect(labels).toEqual([[expected], [], [], [], [expected], [expected]]);
+  });
+
   const cards = () => result?.byPc.get("desk")?.notices ?? [];
   const method = deviceNotice({ id: "b".repeat(32), seq: 2, kind: "method", open: false });
 
