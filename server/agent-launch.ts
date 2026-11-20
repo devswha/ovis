@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
 import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { freeAgentName } from "./agent-name.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { isShellAgentKind, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
@@ -106,9 +107,14 @@ export function withBrowserTool(kind: string, args: string[] | undefined, platfo
     if (!existsSync(file) || readFileSync(file, "utf8") !== config) {
       mkdirSync(browserTools.dir, { recursive: true, mode: 0o700 });
       // a new file renamed over the old one: a link left at that name is replaced, never written through
-      const staged = `${file}.${process.pid}.tmp`;
-      writeFileSync(staged, config, { flag: "wx", mode: 0o600 });
-      renameSync(staged, file);
+      const staged = `${file}.${randomUUID()}.tmp`;
+      try {
+        writeFileSync(staged, config, { flag: "wx", mode: 0o600 });
+        renameSync(staged, file);
+      } catch (error) {
+        rmSync(staged, { force: true });
+        throw error;
+      }
     }
   }
   return withBrowserToolArgs(args ?? [], browserToolArgs(kind, tool, platform, file));
