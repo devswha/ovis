@@ -3,13 +3,36 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { privateStateFs } from "../private-state.ts";
+import { relayFixture } from "../relay/test-helpers.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { keyOf } from "./account-devices.test-helpers.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
+import { SAFETY_LOG_FILE } from "./safety-log.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 const listed = () => createListedPc(close => closes.push(close));
+
+test("G15/T57/P8: a plain decision changes neither the held row nor the safety log, and stays decided", async () => {
+  const { fixture, device, service } = await listed();
+  const { devices } = fixture.app.context.services;
+  const [notice] = devices.openNotices();
+  if (!notice || notice.row !== device.id) throw new Error("Missing listed admission");
+  const state = () => [ACCOUNT_DEVICES_FILE, SAFETY_LOG_FILE].map(file => readFileSync(join(fixture.stateDir, file), "utf8"));
+  const before = state();
+  expect(devices.sessionRow(device.id)).toBeNull();
+  devices.decideNotice(notice.id);
+  expect(devices.openNotices()).toHaveLength(0);
+  expect(state()).toEqual(before);
+  expect(devices.sessionRow(device.id)).toBeNull();
+  fixture.app.stop();
+  const reopened = relayFixture(false, { stateDir: fixture.stateDir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
+  closes.unshift(() => reopened.app.stop());
+  const services = reopened.app.context.services;
+  expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(services.devices.openNotices()).toHaveLength(0);
+  expect(services.devices.sessionRow(device.id)).toBeNull();
+});
 
 test("G15/T57/P8: local Revoke removes the listed row and frees its notice slot", async () => {
   const { fixture, device } = await listed();
