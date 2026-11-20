@@ -73,6 +73,32 @@ it("S32-1: a token refresh that fails in any way keeps the record: it was never 
   }
 });
 
+it("S32-1: a 4xx that is no refusal of the record itself keeps it: a hidden route, try_again, a stale sign-in", async () => {
+  for (const failure of [
+    new AccountServiceError(404, "not_found", "x"), new AccountServiceError(409, "try_again", "x"),
+    new AccountServiceError(403, "session_not_fresh", "x"), new AccountServiceError(400, "invalid_request", "x"),
+  ]) {
+    const store = memoryAccountStore();
+    await store.set("session", session);
+    const record = await block();
+    await keepUnsent(store, session, [record]);
+    await expect(postKept(store, session, [record], async () => { throw failure; })).rejects.toBe(failure);
+    expect((await unsentBlocks(store, session)).flatMap((kept) => kept.records)).toEqual([record]);
+  }
+});
+
+it("S32-1: while the service hides the route (step 2 off for this account), the block stays", async () => {
+  const fake = new FakeAccountService();
+  const store = memoryAccountStore();
+  const signedIn = { ...session, access_token: fake.issueToken("acct") };
+  await store.set("session", signedIn);
+  const record = await block();
+  await keepUnsent(store, signedIn, [record]);
+  const service = new AccountService({ store, fetch: fake.fetch });
+  await expect(postKept(store, signedIn, [record], (kept) => service.postSafetyRecord(kept))).rejects.toMatchObject({ status: 404 });
+  expect((await unsentBlocks(store, signedIn)).flatMap((kept) => kept.records)).toEqual([record]);
+});
+
 it("S32-1: of a partly accepted set, only the records still unconfirmed stay", async () => {
   const store = memoryAccountStore();
   await store.set("session", session);
