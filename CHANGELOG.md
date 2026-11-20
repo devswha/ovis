@@ -14,8 +14,12 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   safety log on each PC with one admission order, account removals kept apart from a PC's own
   Revokes, blocks and freezes that each PC applies and lifts, `ovis recover` and a lock confirmed on
   the PC's screen, a relay pairing that proves its key and waits for the PC's screen to approve it,
-  and the account screens in the app, Not me included. All of it is behind `OVIS_ACCOUNT_OPENS_ALL`,
-  which is off by default: with it off, Ovis works as in 0.5.6.
+  and the account screens in the app, Not me included. These safety controls are behind
+  `OVIS_ACCOUNT_OPENS_ALL`, which is off by default. One part runs with it off: after signing in to
+  the account, the app asks the account service to register this device's key before it reads the
+  PC list, and goes on as before when the service has no such route. Remote PCs reached over SSH
+  take the new bridge (bundle 51) once, by themselves where automatic bridge updates are on, else
+  through Update bridge.
   ([#4278](https://github.com/devswha/ovis/pull/4278),
   [#4286](https://github.com/devswha/ovis/pull/4286),
   [#4290](https://github.com/devswha/ovis/pull/4290),
