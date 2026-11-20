@@ -225,7 +225,9 @@ export class AccountDeviceStore implements AccountRowSource {
     const removed = new Set(list.removed.map((gone) => gone.key));
     const eligible = new Map(list.devices.filter((entry) => entry.eligible && !removed.has(entry.key)).map((entry) => [entry.key, entry]));
     const sameAccount = this.file.account === null || this.file.account === list.account;
-    const leaving = this.file.devices.filter((row) => !sameAccount || !eligible.has(row.key));
+    const stillListed = new Set(list.devices.map(entry => entry.key));
+    const leaving = this.file.devices.filter(row => !sameAccount || removed.has(row.key) ||
+      (!eligible.has(row.key) && !(row.state === "expired" && stillListed.has(row.key))));
     // an expired row was dropped when it expired: it only leaves the file
     const forgotten = new Set(leaving.filter((row) => row.state === "expired").map((row) => row.id));
     if (forgotten.size > 0) this.write({ ...this.file, devices: this.file.devices.filter((row) => !forgotten.has(row.id)) });
