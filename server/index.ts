@@ -329,6 +329,7 @@ export function createServer(
     closeSessions: (id) => { devices.closeAccountSessions(id); },
     heldByDevicesJson: (key) => devices.hasKey(key),
     checkFreshness: () => accountCatchUp.checkFreshness(),
+    releaseOf: id => recoveryReleases?.releaseOf(id) ?? null,
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
     now: () => Date.now(),
     setTimeout: (run, ms) => devices.waitClock().setTimeout(run, ms),
@@ -610,7 +611,7 @@ export function createServer(
     },
     removalsPending: () => devices.pendingLockRemovals().length > 0,
   } }) : undefined;
-  const accountCatchUp = new AccountCatchUp(devices, accountRows, pcAccount);
+  const accountCatchUp = new AccountCatchUp(devices, accountRows, pcAccount, recoveryReleases);
   const catchUp = accountCatchUp.gate;
   const accountOrder = safetyLog !== null ? AccountOrder.open(stateDir) : null;
   devices.attachAccountOrder(accountOrder);

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { AccountDeviceStore, STALE_READ_MS, type AccountRowPorts } from "./account-devices.ts";
 import { keyOf, listOrigins, nameOf, SERVER, snapshotList } from "./account-devices.test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
+import { RecoveryReleases } from "./recovery.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -15,7 +16,9 @@ function machine() {
   const clock = { now: Date.UTC(2026, 0, 1, 12) };
   const events: string[] = [];
   const frozen = new Set<string>();
+  const releases = new RecoveryReleases({ journal: () => {} });
   const ports: AccountRowPorts = {
+    releaseOf: id => releases.releaseOf(id),
     admitListedRows: write => [...write()],
     journal: (entry) => { events.push(`journal ${entry.kind} ${nameOf(entry.key)}`); },
     closeSessions: (rowId, reason) => { events.push(`close ${rowId} ${reason}`); },
@@ -35,7 +38,12 @@ function machine() {
   const [live, held] = store.rows();
   store.access(live!.id);
   events.length = 0;
-  return { clock, events, frozen, list, start, store, live: live!, held: held! };
+  const release = (target: AccountDeviceStore, keys: readonly string[]) => {
+    const named = target.waitingRows().filter(row => keys.includes(row.key));
+    if (named.length) releases.release(named, "owner");
+    return named.map(row => row.key);
+  };
+  return { clock, events, frozen, list, start, store, release, live: live!, held: held! };
 }
 
 describe("S2-27 account-joined rows wait for the catch-up (T41, T42, T56, T65, T70)", () => {
@@ -84,7 +92,7 @@ describe("S2-27 account-joined rows wait for the catch-up (T41, T42, T56, T65, T
   test("T65: service-off keeps the wait; only named released rows have the accepted gap until denial arrives", () => {
     const pc = machine();
     const restarted = pc.start();
-    expect(restarted.release([keyOf("k-live")])).toEqual([keyOf("k-live")]);
+    expect(pc.release(restarted, [keyOf("k-live")])).toEqual([keyOf("k-live")]);
     expect(restarted.access(pc.live.id)).toEqual({ ok: true });
     expect(restarted.access(pc.held.id)).toEqual({ refused: "catching_up" });
   });
@@ -92,12 +100,12 @@ describe("S2-27 account-joined rows wait for the catch-up (T41, T42, T56, T65, T
   test("T70: headless account-only rows can be released by name and first whole read rejudges them", () => {
     const pc = machine();
     const restarted = pc.start();
-    expect(restarted.release([keyOf("k-live"), keyOf("k-unknown")])).toEqual([keyOf("k-live")]);
+    expect(pc.release(restarted, [keyOf("k-live"), keyOf("k-unknown")])).toEqual([keyOf("k-live")]);
     pc.frozen.add("k-live");
     restarted.commitList(pc.list(["k-live", "k-held"]));
     expect(restarted.access(pc.live.id)).toEqual({ refused: "not_listed" });
     // The dropped row cannot be released again or recovered by a restart.
-    expect(restarted.release([keyOf("k-live")])).toEqual([]);
+    expect(pc.release(restarted, [keyOf("k-live")])).toEqual([]);
     expect(pc.start().access(pc.live.id)).toEqual({ refused: "not_listed" });
   });
 });

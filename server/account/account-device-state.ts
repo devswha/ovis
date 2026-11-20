@@ -54,6 +54,7 @@ export type AccessAnswer = { readonly ok: true } | { readonly refused: "join_hol
 export interface AccountRowPorts {
   admitListedRows(write: () => readonly string[]): string[];
   checkFreshness?(): void;
+  releaseOf?(id: string): string | null;
   readonly evidence?: RemovalEvidence;
   /** On disk when it returns; a drop already recorded for this admission is not repeated. */
   journal(entry: JournalEntry): void;

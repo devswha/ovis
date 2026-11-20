@@ -5,7 +5,8 @@ import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, sign
 import { parseAccountDevicesFile, type AccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { writePrivateState } from "../private-state.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
-import { bounded, relayAccountFixture, relayConnection, relayFixture, caughtUp, releaseAccountRows } from "../relay/test-helpers.ts";
+import { bounded, relayAccountFixture, relayConnection, relayFixture, caughtUp } from "../relay/test-helpers.ts";
+import { recoveryActs } from "./recovery-acts.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { applyAccountRecords } from "./records.ts";
 
@@ -37,7 +38,10 @@ async function expectRemoval(remove: Removal) {
     fixture = relayFixture(false, { ...options, stateDir });
     // past the wait after a start (S2-27): the PC's user released this row by name (T70), as no read comes offline
     caughtUp(fixture);
-    expect(releaseAccountRows(fixture, [publicKey])).toEqual([publicKey]);
+    const releases = fixture.app.context.services.recoveryReleases;
+    if (!releases) throw new Error("Expected PC-local releases");
+    const recover = recoveryActs({ releases, logReadable: () => true, user: "owner" });
+    expect(await recover({ act: "release", rows: [id] })).toEqual({ released: [id] });
     const link = await relayConnection(fixture, { serverId });
     expect(await link.auth({ id, publicKey, keys })).toMatchObject({ device_id: id });
     const disksAtClose: string[][] = [];

@@ -19,6 +19,7 @@ import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safet
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import { rowDrop } from "./account/row-drop-evidence.ts";
 import { RevokeAllIntent } from "./account/revoke-all-intent.ts";
+import type { RecoveryCandidate, RecoveryReleases } from "./account/recovery.ts";
 import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device-journal.ts";
 import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
@@ -546,6 +547,7 @@ export class DeviceStore {
   private joinedRows: AccountRowSource | null = null;
   private readonly promotedHolds = new PromotedHolds((key) => this.admits(key), (row) => this.releasePromoted(row));
   private catchUp: CatchUpGate | null = null;
+  private releases?: RecoveryReleases;
   private readonly pc: PcAccountState | null;
   private readonly evidence: RemovalEvidence | null;
   private readonly accountHeld: ((key: string) => boolean) | undefined;
@@ -1366,7 +1368,10 @@ export class DeviceStore {
     const listeners = this.revocations.get(id) ?? new Set<(waiting?: true) => void>();
     listeners.add(close);
     this.revocations.set(id, listeners);
+    const release = this.releases?.releaseOf(id);
+    const unwatch = release ? this.releases?.watch(release, close) : undefined;
     return () => {
+      unwatch?.();
       listeners.delete(close);
       if (listeners.size === 0) this.revocations.delete(id);
     };
@@ -1920,7 +1925,20 @@ export class DeviceStore {
 
 
   /** Step 2 (S2-27): the wait after a start for devices.json rows not paired at this PC; set only with OVIS_ACCOUNT_OPENS_ALL=1. */
-  attachCatchUp(gate: CatchUpGate | null): void { this.catchUp = gate; }
+  attachCatchUp(gate: CatchUpGate | null, releases?: RecoveryReleases): void {
+    this.catchUp = gate;
+    this.releases = releases;
+  }
+
+  listedRecoveryCandidate(row: AccountRow): RecoveryCandidate {
+    const stored = this.joinedAsStored(row);
+    return { id: row.id, key: row.key, label: row.label, origin: row.origin, waiting: "catching_up",
+      joinHold: row.state === "hold", expired: row.state === "expired", openNotice: this.listNotice(row.id) !== undefined,
+      covered: this.isTombstoned(row.key) || this.coveredByEvidence(stored),
+      held: this.accountHeld?.(row.key) === true || this.safety?.inForce.locked === true,
+      frozen: this.accountRowStale(row) || !this.admitsFromList(row.key, this.account() ?? ""),
+      lastSeenAt: row.last_signin_day };
+  }
 
   /** Whether the devices.json row `id` waits for the first whole read (T41). */
   catchingUp(id: string): boolean {

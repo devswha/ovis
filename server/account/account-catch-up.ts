@@ -4,6 +4,7 @@ import { STALE_READ_MS, type accountRowsFor } from "./account-devices.ts";
 import { CatchUpGate } from "./catch-up-gate.ts";
 import type { PcAccountState } from "./pc-binding.ts";
 import type { Readmission } from "./readmission.ts";
+import type { RecoveryReleases } from "./recovery.ts";
 import { SnapshotWriteRefused } from "./snapshot-read.ts";
 
 /** The server's whole-read lifecycle: release judged rows, then bound how long that read keeps them usable. */
@@ -13,14 +14,18 @@ export class AccountCatchUp {
   private remaining: (() => number) | undefined;
   private onStale: (() => void) | undefined;
   private readonly stopLifts?: () => void;
+  private readonly stopRecovery?: () => void;
 
   constructor(
     private readonly devices: DeviceStore,
     private readonly rows: ReturnType<typeof accountRowsFor> | null,
     pc: PcAccountState | null,
+    private readonly releases: RecoveryReleases | undefined,
   ) {
-    this.gate = rows === null ? null : new CatchUpGate(() => pc?.binding()?.bind_id ?? null);
-    devices.attachCatchUp(this.gate);
+    this.gate = rows === null ? null : new CatchUpGate(() => pc?.binding()?.bind_id ?? null, id => releases?.releaseOf(id) != null);
+    devices.attachCatchUp(this.gate, releases);
+    if (rows && releases) this.stopRecovery = releases.registerRecoverySource(() =>
+      (rows.store()?.waitingRows() ?? []).map(row => devices.listedRecoveryCandidate(row)));
     const gate = this.gate;
     if (gate && rows) this.stopLifts = devices.onLifted((target, cause) => {
       switch (cause) {
@@ -47,6 +52,7 @@ export class AccountCatchUp {
       store?.commitList(snapshot, readmission);
       if (this.devices.failsClosed) throw new SnapshotWriteRefused(this.devices.accountError ?? "account_unavailable");
       store?.expire();
+      this.releases?.endAll();
       this.gate?.wholeRead(this.devices.list(null).filter(row => !this.devices.admits(this.devices.relayKeyOf(row.id))).map(row => row.id));
     } catch (error) {
       // A list write may already have changed some rows. They cannot serve on a partial read.
@@ -85,5 +91,5 @@ export class AccountCatchUp {
     this.cancelStaleness = undefined;
   }
 
-  stop(): void { this.stopLifts?.(); this.clearDeadline(); }
+  stop(): void { this.stopRecovery?.(); this.releases?.endAll(); this.stopLifts?.(); this.clearDeadline(); }
 }
