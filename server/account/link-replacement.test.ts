@@ -1,0 +1,116 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { exportAccountKey } from "../../shared/account-records.ts";
+import { DeviceStore, readDeviceRegistry } from "../devices.ts";
+import { DeviceJournal } from "./device-journal.ts";
+import { PcAccountState } from "./pc-binding.ts";
+import { RemovalEvidence } from "./removal-evidence.ts";
+import { SafetyLog } from "./safety-log.ts";
+
+const ACCOUNT = "acct_1";
+const FIVE_MINUTES = 5 * 60_000;
+const dirs: string[] = [];
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+const key = async () => exportAccountKey((await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign"])).publicKey);
+
+function open(dir: string) {
+  const log = SafetyLog.open(dir);
+  const pc = PcAccountState.open(dir);
+  return { pc, devices: new DeviceStore(dir, null, null, { safety: log, pc, removals: RemovalEvidence.open(dir, log), journal: DeviceJournal.open(dir, () => log.ensureFile()) }) };
+}
+function pc() {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-link-replacement-"));
+  dirs.push(dir);
+  return { dir, ...open(dir) };
+}
+const row = (dir: string, id: string) => {
+  const read = readDeviceRegistry(join(dir, "devices.json"));
+  return read.kind === "ok" ? read.devices.find((d) => d.id === id) : undefined;
+};
+
+async function screenApproved(devices: DeviceStore): Promise<{ id: string; key: string }> {
+  const k = await key();
+  const redeemed = devices.redeemCode(devices.startPairing().code, "code", k);
+  if (!redeemed.ok) throw new Error(redeemed.reason);
+  const id = devices.admitConfirmed({ codeId: redeemed.codeId, key: k, label: "Phone", source: "screen" })!.id;
+  return { id, key: k };
+}
+
+describe("a key approved on this PC's screen is replaced only by a confirm of its own (P22, T7, T11, T72, T59)", () => {
+  test("T7: a link that moves a screen-approved key changes nothing at once: the new key waits as a replacement", async () => {
+    const { dir, devices } = pc();
+    const approved = await screenApproved(devices);
+    const before = row(dir, approved.id)!;
+    const next = await key();
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT);
+    expect(row(dir, approved.id)).toEqual(before);
+    expect(devices.pendingReplacement(approved.id)).toMatchObject({ key: next, account: ACCOUNT });
+  });
+
+  test("T72: the replacement takes the row only by its own confirm; the row keeps pc with how link and a new number", async () => {
+    const { dir, devices, pc: state } = pc();
+    const approved = await screenApproved(devices);
+    const next = await key();
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT);
+    expect(devices.replaceConfirmed({ row: approved.id, key: await key(), source: "screen" })).toBeNull();
+    expect(devices.replaceConfirmed({ row: approved.id, key: next, source: "screen" })).toMatchObject({ id: approved.id });
+    expect(row(dir, approved.id)).toMatchObject({ relay_public_key: next, account: ACCOUNT, origin: { from: "pc", how: "link", admit_no: 2 } });
+    expect(state.account()).toBe(ACCOUNT);
+    expect(devices.pendingReplacement(approved.id)).toBeNull();
+    expect(devices.replaceConfirmed({ row: approved.id, key: next, source: "screen" })).toBeNull();
+  });
+
+  test("T72: a second link while one waits replaces it, and only the newest key can be confirmed", async () => {
+    const { devices } = pc();
+    const approved = await screenApproved(devices);
+    const [first, second] = [await key(), await key()];
+    devices.linkAccountKey(approved.id, approved.key, first, ACCOUNT);
+    devices.linkAccountKey(approved.id, approved.key, second, ACCOUNT);
+    expect(devices.pendingReplacement(approved.id)).toMatchObject({ key: second });
+    expect(devices.replaceConfirmed({ row: approved.id, key: first, source: "screen" })).toBeNull();
+  });
+
+  test("P22: declined, unanswered for five minutes, or a restart: the replacement is dropped and the approved key stays", async () => {
+    const { dir, devices } = pc();
+    const approved = await screenApproved(devices);
+    const next = await key();
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT);
+    devices.declineReplacement(approved.id);
+    expect(devices.pendingReplacement(approved.id)).toBeNull();
+
+    const now = Date.now();
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT);
+    expect(devices.replaceConfirmed({ row: approved.id, key: next, source: "screen" }, now + FIVE_MINUTES + 1)).toBeNull();
+    expect(devices.pendingReplacement(approved.id)).toBeNull();
+
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT);
+    const restarted = open(dir).devices;
+    expect(restarted.pendingReplacement(approved.id)).toBeNull();
+    expect(row(dir, approved.id)).toMatchObject({ relay_public_key: approved.key, origin: { from: "pc" } });
+  });
+
+  test("T11: a link that moves a key of a row not approved on the screen admits the new key with a number of its own", async () => {
+    const { dir, devices } = pc();
+    const old = await key();
+    const id = devices.pairRelay(devices.startPairing().code, "Phone", old)!.device.id;
+    const next = await key();
+    devices.linkAccountKey(id, old, next, ACCOUNT);
+    expect(devices.pendingReplacement(id)).toBeNull();
+    expect(row(dir, id)).toMatchObject({ relay_public_key: next, origin: { from: "remote", how: "link", admit_no: 2 } });
+  });
+
+  test("T59: the first device's list key is set only from a sign-in that proved it, once", async () => {
+    const { devices, pc: state } = pc();
+    const k = await key();
+    const id = devices.pairRelay(devices.startPairing().code, "Phone", k)!.device.id;
+    devices.linkAccountKey(id, k, k, ACCOUNT);
+    expect(state.first()).toEqual({ key: k, list_key: null });
+    devices.provedListKey(k);
+    expect(state.first()).toEqual({ key: k, list_key: k });
+    devices.provedListKey(await key());
+    expect(state.first()).toEqual({ key: k, list_key: k });
+  });
+});
