@@ -4,11 +4,12 @@ import { join } from "node:path";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
-import { bounded, deferred, relayConnection, TestClock } from "../relay/test-helpers.ts";
+import { bounded, deferred, relayConnection, relayDevice, TestClock } from "../relay/test-helpers.ts";
 import { ACCOUNT_DEVICES_FILE, AccountDeviceStore } from "./account-devices.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
 import { DeviceJournal } from "./device-journal.ts";
+import { RemovalEvidence } from "./removal-evidence.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
@@ -131,6 +132,20 @@ test("a returning expired key with a waiting block is refused and the list repor
     expect(devices.openNotices().some(notice => notice.key === target)).toBe(false);
     expect(commits.mock.results.map(result => result.value)).toEqual([{ admitted: [], dropped: [] }]);
   } finally { commits.mockRestore(); }
+});
+
+test("readmission origin and confirmation follow a local Revoke at the same wall time", async () => {
+  const machine = await pc();
+  machine.clock.advance(60 * 86_400_000);
+  const other = await relayDevice(machine.fixture);
+  expect(machine.fixture.app.context.services.devices.revoke(other.id)).toBe(true);
+  const [revoked] = RemovalEvidence.open(machine.fixture.stateDir, null).standingRevokes(other.publicKey);
+  if (!revoked) throw new Error("Missing durable Revoke");
+  const returning = await relayConnection(machine.fixture, { serverId: machine.serverId });
+  expect(await bounded(Promise.race([returning.auth(machine.device, [ACCOUNT_OPENS_ALL_FEATURE]), returning.serverError]))).toBe("held");
+  const row = machine.row();
+  expect(Date.parse(row.origin.at)).toBeGreaterThan(Date.parse(revoked.at));
+  expect(row.confirmed_at).toBe(row.origin.at);
 });
 
 test.each(["wrong proof", "failed read"] as const)("T55/S27: %s cannot authorize later background readmission", async failure => {
