@@ -107,7 +107,7 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, onResult 
         if (serverId !== undefined && !rows.has(serverId)) skipped.set(serverId, [...skipped.get(serverId) ?? [], machine]);
       }
       // Directory lookup supplies display rows only; never put it in front of block delivery.
-      const directory = skipped.size === 0 ? [] : service.listPcs(AbortSignal.timeout(ANSWER_TIMEOUT_MS)).catch((error: unknown) => {
+      const directory = service.listPcs(AbortSignal.timeout(ANSWER_TIMEOUT_MS)).catch((error: unknown) => {
         if (error instanceof AccountServiceError || error instanceof AccountServiceUnreachableError || error instanceof SignedOutError ||
             error instanceof SyntaxError || (error instanceof DOMException && error.name === "TimeoutError")) return [];
         throw error;
@@ -118,15 +118,16 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, onResult 
       }), directory]);
       const outcomes = new Map<string, PcBlockOutcome>(sent.outcomes);
       const names = new Map([...rows].map(([id, machine]) => [id, machine.name]));
-      for (const { server_id } of roster) {
-        const routes = skipped.get(server_id);
-        if (routes === undefined || routes[0] === undefined) continue;
+      // Every PC of the account gets a line, including one this browser has never listed; none of them gets a request.
+      for (const { server_id, label } of roster) {
+        if (rows.has(server_id) || outcomes.has(server_id)) continue;
+        const routes = skipped.get(server_id) ?? [];
         const unsupported = routes.some((machine) => {
           const remote = fleet.machineSessions.peek(machine.id)?.socket;
           return remote?.connected && remote.featuresListed() && !remote.accountOpensAll();
         });
         outcomes.set(server_id, { server_id, state: unsupported ? "unsupported" : "unreachable" });
-        names.set(server_id, routes[0].name);
+        names.set(server_id, routes[0]?.name ?? label);
       }
       onResult({ pc: pc.id, notice, signer: current.public_spki, fleet: { ...sent, outcomes }, names });
     } catch (error) {
