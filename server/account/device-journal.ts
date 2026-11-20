@@ -132,7 +132,7 @@ export class DeviceJournal {
 
   openNotices(): readonly JournalEntry[] { return this.doc.open; }
 
-  /** Only outstanding list admissions with a registry owner take a slot. Never change history or access. */
+  /** Only outstanding list admissions with a registry owner take a slot. This never changes access. */
   settleList(owns: (notice: JournalEntry) => boolean): void {
     const open = this.doc.open.filter(n => n.how !== "list" || owns(n));
     const entries = this.doc.entries.filter(n => n.seq > this.doc.trimmed || owns(n));
@@ -164,9 +164,13 @@ export class DeviceJournal {
         return null;
       }
     }
-    const written = this.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
+    // Receipt-less drops still name a specific admission, without widening the drop event's audience.
+    const decides = entry.kind === "drop" && entry.no !== undefined && drop === undefined
+      ? this.doc.open.find(notice => notice.how === "list" && notice.key === entry.key && notice.row === entry.row &&
+        notice.no === entry.no && notice.account === entry.account)?.id : undefined;
+    const written = this.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.kind === "drop" ? null : entry.no ?? null,
       row: entry.row, label: entry.label ?? "", by: null, account: entry.account,
-      ...(entry.kind === "admit" ? { awaitingListCheck: true, two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) }, undefined, drop);
+      ...(entry.kind === "admit" ? { awaitingListCheck: true, two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) }, decides, drop);
     if (drop) evidence.markJournalled(drop, written.seq);
     return written;
   }
@@ -200,38 +204,22 @@ export class DeviceJournal {
     }
   }
 
-  private appendEntry(input: JournalInput | { readonly close: JournalEntry }, liftNumber?: number, decides?: string, drop?: RowDrop): JournalEntry {
+  private appendEntry(input: JournalInput, liftNumber?: number, decides?: string, drop?: RowDrop): JournalEntry {
     if (this.problem !== null) throw new Error(this.strict!);
-    const closing = "close" in input;
-    const entry: JournalEntry = closing ? { ...input.close, seq: this.doc.next_seq }
-      : { ...input, seq: this.doc.next_seq, id: randomBytes(16).toString("hex"), at: new Date().toISOString() };
-    const closes = closing ? [entry] : [];
+    const entry: JournalEntry = { ...input, seq: this.doc.next_seq, id: randomBytes(16).toString("hex"), at: new Date().toISOString() };
     const remaining = this.doc.open.filter(notice => {
       if (notice.id === decides) return false;
       if (notice.how !== "list" || notice.key === null || notice.key !== entry.key) return true;
       // Local recovery revokes the key on this PC. A row receipt ends only its numbered admission.
       if (entry.kind === "remove" && entry.how === "recover") return false;
-      if (!drop || notice.row !== drop.row || notice.no !== drop.admit_no || notice.account !== entry.account) return true;
-      // The drop and the same-ID close must reach disk together; the row receipt still names the drop's sequence.
-      closes.push({ ...notice, seq: entry.seq + closes.length + 1 });
-      return false;
+      return !drop || notice.row !== drop.row || notice.no !== drop.admit_no || notice.account !== entry.account;
     });
-    const next_seq = (closes.at(-1)?.seq ?? entry.seq) + 1;
-    let entries = closing ? this.doc.entries : [...this.doc.entries, entry];
-    let closed = closes.length ? [...(this.doc.closed ?? []), ...closes] : this.doc.closed;
-    let trimmed = this.doc.trimmed;
-    if (entries.length + (closed?.length ?? 0) > JOURNAL_MAX) {
-      trimmed = Math.max(trimmed, next_seq - 1 - JOURNAL_MAX);
-      // An unpublished admission is pending work, not replay history. Keep only
-      // the current admission for each row until activation moves it to open.
-      const latest = new Map(entries.filter(n => n.kind === "admit" || n.kind === "promote" || n.kind === "drop").map(n => [n.row, n.seq]));
-      entries = entries.filter(n => n.seq > trimmed || (n.awaitingListCheck && n.kind === "admit" && latest.get(n.row) === n.seq));
-      closed = closed?.filter(n => n.seq > trimmed);
-    }
-    const open = !closing && entry.kind === "admit" && !entry.awaitingListCheck ? [...remaining, entry] : remaining;
+    const open = entry.kind === "admit" && !entry.awaitingListCheck ? [...remaining, entry] : remaining;
     if (!this.exists) this.companions();
-    this.write({ ...this.doc, next_seq, entries, open, trimmed, ...(closed && { closed }), ...(drop && { last_row_drop: { ...drop, journalled: entry.seq } }),
-      ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) });
+    this.write({ ...this.doc, next_seq: entry.seq + 1, entries: [...this.doc.entries, entry], open,
+      ...(drop && { last_row_drop: { ...drop, journalled: entry.seq } }),
+      ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) },
+    entry.kind === "confirm" && entry.how === "its_me" ? decides : undefined);
     this.exists = true;
     return entry;
   }
@@ -266,10 +254,11 @@ export class DeviceJournal {
 
   /** Close an admission atomically with a replay entry, even for rows that already acknowledged it. */
   decide(id: string): boolean {
-    const notice = this.doc.open.find((entry) => entry.id === id);
-    if (!notice) return false;
+    const open = this.doc.open.filter((entry) => entry.id !== id);
+    if (open.length === this.doc.open.length) return false;
     try {
-      this.appendEntry({ close: notice }, undefined, id);
+      if (this.strict !== null) throw new Error(this.strict);
+      this.write({ ...this.doc, open });
     } catch (error) {
       this.problem = `Cannot record a notice decision in ${this.path} (${error instanceof Error ? error.message : String(error)})`;
       throw error;
@@ -277,8 +266,24 @@ export class DeviceJournal {
     return true;
   }
 
-  private write(doc: Doc): void {
-    writePrivateState(this.path, doc);
-    this.doc = doc;
+  private write(doc: Doc, confirmed?: string): void {
+    let next = doc;
+    if (doc.open !== this.doc.open) {
+      const kept = new Set(doc.open.map(entry => entry.id));
+      // A T53 confirmation is already a replayable close. Every other ID leaving open needs its own delivery sequence.
+      const closes = this.doc.open.filter(entry => entry.id !== confirmed && !kept.has(entry.id))
+        .map((entry, index) => ({ ...entry, seq: doc.next_seq + index }));
+      if (closes.length) next = { ...doc, next_seq: doc.next_seq + closes.length, closed: [...(doc.closed ?? []), ...closes] };
+    }
+    if (next.next_seq > this.doc.next_seq && next.entries.length + (next.closed?.length ?? 0) > JOURNAL_MAX) {
+      const trimmed = Math.max(next.trimmed, next.next_seq - 1 - JOURNAL_MAX);
+      // An unpublished admission is pending work, not replay history. Keep only the current one for each row.
+      const latest = new Map(next.entries.filter(n => n.kind === "admit" || n.kind === "promote" || n.kind === "drop").map(n => [n.row, n.seq]));
+      const entries = next.entries.filter(n => n.seq > trimmed || (n.awaitingListCheck && n.kind === "admit" && latest.get(n.row) === n.seq));
+      const closed = next.closed?.filter(n => n.seq > trimmed);
+      next = { ...next, entries, trimmed, ...(closed && { closed }) };
+    }
+    writePrivateState(this.path, next);
+    this.doc = next;
   }
 }
