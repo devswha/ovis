@@ -5,7 +5,7 @@
  */
 import { expect, test } from "bun:test";
 import { RecoveryReleases, type RecoveryCandidate, type RecoveryJournalEntry } from "./recovery.ts";
-import { recoveryActs } from "./recovery-acts.ts";
+import { recoveryActs, type RecoverySeams } from "./recovery-acts.ts";
 
 const row = (id: string, extra: Partial<RecoveryCandidate> = {}): RecoveryCandidate => ({
   id, key: `key-${id}`, label: `Row ${id}`, origin: { from: "remote", how: "list" }, waiting: "catching_up",
@@ -75,4 +75,55 @@ test("T70: list says when this PC last saw each waiting row", async () => {
   const acts = recoveryActs({ releases, logReadable: () => true, user: "owner" });
   const answer = await acts({ act: "list" }) as { rows: { last_seen_at: string | null }[] };
   expect(answer.rows[0]!.last_seen_at).toBe("2026-11-19T10:00:00.000Z");
+});
+
+function seams(options: { fingerprint?: string; admitted?: boolean } = {}) {
+  const calls: string[] = [];
+  const pending = { id: "0123456789abcdef0123456789abcdef", key: "key-new", label: "Phone", fingerprint: options.fingerprint ?? "AB12-CD34", codeId: "code-1" };
+  const made: RecoverySeams = {
+    pendingOf: (id) => id === pending.id ? pending : null,
+    takePending: (id, fingerprint) => { calls.push(`take ${id} ${fingerprint}`); return fingerprint === pending.fingerprint ? pending : null; },
+    admitConfirmed: (confirm) => { calls.push(`admit ${confirm.codeId} ${confirm.key} ${confirm.source}`); return options.admitted === false ? null : { id: "fedcba9876543210", label: "Phone", role: "drive" }; },
+    removeKey: ({ target }) => { calls.push(`remove ${target}`); return { removed: [target] }; },
+    appendLift: (block, forget) => { calls.push(`lift ${block} ${forget}`); return { outcome: "applied" }; },
+    revokeAll: () => { calls.push("revoke_all"); return ["a", "b"]; },
+  };
+  return { made, calls, pending };
+}
+
+function withSeams(options: { logReadable?: boolean; fingerprint?: string; admitted?: boolean } = {}) {
+  const releases = new RecoveryReleases({ journal: () => {} });
+  const s = seams(options);
+  const acts = recoveryActs({ releases, logReadable: () => options.logReadable ?? true, user: "owner", seams: s.made });
+  return { acts, ...s };
+}
+
+test("P22/T70: admit lets in the waiting key only when the fingerprint the terminal showed is that key's, with origin recover", async () => {
+  const { acts, calls, pending } = withSeams();
+  expect(await acts({ act: "admit", pending: pending.id, fingerprint: "ZZ99-ZZ99" })).toEqual({ error: "The fingerprint does not match the waiting device" });
+  expect(calls.filter((call) => call.startsWith("admit"))).toEqual([]);
+  expect(await acts({ act: "admit", pending: pending.id, fingerprint: "AB12-CD34" })).toEqual({ admitted: "fedcba9876543210" });
+  expect(calls.at(-1)).toBe("admit code-1 key-new recover");
+});
+
+test("P22: an admission the PC refuses (locked, strict, frozen) admits nobody", async () => {
+  const { acts, pending } = withSeams({ admitted: false });
+  expect(await acts({ act: "admit", pending: pending.id, fingerprint: "AB12-CD34" })).toEqual({ error: "This PC refused to admit the key (locked, frozen, or its log cannot be read)" });
+});
+
+test("T37/T69/T70: remove, lift and revoke-all go through this PC's own seams", async () => {
+  const { acts, calls } = withSeams();
+  expect(await acts({ act: "remove", targets: ["0123456789abcdef"] })).toEqual({ removed: ["0123456789abcdef"] });
+  expect(await acts({ act: "lift", blocks: ["a".repeat(64)] })).toEqual({ lifted: ["a".repeat(64)] });
+  expect(await acts({ act: "revoke_all" })).toEqual({ revoked: 2 });
+  expect(calls).toEqual(["remove 0123456789abcdef", `lift ${"a".repeat(64)} false`, "revoke_all"]);
+});
+
+test("P23: while the log cannot be read, every act that writes refuses, and list still answers", async () => {
+  const { acts, calls, pending } = withSeams({ logReadable: false });
+  for (const act of [{ act: "remove", targets: ["0123456789abcdef"] }, { act: "lift", blocks: ["a".repeat(64)] }, { act: "revoke_all" }, { act: "admit", pending: pending.id, fingerprint: "AB12-CD34" }]) {
+    expect(await acts(act)).toEqual({ error: "This PC cannot read its safety log, so nothing is changed: log_unreadable" });
+  }
+  expect(calls).toEqual([]);
+  expect(await acts({ act: "list" })).toHaveProperty("rows");
 });
