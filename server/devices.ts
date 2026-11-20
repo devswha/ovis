@@ -2629,7 +2629,7 @@ export class DeviceStore {
       for (const device of gone) this.journalRemoval(device, "pc", user === undefined ? undefined : "recover", user);
       for (const device of gone) this.announceRemoval(device, "pc");
       intent.finish(rows => this.completeRevokeAll(intent, rows, gate));
-      this.settleDenies();
+      this.refreshAfterRevokeAll();
     } catch (error) {
       this.denyProblem = `Revoke all could not be finished (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until it is.`;
       throw error;
@@ -2642,7 +2642,7 @@ export class DeviceStore {
     if (intent?.finish(rows => {
       this.pc?.raiseGen();
       this.completeRevokeAll(intent, rows, this.gateClosedAt ?? new Date().toISOString());
-    })) this.settleDenies();
+    })) this.refreshAfterRevokeAll();
   }
 
   /**
@@ -2674,8 +2674,11 @@ export class DeviceStore {
       this.failedRows.delete(row.id);
       if (row.relay_public_key !== undefined) this.failedDenies.delete(row.relay_public_key);
     }
+  }
+
+  /** Only after the intent is unlinked can a successful retry clear its prior failure and publish the tombstones. */
+  private refreshAfterRevokeAll(): void {
     this.settleDenies();
-    // the tombstone file follows the evidence once nothing keeps account records refused any more (P13)
     if (this.evidence?.strict === null && this.accountError === null) this.refreshTombstones();
   }
 
