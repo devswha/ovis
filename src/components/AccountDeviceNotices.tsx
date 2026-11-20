@@ -34,7 +34,6 @@ type BlockResult = {
   readonly signer: string;
   readonly fleet: FleetBlock;
   readonly names: ReadonlyMap<string, string>;
-  readonly hidden?: true;
 };
 
 function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, onResult }: {
@@ -130,6 +129,7 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   const shown = feed.byPc.get(selectedMachineId);
   // A block can close its notice or the socket before the account replies. Keep the result at App scope.
   const [results, setResults] = useState<ReadonlyMap<string, BlockResult>>(new Map());
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const sending = useRef(new Set<string>());
   const [own, setOwn] = useState<Awaited<ReturnType<typeof registeredKey>>>(null);
   const readKey = results.size > 0 || shown?.notices.some((notice) => notice.kind === "admit" && notice.open) === true;
@@ -158,40 +158,42 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   const socket = sockets.find(({ id }) => id === selectedMachineId)?.socket;
   if (pc === undefined) return null;
   const notices = new Map(shown?.notices.map((notice) => [notice.id, notice]));
-  for (const result of results.values()) {
+  const detachedRetries: [string, BlockResult][] = [];
+  for (const [id, result] of results) {
     if (result.pc !== pc.id || result.signer !== own?.public_spki) continue;
-    if (result.hidden) notices.delete(result.notice.id);
-    else if (!notices.has(result.notice.id)) notices.set(result.notice.id, result.notice);
+    if (hidden.has(id)) {
+      if (result.fleet.retryService !== undefined) detachedRetries.push([id, result]);
+    } else if (!notices.has(result.notice.id)) notices.set(result.notice.id, result.notice);
   }
-  if (notices.size === 0 && feed.cut === 0) return null;
-  return (
-    <DeviceNotices key={pc.id} pc={pc.name} notices={[...notices.values()]} cut={feed.cut}
-      onDismiss={(notice) => {
-        feed.dismiss(pc.id, notice);
-        const id = `${pc.id}:${notice.id}`;
+  for (const id of notices.keys()) {
+    if (hidden.has(`${pc.id}:${id}`)) notices.delete(id);
+  }
+  const renderOutcomes = (id: string, result: BlockResult, dismissed = false) => {
+    const { retryService, ...delivered } = result.fleet;
+    return <BlockOutcomes outcomes={dismissed ? [] : [...result.fleet.outcomes.values()]} names={result.names} {...(retryService === undefined ? {} : {
+      accountRetry: async () => {
+        if (!await retryService()) return;
         setResults((current) => {
-          const result = current.get(id);
-          return result === undefined ? current : new Map(current).set(id, { ...result, hidden: true });
+          const latest = current.get(id);
+          return latest?.fleet.retryService !== retryService ? current : new Map(current).set(id, { ...latest, fleet: delivered });
         });
-      }} onShown={feed.acknowledgeShown}
+      },
+    })} />;
+  };
+  if (notices.size === 0 && feed.cut === 0 && detachedRetries.length === 0) return null;
+  return <>
+    <DeviceNotices key={pc.id} pc={pc.name} notices={[...notices.values()]} cut={feed.cut}
+      onDismiss={(notice) => feed.dismiss(pc.id, notice)}
+      onHide={(notice) => setHidden((current) => new Set([...current, `${pc.id}:${notice.id}`]))}
+      onShown={feed.acknowledgeShown}
       actions={(notice) => {
         const id = `${pc.id}:${notice.id}`;
         const result = results.get(id);
-        if (result !== undefined && result.signer === own?.public_spki) {
-          const { retryService, ...delivered } = result.fleet;
-          return <BlockOutcomes outcomes={[...result.fleet.outcomes.values()]} names={result.names} {...(retryService === undefined ? {} : {
-            accountRetry: async () => {
-              if (!await retryService()) return;
-              setResults((current) => {
-                const latest = current.get(id);
-                return latest?.fleet.retryService !== retryService ? current : new Map(current).set(id, { ...latest, fleet: delivered });
-              });
-            },
-          })} />;
-        }
+        if (result !== undefined && result.signer === own?.public_spki) return renderOutcomes(id, result);
         return socket === undefined ? null : <BlockNoticeAction notice={notice} pc={pc} socket={socket} fleet={{ machines, machineSessions, pageServerId }} own={own} inFlight={sending.current}
           onResult={(result) => setResults((current) => new Map(current).set(id, result))} />;
       }}
     />
-  );
+    {detachedRetries.map(([id, result]) => <div key={id} role="status">{renderOutcomes(id, result, true)}</div>)}
+  </>;
 }

@@ -15,7 +15,7 @@ const METHOD_NAMES = { github: "GitHub", google: "Google", apple: "Apple" } as c
  * Two-step sign-in is said as the account record states it, never as used. Hiding an undecided admission
  * leaves its PC's decision untouched; `actions` adds that PC's answers to it.
  */
-export function DeviceNotices({ pc, notices, cut = 0, onDismiss, onShown, actions }: { pc: string; notices: readonly DeviceNotice[]; cut?: number; onDismiss: (notice: DeviceNotice) => void; onShown?: (seq: number) => void; actions?: (notice: DeviceNotice) => ReactNode }) {
+export function DeviceNotices({ pc, notices, cut = 0, onDismiss, onHide, onShown, actions }: { pc: string; notices: readonly DeviceNotice[]; cut?: number; onDismiss: (notice: DeviceNotice) => void; onHide?: (notice: DeviceNotice) => void; onShown?: (seq: number) => void; actions?: (notice: DeviceNotice) => ReactNode }) {
   const t = useT();
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
   const shown = notices.filter((notice) => TOLD_KINDS.has(notice.kind));
@@ -52,8 +52,9 @@ export function DeviceNotices({ pc, notices, cut = 0, onDismiss, onShown, action
         <div className="device-paired-actions">
           {actions?.(notice)}
           <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => {
-            if (notice.open) setHidden((previous) => new Set([...previous, notice.id]));
-            else onDismiss(notice);
+            if (onHide !== undefined) onHide(notice);
+            else if (notice.open) setHidden((previous) => new Set([...previous, notice.id]));
+            if (!notice.open) onDismiss(notice);
           }}><X /></button>
         </div>
       </div>
