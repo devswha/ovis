@@ -26,6 +26,8 @@ export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset"
  * Removal detaches the whole batch before notifying session owners or writing the journal (P8 step 3).
  */
 export interface AccountRowSource {
+  /** Why `account-devices.json` cannot be used. A file that will not read is never empty (S19, T41). */
+  blocked(): string | null;
   rows(): readonly AccountRow[];
   row(id: string): AccountRow | null;
   rowsByKey(key: string): readonly AccountRow[];
@@ -116,6 +118,8 @@ export class AccountDeviceStore implements AccountRowSource {
       this.write(CLEARED);
     }
   }
+
+  blocked(): string | null { return this.error; }
 
   rows(): readonly AccountRow[] { return this.error === null ? this.file.devices : []; }
 
@@ -263,6 +267,7 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
   };
   return {
     store,
+    blocked: () => store()?.blocked() ?? null,
     rows: () => store()?.rows() ?? [],
     row: (id) => store()?.row(id) ?? null,
     rowsByKey: (key) => store()?.rowsByKey(key) ?? [],

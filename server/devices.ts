@@ -593,6 +593,8 @@ export class DeviceStore {
     this.revokeAllIntent = this.evidence === null ? null : new RevokeAllIntent(stateDir, this.revokeAllRows());
     if (this.evidence) this.journal?.checkRowReceipts(this.evidence.rowDrops);
     if (this.journal?.strict || this.evidence?.strict) return;
+    // an account registry that will not read is not empty: every intent stays and nothing is written until it reads
+    if (this.joinedRows?.blocked()) return;
     if (this.error === null) {
       try {
         this.resumeRevokeAll();
@@ -794,7 +796,7 @@ export class DeviceStore {
   }
 
   private get strictProblem(): string | null {
-    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.revokeAllIntent?.strict ?? this.denyProblem;
+    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.revokeAllIntent?.strict ?? this.joinedRows?.blocked() ?? this.denyProblem;
   }
 
 
@@ -2618,6 +2620,8 @@ export class DeviceStore {
   private resumeRevokeAll(): void {
     this.revokeAllIntent?.finish(rows => {
       this.assertWritable();
+      const blocked = this.joinedRows?.blocked();
+      if (blocked) throw new Error(blocked);
       this.pc?.raiseGen();
       if (this.evidence) this.joinedRows?.pruneDenied(this.evidence, "revoke_all");
       this.finishRevokeAll(rows, this.gateClosedAt ?? new Date().toISOString());
