@@ -49,9 +49,17 @@ On Windows, in PowerShell:
 irm https://ovis.sh/install.ps1 | iex
 ```
 
-**On your phone:** on the computer, open **Settings → Devices and PCs → Add a connection → Ovis relay**, switch it on, and scan its QR code with the phone. Where the tab asks you to sign in first, sign in and add this computer to your account, then choose **Show the QR code** and scan it with a phone signed in to the same account: the computer is then in the account, and it asks any other phone to sign in to that account instead of scanning. The iPhone app is on the [App Store](https://apps.apple.com/app/id6824664162) and the Android app is on [Google Play](https://play.google.com/store/apps/details?id=sh.ovis.app). [Phone setup →](docs/guide.md#on-your-phone)
+**On your phone:** the iPhone app is on the [App Store](https://apps.apple.com/app/id6824664162) and the Android app is on [Google Play](https://play.google.com/store/apps/details?id=sh.ovis.app). It opens on the sign-in. [Phone setup →](docs/guide.md#on-your-phone)
 
 <a href="https://apps.apple.com/app/id6824664162"><img src="ovis-site/assets/app-store/badge-en.svg" alt="Download on the App Store" height="48"></a> <a href="https://play.google.com/store/apps/details?id=sh.ovis.app"><img src="ovis-site/assets/google-play/badge-en.svg" alt="Get it on Google Play" height="48"></a>
+
+## Your PCs, anywhere
+
+Sign in to your Ovis account with GitHub, Google or Apple (your first sign-in makes it), and every computer in it opens from your other devices: the desktop app on Mac, Windows or Linux, the iPhone and Android apps, or any browser at [app.ovis.sh](https://app.ovis.sh). They connect through the Ovis relay, end-to-end encrypted, with nothing to set up on your network. [How accounts work →](docs/guide.md#through-an-account)
+
+- **Add a computer in one press.** On it, open **Settings → Devices and PCs → Account** and press **Sign in and add this PC** (**Add this PC to my account** if you are signed in already). Your first computer, or one you add right after a two-step sign-in, goes in with that press; any other is confirmed once from a device you already use.
+- **Add a phone or another device.** Sign in to the same account on it and approve it once on a device you already use: it then reaches every computer in the account. Or pair a phone by QR code: on the computer, open **Settings → Devices and PCs → Add a connection → Phones and devices**, sign in, choose **Show the QR code** and scan it with the phone.
+- **Without an account.** Tailscale, your Wi-Fi or SSH work too: **Start without signing in** on the phone, or **Add a connection → Tailscale** or **Direct** on the desktop. The Android app reaches a computer over SSH by itself, and can install Ovis there. [Remote PCs →](docs/remote-pcs.md)
 
 ## Features
 
@@ -60,7 +68,8 @@ irm https://ovis.sh/install.ps1 | iex
 - **Push alerts.** Even with the app closed.
 - **The real terminal, one click away.** With a key bar on phones.
 - **New agents from anywhere.** In a folder you pick, from the desktop or the phone.
-- **Every workspace in one list.** Other PCs over SSH too.
+- **Every workspace in one list.** Your other PCs too, over the relay or SSH.
+- **A browser of your choice.** Give Claude Code, Codex or GitHub Copilot a browser tool (Chrome DevTools or Playwright MCP) in **Settings → Agents**, and have the desktop app open links in the browser you pick.
 
 [All features →](docs/guide.md#features)
 
