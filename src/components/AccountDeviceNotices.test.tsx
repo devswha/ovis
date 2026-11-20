@@ -471,3 +471,109 @@ it.each([
   expect(refusal()).toHaveLength(0);
 });
 
+it("S2P-6: a refusal goes with its notice even while another PC is shown: the same id opened again shows none", async () => {
+  jest.useFakeTimers();
+  const desk = new DeviceNoticeWire("ws://localhost/ws?pc=desk");
+  const lab = new DeviceNoticeWire("ws://localhost/ws?pc=lab");
+  for (const [key, value] of Object.entries({
+    window: Object.assign(new EventTarget(), { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
+    document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
+    navigator: { languages: ["en"] },
+    getComputedStyle: () => ({ getPropertyValue: () => "" }),
+    WebSocket: class { constructor(url: string) { return url === desk.url ? desk : lab; } },
+    IS_REACT_ACT_ENVIRONMENT: true,
+  })) {
+    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const store = memoryAccountStore();
+  await store.set("session", {
+    service: "https://account.ovis.sh", account: "acct", provider: "github",
+    access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 60_000, sign_in_id: "this-sign-in",
+  });
+  await store.set("signin_key", { account: "acct", sign_in_id: "this-sign-in", no: 1, key: await newKey() });
+  spyOn(indexedAccountStore, "get").mockImplementation(store.get);
+  const registry = new MachineSessionRegistry((id) => new MachineSession(id, { socket: new HerdrSocket(id === "local" ? desk.url : lab.url) }));
+  sessions = registry;
+  for (const machine of itsMeMachines) registry.get(machine.id).socket.connect();
+  desk.open();
+  lab.open();
+  function Notices({ selected }: { selected: string }) {
+    return useAccountDeviceNotices({ machines: itsMeMachines, machineSessions: registry, selectedMachineId: selected, pageServerId: undefined });
+  }
+  await act(async () => { itsMeRenderer = create(<SettingsProvider><Notices selected="local" /></SettingsProvider>); });
+  const view = itsMeRenderer;
+  if (view === undefined) throw new TypeError("Missing notice view");
+  const admission = deviceNotice({ row: "new-phone" });
+  const button = () => view.root.find((node) => node.type === "button" && node.children.includes("It's me"));
+  const refusal = () => view.root.findAll((node) => node.type === "p" && node.children.includes("Desk did not accept It's me from this device."));
+  await act(async () => {
+    desk.snapshot();
+    lab.snapshot();
+    desk.read({ type: "device-notice", notice: admission });
+    lab.read({ type: "device-notice", notice: admission });
+  });
+  await act(async () => { button().props.onClick(); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  expect(refusal()).toHaveLength(1);
+  await act(async () => { view.update(<SettingsProvider><Notices selected="lab" /></SettingsProvider>); });
+  // decided on Desk while Lab is shown, then the same notice id opened there again
+  await act(async () => { desk.read({ type: "device-notice", notice: { ...admission, open: false } }); });
+  await act(async () => { desk.read({ type: "device-notice", notice: admission }); });
+  await act(async () => { view.update(<SettingsProvider><Notices selected="local" /></SettingsProvider>); });
+  expect(refusal()).toHaveLength(0);
+});
+
+it("S2P-6: an It's me still out when its notice closes records no refusal, also once the same id opens again", async () => {
+  jest.useFakeTimers();
+  const desk = new DeviceNoticeWire("ws://localhost/ws?pc=desk");
+  const lab = new DeviceNoticeWire("ws://localhost/ws?pc=lab");
+  for (const [key, value] of Object.entries({
+    window: Object.assign(new EventTarget(), { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
+    document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
+    navigator: { languages: ["en"] },
+    getComputedStyle: () => ({ getPropertyValue: () => "" }),
+    WebSocket: class { constructor(url: string) { return url === desk.url ? desk : lab; } },
+    IS_REACT_ACT_ENVIRONMENT: true,
+  })) {
+    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const store = memoryAccountStore();
+  await store.set("session", {
+    service: "https://account.ovis.sh", account: "acct", provider: "github",
+    access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 60_000, sign_in_id: "this-sign-in",
+  });
+  await store.set("signin_key", { account: "acct", sign_in_id: "this-sign-in", no: 1, key: await newKey() });
+  spyOn(indexedAccountStore, "get").mockImplementation(store.get);
+  const registry = new MachineSessionRegistry((id) => new MachineSession(id, { socket: new HerdrSocket(id === "local" ? desk.url : lab.url) }));
+  sessions = registry;
+  for (const machine of itsMeMachines) registry.get(machine.id).socket.connect();
+  desk.open();
+  lab.open();
+  function Notices({ selected }: { selected: string }) {
+    return useAccountDeviceNotices({ machines: itsMeMachines, machineSessions: registry, selectedMachineId: selected, pageServerId: undefined });
+  }
+  await act(async () => { itsMeRenderer = create(<SettingsProvider><Notices selected="local" /></SettingsProvider>); });
+  const view = itsMeRenderer;
+  if (view === undefined) throw new TypeError("Missing notice view");
+  const admission = deviceNotice({ row: "new-phone" });
+  const button = () => view.root.find((node) => node.type === "button" && node.children.includes("It's me"));
+  const refusal = () => view.root.findAll((node) => node.type === "p" && node.children.includes("Desk did not accept It's me from this device."));
+  await act(async () => {
+    desk.snapshot();
+    lab.snapshot();
+    desk.read({ type: "device-notice", notice: admission });
+    lab.read({ type: "device-notice", notice: admission });
+  });
+  await act(async () => { button().props.onClick(); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  await act(async () => { view.update(<SettingsProvider><Notices selected="lab" /></SettingsProvider>); });
+  // closed on Desk and opened again while the answer was still out, then its last wait ends
+  await act(async () => { desk.read({ type: "device-notice", notice: { ...admission, open: false } }); });
+  await act(async () => { desk.read({ type: "device-notice", notice: admission }); });
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  await act(async () => { view.update(<SettingsProvider><Notices selected="local" /></SettingsProvider>); });
+  expect(refusal()).toHaveLength(0);
+});
