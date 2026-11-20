@@ -156,8 +156,12 @@ it("C3: a reload of the join card a launch put up, not pressed yet, asks again a
   await run.openPage();
   expect({ apps: run.apps(), navigations: run.navigations }).toEqual({ apps: 0, navigations: [expect.stringContaining(`/s/${run.serverId}/#offer=`)] });
   expect(browser.sessionStore.get("ovis-launch-join")).toBe(run.serverId);
-  // back on the front page, the card is over: a row pressed there opens its PC by the account's key again
+  // back on the front page (Back, Forward or a reload into the card keep it), only a press on that PC's link ends it
   await run.reload();
+  expect(browser.sessionStore.get("ovis-launch-join")).toBe(run.serverId);
+  const click = new Event("click");
+  Object.defineProperty(click, "target", { value: { closest: () => ({ getAttribute: () => `/s/${run.serverId}/` }) } });
+  browser.page.dispatchEvent(click);
   expect(browser.sessionStore.has("ovis-launch-join")).toBe(false);
 });
 

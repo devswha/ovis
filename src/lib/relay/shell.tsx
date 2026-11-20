@@ -17,7 +17,7 @@ import { registerPendingPush } from "../push.ts";
 import { alertPrefs, loadSettings, SettingsProvider } from "../settings.ts";
 import { readAlertFilters, withAlertFilters } from "../alertFilters.ts";
 import { onLazyChunkFailure } from "../lazyChunk.ts";
-import { serverScopePath } from "../shellMode.ts";
+import { serverIdOfPath, serverScopePath } from "../shellMode.ts";
 import { setTransport } from "../transport.ts";
 import { takeEntryUrl, watchNavigation } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
@@ -65,6 +65,9 @@ function keepLaunchJoin(serverId: string | null): void {
 function launchJoinFor(serverId: string): boolean {
   try { return sessionStorage.getItem(LAUNCH_JOIN) === serverId; } catch { return false; }
 }
+
+/** the shell's one listener for a press on a PC's link, which ends a launch's join card for that PC */
+let pressedJoin: ((event: MouseEvent) => void) | null = null;
 
 /** The PC a launch sent this tab to, for that PC's page alone: taken as it loads. */
 const LAUNCHED_PC = "ovis-launched-pc";
@@ -156,8 +159,16 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   if (scoped) markLaunched();
   // this PC's page was opened by a launch, not by a person: if the PC turns out off, the launch goes on to Add a PC
   const launchedHere = scoped && launchedPc === entry.serverId;
-  // a front page that came back (Back, a reload) ends a launch's join card: a row a person presses next opens its PC as usual
-  if (!scoped) keepLaunchJoin(null);
+  // only a press on a link to that PC (a row of Add a PC, the dashboard, a sidebar) ends a launch's join card: Back, Forward
+  // or a reload into it keeps it, so it never opens by the account's key without the person's word
+  if (pressedJoin !== null) document.removeEventListener("click", pressedJoin, true);
+  pressedJoin = (event: MouseEvent) => {
+    const target = event.target as { closest?: (selector: string) => Element | null } | null;
+    const link = typeof target?.closest === "function" ? target.closest("a[href]") : null;
+    const id = link === null ? null : serverIdOfPath(new URL(link.getAttribute("href") ?? "", window.location.href).pathname);
+    if (id !== null && launchJoinFor(id)) keepLaunchJoin(null);
+  };
+  document.addEventListener("click", pressedJoin, true);
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
   let last: Attempt | null = null, opening: AbortController | null = null;
