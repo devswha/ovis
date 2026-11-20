@@ -239,8 +239,7 @@ export class SafetyLog {
     let parsed: LogFile | string;
     try { parsed = parseLog(JSON.parse(text)); } catch { parsed = "it is not JSON"; }
     if (typeof parsed === "string") { this.readError = `${this.path} cannot be trusted: ${parsed}`; return false; }
-    // a queue at capacity with no mark may have dropped a block (a crash between the drop and the mark): closed too
-    this.file = this.overflowMarked() || parsed.waiting.length >= WAITING_MAX ? { ...parsed, overflowed: true } : parsed;
+    this.file = this.overflowMarked() ? { ...parsed, overflowed: true } : parsed;
     if (this.file.overflowed) return false;
     this.inForce = this.state();
     return true;
@@ -482,10 +481,14 @@ export class SafetyLog {
     if (this.strict !== null || !this.load()) return false;
     if (this.file.waiting.some((kept) => kept.record.id === item.record.id)) return true;
     if (this.file.waiting.length >= WAITING_MAX) {
-      if (!this.writeFile({ ...this.file, overflowed: true })) {
-        // the mark must outlive this run, or a restart forgets that a block was dropped (S10-2)
-        try { writePrivateState(join(this.stateDir, SAFETY_OVERFLOW_FILE), { v: 1, at: new Date().toISOString() }); }
-        catch (error) { console.error(`The waiting queue's overflow could not be marked: ${error instanceof Error ? error.message : String(error)}`); }
+      // the mark is durable before the block is dropped, or a restart forgets that one was (S10-2): the log, else the side file
+      if (this.writeFile({ ...this.file, overflowed: true })) return false;
+      try { writePrivateState(join(this.stateDir, SAFETY_OVERFLOW_FILE), { v: 1, at: new Date().toISOString() }); }
+      catch (error) {
+        // no mark could be written: nothing is dropped. The block stays, over capacity and in memory only, and the PC is
+        // closed for this run (the failed log write above made it strict)
+        console.error(`The waiting queue's overflow could not be marked, so the block is kept: ${error instanceof Error ? error.message : String(error)}`);
+        this.file = { ...this.file, waiting: [...this.file.waiting, item] };
       }
       return false;
     }
