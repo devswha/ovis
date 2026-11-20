@@ -23,7 +23,7 @@ let desktop = true;
 const SIGN_IN = "Continue with GitHub";
 let onDelete: (() => Promise<void>) | null = null;
 /** the account service's answer to a Not me block post, when a test sets one */
-let safetyAnswer: ((id: string) => Response) | null = null;
+let safetyAnswer: ((id: string) => Response | Promise<Response>) | null = null;
 
 describe("deleting the account from Settings", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -263,6 +263,28 @@ describe("deleting the account from Settings", () => {
     expect(buttons()).toContain("Sign out anyway");
     expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
     expect(await indexedAccountStore.get("unsent_blocks")).toBeUndefined();
+  });
+
+  it("S32-1: a final refusal that answers after Sign out anyway is said to nobody, so the block stays for its account's next sign-in", async () => {
+    await signedIn();
+    const a = (await indexedAccountStore.get("session"))!;
+    await queueFor(a, "late-1");
+    const answer = Promise.withResolvers<Response>();
+    const asked = Promise.withResolvers<void>();
+    safetyAnswer = () => { asked.resolve(); return answer.promise; };
+    await press("Sign out");
+    await until(() => buttons().includes("Send it now"));
+    await press("Send it now");
+    await asked.promise;
+    await press("Sign out anyway");
+    await until(() => buttons().includes(SIGN_IN));
+    const marked = async () => Object.values(await indexedAccountStore.get("unsent_blocks") ?? {}).some((entry) => entry.refused === true);
+    await act(async () => { answer.resolve(Response.json({ error: { code: "signer_not_older", message: "x" } }, { status: 403 })); });
+    for (let turn = 0; turn < 400 && !await marked(); turn++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    // the settled send has drawn whatever it would
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    expect(shown()).not.toContain("The block did not go through yet.");
+    expect(Object.values(await indexedAccountStore.get("unsent_blocks") ?? {}).map((entry) => [entry.records[0]?.id, entry.refused])).toEqual([["late-1", true]]);
   });
 
   it("drops the question when the person signs out, so the next sign-in starts unarmed", async () => {

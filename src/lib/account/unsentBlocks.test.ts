@@ -58,6 +58,31 @@ it("S32-1: target_removed leaves the queue at once; a final refusal stays, marke
   }
 });
 
+it("S32-1: a record code on an answer that is not that refusal's status keeps it (target_removed on a 503, signer_not_older on a 500)", async () => {
+  for (const failure of [new AccountServiceError(503, "target_removed", "x"), new AccountServiceError(500, "signer_not_older", "x")]) {
+    const store = memoryAccountStore();
+    await store.set("session", session);
+    const record = await block();
+    await keepUnsent(store, session, [record]);
+    await expect(postKept(store, session, [record], async () => { throw failure; })).rejects.toBe(failure);
+    expect(await unsentBlocks(store, session)).toEqual([{ account: session.account, sign_in_id: session.sign_in_id, records: [record] }]);
+  }
+});
+
+it("S32-1: a refusal shown while another account is the stored sign-in removes nothing", async () => {
+  const store = memoryAccountStore();
+  await store.set("session", session);
+  const record = await block();
+  await keepUnsent(store, session, [record]);
+  expect(await postKept(store, session, [record], async () => { throw new AccountServiceError(403, "signer_not_older", "x"); })).toBe("refused");
+  await store.set("session", { ...session, account: "other", sign_in_id: "b" });
+  await refusalShown(store, session.account, [record.id]);
+  expect(await unsentBlocks(store, session)).toHaveLength(1);
+  await store.set("session", undefined);
+  await refusalShown(store, session.account, [record.id]);
+  expect(await unsentBlocks(store, session)).toHaveLength(1);
+});
+
 it("S32-1: a record still waiting is never removed as a shown refusal", async () => {
   const store = memoryAccountStore();
   await store.set("session", session);

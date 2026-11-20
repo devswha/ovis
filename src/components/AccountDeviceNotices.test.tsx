@@ -506,7 +506,7 @@ it.each([
 });
 
 
-async function notMePage(options: { service: (record: BlockRecord) => Response | Promise<Response>; capable?: boolean; holdStore?: Promise<void>; failStore?: boolean; token?: () => Response }) {
+async function notMePage(options: { service: (record: BlockRecord) => Response | Promise<Response>; capable?: boolean; holdStore?: Promise<void>; failStore?: boolean; token?: () => Response | Promise<Response>; drawn?: boolean }) {
   // with a token answer, the access token is due for a refresh at the press
   const session = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "test", access_token: "access", refresh_token: "refresh", expires_at: options.token === undefined ? Date.now() + 3600_000 : Date.now() } as const;
   const notice = deviceNotice({ key: (await newKey()).public_spki });
@@ -515,10 +515,11 @@ async function notMePage(options: { service: (record: BlockRecord) => Response |
   const store = memoryAccountStore();
   await store.set("session", session);
   await store.set("signin_key", { account: session.account, sign_in_id: session.sign_in_id, no: 1, key: await newKey() });
+  const page = Object.assign(new EventTarget(), { visibilityState: "visible" as "visible" | "hidden", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } });
   const replaced = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
     window: Object.assign(events, { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
-    document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
+    document: page,
     navigator: { languages: ["en"] },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
     WebSocket: class { constructor() { return wire; } },
@@ -563,7 +564,11 @@ async function notMePage(options: { service: (record: BlockRecord) => Response |
     const socket = new HerdrSocket(wire.url);
     registry = new MachineSessionRegistry(() => new MachineSession(LOCAL_MACHINE, { socket }));
     const sessions = registry;
-    function Probe() { return useAccountDeviceNotices({ machines, machineSessions: sessions, selectedMachineId: LOCAL_MACHINE, pageServerId: "a".repeat(32) }); }
+    // drawn: false is the App behind its access gate, which runs the hook but draws none of it
+    function Probe() {
+      const drawn = useAccountDeviceNotices({ machines, machineSessions: sessions, selectedMachineId: LOCAL_MACHINE, pageServerId: "a".repeat(32) });
+      return options.drawn === false ? null : drawn;
+    }
     sessions.get(LOCAL_MACHINE);
     await act(async () => { renderer = create(<SettingsProvider><Probe /></SettingsProvider>); });
     socket.connect();
@@ -584,7 +589,7 @@ async function notMePage(options: { service: (record: BlockRecord) => Response |
       else Reflect.deleteProperty(globalThis, key);
     }
   };
-  return { store, session, notice, wire, events, order, mount, unmount, root, button, restore, setCapable: (on: boolean) => { options.capable = on; } };
+  return { store, session, notice, wire, events, page, order, mount, unmount, root, button, restore, setCapable: (on: boolean) => { options.capable = on; } };
 }
 
 it("S32-1, T51: the signed block is stored before it goes to any PC or the service; a reload sends it again with the same id", async () => {
@@ -691,6 +696,61 @@ it("S32-1: a final refusal answered after a sign-out is shown at the next sign-i
     expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
     expect(page.button("Try again")).toBeUndefined();
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
+  } finally { await page.restore(); }
+});
+
+it("S32-1: a final refusal the page never draws (the App behind its access gate) stays in the store", async () => {
+  const page = await notMePage({ drawn: false, service: () => Response.json({ error: { code: "signer_not_older", message: "x" } }, { status: 403 }) });
+  try {
+    await page.store.set("unsent_blocks", { r1: { account: page.session.account, sign_in_id: page.session.sign_in_id, records: [{ id: "r1" } as unknown as BlockRecord], refused: true } });
+    await page.mount();
+    await act(async () => {});
+    expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toEqual(["r1"]);
+  } finally { await page.restore(); }
+});
+
+it("S32-1: a final refusal drawn in a hidden tab leaves the store only once the tab is seen", async () => {
+  const page = await notMePage({ service: () => Response.json({ error: { code: "signer_not_older", message: "x" } }, { status: 403 }) });
+  try {
+    page.page.visibilityState = "hidden";
+    await page.store.set("unsent_blocks", { r1: { account: page.session.account, sign_in_id: page.session.sign_in_id, records: [{ id: "r1" } as unknown as BlockRecord], refused: true } });
+    await page.mount();
+    await act(async () => {});
+    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
+    expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toEqual(["r1"]);
+    await act(async () => { page.page.visibilityState = "visible"; page.page.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => {});
+    expect(await page.store.get("unsent_blocks")).toBeUndefined();
+  } finally { await page.restore(); }
+});
+
+it("S32-1: Try again asks again right before the record goes out, after a token refresh", async () => {
+  const fresh = () => Response.json({ access_token: "a2", refresh_token: "r2", expires_in: 3600, account: "acct", provider: "github" });
+  let hold: { asked: PromiseWithResolvers<void>; answer: PromiseWithResolvers<Response> } | undefined;
+  const page = await notMePage({
+    service: () => new Response(null, { status: 503 }),
+    token: () => { if (hold === undefined) return fresh(); hold.asked.resolve(); return hold.answer.promise; },
+  });
+  try {
+    await page.mount();
+    await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
+    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    const retry = page.button("Try again");
+    if (retry === undefined) throw new TypeError("Missing account retry");
+    await page.store.update("session", (current) => current === undefined ? undefined : { ...current, expires_at: Date.now() });
+    const posts = page.order.filter((step) => step.startsWith("service ")).length;
+    const held = { asked: Promise.withResolvers<void>(), answer: Promise.withResolvers<Response>() };
+    hold = held;
+    await act(async () => {
+      const pressed = retry.props.onClick();
+      await held.asked.promise;
+      // the release goes while the refresh is out
+      page.wire.snapshot([]);
+      held.answer.resolve(fresh());
+      await pressed;
+    });
+    expect(page.order.filter((step) => step.startsWith("service "))).toHaveLength(posts);
+    expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
   } finally { await page.restore(); }
 });
 
