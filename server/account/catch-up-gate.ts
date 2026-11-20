@@ -21,7 +21,7 @@ export class CatchUpGate {
   private caughtUpFor: string | null = null;
   /** A lift changes the next read's decision, never the result of the previous one. */
   private waiting: ReadonlySet<string> = new Set();
-  private readonly frozenSinceRead = new Map<string, Set<string>>();
+  private readonly frozenByTarget = new Map<string, Set<string>>();
   private readonly lifted = new Set<string>();
 
   /** `binding`: this PC's binding id now, null in no account, where nobody waits (no block can name it). */
@@ -40,20 +40,25 @@ export class CatchUpGate {
   wholeRead(refused: readonly string[] = []): void {
     this.caughtUpFor = this.binding();
     this.waiting = new Set(refused);
-    this.frozenSinceRead.clear();
     this.lifted.clear();
   }
 
   /** The lift identifies its target key, not the newer rows this block froze between reads. */
   noteFreeze(target: string, ids: readonly string[]): void {
-    const affected = this.frozenSinceRead.get(target) ?? new Set<string>();
+    const affected = this.frozenByTarget.get(target) ?? new Set<string>();
     for (const id of ids) affected.add(id);
-    this.frozenSinceRead.set(target, affected);
+    this.frozenByTarget.set(target, affected);
   }
 
   waitAfterLift(target: string, rows: readonly string[]): ReadonlySet<string> {
-    const affected = new Set([...this.frozenSinceRead.get(target) ?? [], ...rows]);
+    const affected = new Set([...this.endFreeze(target), ...rows]);
     for (const id of affected) this.lifted.add(id);
+    return affected;
+  }
+
+  endFreeze(target: string): ReadonlySet<string> {
+    const affected = this.frozenByTarget.get(target) ?? new Set<string>();
+    this.frozenByTarget.delete(target);
     return affected;
   }
 }

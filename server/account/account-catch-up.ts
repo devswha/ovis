@@ -30,7 +30,7 @@ export class AccountCatchUp {
     if (gate && rows) this.stopLifts = devices.onLifted((target, cause) => {
       switch (cause) {
         case "snapshot":
-        case "screen": return;
+        case "screen": gate.endFreeze(target); return;
         case "orphan":
         case "recover":
         case "record": {
