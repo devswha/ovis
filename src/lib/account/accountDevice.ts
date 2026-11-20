@@ -35,7 +35,7 @@ export function withAccountDevice(store: RelayDeviceStore, device: RelayDevice):
     update: async (serverId, change, source) => {
       if (serverId !== device.server_id) return store.update(serverId, change, source);
       const next = change(current);
-      if (next.public_spki !== device.public_spki || next.private_key !== device.private_key || next.device_id !== device.device_id || next.server_public_key !== device.server_public_key) throw new AccountRowImmutableError();
+      if (next.public_spki !== device.public_spki || next.private_key !== device.private_key || next.device_id !== device.device_id || next.server_id !== device.server_id || next.server_public_key !== device.server_public_key) throw new AccountRowImmutableError();
       current = next;
       return next;
     },
