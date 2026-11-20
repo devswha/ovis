@@ -381,7 +381,7 @@ export class RelaySession {
           this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
           return;
         }
-        if (frame.type === FrameType.AUTH && device === null) {
+        if (frame.type === FrameType.AUTH && device === null && devices.opensAll()) {
           // Step 2 (S2-25): an account-joined row signs in with its registered key; its refusal is told only after the proof
           const joined = await devices.matchAccountRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId);
           if (joined !== null && "refused" in joined) {
