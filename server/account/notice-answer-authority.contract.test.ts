@@ -32,6 +32,7 @@ test("a same-account watch member cannot block a listed device or decide its not
 
 test.each([
   ["admitted device", true], ["different account", true], ["other same-account row", false], ["other block target", true],
+  ["stored receipt", true],
 ] as const)("G15/T57/P8: Not me from %s leaves open = %s", async (actor, staysOpen) => {
   const { fixture, device, member, serverId } = await createListedPc(close => closes.push(close));
   const { devices, core } = fixture.app.context.services;
@@ -48,7 +49,10 @@ test.each([
     panes: [], agents: [], workspaces: [], tabs: [], layouts: [], version: "fixture", protocol: 22,
   });
   // Isolate the caller gate from signature verification and the independent removal caused by a real block.
-  const block = spyOn(devices, "applyBlock").mockResolvedValue({ outcome: "applied", id: "fixture", n: 1 });
+  const block = spyOn(devices, "applyBlock").mockImplementation(async (_record, _got, onRaise) => {
+    if (actor !== "stored receipt") onRaise?.();
+    return { outcome: "applied", id: "fixture", n: 1 };
+  });
   try {
     let caller = actor === "admitted device" ? device : member;
     if (actor === "different account") {
