@@ -18,7 +18,7 @@ import { QrCode } from "./QrCode.tsx";
 
 // the confirmation before Revoke all is a portal on document.body, which this renderer has none of
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, connectTabs, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, TailscaleTab, DirectTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
+const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, connectTabs, devicesWayOf, localWays, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, TailscaleTab, DirectTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
 const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
 const { announcePairingCode, QR_CODE_ENDED_CHANNEL, useRelay } = await import("../lib/useRelay.ts");
 const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrFindings, accountQrNoticeWaiting, addedBy, accountQrPending, resetAccountQrWatch, unvouched } = await import("../lib/accountQrWatch.ts");
@@ -458,6 +458,29 @@ describe("Connect a phone on a phone", () => {
     expect(openingTab({ tabs: all, phone: true, noticeWaiting: true, hasAccount: false })).toBe("devices");
     expect(openingTab({ tabs: all, phone: true, noticeWaiting: true, hasAccount: true })).toBe("relay");
     expect(openingTab({ tabs: ["tailscale", "direct", "devices"], phone: false, noticeWaiting: true, hasAccount: true })).toBe("tailscale");
+  });
+
+  it("pairs a device without signing in only where a phone can open an address, else offers the one Tailscale step that makes one", () => {
+    const owner = { readOnly: false, canPair: true, portal: null };
+    // the desktop app on loopback with no Tailscale: no code with nowhere to type it, the install step instead
+    expect(localWays({ ...owner, plan: { kind: "missing" }, pairUrl: null })).toEqual({ address: null, tailscaleStep: { kind: "missing" }, code: null, portal: false, any: true });
+    const command = { kind: "command", command: "tailscale serve --bg --https=443 http://127.0.0.1:7317", url: "https://desk.example.ts.net" } as const;
+    expect(localWays({ ...owner, plan: command, pairUrl: null }).tailscaleStep).toEqual(command);
+    const served = localWays({ ...owner, plan: { kind: "served", url: "https://desk.example.ts.net" }, pairUrl: "https://desk.example.ts.net" });
+    expect([served.address, served.tailscaleStep, served.code]).toEqual(["https://desk.example.ts.net", null, "https://desk.example.ts.net"]);
+    // a page at the PC's Wi-Fi address pairs with a code there, and offers nothing it cannot tell about Tailscale
+    expect(localWays({ ...owner, plan: { kind: "unknown" }, pairUrl: "http://192.168.1.20:7317" })).toEqual({ address: null, tailscaleStep: null, code: "http://192.168.1.20:7317", portal: false, any: true });
+    expect(localWays({ ...owner, plan: { kind: "unknown" }, pairUrl: null }).any).toBe(false);
+    // a watching device or a Portal visitor starts nothing on the PC
+    expect(localWays({ readOnly: true, canPair: true, portal: null, plan: { kind: "stopped" }, pairUrl: "http://192.168.1.20:7317" }).any).toBe(false);
+  });
+
+  it("pairs a device through the relay first, and the other way only once it is picked and offers something", () => {
+    expect(devicesWayOf({ relay: true, local: true, chosen: null })).toBe("relay");
+    expect(devicesWayOf({ relay: true, local: true, chosen: "local" })).toBe("local");
+    expect(devicesWayOf({ relay: true, local: false, chosen: "local" })).toBe("relay");
+    expect(devicesWayOf({ relay: false, local: true, chosen: null })).toBe("local");
+    expect(devicesWayOf({ relay: false, local: false, chosen: null })).toBeNull();
   });
 
   const ssh = (destination: string, extra: Partial<Machine> = {}): Machine => ({ id: destination, name: destination, kind: "ssh", target: { destination }, enabled: true, state: "disconnected", error: null, snapshot: null, ...extra });

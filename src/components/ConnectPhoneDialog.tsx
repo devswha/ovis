@@ -23,7 +23,7 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { announcePairingCode, announceQrCodeEnded, DEVICES_CHANGED_EVENT, inRelayShell, PAIRING_CODE_EVENT, tellOtherWindowsQrCodeEnded, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
-import type { PairedDevice, PairingCode } from "../../shared/protocol.ts";
+import type { PairedDevice, PairingCode, PortalStatus } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
 import { PhonePanel, QrReveal, ShareLink } from "./PhonePanel.tsx";
@@ -39,6 +39,14 @@ import { ExternalLink } from "../lib/externalLink.ts";
 
 /** The ways to add a PC are the tabs (the relay, Tailscale, a typed address); pairing a phone sits apart, after them. */
 export type ConnectTab = "relay" | "tailscale" | "direct" | "devices";
+
+/**
+ * Phones and devices pairs a device one of two ways: the Ovis relay (from anywhere, through the account), or without
+ * signing in, at an address the phone can open itself (the same Wi-Fi, Tailscale, Portal).
+ */
+export type DevicesWay = "relay" | "local";
+
+const TAILSCALE_DOWNLOAD = "https://tailscale.com/download";
 
 /** the guide's way to open a PC from outside: Portal, Cloudflare Tunnel or a reverse proxy */
 const OUTSIDE_HELP = "https://github.com/devswha/ovis/blob/main/docs/guide.md#behind-a-reverse-proxy";
@@ -154,6 +162,14 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
   opened.current.add(tab);
   const label: Record<ConnectTab, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", direct: t("Direct"), devices: t("Phones and devices") };
   const ways = tabs.filter((way) => way !== "devices");
+  const { status: portal } = usePortal();
+  const local = localWays({ plan, pairUrl, readOnly, canPair, portal });
+  const relayWay = tabs.includes("relay");
+  const [devicesChosen, setDevicesChosen] = useState<DevicesWay | null>(null);
+  const devicesWay = devicesWayOf({ relay: relayWay, local: local.any, chosen: devicesChosen });
+  // one relay panel serves both the relay's tab and Phones and devices' relay way, so it never runs twice
+  const relayShown = tab === "relay" || (tab === "devices" && devicesWay === "relay");
+  if (relayShown) opened.current.add("relay");
 
   return createPortal(
     <SettingsQuery.Provider value={[]}>
@@ -184,12 +200,12 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
           )}
           {opened.current.has("devices") && (
             <div className="connect-tab" data-tab-panel="devices" hidden={tab !== "devices"}>
-              <DevicesTab plan={plan} pairUrl={pairUrl} readOnly={readOnly} canPair={canPair} phone={phone} />
+              <DevicesTab plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} relay={relayWay} way={devicesWay} onWay={setDevicesChosen} phone={phone} />
             </div>
           )}
           {opened.current.has("relay") && tabs.includes("relay") && (
-            <div className="connect-tab" data-tab-panel="relay" hidden={tab !== "relay"}>
-              <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} accountId={accountId} joinBySignIn={joinBySignIn} account={account} phone={phone} active={tab === "relay"} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll} machines={machines} onConnectMachine={onConnectMachine} />
+            <div className="connect-tab" data-tab-panel="relay" hidden={!relayShown}>
+              <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} accountId={accountId} joinBySignIn={joinBySignIn} account={account} phone={phone} active={relayShown} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll} machines={machines} onConnectMachine={onConnectMachine} />
             </div>
           )}
         </div>
@@ -415,33 +431,129 @@ export function DirectTab({ found: { found, failed, withheld, stateOf, retry }, 
   );
 }
 
-function DevicesTab({ plan, pairUrl, readOnly, canPair, phone }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; canPair: boolean; phone: boolean }) {
-  const t = useT();
-  const { status: portal } = usePortal();
-  const address = plan.kind === "here" || plan.kind === "served";
-  const pairs = canPair && !readOnly;
+/** What pairing a device without signing in can offer on this page; `any` is false when it offers nothing. */
+export interface LocalWays {
+  /** the address a phone opens, as a QR code */
+  address: string | null;
+  /** this PC's Tailscale is one step from giving a phone an address: the step to show (owner's page of this PC only) */
+  tailscaleStep: Extract<PhonePlan, { kind: "missing" | "stopped" | "command" }> | null;
+  /** a six-digit code, with a QR code of an address that opens this PC */
+  code: string | null;
+  portal: boolean;
+  any: boolean;
+}
+
+/**
+ * The ways to pair a device without signing in. A code is offered only with an address a phone can open, so the
+ * sheet never shows a code it cannot say where to type; with no address, the Tailscale step that would make one.
+ */
+export function localWays({ plan, pairUrl, readOnly, canPair, portal }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; canPair: boolean; portal: PortalStatus | null }): LocalWays {
+  const shell = inRelayShell();
+  const address = plan.kind === "here" || plan.kind === "served" ? plan.url : null;
+  const tailscaleStep = address === null && !readOnly && !shell && (plan.kind === "missing" || plan.kind === "stopped" || plan.kind === "command") ? plan : null;
+  const code = canPair && !readOnly && !shell ? pairUrl : null;
   const portalShown = portal?.supported === true && (portal.phase !== "idle" || (portal.usable && portal.blocked === null));
-  if (!address && !pairs && !portalShown) return <p className="settings-description">{t("Open Ovis on the PC itself to add a connection.")}</p>;
+  return { address, tailscaleStep, code, portal: portalShown, any: address !== null || tailscaleStep !== null || code !== null || portalShown };
+}
+
+/** the relay first, where the relay is this window's to show; the other way only when it offers something */
+export function devicesWayOf({ relay, local, chosen }: { relay: boolean; local: boolean; chosen: DevicesWay | null }): DevicesWay | null {
+  if (relay && (!local || chosen !== "local")) return "relay";
+  return local ? "local" : null;
+}
+
+function DevicesTab({ plan, pairUrl, readOnly, local, relay, way, onWay, phone }: {
+  plan: PhonePlan; pairUrl: string | null; readOnly: boolean; local: LocalWays; relay: boolean; way: DevicesWay | null; onWay: (way: DevicesWay) => void; phone: boolean;
+}) {
+  const t = useT();
+  // kept once opened, as the tabs are: its pairing code stays the same when the relay way is looked at in between
+  const localOpened = useRef(false);
+  if (way === "local") localOpened.current = true;
+  if (way === null) return <p className="settings-description">{t("Open Ovis on the PC itself to add a connection.")}</p>;
+  const names: Record<DevicesWay, string> = { relay: t("Ovis relay"), local: t("Without signing in (same Wi-Fi · Tailscale)") };
   return (
     <>
-      {address && (
+      {relay && local.any ? (
+        <div className="segmented connect-devices-ways" role="group" aria-label={t("How to connect a device")}>
+          {(["relay", "local"] as const).map((each) => <button key={each} type="button" aria-pressed={way === each} data-way={each} onClick={() => onWay(each)}>{names[each]}</button>)}
+        </div>
+      ) : <p className="settings-label" data-way={way}>{names[way]}</p>}
+      {localOpened.current && <div className="connect-devices-local" hidden={way !== "local"}><LocalWay plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} phone={phone} /></div>}
+    </>
+  );
+}
+
+function LocalWay({ plan, pairUrl, readOnly, local, phone }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; local: LocalWays; phone: boolean }) {
+  const t = useT();
+  const needsTailscale = <p className="settings-hint">{t("The phone needs the Tailscale app turned on too.")}</p>;
+  return (
+    <>
+      {local.address !== null && (
         <section className="connect-section" aria-label="Tailscale">
           <p className="settings-label">Tailscale</p>
-          <PhonePanel url={plan.url} phone={phone} />
+          <PhonePanel url={local.address} phone={phone} />
+          {plan.kind === "served" && needsTailscale}
         </section>
       )}
-      {pairs && (
+      {local.tailscaleStep !== null && (
+        <section className="connect-section" aria-label="Tailscale" data-tailscale={local.tailscaleStep.kind}>
+          <p className="settings-label">Tailscale</p>
+          <TailscaleStep step={local.tailscaleStep} />
+          {needsTailscale}
+        </section>
+      )}
+      {local.code !== null && (
         <section className="connect-section" aria-label={t("Pairing code")}>
           <p className="settings-label">{t("Pairing code")}</p>
-          <CodeRoute pairUrl={inRelayShell() ? null : pairUrl} startAtOnce phone={phone} compact />
+          <CodeRoute pairUrl={pairUrl} startAtOnce phone={phone} compact />
         </section>
       )}
-      {portalShown && (
+      {local.portal && (
         <section className="connect-section" aria-label="Portal">
           <PortalPanel readOnly={readOnly} />
         </section>
       )}
     </>
+  );
+}
+
+/**
+ * The one Tailscale step that would give a phone an address, behind a press: install it, sign in, or serve Ovis on the
+ * tailnet with the command this PC's server worked out (`serve_command`, the setup guide's own).
+ */
+function TailscaleStep({ step }: { step: NonNullable<LocalWays["tailscaleStep"]> }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  if (step.kind === "missing") return (
+    <>
+      <p className="settings-description">{t("Tailscale isn't installed.")}</p>
+      <div className="phone-actions"><ExternalLink kind="link" className="btn" href={TAILSCALE_DOWNLOAD}>{t("Install Tailscale")}</ExternalLink></div>
+    </>
+  );
+  const signIn = step.kind === "stopped";
+  return (
+    <>
+      <p className="settings-description">{signIn ? t("Tailscale on this PC is off or not signed in.") : t("Tailscale is on, but Ovis is not open at a Tailscale address yet.")}</p>
+      {open ? (
+        <>
+          <p className="settings-description">{signIn ? t("Sign in from the Tailscale app on this PC, or run this:") : t("Run this once on this PC.")}</p>
+          <CommandToCopy command={signIn ? "tailscale up" : step.command} />
+        </>
+      ) : (
+        <div className="phone-actions"><button type="button" className="btn" onClick={() => setOpen(true)}>{signIn ? t("Sign in to Tailscale") : t("Open with Tailscale")}</button></div>
+      )}
+    </>
+  );
+}
+
+function CommandToCopy({ command }: { command: string }) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="connect-command">
+      <code>{command}</code>
+      <button type="button" className="btn btn-ghost" onClick={() => void copyText(command).then((ok) => { if (ok) { setCopied(true); window.setTimeout(() => setCopied(false), 1600); } })}>{t(copied ? "Copied" : "Copy")}</button>
+    </div>
   );
 }
 
@@ -1159,7 +1271,7 @@ export function CodeRoute({ pairUrl, startAtOnce, phone = false, compact = false
     <div className="connect-phone-code" role="status">
       <CompactPair qr={qrValue} qrLabel={code === null ? t("Pairing code") : t("QR code that pairs a phone with code {code}", { code: code.code })}
         code={code?.code ?? null} shown={code === null ? null : spaced} codeLabel={t("Pairing code")} busy={busy}
-        qrNote={busy ? undefined : code === null ? t("This code expired.") : pairUrl === null ? t("No address a phone can open: type the code instead.") : undefined}
+        qrNote={busy || code !== null ? undefined : t("This code expired.")}
         onRefresh={() => void pair()} />
       {error !== null && <p className="settings-hint" role="alert">{error}</p>}
     </div>
