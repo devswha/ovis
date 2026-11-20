@@ -134,7 +134,7 @@ export class RelaySession {
   private keyProofSession: string | undefined;
   private authReceipts = false;
   private hinting = false;
-  /** The app offered the account-opens-all mux feature on a PC with OVIS_ACCOUNT_OPENS_ALL=1: it reads the account refusal codes. */
+  /** The app offered the account-opens-all mux feature on a PC with Step 2 on: it reads the account refusal codes. */
   private accountCodes = false;
   private directing = false;
   private tailnet = false;

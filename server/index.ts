@@ -225,7 +225,7 @@ export function createServer(
     /** accept plain-http loopback push endpoints (server/push.ts); only tests delivering to push.fake.ts set it */
     pushLoopbackHttp?: boolean;
     desktopActivity?: boolean;
-    /** OVIS_ACCOUNT_OPENS_ALL, the Step 2 release flag (off by default): screen proof (server/account/local-confirm.ts) exists only with it */
+    /** Step 2 defaults to on unless OVIS_ACCOUNT_OPENS_ALL=0; screen proof (server/account/local-confirm.ts) exists only with it. */
     accountOpensAll?: boolean;
     /** the platform the key confirm is decided by; tests name another than this machine's */
     platform?: NodeJS.Platform;

@@ -806,9 +806,9 @@ until someone signs in on it; the steps below are then the way.
 3. The device is then the PC's first member: it links, and enrolls the PC
    ([Enrolling a PC](#enrolling-a-pc)), so the account's other devices are let in and introduced.
 
-**In one press.** Off unless `OVIS_ACCOUNT_OPENS_ALL=1` on the PC and the account service's step-2
-switch is on for the account. **Add this PC to my account** then adds the PC with no other device
-and no digits, when the account service admits it: the browser on the PC's own page lists the PC
+**In one press.** Step 2 is on by default on the PC ([how to turn it off](#turning-step-2-off)).
+The account service's Step 2 switch must also be on. **Add this PC to my account** then adds the PC
+with no other device and no digits, when the account service admits it: the browser on the PC's own page lists the PC
 (`PUT /v1/pcs`, as above), then asks `POST /v1/pcs/{server_id}/admit`. The service admits only a
 sign-in made in an app itself within the last 10 minutes with two-step sign-in set (unknown, as
 for a Google sign-in that does not say, is not enough), within a daily cap of PC adds per account,
@@ -1017,11 +1017,21 @@ is what authenticates the PC.
   what the row says, which for an account's first member on a PC is that device's own claim
   ([What this does not protect against](#what-this-does-not-protect-against)).
 
+### Turning Step 2 off
+
+Step 2 is on by default. Only the exact value `0` turns it off. An unset or empty value, `1`,
+`false`, and all other values leave it on.
+
+- **herdr plugin:** Set `OVIS_ACCOUNT_OPENS_ALL=0` in
+  `~/.config/herdr/plugins/config/devswha.ovis/.env`, then restart only the Ovis plugin.
+- **Desktop app:** Set `OVIS_ACCOUNT_OPENS_ALL=0` in the environment that launches the app,
+  then restart Ovis.
+
 ### Confirmed on this PC
 
-Off unless `OVIS_ACCOUNT_OPENS_ALL=1`; nothing below exists without it. Some acts are taken only
-when they are confirmed on this PC's own screen (`server/account/local-confirm.ts`). The server
-puts the act on the screen; it is answered there, once, within 2 minutes, and the approval is
+With Step 2 on, some acts are taken only when they are confirmed on this PC's own screen
+(`server/account/local-confirm.ts`). The server puts the act on the screen; it is answered
+there, once, within 2 minutes, and the approval is
 used up by that one act and no other (an approval of one key approves no other key). Nothing
 answers one but these two:
 
@@ -1050,7 +1060,7 @@ reaches the same screen as you do.
 
 ### Limits of this release
 
-Off unless `OVIS_ACCOUNT_OPENS_ALL=1`, like everything in this part.
+These limits apply while Step 2 is on, which is the default.
 
 - **Lifting a block needs a two-step sign-in.** Only a device that is older than the block, and
   whose own sign-in has two-step sign-in set on the account, can lift a block from the app. A

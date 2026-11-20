@@ -69,7 +69,7 @@ export const SESSION_ERRORS = [
   "unsupported_version", "unsupported_extension", "unsupported_transport",
   "protocol_error", "auth_failed", "auth_revoked", "auth_changed",
   "flow_control_error", "resource_exhausted", "timeout", "internal_error",
-  // Step 2, sent only by a PC with OVIS_ACCOUNT_OPENS_ALL=1 to an account-joined sign-in; `held` carries its HoldState
+  // Step 2, sent only by a PC with Step 2 on to an account-joined sign-in; `held` carries its HoldState
   "held", "not_listed", "admission",
 ] as const;
 export type SessionError = typeof SESSION_ERRORS[number];

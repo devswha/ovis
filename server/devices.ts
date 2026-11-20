@@ -1240,7 +1240,7 @@ export class DeviceStore {
     return gone.map((d) => d.id);
   }
 
-  /** Step 2 (S2-24): the account's order as this PC's whole reads saw it; set only with OVIS_ACCOUNT_OPENS_ALL=1. */
+  /** Step 2 (S2-24): the account's order as this PC's whole reads saw it; set only while Step 2 is on. */
   attachAccountOrder(order: AccountOrder | null): void {
     order?.recordJoins(this.devices);
     this.accountOrder = order;
@@ -1840,7 +1840,7 @@ export class DeviceStore {
   }
 
   /**
-   * Step 2 (S2-25): the account-joined rows (server/account/account-devices.ts), set only with OVIS_ACCOUNT_OPENS_ALL=1.
+   * Step 2 (S2-25): the account-joined rows (server/account/account-devices.ts), set only while Step 2 is on.
    * They never enter devices.json (P1); they sign in by relay AUTH with their registered key and are drive principals
    * once usable, judged by the same evidence and freezes as a devices.json row.
    */
@@ -1959,7 +1959,7 @@ export class DeviceStore {
   }
 
 
-  /** Step 2 (S2-27): the wait after a start for devices.json rows not paired at this PC; set only with OVIS_ACCOUNT_OPENS_ALL=1. */
+  /** Step 2 (S2-27): the wait after a start for devices.json rows not paired at this PC; set only while Step 2 is on. */
   attachCatchUp(gate: CatchUpGate | null, releases?: RecoveryReleases): void {
     this.catchUp = gate;
     this.releases = releases;
