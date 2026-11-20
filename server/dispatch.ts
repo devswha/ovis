@@ -59,7 +59,7 @@ import type { AccountHolds } from "./account/holds.ts";
 import type { SafetyLog } from "./account/safety-log.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import type { accountRowsFor } from "./account/account-devices.ts";
-import { accountRouteAction, accountRowMay } from "./account/account-row-rights.ts";
+import { accountDispatchRefusal } from "./account/dispatch-rights.ts";
 import type { AccountIntroductions } from "./account/introductions.ts";
 import type { RelayService } from "./relay/service.ts";
 import { handleTelemetryRequest, visitSurface } from "./telemetry.ts";
@@ -193,12 +193,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const url = new URL(request.url);
   let { pathname } = url;
   const relayPeer = ctx.peer.kind === "relay" ? ctx.peer.device : undefined;
-  // Step 2 (S2-26): an account-joined caller's every route goes through the one rights check (P5, R1 to R10)
-  if (ctx.peer.kind === "relay" && ctx.services.devices.isAccountRow(ctx.peer.device.id)) {
-    const action = accountRouteAction(request.method, pathname);
-    const verdict = action === null ? null : accountRowMay({ rowId: ctx.peer.device.id, key: ctx.peer.key, state: "live" }, action);
-    if (verdict !== null && "refused" in verdict) return jsonResponse({ error: { code: verdict.refused, message: "An account-joined device cannot do this from afar" } }, 403);
-  }
+  const accountRefusal = accountDispatchRefusal(request, ctx);
+  if (accountRefusal !== null) return accountRefusal;
   // the machine profile on TCP: its liveness for every caller; no credential or header of the request is read
   if (options.profile === "machine" && relayPeer === undefined && ctx.ownerSocket !== true) return machineTcpAnswer(request, pathname);
   // an act waiting for this PC's screen is answered there alone (server/account/local-confirm.ts): every caller of a
@@ -537,7 +533,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const observed = surface === false ? undefined : requestIngress(false);
     const ingress: TelemetryIngress | undefined = observed === "direct" ? (loopback ? "local" : "lan") : observed;
     // Reuse the terminal socket for the same authorized event document as /api/machines/events.
-    const useMachineEvents = machines && !bridgeAuthorized && process.env["OVIS_MACHINE_EVENTS_WS"] !== "0";
+    const useMachineEvents = machines && !bridgeAuthorized && !devices.isAccountRow(deviceId ?? "") && process.env["OVIS_MACHINE_EVENTS_WS"] !== "0";
     const presentedKeys = streamKeys(request);
     const issuedKey = useMachineEvents && presentedKeys.length === 0 ? newStreamKey() : null;
     const keys = issuedKey === null ? presentedKeys : [issuedKey];

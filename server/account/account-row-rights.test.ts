@@ -65,7 +65,7 @@ describe("S2-26 what an account-joined row may do (T36, T37, T40, R3 to R10)", (
 });
 
 describe("S2-26 every route an account-joined caller reaches maps to one rights check (R1 to R10)", () => {
-  test("R1 to R10: the routes map to their actions; any other route needs no extra check", () => {
+  test("R1 to R10: the routes map to their actions; unregistered routes have no action", () => {
     const cases: [string, string, RowAction | null][] = [
       ["PATCH", "/api/devices/aaaaaaaaaaaaaaaa", { action: "label", rowId: "aaaaaaaaaaaaaaaa" }],
       ["DELETE", "/api/devices/aaaaaaaaaaaaaaaa", { action: "revoke", rowId: "aaaaaaaaaaaaaaaa" }],

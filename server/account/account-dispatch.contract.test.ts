@@ -3,7 +3,10 @@ import { handleRequest, type ServerContext } from "../dispatch.ts";
 import { createListedPc } from "./listed-pc.test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { STALE_READ_MS } from "./account-devices.ts";
-import { accountRouteAction } from "./account-row-rights.ts";
+import { accountRouteAction, accountRouteGuard } from "./account-row-rights.ts";
+import { DISPATCH_MUTATIONS, RELAY_CONTROLS } from "../dispatch-routes.ts";
+import { relayConnection } from "../relay/test-helpers.ts";
+import { ask } from "./pairing.test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
@@ -20,7 +23,7 @@ async function listedDispatcher() {
   }), ctx);
   const rows = ctx.services.accountRows?.store();
   if (!rows) throw new Error("Listed PC has no account store");
-  return { rows, device, request };
+  return { rows, device, request, fixture, serverId, ctx };
 }
 
 test("R1-R10: only registered methods and explicitly allowed reads reach dispatch", async () => {
@@ -31,10 +34,41 @@ test("R1-R10: only registered methods and explicitly allowed reads reach dispatc
     expect((await request("GET", "/api/preferences"))?.status).toBe(200);
     for (const [method, path] of [
       ["POST", "/api/unregistered"], ["GET", "/api/unregistered"], ["PATCH", "/api/preferences"],
+      ["HEAD", "/api/preferences"], ["OPTIONS", "/api/preferences"], ["PUT", "/api/unregistered"],
+      ["DELETE", "/api/unregistered"], ["PATCH", "/api/unregistered"],
       ["POST", "/api/machines/local/unregistered"], ["GET", "/api/machines/local/unregistered"],
+      ["GET", "/api/machines/local/machines/local/unregistered"], ["GET", "/ws?machine_id=other"],
     ] as const) {
       const response = await request(method, path);
       expect({ method, path, status: response?.status }).toEqual({ method, path, status: 403 });
+    }
+  } finally { clock.mockRestore(); }
+});
+
+test("R1-R10: every mutation registered by dispatch has an action or a proven handler guard", () => {
+  for (const [method, paths] of Object.entries(DISPATCH_MUTATIONS)) {
+    for (const path of paths) {
+      const pathname = path.replace(":id", "aaaaaaaaaaaaaaaa");
+      expect(accountRouteAction(method, pathname) !== null || accountRouteGuard(method, pathname), `${method} ${path}`).toBe(true);
+    }
+  }
+});
+
+test("R5, R6, R8: registered relay controls and introductions refuse account-joined callers at their handler guards", async () => {
+  const { rows, device, request } = await listedDispatcher();
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
+  try {
+    expect(rows.access(device.id)).toEqual({ ok: true });
+    for (const path of [...Object.values(RELAY_CONTROLS), "/api/account/introduce"]) {
+      const response = await request("POST", path);
+      expect(response?.status, path).toBe(403);
+      const code = path === RELAY_CONTROLS.pairing || path === "/api/account/introduce" ? "account_required" : "local_required";
+      expect(await response?.json(), path).toMatchObject({ error: { code } });
+    }
+    for (const method of ["PUT", "DELETE"]) {
+      const response = await request(method, "/api/alerts/webhook");
+      expect(response?.status).toBe(403);
+      expect(await response?.json()).toMatchObject({ error: { code: "member_required" } });
     }
   } finally { clock.mockRestore(); }
 });
@@ -44,10 +78,44 @@ test("R5, R8, R9: PC maintenance and webhook require authority; push unsubscribe
     ["POST", "/api/runtime/move"], ["DELETE", "/api/runtime/move"], ["POST", "/api/runtime/move/install"],
     ["POST", "/api/runtime/move/stop"], ["POST", "/api/runtime/move/stop-all"], ["POST", "/api/updates/cancel"],
   ] as const) {
-    expect(accountRouteAction(method, path), `${method} ${path}`).not.toBeNull();
+    expect(accountRouteAction(method, path), `${method} ${path}`).toEqual({ action: "drive" });
   }
   for (const method of ["PUT", "DELETE"]) expect(accountRouteAction(method, "/api/alerts/webhook")).toEqual({ action: "webhook" });
   expect(accountRouteAction("DELETE", "/api/push/subscribe")).toEqual({ action: "push_subscribe" });
+});
+
+test("P5, R9: real relay AUTH carries account-only rights through HTTP dispatch", async () => {
+  const { rows, device, fixture, serverId } = await listedDispatcher();
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
+  try {
+    expect(rows.access(device.id)).toEqual({ ok: true });
+    const link = await relayConnection(fixture, { serverId });
+    await link.auth(device);
+    expect((await ask(link, "/api/preferences")).status).toBe(200);
+    for (const [path, method, code] of [
+      ["/api/unregistered", "GET", "account_route_denied"],
+      ["/api/unregistered", "POST", "account_route_denied"],
+      ["/api/alerts/webhook", "PUT", "member_required"],
+    ] as const) {
+      const response = await ask(link, path, { method, ...(method === "GET" ? {} : { body: {} }) });
+      expect({ status: response.status, code: response.body.error?.code }).toEqual({ status: 403, code });
+    }
+  } finally { clock.mockRestore(); }
+});
+
+test("R7: a local terminal upgrade grants no multi-PC event document", async () => {
+  const { rows, device, ctx } = await listedDispatcher();
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
+  try {
+    expect(rows.access(device.id)).toEqual({ ok: true });
+    expect(ctx.services.core.machines).not.toBeNull();
+    const grants: boolean[] = [];
+    const response = await handleRequest(new Request("https://relay.ovis.invalid/ws"), {
+      ...ctx, upgrade: (_request, { data }) => { grants.push(data.machineEvents !== undefined); return false; },
+    });
+    expect(response?.status).toBe(426);
+    expect(grants).toEqual([false]);
+  } finally { clock.mockRestore(); }
 });
 
 test.each(["join_hold", "catching_up"] as const)("S25, T36-T40: a request at dispatch while %s cannot drive", async reason => {
