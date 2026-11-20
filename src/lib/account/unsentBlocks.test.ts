@@ -1,6 +1,6 @@
 import { expect, it } from "bun:test";
 import { newRecordId, signSafetyRecord, type BlockRecord } from "../../../shared/account-records.ts";
-import { keepUnsent, postKept, unsentBlocks } from "./unsentBlocks.ts";
+import { keepUnsent, postKept, refusalShown, unsentBlocks } from "./unsentBlocks.ts";
 import { AccountService, AccountServiceError, AccountServiceUnreachableError } from "./service.ts";
 import { leaveAccount } from "./leave.ts";
 import { FakeAccountService } from "../../../shared/account-service-fake.ts";
@@ -38,19 +38,33 @@ it("S32-1: a post a retry may change (no answer, 5xx, 401, 408, 429) keeps the e
   }
 });
 
-it("S32-1: a final refusal leaves the queue: target_removed reads as done, any other 4xx as refused", async () => {
-  for (const [failure, outcome] of [
-    [new AccountServiceError(409, "target_removed", "gone"), "done"],
-    [new AccountServiceError(403, "signer_not_older", "x"), "refused"],
-    [new AccountServiceError(400, "record_invalid", "x"), "refused"],
-  ] as const) {
-    const store = memoryAccountStore();
+it("S32-1: target_removed leaves the queue at once; a final refusal stays, marked refused, until it was shown", async () => {
+  const store = memoryAccountStore();
   await store.set("session", session);
+  const removed = await block();
+  await keepUnsent(store, session, [removed]);
+  expect(await postKept(store, session, [removed], async () => { throw new AccountServiceError(409, "target_removed", "gone"); })).toBe("done");
+  expect(await unsentBlocks(store, session)).toEqual([]);
+  for (const failure of [new AccountServiceError(403, "signer_not_older", "x"), new AccountServiceError(400, "record_invalid", "x")]) {
     const record = await block();
     await keepUnsent(store, session, [record]);
-    expect(await postKept(store, session, [record], async () => { throw failure; })).toBe(outcome);
+    expect(await postKept(store, session, [record], async () => { throw failure; })).toBe("refused");
+    expect(await unsentBlocks(store, session)).toEqual([{ account: session.account, sign_in_id: session.sign_in_id, records: [record], refused: true }]);
+    // another account's page showing it removes nothing
+    await refusalShown(store, "other", [record.id]);
+    expect(await unsentBlocks(store, session)).toHaveLength(1);
+    await refusalShown(store, session.account, [record.id]);
     expect(await unsentBlocks(store, session)).toEqual([]);
   }
+});
+
+it("S32-1: a record still waiting is never removed as a shown refusal", async () => {
+  const store = memoryAccountStore();
+  await store.set("session", session);
+  const record = await block();
+  await keepUnsent(store, session, [record]);
+  await refusalShown(store, session.account, [record.id]);
+  expect((await unsentBlocks(store, session)).flatMap((kept) => kept.records)).toEqual([record]);
 });
 
 it("S32-1: a token refresh that fails in any way keeps the record: it was never sent, so nothing refused it", async () => {

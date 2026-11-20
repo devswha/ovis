@@ -23,7 +23,7 @@ let desktop = true;
 const SIGN_IN = "Continue with GitHub";
 let onDelete: (() => Promise<void>) | null = null;
 /** the account service's answer to a Not me block post, when a test sets one */
-let safetyAnswer: (() => Response) | null = null;
+let safetyAnswer: ((id: string) => Response) | null = null;
 
 describe("deleting the account from Settings", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -79,7 +79,7 @@ describe("deleting the account from Settings", () => {
         if (url.pathname === "/api/account/status") return Response.json({ account: ACCOUNT, unlinked: [], removals: [], adds: [], blocked: [] });
         return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
       }
-      if (url.pathname === "/v1/safety-records" && safetyAnswer !== null) return safetyAnswer();
+      if (url.pathname === "/v1/safety-records" && safetyAnswer !== null) return safetyAnswer(String((JSON.parse(String(init?.body)) as { record: { id: unknown } }).record.id));
       if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, signsInAs, "github"); fake.approveDevice(userCode, signsInAs); userCode = null; }
       const answer = await fake.fetch(input, init);
       if (url.pathname === "/v1/account" && onDelete !== null) await onDelete();
@@ -242,6 +242,27 @@ describe("deleting the account from Settings", () => {
     expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
     expect(buttons().includes("Try again")).toBe(retry);
     expect(buttons()).toContain("Sign out anyway");
+  });
+
+  it("S32-1: a final refusal for one block is still said after a Try again sends the other, and leaves only once said", async () => {
+    await signedIn();
+    const a = (await indexedAccountStore.get("session"))!;
+    await queueFor(a, "refused-1");
+    await queueFor(a, "busy-1");
+    let busy = 503;
+    safetyAnswer = (id) => id === "refused-1" ? Response.json({ error: { code: "signer_not_older", message: "x" } }, { status: 403 })
+      : busy === 200 ? Response.json({ id }) : Response.json({ error: { code: "unavailable", message: "x" } }, { status: busy });
+    await press("Sign out");
+    await until(() => buttons().includes("Send it now"));
+    await press("Send it now");
+    await until(() => buttons().includes("Try again"));
+    busy = 200;
+    await press("Try again");
+    await until(() => !buttons().includes("Try again"));
+    expect(shown()).toContain("The block did not go through yet.");
+    expect(buttons()).toContain("Sign out anyway");
+    expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
+    expect(await indexedAccountStore.get("unsent_blocks")).toBeUndefined();
   });
 
   it("drops the question when the person signs out, so the next sign-in starts unarmed", async () => {

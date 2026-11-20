@@ -56,6 +56,21 @@ describe("deleting the account", () => {
     expect(Object.keys(await store.get("unsent_blocks") ?? {})).toEqual(["theirs"]);
   });
 
+  it("S32-1: forgets the deleted account's unsent blocks even when another sign-in took its place during the delete", async () => {
+    const { fake, store, session } = await signedIn();
+    await store.set("unsent_blocks", {
+      mine: { account: session.account, sign_in_id: session.sign_in_id, records: [] },
+      theirs: { account: "acct_2", sign_in_id: "another-sign-in", records: [] },
+    });
+    const fetch = async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
+      if (new URL(String(input)).pathname === "/v1/account") await store.set("session", { ...session, account: "acct_2", sign_in_id: "another-sign-in", refresh_token: "r-2" });
+      return fake.fetch(input, init);
+    };
+    await deleteAccount({ service: new AccountService({ store, fetch, lock: memoryLock() }), accountStore: store, session });
+    expect((await store.get("session"))?.account).toBe("acct_2");
+    expect(Object.keys(await store.get("unsent_blocks") ?? {})).toEqual(["theirs"]);
+  });
+
   it("ends the account's other sign-ins too", async () => {
     const { fake, store, session, service } = await signedIn();
     const elsewhere = memoryAccountStore();
