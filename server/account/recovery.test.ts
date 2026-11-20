@@ -48,6 +48,18 @@ test.if(unix)("R11: the recovery socket delivers a complete reply larger than it
   expect(await bounded(askRecovery(dir, { act: "list" }))).toEqual(reply);
 });
 
+test.if(unix)("R11: the recovery client preserves UTF-8 device labels across socket chunks", async () => {
+  const dir = stateDir();
+  const label = "Téléphone€".repeat(80_000);
+  opened(dir, async () => ({ label }));
+  const result = await bounded(askRecovery(dir, { act: "list" }));
+  if (typeof result !== "object" || result === null || !("label" in result) || typeof result.label !== "string") {
+    throw new Error("The response did not contain a label");
+  }
+  expect(result.label.includes("\ufffd")).toBe(false);
+  expect(result.label === label).toBe(true);
+});
+
 test.if(unix)("R11: a recovery folder another user may enter is refused", () => {
   const dir = stateDir();
   mkdirSync(join(dir, RECOVER_DIR), { mode: 0o700 });
