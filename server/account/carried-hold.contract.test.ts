@@ -1,5 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { relayConnection, relayDevice } from "../relay/test-helpers.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { bounded, relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { linkRecord, phone, sendLink } from "./pairing.test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
@@ -64,6 +66,33 @@ async function recentlyPromoted() {
   time.now++;
   return { devices, elder, approve, id, key, notice: notice.id };
 }
+
+test("flag off: a held member survives rollback listed but cannot sign in or sign records", async () => {
+  const { fixture, service } = await createListedPc(close => closes.push(close));
+  const { devices, accountMailbox } = fixture.app.context.services;
+  const member = await relayDevice(fixture);
+  devices.linkAccountKey(member.id, member.publicKey, member.publicKey, ACCOUNT);
+  const target = await phone();
+  service.registerDevice(ACCOUNT, target.spki, "Tablet");
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(devices.linkAccountKey(member.id, member.publicKey, target.spki, ACCOUNT)?.id).toBe(member.id);
+  expect(devices.sessionRow(member.id)).toBeNull();
+  fixture.app.stop();
+
+  const path = join(fixture.stateDir, "devices.json");
+  const before = readFileSync(path);
+  const off = relayFixture(false, { stateDir: fixture.stateDir, accountOpensAll: false, accountService: { url: "https://account.test", fetch: service.fetch } });
+  closes.unshift(() => off.close());
+  const legacy = off.app.context.services.devices;
+  const link = await relayConnection(off);
+  await expect(link.auth({ id: member.id, keys: target.keys, publicKey: target.spki })).rejects.toThrow();
+  expect(await bounded(link.serverError)).toBe("auth_failed");
+  expect(legacy.list(null).some(row => row.id === member.id)).toBe(true);
+  expect(legacy.sessionRow(member.id)).toBeNull();
+  expect(legacy.accountSigner(target.spki, ACCOUNT, true)).toBeNull();
+  expect(readFileSync(path)).toEqual(before);
+  expect(legacy.revokeAll()).toContain(member.id);
+});
 
 test("H1/T38: an established member's later digits release the same carried hold", async () => {
   const { devices, elder, approve, id, key, notice } = await recentlyPromoted();

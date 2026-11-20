@@ -1102,10 +1102,16 @@ export class DeviceStore {
   /** A join hold permits only the row's own leave; a catch-up wait permits no signature. */
   private canSpeak(id: string, ownLeave = false): boolean {
     const member = this.devices.find(row => row.id === id);
-    if (member) return !this.catchingUp(id) && (ownLeave || !this.promotedHolds.refusal(member, Date.now()));
+    if (member) return !this.catchingUp(id) && this.memberAdmitted(member, Date.now(), ownLeave);
     const row = this.joinedRows?.row(id);
     const access = row ? this.listedAccess(row) : null;
     return access !== null && ("ok" in access || (ownLeave && access.refused === "join_hold"));
+  }
+
+  private memberAdmitted(row: StoredDevice, now: number, ownLeave = false): boolean {
+    // Rollback keeps held rows for the owner, but cannot interpret or end their holds.
+    if (this.safety === null) return !Object.hasOwn(row, "held");
+    return ownLeave || this.promotedHolds.refusal(row, now) === null;
   }
 
   /**
@@ -1795,7 +1801,7 @@ export class DeviceStore {
     // session opens another stream either: only this PC itself gets in (S19, P8)
     if (device && this.catchingUp(id)) return null;
     if (this.evidence !== null && (this.failsClosed || (device !== undefined && this.stale(device)))) return null;
-    if (device) return this.promotedHolds.refusal(device, Date.now()) ? null : { role: device.role, key: device.relay_public_key, provisional: false };
+    if (device) return this.memberAdmitted(device, Date.now()) ? { role: device.role, key: device.relay_public_key, provisional: false } : null;
     const waiting = this.pending?.waiting?.rows.get(id);
     if (waiting) return { role: "watch", key: waiting.key, provisional: true };
     // an account-joined row serves while it is usable here: out of its hold and its waits, and not covered or frozen
@@ -2375,7 +2381,7 @@ export class DeviceStore {
     // Authorization changes during WebCrypto invalidate the proof; a rename does not.
     const current = this.devices.find((d) => d.id === deviceId);
     // a block, a freeze or a removal that came while the proof was checked ends it here, before any stream (T66)
-    if (!verified || !current || device === undefined || current.role !== device.role || current.relay_public_key !== device.relay_public_key || this.stale(current) || this.promotedHolds.refusal(current, now)) return null;
+    if (!verified || !current || device === undefined || current.role !== device.role || current.relay_public_key !== device.relay_public_key || this.stale(current) || !this.memberAdmitted(current, now)) return null;
     this.noteSeen(current, now);
     return { id: current.id, label: current.label, role: current.role };
   }
@@ -2412,7 +2418,7 @@ export class DeviceStore {
     for (const device of this.devices) {
       if (!same(digest, device.token_hash)) continue;
       // a row its evidence covers or a block freezes opens nothing, whichever way it signs in (S14, S22)
-      if (this.catchingUp(device.id) || (this.evidence !== null && this.stale(device)) || this.promotedHolds.refusal(device, now)) return null;
+      if (this.catchingUp(device.id) || (this.evidence !== null && this.stale(device)) || !this.memberAdmitted(device, now)) return null;
       this.noteSeen(device, now);
       return { id: device.id, label: device.label, role: device.role };
     }
