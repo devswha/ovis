@@ -132,7 +132,8 @@ export class DeviceJournal {
   /** Only outstanding list admissions with a registry owner take a slot. Never change history or access. */
   settleList(owns: (notice: JournalEntry) => boolean): void {
     const open = this.doc.open.filter(n => n.how !== "list" || owns(n));
-    if (open.length !== this.doc.open.length) this.write({ ...this.doc, open });
+    const entries = this.doc.entries.filter(n => n.seq > this.doc.trimmed || owns(n));
+    if (open.length !== this.doc.open.length || entries.length !== this.doc.entries.length) this.write({ ...this.doc, open, entries });
   }
 
   /** Whether the list may admit anybody new: fewer than OPEN_NOTICES_MAX join notices wait for an answer (G15). */
@@ -172,13 +173,15 @@ export class DeviceJournal {
     if (!ids.length) return;
     const open = [...this.doc.open];
     const latest = new Map(this.doc.entries.filter(entry => entry.kind === "admit" || entry.kind === "promote" || entry.kind === "drop").map(entry => [entry.row, entry.seq]));
-    const entries = this.doc.entries.map(entry => {
+    const entries = this.doc.entries.map((entry): JournalEntry => {
       if (!entry.awaitingListCheck || !entry.row || !ids.includes(entry.row) || latest.get(entry.row) !== entry.seq) return entry;
       const { awaitingListCheck: _, ...notice } = entry;
       if (notice.kind === "admit") open.push(notice);
       return notice;
     });
-    if (entries.some((entry, i) => entry !== this.doc.entries[i])) this.write({ ...this.doc, entries, open });
+    if (entries.some((entry, i) => entry !== this.doc.entries[i])) {
+      this.write({ ...this.doc, entries: entries.filter(n => n.seq > this.doc.trimmed || n.awaitingListCheck), open });
+    }
   }
 
   /** Catch up after a committed batch or interrupted journal write. Each notice and its cursor share one write. */
@@ -200,9 +203,11 @@ export class DeviceJournal {
     let entries = [...this.doc.entries, entry];
     let trimmed = this.doc.trimmed;
     if (entries.length > JOURNAL_MAX) {
-      const cut = entries.slice(0, entries.length - JOURNAL_MAX);
-      trimmed = cut.at(-1)!.seq;
-      entries = entries.slice(cut.length);
+      trimmed = Math.max(trimmed, entry.seq - JOURNAL_MAX);
+      // An unpublished admission is pending work, not replay history. Keep only
+      // the current admission for each row until activation moves it to open.
+      const latest = new Map(entries.filter(n => n.kind === "admit" || n.kind === "promote" || n.kind === "drop").map(n => [n.row, n.seq]));
+      entries = entries.filter(n => n.seq > trimmed || (n.awaitingListCheck && n.kind === "admit" && latest.get(n.row) === n.seq));
     }
     const remaining = this.doc.open.filter(notice => {
       if (notice.id === decides) return false;
