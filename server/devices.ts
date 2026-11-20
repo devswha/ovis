@@ -922,10 +922,13 @@ export class DeviceStore {
       this.drop(targets, "pc");
       return refused("record_invalid");
     }
-    this.deny(() => {
+    const denied = this.deny([record.target], () => {
       this.evidence!.addRemoval(record.target, record.account, { id: record.id, at: new Date().toISOString(), records: [record] });
       this.refreshTombstones();
     });
+    // the block is on disk, its marker is not: the target stays out by its key and nothing else is written; the next
+    // start writes the marker from the log (markBlockTargets, P8)
+    if (denied !== null) { this.keepOut(targets, false); return appended; }
     // (2, 3) the newer rows frozen in place, their sessions ended; the target's rows out, theirs ended too (T64)
     for (const device of this.devices.filter((d) => !targets.includes(d) && this.frozen(d))) {
       const listeners = this.revocations.get(device.id);
