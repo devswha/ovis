@@ -560,8 +560,10 @@ async function notMePage(options: { service: (record: BlockRecord) => Response |
   const machines: readonly Machine[] = [{ id: LOCAL_MACHINE, name: "Desk", kind: "local", enabled: true, state: "connected", error: null, snapshot: null }];
   let renderer: ReactTestRenderer | undefined;
   let registry: MachineSessionRegistry | undefined;
+  let live: HerdrSocket | undefined;
   const mount = async () => {
     const socket = new HerdrSocket(wire.url);
+    live = socket;
     registry = new MachineSessionRegistry(() => new MachineSession(LOCAL_MACHINE, { socket }));
     const sessions = registry;
     // drawn: false is the App behind its access gate, which runs the hook but draws none of it
@@ -589,7 +591,7 @@ async function notMePage(options: { service: (record: BlockRecord) => Response |
       else Reflect.deleteProperty(globalThis, key);
     }
   };
-  return { store, session, notice, wire, events, page, order, mount, unmount, root, button, restore, setCapable: (on: boolean) => { options.capable = on; } };
+  return { store, session, notice, wire, events, page, order, socket: () => live, mount, unmount, root, button, restore, setCapable: (on: boolean) => { options.capable = on; } };
 }
 
 it("S32-1, T51: the signed block is stored before it goes to any PC or the service; a reload sends it again with the same id", async () => {
@@ -847,6 +849,25 @@ it("S32-1: once the PC withdrew the account release, Try again sends nothing, al
     const posts = page.order.filter((step) => step.startsWith("service ")).length;
     await act(async () => { page.wire.snapshot([]); });
     await act(async () => { page.wire.close(); });
+    await act(async () => { await retry.props.onClick(); });
+    expect(page.order.filter((step) => step.startsWith("service "))).toHaveLength(posts);
+    expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
+  } finally { await page.restore(); }
+});
+
+it("S32-1: an explicit withdrawal holds through a reconnect that has listed nothing yet", async () => {
+  const page = await notMePage({ service: () => new Response(null, { status: 503 }) });
+  try {
+    await page.mount();
+    await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
+    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    const retry = page.button("Try again");
+    if (retry === undefined) throw new TypeError("Missing account retry");
+    const posts = page.order.filter((step) => step.startsWith("service ")).length;
+    await act(async () => { page.wire.snapshot([]); });
+    await act(async () => { page.wire.close(); });
+    // back, with no feature list yet
+    await act(async () => { page.socket()?.connect(); page.wire.readyState = 0; page.wire.open(); });
     await act(async () => { await retry.props.onClick(); });
     expect(page.order.filter((step) => step.startsWith("service "))).toHaveLength(posts);
     expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);

@@ -71,6 +71,16 @@ describe("deleting the account", () => {
     expect(Object.keys(await store.get("unsent_blocks") ?? {})).toEqual(["theirs"]);
   });
 
+  it("S32-1: a 202 pending is no deletion: the sign-in and the account's unsent blocks stay; only a 204 deletes", async () => {
+    const { fake, store, session } = await signedIn();
+    await store.set("unsent_blocks", { mine: { account: session.account, sign_in_id: session.sign_in_id, records: [] } });
+    const fetch = async (input: Request | string | URL, init?: RequestInit): Promise<Response> =>
+      new URL(String(input)).pathname === "/v1/account" ? Response.json({ status: "pending" }, { status: 202 }) : fake.fetch(input, init);
+    await expect(deleteAccount({ service: new AccountService({ store, fetch, lock: memoryLock() }), accountStore: store, session })).rejects.toThrow();
+    expect((await store.get("session"))?.account).toBe(session.account);
+    expect(Object.keys(await store.get("unsent_blocks") ?? {})).toEqual(["mine"]);
+  });
+
   it("ends the account's other sign-ins too", async () => {
     const { fake, store, session, service } = await signedIn();
     const elsewhere = memoryAccountStore();

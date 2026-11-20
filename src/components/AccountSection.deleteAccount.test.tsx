@@ -24,6 +24,9 @@ const SIGN_IN = "Continue with GitHub";
 let onDelete: (() => Promise<void>) | null = null;
 /** the account service's answer to a Not me block post, when a test sets one */
 let safetyAnswer: ((id: string) => Response | Promise<Response>) | null = null;
+/** this PC explicitly withdrew the account release (its last feature list lacked it) */
+let withdrawnNow = false;
+let safetyPosts = 0;
 
 describe("deleting the account from Settings", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -39,6 +42,8 @@ describe("deleting the account from Settings", () => {
     desktop = true;
     onDelete = null;
     safetyAnswer = null;
+    withdrawnNow = false;
+    safetyPosts = 0;
     fake = new FakeAccountService(() => Date.now() + ahead);
     fake.offerLinkPage(["github", "google"]);
     for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "location", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -79,6 +84,7 @@ describe("deleting the account from Settings", () => {
         if (url.pathname === "/api/account/status") return Response.json({ account: ACCOUNT, unlinked: [], removals: [], adds: [], blocked: [] });
         return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
       }
+      if (url.pathname === "/v1/safety-records") safetyPosts++;
       if (url.pathname === "/v1/safety-records" && safetyAnswer !== null) return safetyAnswer(String((JSON.parse(String(init?.body)) as { record: { id: unknown } }).record.id));
       if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, signsInAs, "github"); fake.approveDevice(userCode, signsInAs); userCode = null; }
       const answer = await fake.fetch(input, init);
@@ -125,7 +131,7 @@ describe("deleting the account from Settings", () => {
   const foot = (): string => text(renderer!.root.find((node) => node.props["data-portal"] === "page-foot"));
   const button = (label: string): ReactTestInstance => renderer!.root.find((node) => node.type === "button" && text(node) === label);
   const signedIn = async (deleteSlot?: HTMLElement): Promise<void> => {
-    await act(async () => { renderer = create(<SettingsProvider><AccountSection deleteSlot={deleteSlot ?? null} /></SettingsProvider>); });
+    await act(async () => { renderer = create(<SettingsProvider><AccountSection deleteSlot={deleteSlot ?? null} withdrawn={() => withdrawnNow} /></SettingsProvider>); });
     await until(() => buttons().includes(SIGN_IN));
     await press(SIGN_IN);
     await until(() => buttons().includes("Delete account"));
@@ -302,6 +308,21 @@ describe("deleting the account from Settings", () => {
     await act(async () => {});
     expect(shown()).not.toContain("The block was refused. Block it again from this device.");
     expect(Object.values(await indexedAccountStore.get("unsent_blocks") ?? {}).map((entry) => [entry.records[0]?.id, entry.refused])).toEqual([["late-1", true]]);
+  });
+
+  it("S32-1: Send it now posts nothing once this PC explicitly withdrew the account release, and keeps the block", async () => {
+    await signedIn();
+    const a = (await indexedAccountStore.get("session"))!;
+    await queueFor(a, "w1");
+    safetyAnswer = (id) => Response.json({ id });
+    withdrawnNow = true;
+    await press("Sign out");
+    await until(() => buttons().includes("Send it now"));
+    await press("Send it now");
+    await until(() => buttons().includes("Try again"));
+    expect(safetyPosts).toBe(0);
+    expect(Object.keys(await indexedAccountStore.get("unsent_blocks") ?? {})).toEqual(["w1"]);
+    expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
   });
 
   it("drops the question when the person signs out, so the next sign-in starts unarmed", async () => {
