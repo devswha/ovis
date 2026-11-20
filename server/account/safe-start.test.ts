@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
 import { DeviceStore, readDeviceRegistry } from "../devices.ts";
-import { relayConnection, relayFixture } from "../relay/test-helpers.ts";
+import { relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
@@ -233,5 +233,30 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     // nothing written by the finisher is journalled twice
     const journal = JSON.parse(readFileSync(join(dir, "device-journal.json"), "utf8")) as { entries: { kind: string; row: string | null }[] };
     expect(journal.entries.filter((entry) => entry.kind === "remove" && entry.row === row.id)).toHaveLength(1);
+  });
+
+  test("P24, T46: with the start blocked, a row the journal removed is refused at relay sign-in though it is still in devices.json", async () => {
+    const dir = stateDir();
+    const first = relayFixture(false, { stateDir: dir, accountOpensAll: true });
+    const device = await relayDevice(first);
+    const kept = readFileSync(join(dir, "devices.json"));
+    first.app.context.services.devices.endUnlockedRows();
+    first.app.stop();
+    writeFileSync(join(dir, "devices.json"), kept, { mode: 0o600 });
+    // a sibling whose registry will not parse: the start is blocked and the finisher cannot write
+    const sibling = stateDir();
+    writeFileSync(join(sibling, "devices.json"), "not json", { mode: 0o600 });
+    const f = relayFixture(false, { stateDir: dir, siblingStateDir: sibling, accountOpensAll: true });
+    fixtures.push(f);
+    dirs.splice(dirs.indexOf(dir), 1);
+    const link = await relayConnection(f);
+    expect(await link.auth(device).then(() => "in", () => "refused")).toBe("refused");
+  });
+
+  test("S19: a device journal that cannot be read fails the PC closed", () => {
+    const dir = stateDir();
+    store(dir);
+    writeFileSync(join(dir, "device-journal.json"), "not json", { mode: 0o600 });
+    expect(store(dir).failsClosed).toBe(true);
   });
 });
