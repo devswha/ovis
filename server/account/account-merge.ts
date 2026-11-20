@@ -5,6 +5,7 @@
  * - `account-removed.json` (P13): markers by (key, account) with the union of their removals by id (one id in both is
  *   one record, whose `over` is the union of its copies); Revokes and their unrevokes as a union by id.
  * - the enrollment barrier stands when either folder has one, and the held keys are a union (S13, T48).
+ * - the signed records waiting to apply (`account-pending.json`) are a union by record id (T41).
  * A file that cannot be read in either folder is reported, and the PC fails closed (S19).
  */
 import { existsSync, readFileSync } from "node:fs";
@@ -15,6 +16,7 @@ import { parseEvidence, REMOVAL_FILE, type Marker, type Removal, type Revoke, ty
 
 const ENROLLING_FILE = "account-enrolling.json";
 const HELD_FILE = "account-held.json";
+const PENDING_FILE = "account-pending.json";
 
 type Read = { value: Record<string, unknown> } | "missing";
 
@@ -64,11 +66,27 @@ function mergeHolds(active: string, sibling: string): void {
   for (const dir of [active, sibling]) writePrivateState(join(dir, HELD_FILE), merged);
 }
 
+/** The signed records waiting in either folder are waiting in both: a union by record id (T41, T48). */
+function mergePending(active: string, sibling: string): void {
+  const lists = [active, sibling].flatMap((dir) => {
+    const path = join(dir, PENDING_FILE);
+    if (!existsSync(path)) return [];
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (!Array.isArray(value)) throw new Error(`${path} is not a list of waiting records`);
+    return [value as unknown[]];
+  });
+  if (lists.length === 0) return;
+  const key = (record: unknown) => typeof (record as { id?: unknown } | null)?.id === "string" ? (record as { id: string }).id : JSON.stringify(record);
+  const merged = [...new Map(lists.flat().map((record) => [key(record), record])).values()];
+  for (const dir of [active, sibling]) writePrivateState(join(dir, PENDING_FILE), merged);
+}
+
 /** Merges the account state of `sibling` into `active` and back; why it could not, or null. */
 export function mergeAccountState(active: string, sibling: string): string | null {
   try {
     mergeEvidence(active, sibling);
     mergeHolds(active, sibling);
+    mergePending(active, sibling);
     return null;
   } catch (error) {
     return `Cannot merge the account state of ${sibling} into ${active} (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until it is restored.`;

@@ -447,6 +447,14 @@ export function createServer(
     };
   });
 
+  // the holds and the records waiting to apply are on hand before any listener opens: no request is served on less (T41)
+  const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
+  const accountMailbox = new AccountMailbox({
+    pendingPath: join(stateDir, "account-pending.json"), holds: accountHolds,
+    devices, identity: () => ovisRelay.currentIdentity(),
+    service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
+  });
+
   const envPort = process.env["PORT"];
   const clientConnectionLog = new ClientConnectionLog();
   const socketContext = (bunServer: Bun.Server<SocketData>): ServerContext => ({
