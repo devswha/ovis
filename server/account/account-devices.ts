@@ -277,7 +277,7 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
   return {
     store,
     blocked: () => store()?.blocked() ?? null,
-    missing: () => store()?.missing() ?? false,
+    missing: () => store()?.missing() ?? true,
     rows: () => store()?.rows() ?? [],
     row: (id) => store()?.row(id) ?? null,
     rowsByKey: (key) => store()?.rowsByKey(key) ?? [],

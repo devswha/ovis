@@ -10,6 +10,7 @@ import { keyOf } from "./account-devices.test-helpers.ts";
 import { DeviceJournal, JOURNAL_FILE, JOURNAL_MAX } from "./device-journal.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { applyAccountRecords } from "./records.ts";
+import { askRecovery } from "./recovery.ts";
 import { REMOVAL_FILE, RemovalEvidence } from "./removal-evidence.ts";
 
 const closes: (() => void)[] = [];
@@ -109,8 +110,8 @@ test("T41/S19/P8/P10: a missing listed registry during Revoke-all recovery: the 
   expect(outcome).toBe("auth_failed");
 });
 
-test("T41/S19/P8/P10: a new Revoke-all while the listed registry will not parse fails, keeps its intent, and the listed row cannot sign in once the file is restored", async () => {
-  const { fixture, device, serverId } = await listedPc();
+test("T41/S19/P8/P10: a new Revoke-all while the listed registry will not parse ends known rows, keeps its intent, and the listed row cannot sign in once the file is restored", async () => {
+  const { fixture, device, member, serverId } = await listedPc();
   const dir = fixture.stateDir;
   const path = join(dir, ACCOUNT_DEVICES_FILE);
   const intent = join(dir, "revoke-all.json");
@@ -123,7 +124,9 @@ test("T41/S19/P8/P10: a new Revoke-all while the listed registry will not parse 
   const broken = startOffline(dir).app;
   try {
     expect(broken.context.services.devices.failsClosed).toBe(true);
-    expect(() => broken.context.services.devices.revokeAll()).toThrow();
+    if (process.platform === "win32") expect(broken.context.services.devices.revokeAll()).toEqual([member.id]);
+    else expect(await askRecovery(dir, { act: "revoke_all" })).toEqual({ revoked: 1 });
+    expect(broken.context.services.devices.list(null)).toEqual([]);
     expect(existsSync(intent)).toBe(true);
   } finally { broken.stop(); }
   writeFileSync(path, original, { mode: 0o600 });
@@ -136,7 +139,7 @@ test("T41/S19/P8/P10: a new Revoke-all while the listed registry will not parse 
 });
 
 test("T41/S19/P8/P10: a new Revoke-all on a bound PC whose listed registry is missing keeps its intent, and the listed row cannot sign in once the file is restored", async () => {
-  const { fixture, device, serverId } = await listedPc();
+  const { fixture, device, member, serverId } = await listedPc();
   const dir = fixture.stateDir;
   const path = join(dir, ACCOUNT_DEVICES_FILE);
   const intent = join(dir, "revoke-all.json");
@@ -147,15 +150,60 @@ test("T41/S19/P8/P10: a new Revoke-all on a bound PC whose listed registry is mi
   rmSync(path);
   const missing = startOffline(dir).app;
   try {
-    expect(() => missing.context.services.devices.revokeAll()).toThrow();
+    expect(missing.context.services.devices.revokeAll()).toEqual([member.id]);
+    expect(missing.context.services.devices.list(null)).toEqual([]);
+    expect(missing.context.services.devices.failsClosed).toBe(true);
+    expect(existsSync(intent)).toBe(true);
+    // The file reappears before restart. This store has not read it, so retrying cannot finish its listed denial.
+    writeFileSync(path, saved, { mode: 0o600 });
+    expect(missing.context.services.devices.revokeAll()).toEqual([]);
     expect(existsSync(intent)).toBe(true);
   } finally { missing.stop(); }
-  writeFileSync(path, saved, { mode: 0o600 });
   const restarted = startOffline(dir);
   closes.push(() => restarted.close());
   const link = await relayConnection(restarted, { serverId });
   const outcome = await link.auth(device).then(() => "auth_ok", async () => await bounded(link.serverError));
   expect(outcome).toBe("auth_failed");
+});
+
+test("T70: replaying the deferred listed denial does not revoke a later whole-read admission", async () => {
+  const { fixture, service, device, serverId } = await listedPc();
+  const dir = fixture.stateDir;
+  const path = join(dir, ACCOUNT_DEVICES_FILE);
+  const intent = join(dir, "revoke-all.json");
+  fixture.app.stop();
+  const old = readFileSync(path, "utf8");
+  rmSync(path);
+  const missing = startOffline(dir).app;
+  let deferred: string;
+  try {
+    missing.context.services.devices.revokeAll();
+    deferred = readFileSync(intent, "utf8");
+  } finally { missing.stop(); }
+
+  writeFileSync(path, old);
+  const online = relayFixture(false, { stateDir: dir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
+  const newer = keyOf("later-listed");
+  const id = accountDeviceId(serverId, newer);
+  try {
+    const { devices, accountMailbox } = online.app.context.services;
+    const owner = keyOf("later-owner");
+    const paired = devices.pairRelay(devices.startPairing().code, "Owner", owner);
+    if (!paired) throw new Error("Owner did not pair");
+    devices.linkAccountKey(paired.device.id, owner, owner, ACCOUNT);
+    service.registerDevice(ACCOUNT, newer, "New tablet");
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(rows(dir).map(row => row.id)).toEqual([id]);
+  } finally { online.app.stop(); }
+
+  // Replay the retained intent against the registry a later whole read actually produced.
+  writeFileSync(intent, deferred);
+  const recovered = restartOffline(dir);
+  expect(recovered.account()).toBe(ACCOUNT);
+  expect(rows(dir).map(row => row.id)).toEqual([id]);
+  const evidence = RemovalEvidence.open(dir, null);
+  expect(evidence.standingRevokes(newer)).toEqual([]);
+  expect(evidence.standingRevokes(device.publicKey)).toHaveLength(1);
 });
 
 test.each(["unallocated sequence", "transfer points to admission"] as const)("T41/S19/P8/P10: a contradictory drop receipt preserves the registry (%s)", async damage => {

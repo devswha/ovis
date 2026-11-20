@@ -548,6 +548,8 @@ export class DeviceStore {
   private readonly revokeAllPath: string;
   private readonly stateDirPath: string;
   private readonly revokeAllIntent: RevokeAllIntent | null;
+  /** A restored file is not part of this process's view until the next open. */
+  private waitingForListedRestore = false;
   constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; joinedRows?: AccountRowSource | null; held?: (key: string) => boolean } = {}) {
     this.joinedRows = account.joinedRows ?? null;
     this.safety = account.safety ?? null;
@@ -786,7 +788,12 @@ export class DeviceStore {
   }
 
   get accountError(): string | null {
-    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.revokeAllIntent?.strict ?? this.joinedRows?.blocked() ?? this.denyProblem ?? this.accountProblem;
+    return this.revokeAllError ?? this.revokeAllIntent?.strict ?? this.joinedRows?.blocked() ?? null;
+  }
+
+  /** A local denial does not need the listed registry; it still needs the rest of the PC's safety state. */
+  get revokeAllError(): string | null {
+    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.denyProblem ?? this.accountProblem;
   }
 
   /** No device gets in by a row or a code when the PC cannot trust its account state. */
@@ -2592,16 +2599,18 @@ export class DeviceStore {
    * of `ovis recover --revoke-all`, journalled beside each removal (P24).
    */
   private revokeAllInOrder(intent: RevokeAllIntent, user?: string): string[] {
-    this.resumeRevokeAll();
-    const now = new Date().toISOString();
+    const unavailable = this.waitingForListedRestore || this.joinedRows?.blocked() || this.joinedRows?.missing();
+    if (intent.remainingListedOnly && unavailable && !this.devices.length) return [];
+    if (!unavailable) this.resumeRevokeAll();
+    const now = this.nextStamp(Date.now());
     // the file names every row it covers, a pending one's too, so it is finished from itself and never from less (T20)
     const gone = this.revokeAllRows();
     const gateWasOpen = !this.rawGated;
     // a registry that will not read, or is missing on a PC in an account, may hold listed rows: count it as some, so
     // the intent outlives it. A PC never bound has none
-    const unknown = this.joinedRows?.blocked() || (this.joinedRows?.missing() && this.pc?.binding());
+    const unknown = this.waitingForListedRestore || this.joinedRows?.blocked() || (this.joinedRows?.missing() && (this.pc?.binding() || intent.listed > 0));
     const listed = unknown ? 1 : this.joinedRows?.rows().length ?? 0;
-    const denied = this.deny(gone.flatMap((row) => row.relay_public_key ?? []), () => intent.begin(gone, now, listed));
+    const denied = this.deny(gone.flatMap((row) => row.relay_public_key ?? []), () => intent.begin(gone, now, listed, unknown ? this.pc?.nextAdmission() ?? null : null));
     const gate = this.gateClosedAt ?? this.devices[0]?.created_at ?? now;
     // a file that could not be written holds nothing: the rows stay where the next Revoke all finds them, out of every
     // session meanwhile, and the PC closed (P8, T20)
@@ -2628,6 +2637,14 @@ export class DeviceStore {
     try {
       for (const device of gone) this.journalRemoval(device, "pc", user === undefined ? undefined : "recover", user);
       for (const device of gone) this.announceRemoval(device, "pc");
+      if (unknown) {
+        this.waitingForListedRestore = true;
+        this.tombstone(gone, Date.parse(now), "revoke_all");
+        this.save([], gate);
+        this.pc?.clear("revoke_all", "pc");
+        intent.awaitListed();
+        return gone.map(row => row.id);
+      }
       intent.finish(rows => this.completeRevokeAll(intent, rows, gate));
       this.refreshAfterRevokeAll();
     } catch (error) {
@@ -2653,13 +2670,15 @@ export class DeviceStore {
     this.assertWritable();
     const blocked = this.joinedRows?.blocked();
     if (blocked) throw new Error(blocked);
-    if (intent.listed > 0 && this.joinedRows?.missing()) {
+    if (this.waitingForListedRestore || (intent.listed > 0 && this.joinedRows?.missing())) {
+      this.waitingForListedRestore = true;
       throw new Error("account-devices.json is missing while Revoke all covers listed rows: only this PC itself gets in until it is restored.");
     }
     if (this.evidence) this.joinedRows?.pruneDenied(this.evidence, "revoke_all");
-    const joined = this.joinedRows?.rows() ?? [];
+    const joined = this.joinedRows?.rows().filter(row => intent.covers(row.origin.admit_no)) ?? [];
     this.tombstone([...rows, ...joined.map((row) => this.joinedAsStored(row))], Date.now(), "revoke_all");
-    this.endAccountRows("revoke_all");
+    if (joined.length) this.joinedRows?.removeRows(joined.map(row => row.id), "revoke_all", id => this.closeAccountSessions(id));
+    if (intent.remainingListedOnly) return;
     this.save([], gate);
     this.devices = [];
     this.gateClosedAt = gate;

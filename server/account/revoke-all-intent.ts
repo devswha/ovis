@@ -11,21 +11,42 @@ export class RevokeAllIntent {
   private problem: string | null = null;
   /** How many account-joined rows the Revoke all covered when it began; an intent that will not read covers some. */
   private listedRows = 0;
+  private before: number | null = null;
+  private listedOnly = false;
 
   get strict(): string | null { return this.problem; }
 
   constructor(dir: string, rows: readonly StoredDevice[]) {
     this.path = join(dir, "revoke-all.json");
     this.targets = existsSync(this.path) ? rows : null;
-    if (this.targets !== null) this.listedRows = listedIn(this.path);
+    if (this.targets !== null) {
+      const saved = coverage(this.path);
+      this.listedRows = saved.listed;
+      this.before = saved.before;
+      this.listedOnly = saved.listedOnly;
+      if (this.listedOnly) this.targets = [];
+    }
   }
 
   get listed(): number { return this.listedRows; }
 
-  begin(rows: readonly StoredDevice[], at: string, listed: number): void {
-    writePrivateState(this.path, { id: randomBytes(16).toString("hex"), by: "pc", at, rows, listed });
+  get remainingListedOnly(): boolean { return this.listedOnly; }
+  covers(admitNo: number): boolean { return this.before === null || admitNo < this.before; }
+
+  begin(rows: readonly StoredDevice[], at: string, listed: number, before: number | null): void {
+    writePrivateState(this.path, { id: randomBytes(16).toString("hex"), by: "pc", at, rows, listed, before });
     this.targets = rows;
     this.listedRows = listed;
+    this.before = before;
+    this.listedOnly = false;
+  }
+
+  /** Ordinary denials and the binding clear are durable. Only the unavailable listed registry remains. */
+  awaitListed(): void {
+    writePrivateState(this.path, { ...JSON.parse(readFileSync(this.path, "utf8")), rows: [], listedOnly: true });
+    this.targets = [];
+    this.listedOnly = true;
+    this.problem = "Revoke all is waiting for account-devices.json: only this PC itself gets in until it is restored.";
   }
 
   finish(write: (rows: readonly StoredDevice[]) => void): boolean {
@@ -35,6 +56,8 @@ export class RevokeAllIntent {
       rmSync(this.path);
       this.targets = null;
       this.problem = null;
+      this.listedRows = 0;
+      this.listedOnly = false;
       return true;
     } catch (error) {
       this.problem = `Revoke all could not be finished (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until it is.`;
@@ -44,9 +67,14 @@ export class RevokeAllIntent {
 }
 
 /** An intent written before `listed` existed names none; one that will not read names some, so it stays. */
-function listedIn(path: string): number {
+function coverage(path: string) {
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return typeof value === "object" && value !== null && "listed" in value && typeof value.listed === "number" ? value.listed : 0;
-  } catch { return 1; }
+    const doc = typeof value === "object" && value !== null ? value : {};
+    return {
+      listed: "listed" in doc && typeof doc.listed === "number" ? doc.listed : 0,
+      before: "before" in doc && typeof doc.before === "number" && Number.isSafeInteger(doc.before) && doc.before > 0 ? doc.before : null,
+      listedOnly: "listedOnly" in doc && doc.listedOnly === true,
+    };
+  } catch { return { listed: 1, before: null, listedOnly: false }; }
 }
