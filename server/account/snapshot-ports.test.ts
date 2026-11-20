@@ -107,6 +107,19 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     expect(await read(pc(first.dir, rotated).ports, page({ version: 1, server_id: rotated }))).toMatchObject({ committed: true });
   });
 
+  test("T52: the first whole read uses its own order to decide a lift", async () => {
+    const { devices, safetyLog, ports } = pc();
+    const signer = await member(devices);
+    const target = await member(devices);
+    const blocked = await block(target.spki, signer);
+    expect((await devices.applyBlock(blocked, "handed")).outcome).toBe("applied");
+    const record = await lift(blocked.id, signer);
+    const first = page({ devices: [{ key: signer.spki, no: 1, eligible: true, label: "Phone" }],
+      removed: [{ key: target.spki, no: 2 }], blocks: [blocked], lifts: [record] });
+    expect(await read(ports, first)).toMatchObject({ committed: true, liftsRefused: 0 });
+    expect(safetyLog.state().freezes).toEqual([]);
+  });
+
   test("P14: a refused block earns no credit for a concurrent independent revoke", async () => {
     const { devices, ports } = pc();
     const older = await member(devices);
