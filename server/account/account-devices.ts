@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { AccountSnapshotError, parseAccountDevicesFile, type AccountJoinedRow, type AccountSnapshot, type AdmissionOrigin, type SnapshotDevice } from "../../shared/account-snapshot.ts";
 import { writePrivateState } from "../private-state.ts";
+import type { DeviceJournal } from "./device-journal.ts";
+import type { RemovalEvidence } from "./removal-evidence.ts";
 
 export const ACCOUNT_DEVICES_FILE = "account-devices.json";
 export const ACCOUNT_DEVICES_MAX = 100;
@@ -28,7 +30,7 @@ export interface AccountRowSource {
   row(id: string): AccountRow | null;
   rowsByKey(key: string): readonly AccountRow[];
   access(id: string): AccessAnswer;
-  pruneDenied(denied: (key: string, account: string) => boolean): void;
+  pruneDenied(evidence: RemovalEvidence, journal: DeviceJournal | null): void;
   removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void;
 }
 
@@ -115,11 +117,21 @@ export class AccountDeviceStore implements AccountRowSource {
     return this.rows().filter((row) => row.key === key);
   }
 
-  /** Startup replay: the durable deny already stands. Do not notify sessions or duplicate a drop entry. */
-  pruneDenied(denied: (key: string, account: string) => boolean): void {
+  /** Startup replay: finish the journal before the registry. There are no sessions to close yet. */
+  pruneDenied(evidence: RemovalEvidence, journal: DeviceJournal | null): void {
     const { account, devices } = this.file;
     if (account === null) return;
-    const kept = devices.filter(row => !denied(row.key, account));
+    const kept = devices.filter(row => {
+      if (evidence.standingRevokes(row.key).length === 0) {
+        return !evidence.standingMarkers(row.key).some(({ marker }) => marker.account === account);
+      }
+      // A row ID is reused on readmission. Only the last admission or drop for this row counts.
+      const last = journal?.entries().filter(entry => entry.row === row.id && (entry.kind === "admit" || entry.kind === "drop")).at(-1);
+      if (last?.kind !== "drop" || last.how !== "revoke") {
+        this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason: "revoke" });
+      }
+      return false;
+    });
     if (kept.length !== devices.length) this.write({ ...this.file, devices: kept });
   }
 
@@ -230,7 +242,7 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
     row: (id) => store()?.row(id) ?? null,
     rowsByKey: (key) => store()?.rowsByKey(key) ?? [],
     access: (id) => store()?.access(id) ?? { refused: "not_listed" },
-    pruneDenied: denied => { store()?.pruneDenied(denied); },
+    pruneDenied: (evidence, journal) => { store()?.pruneDenied(evidence, journal); },
     removeRows: (ids, reason, close) => { store()?.removeRows(ids, reason, close); },
   };
 }
