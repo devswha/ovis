@@ -29,4 +29,19 @@ describe("merging two folders' account state fails closed on what it cannot trus
     expect(mergeAccountState(active, sibling)).not.toBeNull();
     expect(JSON.parse(readFileSync(join(active, "account-held.json"), "utf8"))).toEqual({ keys: [], full: false });
   });
+
+  test("T41, T48: a waiting signed removal one folder counted is waiting in both after the merge", () => {
+    const [active, sibling] = [dir(), dir()];
+    const waiting = { v: 1, kind: "remove", id: "a".repeat(32), account: "acct_1", key: "k", signer: "s", issued_at: "2026-10-01T00:00:00.000Z", signature: "" };
+    put(active, "account-pending.json", []);
+    put(sibling, "account-pending.json", [waiting]);
+    expect(mergeAccountState(active, sibling)).toBeNull();
+    for (const at of [active, sibling]) expect(JSON.parse(readFileSync(join(at, "account-pending.json"), "utf8"))).toEqual([waiting]);
+  });
+
+  test("S19: a waiting list that is not one is refused, never merged as empty", () => {
+    const [active, sibling] = [dir(), dir()];
+    put(sibling, "account-pending.json", { not: "a list" });
+    expect(mergeAccountState(active, sibling)).not.toBeNull();
+  });
 });
