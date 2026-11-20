@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountDeviceId, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
@@ -86,6 +86,27 @@ test("T41/S19/P8/P10: an unreadable listed registry during Revoke-all recovery: 
   expect(RemovalEvidence.open(dir, null).standingRevokes(device.publicKey)).toHaveLength(1);
   expect(rows(dir)).toEqual([]);
   expect(existsSync(join(dir, "revoke-all.json"))).toBe(false);
+});
+
+test("T41/S19/P8/P10: a missing listed registry during Revoke-all recovery: the revoked row cannot sign in once the file is restored", async () => {
+  const { fixture, device, serverId } = await listedPc();
+  const dir = fixture.stateDir;
+  const path = join(dir, ACCOUNT_DEVICES_FILE);
+  fixture.app.stop();
+  const file = parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8")));
+  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const })) });
+  const live = startOffline(dir).app;
+  const fault = failReplacement(join(dir, REMOVAL_FILE), device.id);
+  try { expect(() => live.context.services.devices.revokeAll()).toThrow("replacement failed"); } finally { fault.mockRestore(); live.stop(); }
+  const saved = readFileSync(path, "utf8");
+  rmSync(path);
+  restartOffline(dir);
+  writeFileSync(path, saved, { mode: 0o600 });
+  const restarted = startOffline(dir);
+  closes.push(() => restarted.close());
+  const link = await relayConnection(restarted, { serverId });
+  const outcome = await link.auth(device).then(() => "auth_ok", async () => await bounded(link.serverError));
+  expect(outcome).toBe("auth_failed");
 });
 
 test.each(["unallocated sequence", "transfer points to admission"] as const)("T41/S19/P8/P10: a contradictory drop receipt preserves the registry (%s)", async damage => {
