@@ -43,15 +43,15 @@ export function useDeviceNotices(sockets: readonly { id: string; socket: NoticeS
   }, [sockets]);
   const selectedSocket = sockets.find(({ id }) => id === selectedPcId)?.socket;
   const shown = byPc.get(selectedPcId);
-  const seenSeq = shown === undefined ? undefined : noticeSeen(shown)?.seq;
-  useEffect(() => {
-    if (seenSeq === undefined || !selectedSocket?.sendNotice({ type: "notice-seen", seq: seenSeq })) return;
+  const acknowledgeShown = useCallback((seq: number) => {
+    const seen = shown === undefined ? null : noticeSeen(shown, seq);
+    if (seen === null || !selectedSocket?.sendNotice(seen)) return;
     setByPc((current) => {
       const notices = current.get(selectedPcId);
       if (notices === undefined) return current;
-      return new Map(current).set(selectedPcId, withNoticeAcked(notices, seenSeq));
+      return new Map(current).set(selectedPcId, withNoticeAcked(notices, seen.seq));
     });
-  }, [seenSeq, selectedPcId, selectedSocket]);
+  }, [shown, selectedPcId, selectedSocket]);
   const dismiss = useCallback((id: string, notice: DeviceNotice) => {
     setByPc((current) => {
       const notices = current.get(id);
@@ -59,5 +59,5 @@ export function useDeviceNotices(sockets: readonly { id: string; socket: NoticeS
       return new Map(current).set(id, withNoticeDecided(notices, notice.id));
     });
   }, []);
-  return { byPc, dismiss, cut: shown?.cut ?? 0 };
+  return { byPc, dismiss, acknowledgeShown, cut: shown?.cut ?? 0 };
 }

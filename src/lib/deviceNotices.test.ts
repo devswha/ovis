@@ -17,9 +17,9 @@ describe("device notices from one PC", () => {
 
   it("T57: the acknowledgment names the newest notice shown and decides nothing", () => {
     const shown = withNoticeReplay(undefined, { notices: [notice(4), notice(5, "method")], cut: 0 });
-    expect(noticeSeen(shown)).toEqual({ type: "notice-seen", seq: 5 });
+    expect(noticeSeen(shown, 5)).toEqual({ type: "notice-seen", seq: 5 });
     const acked = withNoticeAcked(shown, 5);
-    expect(noticeSeen(acked)).toBeNull();
+    expect(noticeSeen(acked, 5)).toBeNull();
     expect(acked.notices.filter((item) => item.open).map((item) => item.seq)).toEqual([4]);
   });
 

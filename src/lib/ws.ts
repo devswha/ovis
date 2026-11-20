@@ -403,7 +403,7 @@ export class HerdrSocket {
     });
 
     let earlyNoticeOffer = false;
-    let pendingNoticeReplay: Extract<ServerMessage, { type: "device-notice-replay" }> | undefined;
+    const pendingNotices: Extract<ServerMessage, { type: "device-notice-replay" | "device-notice" }>[] = [];
     socket.addEventListener("message", (event) => {
       if (this.socket !== socket) return;
       this.trace.flush();
@@ -533,18 +533,17 @@ export class HerdrSocket {
       // A terminal/parser failure is not malformed JSON and must not disappear.
       if (message.type === "features" && !this.featuresKnown) {
         earlyNoticeOffer = message.features?.includes(ACCOUNT_OPENS_ALL_CAPABILITY) === true;
-        if (!earlyNoticeOffer) pendingNoticeReplay = undefined;
+        if (!earlyNoticeOffer) pendingNotices.length = 0;
       }
       if ((message.type === "device-notice" || message.type === "device-notice-replay") && !this.accountOpensAll()) {
-        // A first-connect offer can precede its trusted snapshot; never retain a replay without that offer.
-        if (earlyNoticeOffer && !this.featuresKnown && message.type === "device-notice-replay") pendingNoticeReplay = message;
+        // A first-connect offer can precede its trusted snapshot; retain frames only after that offer.
+        if (earlyNoticeOffer && !this.featuresKnown) pendingNotices.push(message);
         return;
       }
       this.emit(message);
-      if (this.featuresKnown && pendingNoticeReplay !== undefined) {
-        const replay = pendingNoticeReplay;
-        pendingNoticeReplay = undefined;
-        if (this.accountOpensAll()) this.emit(replay);
+      if (this.featuresKnown && pendingNotices.length > 0) {
+        const confirmed = pendingNotices.splice(0);
+        if (this.accountOpensAll()) for (const notice of confirmed) this.emit(notice);
       }
       for (const paneId of unwatched) this.emit({ type: "watch-end", pane_id: paneId });
     });

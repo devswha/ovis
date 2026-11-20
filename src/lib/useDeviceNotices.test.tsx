@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { useEffect } from "react";
 
 import { DeviceNotices } from "../components/DevicePairedNotice.tsx";
 import type { DeviceNotice, NoticeAnswer, NoticeSeen } from "../../shared/account-devices-api.ts";
@@ -23,7 +24,7 @@ describe("device notices on the real PC socket", () => {
   function Probe({ socket, visible = true }: { socket: HerdrSocket; visible?: boolean }) {
     result = useDeviceNotices([{ id: "desk", socket }], "desk");
     return visible ? <SettingsProvider><DeviceNotices pc="Desk" notices={result.byPc.get("desk")?.notices ?? []}
-      onDismiss={(item) => result?.dismiss("desk", item)} /></SettingsProvider> : null;
+      onDismiss={(item) => result?.dismiss("desk", item)} onShown={result.acknowledgeShown} /></SettingsProvider> : null;
   }
 
   async function connect(visible = true) {
@@ -196,8 +197,13 @@ describe("each PC's device notices in the app", () => {
   });
 
   function Probe({ sockets }: { sockets: readonly { id: string; socket: NoticeSocket }[] }) {
-    seen = useDeviceNotices(sockets, "desk");
-    return null;
+    const current = useDeviceNotices(sockets, "desk");
+    seen = current;
+    const notices = current.byPc.get("desk")?.notices;
+    const newest = notices?.at(-1)?.seq;
+    const { acknowledgeShown } = current;
+    useEffect(() => { if (newest !== undefined) acknowledgeShown(newest); }, [acknowledgeShown, newest]);
+    return <>{notices?.map((item) => <p key={item.id}>{item.label}</p>)}</>;
   }
 
   it("T57: a PC's replay shows once and is acknowledged once, up to its newest notice", async () => {

@@ -38,9 +38,8 @@ export function withNoticeReplay(current: PcNotices | undefined, replay: NoticeR
   };
 }
 
-export function noticeSeen(current: PcNotices): NoticeSeen | null {
-  const newest = current.notices.reduce((seq, item) => TOLD_KINDS.has(item.kind) ? Math.max(seq, item.seq) : seq, 0);
-  return newest > current.acked ? { type: "notice-seen", seq: newest } : null;
+export function noticeSeen(current: PcNotices, renderedThrough: number): NoticeSeen | null {
+  return renderedThrough > current.acked ? { type: "notice-seen", seq: renderedThrough } : null;
 }
 
 export function withNoticeAcked(current: PcNotices, seq: number): PcNotices {
