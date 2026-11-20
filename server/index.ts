@@ -565,7 +565,11 @@ export function createServer(
       devices.endUnlockedRows();
       lockSignal?.fire();
     },
-    unlock: (lockId) => { safetyLog.appendUnlock(lockId, pcAccount.binding()); },
+    // the unlock names the lock's own account: a lock stays until an unlock names it, whatever the binding did since (P11)
+    unlock: (lockId) => {
+      const lock = safetyLog.state().locks.find((entry) => entry.record.id === lockId);
+      safetyLog.appendUnlock(lockId, lock === undefined ? null : { account: lock.record.account });
+    },
   } }) : undefined;
   const services: RequestServices = {
     runtimeMove: options.runtimeService ? moveService({
