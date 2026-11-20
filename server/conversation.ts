@@ -79,6 +79,7 @@ import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, 
 import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser, withHcNotes } from "./transcript-records.ts";
 import { skillPromptMessage } from "./skill-activity.ts";
 import { CLAUDE_IMAGE_REF, claudeImageType, claudeResultText, createClaudeTranscriptParser, entryHostToolResults, isHostHandoff, parseClaudeTranscript, type TranscriptEntry } from "./claude-transcript.ts";
+import { replDeliveries, replDispatched, replOutput, virtualCallOutput } from "./claude-code-mode.ts";
 import { forgetSubagents, lineNotifications, subagentDetails, type SubagentDetail } from "./claude-subagents.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { readsStartScreen, startScreenMetadata } from "./start-screen.ts";
@@ -3622,7 +3623,25 @@ function outputInText(source: RecognizedConversation["source"], text: string, re
   // a senpi host tool result names its call inside its header's text, not as a JSON string
   const hostNeedle = `id=${ref}):`;
   let native: string | null = null;
+  // Code Mode: a REPL call whose script ran on answered `(dispatched #N)`; its output is in the events after it
+  // (claude-code-mode.ts), under its number
+  let script: { eval: number; parts: string[]; seen: Set<string> } | null = null;
   for (const line of text.split("\n")) {
+    if (script !== null && line.includes("repl-eval")) {
+      let entry: TranscriptEntry;
+      try { entry = JSON.parse(line) as TranscriptEntry; } catch { continue; }
+      const content = entry.message?.content;
+      const delivered = entry.type === "attachment" && entry.attachment?.type === "poll_events"
+        ? (Array.isArray(entry.attachment.envelopes) ? entry.attachment.envelopes : []).flatMap((envelope: unknown) => typeof envelope === "string" ? replDeliveries(envelope, true).outputs : [])
+        : entry.type === "user" && Array.isArray(content) ? content.flatMap((block: unknown) => (block as { type?: unknown } | null)?.type === "tool_result" ? replDeliveries(claudeResultText((block as { content?: unknown }).content)).outputs : []) : [];
+      for (const output of delivered) {
+        const key = output.at ?? `${script.seen.size}`;
+        if (output.eval !== script.eval || script.seen.has(key)) continue;
+        script.seen.add(key);
+        if (output.output.length > 0) script.parts.push(output.output);
+      }
+      continue;
+    }
     if (!line.includes(needle) && !(source === "claude-transcript" && line.includes(hostNeedle))) continue;
     let entry: Record<string, unknown>;
     try { entry = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
@@ -3632,7 +3651,13 @@ function outputInText(source: RecognizedConversation["source"], text: string, re
       const host = entryHostToolResults(entry, content).filter((result) => result.id === ref).at(-1);
       const result = Array.isArray(content) ? content.find((block) => (block as { type?: unknown; tool_use_id?: unknown } | null)?.type === "tool_result" && (block as { tool_use_id?: unknown }).tool_use_id === ref) : undefined;
       if (host !== undefined) output = claudeResultText((content as unknown[]).slice(host.header + 1, host.end));
-      else if (result !== undefined && native === null && !isHostHandoff(result as { content?: unknown; is_error?: unknown })) native = claudeResultText((result as { content?: unknown }).content);
+      else if (result !== undefined && native === null && !isHostHandoff(result as { content?: unknown; is_error?: unknown })) {
+        native = claudeResultText((result as { content?: unknown }).content);
+        const dispatched = replDispatched(native);
+        if (dispatched !== null) script = { eval: dispatched, parts: [], seen: new Set() };
+        // a REPL's own output element, and a script's call (its output is only in toolUseResult)
+        else native = replOutput(native)?.output ?? (native.length === 0 ? virtualCallOutput(entry) ?? native : native);
+      }
     } else if (source === "codex-transcript") {
       const payload = entry.payload as { type?: unknown; call_id?: unknown; output?: unknown } | undefined;
       if ((payload?.type === "function_call_output" || payload?.type === "custom_tool_call_output") && payload.call_id === ref) output = codexOutputText(payload.output);
@@ -3642,6 +3667,7 @@ function outputInText(source: RecognizedConversation["source"], text: string, re
     }
     if (output !== null) return output.length > TOOL_OUTPUT_MAX ? `${output.slice(0, TOOL_OUTPUT_MAX)}\n… trimmed` : output;
   }
+  if (script !== null && script.parts.length > 0) native = script.parts.join("\n");
   return native !== null && native.length > TOOL_OUTPUT_MAX ? `${native.slice(0, TOOL_OUTPUT_MAX)}\n… trimmed` : native;
 }
 
