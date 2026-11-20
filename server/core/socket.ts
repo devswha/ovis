@@ -199,9 +199,10 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         return;
       }
       if (message.type === "notice-answer") {
-        // It's me waits for its UI: a PC with notices (flag on) says so; one without ignores it as before
-        if (notices !== undefined && message.answer === "its_me") {
-          send(client, { type: "error", code: "not_supported", message: "It's me is not available until the app supports it" });
+        // "It's me" is the join hold's to judge (T53), only for the session's proved key, never a bare device id; the
+        // confirmation it publishes is the answer. A PC without notices (flag off) ignores it as before.
+        if (message.answer === "its_me") {
+          if (notices !== undefined && typeof message.id === "string" && client.data.deviceId !== undefined && client.data.provedKey) notices.itsMe(client.data.deviceId, message.id, client.data.provedKey);
           return;
         }
         // "Not me": each block applies at once and is answered with its receipt; one that applied decides the notice (T51).
