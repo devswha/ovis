@@ -209,9 +209,9 @@ function readRecord(dirs: string[], pair: string[]): MergeRecord | null {
  * this one, which knows nothing of the merge, stays gated on this dir too, the dir's own registry
  * gets a closed gate, its devices as they are; a damaged one is left alone (it keeps every release gated).
  */
-function closeGateOnDisk(active: string, stamp: string, now: Date): void {
+function closeGateOnDisk(active: string, stamp: string, now: Date, opensAll: boolean): void {
   const path = join(active, "devices.json");
-  const own = readDeviceRegistry(path);
+  const own = readDeviceRegistry(path, opensAll);
   if (own.kind === "bad" || own.kind === "ok" && (own.gateClosedAt !== null || own.devices.length > 0)) return;
   try {
     backUp(active, "devices.json", stamp);
@@ -284,8 +284,9 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     return side.base === null ? null : new Set(side.base);
   };
   const bases = { own: baseOf(active, ownPath), other: baseOf(sibling, otherPath) };
-  const own = readDeviceRegistry(ownPath);
-  const other = readDeviceRegistry(otherPath);
+  const opensAll = rules.dropConflictingKeys === true;
+  const own = readDeviceRegistry(ownPath, opensAll);
+  const other = readDeviceRegistry(otherPath, opensAll);
   const unreadable = own.kind === "bad" ? ownPath : other.kind === "bad" ? otherPath : null;
   if (unreadable !== null) {
     return { ids: null, changed: 0, blocked: `Cannot read ${unreadable}, so the paired devices of ${active} and ${sibling} cannot be merged. Restore a valid devices.json there or fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
@@ -366,8 +367,8 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
       const reason = `Cannot write the merged paired devices into ${otherPath}: ${error instanceof Error ? error.message : String(error)}`;
       console.error(reason);
       // that release must at least find a closed gate there, and no device revoked here
-      if (!closedFor(readDeviceRegistry(otherPath))) closeGateOnDisk(sibling, stamp, now);
-      const left = readDeviceRegistry(otherPath);
+      if (!closedFor(readDeviceRegistry(otherPath, opensAll))) closeGateOnDisk(sibling, stamp, now, opensAll);
+      const left = readDeviceRegistry(otherPath, opensAll);
       const revokedThere = left.kind === "ok" && left.devices.some((device) => !merged.devices.some((kept) => kept.id === device.id));
       const risk = !closedFor(left) ? "have no sign-in gate" : revokedThere ? "still let in a device revoked here" : null;
       const known = new Set([...merged.devices.map((device) => device.id), ...bases.other ?? []]);
@@ -565,7 +566,7 @@ export function mergeSiblingState(active: string, sibling: string, now = new Dat
     // whatever went wrong, the server still starts, gated: a start that failed would fall back to an older release
     blocked = `Cannot merge the state of ${sibling} into ${active} (${error instanceof Error ? error.message : String(error)}). External access without a token or trusted Tailscale login remains blocked; restart the server once it is fixed.`;
   }
-  if (blocked !== null) closeGateOnDisk(active, stamp, now);
+  if (blocked !== null) closeGateOnDisk(active, stamp, now, rules.dropConflictingKeys === true);
   return { devicesBlocked: blocked };
 }
 

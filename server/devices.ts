@@ -25,7 +25,7 @@ import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
 import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
-import type { DeviceNotice, NoticeReplay } from "../shared/account-devices-api.ts";
+import { accountOpensAll, type DeviceNotice, type NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceSafetyRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import { PromotedHolds } from "./account/promoted-holds.ts";
 import { mayEndHold, type Sayer } from "./account/join-hold.ts";
@@ -323,7 +323,7 @@ export function isDeviceRole(value: unknown): value is DeviceRole {
  */
 export type DeviceRegistry = { kind: "missing" } | { kind: "ok"; gateClosedAt: string | null; devices: StoredDevice[]; placeholder: boolean } | { kind: "bad" };
 
-export function readDeviceRegistry(path: string): DeviceRegistry {
+export function readDeviceRegistry(path: string, opensAll = accountOpensAll()): DeviceRegistry {
   // one another account could write is as unreadable as a damaged one: the gate stays closed
   const refused = privateStateRefusal(path);
   if (refused !== null) {
@@ -349,8 +349,8 @@ export function readDeviceRegistry(path: string): DeviceRegistry {
       && (d.link_moved_key === undefined || typeof d.link_moved_key === "boolean")
       && (d.imported === undefined || d.imported === true)
       && (d.account_add === undefined || isJsonObject(d.account_add))
-      && (d.held === undefined || (typeof d.held === "string" && /^[0-9a-f]{32}$/.test(d.held)))
-      && (d.carried_notice === undefined || (typeof d.carried_notice === "string" && /^[0-9a-f]{32}$/.test(d.carried_notice)))
+      && (!opensAll || (d.held === undefined || (typeof d.held === "string" && /^[0-9a-f]{32}$/.test(d.held)))
+        && (d.carried_notice === undefined || (typeof d.carried_notice === "string" && /^[0-9a-f]{32}$/.test(d.carried_notice))))
       && (d.paired_over === undefined || (Array.isArray(d.paired_over) && d.paired_over.every((id) => typeof id === "string")))
       )) return { kind: "bad" };
   // an origin that cannot be read is no age (P22): the row stays, without it
@@ -591,7 +591,7 @@ export class DeviceStore {
       this.accountProblem = `Cannot read ${this.tombstonePath}: account records are refused until it is restored or fixed.`;
       this.tombstones = pending;
     } else this.tombstones = [...tombstones, ...pending.filter((t) => !tombstones.some((own) => own.key === t.key))];
-    const read = readDeviceRegistry(this.path);
+    const read = readDeviceRegistry(this.path, this.opensAll());
     if (read.kind === "ok") {
       this.gateClosedAt = read.gateClosedAt;
       this.devices = read.devices;

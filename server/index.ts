@@ -281,7 +281,7 @@ export function createServer(
   // the order is checked against this folder's own rows before the sibling merge, which may remove some (P21, S29)
   const checkedOrder = (dir: string) => {
     const state = PcAccountState.open(dir);
-    const own = readDeviceRegistry(join(dir, "devices.json"));
+    const own = readDeviceRegistry(join(dir, "devices.json"), opensAll);
     if (own.kind === "ok") state.checkRows(own.devices);
     return state;
   };

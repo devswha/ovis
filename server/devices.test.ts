@@ -6,6 +6,7 @@ import type { DevicePairedEvent } from "../shared/protocol.ts";
 import { CODE_TTL_MS, DeviceGoneError, DeviceStore, handleDeviceRequest, newStreamKey, normalizeLabel, PAIRING_LINK_MS, PairingFinishingError, PairingRateLimitedError, PcInAccountError, readDeviceRegistry, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
 import { TestClock } from "./relay/test-helpers.ts";
 import { privateStateFs, privateStateRefusal } from "./private-state.ts";
+import { SafetyLog } from "./account/safety-log.ts";
 import { isTaggedNode, parseTailscaleOwner } from "./tailscale.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "herdr-devices-"));
@@ -381,6 +382,23 @@ describe("relay device", () => {
       expect(() => fresh.startPairing()).toThrow();
       expect(readFileSync(path, "utf8")).toBe(contents);
     }
+  });
+
+  it("flag off: malformed hold metadata leaves the registry readable but held rows unadmitted", () => {
+    const root = mkdtempSync(join(dir, "rollback-registry-"));
+    const path = join(root, "devices.json");
+    const live = { id: "notice", label: "Phone", role: "watch", token_hash: "a".repeat(64),
+      created_at: new Date(0).toISOString(), last_seen_at: null, carried_notice: { old: true } };
+    const held = [null, false, "", {}, "invalid"].map((value, index) => ({ ...live, id: `held-${index}`, held: value }));
+    const bytes = JSON.stringify({ gate_closed_at: null, devices: [live, ...held] });
+    writeFileSync(path, bytes, { mode: 0o600 });
+    const rollback = new DeviceStore(root);
+    expect(rollback.error).toBeNull();
+    expect(rollback.sessionRow(live.id)?.role).toBe("watch");
+    expect(rollback.list(null).map(row => row.id)).toEqual([live.id, ...held.map(row => row.id)]);
+    for (const row of held) expect(rollback.sessionRow(row.id)).toBeNull();
+    expect(new DeviceStore(root, null, null, { safety: SafetyLog.open(root) }).error).not.toBeNull();
+    expect(readFileSync(path, "utf8")).toBe(bytes);
   });
 
   it("limits code issues to ten in a sliding window without extending refusals", () => {
