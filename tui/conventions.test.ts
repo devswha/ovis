@@ -9,8 +9,12 @@ import { fail, files, lineOf, read, repo, stripComments } from "../scripts/sourc
 /** The screen's shipped code: not tests, and not the test tooling under tui/testing/. */
 const productCode = (): string[] => files("tui/**/*.{ts,tsx,mjs,js}").filter((file) => !file.startsWith("tui/testing/") && !/\.test\.tsx?$/.test(file));
 
-/** Module specifiers of static imports and re-exports, side-effect imports and `import("…")` with a literal (as in scripts/conventions.test.ts). */
-const SPECIFIER = /(?:^|[\s;])(?:import|export)\s[^;]*?\sfrom\s*["']([^"']+)["']|(?:^|[\s;])import\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/gm;
+/**
+ * Module specifiers of static imports and re-exports, side-effect imports and `import("…")` with a literal (as in
+ * scripts/conventions.test.ts). A declaration never runs on into the next `import`: one that no semicolon ends would
+ * otherwise take the import after it for its own `from` and hide what that import names.
+ */
+const SPECIFIER = /(?:^|[\s;])(?:import|export)\s(?:(?!\bimport\b)[^;])*?\sfrom\s*["']([^"']+)["']|(?:^|[\s;])import\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/gm;
 
 /** Each relative import of `code` (comments removed), as the repository path it names and its line. */
 function relativeImports(file: string, code: string): { target: string; line: number; specifier: string }[] {
@@ -88,6 +92,17 @@ describe("import closure of tui/main.ts", () => {
       "tui/model/a.ts:2: ../../server/herdr-core/not-written-yet.ts (server/herdr-core/not-written-yet.ts)",
       "server/herdr-core/snapshot.ts:4: ../herdr/client.ts (server/herdr/client.ts)",
       "server/agent-identity.ts:1: ../src/lib/status.ts (src/lib/status.ts)",
+    ]);
+  });
+
+  it("reads an import that no semicolon ends as its own import, whatever follows it", () => {
+    const sources: Record<string, string> = {
+      "tui/main.ts": "import \"../server/index.ts\"\nimport { version } from \"../package.json\";\nimport \"./model/b.ts\";",
+      "tui/model/b.ts": "export const b = 1\nimport \"../../server/main.ts\"\nimport { c } from \"./c.ts\";",
+    };
+    expect(closure("tui/main.ts", (path) => sources[path]).offenders).toEqual([
+      "tui/main.ts:1: ../server/index.ts (server/index.ts)",
+      "tui/model/b.ts:2: ../../server/main.ts (server/main.ts)",
     ]);
   });
 });

@@ -8,7 +8,9 @@ import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts
 
 const SOURCES = [...files("{src,server,shared,scripts,site,telemetry,integrations,tui}/**/*.{ts,tsx,mjs,js}"), "vite.config.ts"];
 
-const SPECIFIER = /(?:^|[\s;])(?:import|export)\s[^;]*?\sfrom\s*["']([^"']+)["']|(?:^|[\s;])import\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/gm;
+// A declaration never runs on into the next `import`: one that no semicolon ends would otherwise take the import
+// after it for its own `from`, and that import's specifier would go unread.
+const SPECIFIER = /(?:^|[\s;])(?:import|export)\s(?:(?!\bimport\b)[^;])*?\sfrom\s*["']([^"']+)["']|(?:^|[\s;])import\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/gm;
 
 const specifiersIn = (code: string): { specifier: string; line: number }[] =>
   [...code.matchAll(SPECIFIER)].map((match) => {
