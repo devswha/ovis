@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mergeAccountState } from "./account-merge.ts";
@@ -43,5 +43,22 @@ describe("merging two folders' account state fails closed on what it cannot trus
     const [active, sibling] = [dir(), dir()];
     put(sibling, "account-pending.json", { not: "a list" });
     expect(mergeAccountState(active, sibling)).not.toBeNull();
+  });
+
+  test("T28, S19: sibling removal evidence the evidence reader would refuse is refused by the merge too", () => {
+    if (process.platform === "win32") return;
+    const [active, sibling] = [dir(), dir()];
+    put(active, REMOVAL_FILE, { v: 1, markers: [], revokes: [], unrevokes: [] });
+    put(sibling, REMOVAL_FILE, { v: 1, markers: [], revokes: [], unrevokes: [] });
+    chmodSync(join(sibling, REMOVAL_FILE), 0o666);
+    expect(mergeAccountState(active, sibling)).not.toBeNull();
+  });
+
+  test("T28, S19: sibling removal evidence missing beside its device journal is refused by the merge", () => {
+    const [active, sibling] = [dir(), dir()];
+    put(active, REMOVAL_FILE, { v: 1, markers: [], revokes: [], unrevokes: [] });
+    put(sibling, "device-journal.json", { v: 1, next_seq: 1, entries: [], seen: {}, open: [], trimmed: 0 });
+    expect(mergeAccountState(active, sibling)).not.toBeNull();
+    expect(existsSync(join(sibling, REMOVAL_FILE))).toBe(false);
   });
 });
