@@ -20,15 +20,18 @@ import { ItsMeButton } from "./JoinWait.tsx";
 const ANSWER_TIMEOUT_MS = 5000;
 
 /** The signed-in account, with this sign-in's registered key when it has one (Not me signs with it; It's me needs none). */
-async function noticeIdentity(session: AccountSession | undefined): Promise<{ readonly account: string; readonly key: OwnKey | null } | null> {
+async function noticeIdentity(session: AccountSession | undefined): Promise<{ readonly account: string; readonly session: AccountSession; readonly key: OwnKey | null } | null> {
   if (session === undefined) return null;
   const kept = await indexedAccountStore.get("signin_key");
   const key = kept !== undefined && kept.no !== null && session.account === kept.account && session.sign_in_id === kept.sign_in_id
     ? { ...kept.key, no: kept.no } : null;
-  return { account: session.account, key };
+  return { account: session.account, session, key };
 }
 
 type Own = Awaited<ReturnType<typeof noticeIdentity>>;
+
+/** Whether a refusal kept for `asked` is this sign-in's to show. */
+const refusedBy = (asked: AccountSession | undefined, own: Own): boolean => asked !== undefined && own !== null && sameSignIn(asked, own.session);
 
 /**
  * "It's me" (owner decision OD3, T53): sent only to the admission's own PC, whose notice id it names. That PC ends the
@@ -42,11 +45,14 @@ function ItsMeAction({ notice, pc, socket, own, inFlight, refusedItsMe, changed 
   readonly own: Own;
   /** the answers out, by PC and notice, app-wide: one at a time, also across switching PCs (T51, T53) */
   readonly inFlight: Set<string>;
-  readonly refusedItsMe: Set<string>;
+  /** a refused It's me by PC and notice, with the sign-in that asked: another sign-in never sees it */
+  readonly refusedItsMe: Map<string, AccountSession>;
   readonly changed: () => void;
 }) {
   const id = `${pc.id}:${notice.id}`;
   const canAnswer = own !== null && notice.account === own.account && notice.kind === "admit" && notice.open && socket.accountOpensAll();
+  // a notice decided or closed takes its refusal with it: the same id opened again starts with none
+  useEffect(() => { if (!notice.open) refusedItsMe.delete(id); }, [notice.open, refusedItsMe, id]);
 
   const confirm = async () => {
     if (!canAnswer || inFlight.has(id)) return;
@@ -65,8 +71,10 @@ function ItsMeAction({ notice, pc, socket, own, inFlight, refusedItsMe, changed 
         if (outcome.status === "fulfilled") break;
         unanswered++;
       }
-      // The PC answers a refused It's me with nothing (too new, held or not caught up): say so rather than go quiet.
-      if (unanswered === 2) refusedItsMe.add(id);
+      // The PC answers a refused It's me with nothing (too new, held or not caught up): say so rather than go quiet,
+      // to the sign-in that asked, and only while it is still the one here
+      const now = await indexedAccountStore.get("session");
+      if (unanswered === 2 && now !== undefined && sameSignIn(started, now)) refusedItsMe.set(id, started);
     } catch (error) {
       if (!(error instanceof DOMException)) throw error;
       console.warn("Ovis: could not read the sign-in for an admission answer", error.name);
@@ -76,7 +84,7 @@ function ItsMeAction({ notice, pc, socket, own, inFlight, refusedItsMe, changed 
     }
   };
 
-  return canAnswer ? <ItsMeButton sending={inFlight.has(id)} onPress={confirm} refusedBy={refusedItsMe.has(id) ? pc.name : null} /> : null;
+  return canAnswer ? <ItsMeButton sending={inFlight.has(id)} onPress={confirm} refusedBy={refusedBy(refusedItsMe.get(id), own) ? pc.name : null} /> : null;
 }
 
 type NoticeFleet = {
@@ -200,7 +208,7 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, changed, 
 }
 
 /** A notice's two answers, one out at a time per PC and notice (T51, T53). */
-function AdmissionActions({ refusedItsMe, ...props }: Parameters<typeof BlockNoticeAction>[0] & { readonly refusedItsMe: Set<string> }) {
+function AdmissionActions({ refusedItsMe, ...props }: Parameters<typeof BlockNoticeAction>[0] & { readonly refusedItsMe: Map<string, AccountSession> }) {
   return <>
     <ItsMeAction notice={props.notice} pc={props.pc} socket={props.socket} own={props.own} inFlight={props.inFlight} refusedItsMe={refusedItsMe} changed={props.changed} />
     <BlockNoticeAction {...props} />
@@ -221,7 +229,7 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   const [results, setResults] = useState<ReadonlyMap<string, BlockResult>>(new Map());
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const sending = useRef(new Set<string>());
-  const refusedItsMe = useRef(new Set<string>());
+  const refusedItsMe = useRef(new Map<string, AccountSession>());
   // The lock and refusal are app-wide per PC and notice, even when an answer finishes offscreen.
   const [, answersChanged] = useReducer((count: number) => count + 1, 0);
   const [own, setOwn] = useState<Own>(null);
