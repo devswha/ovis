@@ -726,7 +726,7 @@ it("S32-1: a final refusal drawn in a hidden tab leaves the store only once the 
 
 it("S32-1: Try again asks again right before the record goes out, after a token refresh", async () => {
   const fresh = () => Response.json({ access_token: "a2", refresh_token: "r2", expires_in: 3600, account: "acct", provider: "github" });
-  let hold: { asked: PromiseWithResolvers<void>; answer: PromiseWithResolvers<Response> } | undefined;
+  let hold: { asked: ReturnType<typeof Promise.withResolvers<void>>; answer: ReturnType<typeof Promise.withResolvers<Response>> } | undefined;
   const page = await notMePage({
     service: () => new Response(null, { status: 503 }),
     token: () => { if (hold === undefined) return fresh(); hold.asked.resolve(); return hold.answer.promise; },

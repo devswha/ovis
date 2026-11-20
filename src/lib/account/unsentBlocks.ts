@@ -24,10 +24,17 @@ export interface UnsentBlocks {
 /** How the service answered for a whole set: took it, found its target already removed, or refused it for good. */
 export type Delivered = "sent" | "done" | "refused";
 
-/** The service's refusals of a block record itself (ovis-account src/safety.ts), which no later send changes. */
-const FINAL = new Set(["record_invalid", "signature_invalid", "account_mismatch", "frozen", "signer_not_member", "unknown_target", "signer_not_older"]);
-/** The block's target is already removed: what the block was for holds, so this confirms it. */
+/**
+ * The service's refusals of a block record itself (ovis-account src/safety.ts), by code and the status it comes with,
+ * which no later send changes. The same code with any other status is no such answer.
+ */
+const FINAL = new Map([
+  ["record_invalid", 400], ["signature_invalid", 400], ["account_mismatch", 403], ["frozen", 403],
+  ["signer_not_member", 403], ["unknown_target", 403], ["signer_not_older", 403],
+]);
+/** The block's target is already removed (409): what the block was for holds, so this confirms it. */
 const MOOT = "target_removed";
+const MOOT_STATUS = 409;
 
 /**
  * Stores `records` for `session`, one entry per record id, in one step with reading that it is still the stored
@@ -81,16 +88,20 @@ export async function postKept(store: AccountStore, session: AccountSession, rec
  */
 function answeredBy(error: unknown): string | undefined {
   if (!(error instanceof AccountServiceError) || error instanceof AccountRefreshError) return undefined;
-  return FINAL.has(error.code) || error.code === MOOT ? error.code : undefined;
+  const answered = FINAL.get(error.code) === error.status || (error.code === MOOT && error.status === MOOT_STATUS);
+  return answered ? error.code : undefined;
 }
 
-/** `ids` of `account` whose final refusal its owner has now been shown: they leave the store. A record still waiting stays. */
+/**
+ * `ids` of `account` whose final refusal its owner has now been shown: they leave the store, while `account` is still
+ * the stored sign-in's (read in the same step). A record still waiting stays.
+ */
 export async function refusalShown(store: AccountStore, account: string, ids: readonly string[]): Promise<void> {
   const shown = new Set(ids);
-  await store.update("unsent_blocks", (current) => {
-    if (current === undefined) return undefined;
-    const next = Object.fromEntries(Object.entries(current).filter(([id, entry]) => !(shown.has(id) && entry.account === account && entry.refused === true)));
-    return Object.keys(next).length === 0 ? undefined : next;
+  await store.updateMany(["session", "unsent_blocks"], (current) => {
+    if (current.session?.account !== account || current.unsent_blocks === undefined) return current;
+    const next = Object.fromEntries(Object.entries(current.unsent_blocks).filter(([id, entry]) => !(shown.has(id) && entry.account === account && entry.refused === true)));
+    return { ...current, unsent_blocks: Object.keys(next).length === 0 ? undefined : next };
   });
 }
 

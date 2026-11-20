@@ -27,6 +27,7 @@ import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { deviceLabel, deviceOs } from "../lib/phone.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { AccountPcList, AccountSignIn, HOSTED_APP_URL, PROVIDER_NAMES, ProviderMark, providerChoice } from "./AccountPcs.tsx";
+import { RefusalSeen } from "./BlockOutcomes.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { statusText } from "./RelayPanel.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
@@ -1137,11 +1138,6 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
   // The question belongs to the sign-in that asked: a switch to another one voids it.
   // A final refusal (`refused`, by record id) is said before the sign-out, and leaves the store once said.
   const [unsentAsked, setUnsentAsked] = useState<{ readonly session: AccountSession; readonly state: "waiting" | "unknown" | "retry" | "refused"; readonly refused?: readonly string[] } | null>(null);
-  useEffect(() => {
-    if (unsentAsked?.state !== "refused" || unsentAsked.refused === undefined) return;
-    void refusalShown(indexedAccountStore, unsentAsked.session.account, unsentAsked.refused)
-      .catch((error: unknown) => console.warn("Ovis: a shown refusal could not be cleared", error instanceof Error ? error.name : error));
-  }, [unsentAsked]);
   /** Says the final refusals `entries` hold, if any; whether there were. */
   const sayRefused = (session: AccountSession, entries: readonly UnsentBlocks[]): boolean => {
     const refused = entries.filter((entry) => entry.refused === true).flatMap((entry) => entry.records.map((record) => record.id));
@@ -1181,9 +1177,11 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
       entries = await unsentBlocks(indexedAccountStore, session);
     } catch (error) {
       console.warn("Ovis: the account service did not confirm the block", error instanceof Error ? error.name : error);
-      setUnsentAsked({ session, state: "retry" });
+      if (await stillAsking() !== null) setUnsentAsked({ session, state: "retry" });
       return;
     }
+    // signed out or switched while it went: its answer is said at that account's next sign-in, not here
+    if (await stillAsking() === null) return;
     // a final refusal, this send's or an earlier one's, is said; the person decides whether to sign out anyway
     if (!sayRefused(session, entries)) endSignIn(session);
   };
@@ -1347,7 +1345,8 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
                 <button type="button" className="btn account-head-btn" aria-label={t("Sign out of {provider}", { provider: PROVIDER_NAMES[view.provider] })} onClick={signOut}>{t("Sign out")}</button>
               </div>
             )}
-          {unsentAsked !== null && (
+          {/* the question is its own sign-in's: under another account's view it is not drawn */}
+          {unsentAsked !== null && unsentAsked.session.account === view.account && (
             <div className="settings-item" role="status">
               <p className="settings-hint">{unsentAsked.state === "unknown" ? t("Could not check whether a block still waits to reach the account.")
                 : unsentAsked.state === "waiting" ? t("A block has not reached the account yet.") : t("The block did not go through yet.")}</p>
@@ -1355,6 +1354,10 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
               {unsentAsked.state === "waiting" && <button type="button" className="btn" onClick={() => { void sendUnsentThenSignOut(); }}>{t("Send it now")}</button>}
               {unsentAsked.state === "retry" && <button type="button" className="btn" onClick={() => { void sendUnsentThenSignOut(); }}>{t("Try again")}</button>}
               <button type="button" className="btn" onClick={() => { void signOutAnyway(); }}>{t("Sign out anyway")}</button>
+              {unsentAsked.state === "refused" && unsentAsked.refused !== undefined && <RefusalSeen onShown={() => {
+                void refusalShown(indexedAccountStore, unsentAsked.session.account, unsentAsked.refused ?? [])
+                  .catch((error: unknown) => console.warn("Ovis: a shown refusal could not be cleared", error instanceof Error ? error.name : error));
+              }} />}
             </div>
           )}
           {view.methods !== null && (

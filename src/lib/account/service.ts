@@ -505,8 +505,10 @@ export class AccountService {
     return isRecord(body) && typeof body.queued === "number" ? body.queued : 0;
   }
 
-  async postSafetyRecord(record: DeviceSafetyRecord): Promise<void> {
-    const body = await this.call("POST", "/v1/safety-records", { record }, AbortSignal.timeout(5_000));
+  /** `ready` runs right before each send, after any token refresh, and stops it by throwing. */
+  async postSafetyRecord(record: DeviceSafetyRecord, ready?: () => void): Promise<void> {
+    const again: SendAgain | undefined = ready === undefined ? undefined : { sends: 2, before: async () => ready(), wait: async () => false };
+    const body = await this.call("POST", "/v1/safety-records", { record }, AbortSignal.timeout(5_000), again);
     if (!isRecord(body) || body.id !== record.id) throw new AccountServiceError(502, "invalid_answer", "The account service did not confirm this record");
   }
 

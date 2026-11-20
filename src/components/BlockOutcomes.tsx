@@ -1,6 +1,6 @@
 import "./BlockOutcomes.css";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { BlockRefusal, PcBlockOutcome } from "../../shared/account-devices-api.ts";
 import { useT } from "../lib/i18n.ts";
 
@@ -11,15 +11,38 @@ export function NotMeButton({ sending, onPress }: { sending: boolean; onPress: (
 }
 
 /**
+ * Drawn beside a final refusal the account service gave (S32-1): calls `onShown` once, when this is on a page that is
+ * seen. Only what is drawn mounts it, so a page behind its access gate or a tab in the background says nothing yet.
+ */
+export function RefusalSeen({ onShown }: { readonly onShown: () => void }) {
+  const shown = useRef(onShown);
+  shown.current = onShown;
+  useEffect(() => {
+    let done = false;
+    const look = (): void => {
+      if (done || document.visibilityState === "hidden") return;
+      done = true;
+      shown.current();
+    };
+    look();
+    document.addEventListener("visibilitychange", look);
+    return () => document.removeEventListener("visibilitychange", look);
+  }, []);
+  return null;
+}
+
+/**
  * Each PC's own answer to a block (device table T51, T60, T65): blocked only on that PC's receipt; a refusal
  * says why by that PC's own order; a PC not reached applies it at its next check, with no time promised.
  */
-export function BlockOutcomes({ outcomes, names, accountRetry, accountFailed = false }: {
+export function BlockOutcomes({ outcomes, names, accountRetry, accountFailed = false, onRefusalShown }: {
   readonly outcomes: readonly PcBlockOutcome[];
   readonly names: ReadonlyMap<string, string>;
   readonly accountRetry?: () => Promise<void>;
   /** the account service refused the block for good (S32-1): said once, with nothing to retry */
   readonly accountFailed?: boolean;
+  /** once that refusal is on a page that is seen (RefusalSeen) */
+  readonly onRefusalShown?: () => void;
 }) {
   const t = useT();
   const [retrying, setRetrying] = useState(false);
@@ -41,7 +64,8 @@ export function BlockOutcomes({ outcomes, names, accountRetry, accountFailed = f
           : t("{pc}: needs an Ovis update to block", { pc });
         return <li key={outcome.server_id} className="settings-hint" data-state={outcome.state}>{line}</li>;
       })}
-      {accountRetry === undefined && accountFailed && <li className="settings-hint" data-account-delivery="failed">{t("The block did not go through yet.")}</li>}
+      {accountRetry === undefined && accountFailed && <li className="settings-hint" data-account-delivery="failed">{t("The block did not go through yet.")}
+        {onRefusalShown !== undefined && <RefusalSeen onShown={onRefusalShown} />}</li>}
       {accountRetry !== undefined && (
         <li className="settings-hint" data-account-delivery="failed">
           {t("The block did not go through yet.")}{" "}
