@@ -5,7 +5,7 @@ import { accountDeviceId, newRecordId, signSafetyRecord } from "../../shared/acc
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import * as herdr from "../herdr/client.ts";
-import { writePrivateState } from "../private-state.ts";
+import { privateStateFs, writePrivateState } from "../private-state.ts";
 import { bounded, relayConnection, relayFixture } from "../relay/test-helpers.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
@@ -38,7 +38,7 @@ async function listedSocketPc() {
   return { pc, services, device, older: initial.device, service, member, serverId };
 }
 
-test.each(["block", "freeze", "lock", "removal"] as const)(
+test.each(["block", "freeze", "lock", "removal", "failed deny"] as const)(
   "a live listed drive row receives machine events; %s closes its socket with 1008", async change => {
     const { pc, services, device, older, service, member, serverId } = await listedSocketPc();
     const { core, devices, safetyLog, accountMailbox } = services;
@@ -66,6 +66,18 @@ test.each(["block", "freeze", "lock", "removal"] as const)(
         service.removeDevice(ACCOUNT, device.publicKey);
         expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
         break;
+      case "failed deny": {
+        const rename = privateStateFs.renameSync;
+        const fault = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+          if (String(to).endsWith("/account-removed.json")) throw new Error("evidence unavailable");
+          rename(from, to);
+        });
+        try { expect(() => devices.revoke(member.id)).toThrow("evidence unavailable"); }
+        finally { fault.mockRestore(); }
+        expect(devices.failsClosed).toBe(true);
+        expect(devices.canDrive(device.id)).toBe(false);
+        break;
+      }
     }
     expect(await bounded(socket.closed)).toMatchObject({ code: 1008 });
     expect(devices.sessionRow(device.id)).toBeNull();
@@ -74,3 +86,12 @@ test.each(["block", "freeze", "lock", "removal"] as const)(
     expect(await bounded(Promise.race([retry.auth(device, [ACCOUNT_OPENS_ALL_FEATURE]), retry.serverError]))).toBe("auth_failed");
   },
 );
+
+test("a held listed device cannot open a drive event stream", async () => {
+  const { fixture, device, serverId } = await createListedPc(close => closes.push(close));
+  const { devices, core } = fixture.app.context.services;
+  expect(devices.has(device.id)).toBe(true);
+  expect(devices.canDrive(device.id)).toBe(false);
+  const link = await relayConnection(fixture, { serverId, websocket: core.socketHandlers });
+  expect(await bounded(Promise.race([link.auth(device, [ACCOUNT_OPENS_ALL_FEATURE]), link.serverError]))).toBe("held");
+});
