@@ -68,6 +68,11 @@ export class PairingRateLimitedError extends Error {
  * round trip, a look-up of who asks). It gets no pairing code: a code held by a device that is already gone is one
  * no revoke ends.
  */
+/** A link would replace a key approved on this PC's screen, from an app that did not ask to (T7): nothing changed. */
+export class ReplacementNeedsAppError extends Error {
+  constructor() { super("Replacing a key approved on this PC's screen needs an app that shows the replacement's fingerprint"); }
+}
+
 export class DeviceGoneError extends Error {
   readonly code = "unauthorized";
   constructor() {
@@ -2593,7 +2598,7 @@ export class DeviceStore {
    * (`auth_changed`); the linking one goes on until it signs in again with the new key. A row that waits to link
    * is no device yet: its link makes it one (promote).
    */
-  linkAccountKey(deviceId: string, oldKey: string, key: string, account: string, sessionId = "", vouched = false): PairedDevice | null {
+  linkAccountKey(deviceId: string, oldKey: string, key: string, account: string, sessionId = "", vouched = false, replacement = false): PairedDevice | null {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
     if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId, vouched);
@@ -2605,6 +2610,8 @@ export class DeviceStore {
     // a key approved on this PC's screen is never replaced by a link alone: the new key waits for a confirm of its own
     // there, and nothing changes until then (P22, T7, T72)
     if (this.pc !== null && key !== oldKey && device.origin?.from === "pc") {
+      // only an app that shows the fingerprint it computes itself may ask: to any other, a confirm is a blind yes
+      if (!replacement) throw new ReplacementNeedsAppError();
       // the challenge the confirm's fingerprint is made over: this PC's own, new with each link, so none can be chosen
       this.replacements.set(deviceId, { key, account, at: Date.now(), challenge: randomBytes(32).toString("base64url"), sessionId, vouched, ownWord });
       return this.list(null).find((d) => d.id === deviceId) ?? null;
