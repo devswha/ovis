@@ -1,7 +1,7 @@
 /**
  * `ovis recover` (docs/account.md, "Recovery at the PC"): run by this PC's user in a terminal on it or over SSH, it
- * talks to the server over its recovery socket only (server/account/recovery.ts). Every release is asked at a
- * terminal, one row at a time; input that is not a terminal answers nothing.
+ * talks to the server over its recovery socket only (server/account/recovery.ts). Confirmation takes place at a
+ * terminal; input that is not a terminal answers nothing.
  */
 import type { RecoveryAction } from "../shared/account-devices-api.ts";
 
@@ -22,7 +22,7 @@ interface WaitingRow {
   refusal: string | null;
 }
 
-const USAGE = "usage: ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id>]\n";
+const USAGE = "usage: ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block id>... | --revoke-all]\n";
 
 export async function runRecover(args: readonly string[], io: RecoverIo): Promise<number> {
   if (io.platform === "win32") {
@@ -30,14 +30,39 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
     return 1;
   }
   const [flag, ...ids] = args;
-  if (flag !== undefined && flag !== "--release" && flag !== "--undo" && flag !== "--admit") { io.out(USAGE); return 2; }
+  const targetAction = flag === "--remove" || flag === "--lift";
+  if (flag !== undefined && flag !== "--release" && flag !== "--undo" && flag !== "--admit" && flag !== "--revoke-all" && !targetAction) { io.out(USAGE); return 2; }
   if (flag === "--admit" && ids.length !== 1) { io.out(USAGE); return 2; }
-  if (flag === "--release" && ids.length === 0) { io.out(USAGE); return 2; }
-  if ((flag === "--release" || flag === "--admit") && !io.terminal) {
+  if (((flag === "--release" || targetAction) && ids.length === 0) || (flag === "--revoke-all" && ids.length !== 0)) { io.out(USAGE); return 2; }
+  if ((flag === "--release" || flag === "--admit" || flag === "--revoke-all" || targetAction) && !io.terminal) {
     io.out("This is not run in a terminal, so nothing can be released here. Run it in a terminal on this PC (over ssh, run ssh -t).\n");
     return 1;
   }
   try {
+    if (targetAction || flag === "--revoke-all") {
+      const confirmed: string[] = [];
+      if (flag === "--revoke-all") {
+        const answer = (await io.ask("Every device of this PC will be signed out. Revoke all devices? [y/N] ")).trim().toLowerCase();
+        if (answer !== "y" && answer !== "yes") return 0;
+      } else {
+        for (const id of ids) {
+          const action = flag === "--remove" ? `Remove ${id} from this PC?` : `Lift block ${id} on this PC?`;
+          const answer = (await io.ask(`${action} [y/N] `)).trim().toLowerCase();
+          if (answer === "y" || answer === "yes") confirmed.push(id);
+        }
+        if (confirmed.length === 0) return 0;
+      }
+      const reply = await io.send(flag === "--remove" ? { act: "remove", targets: confirmed }
+        : flag === "--lift" ? { act: "lift", blocks: confirmed } : { act: "revoke_all" });
+      if (typeof reply === "object" && reply !== null) {
+        if ("error" in reply && typeof reply.error === "string") { io.out(`${reply.error}\n`); return 1; }
+        if ("removed" in reply && Array.isArray(reply.removed)) { io.out(`Removed: ${reply.removed.join(", ")}\n`); return 0; }
+        if ("lifted" in reply && Array.isArray(reply.lifted)) { io.out(`Lifted: ${reply.lifted.join(", ")}\n`); return 0; }
+        if ("revoked" in reply && typeof reply.revoked === "number") { io.out(`Revoked ${reply.revoked} device(s).\n`); return 0; }
+      }
+      io.out("Ovis did not return a recovery result.\n");
+      return 1;
+    }
     if (flag === "--undo") {
       const answer = await io.send({ act: "undo", rows: ids.length > 0 ? ids : null }) as { releases?: string[]; error?: string; warning?: string };
       if (answer.error !== undefined) { io.out(`${answer.error}\n`); return 1; }
