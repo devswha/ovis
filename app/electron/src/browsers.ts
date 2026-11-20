@@ -38,6 +38,8 @@ export interface DesktopEntry {
   name: string;
   exec: string;
   icon: string | null;
+  /** the .desktop file's path, for %k */
+  location: string | null;
   web: boolean;
   shown: boolean;
 }
@@ -72,6 +74,7 @@ export function parseDesktopEntry(text: string): DesktopEntry | null {
     name: unescapeValue(name),
     exec: unescapeValue(exec),
     icon: values.has("Icon") ? unescapeValue(values.get("Icon")!) : null,
+    location: null,
     web: types.includes("x-scheme-handler/https") || types.includes("x-scheme-handler/http"),
     shown: values.get("NoDisplay") !== "true" && values.get("Hidden") !== "true",
   };
@@ -110,39 +113,50 @@ function execWords(exec: string): { text: string; quoted: boolean }[] | null {
 }
 
 /**
- * The arguments an Exec line runs for `url`, its field codes filled in here and never by a shell:
- * %u %U %f %F take the address (one argument), %c the name, %i the icon, %% a percent sign; the
- * others are dropped. An Exec line with no field for the address gets it at the end. One that puts
- * the address inside quotes (`sh -c "browser %u"`, which the spec forbids) is refused: a shell would
- * read the address as its script.
+ * A program that would read the address as code, not as a page to open: a shell or another
+ * interpreter, or a script Windows hands to one. A registration that names one is not offered.
  */
-export function desktopCommand(entry: Pick<DesktopEntry, "exec" | "name" | "icon">, url: string): string[] | null {
+export function runsInterpreter(program: string): boolean {
+  const name = program.split(/[\\/]/).pop()!.toLowerCase();
+  return /^(?:[a-z]*sh|env|python[\d.]*|perl|ruby|node|bun|deno|php|lua|osascript|pwsh|powershell|cmd|wscript|cscript|mshta|rundll32)(?:\.exe)?$/.test(name)
+    || /\.(?:bat|cmd|vbs|vbe|js|jse|wsf|wsh|ps1|hta)$/.test(name);
+}
+
+/**
+ * The arguments an Exec line runs for `url`, its field codes filled in here and never by a shell:
+ * %u %U %f %F, a word of their own, become the address (one argument), %c the name, %k the file's
+ * path, %i the icon, %% a percent sign; the deprecated ones are dropped. An Exec line with no field
+ * for the address gets it at the end. Refused (null): the address inside a larger or quoted word
+ * (`sh -c "browser %u"`, `--url=%u`), which the program would read as part of something else;
+ * two address fields; %k with no file; and a program that is an interpreter.
+ */
+export function desktopCommand(entry: Pick<DesktopEntry, "exec" | "name" | "icon"> & { location?: string | null }, url: string): string[] | null {
   const words = execWords(entry.exec);
-  if (words === null || words.length === 0) return null;
-  if (words.some(({ text, quoted }) => quoted && /%[uUfF]/.test(text))) return null;
+  if (words === null || words.length === 0 || runsInterpreter(words[0]!.text)) return null;
   const command: string[] = [];
   let given = false;
-  for (const { text: word } of words) {
-    if (word === "%i") {
-      if (entry.icon !== null) command.push("--icon", entry.icon);
-      continue;
-    }
-    if (/^%[UF]$/.test(word)) {
+  for (const { text, quoted } of words) {
+    if (!quoted && /^%[uUfF]$/.test(text)) {
+      if (given) return null;
       command.push(url);
       given = true;
       continue;
     }
+    if (!quoted && text === "%i") {
+      if (entry.icon !== null) command.push("--icon", entry.icon);
+      continue;
+    }
+    let refused = false;
     let dropped = false;
-    const filled = word.replace(/%(.)/g, (_match, code: string) => {
+    const filled = text.replace(/%(.)/g, (_match, code: string) => {
       if (code === "%") return "%";
-      if (code === "u" || code === "f") {
-        given = true;
-        return url;
-      }
       if (code === "c") return entry.name;
+      if (code === "k" && entry.location) return entry.location;
+      if ("uUfFk".includes(code)) refused = true;
       dropped = true;
       return "";
     });
+    if (refused) return null;
     if (!(dropped && filled === "")) command.push(filled);
   }
   if (!given) command.push(url);
@@ -176,7 +190,7 @@ export function linuxEntries(dirs: string[], read: (path: string) => string = (p
       seen.add(id);
       let entry: DesktopEntry | null;
       try { entry = parseDesktopEntry(read(path)); } catch { entry = null; }
-      if (entry?.web) entries.set(id, entry);
+      if (entry?.web) entries.set(id, { ...entry, location: path });
     }
   }
   return entries;
@@ -211,14 +225,63 @@ export function parseRegQuery(output: string): Map<string, Map<string, string>> 
   return keys;
 }
 
-/** a command line of the registry in arguments, %1 and the like taken out (the address is added last) */
+/** a command line of the registry in arguments, as Windows splits it (CommandLineToArgvW): a quote may sit inside a word */
 export function windowsCommandWords(line: string): string[] {
   const words: string[] = [];
-  for (const match of line.matchAll(/"([^"]*)"|(\S+)/g)) {
-    const word = match[1] ?? match[2]!;
-    if (!/^"?%\d"?$/.test(word) && word !== "%*") words.push(word);
+  let word = "";
+  let quoted = false;
+  let started = false;
+  for (let i = 0; i < line.length;) {
+    const char = line[i]!;
+    if (char === "\\") {
+      let count = 0;
+      while (line[i + count] === "\\") count++;
+      i += count;
+      if (line[i] === "\"") {
+        word += "\\".repeat(count >> 1);
+        if (count % 2 === 1) { word += "\""; i++; }
+      } else word += "\\".repeat(count);
+      started = true;
+    } else if (char === "\"") {
+      quoted = !quoted;
+      started = true;
+      i++;
+    } else if (!quoted && (char === " " || char === "\t")) {
+      if (started) words.push(word);
+      word = "";
+      started = false;
+      i++;
+    } else {
+      word += char;
+      started = true;
+      i++;
+    }
   }
+  if (started) words.push(word);
   return words;
+}
+
+/**
+ * The arguments a registry command runs for `url`: %1 (or %L), a word of its own, becomes the
+ * address in its place, %* is dropped, and a command with no placeholder gets the address at the
+ * end. Refused (null): the placeholder inside a larger word, and a program that is an interpreter.
+ */
+export function windowsCommand(words: string[], url: string): string[] | null {
+  if (words.length === 0 || runsInterpreter(words[0]!)) return null;
+  const command: string[] = [];
+  let given = false;
+  for (const word of words) {
+    if (/^%[1lL]$/.test(word)) {
+      if (given) return null;
+      command.push(url);
+      given = true;
+    } else if (word !== "%*") {
+      if (/%[1lL*]/.test(word)) return null;
+      command.push(word);
+    }
+  }
+  if (!given) command.push(url);
+  return command;
 }
 
 /** the registry's StartMenuInternet clients, the current user's before the machine's */
@@ -234,10 +297,10 @@ export function windowsBrowsers(trees: Map<string, Map<string, string>>[], userC
       const open = values("shell\\open\\command");
       const line = open ? [...open.values()][0] : undefined;
       const words = line ? windowsCommandWords(line) : [];
-      if (words.length === 0 || browsers.has(id)) continue;
+      if (windowsCommand(words, "https://example.com/") === null || browsers.has(id)) continue;
       const appName = values("Capabilities")?.get("ApplicationName");
       const name = appName && !appName.startsWith("@") ? appName : client;
-      browsers.set(id, { id, name, command: (url) => [...words, url] });
+      browsers.set(id, { id, name, command: (url) => windowsCommand(words, url)! });
       const https = values("Capabilities\\URLAssociations")?.get("https");
       if (userChoice !== null && https !== undefined && https.toLowerCase() === userChoice.toLowerCase()) systemDefault ??= name;
     }

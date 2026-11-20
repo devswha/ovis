@@ -28,6 +28,12 @@ export interface LinkBrowsers {
   open(url: string): void;
 }
 
+/** A web address the chosen browser takes: never this app's own pages, which the app keeps (a new Ovis window). */
+function choosesBrowser(kind: ExternalLinkKind, url: string): boolean {
+  if (kind !== "link" || !isWebLink(url)) return false;
+  try { return typeof location === "undefined" || new URL(url).origin !== location.origin; } catch { return false; }
+}
+
 export function linkBrowsers(): LinkBrowsers | null {
   const bridge = typeof window === "undefined" ? undefined : (window as Window & { ovisBrowsers?: Partial<LinkBrowsers> }).ovisBrowsers;
   return typeof bridge?.list === "function" && typeof bridge.choose === "function" && typeof bridge.open === "function" ? bridge as LinkBrowsers : null;
@@ -93,7 +99,7 @@ const openWebLink = createWebLinkOpener();
  * a tab of its own, with no opener or referrer.
  */
 export function openExternal(url: string, kind: ExternalLinkKind, reuse = false): void {
-  const browsers = kind === "link" && isWebLink(url) ? linkBrowsers() : null;
+  const browsers = choosesBrowser(kind, url) ? linkBrowsers() : null;
   if (browsers) browsers.open(url);
   else if (isWebLink(url)) openWebLink(url, reuse);
   else window.open(url, "_blank", "noopener,noreferrer");
@@ -121,7 +127,8 @@ type ExternalLinkProps = Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "target" 
 export function ExternalLink({ kind, referrer = false, href, onClick, ...props }: ExternalLinkProps): ReactElement {
   const click = (event: MouseEvent<HTMLAnchorElement>) => {
     onClick?.(event);
-    if (event.defaultPrevented || event.button !== 0 || kind !== "link" || href === undefined || !isWebLink(href)) return;
+    // only a plain click: a modified one keeps what the browser or the app does with it
+    if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || href === undefined || !choosesBrowser(kind, href)) return;
     const browsers = linkBrowsers();
     if (!browsers) return;
     event.preventDefault();

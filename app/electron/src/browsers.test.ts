@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { agentBrowser, desktopCommand, findProgram, linuxBrowsers, linuxEntries, macBrowsers, parseDesktopEntry, parseRegQuery, readLinkBrowser, webAddress, windowsBrowsers, windowsCommandWords, writeLinkBrowser } from "./browsers.ts";
+import { agentBrowser, desktopCommand, findProgram, linuxBrowsers, linuxEntries, macBrowsers, parseDesktopEntry, parseRegQuery, readLinkBrowser, runsInterpreter, webAddress, windowsBrowsers, windowsCommand, windowsCommandWords, writeLinkBrowser } from "./browsers.ts";
 
 const URL_ = "https://example.com/a b?q=\"x\"&y=%41 'z' $(id)";
 const ADDRESS = webAddress(URL_)!;
@@ -18,7 +18,7 @@ describe("webAddress", () => {
 
 describe("parseDesktopEntry", () => {
   it("reads the [Desktop Entry] group only, and whether it takes https and is shown", () => {
-    expect(parseDesktopEntry(desktop(["Name=Brave Web Browser", "Exec=/usr/bin/brave %U", "MimeType=text/html;x-scheme-handler/https;"]))).toEqual({ name: "Brave Web Browser", exec: "/usr/bin/brave %U", icon: null, web: true, shown: true });
+    expect(parseDesktopEntry(desktop(["Name=Brave Web Browser", "Exec=/usr/bin/brave %U", "MimeType=text/html;x-scheme-handler/https;"]))).toEqual({ name: "Brave Web Browser", exec: "/usr/bin/brave %U", icon: null, location: null, web: true, shown: true });
     expect(parseDesktopEntry(desktop(["Name=Chrome", "Exec=chrome %U", "MimeType=x-scheme-handler/http;", "NoDisplay=true"]))).toMatchObject({ web: true, shown: false });
     expect(parseDesktopEntry(desktop(["Name=Editor", "Exec=edit %F", "MimeType=text/plain;"]))).toMatchObject({ web: false });
     expect(parseDesktopEntry(["[Desktop Entry]", "Type=Link", "Name=Site", "URL=https://ovis.sh"].join("\n"))).toBeNull();
@@ -27,11 +27,11 @@ describe("parseDesktopEntry", () => {
 
 describe("desktopCommand", () => {
   it("fills the field codes itself, the address always one argument", () => {
-    const entry = (exec: string, icon: string | null = null) => ({ exec, name: "Web", icon });
+    const entry = (exec: string, icon: string | null = null) => ({ exec, name: "Web", icon, location: "/usr/share/applications/web.desktop" });
     const cases: [string, string[]][] = [
       ["/usr/bin/brave %U", ["/usr/bin/brave", ADDRESS]],
       ["firefox --new-tab %u", ["firefox", "--new-tab", ADDRESS]],
-      ["browser --url=%u", ["browser", `--url=${ADDRESS}`]],
+      ["browser --desktop-entry %k %u", ["browser", "--desktop-entry", "/usr/share/applications/web.desktop", ADDRESS]],
       ["\"/opt/My Browser/run\" %U", ["/opt/My Browser/run", ADDRESS]],
       ["\"/opt/a\\\"b\" %f", ["/opt/a\"b", ADDRESS]],
       ["web %i --class %c %d %% %U", ["web", "--icon", "web-icon", "--class", "Web", "%", ADDRESS]],
@@ -47,8 +47,8 @@ describe("desktopCommand", () => {
     expect(desktopCommand({ exec: "   ", name: "Web", icon: null }, ADDRESS)).toBeNull();
   });
 
-  it("refuses an Exec line that puts the address inside quotes, where a shell would run it", () => {
-    for (const exec of ["sh -c \"browser %u\"", "/bin/bash -c \"exec firefox '%U'\"", "web \"--url=%f\""]) {
+  it("refuses an Exec line where the address would not be an argument of its own, or a program would read it as code", () => {
+    for (const exec of ["sh -c \"browser %u\"", "/bin/bash -c \"exec firefox '%U'\"", "web \"--url=%f\"", "browser --url=%u", "sh -c browser%u", "/usr/bin/env browser %u", "python3 open.py %u", "web %u %U", "web --desktop-entry %k %u"]) {
       expect(desktopCommand({ exec, name: "Web", icon: null }, webAddress("https://a.example/x$(id)?q=$(id)")!)).toBeNull();
     }
     expect(desktopCommand({ exec: "\"/opt/My Browser/run\" --class \"%c\" %u", name: "Web", icon: null }, ADDRESS)).toEqual(["/opt/My Browser/run", "--class", "Web", ADDRESS]);
@@ -82,6 +82,7 @@ describe("Linux browsers", () => {
     ]);
     expect(found.systemDefault).toBe("Google Chrome");
     expect(found.browsers[2]!.command(ADDRESS)).toEqual(["kfmclient", "openURL", ADDRESS]);
+    expect(entries.get("firefox.desktop")?.location).toBe("/home/u/.local/share/applications/firefox.desktop");
     expect(linuxBrowsers(entries, null).systemDefault).toBeNull();
   });
 });
@@ -109,7 +110,7 @@ describe("Windows browsers", () => {
     "    ApplicationName    REG_SZ    @C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe,-1",
     "",
     "HKEY_LOCAL_MACHINE\\SOFTWARE\\Clients\\StartMenuInternet\\Microsoft Edge\\shell\\open\\command",
-    "    (Default)    REG_SZ    \"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\" --profile-directory=Default \"%1\"",
+    "    (Default)    REG_SZ    \"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\" --profile-directory=\"Work Profile\" \"%1\" --new-window",
     "",
     "HKEY_LOCAL_MACHINE\\SOFTWARE\\Clients\\StartMenuInternet\\Broken",
     "    (Default)    REG_SZ    Broken",
@@ -134,13 +135,28 @@ describe("Windows browsers", () => {
     ]);
     expect(found.systemDefault).toBe("Google Chrome");
     expect(found.browsers[1]!.command(ADDRESS)).toEqual(["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", ADDRESS]);
-    expect(found.browsers[2]!.command(ADDRESS)).toEqual(["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "--profile-directory=Default", ADDRESS]);
+    expect(found.browsers[2]!.command(ADDRESS)).toEqual(["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "--profile-directory=Work Profile", ADDRESS, "--new-window"]);
     expect(windowsBrowsers([parseRegQuery(machine)], "egoliteURL").systemDefault).toBeNull();
   });
 
-  it("takes %1 out of a command line, the address added once at the end", () => {
-    expect(windowsCommandWords("\"C:\\a b\\x.exe\" -osint -url \"%1\"")).toEqual(["C:\\a b\\x.exe", "-osint", "-url"]);
-    expect(windowsCommandWords("C:\\x.exe %1 %*")).toEqual(["C:\\x.exe"]);
+  it("splits a command line as Windows does, a quote inside a word kept to that word", () => {
+    expect(windowsCommandWords("\"C:\\a b\\x.exe\" -osint -url \"%1\"")).toEqual(["C:\\a b\\x.exe", "-osint", "-url", "%1"]);
+    expect(windowsCommandWords("x.exe --name=\"a \\\"b\\\" c\" C:\\dir\\ end")).toEqual(["x.exe", "--name=a \"b\" c", "C:\\dir\\", "end"]);
+  });
+
+  it("puts the address where %1 stands, at the end without one, and refuses what would not keep it an argument", () => {
+    expect(windowsCommand(["x.exe", "-url", "%1", "--flag"], ADDRESS)).toEqual(["x.exe", "-url", ADDRESS, "--flag"]);
+    expect(windowsCommand(["x.exe", "%*"], ADDRESS)).toEqual(["x.exe", ADDRESS]);
+    for (const words of [["x.exe", "-url=%1"], ["C:\\Windows\\System32\\cmd.exe", "/c", "start", "%1"], ["powershell.exe", "-c", "%1"], ["C:\\tools\\open.bat", "%1"], []]) {
+      expect(windowsCommand(words, ADDRESS)).toBeNull();
+    }
+  });
+});
+
+describe("runsInterpreter", () => {
+  it("names shells, interpreters and Windows scripts, and not browsers", () => {
+    for (const program of ["sh", "/bin/bash", "/usr/bin/env", "python3.12", "C:\\Windows\\System32\\cmd.exe", "pwsh.exe", "C:\\a\\open.bat", "run.ps1"]) expect(runsInterpreter(program)).toBe(true);
+    for (const program of ["/usr/bin/firefox", "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "kfmclient", "/usr/bin/flatpak"]) expect(runsInterpreter(program)).toBe(false);
   });
 });
 

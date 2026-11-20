@@ -43,9 +43,10 @@ describe("the desktop app's browser for links", () => {
   function inDesktopApp(run: () => void): { bridged: string[]; tabs: unknown[][] } {
     const bridged: string[] = [];
     const tabs: unknown[][] = [];
-    const originals = { window: Object.getOwnPropertyDescriptor(globalThis, "window"), document: Object.getOwnPropertyDescriptor(globalThis, "document") };
+    const originals = { window: Object.getOwnPropertyDescriptor(globalThis, "window"), document: Object.getOwnPropertyDescriptor(globalThis, "document"), location: Object.getOwnPropertyDescriptor(globalThis, "location") };
     const ovisBrowsers = { list: async () => null, choose: async () => {}, open: (url: string) => { bridged.push(url); } };
     Object.defineProperty(globalThis, "window", { configurable: true, value: { ovisBrowsers, open: (...args: unknown[]) => { tabs.push(args); return null; } } });
+    Object.defineProperty(globalThis, "location", { configurable: true, value: { origin: "http://127.0.0.1:7317" } });
     Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: () => {
       const link = { href: "", target: "", rel: "", click: () => tabs.push([link.href, link.target, link.rel]) };
       return link;
@@ -53,7 +54,7 @@ describe("the desktop app's browser for links", () => {
     try {
       run();
     } finally {
-      for (const name of ["window", "document"] as const) {
+      for (const name of ["window", "document", "location"] as const) {
         if (originals[name]) Object.defineProperty(globalThis, name, originals[name]);
         else Reflect.deleteProperty(globalThis, name);
       }
@@ -61,19 +62,20 @@ describe("the desktop app's browser for links", () => {
     return { bridged, tabs };
   }
 
-  it("hands a web link to the app, and keeps sign-ins, Ovis pages and other schemes on the system browser's path", () => {
+  it("hands a web link to the app, and keeps sign-ins, this app's own pages and other schemes on their old path", () => {
     const { bridged, tabs } = inDesktopApp(() => {
       openExternal("https://example.com/", "link");
       openExternal("https://github.com/login/device", "sign-in");
+      openExternal("http://127.0.0.1:7317/?pane=t3", "link");
       openExternal("mailto:team@ovis.sh", "link");
     });
     expect(bridged).toEqual(["https://example.com/"]);
-    expect(tabs).toEqual([["https://github.com/login/device", "_blank", "noopener noreferrer"], ["mailto:team@ovis.sh", "_blank", "noopener,noreferrer"]]);
+    expect(tabs).toEqual([["https://github.com/login/device", "_blank", "noopener noreferrer"], ["http://127.0.0.1:7317/?pane=t3", "_blank", "noopener noreferrer"], ["mailto:team@ovis.sh", "_blank", "noopener,noreferrer"]]);
   });
 
-  it("takes over a plain click on a web ExternalLink only", () => {
-    const click = (props: Parameters<typeof ExternalLink>[0], event: { button: number; defaultPrevented?: boolean }) => {
-      const fired = { ...event, defaultPrevented: event.defaultPrevented ?? false, preventDefault() { fired.defaultPrevented = true; } };
+  it("takes over a plain click on a web ExternalLink to another site only", () => {
+    const click = (props: Parameters<typeof ExternalLink>[0], event: { button: number; defaultPrevented?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean }) => {
+      const fired = { ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...event, defaultPrevented: event.defaultPrevented ?? false, preventDefault() { fired.defaultPrevented = true; } };
       (ExternalLink(props).props as { onClick: (event: unknown) => void }).onClick(fired);
       return fired.defaultPrevented;
     };
@@ -81,6 +83,8 @@ describe("the desktop app's browser for links", () => {
     const { bridged } = inDesktopApp(() => {
       expect(click({ kind: "link", href: "https://ovis.sh/", onClick: () => { seen++; } }, { button: 0 })).toBe(true);
       expect(click({ kind: "link", href: "https://ovis.sh/middle" }, { button: 1 })).toBe(false);
+      for (const modifier of ["ctrlKey", "metaKey", "altKey", "shiftKey"] as const) expect(click({ kind: "link", href: "https://ovis.sh/modified" }, { button: 0, [modifier]: true })).toBe(false);
+      expect(click({ kind: "link", href: "http://127.0.0.1:7317/?pane=t3" }, { button: 0 })).toBe(false);
       expect(click({ kind: "sign-in", href: "https://github.com/login/device" }, { button: 0 })).toBe(false);
       expect(click({ kind: "ovis", href: "https://pc.example/" }, { button: 0 })).toBe(false);
       expect(click({ kind: "link", href: "mailto:team@ovis.sh" }, { button: 0 })).toBe(false);

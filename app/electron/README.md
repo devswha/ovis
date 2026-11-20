@@ -55,7 +55,9 @@ when the Ovis pages have it (Korean, Japanese, Chinese; `src/text.ts`), English 
   `src/browsers.ts` lists the browsers: Linux's `.desktop` files that take https, Windows'
   `StartMenuInternet` clients, the apps a Mac's LaunchServices opens https with, and agent-browser
   when its program is on the PC (headed, in a session `ovis-links` of its own). A page names one by
-  its id; the program runs without a shell, the address as one argument. When the chosen browser
+  its id, and only the server's own page (its main frame, by its real origin) may ask; the program
+  runs without a shell, the address as one argument. A registration that names a shell or another
+  interpreter, or puts the address inside a larger or quoted argument, is not offered. When the chosen browser
   is gone or fails at once, the default browser opens the link and a notification says so. The
   choice is kept in `<user data>/link-browser.json`.
 - **Links to a pane**: another program on the PC shows a pane in the window, instead of a browser

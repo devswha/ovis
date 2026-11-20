@@ -291,8 +291,8 @@ async function openWebLink(url: string): Promise<void> {
   try {
     const child = spawn(program!, args, { detached: true, stdio: "ignore" });
     child.once("error", fail);
-    // a launcher that hands the link to a running browser exits at once with 0; one that cannot start fails within a moment
-    child.once("exit", (code) => { if (code !== 0 && code !== null && Date.now() - started < 2_000) fail(); });
+    // a launcher that hands the link to a running browser exits at once with 0; one that cannot start fails (or crashes) within a moment
+    child.once("exit", (code, signal) => { if ((code !== 0 || signal !== null) && Date.now() - started < 2_000) fail(); });
     child.unref();
   } catch {
     fail();
@@ -634,20 +634,22 @@ if (!app.requestSingleInstanceLock()) {
     openOutside(url);
     try { return await waiting.returned; } finally { if (signIn === waiting) signIn = null; }
   });
-  // Settings → Browser for links: the server's own pages list the browsers, choose one by its id and open their web links in it
+  // Settings → Browser for links: the server's own page lists the browsers, chooses one by its id and opens its web links in it.
+  // By the frame's real origin, not its address: the server also shows a file's HTML at its own address, in an opaque origin
+  const serverPage = (frame: Electron.WebFrameMain | null | undefined) => frame != null && frame.parent === null && frame.origin === serverOrigin() && ours(frame.url);
   ipcMain.handle("ovis:browsers", async (event) => {
-    if (!ours(event.senderFrame?.url ?? "")) return null;
+    if (!serverPage(event.senderFrame)) return null;
     const found = await browsers(true);
     return { browsers: found.browsers.map(({ id, name }) => ({ id, name })), systemDefault: found.systemDefault, chosen: linkBrowser };
   });
   ipcMain.handle("ovis:browser-choose", async (event, id: unknown) => {
-    if (!ours(event.senderFrame?.url ?? "")) throw new Error("Choosing a browser is not offered here");
+    if (!serverPage(event.senderFrame)) throw new Error("Choosing a browser is not offered here");
     if (id !== null && (typeof id !== "string" || !(await browsers()).browsers.some((browser) => browser.id === id))) throw new Error("That browser is not on this computer");
     linkBrowser = id;
     writeLinkBrowser(linkBrowserPath, id);
   });
   ipcMain.on("ovis:browser-open", (event, url: unknown) => {
-    if (ours(event.senderFrame?.url ?? "") && typeof url === "string") void openWebLink(url);
+    if (serverPage(event.senderFrame) && typeof url === "string") void openWebLink(url);
   });
   app.on("before-quit", (event) => {
     if (stopped) return;

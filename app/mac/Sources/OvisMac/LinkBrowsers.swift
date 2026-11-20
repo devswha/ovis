@@ -104,8 +104,12 @@ final class LinkBrowsersHandler: NSObject, WKScriptMessageHandlerWithReply {
             browsers = found.browsers
             replyHandler(["browsers": found.browsers.map { ["id": $0.id, "name": $0.name] }, "systemDefault": found.systemDefault ?? NSNull(), "chosen": LinkBrowsers.chosen ?? NSNull()] as [String: Any], nil)
         case "choose":
-            let id = body["id"] as? String
-            if id != nil && !(known().contains { $0.id == id }) { return replyHandler(nil, "That browser is not on this Mac") }
+            // null resets to the default; anything but null or a browser found here is refused and changes nothing
+            if body["id"] is NSNull {
+                LinkBrowsers.chosen = nil
+                return replyHandler(nil, nil)
+            }
+            guard let id = body["id"] as? String, known().contains(where: { $0.id == id }) else { return replyHandler(nil, "That browser is not on this Mac") }
             LinkBrowsers.chosen = id
             replyHandler(nil, nil)
         case "open":
