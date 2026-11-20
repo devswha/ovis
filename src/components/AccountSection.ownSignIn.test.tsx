@@ -240,4 +240,13 @@ describe("the relay tab reopened already signed in", () => {
     state.enrolling = false;
     await until(() => !pending(), 10_000);
   });
+
+  it("offers the add again when the PC left the account before its enrollment ended", async () => {
+    state = { relay: "online", pcAccount: ACCOUNT, enrolling: true };
+    await mount("online");
+    await until(() => text(renderer!.root).includes("Not finished yet"));
+    state = { relay: "online", pcAccount: null, enrolling: false };
+    await until(() => renderer!.root.findAll((node) => node.type === "button" && text(node) === "Add this PC to my account").length === 1, 10_000);
+    expect(text(renderer!.root)).not.toContain("This PC is in your Ovis account");
+  });
 });

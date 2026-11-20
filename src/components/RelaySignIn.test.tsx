@@ -364,6 +364,27 @@ describe("the relay tab's Sign in on the PC's own window", () => {
     expect(buttons()).toContain("Continue with Google");
   });
 
+  it("keeps no sign-in cancelled while it was being written", async () => {
+    setUp("Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0");
+    const writing = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const update = indexedAccountStore.update.bind(indexedAccountStore);
+    spyOn(indexedAccountStore, "update").mockImplementation((async (name: string, change: never) => {
+      if (name === "session") { writing.resolve(); await release.promise; }
+      return update(name as never, change);
+    }) as never);
+    await mount();
+    await press("Continue with Google");
+    const start = await sent.promise;
+    const stop = handOverReturn(new URL((await fake.fetch(start)).headers.get("location") ?? "").search, () => undefined);
+    await act(async () => { await writing.promise; });
+    await press("Cancel");
+    await act(async () => { release.resolve(); for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    stop();
+    expect(await indexedAccountStore.get("session")).toBeUndefined();
+    expect(buttons()).toContain("Continue with Google");
+  });
+
   it("shows the failure, not a stuck page, when the sign-in could not be kept", async () => {
     setUp("Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0");
     const update = indexedAccountStore.update.bind(indexedAccountStore);

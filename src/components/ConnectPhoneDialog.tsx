@@ -635,10 +635,15 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
     if (!enrolling) return;
     let live = true;
     const timer = setInterval(() => {
-      pcAccountStatus(apiFetch).then((status) => { if (live) setEnrolling(status.account !== null && status.enrolling === true); }, () => undefined);
+      pcAccountStatus(apiFetch).then((status) => {
+        if (!live) return;
+        // the PC's account as read now: one that left it while enrolling is in no account again, and offers the add once more
+        onPcAccount(status.account);
+        setEnrolling(status.account !== null && status.enrolling === true);
+      }, () => undefined);
     }, ACCOUNT_QR_POLL_MS);
     return () => { live = false; clearInterval(timer); };
-  }, [enrolling]);
+  }, [enrolling, onPcAccount]);
   const before = useRef<AccountQrBaseline | null>(null);
   const run = useRef(0);
   /** the account this tab showed when Show the QR code was pressed: its codes' PC is listed there or nowhere */
