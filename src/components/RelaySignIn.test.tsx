@@ -391,3 +391,91 @@ describe("the relay tab's Sign in on the PC's own window", () => {
     expect(buttons()).not.toContain("Continue with Google");
   });
 });
+
+describe("the relay tab's Sign in in the desktop app", () => {
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  let renderer: ReactTestRenderer | undefined;
+  let fake: FakeAccountService;
+  let opened: ReturnType<typeof Promise.withResolvers<string>>;
+  let answer: ReturnType<typeof Promise.withResolvers<string>>;
+
+  beforeEach(() => {
+    fake = new FakeAccountService();
+    fake.offerLinkPage(["google"]);
+    opened = Promise.withResolvers<string>();
+    answer = Promise.withResolvers<string>();
+    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) Electron/33.0 Chrome/130.0", maxTouchPoints: 0 } });
+    const events = new EventTarget();
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      isSecureContext: true,
+      location: { href: "http://127.0.0.1:7317/", protocol: "http:", hostname: "127.0.0.1", port: "7317" },
+      open: () => null,
+      // the desktop app's bridge (app/electron/src/accountSignIn.ts): its loopback server brings the provider's return back
+      ovisAccount: { service: SERVICE, providers: ["google"], start: async () => "http://127.0.0.1:53117/callback", open: (url: string) => { opened.resolve(url); return answer.promise; } },
+      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
+      setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+    } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
+      querySelector: () => null,
+    } });
+    const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7317");
+      if (url.origin !== SERVICE) return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
+      return fake.fetch(input, init);
+    };
+    spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
+  });
+
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    mock.restore();
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    descriptors.clear();
+  });
+
+  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
+  const buttons = () => renderer!.root.findAll((node) => node.type === "button").map((node) => text(node).trim());
+  const press = async (label: string) => {
+    const button = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === label)[0]!;
+    await act(async () => { button.props.onClick(); });
+  };
+  const mount = async (onSignedIn: () => void = () => undefined) => {
+    const account = { service: SERVICE, onOpen: () => undefined, onSignedIn };
+    await act(async () => {
+      renderer = create(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>,
+        { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) });
+    });
+  };
+  const returned = async (url: string): Promise<string> => new URL((await fake.fetch(url)).headers.get("location") ?? "").search;
+
+  it("offers the providers and signs in through the app's own loopback", async () => {
+    const signedIn = Promise.withResolvers<void>();
+    await mount(() => signedIn.resolve());
+    expect(buttons()).toContain("Continue with Google");
+    expect(buttons()).not.toContain("Sign in to Ovis");
+    await press("Continue with Google");
+    answer.resolve(await returned(await opened.promise));
+    await act(async () => { await signedIn.promise; });
+    expect((await indexedAccountStore.get("session"))?.provider).toBe("google");
+  });
+
+  it("keeps no sign-in that comes back after Cancel", async () => {
+    await mount();
+    await press("Continue with Google");
+    const url = await opened.promise;
+    await press("Cancel");
+    answer.resolve(await returned(url));
+    await act(async () => { for (let turn = 0; turn < 50; turn++) await Promise.resolve(); });
+    expect(await indexedAccountStore.get("session")).toBeUndefined();
+    expect(buttons()).toContain("Continue with Google");
+  });
+});

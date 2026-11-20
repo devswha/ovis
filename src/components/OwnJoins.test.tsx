@@ -84,6 +84,15 @@ describe("account joins on the PC's own window", () => {
     expect(renderer!.root.findAll((node) => node.props.role === "alert")).toHaveLength(0);
   });
 
+  it("sends nothing for a number of another length, and keeps the field open", async () => {
+    await mount();
+    await press("Type the number");
+    await submit("12 345");
+    expect(typed).toEqual([]);
+    expect(text(renderer!.root.findByProps({ role: "alert" }))).toBe("Type the six digits Galaxy S25 shows.");
+    expect(renderer!.root.findAll((node) => node.type === "form")).toHaveLength(1);
+  });
+
   it("says a wrong number ended the join", async () => {
     await mount();
     await press("Type the number");

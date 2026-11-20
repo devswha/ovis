@@ -54,6 +54,8 @@ const BASE: Record<string, string> = {
   "{name} is no longer waiting.": "{name} 已不再等待。",
   "Adding it to your account. Keep this open until it is done.": "正在添加到你的账号。请保持打开，直到完成。",
   "Signed in. Close this tab and go back to Ovis.": "已登录。请关闭此标签页并返回 Ovis。",
+  "Type the six digits {name} shows.": "请输入 {name} 显示的六位数字。",
+  "The Ovis tab that started this sign-in is gone. Close this tab and sign in again there.": "发起此登录的 Ovis 标签页已不在。请关闭此标签页，在那里重新登录。",
   "Nothing to finish here. Close this tab and go back to Ovis.": "这里没有要完成的登录。请关闭此标签页并返回 Ovis。",
   "Finishing the sign-in in the Ovis tab that started it…": "正在发起登录的 Ovis 标签页中完成登录…",
   "Signing in adds this PC to your account.": "登录后，这台电脑会添加到你的账号。",

@@ -50,6 +50,8 @@ const BASE: Record<string, string> = {
   "{name} is no longer waiting.": "{name}은 더 이상 기다리고 있지 않습니다.",
   "Adding it to your account. Keep this open until it is done.": "계정에 추가하는 중입니다. 끝날 때까지 열어 두세요.",
   "Signed in. Close this tab and go back to Ovis.": "로그인했습니다. 이 탭을 닫고 Ovis로 돌아가세요.",
+  "Type the six digits {name} shows.": "{name}에 보이는 여섯 자리 숫자를 입력하세요.",
+  "The Ovis tab that started this sign-in is gone. Close this tab and sign in again there.": "이 로그인을 시작한 Ovis 탭이 없습니다. 이 탭을 닫고 그 탭에서 다시 로그인하세요.",
   "Nothing to finish here. Close this tab and go back to Ovis.": "여기서 마칠 로그인이 없습니다. 이 탭을 닫고 Ovis로 돌아가세요.",
   "Finishing the sign-in in the Ovis tab that started it…": "로그인을 시작한 Ovis 탭에서 마무리하는 중…",
   "Signing in adds this PC to your account.": "로그인하면 이 PC가 계정에 추가됩니다.",

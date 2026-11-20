@@ -35,8 +35,11 @@ export function OwnJoins() {
   const approve = (join: OwnJoinRequest) => (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     const field = event.currentTarget.elements.namedItem("digits") as HTMLInputElement | null;
+    const digits = (field?.value ?? "").replace(/\s/g, "");
+    // a number of another length is sent nowhere: the join still waits, and so does the field
+    if (!/^[0-9]{6}$/.test(digits)) { setProblem(t("Type the six digits {name} shows.", { name: join.label })); return; }
     setProblem(null);
-    approveOwnJoin(join.id, (field?.value ?? "").replace(/\s/g, "")).then(() => setOpen(null), (error: unknown) => {
+    approveOwnJoin(join.id, digits).then(() => setOpen(null), (error: unknown) => {
       setProblem(error instanceof ApiError && error.code === "wrong_digits"
         ? t("That is not the number {name} shows. It was not let in; it can ask again.", { name: join.label })
         : t("{name} is no longer waiting.", { name: join.label }));
