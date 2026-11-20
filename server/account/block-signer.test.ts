@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord, type BlockRecord, type SafetyRecord } from "../../shared/account-records.ts";
@@ -462,15 +462,38 @@ describe("a block holds only while its signer is a member here (P16, P19, T73)",
     expect(() => devices.admitListedRows(() => { throw new Error("list write failed"); })).toThrow("list write failed");
   });
 
-  test("S10-2: a queue at capacity with no mark (both writes failed, or a crash between the drop and the mark) fails closed at the next open", async () => {
-    const { dir, devices, log } = pc();
-    const signer = await member(devices);
+  /** A PC with WAITING_MAX blocks waiting on a target it has no row of. */
+  async function fullQueue() {
+    const made = pc();
+    const signer = await member(made.devices);
     const absent = await key();
-    for (let i = 0; i < WAITING_MAX; i += 1) log.wait({ record: await block(absent.spki, signer), got: "mailbox", signer_removed: false });
+    for (let i = 0; i < WAITING_MAX; i += 1) made.log.wait({ record: await block(absent.spki, signer), got: "mailbox", signer_removed: false });
+    return { ...made, signer };
+  }
+  const failing = (names: readonly string[]) => {
+    const rename = privateStateFs.renameSync;
+    privateStateFs.renameSync = (from, to) => { if (names.some((name) => String(to).endsWith(name))) throw new Error("simulated EIO"); return rename(from, to); };
+    return () => { privateStateFs.renameSync = rename; };
+  };
+
+  test("S10-2: a queue of exactly WAITING_MAX drops nothing and opens after a restart; one judged leaves it open", async () => {
+    const { dir, devices, log } = await fullQueue();
     expect(devices.failsClosed).toBe(false);
+    log.unwait(log.waitingBlocks()[0]!.record.id);
+    expect({ waiting: log.waitingBlocks().length, closed: devices.failsClosed }).toEqual({ waiting: WAITING_MAX - 1, closed: false });
     log.close();
     const reopened = open(dir);
-    try { expect(reopened.devices.failsClosed).toBe(true); } finally { reopened.log.close(); }
+    try { expect(reopened.devices.failsClosed).toBe(false); } finally { reopened.log.close(); }
+  });
+
+  test("S10-2: when neither the log nor the side file takes the mark, the block is kept, nothing is dropped, and the PC is closed for this run", async () => {
+    const { devices, log, signer } = await fullQueue();
+    const extra = await block((await key()).spki, signer);
+    const restore = failing(["account-log.json", SAFETY_OVERFLOW_FILE]);
+    try { await devices.applyBlock(extra, "session"); } finally { restore(); }
+    expect(devices.failsClosed).toBe(true);
+    expect(log.waitingBlocks().map((kept) => kept.record.id)).toContain(extra.id);
+    expect(log.waitingBlocks()).toHaveLength(WAITING_MAX + 1);
   });
 
   test("S10-2: a marker that is a dangling link, or a log missing beside a marker, fails closed", async () => {
@@ -494,6 +517,7 @@ describe("a block holds only while its signer is a member here (P16, P19, T73)",
     privateStateFs.renameSync = (from, to) => { if (String(to).endsWith("account-log.json")) throw new Error("simulated EIO"); return rename(from, to); };
     try { await devices.applyBlock(overflow, "mailbox"); } finally { privateStateFs.renameSync = rename; }
     expect(devices.failsClosed).toBe(true);
+    expect(existsSync(join(dir, SAFETY_OVERFLOW_FILE))).toBe(true);
     log.close();
     const reopened = open(dir);
     try { expect(reopened.devices.failsClosed).toBe(true); } finally { reopened.log.close(); }
