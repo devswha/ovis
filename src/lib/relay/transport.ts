@@ -5,7 +5,7 @@ import { isTailnetCarrier, MuxProtocolError } from "../../../shared/relay-mux.ts
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
 import { openRelayChannel, RelayNewSessionsRefusedError, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
-import { DirectCarrierUnusableError, openRelayChannelWithFallback, probeDirect } from "../../../shared/relay-channel.ts";
+import { AccountOpenUnsupportedError, DirectCarrierUnusableError, openRelayChannelWithFallback, probeDirect } from "../../../shared/relay-channel.ts";
 import { openRefusalOf } from "../account/openPc.ts";
 import type { RelayChannel, RelayChannelOptions, RelayServerInfo, RelaySocket } from "./channel.ts";
 import { indexedDeviceStore, ServerIdentityChangedError } from "./device.ts";
@@ -54,7 +54,7 @@ function untilClosed(inner: RelaySocket, closed: () => void): RelaySocket {
 
 /** Whether another attempt could only fail the same way: the device was revoked or never paired, the PC's identity or protocol changed, or the offer is unsafe. */
 export function isFatalRelayError(error: unknown, accountOpensAll = false): error is Error {
-  if (error instanceof ServerIdentityChangedError || error instanceof UnsafeRelayDestinationError) return true;
+  if (error instanceof ServerIdentityChangedError || error instanceof UnsafeRelayDestinationError || error instanceof AccountOpenUnsupportedError) return true;
   // the relay takes no new device for this PC while its account is past its limits: only a later try can differ
   if (error instanceof RelayNewSessionsRefusedError) return true;
   return error instanceof MuxProtocolError && ((accountOpensAll && openRefusalOf(error) !== null) || error.code === "auth_revoked" || error.code === "auth_failed"

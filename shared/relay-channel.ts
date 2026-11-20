@@ -17,6 +17,13 @@ import { getDevice, sign } from "./relay-device.ts";
 import { RELAY_NEW_SESSIONS_CLOSE } from "./relay-pass.ts";
 import type { RelayDevice, RelayDeviceStore } from "./relay-device.ts";
 
+export class AccountOpenUnsupportedError extends Error {
+  constructor() {
+    super("The PC did not negotiate account open");
+    this.name = "AccountOpenUnsupportedError";
+  }
+}
+
 export class UnsafeRelayDestinationError extends Error {
   readonly code = "unsafe_relay_destination";
   constructor(readonly field: "relay" | "server_id") {
@@ -257,6 +264,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       const bytes = new Uint8Array(data);
       if (phase === "ready") { mux?.receive(bytes); return; }
       const frame = decodeFrame(bytes);
+      if (options.accountOpensAll && phase === "welcome" && frame.type === FrameType.SESSION_ERROR && frame.payload.code === "unsupported_extension") throw new AccountOpenUnsupportedError();
       if (frame.type === FrameType.SESSION_ERROR) throw new MuxProtocolError(frame.payload.code, frame.payload.message, frame.payload.receipts, frame.payload.hold);
       if (frame.type === FrameType.RECEIVED) {
         if (!mux || frame.payload > mux.stats.submitted) throw new MuxProtocolError("protocol_error", "Receipt exceeds submitted frames");
@@ -269,6 +277,12 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         if (frame.payload.relay_protocol !== RELAY_PROTOCOL) throw new MuxProtocolError("unsupported_version", `The PC speaks relay protocol ${frame.payload.relay_protocol}`);
         server = { version: frame.payload.server_version, relayProtocol: frame.payload.relay_protocol, features: frame.payload.features };
         if (frame.payload.features.some((feature) => !offered.includes(feature))) throw new MuxProtocolError("unsupported_extension", "Server selected unoffered features");
+        if (options.accountOpensAll) {
+          // Account AUTH is sent only after the PC's final, authenticated feature selection.
+          if (frame.payload.provisional) { provisionalNonce = frame.payload.nonce; return; }
+          if (provisionalNonce !== undefined && provisionalNonce !== frame.payload.nonce) throw new MuxProtocolError("protocol_error", "The PC's answer to HELLO changed its WELCOME");
+          if (!frame.payload.features.includes(ACCOUNT_OPENS_ALL_MUX_FEATURE)) throw new AccountOpenUnsupportedError();
+        }
         phase = "auth";
         Object.assign(limits, frame.payload.limits);
         welcome = bytes;
@@ -425,7 +439,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         });
         mux.receiveLargeMessages();
         await send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
-          payload: { protocol: "ovis-mux", versions: [1], features: [...hinted, LARGE_WS_MESSAGES, SERVER_TIME_HEADER, ...offered], required_features: [] } });
+          payload: { protocol: "ovis-mux", versions: [1], features: [...hinted, LARGE_WS_MESSAGES, SERVER_TIME_HEADER, ...offered], required_features: options.accountOpensAll ? [ACCOUNT_OPENS_ALL_MUX_FEATURE] : [] } });
       }).catch(failed);
     };
   });

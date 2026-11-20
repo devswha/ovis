@@ -2,6 +2,7 @@
 import { createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { encodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
+import { AccountOpenUnsupportedError } from "../../../shared/relay-channel.ts";
 import { GLOBAL_RELAY } from "../../../shared/relay-regions.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
@@ -293,8 +294,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (last !== attempt) return;
     comparison = null;
     const refusal = attempt.accountOpen === undefined ? null : openRefusalOf(error);
-    if (refusal !== null) {
-      const step = nextOpenStep(refusal, attempt.retriedAccountOpen === true);
+    const step = attempt.accountOpen !== undefined && error instanceof AccountOpenUnsupportedError ? { kind: "pair" as const }
+      : refusal === null ? null : nextOpenStep(refusal, attempt.retriedAccountOpen === true);
+    if (step !== null) {
       switch (step.kind) {
         case "retry": await connect({ ...attempt, retriedAccountOpen: true }); return;
         case "pair":

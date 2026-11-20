@@ -58,7 +58,7 @@ class FakeSocket implements RelaySocket {
 }
 
 async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account", onClose?: (error: Error) => void,
-  pc: { relay?: string; hints?: readonly string[]; wrap?: (store: MemoryDeviceStore, device: RelayDevice) => RelayDeviceStore } = {}, channel: Partial<RelayChannelOptions> = {}) {
+  pc: { relay?: string; hints?: readonly string[]; features?: readonly string[]; wrap?: (store: MemoryDeviceStore, device: RelayDevice) => RelayDeviceStore } = {}, channel: Partial<RelayChannelOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const registry = new DeviceStore(dir);
@@ -123,7 +123,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
     }
   });
   void daemonOpening.catch(() => {});
-  const welcome = () => ({ protocol: "ovis-mux" as const, version: 1 as const, features: attack === "features" ? ["unoffered"] : attack === "account" ? ["account"] : [],
+  const welcome = () => ({ protocol: "ovis-mux" as const, version: 1 as const, features: pc.features ?? (attack === "features" ? ["unoffered"] : attack === "account" ? ["account"] : []),
     limits: { ...LIMITS_V1, max_streams: 2 }, nonce: attack === "nonce" ? base64url(nonce.slice(1)) : base64url(nonce),
     server_version: "test", relay_protocol: attack === "protocol" ? 2 : 1, min_supported_client: "0.0.0" });
   const raw = (type: number, payload: unknown): Uint8Array => {
@@ -466,7 +466,7 @@ it("T34, G5: offers the account-opens-all mux feature in HELLO only when asked, 
   expect(plain.offered).not.toContain(ACCOUNT_OPENS_ALL_MUX_FEATURE);
   plain.allowAuth.resolve();
   await plain.opening;
-  const asking = await fixture(false, undefined, undefined, {}, { accountOpensAll: true });
+  const asking = await fixture(false, undefined, undefined, { features: [ACCOUNT_OPENS_ALL_MUX_FEATURE] }, { accountOpensAll: true });
   await asking.authSeen.promise;
   expect(asking.offered).toContain(ACCOUNT_OPENS_ALL_MUX_FEATURE);
   asking.allowAuth.resolve();
