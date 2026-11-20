@@ -28,8 +28,12 @@ enum TitleBar {
             unfold(window, for: page)
             return nil
         }
+        let height = bar.frame.height, inset = zoom.frame.maxX
+        // a page joining a window already in full screen: measured with the toolbar, which full screen does
+        // without until the window leaves it (the window's exit handler adds it back)
+        if window.styleMask.contains(.fullScreen) { window.toolbar = nil }
         let post = "(ask) => window.webkit?.messageHandlers?.ovisTitleBar?.postMessage(ask)"
-        return "(() => {\n\(source)\novisTitleBar(document, \(bar.frame.height), \(zoom.frame.maxX), \(post));\n})();"
+        return "(() => {\n\(source)\novisTitleBar(document, \(height), \(inset), \(post));\n})();"
     }
 
     /// Has AppKit look again for the views under the bar that take its clicks. It looks as the bar turns

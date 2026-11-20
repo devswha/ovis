@@ -409,7 +409,11 @@ extension WebPageController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         state = .shown
         if let window, let title = webView.title, !title.isEmpty { window.title = title }
-        if !isPopup { model?.pageLoaded() }
+        if !isPopup {
+            model?.pageLoaded()
+            // again once loaded: at its commit a page can have no root yet, and the script waits for one
+            self.webView.showHeaderInTitleBar()
+        }
         if let token = carryToken {
             let shared = carryShared
             let before = carryBefore
