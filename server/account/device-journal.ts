@@ -162,8 +162,7 @@ export class DeviceJournal {
     }
     const written = this.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
       row: entry.row, label: entry.label ?? "", by: null, account: entry.account,
-      ...(entry.kind === "admit" ? { awaitingListCheck: true, two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) },
-      drop && this.doc.open.find(n => n.how === "list" && n.row === drop.row && n.no === drop.admit_no && n.key === entry.key && n.account === entry.account)?.id, drop);
+      ...(entry.kind === "admit" ? { awaitingListCheck: true, two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) }, undefined, drop);
     if (drop) evidence.markJournalled(drop, written.seq);
     return written;
   }
@@ -205,7 +204,13 @@ export class DeviceJournal {
       trimmed = cut.at(-1)!.seq;
       entries = entries.slice(cut.length);
     }
-    const remaining = decides === undefined ? this.doc.open : this.doc.open.filter((notice) => notice.id !== decides);
+    const remaining = this.doc.open.filter(notice => {
+      if (notice.id === decides) return false;
+      if (notice.how !== "list" || notice.key === null || notice.key !== input.key) return true;
+      // Local recovery revokes the key on this PC. A row receipt ends only its numbered admission.
+      if (input.kind === "remove" && input.how === "recover") return false;
+      return !drop || notice.row !== drop.row || notice.no !== drop.admit_no || notice.account !== input.account;
+    });
     const open = entry.kind === "admit" && !entry.awaitingListCheck ? [...remaining, entry] : remaining;
     if (!this.exists) this.companions();
     this.write({ ...this.doc, next_seq: entry.seq + 1, entries, open, trimmed, ...(drop && { last_row_drop: { ...drop, journalled: entry.seq } }),
