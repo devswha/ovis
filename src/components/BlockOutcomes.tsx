@@ -41,7 +41,7 @@ export function BlockOutcomes({ outcomes, names, accountRetry }: {
       })}
       {accountRetry !== undefined && (
         <li className="settings-hint" data-account-delivery="failed">
-          {t("Account service: block not confirmed.")}{" "}
+          {t("The block did not go through yet.")}{" "}
           <button type="button" className="btn" disabled={retrying} onClick={async () => {
             setRetrying(true);
             try { await accountRetry(); } finally { setRetrying(false); }
