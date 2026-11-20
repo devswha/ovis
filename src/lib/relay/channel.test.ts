@@ -1,4 +1,5 @@
 import { afterEach, expect, it, jest } from "bun:test";
+import { PENDING_MS } from "../../../server/account/pending.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -736,6 +737,21 @@ it.each([true, false])("T71, P11: only KEY_PENDING (%s) shows the fingerprint co
   const key = (await f.store.get(f.offer.server_id))!.public_spki;
   expect(await verifyPairProof(f.offer.server_id, f.keyProof.challenge, key, signature)).toBe(true);
   expect(shown).toEqual(pending ? [await pairFingerprint(f.offer.server_id, f.keyProof.challenge, key)] : []);
+});
+
+it("T71: approval just before the PC's pending-key deadline completes pairing", async () => {
+  jest.useFakeTimers();
+  const waiting = Promise.withResolvers<string>();
+  const f = await fixture(true, "key-proof", undefined, {}, { keyProof: waiting.resolve });
+  const outcome = f.opening.then((channel) => {
+    channel.close();
+    return "paired";
+  }, (error: unknown) => error);
+  await waiting.promise;
+  await f.authSeen.promise;
+  jest.advanceTimersByTime(PENDING_MS - 1);
+  f.allowAuth.resolve();
+  expect(await outcome).toBe("paired");
 });
 
 it("G5: without asking for key proof, HELLO does not offer it", async () => {
