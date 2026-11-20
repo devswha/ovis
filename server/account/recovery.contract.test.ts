@@ -44,8 +44,9 @@ test.if(unix)("P23: while the log cannot be read, ovis recover still lists, and 
   expect(made.app.context.services.recoveryReleases!.releaseOf("0123456789abcdef")).toBeNull();
 });
 
-test.if(unix)("S19/P23: a log that turns unreadable after the start is read at each act: nothing is released or undone, and list says why", async () => {
-  const made = await pairingPc({ startRelay: false, server: { accountOpensAll: true } });
+test.if(unix)("P23/T37/T69/T70/P22: every write refuses a log that turns unreadable after start without changing state", async () => {
+  const member = await memberRow("acct_1");
+  const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true, platform: "linux" } });
   pcs.push(made);
   const releases = made.app.context.services.recoveryReleases!;
   releases.registerRecoverySource(() => [{
@@ -53,11 +54,34 @@ test.if(unix)("S19/P23: a log that turns unreadable after the start is read at e
     joinHold: false, held: false, openNotice: false, expired: false, covered: false, frozen: false, lastSeenAt: null,
   }]);
   expect(await bounded(askRecovery(made.stateDir, { act: "release", rows: ["0123456789abcdef"] }))).toEqual({ released: ["0123456789abcdef"] });
-  writeFileSync(join(made.stateDir, "account-log.json"), "not json", { mode: 0o600 });
-  const listed = await bounded(askRecovery(made.stateDir, { act: "list" })) as { rows: { refusal: string | null }[] };
+  const { waiting } = await waitingDevice(made);
+  const activeRelease = releases.releaseOf("0123456789abcdef");
+  const beforeRows = made.stored();
+  const beforeJournal = journal(made);
+  const logPath = join(made.stateDir, "account-log.json");
+  writeFileSync(logPath, "not json", { mode: 0o600 });
+
+  const error = { error: "This PC cannot read its safety log, so nothing is changed: log_unreadable" };
+  for (const action of [
+    { act: "remove", targets: [member.row.id] },
+    { act: "lift", blocks: ["a".repeat(64)] },
+    { act: "revoke_all" },
+    { act: "admit", pending: waiting.id, fingerprint: waiting.fingerprint },
+    { act: "undo", rows: null },
+  ]) {
+    expect(await bounded(askRecovery(made.stateDir, action))).toEqual(error);
+  }
+  // The write gate must answer before release looks up a row, even one that does not wait here.
+  const missing = "fedcba9876543210";
+  expect(await bounded(askRecovery(made.stateDir, { act: "release", rows: [missing] }))).toEqual({ error: `${missing} cannot be released: log_unreadable` });
+
+  const listed = await bounded(askRecovery(made.stateDir, { act: "list" })) as { rows: { refusal: string | null }[]; pending: unknown[] };
   expect(listed.rows.map((row) => row.refusal)).toEqual(["log_unreadable"]);
-  expect(await bounded(askRecovery(made.stateDir, { act: "undo", rows: null }))).toEqual({ error: "This PC cannot read its safety log, so nothing is changed: log_unreadable" });
-  expect(releases.releaseOf("0123456789abcdef")).not.toBeNull();
+  expect(listed.pending).toEqual([waiting]);
+  expect(made.stored()).toEqual(beforeRows);
+  expect(journal(made)).toEqual(beforeJournal);
+  expect(readFileSync(logPath, "utf8")).toBe("not json");
+  expect(releases.releaseOf("0123456789abcdef")).toEqual(activeRelease);
 });
 
 test.if(unix)("T37: remove of a named key over the socket ends its row and records the removal", async () => {
