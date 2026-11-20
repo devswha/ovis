@@ -103,6 +103,12 @@ final class WebPageController: NSObject, ObservableObject {
                 carryShared = shared
             }
         }
+        // Settings → Browser for links (LinkBrowsers.swift); a popup shares this configuration, and with it the bridge
+        let controller = webView.configuration.userContentController
+        controller.addUserScript(LinkBrowsers.script)
+        controller.addScriptMessageHandler(LinkBrowsersHandler(isOvis: { [weak self] in self?.isOvis($0) ?? false },
+                                                               openDefault: { [weak self] in self?.openElsewhere($0) }),
+                                           contentWorld: .page, name: "ovisBrowsers")
         webView.load(URLRequest(url: origin))
     }
 
