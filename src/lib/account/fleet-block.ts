@@ -8,8 +8,18 @@ import { blockOutcome, parseBlockReceipt, type DeviceNotice, type PcBlockOutcome
 
 export interface OwnKey { readonly public_spki: string; readonly private_key: CryptoKey; readonly no: number }
 
+/** T51: use the same eligibility check when offering and when signing a block. */
+export function canBlockAdmission(notice: DeviceNotice, own: OwnKey): notice is DeviceNotice & {
+  readonly key: string;
+  readonly no: number;
+  readonly account: string;
+} {
+  return notice.kind === "admit" && notice.open && notice.key !== null && notice.no !== null &&
+    notice.account !== null && notice.key !== own.public_spki && own.no < notice.no;
+}
+
 export async function notMeBlocks(notice: DeviceNotice, own: OwnKey, options: { now?: () => number } = {}): Promise<BlockRecord[]> {
-  if (notice.key === null || notice.no === null || notice.account === null || notice.key === own.public_spki || own.no >= notice.no) return [];
+  if (!canBlockAdmission(notice, own)) return [];
   return [await signSafetyRecord({
     v: 1, kind: "block", account: notice.account, target: notice.key, target_no: notice.no, signer: own.public_spki, signer_no: own.no,
     signed_at: new Date((options.now ?? Date.now)()).toISOString(), nonce: newRecordId(),

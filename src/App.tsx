@@ -85,8 +85,8 @@ import { LanExposureNotice } from "./components/LanExposureNotice.tsx";
 import { PushHealthNotice } from "./components/PushHealthNotice.tsx";
 import { RelayNotice } from "./components/RelayNotice.tsx";
 import { InstallHint } from "./components/InstallHint.tsx";
-import { DeviceNotices, DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
-import { useDeviceNotices } from "./lib/useDeviceNotices.ts";
+import { DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
+import { useAccountDeviceNotices } from "./components/AccountDeviceNotices.tsx";
 import { RelayPairingPrompt } from "./components/RelayPairingPrompt.tsx";
 import { AccountApprovals } from "./components/AccountApprovals.tsx";
 import { TelemetryNotice } from "./components/TelemetryControls.tsx";
@@ -333,9 +333,7 @@ export function App() {
   const rowFacts = setupGuide.guide === null && auth?.role !== "watch" && localSnapshot !== null;
   const rowStore = browserStorage();
   const rowOn = rowFacts && rowStore !== null && setupRowState(rowStore) === "on";
-  const noticeSockets = machines.flatMap((machine) => { const socket = machineSessions.peek(machine.id)?.socket; return socket === undefined ? [] : [{ id: machine.id, socket }]; });
-  const deviceNotices = useDeviceNotices(noticeSockets, selectedMachineId);
-  const selectedNotices = deviceNotices.byPc.get(selectedMachineId);
+  const deviceNotices = useAccountDeviceNotices({ machines, machineSessions, selectedMachineId, pageServerId: health?.web_ui?.server_id });
   const otherDevicePaired = useOtherDevice(rowOn, [...pairedNotices, ...removedNotices].map((notice) => notice.event_id).join(" "), true);
   const alertsHealth = usePushHealth();
   const rowAlerts = alertsSurfaces(alertsHere({ alertsOn, notifications, desktop: desktopUpdateBridge() !== null, pushSupported: pushSupported(), pushOn, push: { checked: alertsHealth.checked, problem: alertsHealth.health.problem, delivered: alertsHealth.delivered }, confirmed: confirmation(registeredPushEndpoint()) })).row;
@@ -1134,7 +1132,7 @@ export function App() {
         {relayPairings.length > 0 && <RelayPairingPrompt pairings={relayPairings} />}
         {remotePairings.length > 0 && <AccountApprovals pairings={remotePairings} />}
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
-        {selectedMachine && selectedNotices && <DeviceNotices key={selectedMachineId} pc={selectedMachine.name} notices={selectedNotices.notices} cut={deviceNotices.cut} onDismiss={(notice) => deviceNotices.dismiss(selectedMachineId, notice)} onShown={deviceNotices.acknowledgeShown} />}
+        {deviceNotices}
         {removedNotices.length > 0 && <DeviceRemovedNotice events={removedNotices} onDismiss={dismissRemovedNotice} />}
         {setupGuide.guide === null && <FirstStartHints active={locked === false} />}
         {setupGuide.guide !== null && <MachineContext.Provider value="local"><SetupGuide auth={auth} security={security} onEnableAlerts={enableNotifications} settingsOpen={settingsOpen} pushOn={pushOn} sharedSettingsKnown={sharedSettingsKnown} notifications={notifications} hidden={setupGuide.paused} state={setupGuide.guide} dispatch={setupGuide.dispatch} onClose={setupGuide.close} onOpenSettings={(page) => { setSettingsLinkPage(page); setSettingsOpen(true); }}
