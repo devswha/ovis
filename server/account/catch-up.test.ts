@@ -54,11 +54,14 @@ describe("S2-27 account-joined rows wait for the catch-up (T41, T42, T56, T65, T
     const restarted = pc.start();
     pc.frozen.add("k-live");
     restarted.commitList(pc.list(["k-live", "k-held"]));
-    expect(restarted.access(pc.live.id)).toEqual({ refused: "catching_up" });
+    expect(restarted.access(pc.live.id)).toEqual({ refused: "not_listed" });
     // a carried hold starts its ten seconds again from the release
     expect(restarted.access(pc.held.id)).toEqual({ refused: "join_hold", seconds: 10 });
     pc.frozen.delete("k-live");
     restarted.commitList(pc.list(["k-live", "k-held"]));
+    expect(restarted.access(pc.live.id)).toEqual({ refused: "join_hold", seconds: 10 });
+    expect(restarted.row(pc.live.id)?.origin.admit_no).toBeGreaterThan(pc.live.origin.admit_no);
+    pc.clock.now += JOIN_HOLD_MS;
     expect(restarted.access(pc.live.id)).toEqual({ ok: true });
   });
 
@@ -92,8 +95,9 @@ describe("S2-27 account-joined rows wait for the catch-up (T41, T42, T56, T65, T
     expect(restarted.release([keyOf("k-live"), keyOf("k-unknown")])).toEqual([keyOf("k-live")]);
     pc.frozen.add("k-live");
     restarted.commitList(pc.list(["k-live", "k-held"]));
-    expect(restarted.access(pc.live.id)).toEqual({ refused: "catching_up" });
-    // a release lives in memory only: the next start waits again
-    expect(pc.start().access(pc.live.id)).toEqual({ refused: "catching_up" });
+    expect(restarted.access(pc.live.id)).toEqual({ refused: "not_listed" });
+    // The dropped row cannot be released again or recovered by a restart.
+    expect(restarted.release([keyOf("k-live")])).toEqual([]);
+    expect(pc.start().access(pc.live.id)).toEqual({ refused: "not_listed" });
   });
 });
