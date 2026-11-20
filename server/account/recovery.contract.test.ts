@@ -21,7 +21,7 @@ const unix = process.platform !== "win32";
 test.if(unix)("R11: with the flag on, the server answers ovis recover on its recovery socket", async () => {
   const made = await pairingPc({ server: { accountOpensAll: true } });
   pcs.push(made);
-  expect(await bounded(askRecovery(made.stateDir, { act: "list" }))).toEqual({ rows: [], pending: [] });
+  expect(await bounded(askRecovery(made.stateDir, { act: "list" }))).toEqual({ rows: [], pending: [], standing: [] });
 });
 
 test.if(unix)("R11: with the flag off, the server opens no recovery socket", async () => {
@@ -219,6 +219,35 @@ test.if(unix)("T69: a lift ends an active block under the PC's former account", 
   expect(log?.state().blocks).toEqual([]);
   expect(journal(made).filter((entry) => entry.kind === "lift")).toEqual([
     expect.objectContaining({ label: block.id, account: "acct_old" }),
+  ]);
+});
+
+test.if(unix)("T70/E48: the list names each standing block and freeze once, and the listed freeze ID can be lifted", async () => {
+  const account = "acct_old";
+  const member = await memberRow("acct_1");
+  const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true } });
+  pcs.push(made);
+  const [target, frozen] = [await phone(), await phone()];
+  const signer = member.key.spki;
+  const signed_at = new Date().toISOString();
+  const block = await signSafetyRecord({
+    v: 1, kind: "block", account, target: target.spki, target_no: 9, signer, signer_no: 1, signed_at, nonce: newRecordId(),
+  }, member.key.keys.privateKey);
+  const freezeId = `f:${"c".repeat(64)}`;
+  const log = made.app.context.services.safetyLog;
+  if (log === null) throw new Error("Expected a safety log");
+  expect(log.append({ record: block, got: "handed", asof: { signer_no: 1, target_no: 9, after: 9, joined: 9, signer_removed: false } }).outcome).toBe("applied");
+  expect(log.append({ record: { v: 1, id: freezeId, kind: "freeze", account, target: frozen.spki, after: 9, signer: "service", signed_at, signature: "" },
+    got: "snapshot" }).outcome).toBe("applied");
+
+  const standingBlock = { kind: "block", id: block.id, target: target.spki, account, signer };
+  expect(await bounded(askRecovery(made.stateDir, { act: "list" }))).toMatchObject({
+    standing: [standingBlock, { kind: "freeze", id: freezeId, target: frozen.spki, account, signer: "service" }],
+  });
+  expect(await bounded(askRecovery(made.stateDir, { act: "lift", blocks: [freezeId] }))).toEqual({ lifted: [freezeId] });
+  expect(await bounded(askRecovery(made.stateDir, { act: "list" }))).toMatchObject({ standing: [standingBlock] });
+  expect(journal(made).filter((entry) => entry.kind === "lift")).toEqual([
+    expect.objectContaining({ how: "recover", label: freezeId, account }),
   ]);
 });
 

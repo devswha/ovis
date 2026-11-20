@@ -11,7 +11,7 @@ const rows = [
   { id: "b2", label: "Old laptop", origin: { from: "legacy", how: "legacy" }, waiting: "catching_up", last_seen_at: null, refusal: "frozen" },
 ];
 
-function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string; releaseRows?: typeof rows; admitError?: string } = {}) {
+function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string; releaseRows?: typeof rows; admitError?: string; standing?: readonly { kind: "block" | "freeze"; id: string; target: string; account: string; signer: string }[] } = {}) {
   const sent: RecoveryAction[] = [];
   const prompts: string[] = [];
   const out: string[] = [];
@@ -25,7 +25,7 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
       if (options.unreachable) throw new Error("ENOENT");
       sent.push(request);
       switch (request.act) {
-        case "list": return { rows: options.releaseRows ?? rows, pending: [{ id: "0123456789abcdef0123456789abcdef", label: "New phone", fingerprint: "AB12-CD34" }] };
+        case "list": return { rows: options.releaseRows ?? rows, standing: options.standing, pending: [{ id: "0123456789abcdef0123456789abcdef", label: "New phone", fingerprint: "AB12-CD34" }] };
         case "release": return { released: request.rows };
         case "undo": return { releases: ["r1"], ...(options.undoWarning ? { warning: options.undoWarning } : {}) };
         case "admit": return options.admitError ? { error: options.admitError } : { admitted: "fedcba9876543210" };
@@ -47,6 +47,19 @@ test("T70: recover lists the rows that wait, how each came in, and whether it ca
   expect(run.text()).toContain("remote/list");
   expect(run.text()).toContain("Old laptop");
   expect(run.text()).toContain("frozen");
+});
+
+test("T70/E48: bare recover prints standing blocks and freezes with copyable lift commands", async () => {
+  const block = "a".repeat(64);
+  const freeze = `f:${"b".repeat(64)}`;
+  const run = io({ terminal: false, releaseRows: [], standing: [
+    { kind: "block", id: block, target: "MFkwEwYHKoZIsame--blocked-key1", account: "acct_1", signer: "older-key" },
+    { kind: "freeze", id: freeze, target: "MFkwEwYHKoZIsame---frozen-key2", account: "acct_1", signer: "service" },
+  ] });
+  expect(await runRecover([], run.value)).toBe(0);
+  expect(run.text()).toContain(`block ${block}  key blocked-key1  signed by older-key  (ovis recover --lift ${block})\n`);
+  expect(run.text()).toContain(`freeze ${freeze}  key -frozen-key2  signed by service  (ovis recover --lift ${freeze})\n`);
+  expect(run.sent).toEqual([{ act: "list" }]);
 });
 
 test("T70: release asks for each named row at a terminal and releases only the ones confirmed", async () => {
