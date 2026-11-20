@@ -4,7 +4,7 @@ import type { SecureChannel } from "../../shared/relay-e2ee.ts";
 import { commitmentHolds, fromBase64Url, PAIR_APPROVAL_MS, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import { PairingRateLimitedError, type DeviceMatch, type PairingPath } from "../devices.ts";
@@ -158,6 +158,12 @@ export class RelaySession {
     this.mux = new MuxEngine({
       role: "server", clock: this.clock,
       send: (bytes) => {
+        if (this.state === "ready") options.services.checkAccountFreshness();
+        // Revocation can start here, after the mux selected a frame. Only teardown may still go on the wire.
+        if (this.state === "closed" && bytes[1] !== FrameType.SESSION_ERROR && bytes[1] !== FrameType.WS_CLOSE
+          && bytes[1] !== FrameType.RESET && bytes[1] !== FrameType.RECEIVED && bytes[1] !== FrameType.CREDIT) {
+          throw new MuxProtocolError("auth_changed", "Session closed before frame delivery");
+        }
         this.touch(bytes);
         return options.channel.send(bytes.slice().buffer);
       },
