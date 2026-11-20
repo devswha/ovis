@@ -274,3 +274,52 @@ it("T53, T57: It's me uses only the admission PC's socket and retries only until
   await act(async () => { jest.advanceTimersByTime(10_000); });
   expect(answers(desk)).toEqual([answer, answer]);
 });
+
+it("T53: an It's me the PC does not take says so after its one retry, and can be pressed again", async () => {
+  jest.useFakeTimers();
+  const desk = new DeviceNoticeWire("ws://localhost/ws?pc=desk");
+  for (const [key, value] of Object.entries({
+    window: Object.assign(new EventTarget(), { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
+    document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
+    navigator: { languages: ["en"] },
+    getComputedStyle: () => ({ getPropertyValue: () => "" }),
+    WebSocket: class { constructor() { return desk; } },
+    IS_REACT_ACT_ENVIRONMENT: true,
+  })) {
+    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const store = memoryAccountStore();
+  await store.set("session", {
+    service: "https://account.ovis.sh", account: "acct", provider: "github",
+    access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 60_000, sign_in_id: "this-sign-in",
+  });
+  spyOn(indexedAccountStore, "get").mockImplementation(store.get);
+  const registry = new MachineSessionRegistry((id) => new MachineSession(id, { socket: new HerdrSocket(desk.url) }));
+  sessions = registry;
+  registry.get("local").socket.connect();
+  desk.open();
+  const local = itsMeMachines.filter((machine) => machine.id === "local");
+  function Notices() {
+    return useAccountDeviceNotices({ machines: local, machineSessions: registry, selectedMachineId: "local", pageServerId: undefined });
+  }
+  await act(async () => { itsMeRenderer = create(<SettingsProvider><Notices /></SettingsProvider>); });
+  const view = itsMeRenderer;
+  if (view === undefined) throw new TypeError("Missing notice view");
+  const admission = deviceNotice({ row: "new-phone" });
+  const answers = () => desk.sent.filter(({ type }) => type === "notice-answer");
+  const button = () => view.root.find((node) => node.type === "button" && node.children.includes("It's me"));
+  const refusal = () => view.root.findAll((node) => node.type === "p" && node.children.includes("Desk did not accept It's me from this device."));
+  await act(async () => { desk.snapshot(); desk.read({ type: "device-notice", notice: admission }); });
+  await act(async () => { button().props.onClick(); });
+  expect(refusal()).toHaveLength(0);
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  expect(answers()).toHaveLength(2);
+  expect(refusal()).toHaveLength(0);
+  await act(async () => { jest.advanceTimersByTime(5_000); });
+  expect(refusal()).toHaveLength(1);
+  expect(button().props.disabled).toBe(false);
+  await act(async () => { button().props.onClick(); });
+  expect(refusal()).toHaveLength(0);
+  expect(answers()).toHaveLength(3);
+});
