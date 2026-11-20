@@ -38,7 +38,7 @@ const refusedBy = (asked: AccountSession | undefined, own: Own): boolean => aske
  * new device's hold at once only when its own checks pass for this device's session; the answer counts once that PC
  * publishes the confirmation, and one lost answer is sent again.
  */
-function ItsMeAction({ notice, pc, socket, own, inFlight, refusedItsMe, changed }: {
+function ItsMeAction({ notice, pc, socket, own, inFlight, refusedItsMe, pendingItsMe, changed }: {
   readonly notice: DeviceNotice;
   readonly pc: Machine;
   readonly socket: NoticeSocket;
@@ -47,17 +47,19 @@ function ItsMeAction({ notice, pc, socket, own, inFlight, refusedItsMe, changed 
   readonly inFlight: Set<string>;
   /** a refused It's me by PC and notice, with the sign-in that asked: another sign-in never sees it */
   readonly refusedItsMe: Map<string, AccountSession>;
+  /** the It's me out now by PC and notice, until its notice closes: an answer whose notice closed meanwhile says nothing */
+  readonly pendingItsMe: Map<string, symbol>;
   readonly changed: () => void;
 }) {
   const id = `${pc.id}:${notice.id}`;
   const canAnswer = own !== null && notice.account === own.account && notice.kind === "admit" && notice.open && socket.accountOpensAll();
-  // a notice decided or closed takes its refusal with it: the same id opened again starts with none
-  useEffect(() => { if (!notice.open) refusedItsMe.delete(id); }, [notice.open, refusedItsMe, id]);
 
   const confirm = async () => {
     if (!canAnswer || inFlight.has(id)) return;
     inFlight.add(id);
     refusedItsMe.delete(id);
+    const press = Symbol(id);
+    pendingItsMe.set(id, press);
     changed();
     try {
       const started = await indexedAccountStore.get("session");
@@ -74,11 +76,12 @@ function ItsMeAction({ notice, pc, socket, own, inFlight, refusedItsMe, changed 
       // The PC answers a refused It's me with nothing (too new, held or not caught up): say so rather than go quiet,
       // to the sign-in that asked, and only while it is still the one here
       const now = await indexedAccountStore.get("session");
-      if (unanswered === 2 && now !== undefined && sameSignIn(started, now)) refusedItsMe.set(id, started);
+      if (unanswered === 2 && now !== undefined && sameSignIn(started, now) && pendingItsMe.get(id) === press) refusedItsMe.set(id, started);
     } catch (error) {
       if (!(error instanceof DOMException)) throw error;
       console.warn("Ovis: could not read the sign-in for an admission answer", error.name);
     } finally {
+      if (pendingItsMe.get(id) === press) pendingItsMe.delete(id);
       inFlight.delete(id);
       changed();
     }
@@ -208,9 +211,9 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, changed, 
 }
 
 /** A notice's two answers, one out at a time per PC and notice (T51, T53). */
-function AdmissionActions({ refusedItsMe, ...props }: Parameters<typeof BlockNoticeAction>[0] & { readonly refusedItsMe: Map<string, AccountSession> }) {
+function AdmissionActions({ refusedItsMe, pendingItsMe, ...props }: Parameters<typeof BlockNoticeAction>[0] & { readonly refusedItsMe: Map<string, AccountSession>; readonly pendingItsMe: Map<string, symbol> }) {
   return <>
-    <ItsMeAction notice={props.notice} pc={props.pc} socket={props.socket} own={props.own} inFlight={props.inFlight} refusedItsMe={refusedItsMe} changed={props.changed} />
+    <ItsMeAction notice={props.notice} pc={props.pc} socket={props.socket} own={props.own} inFlight={props.inFlight} refusedItsMe={refusedItsMe} pendingItsMe={pendingItsMe} changed={props.changed} />
     <BlockNoticeAction {...props} />
   </>;
 }
@@ -225,11 +228,24 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   });
   const feed = useDeviceNotices(sockets, selectedMachineId);
   const shown = feed.byPc.get(selectedMachineId);
+  const refusedItsMe = useRef(new Map<string, AccountSession>());
+  const pendingItsMe = useRef(new Map<string, symbol>());
+  // a notice decided or closed on any PC, shown or not, takes its refusal with it: the same id opened again starts
+  // with none (S2P-6). A PC whose notices are not known now keeps its refusals until they are.
+  useEffect(() => {
+    for (const key of new Set([...refusedItsMe.current.keys(), ...pendingItsMe.current.keys()])) {
+      const at = key.lastIndexOf(":");
+      const notices = feed.byPc.get(key.slice(0, at))?.notices;
+      if (notices !== undefined && !notices.some((notice) => notice.id === key.slice(at + 1) && notice.open)) {
+        refusedItsMe.current.delete(key);
+        pendingItsMe.current.delete(key);
+      }
+    }
+  }, [feed.byPc]);
   // A block can close its notice or the socket before the account replies. Keep the result at App scope.
   const [results, setResults] = useState<ReadonlyMap<string, BlockResult>>(new Map());
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const sending = useRef(new Set<string>());
-  const refusedItsMe = useRef(new Map<string, AccountSession>());
   // The lock and refusal are app-wide per PC and notice, even when an answer finishes offscreen.
   const [, answersChanged] = useReducer((count: number) => count + 1, 0);
   const [own, setOwn] = useState<Own>(null);
@@ -292,7 +308,7 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
         const result = results.get(id);
         if (result !== undefined && result.signer === own?.key?.public_spki) return renderOutcomes(id, result);
         return socket === undefined ? null : <AdmissionActions notice={notice} pc={pc} socket={socket} fleet={{ machines, machineSessions, pageServerId }} own={own}
-          inFlight={sending.current} refusedItsMe={refusedItsMe.current} changed={answersChanged} onResult={(result) => setResults((current) => new Map(current).set(id, result))} />;
+          inFlight={sending.current} refusedItsMe={refusedItsMe.current} pendingItsMe={pendingItsMe.current} changed={answersChanged} onResult={(result) => setResults((current) => new Map(current).set(id, result))} />;
       }}
     />
     {detachedRetries.map(([id, result]) => <div key={id} role="status">{renderOutcomes(id, result, true)}</div>)}
