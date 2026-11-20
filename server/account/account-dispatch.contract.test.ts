@@ -1,15 +1,35 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { handleRequest, type ServerContext } from "../dispatch.ts";
-import { createListedPc } from "./listed-pc.test-helpers.ts";
+import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { STALE_READ_MS } from "./account-devices.ts";
 import { accountRouteAction, accountRouteGuard } from "./account-row-rights.ts";
 import { DISPATCH_MUTATIONS, RELAY_CONTROLS } from "../dispatch-routes.ts";
 import { relayConnection } from "../relay/test-helpers.ts";
-import { ask } from "./pairing.test-helpers.ts";
+import { ask, phone } from "./pairing.test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
+
+test("R1/T37: signed-in listed row can Revoke a newer listing but not its older member", async () => {
+  const { fixture, device, member, serverId, service } = await createListedPc(close => closes.push(close));
+  const { accountRows, accountMailbox } = fixture.app.context.services;
+  const newer = await phone();
+  service.registerDevice(ACCOUNT, newer.spki, "Newer");
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const [target] = accountRows?.rowsByKey(newer.spki) ?? [];
+  if (!target) throw new Error("Missing newer listing");
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
+  try {
+    const link = await relayConnection(fixture, { serverId });
+    await link.auth(device);
+    const revoke = (id: string) => ask(link, `/api/devices/${id}`, { method: "DELETE", body: {} });
+    expect((await revoke(target.id)).status).toBe(204);
+    expect(accountRows?.row(target.id)).toBeNull();
+    const older = await revoke(member.id);
+    expect([older.status, older.body.error?.code]).toEqual([403, "older_device"]);
+  } finally { clock.mockRestore(); }
+});
 
 async function listedDispatcher() {
   const { fixture, device, serverId } = await createListedPc(close => closes.push(close));
