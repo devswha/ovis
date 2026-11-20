@@ -1,5 +1,5 @@
 import { tally, usageCounters } from "../lib/usageCounters.ts";
-import { useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
+import { useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
 import { Ellipsis, ListFilter, Monitor, Plus, Search, Terminal, TriangleAlert, X } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
@@ -23,8 +23,9 @@ import type { InboxListHandle } from "../lib/useInbox.ts";
 import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/useInboxQuestions.ts";
 import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads } from "../lib/useInboxSummaries.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { AgentMark } from "./AgentMark.tsx";
-import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
+import { blockedNote, inboxRowTitle, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { compactWorktreeName, StatusBadge } from "./Sidebar.tsx";
 import "./InboxList.css";
@@ -89,8 +90,10 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   const searchToggle = useRef<HTMLButtonElement>(null);
   const { settings, resolvedLanguage } = useSettings();
   const popup = useMediaQuery(SHEET_QUERY) ? "dialog" : "menu";
-  const { agentGroupSort: sort, sidebarRows, statusIndicators } = settings;
-  const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => agentRowTitle(row, sidebarRows === "one").drawn }), [machines, activity, sort, sidebarRows]);
+  const { agentGroupSort: sort, autoTabNames, statusIndicators } = settings;
+  const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
+  const autoLabels = autoTabNames ? firstLines : null;
+  const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => inboxRowTitle(row, autoLabels) }), [machines, activity, sort, autoLabels]);
   const questions = useInboxQuestions(questionReads, questionTargets(all, activity));
   const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity));
   const stamps = useAgentStateStamps();
@@ -163,7 +166,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     const online = machine.state === "connected";
     const status = inboxStatus(row, activity);
     const group = agentGroup(status);
-    const title = agentRowTitle(row, false).title;
+    const title = inboxRowTitle(row, autoLabels);
     const tabs = machine.snapshot?.tabs.filter((candidate) => candidate.workspace_id === workspace.workspace_id) ?? [];
     const place = agentContext({
       agentLabel: null, title, markAgent: null, machineName: null,
