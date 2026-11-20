@@ -14,7 +14,7 @@ import { paneMark } from "../lib/sidebarAgents.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useSettings } from "../lib/settings.ts";
 import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
-import { inboxRowTitle } from "./AgentSidebar.tsx";
+import { agentRowTitle, inboxRowTopic } from "./AgentSidebar.tsx";
 import { InboxAvatar } from "./InboxList.tsx";
 import { InboxRailBlank } from "./InboxRail.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
@@ -39,7 +39,7 @@ function threadFacts({ machines, activity, machineId, pane, connection, watching
   const said = connection !== null ? t(connection === "connected" ? "Connected" : "Reconnecting…")
     : [watching ? t("View only") : null, severalPcs && machine ? machine.name : null, state].filter((part) => part !== null).join(" · ");
   return {
-    name: row ? inboxRowTitle(row, autoLabels) : displayPaneTitle(pane),
+    name: row ? inboxRowTopic(row, autoLabels) ?? agentRowTitle(row, false).title : displayPaneTitle(pane),
     kind: row?.entry.canonicalAgent ?? null,
     mark: row ? paneMark(row.entry) ?? "" : null,
     said,
