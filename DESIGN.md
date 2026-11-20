@@ -5080,8 +5080,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   PC, which keeps listing the phone until it is revoked there, so neither is a `.btn-danger`.
 - The hosted shell's front page is never the dashboard. A launch opens the PC this device opened last unless its
   check finds it off (the relay had nobody for it), then the next saved PC not found off (`launchOrder`, at most
-  four, two at a time; a check still running after four seconds, or one the relay refused, opens that PC, whose page
-  retries and says why; the connecting card meanwhile); every one off, a later visit, Back, a sign-in's return or the phone app's own row
+  four, two at a time; a check still running after four seconds, or one the relay refused, opens that PC, and when its
+  page then hears from the relay that it is off, the launch goes on to the front page, once; a PC a person opened
+  keeps its failure card and Try again; the connecting card meanwhile); every one off, a later visit, Back, a sign-in's return or the phone app's own row
   (`#pcs` inside the app) shows Add a PC, whose list says Off or Needs approval beside a PC, as the Claude and
   ChatGPT apps open on the last conversation and keep account pages behind Settings. The dashboard opens only by
   its own addresses (`#overview`, `#pcs`, `#devices`, `#relay`, `#settings`), which a signed-in Add a PC offers as

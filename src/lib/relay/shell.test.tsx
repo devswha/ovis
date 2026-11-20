@@ -992,6 +992,21 @@ describe("the hosted shell's front page", () => {
       expect(went).toEqual([`/s/${"b".repeat(32)}/`]);
     });
 
+    it("goes on to the front page when the PC a launch opened turns out off, and keeps the card for a PC a person opened", async () => {
+      const { server_id, server_public_key } = keyFor();
+      const [saved] = await pcs(server_id);
+      const scope = `https://app.ovis.sh/s/${server_id}/`;
+      const off = async (): Promise<never> => { throw new MuxProtocolError("timeout", "nobody there"); };
+      for (const [launched, expected] of [[true, ["/"]], [false, []]] as const) {
+        const went: string[] = [];
+        if (launched) browser.sessionStore.set("ovis-launched-pc", server_id);
+        await mountRelayShell(mountFor({ entryUrl: scope, store: deviceStore([{ ...saved!, server_public_key }]), navigate: (path) => { went.push(path); }, open: off }));
+        if (!launched) await until(() => rendered.length > 0 && last().state.kind === "failed", "the PC's failure card");
+        expect(went).toEqual([...expected]);
+        expect(browser.sessionStore.has("ovis-launched-pc")).toBe(false);
+      }
+    });
+
     it("takes the phone app's #pcs as its way to the front page, never the dashboard, and opens no PC from it", async () => {
       const replaced: string[] = [];
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true } });

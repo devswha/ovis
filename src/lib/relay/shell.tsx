@@ -53,6 +53,15 @@ function rememberPc(serverId: string): void {
   try { localStorage.setItem(LAST_PC, serverId); } catch { /* a page without storage opens on the front page */ }
 }
 
+/** The PC a launch sent this tab to, for that PC's page alone: taken as it loads. */
+const LAUNCHED_PC = "ovis-launched-pc";
+function keepLaunchedPc(serverId: string): void {
+  try { sessionStorage.setItem(LAUNCHED_PC, serverId); } catch { /* the PC's page keeps its own failure card */ }
+}
+function takeLaunchedPc(): string | null {
+  try { const id = sessionStorage.getItem(LAUNCHED_PC); sessionStorage.removeItem(LAUNCHED_PC); return id; } catch { return null; }
+}
+
 /** This tab has shown a page of the shell: from now on a front page is one it came back to, and stays. */
 function markLaunched(): void {
   try { sessionStorage.setItem(LAUNCHED, "1"); } catch { /* no storage: launchPc opens nothing */ }
@@ -108,6 +117,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   restored = (event: PageTransitionEvent) => { if (event.persisted && left) window.location.reload(); };
   window.addEventListener("pageshow", restored);
   if (scoped) markLaunched();
+  // this PC's page was opened by a launch, not by a person: if the PC turns out off, the launch goes on to Add a PC
+  const launchedHere = scoped && takeLaunchedPc() === entry.serverId;
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
   let last: Attempt | null = null, opening: AbortController | null = null;
@@ -294,7 +305,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       // a Cancel or a link meanwhile owns the page
       if (entries !== loaded || shown !== asking) return;
       // an address taken meanwhile (the dashboard's, Back) wins over the launch: the front page draws it
-      if (pc !== null && !navigatedSinceEntry()) { left = true; navigate(serverScopePath(pc)); }
+      if (pc !== null && !navigatedSinceEntry()) { left = true; keepLaunchedPc(pc); navigate(serverScopePath(pc)); }
     }
     if (left) return;
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
@@ -417,6 +428,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     refusedLinks.delete(attempt.offer.server_id);
     const mismatch = error instanceof ServerIdentityChangedError && error.saved !== undefined && error.offered !== undefined
       ? keyMismatch(attempt.offer.server_id, [{ key: error.saved, from: "saved" }, { key: error.offered, from: "link" }]) : null;
+    // the PC a launch opened before its check could say it is off: the relay now says so, and the launch lands where it
+    // would have, on the front page (Add a PC), once; a PC opened by a person keeps its card and its Try again
+    if (launchedHere && attempt.paired && attempt.fresh !== true && app === null && (failure === "pc-offline" || failure === "pc-unresponsive") && refused === undefined && !navigatedSinceEntry() && entries === 0) {
+      cancelAttempt(); navigate("/"); return;
+    }
     show({ kind: "failed", ...(attempt.paired && attempt.fresh !== true ? {} : { pairing: true as const }), failure: (refused === undefined ? null : refusalOf(refused)) ?? failure, name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id, ...(mismatch ? { mismatch } : {})  });
   };
 
