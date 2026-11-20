@@ -2,6 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { handleRequest, type ServerContext } from "../dispatch.ts";
 import { createListedPc } from "./listed-pc.test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
+import { STALE_READ_MS } from "./account-devices.ts";
 import { accountRouteAction } from "./account-row-rights.ts";
 
 const closes: (() => void)[] = [];
@@ -47,4 +48,12 @@ test("R5, R8, R9: PC maintenance and webhook require authority; push unsubscribe
   }
   for (const method of ["PUT", "DELETE"]) expect(accountRouteAction(method, "/api/alerts/webhook")).toEqual({ action: "webhook" });
   expect(accountRouteAction("DELETE", "/api/push/subscribe")).toEqual({ action: "push_subscribe" });
+});
+
+test.each(["join_hold", "catching_up"] as const)("S25, T36-T40: a request at dispatch while %s cannot drive", async reason => {
+  const { rows, request } = await listedDispatcher();
+  if (reason === "catching_up") rows.staleness(Date.now() - STALE_READ_MS);
+  const response = await request("GET", "/api/preferences");
+  expect(response?.status).toBe(403);
+  expect(await response?.json()).toMatchObject({ error: { code: reason } });
 });
