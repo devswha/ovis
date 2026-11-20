@@ -16,16 +16,19 @@ it("T60: the machine router forwards only the records POST with the target PC cr
     trackTerminal: () => () => {},
   } as unknown as MachineManager;
   const records = { records: [{ kind: "block", id: "signed-id" }] };
-  const send = (method: string, suffix = "account/records", origin = "https://app.example", readOnly = false) =>
+  const send = (method: string, suffix = "account/records", origin = "https://app.example", readOnly = false, owner = true) =>
     handleMachineRequest(new Request(`https://app.example/api/machines/desk/${suffix}`, {
       method, headers: { origin, "x-herdr-machine": "1", "content-type": "application/json", authorization: "Bearer caller" },
       body: method === "GET" ? undefined : JSON.stringify(records),
-    }), manager, undefined, undefined, readOnly);
+    }), manager, undefined, undefined, readOnly, undefined, undefined, undefined, undefined, owner);
 
   expect((await send("POST", "account/records", "https://other.example")).status).toBe(403);
   expect((await send("POST", "account/records", "https://app.example", true)).status).toBe(403);
   expect((await send("GET")).status).toBe(404);
   expect((await send("POST", "account/records/extra")).status).toBe(403);
+  const visitor = await send("POST", "account/records", "https://app.example", false, false);
+  expect(visitor.status).toBe(403);
+  expect(calls).toEqual([]);
   expect((await send("POST")).status).toBe(200);
   expect(calls).toEqual([{ method: "POST", path: "/api/account/records", authorization: "Bearer target", body: records }]);
 });
