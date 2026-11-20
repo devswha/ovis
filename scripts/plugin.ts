@@ -1262,6 +1262,7 @@ async function status(): Promise<number> {
  * The release flag, read as shared/account-devices-api.ts accountOpensAll() reads it: this script loads in a checkout
  * whose packages are not installed, so it imports nothing the contract module pulls in.
  */
+// Like the server, require an explicit opt-out: a padded or otherwise mistyped value must not disable Step 2.
 const accountOpensAll = (): boolean => env["OVIS_ACCOUNT_OPENS_ALL"] !== "0";
 
 /** `ovis recover` (scripts/plugin-recover.ts), over the server's recovery socket in this PC's state folder. */

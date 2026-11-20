@@ -200,6 +200,8 @@ export interface StoredDevice {
   joined_by?: JoinedBy;
   /** where this PC admitted the row from, and its place in this PC's own order (server/account/admission-order.ts) */
   origin?: RowOrigin;
+  /** A clock-ahead legacy stamp has no authority, even after the clock catches up. */
+  untrusted_created_at?: string;
   /** a copy a sibling merge brought into this dir with the release flag on: no row of this dir's own, never legacy (T50) */
   imported?: true;
   /** A promoted list admission keeps the original notice ID until its hold ends. */
@@ -348,6 +350,7 @@ export function readDeviceRegistry(path: string, opensAll = accountOpensAll()): 
       && (d.linked_at === undefined || typeof d.linked_at === "string")
       && (d.link_moved_key === undefined || typeof d.link_moved_key === "boolean")
       && (d.imported === undefined || d.imported === true)
+      && (d.untrusted_created_at === undefined || typeof d.untrusted_created_at === "string")
       && (d.account_add === undefined || isJsonObject(d.account_add))
       && (!opensAll || (d.held === undefined || (typeof d.held === "string" && /^[0-9a-f]{32}$/.test(d.held)))
         && (d.carried_notice === undefined || (typeof d.carried_notice === "string" && /^[0-9a-f]{32}$/.test(d.carried_notice))))
@@ -527,6 +530,7 @@ export class DeviceStore {
   private tombstones: AccountTombstone[] = [];
   /** Why account records cannot be applied: a tombstone file that will not parse is not an empty one. */
   private accountProblem: string | null = null;
+  private legacyClockProblem: string | null = null;
   readonly error: string | null = null;
 
   /**
@@ -624,14 +628,16 @@ export class DeviceStore {
     // a strict order changes nothing else on disk, not even a repair: its damage stays visible (S29)
     // a damaged pending file beside a readable tombstone file: the Revokes the readable one holds are evidence at once,
     // and neither file is touched until the damaged one is repaired (T26, S19)
-    if (this.error === null && this.evidence !== null && this.evidence.strict === null && this.safety?.strict == null && this.pc?.strict == null && pendingRead === null && tombstones !== null) {
-      this.evidence.takeIn([...this.carried, ...tombstones], this.devices.map((d) => ({ relay_public_key: d.relay_public_key, created_at: d.created_at, pairedHere: pairedHere(d) })), Date.now());
+    const now = Date.now();
+    if (this.error === null && this.evidence !== null && this.evidence.strict === null && this.safety?.strict == null && this.pc?.strict == null) {
+      if (this.accountProblem === null) this.quarantineLegacyClock(now);
+      if (pendingRead === null && tombstones !== null) this.evidence.takeIn([...this.carried, ...tombstones], this.repairEvidenceRows(), now);
     }
     // a time this PC wrote that lies more than a day ahead is no time it wrote: it would push every later stamp past it,
     // so the PC fails closed until it is repaired (S19, P13)
     if (this.evidence !== null) {
-      const ahead = [...this.ownTimes(), ...this.carried.filter((t) => t.record_id === "local").map((t) => t.removed_at)].find((t) => !isIsoTime(t) || Date.parse(t) > Date.now() + DAY_MS);
-      if (ahead !== undefined) this.accountProblem = `A time this PC wrote lies in the future (${ahead}): account records are refused until it is repaired.`;
+      const ahead = [...this.ownTimes(), ...this.carried.filter((t) => t.record_id === "local").map((t) => t.removed_at)].find((t) => !isIsoTime(t) || Date.parse(t) > now + DAY_MS);
+      if (ahead !== undefined) this.accountProblem ??= `A time this PC wrote lies in the future (${ahead}): account records are refused until it is repaired.`;
     }
     if (this.error === null && this.accountProblem === null && this.pc?.strict == null && !this.revokeAllIntent?.strict) {
       if (this.evidence !== null) {
@@ -708,7 +714,7 @@ export class DeviceStore {
     // evidence that cannot be trusted is never written over, and nothing is taken in while the safety log cannot be
     // read: a removal would record no forgettings it outranks, and an old forget redelivered later would end it (S19, T61)
     if (this.evidence!.strict !== null || this.safety?.strict != null) return;
-    this.evidence!.takeIn([...this.carried, ...found], this.devices.map((d) => ({ relay_public_key: d.relay_public_key, created_at: d.created_at, pairedHere: pairedHere(d) })), Date.now());
+    this.evidence!.takeIn([...this.carried, ...found], this.repairEvidenceRows(), Date.now());
     // the tombstone file is written from the evidence before the pending file goes, so nothing pending is lost (T26)
     this.writeTombstones(this.evidence!.tombstones());
     rmSync(this.pendingTombstonePath, { force: true });
@@ -738,8 +744,33 @@ export class DeviceStore {
 
   /** The times this PC wrote itself: rows' making, its own tombstones and Revokes; never a time a record carries (P13). */
   private ownTimes(): string[] {
-    return [...this.devices.map((d) => d.created_at), ...(this.joinedRows?.rows() ?? []).map(row => row.confirmed_at),
+    return [...this.devices.filter(row => row.untrusted_created_at !== row.created_at).map(row => row.created_at), ...(this.joinedRows?.rows() ?? []).map(row => row.confirmed_at),
       ...this.tombstones.filter((t) => t.record_id === "local").map((t) => t.removed_at), ...this.evidence?.times() ?? []];
+  }
+
+  private quarantineLegacyClock(now: number): void {
+    const firstMigration = this.pc?.migrating === true && !this.pc.upgrading;
+    const marked = this.devices.map(row => {
+      const legacy = row.origin?.from === "legacy" || (firstMigration && row.origin === undefined && !row.imported);
+      return legacy && isIsoTime(row.created_at) && Date.parse(row.created_at) > now + DAY_MS && row.untrusted_created_at !== row.created_at
+        ? { ...row, untrusted_created_at: row.created_at } : row;
+    });
+    const bad = marked.find(row => row.untrusted_created_at === row.created_at);
+    if (!bad) return;
+    this.legacyClockProblem = `A legacy pairing time lies in the future (${bad.created_at}): account records are refused until it is repaired.`;
+    if (marked.every((row, index) => row === this.devices[index])) return;
+    this.devices = marked;
+    try { this.save(marked); }
+    catch (error) {
+      if (!(error instanceof Error)) throw error;
+      this.accountProblem ??= `Cannot record an untrusted pairing time: ${error.message}`;
+    }
+  }
+
+  private repairEvidenceRows() {
+    const latest = Date.now() + DAY_MS;
+    return this.devices.map(row => ({ relay_public_key: row.relay_public_key, created_at: row.created_at,
+      pairedHere: pairedHere(row) && row.untrusted_created_at !== row.created_at && isIsoTime(row.created_at) && Date.parse(row.created_at) <= latest }));
   }
 
   nextStamp(now: number): string {
@@ -799,17 +830,37 @@ export class DeviceStore {
     // main's own rule stays the floor under the evidence: a tombstone of this PC keeps its key out, whatever path took
     // the evidence in or skipped it (P13, rule 1)
     const tombstoned = device.relay_public_key !== undefined
-      && this.tombstones.some((t) => t.key === device.relay_public_key && (!pairedHere(device) || this.later(t.removed_at, device.created_at, true)));
+      && this.tombstones.some((t) => t.key === device.relay_public_key
+        && (device.untrusted_created_at === device.created_at || !pairedHere(device) || this.later(t.removed_at, device.created_at, true)));
     return tombstoned || (this.evidence !== null && (this.lockHeld.has(device.id) || this.journalEnded(device.id) || this.coveredByEvidence(device) || this.frozen(device) || (this.safety?.inForce.locked === true && device.origin?.from !== "pc")));
   }
 
   get accountError(): string | null {
-    return this.revokeAllError ?? this.revokeAllIntent?.strict ?? this.joinedRows?.blocked() ?? null;
+    return this.accountIntegrityError ?? this.legacyClockProblem;
   }
 
   /** A local denial does not need the listed registry; it still needs the rest of the PC's safety state. */
   get revokeAllError(): string | null {
-    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.denyProblem ?? this.accountProblem;
+    return this.revokeIntegrityError ?? this.denyProblem ?? this.legacyClockProblem;
+  }
+
+  private get revokeIntegrityError(): string | null {
+    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.accountProblem;
+  }
+
+  private get accountIntegrityError(): string | null {
+    return this.revokeIntegrityError ?? this.denyProblem ?? this.revokeAllIntent?.strict ?? this.joinedRows?.blocked() ?? null;
+  }
+
+  /** A failed deny shuts out devices, not the PC's retry of a device removal. */
+  localRemovalRetry(): boolean {
+    return this.denyProblem !== null && this.revokeIntegrityError === null && this.error === null;
+  }
+
+  /** Only a proved legacy credential may pass the clock-only fault at the HTTP/WS boundary. */
+  legacyClockCredential(id: string): boolean {
+    return this.legacyClockProblem !== null && this.accountIntegrityError === null && this.error === null
+      && this.devices.some(row => row.id === id && row.origin?.from === "legacy" && !this.stale(row) && !this.catchingUp(id));
   }
 
   /** No device gets in by a row or a code when the PC cannot trust its account state. */
@@ -1101,8 +1152,9 @@ export class DeviceStore {
 
   /** A join hold permits only the row's own leave; a catch-up wait permits no signature. */
   private canSpeak(id: string, ownLeave = false): boolean {
+    if (this.failsClosed) return false;
     const member = this.devices.find(row => row.id === id);
-    if (member) return !this.catchingUp(id) && this.memberAdmitted(member, Date.now(), ownLeave);
+    if (member) return !this.catchingUp(id, false) && this.memberAdmitted(member, Date.now(), ownLeave);
     const row = this.joinedRows?.row(id);
     const access = row ? this.listedAccess(row) : null;
     return access !== null && ("ok" in access || (ownLeave && access.refused === "join_hold"));
@@ -1826,7 +1878,7 @@ export class DeviceStore {
     // a row its evidence covers serves no request, whatever session it holds (S14); while the PC fails closed no
     // session opens another stream either: only this PC itself gets in (S19, P8)
     if (device && this.catchingUp(id)) return null;
-    if (this.evidence !== null && (this.failsClosed || (device !== undefined && this.stale(device)))) return null;
+    if (this.evidence !== null && ((this.failsClosed && (!device || !this.legacyClockCredential(id))) || (device !== undefined && this.stale(device)))) return null;
     if (device) return this.memberAdmitted(device, Date.now()) ? { role: device.role, key: device.relay_public_key, provisional: false } : null;
     const waiting = this.pending?.waiting?.rows.get(id);
     if (waiting) return { role: "watch", key: waiting.key, provisional: true };
@@ -1976,9 +2028,9 @@ export class DeviceStore {
   }
 
   /** Whether the devices.json row `id` waits for the first whole read (T41). */
-  catchingUp(id: string): boolean {
+  catchingUp(id: string, credential = true): boolean {
     const device = this.devices.find((d) => d.id === id);
-    return device !== undefined && (this.catchUp?.waits({ id, origin: device.origin }) ?? false);
+    return device !== undefined && (this.catchUp?.waits({ id, origin: device.origin }, credential) ?? false);
   }
 
   /** Whether `id` is an account-joined row (S2-26): its every route goes through accountRowMay. */
@@ -2392,7 +2444,7 @@ export class DeviceStore {
 
   /** The transport owns a fresh 32-byte nonce per session and consumes AUTH only once. */
   async matchRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string, now = Date.now()): Promise<DeviceMatch | null> {
-    if (this.failsClosed) return null;
+    if (this.failsClosed && !this.legacyClockCredential(deviceId)) return null;
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key !== undefined);
     // a row that waits to link signs in as any row does, by the key its PAIR named, while it stands; only that
     // sign-in proves the key
@@ -2401,7 +2453,7 @@ export class DeviceStore {
     if (publicKey === undefined || (device !== undefined && this.stale(device))) return null;
     const verified = await verifyRelayProof(publicKey, { nonce, signature, serverId });
     // a log that turned strict while the proof was checked refuses it too (S19)
-    if (this.failsClosed) return null;
+    if (this.failsClosed && !this.legacyClockCredential(deviceId)) return null;
     // the row went, or linked, while its signature was checked: the proof was for a row that is no more
     if (waiting !== undefined) return verified && this.provisional(deviceId) === waiting ? { id: waiting.id, label: waiting.label, role: "watch" } : null;
     // Authorization changes during WebCrypto invalidate the proof; a rename does not.
@@ -2414,10 +2466,11 @@ export class DeviceStore {
 
   match(token: string | undefined, now = Date.now()): DeviceMatch | null {
     this.pruneUnconfirmedFirstPairs(now);
-    if (!token || this.failsClosed) return null;
+    if (!token) return null;
     const digest = hash(token);
     const candidateIndex = this.unconfirmedFirstPairs.findIndex(({ device }) => same(digest, device.token_hash));
     if (candidateIndex !== -1) {
+      if (this.failsClosed) return null;
       const { device: candidate, origin } = this.unconfirmedFirstPairs[candidateIndex]!;
       if (!this.admits(undefined)) return null;
       const admitted = this.admitted({ ...candidate, last_seen_at: new Date(now).toISOString() }, now);
@@ -2443,6 +2496,7 @@ export class DeviceStore {
     }
     for (const device of this.devices) {
       if (!same(digest, device.token_hash)) continue;
+      if (this.failsClosed && !this.legacyClockCredential(device.id)) return null;
       // a row its evidence covers or a block freezes opens nothing, whichever way it signs in (S14, S22)
       if (this.catchingUp(device.id) || (this.evidence !== null && this.stale(device)) || !this.memberAdmitted(device, now)) return null;
       this.noteSeen(device, now);
@@ -2723,7 +2777,7 @@ export class DeviceStore {
   }
 
   /** Holding a pairing code requires an ordinary paired member, not just a drive session. */
-  canHoldCode(id: string): boolean { return this.devices.some(device => device.id === id) && this.canDrive(id); }
+  canHoldCode(id: string): boolean { return !this.failsClosed && this.devices.some(device => device.id === id) && this.canDrive(id); }
 
   private pruneUnconfirmedFirstPairs(now: number): void {
     this.unconfirmedFirstPairs = this.unconfirmedFirstPairs.filter(({ expires }) => now <= expires);

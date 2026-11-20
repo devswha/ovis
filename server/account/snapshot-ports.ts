@@ -25,6 +25,7 @@ export interface SnapshotDeps {
   requestRead(): void;
   /** The account-joined rows' store, given the whole read's list in its commit turn (S2-25); absent without one. */
   commitList?(snapshot: AccountSnapshot): void;
+  step2Off?(): void;
 }
 
 
@@ -34,6 +35,8 @@ const fencedThrough = new WeakMap<SafetyLog, number>();
 
 export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
   const { devices, safetyLog, pc, journal } = deps;
+  const bindId = pc.binding()?.bind_id;
+  const serverId = deps.serverId();
   const orders = new WeakMap<StagedRead["snapshot"], LiftOrder>();
   const fenceFreezes = () => {
     const fenced = fencedThrough.get(safetyLog) ?? 0;
@@ -135,6 +138,9 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
     commitList(snapshot) {
       devices.resumePromotedHolds();
       deps.commitList?.(snapshot);
+    },
+    step2Off() {
+      if (bindId !== undefined && pc.binding()?.bind_id === bindId && deps.serverId() === serverId) deps.step2Off?.();
     },
     methodsVersion: () => deps.order.methodsVersion(),
     journalMethod(version) {

@@ -18,6 +18,7 @@ export const OVIS_ACCOUNT_OPENS_ALL = "OVIS_ACCOUNT_OPENS_ALL";
 export const ACCOUNT_OPENS_ALL_CAPABILITY = "account-opens-all/1";
 
 export function accountOpensAll(value = process.env[OVIS_ACCOUNT_OPENS_ALL]): boolean {
+  // Require an explicit opt-out: a padded or otherwise mistyped value must not disable Step 2.
   return value !== "0";
 }
 

@@ -1019,13 +1019,17 @@ is what authenticates the PC.
 
 ### Turning Step 2 off
 
+If the account service disables Step 2 for an account, a listed PC gets `step2_off` on its
+snapshot read. Phones paired before Step 2 can still connect as in Step 1, subject to any blocks
+or other denials already on that PC. Account-joined phones wait until a whole snapshot succeeds again.
+
 Step 2 is on by default. Only the exact value `0` turns it off. An unset or empty value, `1`,
 `false`, and all other values leave it on.
 
 - **herdr plugin:** Set `OVIS_ACCOUNT_OPENS_ALL=0` in
   `~/.config/herdr/plugins/config/devswha.ovis/.env`, then restart only the Ovis plugin.
-- **Desktop app:** Set `OVIS_ACCOUNT_OPENS_ALL=0` in the environment that launches the app,
-  then restart Ovis.
+- **Desktop app:** There is no in-app switch yet. If you launch Ovis yourself, set
+  `OVIS_ACCOUNT_OPENS_ALL=0` in the launch environment and restart Ovis from that environment.
 
 ### Confirmed on this PC
 

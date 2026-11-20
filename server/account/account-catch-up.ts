@@ -2,6 +2,7 @@ import type { AccountSnapshot } from "../../shared/account-snapshot.ts";
 import type { DeviceStore } from "../devices.ts";
 import { STALE_READ_MS, type accountRowsFor } from "./account-devices.ts";
 import { CatchUpGate } from "./catch-up-gate.ts";
+import type { FirstActivation } from "./first-activation.ts";
 import type { PcAccountState } from "./pc-binding.ts";
 import type { Readmission } from "./readmission.ts";
 import type { RecoveryReleases } from "./recovery.ts";
@@ -15,14 +16,17 @@ export class AccountCatchUp {
   private onStale: (() => void) | undefined;
   private readonly stopLifts?: () => void;
   private readonly stopRecovery?: () => void;
+  private readonly releases: RecoveryReleases | undefined;
 
   constructor(
     private readonly devices: DeviceStore,
     private readonly rows: ReturnType<typeof accountRowsFor> | null,
-    pc: PcAccountState | null,
-    private readonly releases: RecoveryReleases | undefined,
+    private readonly options: { readonly pc: PcAccountState | null; readonly releases?: RecoveryReleases | undefined; readonly activation?: FirstActivation | undefined },
   ) {
-    this.gate = rows === null ? null : new CatchUpGate(() => pc?.binding()?.bind_id ?? null, id => releases?.releaseOf(id) != null);
+    const { pc, releases, activation } = options;
+    this.releases = releases;
+    this.gate = rows === null ? null : new CatchUpGate(() => pc?.binding()?.bind_id ?? null,
+      id => releases?.releaseOf(id) != null, () => activation?.pending() === true);
     devices.attachCatchUp(this.gate, releases);
     if (rows && releases) this.stopRecovery = releases.registerRecoverySource(() =>
       (rows.store()?.waitingRows() ?? []).map(row => devices.listedRecoveryCandidate(row)));
@@ -45,6 +49,12 @@ export class AccountCatchUp {
     });
   }
 
+  /** An explicit opt-out is not a whole read: no renewal, no lift, and no account-list access. */
+  step2Off(): void {
+    this.gate?.step2Off();
+    this.rows?.store()?.waitForRead();
+  }
+
   /** `readmission`: the proved returning device a sign-in's own pull may readmit (S2-28, T55). */
   commitList(snapshot: AccountSnapshot, readmission?: Readmission): void {
     const store = this.rows?.store();
@@ -52,6 +62,7 @@ export class AccountCatchUp {
       store?.commitList(snapshot, readmission);
       if (this.devices.failsClosed) throw new SnapshotWriteRefused(this.devices.accountError ?? "account_unavailable");
       store?.expire();
+      this.options.activation?.complete();
       this.releases?.endAll();
       this.gate?.wholeRead(this.devices.list(null).filter(row => !this.devices.admits(this.devices.relayKeyOf(row.id))).map(row => row.id));
     } catch (error) {
