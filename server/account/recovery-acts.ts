@@ -10,6 +10,7 @@ import { AlreadyReleasedError, ReleaseJournalError, releaseRefusal, type Recover
 /** What this PC does for the acts beyond release and undo (Track A's devices.ts and safety-log.ts). */
 export interface RecoverySeams {
   pendingOf(id: string): { id: string; key: string; label: string; fingerprint: string; codeId?: string } | null;
+  pendingList(): { id: string; label: string; fingerprint: string }[];
   /** takes the waiting redemption out only when `fingerprint` is its key's */
   takePending(id: string, fingerprint: string): { id: string; key: string; label: string; fingerprint: string; codeId?: string } | null;
   admitConfirmed(confirm: { codeId: string; key: string; label: string; source: "recover" }): DeviceMatch | null;
@@ -36,6 +37,7 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
           rows: releases.candidates().filter((row) => row.waiting !== null).map((row) => ({
             id: row.id, label: row.label, origin: row.origin, waiting: row.waiting, last_seen_at: row.lastSeenAt, refusal: releaseRefusal(row, pc),
           })),
+          ...(options.seams ? { pending: options.seams.pendingList() } : {}),
         };
       case "release": {
         const candidates = releases.candidates();

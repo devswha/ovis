@@ -22,7 +22,7 @@ interface WaitingRow {
   refusal: string | null;
 }
 
-const USAGE = "usage: ovis recover [--release <row id>... | --undo [<row id>...]]\n";
+const USAGE = "usage: ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id>]\n";
 
 export async function runRecover(args: readonly string[], io: RecoverIo): Promise<number> {
   if (io.platform === "win32") {
@@ -30,9 +30,10 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
     return 1;
   }
   const [flag, ...ids] = args;
-  if (flag !== undefined && flag !== "--release" && flag !== "--undo") { io.out(USAGE); return 2; }
+  if (flag !== undefined && flag !== "--release" && flag !== "--undo" && flag !== "--admit") { io.out(USAGE); return 2; }
+  if (flag === "--admit" && ids.length !== 1) { io.out(USAGE); return 2; }
   if (flag === "--release" && ids.length === 0) { io.out(USAGE); return 2; }
-  if (flag === "--release" && !io.terminal) {
+  if ((flag === "--release" || flag === "--admit") && !io.terminal) {
     io.out("This is not run in a terminal, so nothing can be released here. Run it in a terminal on this PC (over ssh, run ssh -t).\n");
     return 1;
   }
@@ -45,13 +46,24 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
       if (answer.warning !== undefined) { io.out(`${answer.warning}\n`); return 1; }
       return 0;
     }
-    const listed = await io.send({ act: "list" }) as { rows?: WaitingRow[]; error?: string };
+    const listed = await io.send({ act: "list" }) as { rows?: WaitingRow[]; pending?: { id: string; label: string; fingerprint: string }[]; error?: string };
     if (listed.error !== undefined) { io.out(`${listed.error}\n`); return 1; }
     const rows = listed.rows ?? [];
+    if (flag === "--admit") {
+      const waiting = (listed.pending ?? []).find((entry) => entry.id === ids[0]);
+      if (waiting === undefined) { io.out(`${ids[0]}: no such device waits here.\n`); return 1; }
+      const answer = (await io.ask(`${waiting.label} (the name it gives itself) waits with key fingerprint ${waiting.fingerprint}.\nCompare it with the characters the device shows. Admit this key? [y/N] `)).trim().toLowerCase();
+      if (answer !== "y" && answer !== "yes") { io.out("Not admitted.\n"); return 0; }
+      const admitted = await io.send({ act: "admit", pending: waiting.id, fingerprint: waiting.fingerprint }) as { admitted?: string; error?: string };
+      if (admitted.error !== undefined) { io.out(`${admitted.error}\n`); return 1; }
+      io.out(`Admitted ${waiting.label}.\n`);
+      return 0;
+    }
     if (flag === undefined) {
       if (rows.length === 0) { io.out("No device waits for this PC's account to be read.\n"); return 0; }
       for (const row of rows) io.out(`${describe(row)}\n`);
       io.out("Release one with: ovis recover --release <row id>\n");
+      for (const entry of listed.pending ?? []) io.out(`waiting: ${entry.id}  ${entry.label}  key ${entry.fingerprint}  (ovis recover --admit ${entry.id})\n`);
       return 0;
     }
     let failed = false;

@@ -82,6 +82,7 @@ function seams(options: { fingerprint?: string; admitted?: boolean } = {}) {
   const pending = { id: "0123456789abcdef0123456789abcdef", key: "key-new", label: "Phone", fingerprint: options.fingerprint ?? "AB12-CD34", codeId: "code-1" };
   const made: RecoverySeams = {
     pendingOf: (id) => id === pending.id ? pending : null,
+    pendingList: () => [{ id: pending.id, label: pending.label, fingerprint: pending.fingerprint }],
     takePending: (id, fingerprint) => { calls.push(`take ${id} ${fingerprint}`); return fingerprint === pending.fingerprint ? pending : null; },
     admitConfirmed: (confirm) => { calls.push(`admit ${confirm.codeId} ${confirm.key} ${confirm.source}`); return options.admitted === false ? null : { id: "fedcba9876543210", label: "Phone", role: "drive" }; },
     removeKey: ({ target }) => { calls.push(`remove ${target}`); return { removed: [target] }; },
