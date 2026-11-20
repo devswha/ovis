@@ -123,6 +123,15 @@ test("P22: an admission refusal tells a revoked device to pair again at this PC'
   expect(run.text()).toMatch(/revoked here.*pair it again at this PC's screen/i);
 });
 
+test("P23/T70: a standing safety refusal prints the lift command and exits without claiming admission", async () => {
+  const id = "a".repeat(64);
+  const refusal = `New phone cannot be admitted while block ${id} stands: lift it first with ovis recover --lift ${id}`;
+  const run = io({ answers: ["y"], admitError: refusal });
+  expect(await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], run.value)).toBe(1);
+  expect(run.text()).toContain(`${refusal}\n`);
+  expect(run.text()).not.toContain("Admitted New phone.");
+});
+
 for (const { args, exit } of [{ args: [], exit: 0 }, { args: ["--admit"], exit: 2 }]) {
   test(`P22: recover${args.length ? " --admit without an id" : ""} lists pending devices even with no release rows`, async () => {
     const run = io({ terminal: false, releaseRows: [] });

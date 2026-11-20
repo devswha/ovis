@@ -133,6 +133,34 @@ async function waitingDevice(made: Pc) {
   return { paired, waiting: listed.pending.find((entry) => entry.fingerprint === paired.fingerprint)! };
 }
 
+for (const kind of ["block", "freeze"] as const) {
+  test.if(unix)(`P23/T70: admit leaves a waiting key targeted by a standing ${kind} untouched`, async () => {
+    const member = await memberRow("acct_1");
+    const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true, platform: "linux" } });
+    pcs.push(made);
+    const { paired, waiting } = await waitingDevice(made);
+    const account = "acct_1";
+    const target = paired.device.spki;
+    const signed_at = new Date().toISOString();
+    const log = made.app.context.services.safetyLog;
+    if (log === null) throw new Error("Expected a safety log");
+    const block = await signSafetyRecord({
+      v: 1, kind: "block", account, target, target_no: 9, signer: member.key.spki, signer_no: 1, signed_at, nonce: newRecordId(),
+    }, member.key.keys.privateKey);
+    const receipt = kind === "block"
+      ? log.append({ record: block, got: "handed", asof: { signer_no: 1, target_no: 9, after: 9, joined: 9, signer_removed: false } })
+      : log.append({ record: { v: 1, id: `f:${block.id}`, kind: "freeze", account, target, after: 9, signer: "service", signed_at, signature: "" }, got: "snapshot" });
+    expect(receipt.outcome).toBe("applied");
+    const before = made.stored();
+
+    expect(await bounded(askRecovery(made.stateDir, { act: "admit", pending: waiting.id, fingerprint: waiting.fingerprint }))).toEqual({
+      error: `New phone cannot be admitted while ${kind} ${receipt.id} stands: lift it first with ovis recover --lift ${receipt.id}`,
+    });
+    expect(made.stored()).toEqual(before);
+    expect(await bounded(askRecovery(made.stateDir, { act: "list" }))).toMatchObject({ pending: [waiting] });
+  });
+}
+
 test.if(unix)("P22/T70: the fingerprint the terminal showed admits the waiting device once, with origin recover; a wrong one admits nobody", async () => {
   const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" } });
   pcs.push(made);
