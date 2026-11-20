@@ -8,7 +8,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PcAccountState } from "./pc-binding.ts";
 import { pairingPc, memberRow, signIn, ask, type Pc } from "./pairing.test-helpers.ts";
-import { bounded } from "../relay/test-helpers.ts";
+import { bounded, deferred } from "../relay/test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -128,4 +128,45 @@ test("N4: on a locked PC, a direct loopback window gets 403 locked on everything
     expect([path, tried.status, tried.body.error?.code]).toEqual([path, 403, "locked"]);
   }
   expect((await made.local("/api/account/lock")).status).toBe(200);
+});
+
+/** A bound PC whose screen a test answers through the desktop owner channel. */
+async function screenedPc() {
+  const member = await memberRow("acct_1");
+  const told: { pending: { id: string; action: { kind: string } }[] }[] = [];
+  let push!: (line: string) => void;
+  const input = new ReadableStream<Uint8Array>({ start(controller) { push = (line) => controller.enqueue(new TextEncoder().encode(line)); } });
+  const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true, desktopOwner: { input, write: (line) => { told.push(JSON.parse(line)); } } } });
+  pcs.push(made);
+  const approve = (kind: string) => {
+    const open = told.at(-1)?.pending.find((entry) => entry.action.kind === kind);
+    if (!open) throw new Error(`nothing waits for ${kind}`);
+    push(`${JSON.stringify({ approve: open.id })}\n`);
+  };
+  return Object.assign(made, { member, approve });
+}
+
+test("T46/S24: the screen's approval of a lock ends a connection already open on a grant that is not a row", async () => {
+  const made = await screenedPc();
+  const socket = new WebSocket(`ws://127.0.0.1:${made.app.port}/ws`);
+  const opened = deferred<void>(), closed = deferred<number>();
+  socket.onopen = () => opened.resolve();
+  socket.onclose = (event) => closed.resolve(event.code);
+  await bounded(opened.promise);
+  const asked = await made.local("/api/account/lock", { method: "POST", headers: { "x-herdr-machine": "1" }, body: {} });
+  expect(asked.status).toBe(202);
+  made.approve("lock");
+  await bounded(closed.promise);
+  expect(made.app.context.services.safetyLog!.state().locked).toBe(true);
+});
+
+test("S19/P11: an admission order that cannot be read refuses a loopback window as an unreadable log does, and the lock says strict", async () => {
+  const member = await memberRow("acct_1");
+  const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true },
+    prepare: (dir) => { writeFileSync(join(dir, "account-pc.json"), "not json", { mode: 0o600 }); } });
+  pcs.push(made);
+  expect(made.devices.failsClosed).toBe(true);
+  const tried = await made.local("/api/devices");
+  expect([tried.status, tried.body.error?.code]).toEqual([403, "strict"]);
+  expect((await made.local("/api/account/lock")).body.strict).toBe(true);
 });
