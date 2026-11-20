@@ -264,6 +264,17 @@ describe("the relay tab reopened already signed in", () => {
     await until(() => button("Add this PC to my account").length === 1);
   });
 
+  it("offers the one press again when the relay's switch turns it off, and that press adds the PC", async () => {
+    state.relay = "online";
+    await mount("online");
+    await until(() => button("Add this PC to my account").length === 1);
+    state.relay = "off";
+    await act(async () => { renderer!.update(tabAt("off")); });
+    await until(() => button("Turn on the relay and add this PC").length === 1);
+    await act(async () => { button("Turn on the relay and add this PC")[0]!.props.onClick(); });
+    await until(() => button("Stop waiting").length === 1);
+  });
+
   it("goes on with a press of Turn on the relay and add this PC while the relay's state is read again", async () => {
     await mount("off");
     await until(() => button("Turn on the relay and add this PC").length === 1);

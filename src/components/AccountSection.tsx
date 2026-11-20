@@ -567,7 +567,16 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     });
   };
   const relayOff = state.kind === "relay-off";
-  useEffect(() => { if (relayOn === true) setState((current) => current.kind === "relay-off" ? { kind: "offer" } : current); }, [relayOn]);
+  useEffect(() => {
+    if (relayOn === undefined) return;
+    if (relayOn) { setState((current) => current.kind === "relay-off" ? { kind: "offer" } : current); return; }
+    // turned off again: the idle offer becomes the one press that turns it on and adds, under the sign-in stored now
+    let live = true;
+    accountService().session().then((session) => {
+      if (live && session !== undefined) setState((current) => current.kind === "offer" ? { kind: "relay-off", account: session.account, error: null } : current);
+    }, warned("Ovis: the sign-in could not be read"));
+    return () => { live = false; };
+  }, [relayOn, accountService]);
   const [closesGate, setClosesGate] = useState(false);
   useEffect(() => {
     if (!relayOff) return;
