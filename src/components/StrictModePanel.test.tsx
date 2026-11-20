@@ -3,7 +3,8 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 
 import { SettingsProvider } from "../lib/settings.ts";
 import { mock, spyOn } from "bun:test";
-import { StrictModePanel, StrictModeSection, StrictUnlockAsk, type LockState } from "./StrictModePanel.tsx";
+import { StrictModePanel, StrictModeSection, StrictUnlockAsk } from "./StrictModePanel.tsx";
+import type { LockState } from "../lib/account/lock.ts";
 import { AccessGate } from "./AccessGate.tsx";
 
 const unlocked: LockState = {

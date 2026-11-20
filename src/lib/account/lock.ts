@@ -3,12 +3,25 @@
  * a named unlock on its own screen. A request grants nothing; the PC writes the record only when its screen approves
  * that exact act, and a window that is not this PC's own is refused (local_required).
  */
-import type { LockState } from "../../components/StrictModePanel.tsx";
 import { apiFetch } from "../api-request-id.ts";
 import { errorFrom } from "../api.ts";
 
 /** How long the PC's screen keeps an asked act open (CONFIRM_MS in server/account/local-confirm.ts). */
 export const CONFIRM_WINDOW_MS = 2 * 60_000;
+
+/** GET /api/account/lock (server/account/lock-routes.ts): `preview` is what turning it on ends (T46), only while unlocked and bound. */
+export interface LockState {
+  readonly bound: boolean;
+  /** whether this PC can confirm on its own screen; fixed by platform (Linux only this release) */
+  readonly confirm: "available" | "unsupported";
+  /** the lock in force, by its id */
+  readonly locked: string | null;
+  readonly strict: boolean;
+  readonly preview?: {
+    readonly rows: readonly { readonly id: string; readonly label: string; readonly origin: { readonly from: string; readonly how: string } | null; readonly file: "devices" | "account" }[];
+    readonly grants: readonly ("token" | "portal" | "tailscale" | "open_lan" | "loopback")[];
+  };
+}
 
 const LOCK = "/api/account/lock";
 const UNLOCK = "/api/account/unlock";

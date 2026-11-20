@@ -23,6 +23,8 @@ export interface AccessGateProps {
   onPaired?: () => void;
   /** Fires once the server set a cookie: the shell can mount, and every later fetch and the WebSocket carry it. */
   onUnlocked: () => void;
+  /** the server says this request is this PC's own window (/api/health auth.own_window) */
+  ownWindow?: boolean;
 }
 
 /**
@@ -32,7 +34,7 @@ export interface AccessGateProps {
  * token stays as the other way. Nothing is stored here: the server answers with an
  * HttpOnly cookie either way.
  */
-export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconfirmed, onPaired, onUnlocked }: AccessGateProps) {
+export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconfirmed, onPaired, onUnlocked, ownWindow = false }: AccessGateProps) {
   const t = useT();
   const codeRef = useRef<HTMLInputElement | null>(null);
   const tokenRef = useRef<HTMLInputElement | null>(null);
@@ -91,6 +93,18 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
     }
   };
 
+  // a locked PC pairs nobody: its own window may only ask to turn strict mode off (T47, N4); any other window gets nothing
+  if (reason === "locked") {
+    return ownWindow ? (
+      <main className="access-gate-screen">
+        <div className="access-gate" data-testid="strict-gate">
+          <img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="access-gate-mark" />
+          <StrictUnlockAsk />
+        </div>
+      </main>
+    ) : null;
+  }
+
   return (
     <main className="access-gate-screen">
       <div className="access-gate" data-testid="token-gate">
@@ -98,7 +112,6 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
         <h1 id="access-gate-title" className="access-gate-title">
           {t(reason === "token_required" ? "Unlock" : "Pair this device")}
         </h1>
-        {reason === "locked" && <StrictUnlockAsk />}
         {reason === "other_user" && (
           <p className="access-gate-refused" role="status">{t("Tailscale says this device belongs to someone other than this PC's owner. The owner can still let it in with a pairing code.")}</p>
         )}
