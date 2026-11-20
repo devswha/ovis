@@ -101,10 +101,12 @@ interface Hold {
   receipts: number;
   legacy: boolean;
   settleMark: number | null;
+  /** the last roster's evidence when the first move since the hold last settled went out; undefined until one does */
+  sent?: Evidence | null;
 }
 interface PcOrder {
   shown: string[] | null;
-  last: { ids: string[]; evidence: Evidence | null; arrived: number } | null;
+  last: { ids: string[]; evidence: Evidence | null } | null;
   generation: number;
   pending: Set<number>;
   desired: string[] | null;
@@ -126,7 +128,6 @@ export class ReorderCoordinator {
   private listeners = new Set<() => void>();
   private changes = 0;
   private loads = 0;
-  private arrivals = 0;
 
   constructor(private options: { verify?: SourceProofQuery; onSettled?: (machineId: string) => void } = {}) {}
 
@@ -182,7 +183,7 @@ export class ReorderCoordinator {
     const pc = this.pc(id);
     const ids = snapshot.workspaces.map((workspace) => workspace.workspace_id);
     const evidence = evidenceOf(snapshot);
-    pc.last = { ids, evidence, arrived: ++this.arrivals };
+    pc.last = { ids, evidence };
     if (evidence && pc.retired.has(evidence.epoch)) return;
     if (pc.waiters.length > 0 && this.qualifies(pc, evidence)) for (const waiter of pc.waiters.splice(0)) waiter.resolve(ids);
     if (pc.pending.size > 0 || pc.hold) {
@@ -260,8 +261,9 @@ export class ReorderCoordinator {
       const base = pc.failed ? await this.qualifiedBase(pc, generation) : [...current];
       pc.failed = false;
       for (const step of workspaceMoves(base, mergeOrder(next, base))) {
-        const sent = this.arrivals;
-        this.acknowledge(machineId, pc, await move(step), sent);
+        const hold = pc.hold!;
+        if (hold.sent === undefined) hold.sent = pc.last?.evidence ?? null;
+        this.acknowledge(pc, await move(step));
       }
     });
     pc.chain = run.catch(() => { pc.failed = true; });
@@ -274,7 +276,7 @@ export class ReorderCoordinator {
     return new Promise((resolve, reject) => pc.waiters.push({ generation, resolve, reject }));
   }
 
-  private acknowledge(id: string, pc: PcOrder, receipt: WorkspaceMoved | void, sent: number): void {
+  private acknowledge(pc: PcOrder, receipt: WorkspaceMoved | void): void {
     pc.receipts++;
     this.invalidateCheck(pc);
     const hold = pc.hold!;
@@ -286,9 +288,6 @@ export class ReorderCoordinator {
     pc.floors.set(epoch, Math.max(pc.floors.get(epoch) ?? 0, seq!));
     pc.protectedEpoch = epoch;
     hold.epoch = epoch;
-    // a roster that arrived while this move was on its way is checked now, as one arriving after its receipt is: one of another
-    // server lifetime may come from a restart after the move. One read before the move was sent is older than the receipt
-    if (pc.last?.evidence && pc.last.arrived > sent && !pc.retired.has(pc.last.evidence.epoch)) this.mismatch(id, pc, pc.last.evidence);
   }
 
   private settle(machineId: string, pc: PcOrder, generation: number, error: unknown): void {
@@ -304,10 +303,26 @@ export class ReorderCoordinator {
       } else {
         hold.settleMark = this.loads;
         this.options.onSettled?.(machineId);
+        this.recheck(machineId, pc, hold);
       }
     }
     this.notify();
     if (error !== null && latest) throw error;
+  }
+
+  /**
+   * A roster that arrived while the moves were on their way was let through or had its check cut short by a later receipt.
+   * Once they settle it is checked as one arriving now would be: one of another server lifetime may come from a restart
+   * after a move. Only when its evidence changed since the first move went out: the roster read before it is older than
+   * every receipt, also when an event repeats it.
+   */
+  private recheck(machineId: string, pc: PcOrder, hold: Hold): void {
+    const sent = hold.sent;
+    hold.sent = undefined;
+    const last = pc.last?.evidence;
+    if (sent === undefined || hold.epoch === null || !last || pc.retired.has(last.epoch)) return;
+    if (sent && sent.epoch === last.epoch && sent.seq === last.seq) return;
+    this.mismatch(machineId, pc, last);
   }
 }
 

@@ -400,6 +400,57 @@ describe("ReorderCoordinator", () => {
     expect(coordinator.state("local")).toMatchObject({ checking: false, floors: { E2: 1 } });
   });
 
+  test("a restarted roster that arrived mid-batch is verified once the batch settles, also after a later step fails", async () => {
+    const asks = verifier();
+    const settled: string[] = [];
+    const coordinator = new ReorderCoordinator({ verify: asks.verify, onSettled: (id) => settled.push(id) });
+    const moves = mover();
+    const done = coordinator.reorder("local", O, ["c", "b", "a"], moves.move);
+    const failed = done.then(() => null, (error: unknown) => error);
+    const first = await moves.next();
+    coordinator.roster([entry("local", A, "E2", 0)], event);
+    first.resolve({ ok: true, order_epoch: "E1", moved_seq: 1 });
+    const second = await moves.next();
+    expect(asks.count()).toBe(0);
+    second.reject(new Error("herdr refused"));
+    expect(await failed).toBeInstanceOf(Error);
+    expect(settled).toEqual(["local"]);
+    (await asks.next()).resolve({ machines: [entry("local", B, "E2", 0)], boot_id: "E2" });
+    await flush();
+    expect(coordinator.state("local")).toMatchObject({ held: false, retired: ["E1"], guard: { epoch: "E2" } });
+    expect(coordinator.order("local", O)).toEqual(B);
+  });
+
+  test("a PC that left before its move's receipt asks no verification", async () => {
+    const asks = verifier();
+    const coordinator = new ReorderCoordinator({ verify: asks.verify });
+    const moves = mover();
+    const done = coordinator.reorder("local", O, A, moves.move);
+    const step = await moves.next();
+    coordinator.roster([entry("local", A, "E2", 0)], event);
+    coordinator.roster([], event);
+    step.resolve({ ok: true, order_epoch: "E1", moved_seq: 1 });
+    await done;
+    await flush();
+    expect(asks.count()).toBe(0);
+    expect(coordinator.state("local")).toMatchObject({ held: false, checking: false });
+  });
+
+  test("an event repeating the roster read before the move asks no verification when its receipt lands", async () => {
+    const asks = verifier();
+    const coordinator = new ReorderCoordinator({ verify: asks.verify });
+    coordinator.roster([entry("local", O, "E1", 0)], event);
+    const moves = mover();
+    const done = coordinator.reorder("local", O, A, moves.move);
+    const step = await moves.next();
+    coordinator.roster([entry("local", O, "E1", 0)], event);
+    step.resolve({ ok: true, order_epoch: "E2", moved_seq: 1 });
+    await done;
+    await flush();
+    expect(asks.count()).toBe(0);
+    expect(coordinator.state("local")).toMatchObject({ checking: false, floors: { E2: 1 } });
+  });
+
   test("passive older boot proof never retires a newer receipt epoch", async () => {
     const asks = verifier();
     const coordinator = new ReorderCoordinator({ verify: asks.verify });
