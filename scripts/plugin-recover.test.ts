@@ -11,7 +11,7 @@ const rows = [
   { id: "b2", label: "Old laptop", origin: { from: "legacy", how: "legacy" }, waiting: "catching_up", last_seen_at: null, refusal: "frozen" },
 ];
 
-function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string; releaseRows?: typeof rows; admitError?: string; standing?: readonly { kind: "block" | "freeze"; id: string; target: string; account: string; signer: string }[] } = {}) {
+function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string; releaseRows?: typeof rows; admitError?: string; pendingLabel?: string; standing?: readonly { kind: "block" | "freeze"; id: string; target: string; account: string; signer: string }[] } = {}) {
   const sent: RecoveryAction[] = [];
   const prompts: string[] = [];
   const out: string[] = [];
@@ -25,7 +25,7 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
       if (options.unreachable) throw new Error("ENOENT");
       sent.push(request);
       switch (request.act) {
-        case "list": return { rows: options.releaseRows ?? rows, standing: options.standing, pending: [{ id: "0123456789abcdef0123456789abcdef", label: "New phone", fingerprint: "AB12-CD34" }] };
+        case "list": return { rows: options.releaseRows ?? rows, standing: options.standing, pending: [{ id: "0123456789abcdef0123456789abcdef", label: options.pendingLabel ?? "New phone", fingerprint: "AB12-CD34" }] };
         case "release": return { released: request.rows };
         case "undo": return { releases: ["r1"], ...(options.undoWarning ? { warning: options.undoWarning } : {}) };
         case "admit": return options.admitError ? { error: options.admitError } : { admitted: "fedcba9876543210" };
@@ -117,6 +117,37 @@ test("P22/T70: admit shows the waiting device's fingerprint and sends it only af
   expect(run.text()).toContain("AB12-CD34");
   expect(run.text()).toContain("New phone");
   expect(run.sent.at(-1)).toEqual({ act: "admit", pending: "0123456789abcdef0123456789abcdef", fingerprint: "AB12-CD34" });
+});
+
+for (const { name, label, escaped } of [
+  { name: "terminal controls", label: "\x1b[2K\rFAKE-FAKE", escaped: "\\x1b[2K\\x0dFAKE-FAKE" },
+  { name: "a bidi override", label: "Phone\u202eFAKE-FAKE", escaped: "Phone\\u202eFAKE-FAKE" },
+]) {
+  test(`P22/T70: admit renders ${name} visibly before the real fingerprint line`, async () => {
+    const run = io({ pendingLabel: label, answers: ["y"] });
+    expect(await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], run.value)).toBe(0);
+    expect(run.text()).not.toMatch(/[\x1b\r\u202e]/);
+    expect(run.prompts[0]).toMatch(/(?:^|\n)AB12-CD34\n[^\n]*\[y\/N\] $/);
+    expect(run.prompts[0]?.split("\n").slice(0, -2).join("\n")).toContain(escaped);
+    expect(run.text()).toContain(`Admitted ${escaped}.`);
+  });
+}
+
+test("T70: release escapes the label and puts the actual row ID on its own confirmation line", async () => {
+  const run = io({ releaseRows: rows.map((row) => row.id === "a1" ? { ...row, label: "Phone\nfake row" } : row) });
+  expect(await runRecover(["--release", "a1"], run.value)).toBe(0);
+  expect(run.prompts[0]).toMatch(/Phone\\x0afake row[^\n]*\n[^\n]*a1\n[^\n]*\[y\/N\] $/);
+});
+
+test("T70/E48: listing renders controls in device rows, pending labels, and standing blocks visibly", async () => {
+  const run = io({ pendingLabel: "Phone\u061c\u200e\u200f\u2066\u2069", standing: [
+    { kind: "block", id: "block\x7f", target: "key\x9b", account: "acct_1", signer: "signer\x00" },
+  ], releaseRows: rows.map((row) => ({ ...row, label: `${row.label}\x1b` })) });
+  expect(await runRecover([], run.value)).toBe(0);
+  expect(run.text()).toContain("Phone\\u061c\\u200e\\u200f\\u2066\\u2069");
+  expect(run.text()).toContain("block\\x7f  key key\\x9b  signed by signer\\x00");
+  expect(run.text()).toContain("Old laptop\\x1b");
+  expect(run.text()).not.toMatch(/[\x00\x1b\x7f\x9b\u061c\u200e\u200f\u2066\u2069]/);
 });
 
 test("P22: admit answered with anything but yes sends nothing, and needs a terminal", async () => {
