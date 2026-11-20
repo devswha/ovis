@@ -59,7 +59,9 @@ export function lockRoutes(options: { confirms: LocalConfirms; store: LockStore;
       if (!store.bound()) return fail("not_bound", "Sign this PC in to an account before locking it.", 409);
       if (lock !== null) return fail("already_locked", "This PC is locked already.", 409);
       const preview = store.preview();
-      return onScreen({ kind: "lock" }, "Lock this PC", [`${preview.rows.length} device(s) will be signed out`], () => store.lock());
+      return onScreen({ kind: "lock" }, "Lock this PC", [`${preview.rows.length} device(s) will be signed out`], () => {
+        if (store.state().lock === null) store.lock();
+      });
     }
     if (pathname === "/api/account/unlock") {
       if (lock === null || body.lock !== lock) return fail("not_locked", "That lock is not in force on this PC.", 409);
