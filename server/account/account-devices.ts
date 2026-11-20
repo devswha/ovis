@@ -10,7 +10,6 @@ import { join } from "node:path";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { AccountSnapshotError, parseAccountDevicesFile, type AccountJoinedRow, type AccountSnapshot, type AdmissionOrigin, type SnapshotDevice } from "../../shared/account-snapshot.ts";
 import { writePrivateState } from "../private-state.ts";
-import type { DeviceJournal } from "./device-journal.ts";
 import type { RemovalEvidence } from "./removal-evidence.ts";
 
 export const ACCOUNT_DEVICES_FILE = "account-devices.json";
@@ -30,7 +29,7 @@ export interface AccountRowSource {
   row(id: string): AccountRow | null;
   rowsByKey(key: string): readonly AccountRow[];
   access(id: string): AccessAnswer;
-  pruneDenied(evidence: RemovalEvidence, journal: DeviceJournal | null): void;
+  pruneDenied(evidence: RemovalEvidence): void;
   removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void;
 }
 
@@ -51,7 +50,7 @@ export interface JournalEntry {
 export type AccessAnswer = { readonly ok: true } | { readonly refused: "join_hold"; readonly seconds: number | null } | { readonly refused: "not_listed" };
 
 export interface AccountRowPorts {
-  /** On disk when it returns; throws when it could not be written. */
+  /** On disk when it returns; a drop already recorded for this admission is not repeated. */
   journal(entry: JournalEntry): void;
   closeSessions(rowId: string, reason: DropReason): void;
   /** P2: a key a devices.json row holds stays there. */
@@ -119,18 +118,13 @@ export class AccountDeviceStore implements AccountRowSource {
   }
 
   /** Startup replay: finish the journal before the registry. There are no sessions to close yet. */
-  pruneDenied(evidence: RemovalEvidence, journal: DeviceJournal | null): void {
+  pruneDenied(evidence: RemovalEvidence): void {
     const { account, devices } = this.file;
     if (account === null) return;
     const kept = devices.filter(row => {
-      if (evidence.standingRevokes(row.key).length === 0) {
-        return !evidence.standingMarkers(row.key).some(({ marker }) => marker.account === account);
-      }
-      // A row ID is reused on readmission. Only the last admission or drop for this row counts.
-      const last = journal?.entries().filter(entry => entry.row === row.id && (entry.kind === "admit" || entry.kind === "drop")).at(-1);
-      if (last?.kind !== "drop" || last.how !== "revoke") {
-        this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason: "revoke" });
-      }
+      const reason = evidence.accountRowDrop(row.key, account);
+      if (reason === null) return true;
+      this.ports.journal({ kind: "drop", key: row.key, row: row.id, reason });
       return false;
     });
     if (kept.length !== devices.length) this.write({ ...this.file, devices: kept });
@@ -252,7 +246,7 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
     row: (id) => store()?.row(id) ?? null,
     rowsByKey: (key) => store()?.rowsByKey(key) ?? [],
     access: (id) => store()?.access(id) ?? { refused: "not_listed" },
-    pruneDenied: (evidence, journal) => { store()?.pruneDenied(evidence, journal); },
+    pruneDenied: (evidence) => { store()?.pruneDenied(evidence); },
     removeRows: (ids, reason, close) => { store()?.removeRows(ids, reason, close); },
   };
 }

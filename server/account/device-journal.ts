@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { DeviceNotice, NoticeKind, NoticeReplay } from "../../shared/account-devices-api.ts";
 import { writePrivateState } from "../private-state.ts";
 import { DEVICE_JOURNAL_FILE, type SafetyLog } from "./safety-log.ts";
+import type { JournalEntry as AccountRowEntry } from "./account-devices.ts";
 
 export const JOURNAL_FILE = DEVICE_JOURNAL_FILE;
 export const JOURNAL_MAX = 1_000;
@@ -108,6 +109,16 @@ export class DeviceJournal {
   /** Appends one entry, on disk when this returns; throws when it cannot be written, so what it records does not happen. */
   append(input: JournalInput): JournalEntry {
     return this.appendEntry(input);
+  }
+
+  /** A registry write may be replayed. Row IDs are reused, so a new admission reopens the row's history. */
+  recordAccountRow(entry: AccountRowEntry, account: string | null): void {
+    if (entry.kind === "drop") {
+      const last = this.doc.entries.filter(event => event.row === entry.row && (event.kind === "admit" || event.kind === "drop")).at(-1);
+      if (last?.kind === "drop") return;
+    }
+    this.append({ kind: entry.kind, how: entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
+      row: entry.row, label: entry.label ?? "", by: null, account });
   }
 
   /** Catch up after a committed batch or interrupted journal write. Each notice and its cursor share one write. */

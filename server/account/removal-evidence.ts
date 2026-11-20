@@ -118,6 +118,17 @@ export class RemovalEvidence {
 
   standingRevokes(key: string): Revoke[] { return this.doc.revokes.filter((r) => r.key === key && this.revokeStands(r)); }
 
+  /** What first denied this listed row. Later records for an already absent key don't drop it again. */
+  accountRowDrop(key: string, account: string): "revoke" | "remove" | "block" | null {
+    if (this.standingRevokes(key).length) return "revoke";
+    const removal = this.standingMarkers(key).find(({ marker }) => marker.account === account)?.standing[0];
+    if (!removal) return null;
+    // Imported tombstones can carry several records; only this removal's record identifies its act.
+    const blocked = removal.records?.some(record => typeof record === "object" && record !== null &&
+      "id" in record && record.id === removal.id && "kind" in record && record.kind === "block");
+    return blocked ? "block" : "remove";
+  }
+
   /** The removal ids a pairing of `key` on this PC knew: it stands over every one of them (`paired_over`). */
   pairedOver(key: string): string[] { return this.standingMarkers(key).flatMap(({ standing }) => standing.map((r) => r.id)); }
 

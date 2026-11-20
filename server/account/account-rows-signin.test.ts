@@ -37,7 +37,7 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
   const devices = new DeviceStore(dir, null, null, { safety, pc: binding, removals: evidence, journal });
   const clock = { now: Date.now() };
   const rows = new AccountDeviceStore(dir, SERVER, {
-    journal: (entry) => { journal.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: entry.reason ?? "list", key: entry.key, no: entry.no ?? null, row: entry.row, label: entry.label ?? "", by: null, account: ACCOUNT }); },
+    journal: (entry) => journal.recordAccountRow(entry, ACCOUNT),
     closeSessions: (id) => { devices.closeAccountSessions(id); },
     heldByDevicesJson: (candidate) => devices.hasKey(candidate),
     admits: (key, account) => devices.admitsFromList(key, account),

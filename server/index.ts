@@ -318,7 +318,7 @@ export function createServer(
   const serverIdNow = () => ovisRelay.currentIdentity()?.server_id ?? null;
   // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
   const accountRows = safetyLog !== null && pcAccount !== null && journal !== null ? accountRowsFor(stateDir, serverIdNow, {
-    journal: (entry) => { journal.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: entry.reason ?? "list", key: entry.key, no: entry.no ?? null, row: entry.row, label: entry.label ?? "", by: null, account: pcAccount.account() }); },
+    journal: (entry) => journal.recordAccountRow(entry, pcAccount.account()),
     closeSessions: (id) => { devices.closeAccountSessions(id); },
     heldByDevicesJson: (key) => devices.hasKey(key),
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
