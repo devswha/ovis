@@ -342,11 +342,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         show(launchCard);
         const card = launchCard;
         // fixed wait: a sign-in or a directory that has not answered by then opens no PC; the front page draws what is known
-        setTimeout(() => { if (shown === card && launchCard === card) { accountLaunch = false; launchCard = null; void showFront(); } }, ACCOUNT_READ_WAIT_MS);
+        // and it ends this launch: a sign-in or directory answering later does not take the page from what the person does next
+        setTimeout(() => { if (shown === card && launchCard === card) { accountLaunch = false; accountTried = true; launchCard = null; void showFront(); } }, ACCOUNT_READ_WAIT_MS);
         return;
       }
       if (unread && shown === launchCard) return;
-      accountTried = true;
+      // only a signed-in read is the launch's one try: a signed-out one leaves it to a sign-in made on this page
+      if (view?.kind === "signed-in") accountTried = true;
       // signed in and the directory not read yet: the launch waits for it on its card (accountChanged draws this again)
       accountLaunch = false; launchCard = null;
       const pc = view?.kind === "signed-in" ? accountLaunchPc(view.pcs ?? []) : null;

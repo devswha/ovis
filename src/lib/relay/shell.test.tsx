@@ -1179,6 +1179,35 @@ describe("the hosted shell's front page", () => {
       expect(last().state.kind).not.toBe("connecting");
     });
 
+    it("opens no account PC when the account's PCs answer after the launch's wait gave up", async () => {
+      browser.setVisibility("hidden");
+      const went: string[] = [];
+      const pair = generateKeyPair();
+      const listed = { server_id: deriveServerId(pair.publicKey), label: "Desk", added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
+      const directory = Promise.withResolvers<Response>();
+      const accountStore = memoryAccountStore();
+      await accountStore.set("pending", { "state-1": { service: SERVICE, provider: "github", state: "state-1", verifier: "verifier-123", redirect_uri: "https://app.ovis.sh/", started_at: Date.now() } });
+      jest.useFakeTimers();
+      const mounted = mountRelayShell(mountFor({
+        entryUrl: "https://app.ovis.sh/#code=good-code&state=state-1", store: deviceStore([]), navigate: (path) => { went.push(path); },
+        accountStore, accountService: SERVICE, accountProviders: ["github"],
+        accountFetch: async (input) => {
+          const path = new URL(String(input)).pathname;
+          if (path === "/v1/pcs") return directory.promise;
+          if (["/v1/devices/challenge", "/v1/providers"].includes(path)) return new Response(null, { status: 404 });
+          return Response.json({ access_token: "access", refresh_token: "refresh", expires_in: 3600, account: "acct-test", provider: "github" });
+        },
+      }));
+      await until(() => rendered.length > 0 && last().state.kind === "connecting", "the launch's wait for the account's PCs");
+      jest.advanceTimersByTime(ACCOUNT_READ_WAIT_MS);
+      await until(() => last().state.kind !== "connecting", "the front page after the wait");
+      directory.resolve(Response.json({ pcs: [listed] }));
+      await mounted;
+      await drain();
+      expect(went).toEqual([]);
+      expect(last().state.kind).not.toBe("connecting");
+    });
+
     it("opens nothing after a refused or cancelled sign-in, whose reason the sign-in screen says", async () => {
       browser.setVisibility("hidden");
       const went: string[] = [];
