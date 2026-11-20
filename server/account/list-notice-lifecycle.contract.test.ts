@@ -43,6 +43,18 @@ test("G15/T57/P8: local Revoke removes the listed row and frees its notice slot"
   expect(devices.openNotices()).toHaveLength(0);
 });
 
+test("G15/T57/P8: a key-only local recovery marker decides just its listed admission before pruning", async () => {
+  const { fixture, device, service } = await listed();
+  const { accountMailbox, devices } = fixture.app.context.services;
+  const other = keyOf("k-other");
+  service.registerDevice(ACCOUNT, other, "Kept");
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(devices.openNotices().map(n => n.key)).toEqual([device.publicKey, other]);
+  devices.removeKey({ target: device.publicKey, by: "local" });
+  expect(devices.isTombstoned(device.publicKey)).toBe(true);
+  expect(devices.openNotices().map(n => n.key)).toEqual([other]);
+});
+
 test("G15/T57/P8: a failed listed-row save leaves no open notice for the unsaved row", async () => {
   const { fixture, service, serverId } = await listed();
   const { devices, accountMailbox } = fixture.app.context.services;
