@@ -22,13 +22,18 @@ function localAccountPath(request: Request): string | null {
 }
 
 /** The account-session gate runs before a handler or a cross-PC forward can act. */
+/** R1: a refusal says where the act can be done instead. */
+const REFUSAL_MESSAGES: Readonly<Record<string, string>> = {
+  older_device: "removing an older device is done from that PC or from an older device",
+};
+
 export function accountDispatchRefusal(request: Request, ctx: ServerContext): Response | null {
   if (ctx.peer.kind !== "relay" || !ctx.services.devices.isAccountRow(ctx.peer.device.id)) return null;
   const { device, key } = ctx.peer;
   const rows = ctx.services.accountRows;
   const access = rows?.access(device.id);
   const row = rows?.row(device.id);
-  const fail = (code: string) => jsonResponse({ error: { code, message: "An account-joined device cannot do this from afar" } }, 403);
+  const fail = (code: string) => jsonResponse({ error: { code, message: REFUSAL_MESSAGES[code] ?? "An account-joined device cannot do this from afar" } }, 403);
   if (access === undefined || row === null || row === undefined || row.key !== key) return fail("not_listed");
   if ("refused" in access) return fail(access.refused);
 
