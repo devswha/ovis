@@ -146,8 +146,13 @@ export function sheetSteppedOff(): boolean {
   return steppedOff;
 }
 
-export function sheetBackPending(): boolean {
-  return stepping !== null;
+/**
+ * Whether a traversal of the sheets' own is on its way: a closed sheet's step off its entry, or a way
+ * back onto an entry a Back left for a sheet still up. Until it lands the history is on an entry that
+ * is not the one shown, and an address written now would land on that entry instead.
+ */
+export function sheetTraversalPending(): boolean {
+  return stepping !== null || returning !== null || climbing !== null || stood?.pending === true;
 }
 
 /** The key of the entry the step on its way lands on; null with no step on its way, or where the browser tells no entries. */

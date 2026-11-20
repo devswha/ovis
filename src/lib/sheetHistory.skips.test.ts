@@ -177,6 +177,27 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     expect(fake.at()).toBe(start);
   });
 
+  it("tells the app its way back onto the entry Back left is on its way until it lands, so no address is written on the entry under it", async () => {
+    const start = fake.at();
+    fake.tap();
+    const leaveDrawer = enter(() => {});
+    fake.tap();
+    const leaveMenu = enter(() => {});
+    const entry = fake.key();
+    const pending: Array<["sheet's entry" | "entry under it", boolean]> = [];
+    fake.window.addEventListener("popstate", (event) => {
+      pending.push([(event.state as Record<string, unknown> | null)?.["ovis:sheet"] === undefined ? "entry under it" : "sheet's entry", sheetHistory.sheetTraversalPending()]);
+    });
+    h.back(); await settled();
+    expect(pending).toEqual([["entry under it", true], ["sheet's entry", false]]);
+    expect(fake.key()).toBe(entry);
+    leaveMenu(); await settled();
+    h.back(); await settled();
+    leaveDrawer(); await settled();
+    expect(fake.at()).toBe(start);
+    expect(sheetHistory.sheetTraversalPending()).toBe(false);
+  });
+
   it("steps off the entry again when the sheet it came back for closed before the way back landed", async () => {
     const start = fake.at();
     let drawerClosed = 0;
