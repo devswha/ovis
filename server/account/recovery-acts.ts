@@ -4,9 +4,23 @@
  * come with the device and log changes they need.
  */
 import { AccountDevicesApiError, parseRecoveryAction } from "../../shared/account-devices-api.ts";
+import type { DeviceMatch } from "../devices.ts";
 import { AlreadyReleasedError, ReleaseJournalError, releaseRefusal, type RecoveryReleases } from "./recovery.ts";
 
-export function recoveryActs(options: { releases: RecoveryReleases; logReadable(): boolean; user: string }): (request: unknown) => Promise<unknown> {
+/** What this PC does for the acts beyond release and undo (Track A's devices.ts and safety-log.ts). */
+export interface RecoverySeams {
+  pendingOf(id: string): { id: string; key: string; label: string; fingerprint: string; codeId?: string } | null;
+  /** takes the waiting redemption out only when `fingerprint` is its key's */
+  takePending(id: string, fingerprint: string): { id: string; key: string; label: string; fingerprint: string; codeId?: string } | null;
+  admitConfirmed(confirm: { codeId: string; key: string; label: string; source: "recover" }): DeviceMatch | null;
+  removeKey(input: { target: string; by: "local" }): { removed: string[] } | { refused: string };
+  appendLift(blockId: string, forget: boolean): { outcome: string };
+  revokeAll(): string[];
+}
+
+const UNREADABLE = { error: "This PC cannot read its safety log, so nothing is changed: log_unreadable" };
+
+export function recoveryActs(options: { releases: RecoveryReleases; logReadable(): boolean; user: string; seams?: RecoverySeams }): (request: unknown) => Promise<unknown> {
   const { releases } = options;
   return async (request) => {
     let action;
@@ -46,8 +60,35 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
         const undone = releases.undo(action.rows ?? undefined, options.user);
         return { releases: undone.releases, ...(undone.journalError === null ? {} : { warning: `The undo was not journalled: ${undone.journalError.message}` }) };
       }
-      default:
-        return { error: `${action.act} is not available on this PC yet` };
+      case "admit": case "remove": case "lift": case "revoke_all": {
+        const acts = options.seams;
+        if (acts === undefined) return { error: `${action.act} is not available on this PC yet` };
+        if (!pc.logReadable) return UNREADABLE;
+        if (action.act === "revoke_all") return { revoked: acts.revokeAll().length };
+        if (action.act === "remove") {
+          const removed: string[] = [];
+          for (const target of action.targets) {
+            const done = acts.removeKey({ target, by: "local" });
+            if ("refused" in done) return { error: `${target} was not removed: ${done.refused}`, removed };
+            removed.push(...done.removed);
+          }
+          return { removed };
+        }
+        if (action.act === "lift") {
+          for (const block of action.blocks) {
+            const done = acts.appendLift(block, false);
+            if (done.outcome !== "applied" && done.outcome !== "already_applied") return { error: `${block} was not lifted: ${done.outcome}` };
+          }
+          return { lifted: [...action.blocks] };
+        }
+        const waiting = acts.takePending(action.pending, action.fingerprint);
+        if (waiting === null) {
+          return { error: acts.pendingOf(action.pending) === null ? "No such device waits here" : "The fingerprint does not match the waiting device" };
+        }
+        if (waiting.codeId === undefined) return { error: "No such device waits here" };
+        const admitted = acts.admitConfirmed({ codeId: waiting.codeId, key: waiting.key, label: waiting.label, source: "recover" });
+        return admitted === null ? { error: "This PC refused to admit the key (locked, frozen, or its log cannot be read)" } : { admitted: admitted.id };
+      }
     }
   };
 }
