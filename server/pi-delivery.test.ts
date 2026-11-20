@@ -560,6 +560,24 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, [candidate("r2", "second", anchor)])).toEqual({ consumed: ["r2"], changed: [], retry: false });
   });
 
+  it("lets a changed send take a copy of a later send's text when Pi recorded more copies than later sends need", () => {
+    const path = join(dir(), "session.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("u1", "a0", "user", "hello") + entry("u2", "u1", "user", "hello"));
+    expect(matchPiDeliveries(path, [candidate("r1", "hello\\", anchor), candidate("r2", "hello", anchor)]))
+      .toEqual({ consumed: ["r1", "r2"], changed: [], retry: false });
+  });
+
+  it("leaves a later send's only record to it", () => {
+    const path = join(dir(), "session.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("u1", "a0", "user", "hello"));
+    expect(matchPiDeliveries(path, [candidate("r1", "first", anchor), candidate("r2", "hello", anchor)]))
+      .toEqual({ consumed: [], changed: [], retry: false });
+  });
+
   it("accepts an unwritten session only when that exact path becomes its first file", () => {
     const path = join(dir(), "session.jsonl");
     const session = crypto.randomUUID();

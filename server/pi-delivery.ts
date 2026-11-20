@@ -341,10 +341,14 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       const earlier = match ? undefined : same[0];
       // Pi changed a plain message on the way (a notice typed into its box before Enter, a character its
       // editor reads otherwise): the next record after the last one matched is this send's, unless a later
-      // receipt's own text claims it, so a changed text never holds the receipts behind it. A `/name` send
-      // keeps to its own text above: Pi may record it as something else, or as nothing.
-      const following = match || earlier || piSkillSend(candidate.text) !== undefined || piMaybeCommand(candidate.text) ? undefined : chain.find((entry) => entry.start > afterMatched && entry.role === "user"
-        && fresh(entry) && !consumedEntries.has(key(entry)) && !later.some((other) => piRecordOf(other.text, entry)));
+      // receipt's own text needs it (the later receipts with its text, against the copies of it still to
+      // come), so a changed text never holds the receipts behind it. A `/name` send keeps to its own text
+      // above: Pi may record it as something else, or as nothing.
+      const open = (entry: BranchEntry): boolean => entry.start > afterMatched && entry.role === "user" && fresh(entry) && !consumedEntries.has(key(entry));
+      const needed = (entry: BranchEntry): boolean => later.filter((other) => piRecordOf(other.text, entry)).length
+        >= chain.filter((copy) => copy.start >= entry.start && open(copy) && copy.text === entry.text).length;
+      const following = match || earlier || piSkillSend(candidate.text) !== undefined || piMaybeCommand(candidate.text)
+        ? undefined : chain.find((entry) => open(entry) && !needed(entry));
       if (match ?? following) consumed.push(candidate.id);
       else if (earlier) ambiguous.push(candidate.id);
       else break;
