@@ -3,17 +3,18 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { parseNoticeAnswer, type DeviceNotice } from "../shared/account-devices-api.ts";
 import { parseSafetyRecord, verifySafetyRecord, type BlockRecord } from "../shared/account-records.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
+import type { PendingKey } from "../shared/machines.ts";
 import { App } from "./App.tsx";
 import { indexedAccountService } from "./lib/account/service.ts";
 import { indexedAccountStore, memoryAccountStore, newKey } from "./lib/account/store.ts";
-import { DeviceNoticeWire, deviceNotice, NOTICE_SNAPSHOT } from "./lib/deviceNoticeWire.fixture.ts";
+import { DEVICE_NOTICE_FEATURE, DeviceNoticeWire, deviceNotice, NOTICE_SNAPSHOT } from "./lib/deviceNoticeWire.fixture.ts";
 import { translate } from "./lib/i18n.ts";
 import { MachineSessionRegistry } from "./lib/machineSession.ts";
 import { SettingsProvider } from "./lib/settings.ts";
 import { storeSelection } from "./lib/useSplitView.ts";
 
 async function withDeviceNotices(
-  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly admission?: Pick<DeviceNotice, "method" | "two_step"> },
+  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly admission?: Pick<DeviceNotice, "method" | "two_step">; readonly decline?: () => Promise<Response> },
   check: (fixture: { readonly tree: ReactTestRenderer; readonly laptop: DeviceNoticeWire; readonly desk: DeviceNoticeWire;
     readonly delivered: readonly BlockRecord[]; readonly servicePosts: readonly { readonly body: unknown; readonly status: number }[] }) => void | Promise<void>,
 ) {
@@ -88,6 +89,7 @@ async function withDeviceNotices(
       return response;
     }
     if (url.origin === "https://account.example" && pathname === "/v1/signout") return service.fetch(url, init);
+    if (pathname === "/api/devices/pending/decline" && options.decline !== undefined) return options.decline();
     if (pathname === "/api/health") return Response.json({
       auth: { required: false, authenticated: true, role: "drive" },
       web_ui: { boot_id: null, revision: null, server_id: options.laptopId },
@@ -237,5 +239,28 @@ it("T53: an open admission offers Not me but does not offer early approval", asy
     const card = tree.root.findByProps({ "data-testid": "device-notice" });
     const actionLabels = card.findAllByType("button").flatMap((button) => button.children.filter((child) => typeof child === "string"));
     expect(actionLabels).toEqual([translate("en", "Not me")]);
+  });
+});
+
+it("T71, T72: a delayed decline reply cannot restore a key removed by a newer PC event", async () => {
+  const reply = Promise.withResolvers<Response>();
+  const started = Promise.withResolvers<void>();
+  await withDeviceNotices({ decline: () => { started.resolve(); return reply.promise; } }, async ({ tree, laptop }) => {
+    const first: PendingKey = { id: "first", label: "Phone", fingerprint: "AB12-CD34", via: "relay", redeemed_at: "2026-11-20T04:00:00.000Z", slots: { used: 1, of: 5 } };
+    const second: PendingKey = { ...first, id: "second", label: "Tablet" };
+    const declines = () => tree.root.findAllByType("button").filter((button) => button.children.includes("Decline"));
+    await act(async () => {
+      laptop.snapshot([DEVICE_NOTICE_FEATURE, "machine-events"]);
+      laptop.read({ type: "machine-event", event: { type: "pending-redemptions", pending: [first, second] } });
+    });
+    const [decline] = declines();
+    expect(declines()).toHaveLength(2);
+    if (decline === undefined) throw new TypeError("Missing Decline button");
+    await act(async () => { decline.props.onClick(); await started.promise; });
+
+    await act(async () => { laptop.read({ type: "machine-event", event: { type: "pending-redemptions", pending: [] } }); });
+    expect(declines()).toHaveLength(0);
+    await act(async () => { reply.resolve(Response.json({ pending: [second] })); });
+    expect(declines()).toHaveLength(0);
   });
 });
