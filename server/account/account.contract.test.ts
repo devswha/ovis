@@ -17,6 +17,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { applyAccountRecords, applyEnrollment } from "./records.ts";
 import { createServer } from "../index.ts";
+import { pullForRefusedSignIn } from "../relay/refused-signin.ts";
 
 type Fixture = ReturnType<typeof relayFixture>;
 type Link = Awaited<ReturnType<typeof relayConnection>>;
@@ -940,6 +941,19 @@ async function signInAs(f: Fixture, serverId: string, key: AccountKey): Promise<
 }
 
 const pulls = (service: FakeAccountService) => service.requests.filter((request) => request === "POST /v1/pc/mailbox").length;
+
+test("flag off: disconnect during sign-in does not cancel a mailbox removal", async () => {
+  const { f, identity, leave, signer } = await accountPc();
+  const services = f.app.context.services;
+  const key = (await accountKey()).spki;
+  await leave(await remove(signer, key));
+  const mux = { active: true, extendSetup: () => {} };
+  const pull = pullForRefusedSignIn({ services, serverId: identity.server_id },
+    { deviceId: accountDeviceId(identity.server_id, key), nonce: new Uint8Array(32), signature: "" }, mux);
+  mux.active = false;
+  expect(await pull).toBe(false);
+  expect(services.devices.isTombstoned(key)).toBe(true);
+});
 
 test("a device a member just added elsewhere signs in at once: the PC reads its mailbox for a device it does not know", async () => {
   const { f, service, identity, leave, signer } = await accountPc();
