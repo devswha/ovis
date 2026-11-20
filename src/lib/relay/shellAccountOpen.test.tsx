@@ -227,6 +227,24 @@ it.each<HoldState>([{ reason: "catching_up" }, { reason: "join_hold", until: nul
   expect({ attempts, apps: run.apps(), navigations: run.navigations }).toEqual({ attempts: 2, apps: 1, navigations: [] });
 });
 
+it("T53: a hold deadline already past on this clock backs off rather than reconnecting immediately", async () => {
+  let attempts = 0;
+  let until = "";
+  const run = await accountPc({ open: async () => {
+    if (++attempts <= 2) throw refused("held", { reason: "join_hold", until });
+    throw refused("admission");
+  } });
+  jest.useFakeTimers();
+  until = new Date(Date.now() - 1_000).toISOString();
+  await run.openPage();
+
+  for (const [advance, expected] of [[999, 1], [1, 2], [1_999, 2], [1, 3]] as const) {
+    jest.advanceTimersByTime(advance);
+    for (let turn = 0; turn < 100; turn++) await Promise.resolve();
+    expect(attempts).toBe(expected);
+  }
+});
+
 it.each([
   { code: "not_listed", auths: 2, screen: "connecting", pair: true },
   { code: "admission", auths: 1, screen: "connecting", pair: true },
