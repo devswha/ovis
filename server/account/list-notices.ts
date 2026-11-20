@@ -25,6 +25,9 @@ export function listNotices(journal: DeviceJournal, evidence: RemovalEvidence, s
       if (open && open.no === entry.no) { send(open); return; }
       // Old builds used the account number. Never give an old notice ID authority over the repaired admission.
       const obsolete = open && open.no === entry.accountNo && !journal.entries().some((n) => n.row === entry.row && n.seq > open.seq) ? open : undefined;
+      // G14: this row was journalled before it was saved. Without an open admission there is
+      // nothing to republish, even if its decided history has since been trimmed.
+      if (!obsolete) return;
       send(journal.append({ kind: "admit", how: "list", key: entry.key, no: entry.no ?? null, row: entry.row, label: entry.label ?? "", by: null, account: entry.account,
         two_step: obsolete?.two_step ?? "unknown", ...(obsolete?.provider === undefined ? {} : { provider: obsolete.provider }) }, obsolete?.id));
     },

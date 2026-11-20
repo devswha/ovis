@@ -129,6 +129,12 @@ export class DeviceJournal {
 
   openNotices(): readonly JournalEntry[] { return this.doc.open; }
 
+  /** Only outstanding list admissions with a registry owner take a slot. Never change history or access. */
+  settleList(owns: (notice: JournalEntry) => boolean): void {
+    const open = this.doc.open.filter(n => n.how !== "list" || owns(n));
+    if (open.length !== this.doc.open.length) this.write({ ...this.doc, open });
+  }
+
   /** Whether the list may admit anybody new: fewer than OPEN_NOTICES_MAX join notices wait for an answer (G15). */
   admitsFromList(): boolean { return this.problem === null && this.doc.open.length < OPEN_NOTICES_MAX; }
 
@@ -156,7 +162,8 @@ export class DeviceJournal {
     }
     const written = this.append({ kind: entry.kind === "drop" ? "drop" : "admit", how: drop?.how ?? entry.reason ?? "list", key: entry.key, no: entry.no ?? null,
       row: entry.row, label: entry.label ?? "", by: null, account: entry.account,
-      ...(entry.kind === "admit" ? { awaitingListCheck: true, two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) }, undefined, drop);
+      ...(entry.kind === "admit" ? { awaitingListCheck: true, two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) } : {}) },
+      drop && this.doc.open.find(n => n.how === "list" && n.row === drop.row && n.no === drop.admit_no && n.key === entry.key && n.account === entry.account)?.id, drop);
     if (drop) evidence.markJournalled(drop, written.seq);
     return written;
   }

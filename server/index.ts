@@ -323,6 +323,7 @@ export function createServer(
   const rowsForDevices = (devices: DeviceStore) => opened.rows = safetyLog !== null && pcAccount !== null && journal !== null && removals !== null ? accountRowsFor(stateDir, serverIdNow, {
     evidence: removals,
     ...listNotices(journal, removals, (entry) => devices.publish(entry)),
+    settleNotices: rows => devices.settleListNotices(rows),
     closeSessions: (id) => { devices.closeAccountSessions(id); },
     heldByDevicesJson: (key) => devices.hasKey(key),
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),

@@ -73,7 +73,7 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
   frames: Omit<FrameHandlers, ConnectionFrame>;
   accountEnabled?: boolean | undefined;
   /** the device journal's notices for a paired device (server/devices.ts), with OVIS_ACCOUNT_OPENS_ALL on */
-  notices?: { replay(deviceId: string): NoticeReplay | null; seen(deviceId: string, seq: number): void; block(record: unknown): Promise<BlockReceipt>; decide(id: string): void; itsMe(deviceId: string, id: string, provedKey: string): boolean };
+  notices?: { replay(deviceId: string): NoticeReplay | null; seen(deviceId: string, seq: number): void; block(record: unknown): Promise<BlockReceipt>; mayAnswer(caller: string | undefined, id: string): boolean; open(id: string): boolean; decide(id: string): void; itsMe(deviceId: string, id: string, provedKey: string): boolean };
 }): SocketHandler {
   const notices = accountEnabled ? noticeHandlers : undefined;
   const websocketDiagnostics = new ConnectionDiagnostics("websocket");
@@ -206,8 +206,11 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         // "Not me": each block applies at once and is answered with its receipt; one that applied decides the notice (T51).
         if (notices === undefined || typeof message.id !== "string" || message.answer !== "not_me" || !Array.isArray(message.blocks) || message.blocks.length > 2) return;
         const receipts: BlockReceipt[] = [];
-        for (const block of message.blocks) receipts.push(await notices.block(block));
-        if (receipts.some((receipt) => receipt.outcome !== "refused")) {
+        for (const block of message.blocks) {
+          if (notices.open(message.id) && !notices.mayAnswer(client.data.deviceId, message.id)) break;
+          receipts.push(await notices.block(block));
+        }
+        if (receipts.some((receipt) => receipt.outcome !== "refused") && notices.mayAnswer(client.data.deviceId, message.id)) {
           try { notices.decide(message.id); }
           catch (error) {
             console.error(`[devices] the notice could not be decided: ${error instanceof Error ? error.message : String(error)}`);

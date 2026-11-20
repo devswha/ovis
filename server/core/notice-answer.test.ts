@@ -50,18 +50,19 @@ async function signIn(devices: DeviceStore, row: Key & { id: string }) {
   return devices.matchRelay(row.id, nonce, signature, serverId);
 }
 
-function noticeSocket(devices: DeviceStore, submit = (value: unknown) => devices.applyBlock(value, "session")) {
+function noticeSocket(devices: DeviceStore, deviceId: string, submit = (value: unknown) => devices.applyBlock(value, "session")) {
   const handler = createSocket({
     clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {},
     watchable: () => false, terminalHistory: () => false, terminalModes: () => false, watchPane() {}, unwatchPane() {},
     end() {}, holdPending() {}, attachments: new Map(), clientSnapshot: async () => { throw new Error("Snapshot not used"); },
     herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
     accountEnabled: true,
-    notices: { replay: (id) => devices.noticeReplay(id), seen: (id, seq) => devices.noticeSeen(id, seq), block: submit, decide: (id) => devices.decideNotice(id), itsMe: () => false },
+    notices: { replay: (id) => devices.noticeReplay(id), seen: (id, seq) => devices.noticeSeen(id, seq), block: submit, decide: (id) => devices.decideNotice(id), itsMe: () => false,
+      open: id => devices.openNotices().some(entry => entry.id === id), mayAnswer: (caller, id) => devices.mayAnswerNotice(caller, id) },
   });
   const replies: ServerMessage[] = [];
   const client: Client = {
-    data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0,
+    data: connectionData({ deviceId, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0,
     send: (raw) => { replies.push(JSON.parse(String(raw))); return 1; }, close() {},
   };
   return { send: (frame: unknown) => handler.message(client, JSON.stringify(frame)), replies };
@@ -75,7 +76,7 @@ describe("blocks and freezes on the PC (P16, P21, T51)", () => {
     const notice = devices.openNotices().find((entry) => entry.row === target.id);
     if (!notice) throw new Error("Missing target admission notice");
     const record = await block(target.spki, signer);
-    const socket = noticeSocket(devices, async (value) => {
+    const socket = noticeSocket(devices, signer.id, async (value) => {
       const receipt = await devices.applyBlock(value, "session");
       const path = join(dir, JOURNAL_FILE);
       renameSync(path, `${path}.saved`);
@@ -99,7 +100,7 @@ describe("blocks and freezes on the PC (P16, P21, T51)", () => {
     const signer = await member(devices);
     const target = await member(devices);
     const record = await block(target.spki, signer);
-    const socket = noticeSocket(devices);
+    const socket = noticeSocket(devices, signer.id);
 
     await socket.send({ type: "notice-answer", id: 51, answer: "not_me", blocks: [record] });
 

@@ -202,6 +202,8 @@ export interface StoredDevice {
   imported?: true;
   /** A promoted list admission keeps the original notice ID until its hold ends. */
   held?: string;
+  /** The carried notice stays answerable after its timer or an elder's digits release the hold. */
+  carried_notice?: string;
   /** the account removals of its key that its pairing on this PC knew, and stands over (P13) */
   paired_over?: string[];
 }
@@ -346,6 +348,7 @@ export function readDeviceRegistry(path: string): DeviceRegistry {
       && (d.imported === undefined || d.imported === true)
       && (d.account_add === undefined || isJsonObject(d.account_add))
       && (d.held === undefined || (typeof d.held === "string" && /^[0-9a-f]{32}$/.test(d.held)))
+      && (d.carried_notice === undefined || (typeof d.carried_notice === "string" && /^[0-9a-f]{32}$/.test(d.carried_notice)))
       && (d.paired_over === undefined || (Array.isArray(d.paired_over) && d.paired_over.every((id) => typeof id === "string")))
       )) return { kind: "bad" };
   // an origin that cannot be read is no age (P22): the row stays, without it
@@ -953,7 +956,7 @@ export class DeviceStore {
     const existing = this.devices.find((d) => d.relay_public_key === confirm.key);
     if (existing !== undefined) {
       const confirmed = { ...existing, origin };
-      if (confirm.source === "screen") delete confirmed.held;
+      if (confirm.source === "screen") { delete confirmed.held; delete confirmed.carried_notice; }
       this.replaceDevice(existing, confirmed);
       this.voidPending();
       return { id: existing.id, label: existing.label, role: existing.role };
@@ -1875,7 +1878,7 @@ export class DeviceStore {
 
   private releasePromoted(row: StoredDevice): void {
     const { held, ...live } = row;
-    if (held) this.replaceDevice(row, live);
+    if (held) this.replaceDevice(row, { ...live, carried_notice: held });
   }
 
   private replaceDevice(row: StoredDevice, updated: StoredDevice): void {
@@ -2430,6 +2433,23 @@ export class DeviceStore {
 
   openNotices(): readonly JournalEntry[] { return this.journal?.openNotices() ?? []; }
 
+  /** Reconcile only against known registries, after a write or on recovery. A transfer may keep the original notice. */
+  settleListNotices(rows: readonly AccountRow[], members = this.devices): void {
+    if (this.error !== null || this.journal?.strict !== null) return;
+    this.journal.settleList(n => {
+      const member = members.find(m => m.relay_public_key === n.key);
+      if (member) return member.held === n.id || member.carried_notice === n.id;
+      return rows.some(r => r.id === n.row && r.key === n.key && (r.state === "hold" || r.state === "live")
+        && (r.origin.admit_no === n.no || r.no === n.no));
+    });
+  }
+
+  mayAnswerNotice(caller: string | undefined, id: string): boolean {
+    const notice = this.openNotices().find(n => n.id === id);
+    const row = caller && this.anyRow(caller);
+    return !!row && !!notice?.account && notice.account === row.account && notice.row !== caller && row.relay_public_key !== notice.key;
+  }
+
   /** A journal entry of this PC's own, on disk before the change it records; nothing with the release flag off (P15). */
   journalEvent(input: JournalInput): void {
     if (this.journal === null) return;
@@ -2785,6 +2805,7 @@ export class DeviceStore {
   private save(devices = this.devices, gateClosedAt = this.gateClosedAt): void {
     const closes = !this.rawGated && (gateClosedAt !== null || devices.length > 0);
     writePrivateState(this.path, { gate_closed_at: gateClosedAt, devices });
+    if (this.joinedRows && !this.joinedRows.blocked() && !this.joinedRows.missing()) this.settleListNotices(this.joinedRows.rows(), devices);
     // The write that closes the gate: onGateClosed. Told once the caller has set the store's own fields, which each
     // does right after this returns, and before anything else of this process runs (no frame of a connection is
     // read in between). Each on its own: one that throws ends neither the others nor the pairing that closed the gate.

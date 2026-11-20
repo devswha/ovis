@@ -20,7 +20,7 @@ function socket(stopped: boolean, notices?: Parameters<typeof createSocket>[0]["
 
 it("T53 postponed: a socket refuses It's me even with the session's proved key", async () => {
   const itsMe = mock(() => true);
-  const { handler, client } = socket(false, { replay: () => null, seen() {}, decide() {}, block: async () => ({ outcome: "refused", id: "", reason: "record_invalid" }), itsMe });
+  const { handler, client } = socket(false, { replay: () => null, seen() {}, decide() {}, open: () => false, mayAnswer: () => false, block: async () => ({ outcome: "refused", id: "", reason: "record_invalid" }), itsMe });
   const sent = spyOn(client, "send");
   client.data.deviceId = "member";
   for (const provedKey of [undefined, "session-key"]) {

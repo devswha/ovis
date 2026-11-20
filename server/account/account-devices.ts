@@ -69,6 +69,7 @@ export interface AccountRowPorts {
   /** P2: a key a devices.json row holds stays there. */
   heldByDevicesJson(key: string): boolean;
   hasNoticeSlot(): boolean;
+  settleNotices?(rows: readonly AccountRow[]): void;
   /** Standing guards apply both to a new row and to release of an existing hold. */
   admits(key: string, account: string): boolean;
   admitListedRows(write: () => readonly string[]): string[];
@@ -140,6 +141,7 @@ export class AccountDeviceStore implements AccountRowSource {
     }
     // Finish a promotion interrupted between the member write and the list-row removal.
     if (!foreign && this.file.devices.length !== file.devices.length) this.write(this.file);
+    else if (this.error === null && !this.missing()) ports.settleNotices?.(this.file.devices);
   }
 
   blocked(): string | null { return this.error; }
@@ -327,8 +329,13 @@ export class AccountDeviceStore implements AccountRowSource {
       this.ports.journal(entry);
       this.pendingDrops.shift();
     }
-    writePrivateState(this.path, { v: 1, server_id: this.serverId, ...next });
-    this.file = next;
+    try {
+      writePrivateState(this.path, { v: 1, server_id: this.serverId, ...next });
+      this.file = next;
+    } finally {
+      // A failed admission save leaves the previous rows in memory, not the journalled candidate.
+      this.ports.settleNotices?.(this.file.devices);
+    }
   }
 }
 
