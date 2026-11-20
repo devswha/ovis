@@ -11,7 +11,8 @@ export async function pullForRefusedSignIn(
   const { devices, accountMailbox } = options.services;
   if (devices.account() === null) return true;
   const { deviceId, nonce, signature } = proof;
-  if (await devices.matchRelay(deviceId, nonce, signature, options.serverId) !== null) return mux.active;
+  // a devices.json row still waiting for the first whole read (S22) takes the pull too, so its sign-in starts the read
+  if (await devices.matchRelay(deviceId, nonce, signature, options.serverId) !== null && !devices.catchingUp(deviceId)) return mux.active;
   const joined = await devices.matchAccountRelay(deviceId, nonce, signature, options.serverId);
   if (!mux.active || (joined !== null && "match" in joined)) return mux.active;
   mux.extendSetup(SIGN_IN_WAIT_MS + 10_000);
