@@ -143,6 +143,7 @@ export class AccountMailbox {
   private drainedScope: string | null = null;
   error: string | null = null;
   private timer: ReturnType<typeof setInterval> | undefined;
+  private stopped = false;
   private pulling: Promise<number> | undefined;
 
   private pending: unknown[];
@@ -234,7 +235,7 @@ export class AccountMailbox {
   private async readSnapshotNow(readmission?: Readmission): Promise<{ outcome: ReadOutcome | null; adds: number }> {
     const empty = { outcome: null, adds: 0 };
     const snapshot = this.options.snapshot;
-    if (!snapshot) return empty;
+    if (!snapshot || this.stopped) return empty;
     const account = snapshot.account();
     const ports = snapshot.ports(readmission);
     if (account === null || ports === null) return empty;
@@ -245,7 +246,7 @@ export class AccountMailbox {
       const outcome = await readSnapshot(async (cursor) => {
         if (cursor.page === 0) staged = await stageMailboxAdds(this.pending);
         return this.snapshotPage(account, cursor, used);
-      }, { ...ports, commit: (stage) => {
+      }, { ...ports, scope: () => this.stopped ? null : ports.scope(), commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
         ports.commit(stage);
         const removed = new Set(stage.snapshot.removed.map((row) => row.key));
@@ -279,7 +280,7 @@ export class AccountMailbox {
   }
 
   start(): void {
-    if (this.timer) return;
+    if (this.timer || this.stopped) return;
     void this.pull();
     this.timer = setInterval(() => { void this.pull(); }, MAILBOX_PULL_MS);
     this.timer.unref?.();
@@ -524,6 +525,7 @@ export class AccountMailbox {
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
   }
