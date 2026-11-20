@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { exportAccountKey, newRecordId, signSafetyRecord } from "../shared/account-records.ts";
 import type { Machine, MachineEvent } from "../shared/machines.ts";
+import { createServer } from "./index.ts";
 import { handleMachineRequest, machineEventsClock, machineEventsQueuedBytes } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 
@@ -32,6 +37,50 @@ it("T60: the machine router forwards only the records POST with the target PC cr
   expect((await send("POST")).status).toBe(200);
   expect(calls).toEqual([{ method: "POST", path: "/api/account/records", authorization: "Bearer target", body: records }]);
 });
+
+it("T60: a signed roster block passes the receiving PC's real account route", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-roster-block-"));
+  const target = createServer({ hostname: "127.0.0.1", port: 0, token: "target", stateDir, sidecar: false, machines: false, tailscaleOwner: null, accountOpensAll: true });
+  try {
+    const { devices } = target.context.services;
+    const account = "acct_1";
+    const member = async (label: string) => {
+      const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+      const spki = await exportAccountKey(keys.publicKey);
+      const row = devices.pairRelay(devices.startPairing().code, label, spki);
+      if (!row) throw new Error("Could not pair test device");
+      devices.linkAccountKey(row.device.id, spki, spki, account);
+      return { id: row.device.id, keys, spki };
+    };
+    const signer = await member("Older phone");
+    const blocked = await member("Newer phone");
+    const record = await signSafetyRecord({
+      v: 1, kind: "block", account, target: blocked.spki, target_no: 2, signer: signer.spki, signer_no: 1,
+      signed_at: new Date().toISOString(), nonce: newRecordId(),
+    }, signer.keys.privateKey);
+    const manager = {
+      endpoint: () => ({ url: `http://127.0.0.1:${target.port}`, token: "target" }),
+      trackTerminal: () => () => {},
+    } as unknown as MachineManager;
+    const response = await handleMachineRequest(new Request("https://app.example/api/machines/desk/account/records", {
+      method: "POST", headers: { origin: "https://app.example", "x-herdr-machine": "1", "content-type": "application/json" },
+      body: JSON.stringify({ records: [record] }),
+    }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
+    const receipt: unknown = await response.json();
+    expect({ status: response.status, body: receipt }).toEqual({
+      status: 200,
+      // Track A's S2-09 adds block receipts; older PCs still return their own per-record result.
+      body: "applyBlock" in devices
+        ? { results: [], receipts: [{ id: record.id, outcome: "applied", n: 1 }] }
+        : { results: [{ id: record.id, outcome: "refused", code: "record_invalid" }] },
+    });
+    expect(devices.has(blocked.id)).toBe(!("applyBlock" in devices));
+  } finally {
+    target.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 const TOTAL_BYTES = 32 * 1024 * 1024;
 const CEILING_BYTES = 64 * 1024 * 1024;
 const STALL_MS = 30_000;
