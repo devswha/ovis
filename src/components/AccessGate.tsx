@@ -34,7 +34,25 @@ export interface AccessGateProps {
  * token stays as the other way. Nothing is stored here: the server answers with an
  * HttpOnly cookie either way.
  */
-export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconfirmed, onPaired, onUnlocked, ownWindow = false }: AccessGateProps) {
+export function AccessGate(props: AccessGateProps) {
+  // a locked PC pairs nobody: its own window may only ask to turn strict mode off; any other window sees one line.
+  // Chosen before the pairing form mounts, so a pairing QR's code is never claimed or sent (T47, N4)
+  return props.reason === "locked" ? <LockedGate ownWindow={props.ownWindow === true} /> : <PairingGate {...props} />;
+}
+
+function LockedGate({ ownWindow }: { ownWindow: boolean }) {
+  const t = useT();
+  return (
+    <main className="access-gate-screen">
+      <div className="access-gate" data-testid="strict-gate">
+        <img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="access-gate-mark" />
+        {ownWindow ? <StrictUnlockAsk /> : <p className="access-gate-copy">{t("This PC is in strict mode.")}</p>}
+      </div>
+    </main>
+  );
+}
+
+function PairingGate({ reason, initialCode, consumePairCode, pairingUnconfirmed, onPaired, onUnlocked }: AccessGateProps) {
   const t = useT();
   const codeRef = useRef<HTMLInputElement | null>(null);
   const tokenRef = useRef<HTMLInputElement | null>(null);
@@ -92,18 +110,6 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
       tokenRef.current?.select();
     }
   };
-
-  // a locked PC pairs nobody: its own window may only ask to turn strict mode off (T47, N4); any other window gets nothing
-  if (reason === "locked") {
-    return ownWindow ? (
-      <main className="access-gate-screen">
-        <div className="access-gate" data-testid="strict-gate">
-          <img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="access-gate-mark" />
-          <StrictUnlockAsk />
-        </div>
-      </main>
-    ) : null;
-  }
 
   return (
     <main className="access-gate-screen">

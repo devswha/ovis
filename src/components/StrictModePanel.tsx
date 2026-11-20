@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { currentLocale, useT } from "../lib/i18n.ts";
 import type { HealthAuth } from "../../shared/access.ts";
 import { ApiError } from "../lib/api.ts";
-import { CONFIRM_WINDOW_MS, fetchLockState, requestLock, requestUnlock, type LockState } from "../lib/account/lock.ts";
+import { CONFIRM_MS, fetchLockState, requestLock, requestUnlock, type LockState } from "../lib/account/lock.ts";
 
 /** An act this window asked for, waiting on this PC's screen until `until` (ms). */
 interface Asked { readonly kind: "lock" | "unlock"; readonly until: number }
@@ -34,14 +34,16 @@ function useLockRequest(read: () => void) {
     return () => { window.removeEventListener("focus", back); clearTimeout(timer); };
   }, [asked, read]);
   const ask = (kind: Asked["kind"], request: () => Promise<string>) => {
-    const until = Date.now() + CONFIRM_WINDOW_MS;
+    const until = Date.now() + CONFIRM_MS;
     void request().then(() => { setStatus({ asked: { kind, until } }); read(); }, (error: unknown) => {
       console.warn("Ovis: strict mode was not asked for", error instanceof Error ? error.name : error);
       setStatus({ refused: refusalOf(error) });
       read();
     });
   };
-  return { status, ask, clear: useCallback(() => setStatus(null), []) };
+  // the lock changed: what this window asked for is settled; a refusal it was told stays
+  const settled = useCallback(() => setStatus((now) => now !== null && "asked" in now ? null : now), []);
+  return { status, ask, settled };
 }
 
 function RequestStatus({ status }: { status: ReturnType<typeof useLockRequest>["status"] }) {
@@ -75,7 +77,12 @@ export function StrictUnlockAsk() {
   const read = useCallback(() => {
     void fetchLockState().then((state) => setLock(state.locked), () => setLock(null));
   }, []);
-  useEffect(() => { read(); }, [read]);
+  // read now, and again whenever this window comes back (the confirm page is another window)
+  useEffect(() => {
+    read();
+    window.addEventListener("focus", read);
+    return () => window.removeEventListener("focus", read);
+  }, [read]);
   const request = useLockRequest(read);
   if (lock === null) return null;
   return (
@@ -132,9 +139,9 @@ export function StrictModeSection({ offered, auth }: { offered: boolean; auth: H
   useEffect(() => { if (offered) read(); }, [offered, read]);
   const request = useLockRequest(read);
   const lock = state?.locked ?? null;
-  const { clear } = request;
+  const { settled } = request;
   // the lock changed (approved, or by another window): what this window asked for is settled
-  useEffect(() => { clear(); }, [lock, clear]);
+  useEffect(() => { settled(); }, [lock, settled]);
   if (!offered || state === null) return null;
   // the server's own-window rule for this request (/api/health auth.own_window): the lock routes enforce it themselves
   return <StrictModePanel state={state} local={auth?.own_window === true} status={request.status}

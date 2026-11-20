@@ -6,8 +6,7 @@
 import { apiFetch } from "../api-request-id.ts";
 import { errorFrom } from "../api.ts";
 
-/** How long the PC's screen keeps an asked act open (CONFIRM_MS in server/account/local-confirm.ts). */
-export const CONFIRM_WINDOW_MS = 2 * 60_000;
+export { CONFIRM_MS } from "../../../shared/account-devices-api.ts";
 
 /** GET /api/account/lock (server/account/lock-routes.ts): `preview` is what turning it on ends (T46), only while unlocked and bound. */
 export interface LockState {

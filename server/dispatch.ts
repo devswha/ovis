@@ -667,7 +667,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const own = ctx.services.lockRoutes !== undefined && ownWindow ? { own_window: true as const } : {};
     const auth: HealthAuth = access.level === "full"
       ? { required: false, authenticated: true, via: access.via, role: access.role, ...(access.via === "token" && bearerMatches(request, token) ? { bearer: true as const } : {}), ...(access.portal ? { portal: access.portal } : {}), ...own }
-      : { required: true, authenticated, ...(authenticated ? {} : { reason: access.reason }), ...own };
+      // a window refused at the door of a locked PC is told the PC is locked, never offered a pairing it cannot use (T47, N4)
+      : { required: true, authenticated, ...(authenticated ? {} : { reason: ctx.services.safetyLog?.state().locked === true && access.reason === "pairing_required" ? "locked" as const : access.reason }), ...own };
     // this server is open to the network with no token and nothing paired, told to a client
     // that got in and to nobody else: naming it to an anonymous caller would be
     // reconnaissance, not help. Nothing here changes who is let in (server/access.ts).

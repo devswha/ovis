@@ -256,7 +256,7 @@ describe("the strict-mode section in Settings", () => {
     await act(async () => {
       renderer = create(<SettingsProvider><AccessGate reason="locked" ownWindow={false} initialCode="" consumePairCode={() => ""} pairingUnconfirmed={false} onUnlocked={() => {}} /></SettingsProvider>);
     });
-    expect(renderer!.toJSON()).toBeNull();
+    expect(text(renderer!.root)).toBe("This PC is in strict mode.");
   });
 
   it("T47, N4: a window that is not this PC's own sees one static line on a locked PC: no form, no button, no request", async () => {
