@@ -43,11 +43,11 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   const account = store.account();
   if (account !== null && account !== record.account) return refused("account_mismatch");
   // A lock can hide the signer as well. It is a final refusal, not a missing signer to retry.
-  if (record.kind === "add" && !store.admits(record.key)) return refused("closed");
+  const closed = record.kind === "add" && !store.admits(record.key);
   // a member of any role may sign the remove of its own key: that is how a device leaves (docs/account.md)
   const leaving = record.kind === "remove" && record.signer === record.key;
   const signer = store.accountSigner(record.signer, record.account, leaving);
-  if (!signer) return refused("signer_not_member");
+  if (!signer) return refused(closed ? "closed" : "signer_not_member");
   if (record.kind === "remove" && store.opensAll()) {
     if (gates?.held(record.signer, !leaving)) return refused("removal_pending");
     if (!store.removeAuthority(record.signer, record.key, record.account)) return refused("older_device");
@@ -56,6 +56,7 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   // the signature covers the signer only: a key off the curve would leave a devices.json no store can read
   if (!store.acceptsRelayKey(record.key)) return refused("record_invalid");
   if (store.isTombstoned(record.key)) return refused("tombstoned");
+  if (closed) return refused("closed");
   if (store.hasKey(record.key)) {
     store.keepAccountAdd(record, signer.id);
     return { id: record.id, outcome: "unchanged" };
