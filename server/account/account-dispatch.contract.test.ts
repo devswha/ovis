@@ -27,6 +27,8 @@ test("R1/T37: signed-in listed row can Revoke a newer listing but not its older 
     expect(accountRows?.row(target.id)).toBeNull();
     const older = await revoke(member.id);
     expect([older.status, older.body.error?.code]).toEqual([403, "older_device"]);
+    // R1: the refusal says where the older device can be removed
+    expect(older.body.error?.message).toBe("removing an older device is done from that PC or from an older device");
   } finally { clock.mockRestore(); }
 });
 
