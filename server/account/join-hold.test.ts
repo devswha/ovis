@@ -52,10 +52,15 @@ describe("S2-29 the join hold and the first device (T34, T53, T67)", () => {
     expect(() => first.commitList(read)).toThrow("stopped after row write");
     const journal = DeviceJournal.open(dir);
     expect(journal.openNotices()).toEqual([]);
-    const restarted = new AccountDeviceStore(dir, SERVER, { ...ports, ...listNotices(journal, evidence, () => {}) });
+    const notices = listNotices(journal, evidence, () => {});
+    const restarted = new AccountDeviceStore(dir, SERVER, { ...ports, ...notices, publish(entry) {
+      // T42 has judged the row, but T34 cannot start the hold before the notice is published.
+      expect(restarted.access(entry.row)).toEqual({ refused: "join_hold", seconds: null });
+      notices.publish(entry);
+    } });
     const [held] = restarted.rows();
     if (!held) throw new Error("Missing durable row");
-    expect(restarted.access(held.id)).toEqual({ refused: "join_hold", seconds: null });
+    expect(restarted.access(held.id)).toEqual({ refused: "catching_up" });
     restarted.commitList(read);
     expect(DeviceJournal.open(dir).openNotices().map(entry => entry.row)).toEqual([held.id]);
     expect(restarted.access(held.id)).toEqual({ refused: "join_hold", seconds: 10 });
