@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { SettingsProvider } from "../lib/settings.ts";
@@ -51,6 +51,24 @@ describe("the new device's wait", () => {
 
   it("T67: a PC that holds nothing shows no wait", async () => {
     expect(await mount(<JoinWait pc="Desk" hold={undefined} now={NOW} />)).toBe("");
+  });
+
+  it("T53/T67: dismissal leaves the same hold hidden without answering, and a new reason shows", async () => {
+    const onPress = mock();
+    const screen = (wait: React.ReactElement) => <SettingsProvider>{wait}<ItsMeButton sending={false} onPress={onPress} /></SettingsProvider>;
+    const hold = { reason: "join_hold", until: null } as const;
+    await act(async () => { renderer = create(screen(<JoinWait pc="Desk" hold={hold} now={NOW} />)); });
+    const view = renderer;
+    if (view === undefined) throw new Error("No wait rendered");
+    const dismiss = view.root.find((node) => node.type === "button" && node.props["aria-label"] === "Dismiss");
+    await act(async () => { dismiss.props.onClick(); });
+    expect(view.root.findAllByProps({ role: "status" })).toEqual([]);
+    expect(onPress).not.toHaveBeenCalled();
+    await act(async () => { view.update(screen(<JoinWait pc="Desk" hold={{ ...hold, until: "2026-11-20T04:00:07.400Z" }} now={NOW + 1000} />)); });
+    expect(view.root.findAllByProps({ role: "status" })).toEqual([]);
+    await act(async () => { view.update(screen(<JoinWait pc="Desk" hold={{ reason: "catching_up" }} now={NOW} />)); });
+    expect(text(view.root.findByProps({ role: "status" }))).toContain("checking your account");
+    expect(onPress).not.toHaveBeenCalled();
   });
 
   it("T53: It's me is one press, held while it goes to each PC", async () => {
