@@ -14,6 +14,7 @@ import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { AccountHolds } from "./holds.ts";
+import type { Readmission } from "./readmission.ts";
 import type { UsedReport } from "../../shared/account-snapshot.ts";
 import { readSnapshot, type PageAnswer, type ReadOutcome, type SnapshotPorts } from "./snapshot-read.ts";
 import { applyAccountRecords, stageMailboxAdds, type AddGates, type RecordOutcome } from "./records.ts";
@@ -130,7 +131,7 @@ export interface AccountMailboxOptions {
    * The account's whole snapshot read (Step 2, S2-24), run after each pull: the account it reads and the ports that
    * apply it, or null for none now. The server gives it only while OVIS_ACCOUNT_OPENS_ALL is on.
    */
-  readonly snapshot?: { account(): string | null; ports(): SnapshotPorts | null; used?(): UsedReport };
+  readonly snapshot?: { account(): string | null; ports(readmission?: Readmission): SnapshotPorts | null; used?(): UsedReport };
 }
 
 export class AccountMailbox {
@@ -217,10 +218,10 @@ export class AccountMailbox {
 
   private waiting(): unknown[] { return [...this.draining, ...this.pending]; }
 
-  pull(): Promise<number> {
+  pull(readmission?: Readmission): Promise<number> {
     this.pulling ??= this.exclusively(async () => {
       const applied = await this.drain();
-      return applied + (await this.readSnapshotNow()).adds;
+      return applied + (await this.readSnapshotNow(readmission)).adds;
     }).finally(() => { this.pulling = undefined; });
     return this.pulling;
   }
@@ -230,12 +231,12 @@ export class AccountMailbox {
     return this.exclusively(async () => (await this.readSnapshotNow()).outcome);
   }
 
-  private async readSnapshotNow(): Promise<{ outcome: ReadOutcome | null; adds: number }> {
+  private async readSnapshotNow(readmission?: Readmission): Promise<{ outcome: ReadOutcome | null; adds: number }> {
     const empty = { outcome: null, adds: 0 };
     const snapshot = this.options.snapshot;
     if (!snapshot) return empty;
     const account = snapshot.account();
-    const ports = snapshot.ports();
+    const ports = snapshot.ports(readmission);
     if (account === null || ports === null) return empty;
     let adds = 0;
     const used = snapshot.used?.();
@@ -417,13 +418,13 @@ export class AccountMailbox {
    * nothing out, so after it the next may start 10 seconds after it began. What the pull finds is
    * checked and applied like any other record; the caller checks the sign-in again. Never throws.
    */
-  async pullForRefusedSignIn(waitMs = SIGN_IN_WAIT_MS, now = Date.now()): Promise<void> {
+  async pullForRefusedSignIn(waitMs = SIGN_IN_WAIT_MS, now = Date.now(), readmission?: Readmission): Promise<void> {
     if (this.options.devices.account() === null) return;
     let pull = this.pulling;
     if (!pull) {
       if (now < this.nextSignInPull) return;
       this.nextSignInPull = now + SIGN_IN_PULL_MS;
-      pull = this.pull();
+      pull = this.pull(readmission);
       void pull.then(() => {
         if (this.error !== null) this.nextSignInPull = Math.min(this.nextSignInPull, now + SIGN_IN_PULL_RETRY_MS);
       }, () => undefined);

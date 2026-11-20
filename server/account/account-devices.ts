@@ -7,7 +7,7 @@ import { writePrivateState } from "../private-state.ts";
 import type { RemovalEvidence } from "./removal-evidence.ts";
 import { rowDrop } from "./row-drop-evidence.ts";
 import { expiresAt } from "./row-expiry.ts";
-import { AccountReadmissions, type Readmission } from "./readmission.ts";
+import type { Readmission } from "./readmission.ts";
 import { firstDevice, holdSecondsLeft, JOIN_HOLD_MS, mayEndHold, type Sayer } from "./join-hold.ts";
 import { CLEARED, loadAccountDevices, type DevicesFile, type AccountRow, type AccountRowPorts, type AccountRowSource, type AccessAnswer, type DropReason, type JournalEntry, type ListCommit } from "./account-device-state.ts";
 export type { AccountRow, AccountRowPorts, AccountRowSource, AccessAnswer, DropReason, JournalEntry, ListCommit } from "./account-device-state.ts";
@@ -26,7 +26,6 @@ export class AccountDeviceStore implements AccountRowSource {
   private readonly path: string;
   private file: DevicesFile;
   private readonly pendingDrops: JournalEntry[] = [];
-  private readonly readmissions = new AccountReadmissions();
 
   constructor(stateDir: string, private readonly serverId: string, private readonly ports: AccountRowPorts,
     private readonly rowsChanged?: (rows: readonly AccountRow[]) => void) {
@@ -171,7 +170,11 @@ export class AccountDeviceStore implements AccountRowSource {
   }
 
   readmission(id: string): Readmission | undefined {
-    return this.readmissions.retry(this.row(id), this.file.account);
+    const proved = this.row(id);
+    const account = this.file.account;
+    if (proved?.state !== "expired" || account === null) return undefined;
+    return (row, owner) => owner === account && row.id === proved.id
+      && row.key === proved.key && row.origin.admit_no === proved.origin.admit_no;
   }
 
   /** Publishes again every notice that could not be published: until it is, its row stays held. */
@@ -183,7 +186,7 @@ export class AccountDeviceStore implements AccountRowSource {
   }
 
   /** Applies a whole read's list: drops what it no longer names, then admits what it newly names and the guards let in. */
-  commitList(list: ListCommit): { admitted: string[]; dropped: string[] } {
+  commitList(list: ListCommit, readmission?: Readmission): { admitted: string[]; dropped: string[] } {
     this.usable();
     const removed = new Set(list.removed.map((gone) => gone.key));
     const eligible = new Map(list.devices.filter((entry) => entry.eligible && !removed.has(entry.key)).map((entry) => [entry.key, entry]));
@@ -204,7 +207,7 @@ export class AccountDeviceStore implements AccountRowSource {
       if (!this.ports.hasNoticeSlot()) break;
       const existing = this.file.devices.find((row) => row.key === entry.key);
       if (existing) {
-        if (sameAccount && this.readmissions.permits(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
+        if (sameAccount && readmission?.(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
         continue;
       }
       if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) break;

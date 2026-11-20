@@ -15,8 +15,6 @@ export async function pullForRefusedSignIn(
   const joined = await devices.matchAccountRelay(deviceId, nonce, signature, options.serverId);
   if (!mux.active || (joined !== null && "match" in joined)) return mux.active;
   mux.extendSetup(SIGN_IN_WAIT_MS + 10_000);
-  const read = () => accountMailbox.pullForRefusedSignIn();
-  if (joined?.readmission) await joined.readmission(read);
-  else await read();
+  await accountMailbox.pullForRefusedSignIn(SIGN_IN_WAIT_MS, Date.now(), joined?.readmission);
   return mux.active;
 }
