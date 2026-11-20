@@ -198,7 +198,7 @@ test("T41/S19/P8/P10: an unwritable drop receipt starts strict and retries the o
     const before = readFileSync(journalPath, "utf8");
     const { app } = startOffline(dir);
     try {
-      expect((await fetch(`http://127.0.0.1:${app.port}/api/devices`)).status).toBe(200);
+      expect(app.context.services.devices.list(null).map(row => row.id)).toContain(member.id);
       expect(app.context.services.devices.sessionRow(member.id)).toBeNull();
       expect(app.context.services.devices.accountError).not.toBeNull();
     } finally { app.stop(); }
