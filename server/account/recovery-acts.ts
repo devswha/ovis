@@ -34,6 +34,10 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
       throw error;
     }
     const pc = { logReadable: options.logReadable() };
+    // Read the log for each request (S19), before any write can inspect or change its targets.
+    if (action.act !== "list" && !pc.logReadable) {
+      return action.act === "release" ? { error: `${action.rows[0]} cannot be released: log_unreadable` } : UNREADABLE;
+    }
     switch (action.act) {
       case "list":
         return {
@@ -60,15 +64,12 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
         return { released: chosen.map((row) => row.id) };
       }
       case "undo": {
-        // the log is read as each act comes, not only at the start (S19): while it cannot be, nothing is changed
-        if (!pc.logReadable) return { error: "This PC cannot read its safety log, so nothing is changed: log_unreadable" };
         const undone = releases.undo(action.rows ?? undefined, options.user);
         return { releases: undone.releases, ...(undone.journalError === null ? {} : { warning: `The undo was not journalled: ${undone.journalError.message}` }) };
       }
       case "admit": case "remove": case "lift": case "revoke_all": {
         const acts = options.seams;
         if (acts === undefined) return { error: `${action.act} is not available on this PC yet` };
-        if (!pc.logReadable) return UNREADABLE;
         if (action.act === "revoke_all") return { revoked: acts.revokeAll(options.user).length };
         if (action.act === "remove") {
           const removed: string[] = [];
