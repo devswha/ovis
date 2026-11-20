@@ -165,8 +165,7 @@ export class AccountDeviceStore implements AccountRowSource {
     const entry = list.devices.find((candidate) => candidate.key === key && candidate.eligible);
     if (!expired || !entry || list.removed.some((gone) => gone.key === key) || list.account !== this.file.account) return false;
     if (!this.ports.hasNoticeSlot() || this.ports.heldByDevicesJson(key) || !this.ports.admits(key, list.account)) return false;
-    this.admit(entry, false);
-    return true;
+    return this.admit(entry, false);
   }
 
   readmission(id: string): Readmission | undefined {
