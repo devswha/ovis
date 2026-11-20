@@ -1101,8 +1101,9 @@ export class DeviceStore {
   private canSpeak(id: string, ownLeave = false): boolean {
     const member = this.devices.find(row => row.id === id);
     if (member) return !this.catchingUp(id) && (ownLeave || !this.promotedHolds.refusal(member, Date.now()));
-    const access = this.joinedRows?.access(id);
-    return access !== undefined && ("ok" in access || (ownLeave && access.refused === "join_hold"));
+    const row = this.joinedRows?.row(id);
+    const access = row ? this.listedAccess(row) : null;
+    return access !== null && ("ok" in access || (ownLeave && access.refused === "join_hold"));
   }
 
   /**
