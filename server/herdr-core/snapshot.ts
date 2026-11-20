@@ -298,7 +298,10 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
     let tabId = labeled && !(ids.has(labeled) && !group.tabs.some((candidate) => candidate.id === labeled)) ? labeled : `${spaceId}:${terminal.address}`;
     for (let n = 2; tabId !== labeled && ids.has(tabId) && !group.tabs.some((candidate) => candidate.id === tabId); n++) tabId = `${spaceId}:${terminal.address}:${n}`;
     const tab = group.tabs.find((candidate) => candidate.id === tabId);
-    if (tab && !tab.label) tab.label = where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "";
+    if (tab && !tab.label) {
+      const name = where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "";
+      tab.label = namedAfterAgent(name, [...tab.terminals, terminal]) ? "" : name;
+    }
     if (tab) {
       tab.root = besides(tab.root, tab.terminals.length, terminal.address);
       tab.terminals.push(terminal);
