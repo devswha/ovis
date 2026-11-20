@@ -82,7 +82,7 @@ describe("device notices on the real PC socket", () => {
     }
   });
 
-  it("a list admission with two-step unknown says so even without its sign-in method (T57)", async () => {
+  it("a list admission distinguishes two-step set from unknown without a sign-in method (T34, T57)", async () => {
     const { wire } = await connect();
     const twoStepValues = ["unknown", null, "set", "verified", undefined, "bogus"] as const;
     await act(async () => {
@@ -98,7 +98,7 @@ describe("device notices on the real PC socket", () => {
     const labels = rendered.map((card) => card.findAllByProps({ className: "settings-hint" })
       .flatMap((line) => line.children)
       .filter((line) => typeof line === "string" && line.toLowerCase().includes("two-step sign-in")));
-    expect(labels).toEqual([[expected], [], [], [], [expected], [expected]]);
+    expect(labels).toEqual([[expected], [], ["Two-step sign-in set on the account"], [], [expected], [expected]]);
   });
 
   const cards = () => result?.byPc.get("desk")?.notices ?? [];
