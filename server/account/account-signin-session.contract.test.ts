@@ -47,7 +47,7 @@ async function refusal(pc: Awaited<ReturnType<typeof listedPc>>, features: reado
 }
 
 describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
-  test("P8, T41: startup finishes an interrupted account revoke from its durable deny", async () => {
+  test.each(["before", "after"] as const)("P8, T41: startup finishes an account revoke interrupted %s its journal write", async (cut) => {
     const { fixture, device, member } = await listedPc();
     const { devices } = fixture.app.context.services;
     const path = join(fixture.stateDir, ACCOUNT_DEVICES_FILE);
@@ -56,6 +56,7 @@ describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
     const failure = spyOn(DeviceJournal.prototype, "append").mockImplementation(function (this: DeviceJournal, entry) {
       if (entry.kind === "drop" && entry.how === "revoke") {
         copyFileSync(path, checkpoint);
+        if (cut === "after") append.call(this, entry);
         throw new Error("journal unavailable");
       }
       return append.call(this, entry);
@@ -74,6 +75,8 @@ describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
         .toEqual({ knownAfterFailure: false, persisted: [], knownAfterRestart: false });
       expect(restarted.isTombstoned(device.publicKey)).toBe(true);
       expect(restarted.has(member.id)).toBe(true);
+      const history = DeviceJournal.open(fixture.stateDir).entries().filter(entry => entry.row === device.id);
+      expect(history.map(({ kind, how }) => [kind, how])).toEqual([["admit", "list"], ["drop", "revoke"]]);
     } finally { recovered.app.stop(); }
   });
 
