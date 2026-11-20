@@ -238,7 +238,7 @@ describe("deleting the account from Settings", () => {
     await press("Sign out");
     await until(() => buttons().includes("Send it now"));
     await press("Send it now");
-    await until(() => shown().includes("The block did not go through yet."));
+    await until(() => shown().includes(retry ? "The block did not go through yet." : "The block was refused. Block it again from this device."));
     expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
     expect(buttons().includes("Try again")).toBe(retry);
     expect(buttons()).toContain("Sign out anyway");
@@ -259,7 +259,7 @@ describe("deleting the account from Settings", () => {
     busy = 200;
     await press("Try again");
     await until(() => !buttons().includes("Try again"));
-    expect(shown()).toContain("The block did not go through yet.");
+    expect(shown()).toContain("The block was refused. Block it again from this device.");
     expect(buttons()).toContain("Sign out anyway");
     expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
     expect(await indexedAccountStore.get("unsent_blocks")).toBeUndefined();
@@ -296,7 +296,7 @@ describe("deleting the account from Settings", () => {
       await checked.promise;
     });
     await act(async () => {});
-    expect(shown()).not.toContain("The block did not go through yet.");
+    expect(shown()).not.toContain("The block was refused. Block it again from this device.");
     expect(Object.values(await indexedAccountStore.get("unsent_blocks") ?? {}).map((entry) => [entry.records[0]?.id, entry.refused])).toEqual([["late-1", true]]);
   });
 

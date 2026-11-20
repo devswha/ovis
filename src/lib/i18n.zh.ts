@@ -260,6 +260,7 @@ const BASE: Record<string, string> = {
   "Tailscale isn't installed.": "没有安装 Tailscale。",
   "Check again": "重新检查",
   "The block did not go through yet.": "阻止请求尚未送达。",
+  "The block was refused. Block it again from this device.": "阻止请求被拒绝了。请在此设备上再次阻止。",
   "The block was not sent. Try again.": "阻止未能发送。请重试。",
   "Other PCs": "其他电脑",
   "Unnamed PC": "未命名的电脑",
