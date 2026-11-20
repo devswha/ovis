@@ -224,6 +224,28 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     expect(fake.at()).toBe(start);
   });
 
+  it("tells nothing when the way back for a sheet with no entry that refused Back is dropped: the history is still on another pane's entry", async () => {
+    const start = fake.at();
+    fake.tap();
+    h.pushState({ pane: "b" }, "", "/?pane=b");
+    h.pushState({ pane: "c" }, "", "/?pane=c");
+    h.back(); await settled();
+    const leave = enter(() => false);
+    let over = 0;
+    const stop = sheetHistory.onSheetTraversalOver(() => { over += 1; });
+    fake.drop(true);
+    h.back(); await settled(); await settled();
+    fake.drop(false);
+    expect(fake.at()).toBe(start);
+    expect(over).toBe(0);
+    stop();
+    leave(); await settled();
+    jest.advanceTimersByTime(1000);
+    h.forward(); await settled();
+    h.back(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
   it("steps off the entry again when the sheet it came back for closed before the way back landed", async () => {
     const start = fake.at();
     let drawerClosed = 0;
@@ -810,9 +832,18 @@ describe("a phone's sheet where Back skips an entry made with no tap, in a brows
     leaveMenu(); await settled();
     leaveDrawer(); await settled();
     expect(sheetHistory.sheetTraversalPending()).toBe(false); expect(over).toBe(1);
+    // a sheet opened afresh, with no traversal since, is no sheet that way back was for
+    fake.tap();
+    const leaveFresh = enter(() => {});
+    expect(typeof sheetOn()).toBe("string");
+    expect(sheetHistory.sheetTraversalPending()).toBe(false); expect(over).toBe(2);
     stop();
+    leaveFresh(); await settled();
+    expect(fake.at()).toBe(start);
     // the next traversal lets go of the way that landed nowhere
     h.forward(); await settled(); await settled();
+    expect(fake.at()).toBe(start + 1);
+    h.back(); await settled();
     expect(fake.at()).toBe(start);
   });
 

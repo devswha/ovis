@@ -141,7 +141,7 @@ let steppedOff = false;
 let asked: ReturnType<typeof setTimeout> | null = null;
 const LANDING_MS = 1000;
 function makeWaiting(): void {
-  for (const id of [...waiting]) { waiting.delete(id); if (open.has(id)) write(id); }
+  for (const id of [...waiting]) { waiting.delete(id); if (open.has(id)) write(id); else stranded.delete(id); }
 }
 
 export function sheetSteppedOff(): boolean {
@@ -152,18 +152,22 @@ export function sheetSteppedOff(): boolean {
  * Whether the history is off the entry of what is shown for a traversal of the sheets' own: a closed
  * sheet's step off its entry on its way, or a sheet still up whose way back onto the entry a Back left
  * is on its way, or was dropped and waits for the next tap to make its entry. An address written now
- * would land on the entry under it. A way back the browser drops with no word (no Navigation API)
- * holds nothing once every sheet is closed.
+ * would land on the entry under it. A way back counts only while the sheet it is for is up: one the
+ * browser drops with no word (no Navigation API) holds nothing once that sheet closed.
  */
 export function sheetTraversalPending(): boolean {
-  if (stepping !== null) return true;
-  if (open.size === 0) return false;
-  return returning !== null || climbing !== null || stood?.pending === true || [...stranded].some((id) => waiting.has(id));
+  return stepping !== null || (returning !== null && open.has(returning.owner)) || (climbing !== null && open.has(climbing.owner))
+    || stood?.pending === true || [...stranded].some((id) => open.has(id));
 }
 
 const traversalOver = new Set<() => void>();
 
-/** Calls `listener` whenever a sheet made its entry, closed, or lost its way back, and no traversal of theirs is pending then. */
+/**
+ * Calls `listener` when the history is on the entry of what is shown again with no landing to tell it,
+ * and nothing is pending: a sheet made its entry, or the sheet a way back was for closed (the history
+ * is on the entry under it, which is what is left shown). A way back that only ended (dropped, or
+ * given up) tells nothing: the history may still be on another pane's entry.
+ */
 export function onSheetTraversalOver(listener: () => void): () => void {
   traversalOver.add(listener);
   return () => { traversalOver.delete(listener); };
@@ -242,7 +246,6 @@ function climb(id: string, key: string): void {
     if (climbing?.owner !== id) return;
     climbing = null;
     if (open.has(id)) { waiting.add(id); stranded.add(id); }
-    tellTraversalOver();
   };
   const way = navigation()!.traverseTo(key);
   way.committed.catch(dropped);
@@ -291,9 +294,9 @@ export function leaveSheet(id: string): void {
   underNavigation.delete(id);
   staying.delete(id);
   waiting.delete(id);
-  stranded.delete(id);
+  const wayFor = stranded.delete(id) || returning?.owner === id || climbing?.owner === id;
   if (!open.delete(id)) return;
-  tellTraversalOver();
+  if (wayFor) tellTraversalOver();
   leaving.set(id, setTimeout(() => {
     leaving.delete(id);
     const address = addresses.get(id);
@@ -466,8 +469,7 @@ if (typeof window !== "undefined") {
       const dropped = (): void => {
         if (returning?.entry !== from) return;
         returning = null;
-        for (const kept of again) { covered.delete(kept.id); waiting.add(kept.id); stranded.add(kept.id); }
-        tellTraversalOver();
+        for (const kept of again) { covered.delete(kept.id); waiting.add(kept.id); if (open.has(kept.id)) stranded.add(kept.id); }
       };
       const way = navigation()!.traverseTo(left);
       way.committed.catch(dropped);
@@ -486,7 +488,7 @@ if (typeof window !== "undefined") {
       for (const kept of again) { open.set(kept.id, kept.onBack); if (kept.under) covered.add(kept.id); }
       stood = onto;
       // a way back the browser drops (another traversal overtook it) is taken again when that one lands
-      const lost = (): void => { onto.pending = false; tellTraversalOver(); };
+      const lost = (): void => { onto.pending = false; };
       const way = navigation()!.traverseTo(onto.key);
       way.committed.catch(lost);
       way.finished.catch(() => undefined);
