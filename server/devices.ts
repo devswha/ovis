@@ -2579,8 +2579,10 @@ export class DeviceStore {
     // the file names every row it covers, a pending one's too, so it is finished from itself and never from less (T20)
     const gone = this.revokeAllRows();
     const gateWasOpen = !this.rawGated;
-    // a registry that will not read may hold listed rows: count it as some, so the intent outlives it
-    const listed = this.joinedRows?.blocked() ? 1 : this.joinedRows?.rows().length ?? 0;
+    // a registry that will not read, or is missing on a PC in an account, may hold listed rows: count it as some, so
+    // the intent outlives it. A PC never bound has none
+    const unknown = this.joinedRows?.blocked() || (this.joinedRows?.missing() && this.pc?.binding());
+    const listed = unknown ? 1 : this.joinedRows?.rows().length ?? 0;
     const denied = this.deny(gone.flatMap((row) => row.relay_public_key ?? []), () => intent.begin(gone, now, listed));
     const gate = this.gateClosedAt ?? this.devices[0]?.created_at ?? now;
     // a file that could not be written holds nothing: the rows stay where the next Revoke all finds them, out of every
