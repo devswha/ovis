@@ -928,7 +928,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
       case "unsupported": return t("This account service can't sign in a browser on this PC yet.");
       case "in_use": return name === null
         ? t("This sign-in already belongs to another Ovis account. Nothing was changed.")
-        : t("This {provider} account is linked to another Ovis account. To see that account, sign out and sign in with {provider}. To use both ways to sign in on one account, delete one of the two accounts, then add its way to sign in to the one you keep.", { provider: name });
+        : t("This {provider} account is linked to another Ovis account. To see that account, sign out and sign in with {provider}. To add {provider} to this account instead, first take it off that one: sign in there with its other way to sign in and remove {provider}, or delete that account if {provider} is its only one. Then add {provider} here.", { provider: name });
       case "no_sign_in": return t("The sign-in did not finish. Try again.");
     }
   };

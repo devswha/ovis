@@ -72,7 +72,7 @@ const BASE: Record<string, string> = {
   "Open {provider}": "打开 {provider}",
   "{provider} refused the sign-in.": "{provider} 拒绝了此次登录。",
   "Your account already signs in with {provider}.": "此账户已经可以用 {provider} 登录。",
-  "This {provider} account is linked to another Ovis account. To see that account, sign out and sign in with {provider}. To use both ways to sign in on one account, delete one of the two accounts, then add its way to sign in to the one you keep.": "这个 {provider} 账号已关联到另一个 Ovis 账户。要查看那个账户，请退出登录后用 {provider} 登录。要在一个账户上使用两种登录方式，请删除其中一个账户，再在保留的账户中添加该登录方式。",
+  "This {provider} account is linked to another Ovis account. To see that account, sign out and sign in with {provider}. To add {provider} to this account instead, first take it off that one: sign in there with its other way to sign in and remove {provider}, or delete that account if {provider} is its only one. Then add {provider} here.": "这个 {provider} 账号已关联到另一个 Ovis 账户。要查看那个账户，请退出登录后用 {provider} 登录。若要把 {provider} 添加到当前账户，请先从那个账户移除它：用那个账户的其他登录方式登录并移除 {provider}；如果 {provider} 是它唯一的登录方式，就删除那个账户。然后在这里添加 {provider}。",
   "Add another way to sign in before removing this one.": "请先添加另一种登录方式，再移除这一种。",
   "The sign-in method could not be removed. Try again.": "无法移除该登录方式。请重试。",
   "Ways to sign in": "登录方式",
