@@ -5069,13 +5069,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Install (a row of More settings' This device, shown only when the browser can install) offers it;
   About links the repository.
 - In the hosted relay shell (app.ovis.sh, `<meta name="ovis-shell">`, lib/shellMode.ts) the page
-  opens with a **This app** group of two rows the native build never shows: **Change PC** (a neutral button to the
-  shell's front page: the paired-PC list, or, signed out where the account service runs, the sign-in
-  screen with that list behind **Continue without an account**; the same row the iOS app gets for
-  its own list)
+  opens with a **This app** group of three rows the native build never shows: **Change PC** (a neutral button to the
+  shell's front page: Add a PC, listing this device's PCs and the account's, or, signed out where the account
+  service runs, the sign-in screen with that list behind **Start without signing in**; the same row the iOS app
+  gets for its own list), **Relayed connections** with **Manage** (a neutral button to `/#overview`, the relay
+  dashboard, which no launch, sign-in or pairing ever lands on: people open it on purpose to manage the PCs they
+  reach through the relay)
   and **Forget this PC** (a neutral button that asks once in a `ConfirmDialog`, **Forget**, then
   deletes this phone's key for the PC and leaves for the front page). Neither is destructive on the
   PC, which keeps listing the phone until it is revoked there, so neither is a `.btn-danger`.
+- The hosted shell's front page is never the dashboard. A launch opens the PC this device opened last, or the
+  next saved PC that answers its check (`launchOrder`, at most four asked at once, four seconds at most, the
+  connecting card meanwhile); none answering, a later visit, Back, a sign-in's return or the phone app's own row
+  (`#pcs` inside the app) shows Add a PC, whose list says Off or Needs approval beside a PC, as the Claude and
+  ChatGPT apps open on the last conversation and keep account pages behind Settings. The dashboard opens only by
+  its own addresses (`#overview`, `#pcs`, `#devices`, `#relay`, `#settings`).
 - Portal, in Add a connection's Phones and devices tab where the server offers it: while it runs,
   the address and QR code as the Tailscale way draws them over a Relay row with Stop; otherwise one
   hint for what blocks it (no token, serve-only, no `portal` or an old one, with a link to get it)
@@ -5810,8 +5818,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Success mounts the shell; Lock unsubscribes push, deletes auth and returns to the gate.
 
 ### My machines (`.acct-*`)
-- `#my-machines` opens the signed-in machine list in the hosted shell. The front page stays the
-  relay dashboard. `MyMachinesPage` adapts the account directory, local pairings and connection
+- `#my-machines` opens the signed-in machine list in the hosted shell. The front page is Add a PC;
+  the relay dashboard opens only by its own address. `MyMachinesPage` adapts the account directory, local pairings and connection
   checks already held by the shell; the screens make no requests of their own. Today's source
   does not offer Devices, Invites or removal.
 - Layout: a section nav beside one column of rows -> the relay dashboard's shell; scroll owner:
