@@ -2226,16 +2226,17 @@ export class DeviceStore {
     const gone = this.devices.filter((d) => d === named || (key !== undefined && d.relay_public_key === key));
     const now = Date.now();
     const evidence = this.evidence;
-    const denied = this.deny(() => {
+    const denied = this.deny(key === undefined ? [] : [key], () => {
       if (gone.length > 0) this.tombstone(gone, now);
       else { evidence.addRevoke(key!, null, now); this.refreshTombstones(); this.dropWaiting([key!], "revoke"); }
     });
+    // a deny not on disk writes nothing else: the rows stay out by row for this run and the PC closed (P8)
+    if (denied !== null) { this.keepOut(gone); throw denied; }
     if (gone.length > 0) this.drop(gone, "pc", "recover", input.user);
     else {
       this.journalEvent({ kind: "remove", how: "recover", key: key!, no: null, row: null, label: "", by: input.user ?? null, account: null });
       this.liftOrphanedBlocks();
     }
-    if (denied !== null) throw denied;
     return { removed: gone.map((d) => d.id) };
   }
 
