@@ -28,3 +28,10 @@ test("P17/T53, G15: the ten-second hold ends at capacity without admitting a new
   time.now++;
   expect(devices.sessionRow(row)).toMatchObject({ role: "drive" });
 });
+
+test("P17/T53, G15: an eligible It's me settles its notice at capacity", async () => {
+  const { devices, row, notice, member } = await atCapacity();
+  expect(devices.itsMe(member.id, notice, member.publicKey)).toBe(true);
+  expect(devices.openNotices().some(n => n.id === notice)).toBe(false);
+  expect(devices.sessionRow(row)).toMatchObject({ role: "drive" });
+});
