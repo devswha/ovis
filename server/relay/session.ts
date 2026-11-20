@@ -485,9 +485,17 @@ export class RelaySession {
     this.state = "verifying";
     // a member's remote approval never lets in a key this PC holds back (removed elsewhere, or a remove for it waits here);
     // only a pairing approved on this PC itself does
-    if (sas.approvedBy !== undefined && this.options.services.accountMailbox.gates().held(sas.publicKey)) { this.close("auth_failed"); return; }
+    const id = accountDeviceId(this.options.serverId, sas.publicKey);
+    const { devices, accountMailbox } = this.options.services;
+    if (sas.approvedBy !== undefined) {
+      const gates = accountMailbox.gates();
+      const approverKey = devices.relayKeyOf(sas.approvedBy);
+      if (gates.held(sas.publicKey) || (devices.has(id) && (gates.enrolling() || !approverKey || gates.removing?.(approverKey)))) {
+        this.close("auth_failed"); return;
+      }
+    }
     let device: DeviceMatch | undefined;
-    try { device = this.options.services.devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id: accountDeviceId(this.options.serverId, sas.publicKey), ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }) }, undefined, this.admitNewDevice)?.device; }
+    try { device = devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id, ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }) }, undefined, this.admitNewDevice)?.device; }
     catch (error) {
       if (error instanceof PairingRateLimitedError) { this.close("auth_failed"); return; }
       throw error;
@@ -560,7 +568,8 @@ export class RelaySession {
     // the row as its own session sees it: a device, or one that waits to link. What a waiting row may do is decided
     // anew for every stream (principal), never from the answer below
     const row = devices.sessionRow(device.id);
-    if (!row || !this.mux.active) { this.unwatch(); return; }
+    if (!this.mux.active) { this.unwatch(); return; }
+    if (!row) { this.close("auth_failed"); return; }
     if (row.role !== device.role) {
       this.close("auth_changed");
       return;

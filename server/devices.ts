@@ -2175,9 +2175,14 @@ export class DeviceStore {
     if (approval.addedBy !== undefined && !this.isAccountApprover(approval.addedBy)) { this.noteRelayFailure(approval.path, now); return null; }
     // Legacy account-member approvals never take a tombstoned key.
     if (approval.addedBy !== undefined && (this.accountError !== null || this.isTombstoned(publicKey))) { this.noteRelayFailure(approval.path, now); return null; }
-    if (approval.id !== undefined && this.has(approval.id)) { this.noteRelayFailure(approval.path, now); return null; }
+    const listed = approval.addedBy === undefined ? undefined : this.joinedRows?.rowsByKey(publicKey)[0];
+    const id = approval.id ?? listed?.id;
+    const collision = listed
+      ? id !== listed.id || !this.canAddAt(listed.id, publicKey) || this.keyHeldByOther(publicKey, listed.id)
+      : id !== undefined && this.has(id);
+    if (collision) { this.noteRelayFailure(approval.path, now); return null; }
     if (admit && this.isNewKey(publicKey) && !admit()) return null;
-    const paired = this.enrollRelay(label, publicKey, now, false, { addedBy: approval.addedBy, approvedIn: approval.addedBy === undefined ? undefined : this.approverAccount(approval.addedBy) ?? undefined, digits: true, pairingHere }, approval.id);
+    const paired = this.enrollRelay(label, publicKey, now, false, { addedBy: approval.addedBy, approvedIn: approval.addedBy === undefined ? undefined : this.approverAccount(approval.addedBy) ?? undefined, digits: true, pairingHere }, id);
     if (paired === null) return null;
     // written after the row, so a stop between the two leaves a row newer than its tombstone: the next start ends that
     // Revoke (finishInterruptedWrites, or with the flag on RemovalEvidence.takeIn)
@@ -2237,7 +2242,10 @@ export class DeviceStore {
       // what a later link reads to tell a member's approval from a code a device outside the account started
       ...(addedBy !== undefined && approvedIn !== undefined ? { member_approved_in: approvedIn } : {}),
     };
-    if (!this.enroll(device, now, [], codeSpent, { ...(digits === undefined ? {} : { digits }), pairingHere })) return null;
+    const enrolled = !codeSpent && addedBy !== undefined && approvedIn !== undefined
+      ? this.enrollApproved(device, this.relayKeyOf(addedBy), now)
+      : this.enroll(device, now, [], codeSpent, { ...(digits === undefined ? {} : { digits }), pairingHere });
+    if (!enrolled) return null;
     return { device: { id: device.id, label: device.label, role: device.role } };
   }
 
@@ -2885,29 +2893,35 @@ export class DeviceStore {
     if (this.isTombstoned(entry.key)) throw new Error("tombstoned key");
     // an id another row holds would merge two devices' authority; a derived id collides only for the same key
     if (!this.canAddAt(entry.id, entry.key)) throw new Error("device id in use");
-    const joined = this.joinedRows?.row(entry.id);
-    const signer = entry.record && this.provedSayer(entry.addedBy, entry.record.signer);
-    const approved = joined && signer && mayEndHold(signer, { key: joined.key, no: joined.no, admitNo: joined.origin.admit_no }, now);
-    const carry = joined?.state === "hold" && (joined.hold_until === null || (!approved && Date.parse(joined.hold_until) > now));
-    const held = carry ? this.listNotice(entry.id)?.id : undefined;
-    if (carry && !held) throw new Error("The held admission has no durable notice");
     const device: StoredDevice = {
       id: entry.id, label: normalizeLabel(entry.label, "Device"), role: entry.role,
       token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: entry.key,
       created_at: new Date(now).toISOString(), last_seen_at: null, account: entry.account, added_by: entry.addedBy,
       ...(entry.record === undefined ? {} : { account_add: entry.record }),
-      ...(joined && this.pc ? { origin: this.pc.admit("remote", "promoted", entry.record?.signer ?? null, now) } : {}),
-      ...(held ? { held } : {}),
     };
-    if (!this.enroll(device, now, [], false)) throw new AdmissionRefusedError();
+    if (!this.enrollApproved(device, entry.record?.signer, now)) throw new AdmissionRefusedError();
     // another key joined the account: the PC has had other devices, for good (T67, H2)
     if (this.pc !== null && this.pc.first()?.key !== entry.key) this.pc.setOthersEver();
-    if (joined) {
-      if (held) this.promotedHolds.carry(held, joined.hold_until);
-      this.joinedRows?.promoted(joined.id);
-      this.closeAccountSessions(joined.id);
-    }
     return { id: device.id, label: device.label, role: device.role };
+  }
+
+  /** Signed add and member digits have different membership metadata, but transfer the same listing and hold. */
+  private enrollApproved(device: StoredDevice, signerKey: string | undefined, now: number): boolean {
+    const joined = this.joinedRows?.row(device.id);
+    if (!joined) return this.enroll(device, now, [], false);
+    const signer = signerKey && device.added_by && this.provedSayer(device.added_by, signerKey);
+    const approved = signer && mayEndHold(signer, { key: joined.key, no: joined.no, admitNo: joined.origin.admit_no }, now);
+    const carry = joined.state === "hold" && (joined.hold_until === null || (!approved && Date.parse(joined.hold_until) > now));
+    const held = carry ? this.listNotice(device.id)?.id : undefined;
+    if (carry && !held) throw new Error("The held admission has no durable notice");
+    if (!this.enroll({ ...device,
+      ...(this.pc ? { origin: this.pc.admit("remote", "promoted", signerKey ?? null, now) } : {}),
+      ...(held ? { held } : {}),
+    }, now, [], false)) return false;
+    if (held) this.promotedHolds.carry(held, joined.hold_until);
+    this.joinedRows?.promoted(joined.id);
+    this.closeAccountSessions(joined.id);
+    return true;
   }
 
   /**

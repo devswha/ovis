@@ -8,14 +8,14 @@ import { readDeviceRegistry } from "../devices.ts";
 import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { DeviceJournal } from "./device-journal.ts";
-import { ACCOUNT, listedPc } from "./listed-pc.test-helpers.ts";
+import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { ask, phone } from "./pairing.test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 
 async function approveListed(memberAgeMs: number) {
-  const { fixture, member, serverId, service } = await listedPc(closes);
+  const { fixture, member, serverId, service } = await createListedPc(close => closes.push(close));
   const { relay, devices, accountMailbox } = fixture.app.context.services;
   const time = { now: Date.now() + memberAgeMs };
   const clock = spyOn(Date, "now").mockImplementation(() => time.now);
