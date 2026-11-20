@@ -14,7 +14,7 @@ import { memoryAccountStore } from "../account/store.ts";
 import { SettingsProvider } from "../settings.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import { dashboardModel, dashboardPcs } from "./dashboard.ts";
-import { accountOpenPeer } from "./accountOpenPeer.ts";
+import { accountOpenPeer } from "./accountOpenPeer.fixture.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { mountRelayShell, type RelayShellMount } from "./shell.tsx";
