@@ -324,9 +324,24 @@ final class SshTunnel {
             toPc.flush();
             InputStream fromPc = stream.input();
             pipes.execute(() -> pump(fromPage, toPc, client, stream));
-            if (pump(fromPc, toPage, client, stream) == 0) {
+            byte[] answer;
+            try {
+                answer = readHead(fromPc);
+            } catch (IOException dropped) {
+                // the link went down before the PC answered
+                answer = null;
+            }
+            if (answer == null) {
                 // the PC side ended before answering: say so, so the page never takes silence for a reason to send again
                 answerFailure(toPage, new SshFailure("unreachable", "The connection to the PC ended"));
+            } else if (redirectsAway(answer, "http://" + bindHost.getHostAddress() + ":" + client.getLocalPort() + "/")) {
+                toPage.write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+                toPage.flush();
+                stream.close();
+            } else {
+                toPage.write(answer);
+                toPage.flush();
+                pump(fromPc, toPage, client, stream);
             }
             closeQuietly(client);
         } catch (IOException | RuntimeException ended) {
@@ -364,6 +379,23 @@ final class SshTunnel {
             if (matched == 4) return head.toByteArray();
         }
         return null;
+    }
+
+    /**
+     * Whether a response head (from the PC) redirects to an SSH PC's loopback host at another port
+     * (SshPcs.otherLoopbackPort): the WebView follows a redirect without asking the app, and would send that
+     * host's gate cookie to whatever listens there. `own` is this tunnel's origin, for a relative Location.
+     */
+    static boolean redirectsAway(byte[] head, String own) {
+        for (String line : new String(head, StandardCharsets.ISO_8859_1).split("\r\n")) {
+            if (!line.toLowerCase(Locale.ROOT).startsWith("location:")) continue;
+            try {
+                return SshPcs.otherLoopbackPort(java.net.URI.create(own).resolve(line.substring("location:".length()).trim()).toString());
+            } catch (IllegalArgumentException unreadable) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether a request head carries `gate` as the gate cookie, compared in constant time. */

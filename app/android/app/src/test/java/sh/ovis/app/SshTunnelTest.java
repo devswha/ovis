@@ -45,6 +45,7 @@ public class SshTunnelTest {
         final BlockingQueue<String> requests = new LinkedBlockingQueue<>();
         final AtomicInteger connections = new AtomicInteger();
         volatile boolean hold;
+        volatile String answer = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
 
         Ovis() throws IOException {
             server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
@@ -75,7 +76,7 @@ public class SshTunnelTest {
                     s.getInputStream().read();
                     return;
                 }
-                s.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".getBytes(StandardCharsets.US_ASCII));
+                s.getOutputStream().write(answer.getBytes(StandardCharsets.US_ASCII));
             } catch (IOException ended) {
                 // the tunnel closed its side
             }
@@ -227,6 +228,20 @@ public class SshTunnelTest {
         assertTrue(gated().endsWith("ok"));
         assertEquals("the second request reuses the connection", 1, links.size());
         assertTrue(told.isEmpty());
+    }
+
+    @Test
+    public void aRedirectToAnSshPcsHostAtAnotherPortIsRefused() throws IOException {
+        ovis.answer = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.2:8080/x\r\nContent-Length: 0\r\n\r\n";
+        assertTrue(gated().startsWith("HTTP/1.1 403 "));
+        ovis.answer = "HTTP/1.1 302 Found\r\nLocation: //127.0.0.3/x\r\nContent-Length: 0\r\n\r\n";
+        assertTrue(gated().startsWith("HTTP/1.1 403 "));
+        // its own pages, and another SSH PC's tunnel, are redirected to as they were
+        for (String location : new String[] { "/next", "http://127.0.0.2:" + SshPcs.LOCAL_PORT + "/", "https://example.com/" }) {
+            ovis.answer = "HTTP/1.1 302 Found\r\nLocation: " + location + "\r\nContent-Length: 0\r\n\r\n";
+            String answer = gated();
+            assertTrue(answer, answer.startsWith("HTTP/1.1 302 ") && answer.contains(location));
+        }
     }
 
     @Test

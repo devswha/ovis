@@ -316,24 +316,29 @@ final class SshLink {
      * Takes every line whose key is `blob` (its Base64: the field after the line's key type, so a line pasted
      * with another comment or with options counts too, and a line that only mentions it, in its comment or
      * anywhere else, does not) out of the account's authorized_keys, keeping every other line and the file's
-     * mode: "removed", or "absent" when none was there. A file that cannot be read whole is left as it is.
+     * mode (a symlinked file is changed where it lives): "removed", or "absent" when none was there. A file
+     * that cannot be read whole is left as it is.
      */
     static String unauthorizeKey(Connection connection, String blob) throws SshFailure {
         if (!blob.matches("[A-Za-z0-9+/]{40,}={0,2}")) throw new SshFailure("internal", "Unexpected characters in the key");
-        // the key field follows the first field that names a key type; options, if any, come before it
-        String has = "{ for (i = 1; i < NF; i++) if ($i ~ /^(ssh-|ecdsa-sha2-|sk-)/) { if ($(i + 1) == k) { found = 1; next } break } } ";
-        String answer = runOk(
-            connection,
-            "set -eu; f=\"$HOME/.ssh/authorized_keys\"; key='" + blob + "'; " +
-            "test -f \"$f\" || { echo absent; exit 0; }; " +
-            "if ! awk -v k=\"$key\" '" + has + "END { exit !found }' \"$f\"; then echo absent; exit 0; fi; " +
-            "t=$(mktemp \"$f.XXXXXX\"); cp -p \"$f\" \"$t\"; " +
-            "if ! awk -v k=\"$key\" '" + has.replace("found = 1; next", "next") + "{ print }' \"$f\" > \"$t\"; then rm -f \"$t\"; exit 1; fi; " +
-            "mv \"$t\" \"$f\"; echo removed",
-            20_000
-        ).trim();
+        String answer = runOk(connection, unauthorizeCommand(blob), 20_000).trim();
         if (!answer.equals("removed") && !answer.equals("absent")) throw new SshFailure("internal", "Unexpected answer: " + answer);
         return answer;
+    }
+
+    /** The shell command unauthorizeKey runs on the PC, for a `blob` already checked. */
+    static String unauthorizeCommand(String blob) {
+        // the key field follows the first field that names a key type; options, if any, come before it, and a
+        // quoted option value (which may hold spaces, a key type's name or a key) is never a field of its own
+        String has = "{ s = $0; gsub(/\"[^\"]*\"/, \"Q\", s); n = split(s, w, /[ \\t]+/); " +
+            "for (i = 1; i < n; i++) if (w[i] ~ /^(ssh-|ecdsa-sha2-|sk-)/) { if (w[i + 1] == k) { found = 1; next } break } } ";
+        return
+            "set -eu; f=\"$HOME/.ssh/authorized_keys\"; key='" + blob + "'; " +
+            "test -f \"$f\" || { echo absent; exit 0; }; f=$(readlink -f \"$f\" 2>/dev/null || printf %s \"$f\"); " +
+            "if ! awk -v k=\"$key\" '" + has + "END { exit !found }' \"$f\"; then echo absent; exit 0; fi; " +
+            "m=$(stat -c %a \"$f\" 2>/dev/null || stat -f %Lp \"$f\"); t=$(mktemp \"$f.XXXXXX\"); " +
+            "if ! awk -v k=\"$key\" '" + has.replace("found = 1; next", "next") + "{ print }' \"$f\" > \"$t\"; then rm -f \"$t\"; exit 1; fi; " +
+            "chmod \"$m\" \"$t\"; mv \"$t\" \"$f\"; echo removed";
     }
 
     private static void checkKeyLine(String keyLine) throws SshFailure {

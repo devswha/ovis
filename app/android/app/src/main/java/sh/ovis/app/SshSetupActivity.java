@@ -434,7 +434,11 @@ public class SshSetupActivity extends Activity {
 
         say(getString(R.string.ssh_connecting, address), true);
         tell("connecting");
-        SshLink.HostKeyCheck first = new SshLink.HostKeyCheck(null, null);
+        SshPcs.Pc before = editing != null ? store.get(editing.origin) : store.find(address, sshPort, account);
+        // a PC with a pinned key is asked for that very kind of key, as its tunnel asks (SshLink.connect): one that
+        // also offers a kind it prefers has not changed its key
+        boolean pinned = before != null && before.hasHostKey();
+        SshLink.HostKeyCheck first = new SshLink.HostKeyCheck(pinned ? before.hostKeyAlgorithm : null, null);
         try {
             SshLink.connect(address, sshPort, first).close();
             say(getString(R.string.ssh_no_host_key), false);
@@ -448,10 +452,9 @@ public class SshSetupActivity extends Activity {
         }
         String algorithm = first.seenAlgorithm;
         String hostKey = SshHostKeys.encode(first.seenKey);
-        SshPcs.Pc before = editing != null ? store.get(editing.origin) : store.find(address, sshPort, account);
         boolean known = before != null && SshHostKeys.judge(before.hostKeyAlgorithm, before.hostKey, algorithm, first.seenKey) == SshHostKeys.Verdict.SAME;
         // a pinned key that differs stops here, before anything is sent: only Forget host key under Manage lets a new one in
-        if (before != null && before.hasHostKey() && !known) {
+        if (pinned && !known) {
             say(getString(R.string.ssh_fail_host_key_pinned, SshHostKeys.fingerprint(first.seenKey)), false);
             tell("failed:host-key-changed");
             return;
@@ -469,6 +472,7 @@ public class SshSetupActivity extends Activity {
             tell("signing-in");
             connection = SshLink.connect(address, sshPort, new SshLink.HostKeyCheck(algorithm, hostKey));
             active = connection;
+            if (left) throw new SshFailure("internal", "The screen was closed");
             String saveAs = how;
             if (how.equals("phone-key")) {
                 SshLink.signIn(connection, account, phoneKey(store));
@@ -483,6 +487,7 @@ public class SshSetupActivity extends Activity {
                 // the key, not the password, is what reconnects: prove it works before the password is gone
                 connection = SshLink.connect(address, sshPort, new SshLink.HostKeyCheck(algorithm, hostKey));
             active = connection;
+            if (left) throw new SshFailure("internal", "The screen was closed");
                 SshLink.signIn(connection, account, mine);
                 saveAs = "phone-key";
             }

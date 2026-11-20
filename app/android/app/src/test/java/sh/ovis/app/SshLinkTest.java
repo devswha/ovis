@@ -5,9 +5,15 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.concurrent.TimeUnit;
 import org.junit.Test;
 
-/** What SshLink reads from a machine's answers, without a machine. */
+/** What SshLink reads from a machine's answers, and the cleanup it runs there (with this machine's sh), without a machine. */
 public class SshLinkTest {
     private static String descriptor(int port, String socket, boolean managed) {
         return "D {\"port\":" + port + ",\"pid\":42,\"token\":\"t\",\"socket_path\":\"" + socket + "\"" + (managed ? ",\"managed_remote\":true" : "") + "}";
@@ -110,5 +116,58 @@ public class SshLinkTest {
         assertEquals("unreachable", unknown.kind);
         assertTrue(unknown.getMessage(), unknown.getMessage().contains("nowhere.example"));
         assertTrue(SshLink.unreachable(new java.net.ConnectException("Connection refused")).getMessage().contains("Connection refused"));
+    }
+
+    private static final String PHONE = "AAAAC3NzaC1lZDI1NTE5AAAAIPhoneKeyBlob0123456789abcdefghijklmnopqrstuv";
+    private static final String OTHER = "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYOtherKey0123456789abcdefghijklmnop";
+
+    /** Runs the command unauthorizeKey sends to the PC, with `home` as HOME: its answer. */
+    private static String unauthorize(Path home) throws IOException, InterruptedException {
+        ProcessBuilder builder = new ProcessBuilder("sh", "-c", SshLink.unauthorizeCommand(PHONE)).redirectErrorStream(true);
+        builder.environment().put("HOME", home.toString());
+        Process sh = builder.start();
+        sh.getOutputStream().close();
+        String answer = new String(sh.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertTrue("the command did not end", sh.waitFor(20, TimeUnit.SECONDS));
+        assertEquals(answer, 0, sh.exitValue());
+        return answer.trim();
+    }
+
+    private static Path keys(String... lines) throws IOException {
+        Path home = Files.createTempDirectory("ovis-unauthorize");
+        Files.createDirectories(home.resolve(".ssh"));
+        Path file = home.resolve(".ssh/authorized_keys");
+        Files.write(file, (String.join("\n", lines) + "\n").getBytes(StandardCharsets.UTF_8));
+        return home;
+    }
+
+    @Test
+    public void removeTakesOutOnlyLinesWhoseKeyFieldIsThePhonesKey() throws Exception {
+        String plain = "ssh-ed25519 " + PHONE + " ovis-phone:Pixel";
+        String withOptions = "from=\"10.0.2.0/24\",command=\"echo hi there\" ssh-ed25519 " + PHONE + " pasted";
+        String agentOption = "command=\"ssh-agent -D\" ssh-ed25519 " + PHONE + " agent";
+        String mentionsInComment = "ecdsa-sha2-nistp256 " + OTHER + " " + PHONE;
+        String mentionsInOption = "command=\"echo ssh-ed25519 " + PHONE + "\" ecdsa-sha2-nistp256 " + OTHER + " note";
+        String unrelated = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUnrelated0123456789abcdefghijklmnopqrstuvwx keep";
+        Path home = keys(plain, withOptions, agentOption, mentionsInComment, mentionsInOption, unrelated);
+        Path file = home.resolve(".ssh/authorized_keys");
+        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("r--------"));
+
+        assertEquals("removed", unauthorize(home));
+        assertEquals(mentionsInComment + "\n" + mentionsInOption + "\n" + unrelated + "\n", new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
+        assertEquals("a read-only file stays read-only", "r--------", PosixFilePermissions.toString(Files.getPosixFilePermissions(file)));
+        assertEquals("absent", unauthorize(home));
+    }
+
+    @Test
+    public void removeChangesASymlinkedFileWhereItLives() throws Exception {
+        Path home = keys("ssh-ed25519 " + PHONE + " phone", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUnrelated0123456789abcdefghijklmnopqrstuvwx keep");
+        Path real = home.resolve("dotfiles-authorized_keys");
+        Files.move(home.resolve(".ssh/authorized_keys"), real);
+        Files.createSymbolicLink(home.resolve(".ssh/authorized_keys"), real);
+
+        assertEquals("removed", unauthorize(home));
+        assertTrue(Files.isSymbolicLink(home.resolve(".ssh/authorized_keys")));
+        assertFalse(new String(Files.readAllBytes(real), StandardCharsets.UTF_8).contains(PHONE));
     }
 }

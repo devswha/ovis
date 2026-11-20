@@ -48,7 +48,7 @@
              waits on its dialogs and returns its result to this instance, so a rotation or a theme or language
              change must not recreate it -->
         <activity
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|layoutDirection|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".SshSetupActivity"
             android:exported="false"
             android:theme="@style/AppTheme.NoActionBar"

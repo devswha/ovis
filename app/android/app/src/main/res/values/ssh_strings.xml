@@ -40,7 +40,7 @@
     <string name="ssh_confirm_message">Its host key fingerprint:\n\n%1$s\n%2$s\n\nCheck it on that machine with\nssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\nand trust it only if it matches.</string>
     <string name="ssh_trust">Trust and connect</string>
     <string name="ssh_install_title">Install Ovis on %1$s?</string>
-    <string name="ssh_install_message">Ovis is not installed for this account there. The phone can run the official installer there now, for this account only and without sudo:\n\n%1$s\n\nIt downloads about 360 MB and needs about 1 GB of disk: half a minute on a fast connection, a few minutes on a slow one. Keep Ovis open on this phone until it finishes: leaving the app stops the install.</string>
+    <string name="ssh_install_message">Ovis is not installed for this account there. The phone can run the official installer there now, for this account only and without sudo:\n\n%1$s\n\nIt downloads about 360 MB and needs about 1 GB of disk: half a minute on a fast connection, a few minutes on a slow one. Keep this screen open until it finishes: closing it stops the install.</string>
     <string name="ssh_install_yes">Install</string>
     <string name="ssh_install_no">Not now</string>
     <string name="ssh_installing">Installing Ovis on %1$s…\n%2$s</string>

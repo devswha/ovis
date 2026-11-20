@@ -81,7 +81,7 @@ public class SshSetupFlowTest {
     public void theScreenIsNotRecreatedByARotationOrAThemeOrLanguageChange() throws Exception {
         Context app = InstrumentationRegistry.getInstrumentation().getTargetContext();
         ActivityInfo info = app.getPackageManager().getActivityInfo(new ComponentName(app, SshSetupActivity.class), 0);
-        int needed = ActivityInfo.CONFIG_ORIENTATION | ActivityInfo.CONFIG_SCREEN_SIZE | ActivityInfo.CONFIG_UI_MODE | ActivityInfo.CONFIG_LOCALE;
+        int needed = ActivityInfo.CONFIG_ORIENTATION | ActivityInfo.CONFIG_SCREEN_SIZE | ActivityInfo.CONFIG_UI_MODE | ActivityInfo.CONFIG_LOCALE | ActivityInfo.CONFIG_LAYOUT_DIRECTION;
         assertEquals(needed, info.configChanges & needed);
     }
 
