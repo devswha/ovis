@@ -12,7 +12,8 @@ afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
 test("T56: a failed service past one hour closes account-only sessions and refuses their sign-ins and requests", async () => {
   const clock = new TestClock();
   const epoch = Date.now();
-  const time = spyOn(Date, "now").mockImplementation(() => epoch + clock.now());
+  let correction = 0;
+  const time = spyOn(Date, "now").mockImplementation(() => epoch + clock.now() + correction);
   closes.push(() => time.mockRestore());
   const pc = await createListedPc(close => closes.push(close));
   const { devices, accountMailbox } = pc.fixture.app.context.services;
@@ -29,8 +30,10 @@ test("T56: a failed service past one hour closes account-only sessions and refus
   pc.service.opensAll = false;
 
   clock.advance(STALE_READ_MS - 1);
+  correction = 60_000;
   await accountMailbox.pull();
   expect((await ask(session, "/api/account/status")).status).toBe(200);
+  correction = -1;
   clock.advance(1);
   await session.flush();
   expect(errors).toEqual(["auth_changed"]);
@@ -47,4 +50,22 @@ test("T56: a failed service past one hour closes account-only sessions and refus
   const recovered = await relayConnection(pc.fixture, { serverId: pc.serverId });
   await recovered.auth(pc.device, [ACCOUNT_OPENS_ALL_FEATURE]);
   expect((await ask(recovered, "/api/account/status")).status).toBe(200);
+});
+
+test("T56: a request at the monotonic hour is refused before timer delivery", async () => {
+  const clock = new TestClock();
+  const pc = await createListedPc(close => closes.push(close));
+  const { devices, accountMailbox } = pc.fixture.app.context.services;
+  devices.useClock(clock);
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const wall = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
+  closes.push(() => wall.mockRestore());
+  const session = await relayConnection(pc.fixture, { serverId: pc.serverId });
+  await session.auth(pc.device, [ACCOUNT_OPENS_ALL_FEATURE]);
+  expect((await ask(session, "/api/health")).status).toBe(200);
+  // Advance the clock reading independently of its callback queue (a busy event loop).
+  const elapsed = spyOn(clock, "now").mockReturnValue(STALE_READ_MS);
+  closes.push(() => elapsed.mockRestore());
+  await expect(ask(session, "/api/health")).rejects.toThrow();
+  expect(await bounded(session.serverError)).toBe("auth_changed");
 });
