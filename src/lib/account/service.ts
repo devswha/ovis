@@ -630,6 +630,9 @@ export class AccountService {
           headers: { authorization: `Bearer ${session.access_token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           ...(signal === undefined ? {} : { signal }),
+          // `only`: the endpoint's own answer counts, never a redirect's target (a followed 303 is a GET); a redirect
+          // fails the fetch, which reads as no answer
+          ...(only === undefined ? {} : { redirect: "error" as const }),
         });
       } catch (error) {
         if (again !== undefined && error instanceof AccountServiceUnreachableError && sent < sends && await again.wait(error, sent)) continue;
@@ -641,6 +644,8 @@ export class AccountService {
         stale = session.access_token;
         continue;
       }
+      // a strict call (`only`) refused again with tokens a refresh just gave: that request's refusal, not a revoked sign-in
+      if (response.status === 401 && only !== undefined) throw await failure(response);
       if (response.status === 401) return this.signedOut(session);
       if (!response.ok) {
         const refusal = await failure(response);

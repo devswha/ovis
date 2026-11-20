@@ -3,8 +3,8 @@
  * device's account store before any PC or the service is sent one, and until the service has answered for each, so a
  * closed tab or a reload loses no block. A later attempt sends the same signed records again (the service takes a
  * record id once). A record leaves only on the service's confirmation of it (taken, its id already taken, or its
- * target already removed), or once its final refusal (FINAL) was shown to its account's owner (refusalShown): until
- * then it stays, marked refused. Any other answer keeps it as it is: no answer, a timeout, a 5xx, a 401, 408 or 429, a
+ * target already removed), or after its owner pressed OK on its final refusal (FINAL; refusalShown): until then it
+ * stays, marked refused. Any other answer keeps it as it is: no answer, a timeout, a 5xx, a 401, 408 or 429, a
  * route the service hides (404 while step 2 is off for the account), try_again, a sign-in too old, an answer this
  * build does not know, and any failure before it went out (a refused token refresh, a sign-out).
  */
