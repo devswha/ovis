@@ -56,6 +56,8 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { answerServerChallenge, deriveServerId } from "../shared/relay-server-proof.ts";
 
 export async function relayShellQa(tree: RelayServerTree): Promise<void> {
+  // This cross-version suite explicitly requires pairing straight into the app, with no PC fingerprint confirmation.
+  process.env["OVIS_ACCOUNT_OPENS_ALL"] = "0";
   const { createServer, RelayService } = tree;
   const repo = join(import.meta.dir, "..");
   const evidence = process.env["UI_EVIDENCE_DIR"] || null;

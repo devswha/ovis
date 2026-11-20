@@ -49,7 +49,7 @@ test.each(["offline", "a service outage"] as const)("a first activation during %
   const pc = await upgrade();
   const { fixture, serverId, accountMailbox } = pc.start(async request => {
     if (failure === "offline") throw new TypeError("offline");
-    return new URL(request.url).pathname === "/v1/pc/snapshot"
+    return new URL(request instanceof Request ? request.url : request).pathname === "/v1/pc/snapshot"
       ? new Response(null, { status: 503 }) : await pc.service.fetch(request);
   });
   await accountMailbox.pull();
