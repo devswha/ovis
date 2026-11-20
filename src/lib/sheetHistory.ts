@@ -39,6 +39,8 @@ const heirs = new Map<string, string>();
 const SKIPS = typeof navigator !== "undefined" && "userActivation" in navigator && /Chrome\/|Chromium\//.test(navigator.userAgent);
 let tapped = !SKIPS;
 const waiting = new Set<string>();
+/** sheets still up whose way back onto their entry the browser dropped: they wait for the next tap to make one */
+const stranded = new Set<string>();
 let seen: string | null = null;
 let returning: { entry: string; owner: string; href: string } | null = null;
 interface NavigationApi {
@@ -147,12 +149,29 @@ export function sheetSteppedOff(): boolean {
 }
 
 /**
- * Whether a traversal of the sheets' own is on its way: a closed sheet's step off its entry, or a way
- * back onto an entry a Back left for a sheet still up. Until it lands the history is on an entry that
- * is not the one shown, and an address written now would land on that entry instead.
+ * Whether the history is off the entry of what is shown for a traversal of the sheets' own: a closed
+ * sheet's step off its entry on its way, or a sheet still up whose way back onto the entry a Back left
+ * is on its way, or was dropped and waits for the next tap to make its entry. An address written now
+ * would land on the entry under it. A way back the browser drops with no word (no Navigation API)
+ * holds nothing once every sheet is closed.
  */
 export function sheetTraversalPending(): boolean {
-  return stepping !== null || returning !== null || climbing !== null || stood?.pending === true;
+  if (stepping !== null) return true;
+  if (open.size === 0) return false;
+  return returning !== null || climbing !== null || stood?.pending === true || [...stranded].some((id) => waiting.has(id));
+}
+
+const traversalOver = new Set<() => void>();
+
+/** Calls `listener` whenever a sheet made its entry, closed, or lost its way back, and no traversal of theirs is pending then. */
+export function onSheetTraversalOver(listener: () => void): () => void {
+  traversalOver.add(listener);
+  return () => { traversalOver.delete(listener); };
+}
+
+function tellTraversalOver(): void {
+  if (sheetTraversalPending()) return;
+  for (const listener of [...traversalOver]) listener();
 }
 
 /** The key of the entry the step on its way lands on; null with no step on its way, or where the browser tells no entries. */
@@ -222,7 +241,8 @@ function climb(id: string, key: string): void {
   const dropped = (): void => {
     if (climbing?.owner !== id) return;
     climbing = null;
-    if (open.has(id)) waiting.add(id);
+    if (open.has(id)) { waiting.add(id); stranded.add(id); }
+    tellTraversalOver();
   };
   const way = navigation()!.traverseTo(key);
   way.committed.catch(dropped);
@@ -249,6 +269,8 @@ function write(id: string): void {
   addresses.set(id, window.location.href);
   seen = id;
   keep(id);
+  stranded.delete(id);
+  tellTraversalOver();
 }
 
 function remake(id: string, onBack: () => boolean | void): void {
@@ -269,7 +291,9 @@ export function leaveSheet(id: string): void {
   underNavigation.delete(id);
   staying.delete(id);
   waiting.delete(id);
+  stranded.delete(id);
   if (!open.delete(id)) return;
+  tellTraversalOver();
   leaving.set(id, setTimeout(() => {
     leaving.delete(id);
     const address = addresses.get(id);
@@ -442,7 +466,8 @@ if (typeof window !== "undefined") {
       const dropped = (): void => {
         if (returning?.entry !== from) return;
         returning = null;
-        for (const kept of again) { covered.delete(kept.id); waiting.add(kept.id); }
+        for (const kept of again) { covered.delete(kept.id); waiting.add(kept.id); stranded.add(kept.id); }
+        tellTraversalOver();
       };
       const way = navigation()!.traverseTo(left);
       way.committed.catch(dropped);
@@ -461,7 +486,7 @@ if (typeof window !== "undefined") {
       for (const kept of again) { open.set(kept.id, kept.onBack); if (kept.under) covered.add(kept.id); }
       stood = onto;
       // a way back the browser drops (another traversal overtook it) is taken again when that one lands
-      const lost = (): void => { onto.pending = false; };
+      const lost = (): void => { onto.pending = false; tellTraversalOver(); };
       const way = navigation()!.traverseTo(onto.key);
       way.committed.catch(lost);
       way.finished.catch(() => undefined);

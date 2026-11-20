@@ -185,17 +185,43 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     const leaveMenu = enter(() => {});
     const entry = fake.key();
     const pending: Array<["sheet's entry" | "entry under it", boolean]> = [];
+    let listening = true;
     fake.window.addEventListener("popstate", (event) => {
-      pending.push([(event.state as Record<string, unknown> | null)?.["ovis:sheet"] === undefined ? "entry under it" : "sheet's entry", sheetHistory.sheetTraversalPending()]);
+      if (listening) pending.push([(event.state as Record<string, unknown> | null)?.["ovis:sheet"] === undefined ? "entry under it" : "sheet's entry", sheetHistory.sheetTraversalPending()]);
     });
     h.back(); await settled();
     expect(pending).toEqual([["entry under it", true], ["sheet's entry", false]]);
     expect(fake.key()).toBe(entry);
+    listening = false;
     leaveMenu(); await settled();
     h.back(); await settled();
     leaveDrawer(); await settled();
     expect(fake.at()).toBe(start);
     expect(sheetHistory.sheetTraversalPending()).toBe(false);
+  });
+
+  it("keeps the address off the entry under a sheet whose way back the browser dropped until a tap makes its entry, and says so then", async () => {
+    const start = fake.at();
+    fake.tap();
+    const leaveDrawer = enter(() => {});
+    fake.tap();
+    const leaveMenu = enter(() => {});
+    let over = 0;
+    const stop = sheetHistory.onSheetTraversalOver(() => { over += 1; });
+    fake.drop(true);
+    h.back(); await settled(); await settled();
+    fake.drop(false);
+    expect(fake.at()).toBe(start);
+    expect(sheetHistory.sheetTraversalPending()).toBe(true);
+    leaveMenu(); await settled();
+    expect(sheetHistory.sheetTraversalPending()).toBe(true); expect(over).toBe(0);
+    fake.tap();
+    expect(fake.at()).toBe(start + 1);
+    expect(sheetHistory.sheetTraversalPending()).toBe(false); expect(over).toBe(1);
+    stop();
+    h.back(); await settled();
+    leaveDrawer(); await settled();
+    expect(fake.at()).toBe(start);
   });
 
   it("steps off the entry again when the sheet it came back for closed before the way back landed", async () => {
@@ -765,6 +791,29 @@ describe("a phone's sheet where Back skips an entry made with no tap, in a brows
     h.back(); await settled();
     expect(fake.at()).toBe(start);
     leaveSecond(); await settled();
+  });
+
+  it("holds no address once every sheet is closed, when the way back onto the entry Back left lands nowhere", async () => {
+    const start = fake.at();
+    fake.tap();
+    const leaveDrawer = enter(() => {});
+    fake.tap();
+    const leaveMenu = enter(() => {});
+    let over = 0;
+    const stop = sheetHistory.onSheetTraversalOver(() => { over += 1; });
+    // the way back is a step by count here, which the browser drops with no word
+    fake.drop(true);
+    h.back(); await settled();
+    fake.drop(false);
+    expect(fake.at()).toBe(start);
+    expect(sheetHistory.sheetTraversalPending()).toBe(true);
+    leaveMenu(); await settled();
+    leaveDrawer(); await settled();
+    expect(sheetHistory.sheetTraversalPending()).toBe(false); expect(over).toBe(1);
+    stop();
+    // the next traversal lets go of the way that landed nowhere
+    h.forward(); await settled(); await settled();
+    expect(fake.at()).toBe(start);
   });
 
   it("tells nothing on an entry the browser made by itself, and counts anew from it at the next push", async () => {
