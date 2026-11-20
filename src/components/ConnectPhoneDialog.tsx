@@ -530,7 +530,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
             {relaySwitch}
             {switchFailure}
             {startFailure}
-            <AddThisPc signedInHere={takeSignedInNow} />
+            <AddThisPc key={on ? "relay-on" : "relay-off"} signedInHere={takeSignedInNow} />
           </>
         )}
       </div>
