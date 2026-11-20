@@ -10,6 +10,7 @@
 import { BrowserWindow, session as sessions, WebContentsView, type Session, type WebContents } from "electron";
 import { mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
+import { BrowserResults, type BrowserResult } from "./browserResults.ts";
 import { isIP } from "node:net";
 import { canonicalHost, decide, machineHost, ovisAt, shownAddress, urlPort, type Allowed, type BrowserPolicy } from "../../../shared/browser-policy.ts";
 import { hostForm } from "./browserState.ts";
@@ -44,22 +45,8 @@ export interface BrowserTab {
   owner: string | null;
 }
 
-/** a file the built-in browser kept (a download), as the page's right panel lists it (src/lib/desktopBrowser.ts) */
-export interface BrowserResult {
-  id: string;
-  kind: "download";
-  name: string;
-  /** ms since the epoch */
-  at: number;
-  bytes: number | null;
-  done: boolean;
-  tab: number | null;
-  profile: BrowserProfile;
-}
-
-export const MAX_RESULTS = 50;
-/** the downloads of this run of the app, newest first, and where each was kept */
-const results: { result: BrowserResult; path: string }[] = [];
+/** the downloads of this run of the app, of both profiles */
+const results = new BrowserResults();
 
 export interface BrowserBounds {
   x: number;
@@ -127,13 +114,12 @@ export class BrowserTabs {
 
   /** the downloads of this run of the app, newest first */
   results(): BrowserResult[] {
-    return results.map(({ result }) => result);
+    return results.list();
   }
 
   /** where a finished download was kept, for the person to see in its folder (main never opens it) */
   resultPath(id: string): string | null {
-    const kept = results.find(({ result }) => result.id === id);
-    return kept?.result.done ? kept.path : null;
+    return results.path(id);
   }
 
   list(): BrowserTab[] {
@@ -351,13 +337,12 @@ export class BrowserTabs {
       const path = join(folder, `${Date.now()}-${basename(item.getFilename()).replace(/[^\w.-]+/g, "_").slice(-120) || "download"}`);
       item.setSavePath(path);
       const tab = tabs.tabOf(from);
-      const kept = { result: { id: `d${count}-${profile}`, kind: "download" as const, name: item.getFilename().slice(0, 200), at: Date.now(), bytes: item.getTotalBytes() || null, done: false, tab, profile }, path };
-      results.unshift(kept);
-      results.splice(MAX_RESULTS);
+      const id = `d${count}-${profile}`;
+      results.add({ id, kind: "download", name: item.getFilename().slice(0, 200), at: Date.now(), bytes: item.getTotalBytes() || null, done: false, tab, profile }, path);
       tabs.tell();
       item.once("done", (_done, state) => {
-        if (state === "completed") kept.result = { ...kept.result, done: true, bytes: item.getReceivedBytes() };
-        else results.splice(results.indexOf(kept), 1);
+        if (state === "completed") results.finish(id, item.getReceivedBytes());
+        else results.drop(id);
         owners.get(partition)?.tell();
       });
     });
