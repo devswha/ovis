@@ -25,12 +25,16 @@ async function lockedPc() {
   return Object.assign(made, { member });
 }
 
-test("T46: a locked PC refuses a row not approved at its screen, through the relay", async () => {
-  const made = await lockedPc();
-  const signed = await signIn(made, made.member.row.id, made.member.key);
-  if ("error" in signed) return;
-  const tried = await ask(signed.link, "/api/devices");
-  expect([tried.status, tried.body.error?.code]).toEqual([403, "locked"]);
+test("T46: a locked PC refuses relay sign-in from a row that could sign in before the lock", async () => {
+  const member = await memberRow("acct_1");
+  const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true } });
+  pcs.push(made);
+  const signed = await signIn(made, member.row.id, member.key);
+  if ("error" in signed) throw new Error(`The relay fixture could not sign in before locking: ${signed.error}`);
+  const receipt = made.app.context.services.safetyLog?.appendLock({ account: "acct_1" });
+  expect(receipt?.outcome).toBe("applied");
+  const tried = await signIn(made, member.row.id, member.key);
+  expect(tried).toEqual({ error: "auth_failed" });
 });
 
 test("N4: a locked PC refuses a loopback window that gave no screen proof", async () => {
