@@ -78,12 +78,17 @@ const MCP_FLAGS: Readonly<Record<string, string>> = { claude: "--mcp-config", co
  * dialogs gives them nothing after it. The word as the value of a flag the dialogs send is no command.
  */
 const MCP_COMMAND_AFTER_END: Readonly<Record<string, boolean>> = { claude: true, copilot: true, codex: false };
-const VALUE_FLAGS = new Set(["--model", "-m", "--effort", "--permission-mode", "--settings", "-c", "--config"]);
+/** each agent's own: Claude Code's `-c` is `--continue`, which takes no value, so a word after it may be a subcommand */
+const VALUE_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  claude: new Set(["--model", "--effort", "--permission-mode", "--settings"]),
+  codex: new Set(["--model", "-m", "--config", "-c"]),
+  copilot: new Set(["--model"]),
+};
 function runsMcpCommand(kind: string, args: readonly string[], options: readonly string[]): boolean {
   const after = MCP_COMMAND_AFTER_END[kind];
   if (after === undefined) return false;
   const read = after ? args : options;
-  return read.some((arg, at) => arg === "mcp" && (at === 0 || !VALUE_FLAGS.has(read[at - 1]!)));
+  return read.some((arg, at) => arg === "mcp" && (at === 0 || !VALUE_FLAGS[kind]!.has(read[at - 1]!)));
 }
 
 type LaunchFlag = "model" | "effort" | "config";

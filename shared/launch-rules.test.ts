@@ -101,6 +101,7 @@ describe("an MCP server named by the client", () => {
     ["copilot", ["--model", "x", "mcp", "add", "x", "--", "sh"]],
     ["claude", ["--", "mcp", "add", "x", "sh"]],
     ["copilot", ["--", "mcp", "add", "x"]],
+    ["claude", ["-c", "mcp", "add", "x", "sh"]],
   ])("is refused through %s's own mcp command, which writes its settings", (kind, args) => {
     expect(launchArgsFault(kind, args)).toContain("mcp command");
   });
