@@ -10,7 +10,8 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { HerdrSocket } from "../lib/ws.ts";
 import { useAccountDeviceNotices } from "./AccountDeviceNotices.tsx";
 
-it.each([false, true])("T51, T60: retry the exact signed block after failed account delivery (dismissed while pending: %s)", async (dismissWhilePending) => {
+it.each(["lost response", "503 after dismissal", "wrong record ID"] as const)("T51, T60: retry the exact signed block after %s", async (failure) => {
+  const dismissWhilePending = failure === "503 after dismissal";
   const notice = deviceNotice({ key: (await newKey()).public_spki });
   const wire = new DeviceNoticeWire("ws://localhost/ws");
   const events = new EventTarget();
@@ -45,8 +46,11 @@ it.each([false, true])("T51, T60: retry the exact signed block after failed acco
     posted.push(record);
     if (posted.length === 1) {
       started.resolve();
-      if (dismissWhilePending) return pendingReply.promise;
-      throw new TypeError("The account response was lost");
+      switch (failure) {
+        case "503 after dismissal": return pendingReply.promise;
+        case "wrong record ID": return Response.json({ id: "another-record" });
+        case "lost response": throw new TypeError("The account response was lost");
+      }
     }
     return Response.json({ id: record.id });
   }, { preconnect: fetch.preconnect });
