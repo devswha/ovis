@@ -31,6 +31,7 @@ function ports(dir: string, over: Partial<AccountRowPorts> = {}) {
     journal: (entry) => { events.push(`journal ${entry.kind} ${nameOf(entry.key)} file=[${fileKeys(dir).join(",")}]`); },
     closeSessions: (rowId, reason) => { events.push(`close ${rowId} ${reason}`); },
     heldByDevicesJson: () => false,
+    hasNoticeSlot: () => true,
     admits: () => true,
     publish: () => {},
     now: () => clock.now,

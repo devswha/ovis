@@ -893,7 +893,7 @@ export class DeviceStore {
 
   /** A list read is not local pairing: it cannot supersede any standing removal. */
   admitsFromList(key: string, account: string): boolean {
-    return this.journal?.admitsFromList() !== false && this.admits(key) && !this.isTombstoned(key) && !this.coveredByEvidence({ relay_public_key: key, account });
+    return this.admits(key) && !this.isTombstoned(key) && !this.coveredByEvidence({ relay_public_key: key, account });
   }
 
   /** Hears every key a deny takes, in the deny turn, rows or not (Revoke, account remove, block, Revoke all). */

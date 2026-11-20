@@ -23,6 +23,7 @@ function machine(over: Partial<AccountRowPorts> = {}, first: { othersEver?: bool
     journal: (entry) => { events.push(`journal ${entry.kind} ${nameOf(entry.key)}`); },
     closeSessions: () => {},
     heldByDevicesJson: () => false,
+    hasNoticeSlot: () => true,
     admits: () => true,
     publish: (entry) => { events.push(`publish ${nameOf(entry.key)}`); },
     now: () => clock.now,

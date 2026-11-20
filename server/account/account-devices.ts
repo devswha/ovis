@@ -68,7 +68,8 @@ export interface AccountRowPorts {
   closeSessions(rowId: string, reason: DropReason): void;
   /** P2: a key a devices.json row holds stays there. */
   heldByDevicesJson(key: string): boolean;
-  /** Every admission guard of the commit turn (G2 to G15) for this key, now. */
+  hasNoticeSlot(): boolean;
+  /** Standing guards apply both to a new row and to release of an existing hold. */
   admits(key: string, account: string): boolean;
   admitListedRows(write: () => readonly string[]): string[];
   /** Puts the admission's notice in the unseen set of every older row, on disk; throws when it could not. */
@@ -241,7 +242,7 @@ export class AccountDeviceStore implements AccountRowSource {
     this.republish();
     const listKeys = list.devices.map((entry) => entry.key);
     for (const entry of eligible.values()) {
-      if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) break;
+      if (this.file.devices.length >= ACCOUNT_DEVICES_MAX || !this.ports.hasNoticeSlot()) break;
       if (this.file.devices.some((row) => row.key === entry.key)) continue;
       if (this.ports.heldByDevicesJson(entry.key) || !this.ports.admits(entry.key, list.account)) continue;
       const first = this.ports.firstDevice;
