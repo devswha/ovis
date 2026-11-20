@@ -383,20 +383,25 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.deepEqual(askedAgain, [], "the tab asked the PC for no code");
 
     // Phones and devices opens on the relay; this loopback page with no Tailscale has no address a phone can open, so
-    // its other way offers the step that makes one, and no code it cannot say where to type
+    // its other way offers the step that makes one, and the code stands alone, said where to type, with no QR box
     await ui.openTab("devices");
     assert.equal(await devicesTab.locator('.connect-devices-ways [data-way="relay"]').getAttribute("aria-pressed"), "true", "Phones and devices opens on the Ovis relay");
     assert.equal(await relayTab.isVisible(), true, "and shows the relay's own panel there");
+    const codeStart = pairStart();
     await devicesTab.locator('.connect-devices-ways [data-way="local"]').click();
+    const codeStarted = await startedCode(codeStart);
+    await wifiCode.filter({ hasText: exactly(spaced(codeStarted)) }).waitFor();
     await devicesTab.getByRole("link", { name: "Install Tailscale", exact: true }).waitFor();
     assert.equal(await devicesTab.getByText("The phone needs the Tailscale app turned on too.", { exact: true }).count(), 1, "it says the phone needs Tailscale too");
-    assert.equal(await wifiCode.count(), 0, "no address, no code");
+    assert.equal(await devicesTab.locator(".connect-phone-code .compact-pair-qr-empty, .connect-phone-code [role='img']").count(), 0, "no address: no QR code and no empty box beside the code");
+    assert.equal(await devicesTab.getByText("No address a phone can open: type the code instead.").count(), 0, "and no dead end");
     await devicesTab.evaluate((panel) => { (panel as HTMLElement & { kept?: boolean }).kept = true; });
     await ui.openTab("relay");
     assert.equal(await devicesTab.isHidden(), true, "another tab hides Phones and devices");
     await ui.openTab("devices");
     assert.equal(await devicesTab.evaluate((panel) => (panel as HTMLElement & { kept?: boolean }).kept === true), true, "Phones and devices is kept while the sheet is open, not mounted again");
     assert.equal(await devicesTab.locator('.connect-devices-ways [data-way="local"]').getAttribute("aria-pressed"), "true", "and keeps the way picked");
+    assert.equal(await wifiCode.innerText(), spaced(codeStarted), "back on Phones and devices, its code is the same");
     await ui.closeSheet();
 
     const thisPcId = dialog.getByTestId("this-pc").locator(".my-device-id");
@@ -427,9 +432,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await ui.openLocal();
     const pageCode = await startedCode(pageStart);
     await wifiCode.filter({ hasText: exactly(spaced(pageCode)) }).waitFor();
-    await ui.openTab("relay");
-    await ui.openTab("devices");
-    assert.equal(await wifiCode.innerText(), spaced(pageCode), "back on Phones and devices, its code is the same");
+    assert.equal(await devicesTab.locator(".connect-phone-code [role='img']").count(), 1, "with the tailnet address, the code comes with its QR code");
     await page.unroute("**/api/access");
     const phonePaired = await fetch(`${fixture.origin}/api/devices/pair`, {
       method: "POST",

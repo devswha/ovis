@@ -259,6 +259,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Sign in from the Tailscale app on this PC, or run this:": "이 PC의 Tailscale 앱에서 로그인하거나, 이것을 실행하세요:",
   "Sign in to Tailscale": "Tailscale 로그인",
   "Open with Tailscale": "Tailscale로 열기",
+  "Type it on the other device where it opens this PC's Ovis: at its Portal address, through a proxy, or from another PC adding this one by its address.": "다른 기기에서 이 PC의 Ovis를 연 곳에 입력하세요: Portal 주소, 프록시, 또는 이 PC를 주소로 추가하는 다른 PC.",
   "Direct": "직접 연결",
   "The PCs of this Tailscale login. Connect goes over SSH, with nothing to install there.": "이 Tailscale 계정의 PC예요. SSH로 연결하고, 그 PC에 설치할 것은 없어요.",
   "No other PC of this Tailscale login was found.": "이 Tailscale 계정의 다른 PC를 찾지 못했어요.",

@@ -163,8 +163,10 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
   const label: Record<ConnectTab, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", direct: t("Direct"), devices: t("Phones and devices") };
   const ways = tabs.filter((way) => way !== "devices");
   const { status: portal } = usePortal();
-  const local = localWays({ plan, pairUrl, readOnly, canPair, portal });
+  const local = localWays({ plan, readOnly, canPair, portal });
   const relayWay = tabs.includes("relay");
+  // until the relay's state comes, which way opens is not known: nothing starts, so no pairing code is made unasked
+  const relayPending = !readOnly && !inRelayShell() && !relay.unsupported && relay.status === null;
   const [devicesChosen, setDevicesChosen] = useState<DevicesWay | null>(null);
   const devicesWay = devicesWayOf({ relay: relayWay, local: local.any, chosen: devicesChosen });
   // one relay panel serves both the relay's tab and Phones and devices' relay way, so it never runs twice
@@ -198,7 +200,7 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
               <DirectTab found={found} machines={machines} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} />
             </div>
           )}
-          {opened.current.has("devices") && (
+          {opened.current.has("devices") && !relayPending && (
             <div className="connect-tab" data-tab-panel="devices" hidden={tab !== "devices"}>
               <DevicesTab plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} relay={relayWay} way={devicesWay} onWay={setDevicesChosen} phone={phone} />
             </div>
@@ -437,23 +439,26 @@ export interface LocalWays {
   address: string | null;
   /** this PC's Tailscale is one step from giving a phone an address: the step to show (owner's page of this PC only) */
   tailscaleStep: Extract<PhonePlan, { kind: "missing" | "stopped" | "command" }> | null;
-  /** a six-digit code, with a QR code of an address that opens this PC */
-  code: string | null;
+  /**
+   * a six-digit code: with a QR code where the page knows an address a phone opens, else typed where this PC's Ovis is
+   * open another way (Portal, a proxy, another PC adding it by its address)
+   */
+  code: boolean;
   portal: boolean;
   any: boolean;
 }
 
 /**
- * The ways to pair a device without signing in. A code is offered only with an address a phone can open, so the
- * sheet never shows a code it cannot say where to type; with no address, the Tailscale step that would make one.
+ * The ways to pair a device without signing in: an address a phone opens, the pairing code, Portal, and with no
+ * address the one Tailscale step that would make one.
  */
-export function localWays({ plan, pairUrl, readOnly, canPair, portal }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; canPair: boolean; portal: PortalStatus | null }): LocalWays {
+export function localWays({ plan, readOnly, canPair, portal }: { plan: PhonePlan; readOnly: boolean; canPair: boolean; portal: PortalStatus | null }): LocalWays {
   const shell = inRelayShell();
   const address = plan.kind === "here" || plan.kind === "served" ? plan.url : null;
   const tailscaleStep = address === null && !readOnly && !shell && (plan.kind === "missing" || plan.kind === "stopped" || plan.kind === "command") ? plan : null;
-  const code = canPair && !readOnly && !shell ? pairUrl : null;
+  const code = canPair && !readOnly;
   const portalShown = portal?.supported === true && (portal.phase !== "idle" || (portal.usable && portal.blocked === null));
-  return { address, tailscaleStep, code, portal: portalShown, any: address !== null || tailscaleStep !== null || code !== null || portalShown };
+  return { address, tailscaleStep, code, portal: portalShown, any: address !== null || tailscaleStep !== null || code || portalShown };
 }
 
 /** the relay first, where the relay is this window's to show; the other way only when it offers something */
@@ -486,6 +491,8 @@ function DevicesTab({ plan, pairUrl, readOnly, local, relay, way, onWay, phone }
 function LocalWay({ plan, pairUrl, readOnly, local, phone }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; local: LocalWays; phone: boolean }) {
   const t = useT();
   const needsTailscale = <p className="settings-hint">{t("The phone needs the Tailscale app turned on too.")}</p>;
+  // the hosted shell's page is no address of this PC: its code is typed, as before
+  const codeUrl = inRelayShell() ? null : pairUrl;
   return (
     <>
       {local.address !== null && (
@@ -502,15 +509,17 @@ function LocalWay({ plan, pairUrl, readOnly, local, phone }: { plan: PhonePlan; 
           {needsTailscale}
         </section>
       )}
-      {local.code !== null && (
+      {local.code && (
         <section className="connect-section" aria-label={t("Pairing code")}>
           <p className="settings-label">{t("Pairing code")}</p>
-          <CodeRoute pairUrl={pairUrl} startAtOnce phone={phone} compact />
+          {codeUrl === null && <p className="settings-description">{t("Type it on the other device where it opens this PC's Ovis: at its Portal address, through a proxy, or from another PC adding this one by its address.")}</p>}
+          <CodeRoute pairUrl={codeUrl} startAtOnce phone={phone} compact />
         </section>
       )}
       {local.portal && (
         <section className="connect-section" aria-label="Portal">
-          <PortalPanel readOnly={readOnly} />
+          {/* the hosted shell is no local window of this PC: Portal's controls are local only (account-row-rights.ts) */}
+          <PortalPanel readOnly={readOnly || inRelayShell()} />
         </section>
       )}
     </>

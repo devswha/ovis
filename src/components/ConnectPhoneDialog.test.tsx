@@ -5,7 +5,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 
 import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
-import type { PairedDevice, RelayStatus } from "../../shared/protocol.ts";
+import type { PairedDevice, PortalStatus, RelayStatus } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
 import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
@@ -460,19 +460,23 @@ describe("Connect a phone on a phone", () => {
     expect(openingTab({ tabs: ["tailscale", "direct", "devices"], phone: false, noticeWaiting: true, hasAccount: true })).toBe("tailscale");
   });
 
-  it("pairs a device without signing in only where a phone can open an address, else offers the one Tailscale step that makes one", () => {
+  it("pairs a device without signing in with the code wherever the window may pair, and with no address offers the one Tailscale step that makes one", () => {
     const owner = { readOnly: false, canPair: true, portal: null };
-    // the desktop app on loopback with no Tailscale: no code with nowhere to type it, the install step instead
-    expect(localWays({ ...owner, plan: { kind: "missing" }, pairUrl: null })).toEqual({ address: null, tailscaleStep: { kind: "missing" }, code: null, portal: false, any: true });
+    // the desktop app on loopback with no Tailscale: the code stays (Portal, a proxy, another PC type it), beside the install step
+    expect(localWays({ ...owner, plan: { kind: "missing" } })).toEqual({ address: null, tailscaleStep: { kind: "missing" }, code: true, portal: false, any: true });
     const command = { kind: "command", command: "tailscale serve --bg --https=443 http://127.0.0.1:7317", url: "https://desk.example.ts.net" } as const;
-    expect(localWays({ ...owner, plan: command, pairUrl: null }).tailscaleStep).toEqual(command);
-    const served = localWays({ ...owner, plan: { kind: "served", url: "https://desk.example.ts.net" }, pairUrl: "https://desk.example.ts.net" });
-    expect([served.address, served.tailscaleStep, served.code]).toEqual(["https://desk.example.ts.net", null, "https://desk.example.ts.net"]);
-    // a page at the PC's Wi-Fi address pairs with a code there, and offers nothing it cannot tell about Tailscale
-    expect(localWays({ ...owner, plan: { kind: "unknown" }, pairUrl: "http://192.168.1.20:7317" })).toEqual({ address: null, tailscaleStep: null, code: "http://192.168.1.20:7317", portal: false, any: true });
-    expect(localWays({ ...owner, plan: { kind: "unknown" }, pairUrl: null }).any).toBe(false);
+    expect(localWays({ ...owner, plan: command }).tailscaleStep).toEqual(command);
+    const served = localWays({ ...owner, plan: { kind: "served", url: "https://desk.example.ts.net" } });
+    expect([served.address, served.tailscaleStep, served.code]).toEqual(["https://desk.example.ts.net", null, true]);
+    // Portal on a loopback page: its address and the code it asks for
+    const portal = { supported: true, phase: "running", usable: true, blocked: null } as unknown as PortalStatus;
+    expect(localWays({ ...owner, portal, plan: { kind: "unknown" } })).toEqual({ address: null, tailscaleStep: null, code: true, portal: true, any: true });
     // a watching device or a Portal visitor starts nothing on the PC
-    expect(localWays({ readOnly: true, canPair: true, portal: null, plan: { kind: "stopped" }, pairUrl: "http://192.168.1.20:7317" }).any).toBe(false);
+    expect(localWays({ readOnly: true, canPair: true, portal: null, plan: { kind: "stopped" } }).any).toBe(false);
+    expect(localWays({ readOnly: false, canPair: false, portal: null, plan: { kind: "unknown" } }).any).toBe(false);
+    // the hosted shell keeps its typed code, and offers no Tailscale step for a PC it does not run on
+    shellMeta = true;
+    expect(localWays({ ...owner, plan: { kind: "missing" } })).toEqual({ address: null, tailscaleStep: null, code: true, portal: false, any: true });
   });
 
   it("pairs a device through the relay first, and the other way only once it is picked and offers something", () => {

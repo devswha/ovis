@@ -259,6 +259,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Sign in from the Tailscale app on this PC, or run this:": "在这台电脑的 Tailscale 应用中登录，或运行：",
   "Sign in to Tailscale": "登录 Tailscale",
   "Open with Tailscale": "用 Tailscale 打开",
+  "Type it on the other device where it opens this PC's Ovis: at its Portal address, through a proxy, or from another PC adding this one by its address.": "在打开这台电脑 Ovis 的另一台设备上输入：Portal 地址、代理，或按地址添加这台电脑的另一台电脑。",
   "Direct": "直接连接",
   "The PCs of this Tailscale login. Connect goes over SSH, with nothing to install there.": "此 Tailscale 登录下的 PC。通过 SSH 连接，无需在那台 PC 上安装任何东西。",
   "No other PC of this Tailscale login was found.": "未找到此 Tailscale 登录下的其他 PC。",

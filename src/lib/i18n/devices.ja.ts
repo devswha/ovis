@@ -259,6 +259,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Sign in from the Tailscale app on this PC, or run this:": "この PC の Tailscale アプリでサインインするか、次を実行します:",
   "Sign in to Tailscale": "Tailscale にサインイン",
   "Open with Tailscale": "Tailscale で開く",
+  "Type it on the other device where it opens this PC's Ovis: at its Portal address, through a proxy, or from another PC adding this one by its address.": "この PC の Ovis を開いている別のデバイスで入力します: Portal のアドレス、プロキシ、またはこの PC をアドレスで追加する別の PC。",
   "Direct": "直接接続",
   "The PCs of this Tailscale login. Connect goes over SSH, with nothing to install there.": "この Tailscale ログインの PC です。SSH で接続し、その PC に何もインストールしません。",
   "No other PC of this Tailscale login was found.": "この Tailscale ログインの他の PC は見つかりませんでした。",
