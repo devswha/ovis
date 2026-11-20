@@ -203,6 +203,9 @@ describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
   });
 
   test("T34, G15: a list stops at 64 unanswered notices and resumes when one is answered", async () => {
+    // Exercise all 64 real replacements; the power-loss behavior of fsync is not part of G15.
+    const flush = spyOn(privateStateFs, "fsyncSync").mockImplementation(() => {});
+    closes.push(() => flush.mockRestore());
     const { fixture, device, service, serverId } = await listedPc();
     const { accountMailbox, devices } = fixture.app.context.services;
     const [original] = devices.openNotices();
