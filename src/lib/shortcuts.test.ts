@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { SHORTCUTS, bindingDisplayKeys, isAppShortcut, shortcutEventKey, isMacPlatform, matchShortcut, type ShortcutEventLike, keepsArrowsForText, keepsKeyForText, shortcutConflict, shortcutDisplayKeys, shortcutKeys } from "./shortcuts.ts";
+import { SHORTCUTS, bindingDisplayKeys, closePaneKeyStep, isAppShortcut, shortcutEventKey, isMacPlatform, matchShortcut, type ShortcutEventLike, keepsArrowsForText, keepsKeyForText, shortcutConflict, shortcutDisplayKeys, shortcutKeys } from "./shortcuts.ts";
 import { isReservedShortcutKey, sanitizeShortcutOverrides } from "./shortcutBindings.ts";
 
 function keyEvent(key: string, patch: Partial<ShortcutEventLike> = {}): ShortcutEventLike {
@@ -68,17 +68,13 @@ describe("keepsArrowsForText", () => {
   it("lets the binding go where the field has no text left that way, so a draft never stops a pane switch", () => {
     const draft = (selectionStart: number, selectionEnd: number, selectionDirection = "none") =>
       ({ tagName: "TEXTAREA", value: "draft", selectionStart, selectionEnd, selectionDirection, classList: classes("composer-text") });
-    // the caret at the end: down has nothing left to select, up still does
     expect(keepsKeyForText({ key: "ArrowDown", target: draft(5, 5) }, "next-pane")).toBe(false);
     expect(keepsKeyForText({ key: "End", target: draft(5, 5) }, "next-pane")).toBe(false);
     expect(keepsKeyForText({ key: "ArrowUp", target: draft(5, 5) }, "previous-pane")).toBe(true);
-    // up once selected to the start (its moving end): the next up switches
     expect(keepsKeyForText({ key: "ArrowUp", target: draft(0, 5, "backward") }, "previous-pane")).toBe(false);
     expect(keepsKeyForText({ key: "ArrowDown", target: draft(0, 5, "backward") }, "next-pane")).toBe(true);
-    // a selection made forward from the start still moves its end back
     expect(keepsKeyForText({ key: "ArrowUp", target: draft(0, 5, "forward") }, "previous-pane")).toBe(true);
     expect(keepsKeyForText({ key: "ArrowDown", target: draft(0, 5, "forward") }, "next-pane")).toBe(false);
-    // the caret inside the text: both ways still select
     expect(keepsKeyForText({ key: "ArrowUp", target: draft(2, 2) }, "previous-pane")).toBe(true);
     expect(keepsKeyForText({ key: "ArrowDown", target: draft(2, 2) }, "next-pane")).toBe(true);
   });
@@ -132,6 +128,13 @@ describe("shortcutDisplayKeys", () => {
     expect(shortcutDisplayKeys("toggle-view", { "toggle-view": "p" })).toEqual(["Mod", "Shift", "P"]);
     expect(shortcutDisplayKeys("settings", { settings: null })).toEqual([]);
     expect(shortcutDisplayKeys("voice", { voice: "p" })).toEqual(["Mod", "Shift", "Space"]);
+  });
+
+  it("lists the composer's Alt+Enter hold, never dispatched or rebound", () => {
+    expect(SHORTCUTS.find((shortcut) => shortcut.id === "hold-message")?.keys).toEqual(["Alt", "Enter"]);
+    expect(shortcutDisplayKeys("hold-message", { "hold-message": "p" })).toEqual(["Alt", "Enter"]);
+    const altEnter: ShortcutEventLike = { key: "Enter", code: "Enter", ctrlKey: false, metaKey: false, shiftKey: false, altKey: true };
+    for (const mac of [false, true]) expect(matchShortcut(altEnter, mac, { "hold-message": "alt+enter" })).toBeNull();
   });
 });
 
@@ -248,13 +251,14 @@ it("pages the selected pane with fixed Mod+Shift bindings, remapping and disabli
 
 describe("new tab and split pane", () => {
   it("have no key until one is chosen in Settings, and then work like any other binding", () => {
-    for (const id of ["new-tab", "rename-tab", "split-right", "split-down"] as const) {
+    for (const id of ["new-tab", "rename-tab", "split-right", "split-down", "zoom-pane"] as const) {
       expect(shortcutKeys(id, {})).toEqual([]);
       expect(shortcutDisplayKeys(id, {})).toEqual([]);
     }
     expect(matchShortcut(keyEvent("t", { ctrlKey: true }), false)).toBeNull();
-    const overrides = sanitizeShortcutOverrides({ "new-tab": "y", "rename-tab": "r", "split-right": "l", "split-down": "h" });
-    expect(overrides).toEqual({ "new-tab": "y", "rename-tab": "r", "split-right": "l", "split-down": "h" });
+    const overrides = sanitizeShortcutOverrides({ "new-tab": "y", "rename-tab": "r", "split-right": "l", "split-down": "h", "zoom-pane": "ctrl+alt+z" });
+    expect(overrides).toEqual({ "new-tab": "y", "rename-tab": "r", "split-right": "l", "split-down": "h", "zoom-pane": "ctrl+alt+z" });
+    expect(matchShortcut(keyEvent("z", { ctrlKey: true, altKey: true, shiftKey: false, code: "KeyZ" }), false, overrides)).toBe("zoom-pane");
     expect(matchShortcut(keyEvent("R", { ctrlKey: true }), false, overrides)).toBe("rename-tab");
     expect(shortcutDisplayKeys("rename-tab", overrides)).toEqual(["Mod", "Shift", "R"]);
     expect(matchShortcut(keyEvent("Y", { ctrlKey: true }), false, overrides)).toBe("new-tab");
@@ -263,6 +267,33 @@ describe("new tab and split pane", () => {
     expect(shortcutDisplayKeys("new-tab", overrides)).toEqual(["Mod", "Shift", "Y"]);
     expect(shortcutConflict("split-down", ["y"], overrides)).toBe(true);
     expect(shortcutConflict("new-tab", ["k"], {})).toBe(true);
+  });
+});
+
+describe("close pane", () => {
+  it("has no key until one is chosen in Settings, and then works like any other binding", () => {
+    expect(shortcutKeys("close-pane", {})).toEqual([]);
+    expect(shortcutDisplayKeys("close-pane", {})).toEqual([]);
+    expect(matchShortcut(keyEvent("x", { ctrlKey: true }), false)).toBeNull();
+    const overrides = sanitizeShortcutOverrides({ "close-pane": "ctrl+alt+x" });
+    expect(overrides).toEqual({ "close-pane": "ctrl+alt+x" });
+    expect(matchShortcut(keyEvent("x", { ctrlKey: true, altKey: true, shiftKey: false, code: "KeyX" }), false, overrides)).toBe("close-pane");
+    expect(matchShortcut(keyEvent("X", { metaKey: true }), true, sanitizeShortcutOverrides({ "close-pane": "x" }, true))).toBe("close-pane");
+  });
+
+  it("runs once per press, and never where a dialog, sheet or menu has the key", () => {
+    const field = { closest: () => null } as unknown as EventTarget;
+    const inside = (owner: string) => ({ closest: (selector: string) => selector.includes(owner) ? {} : null });
+    expect(closePaneKeyStep({ target: field }, false)).toBe("run");
+    expect(closePaneKeyStep({ target: null }, false)).toBe("run");
+    expect(closePaneKeyStep({ target: field, repeat: true }, false)).toBe("ignore");
+    for (const owner of ["[role='alertdialog']", "[role='dialog']", "[role='menu']", "[role='listbox']", "dialog"]) {
+      expect(closePaneKeyStep({ target: inside(owner) as unknown as EventTarget }, false)).toBe("pass");
+    }
+    const suggesting = { closest: () => null, getAttribute: (name: string) => name === "aria-expanded" ? "true" : null } as unknown as EventTarget;
+    expect(closePaneKeyStep({ target: suggesting }, false)).toBe("pass");
+    expect(closePaneKeyStep({ target: field }, true)).toBe("pass");
+    expect(closePaneKeyStep({ target: field, repeat: true }, true)).toBe("pass");
   });
 });
 
@@ -294,7 +325,6 @@ describe("exact-modifier bindings", () => {
     const overrides = sanitizeShortcutOverrides({ palette: "ctrl+k", "scroll-up": "meta+PageUp" }, true);
     expect(matchShortcut(ctrlK(), false, overrides)).toBe("palette");
     expect(matchShortcut(ctrlK({ altKey: true }), false, overrides)).toBeNull();
-    // the moved palette no longer answers its default Mod+Shift+K
     expect(matchShortcut(ctrlK({ shiftKey: true }), false, overrides)).toBeNull();
     expect(matchShortcut(keyEvent("PageUp", { metaKey: true, shiftKey: false }), true, overrides)).toBe("scroll-up");
     expect(matchShortcut(keyEvent("PageUp", { metaKey: true, shiftKey: true }), true, overrides)).toBeNull();

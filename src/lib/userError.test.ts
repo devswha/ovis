@@ -11,7 +11,7 @@ describe("userErrorMessage", () => {
   afterEach(() => setCurrentLanguage("en"));
 
   it("tells a signed-out browser to pair again", () => {
-    for (const status of [401, 403]) expect(userErrorMessage(api(status))).toEqual({ message: "This browser is not signed in to this PC any more. Pair it again in Settings → Phone & devices.", detail: "herdr said no" });
+    for (const status of [401, 403]) expect(userErrorMessage(api(status))).toEqual({ message: "This browser is not signed in to this PC any more. Pair it again in Settings → Devices and PCs.", detail: "herdr said no" });
   });
 
   it("says a missing item is gone", () => {
@@ -87,7 +87,10 @@ describe("machineErrorText", () => {
   const inKorean = (key: string) => translate("ko", key);
 
   it("shows the server's sentences for an unusable PC answer in the UI language", () => {
-    for (const sentence of [new RemoteResponseTooLarge().message, new RemoteResponseInvalid().message]) {
+    for (const sentence of [new RemoteResponseTooLarge().message, new RemoteResponseInvalid().message, "Start Ovis on that PC, or start a new herdr here", "Ovis on this PC is running but not answering right now. Try it again in a moment, or start a new herdr here.",
+      "The Ovis chosen on this PC serves herdr-core from a socket that is not this SSH account's own, so it was not used. Choose again, or start a new herdr here.",
+      "Choosing this PC's Ovis server over SSH requires Linux or macOS", "Choose this PC's Ovis server or a running herdr session.",
+      "A herdr session is already running on this PC. Choose it, or start a new one.", "The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again."]) {
       const shown = machineErrorText(sentence, inKorean);
       expect(shown).toBe(translate("ko", sentence));
       expect(shown).not.toBe(sentence);
@@ -103,7 +106,6 @@ describe("machineErrorText", () => {
 describe("the PC proxy's unusable-answer errors", () => {
   const realFetch = globalThis.fetch;
   afterEach(() => { globalThis.fetch = realFetch; setCurrentLanguage("en"); });
-  // what server/machine-api.ts answers for another PC's answer it would not pass on
   const proxied = [
     { code: "remote_response_too_large", message: new RemoteResponseTooLarge().message },
     { code: "remote_response_invalid", message: new RemoteResponseInvalid().message },
@@ -134,7 +136,7 @@ describe("userFailure", () => {
   afterEach(() => setCurrentLanguage("en"));
 
   it("names the cause the status gives, with the advice beyond trying again folded beside it", () => {
-    expect(userFailure(api(401))).toEqual({ kind: "signed-out", cause: "Not signed in to this PC", advice: "Pair it again in Settings → Phone & devices.", detail: "herdr said no" });
+    expect(userFailure(api(401))).toEqual({ kind: "signed-out", cause: "Not signed in to this PC", advice: "Pair it again in Settings → Devices and PCs.", detail: "herdr said no" });
     expect(userFailure(api(404))).toEqual({ kind: "gone", cause: "It no longer exists on the PC", advice: "Refresh and try again.", detail: "herdr said no" });
     expect(userFailure(api(409))).toEqual({ kind: "changed", cause: "It changed on the PC", advice: "Check it and try again.", detail: "herdr said no" });
     expect(userFailure(new TypeError("Failed to fetch"))).toEqual({ kind: "unreachable", cause: "Can't reach the PC", advice: "Check your connection, then try again.", detail: "Failed to fetch" });

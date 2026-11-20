@@ -1,13 +1,12 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
-import { clearFileCache, filesNamed, GIT_LIST_DEADLINE_MS, GIT_LIST_MAX_BYTES, paneFiles, setGitListOptions } from "./files.ts";
+import { clearFileCache, filesNamed, GIT_LIST_DEADLINE_MS, GIT_LIST_MAX_BYTES, MAX_MARKDOWN_DOCUMENTS, paneDocuments, paneFiles, readMarkdownDocuments, setGitListOptions } from "./files.ts";
 
 const roots: string[] = [];
-/** what a test may set for the code under test to read; each is put back as it was */
 const SET_BY_TESTS = ["GIT_DIR", "GIT_COMMON_DIR", "PATH"] as const;
 const inherited = SET_BY_TESTS.map((name) => [name, process.env[name]] as const);
 afterEach(() => {
@@ -133,11 +132,9 @@ describe("paneFiles", () => {
 
 function gitRepository(root: string): void {
   expect(Bun.spawnSync(["git", "init", "-q", root]).exitCode).toBe(0);
-  // README.md is left out by git alone: the bounded walk would list it
   writeFileSync(join(root, ".gitignore"), "README.md\n");
 }
 
-/** A test-owned stand-in for git, in a folder of its own outside the tree it is asked about. */
 function fakeGit(script: (folder: string) => string): { git: string; folder: string } {
   const folder = mkdtempSync(join(tmpdir(), "files-fake-git-"));
   roots.push(folder);
@@ -147,7 +144,6 @@ function fakeGit(script: (folder: string) => string): { git: string; folder: str
   return { git, folder };
 }
 
-/** Settles as `promise` does, or fails once `timeoutMs` passes without it. */
 function within<T>(promise: Promise<T>, timeoutMs: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
@@ -156,12 +152,6 @@ function within<T>(promise: Promise<T>, timeoutMs: number, what: string): Promis
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-/**
- * A stand-in git that prints one whole name and exits 0, leaving a holder process on its stdout
- * until the test kills it (the holder waits on a FIFO no one writes, not on a timer). The holder
- * also keeps the `life` FIFO open for writing: a `cat` started before the listing reads the
- * holder's pid from it (the holder is ready) and then its end (every holder fd closed: it exited).
- */
 function heldGit() {
   const { git, folder } = fakeGit((dir) => `printf 'ghost-held\\0'\nsh -c 'exec 3>"$1"; echo $$ >&3; read _ < "$2"' holder "${dir}/life" "${dir}/hold" &\nexit 0`);
   for (const fifo of ["life", "hold"]) expect(Bun.spawnSync(["mkfifo", join(folder, fifo)]).exitCode).toBe(0);
@@ -170,7 +160,6 @@ function heldGit() {
   const exited = Promise.withResolvers<void>();
   let pid: number | undefined;
   let running = true;
-  // awaited by the test; this only keeps an early failure from being reported a second time
   ready.promise.catch(() => undefined);
   void (async () => {
     const reader = watcher.stdout.getReader();
@@ -192,9 +181,7 @@ function heldGit() {
   return {
     git,
     ready: ready.promise,
-    /** true until the holder's end closed `life` */
     holding: () => running,
-    /** Kills the holder, or the watcher when no holder ever came, and waits until both are gone. */
     async end(): Promise<void> {
       if (pid === undefined) watcher.kill("SIGKILL");
       else process.kill(pid, "SIGKILL");
@@ -205,6 +192,84 @@ function heldGit() {
 }
 
 const INERT_ARGV = ["--no-pager", "--no-optional-locks", "--literal-pathspecs", "-c", "core.fsmonitor="];
+
+describe("paneDocuments", () => {
+  const at = (root: string, path: string, iso: string): void => utimesSync(join(root, path), new Date(iso), new Date(iso));
+
+  it("lists the folder's Markdown files newest first, with their sizes and times, and no skipped folder's", async () => {
+    const root = fixture();
+    mkdirSync(join(root, "docs"));
+    writeFileSync(join(root, "docs", "plan.markdown"), "# Plan\n");
+    writeFileSync(join(root, "NOTES.MD"), "n");
+    writeFileSync(join(root, "node_modules", "hidden", "skipped.md"), "x");
+    at(root, "README.md", "2026-11-01T00:00:00.000Z");
+    at(root, "docs/plan.markdown", "2026-11-03T00:00:00.000Z");
+    at(root, "NOTES.MD", "2026-11-02T00:00:00.000Z");
+    expect(await paneDocuments(root)).toEqual({
+      root,
+      documents: [
+        { path: "docs/plan.markdown", size: 7, modified: "2026-11-03T00:00:00.000Z" },
+        { path: "NOTES.MD", size: 1, modified: "2026-11-02T00:00:00.000Z" },
+        { path: "README.md", size: 7, modified: "2026-11-01T00:00:00.000Z" },
+      ],
+      truncated: false,
+    });
+  });
+
+  it("leaves out what git ignores in a repository", async () => {
+    const root = fixture();
+    expect(Bun.spawnSync(["git", "init", "-q", root]).exitCode).toBe(0);
+    mkdirSync(join(root, "out"));
+    writeFileSync(join(root, "out", "report.md"), "built");
+    writeFileSync(join(root, ".gitignore"), "out/\n");
+    expect((await paneDocuments(root)).documents.map((document) => document.path)).toEqual(["README.md"]);
+  });
+
+  it("answers at most its cap of files, the newest, and says the list was cut", async () => {
+    const root = fixture();
+    rmSync(join(root, "README.md"));
+    for (let index = 0; index <= MAX_MARKDOWN_DOCUMENTS; index += 1) {
+      writeFileSync(join(root, `n${index}.md`), "");
+      at(root, `n${index}.md`, new Date(Date.UTC(2026, 0, 1) + index * 1000).toISOString());
+    }
+    const listed = await paneDocuments(root);
+    expect(listed.truncated).toBe(true);
+    expect(listed.documents).toHaveLength(MAX_MARKDOWN_DOCUMENTS);
+    expect(listed.documents[0]!.path).toBe(`n${MAX_MARKDOWN_DOCUMENTS}.md`);
+    expect(listed.documents.some((document) => document.path === "n0.md")).toBe(false);
+  });
+
+  it("finds the newest file of a repository holding thousands, wherever its name sorts", async () => {
+    const root = fixture();
+    expect(Bun.spawnSync(["git", "init", "-q", root]).exitCode).toBe(0);
+    mkdirSync(join(root, "notes"));
+    for (let index = 0; index < 2_000; index += 1) {
+      writeFileSync(join(root, "notes", `a${String(index).padStart(5, "0")}.md`), "");
+      at(root, `notes/a${String(index).padStart(5, "0")}.md`, "2026-01-01T00:00:00.000Z");
+    }
+    writeFileSync(join(root, "zz-newest.md"), "new");
+    at(root, "README.md", "2026-01-01T00:00:00.000Z");
+    at(root, "zz-newest.md", "2026-11-05T00:00:00.000Z");
+    const listed = await paneDocuments(root);
+    expect(listed.documents[0]!.path).toBe("zz-newest.md");
+    expect(listed.truncated).toBe(true);
+  });
+
+  it("outside a repository, finds a note in a folder crowded with other files", async () => {
+    const root = fixture();
+    rmSync(join(root, "README.md"));
+    for (let index = 0; index < 1_000; index += 1) writeFileSync(join(root, `a${String(index).padStart(4, "0")}.txt`), "");
+    writeFileSync(join(root, "z-note.md"), "note");
+    expect(await paneDocuments(root)).toMatchObject({ documents: [{ path: "z-note.md" }], truncated: false });
+  });
+
+  it("stops reading at its time limit and says the list is cut", () => {
+    const root = fixture();
+    expect(readMarkdownDocuments(root, null, 0)).toEqual({ documents: [], cut: true });
+    expect(readMarkdownDocuments(root, ["README.md"], 0)).toEqual({ documents: [], cut: true });
+    expect(readMarkdownDocuments(root, ["README.md"])).toMatchObject({ documents: [{ path: "README.md" }], cut: false });
+  });
+});
 
 describe("git inventories", () => {
   it("isolates both Git inventories from inherited repository variables", async () => {
@@ -239,14 +304,12 @@ describe("git inventories", () => {
   it("keeps an inherited common directory's excludes and config out of both inventories", async () => {
     const root = fixture();
     gitRepository(root);
-    // deeper than the walk goes, so only git's own listing can find it
     const buried = "deep/1/2/3/4/5/6/buried.txt";
     mkdirSync(join(root, buried, ".."), { recursive: true });
     writeFileSync(join(root, buried), "deep");
     const foreign = mkdtempSync(join(tmpdir(), "files-foreign-"));
     roots.push(foreign);
     expect(Bun.spawnSync(["git", "init", "-q", foreign]).exitCode).toBe(0);
-    // that repository would leave out src/api.ts by its info/exclude, and buried.txt by its configured excludes file
     mkdirSync(join(foreign, ".git", "info"), { recursive: true });
     writeFileSync(join(foreign, ".git", "info", "exclude"), "src/api.ts\n");
     writeFileSync(join(foreign, "excludes"), "buried.txt\n");
@@ -319,7 +382,6 @@ describe("git inventories", () => {
     const { git } = fakeGit(() => `exec cat "${listing}"`);
     setGitListOptions({ git, maxBytes: cap });
     for (const bytes of [cap - 1, cap, cap + 1]) {
-      // two complete NUL-terminated names, `bytes` long in all
       const second = `ghost-${bytes}-`.padEnd(bytes - "ghost-first\0".length - 1, "x");
       writeFileSync(listing, `ghost-first\0${second}\0`);
       expect(readFileSync(listing).byteLength).toBe(bytes);
@@ -371,7 +433,6 @@ describe("git inventories", () => {
     try {
       const started = performance.now();
       const listed = paneFiles(root, "", 100);
-      // git itself exits 0 with a whole name printed, while the holder it left keeps stdout open
       expect(await within(gitExit.promise, deadlineMs + 1_000, "git's exit")).toBe(0);
       await within(asyncHolder.ready, deadlineMs + 1_000, "the holder's readiness");
       expect(await within(listed, deadlineMs + 1_000, "the async inventory")).toEqual(walk);
@@ -389,7 +450,6 @@ describe("git inventories", () => {
       const started = performance.now();
       expect(await within(filesNamed(root, "ghost-held"), deadlineMs + 1_000, "the name lookup")).toEqual([]);
       expect(performance.now() - started).toBeLessThan(deadlineMs + 1_000);
-      // the holder reported in while the lookup ran, and still holds stdout after it answered
       await within(namedHolder.ready, 1_000, "the holder's readiness");
       expect(namedHolder.holding()).toBe(true);
     } finally {
@@ -399,7 +459,6 @@ describe("git inventories", () => {
 
   it("runs other work while a name lookup waits for a slow git", async () => {
     const root = fixture();
-    // a git that answers only once the test lets it go, through a FIFO no one else writes
     const { git, folder } = fakeGit((dir) => `read _ < "${dir}/go"\nprintf 'slow-name\\0'`);
     expect(Bun.spawnSync(["mkfifo", join(folder, "go")]).exitCode).toBe(0);
     setGitListOptions({ git });
@@ -407,9 +466,7 @@ describe("git inventories", () => {
     try {
       let answered = false;
       const named = filesNamed(root, "slow-name").finally(() => { answered = true; });
-      // a second lookup of the folder meanwhile waits for the same listing, not a git of its own
       const again = filesNamed(root, "api.ts");
-      // a timer comes due while git still waits: the lookup holds no one else's turn (#1404)
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(answered).toBe(false);
       await within(writeFile(join(folder, "go"), "\n"), 5_000, "git's release");
@@ -423,18 +480,15 @@ describe("git inventories", () => {
 
   it("keeps a listing begun before clearFileCache out of the cache it cleared", async () => {
     const root = fixture();
-    // the old git answers only once released; the new one answers at once
     const slow = fakeGit((dir) => `read _ < "${dir}/go"\nprintf 'old-name\\0'`);
     expect(Bun.spawnSync(["mkfifo", join(slow.folder, "go")]).exitCode).toBe(0);
     const fast = fakeGit(() => `printf 'new-name\\0'`);
     setGitListOptions({ git: slow.git });
-    // filesNamed starts its git before its first await, so the old listing is under way here
     const old = filesNamed(root, "old-name");
     clearFileCache();
     setGitListOptions({ git: fast.git });
     expect(await within(filesNamed(root, "new-name"), 5_000, "the new lookup")).toEqual(["new-name"]);
     await within(writeFile(join(slow.folder, "go"), "\n"), 5_000, "the old git's release");
-    // the old lookup still answers its caller, but leaves the newer listing in the cache
     expect(await within(old, 5_000, "the old lookup")).toEqual(["old-name"]);
     expect(await filesNamed(root, "old-name")).toEqual([]);
     expect(await filesNamed(root, "new-name")).toEqual(["new-name"]);

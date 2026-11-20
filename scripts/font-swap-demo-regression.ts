@@ -7,12 +7,9 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// The late arrival of the app's faces (src/fonts/fonts.css, font-display: swap), on the unmodified
-// app over the demo's fixture transport: the font files are held back here as a slow link holds
-// them, so the conversation is first drawn in this machine's fallback and rewraps when a face
-// comes. Each case holds them until it has measured that first drawing and then lets them go, so
-// no clock decides which drawing was measured. All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session
 // is opened.
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-font-swap-demo-"));
@@ -35,35 +32,18 @@ try {
   writeFileSync(index, html
     .replace(/<html\b/, () => `<html style='--font-ui: "Pretendard Variable", monospace'`)
     .replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  // fonts.css takes an installed JetBrains Mono before the file; a request this script holds must
-  // be the only way to the face, on a developer's desktop that has the font as on CI that has not
-  let fileOnly = 0;
-  for (const name of readdirSync(join(app, "assets")).filter((entry) => entry.endsWith(".css"))) {
-    const css = readFileSync(join(app, "assets", name), "utf8");
-    const stripped = css.replace(/local\((?:"[^"]*"|'[^']*'|[^)]*)\)\s*,\s*/g, () => { fileOnly += 1; return ""; });
-    if (stripped !== css) writeFileSync(join(app, "assets", name), stripped);
-  }
-  assert.ok(fileOnly > 0, "the built stylesheet names an installed face, and this copy of it no longer does");
+  // a request this script holds must be the only way to the face, on a developer's desktop that
+  // has the font as on CI that has not: the built faces name their files alone, no installed copy
+  const installed = readdirSync(join(app, "assets")).filter((entry) => entry.endsWith(".css") && /local\(/.test(readFileSync(join(app, "assets", entry), "utf8")));
+  assert.deepEqual(installed, [], "the built stylesheet names no installed face before a file");
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.web)}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
-      /** A phone on a slow link: every font file is held until `release`. `stall` names files that never come at all. */
-      const open = async (stall: RegExp | null, height = 844): Promise<{ page: Page; errors: string[]; held: () => number; release: () => void; close: () => Promise<void> }> => {
-        const context = await browser.newContext({ viewport: { width: 390, height }, locale: "en-US", hasTouch: true, isMobile: true });
-        // the monospace fallback is also the Interface font: the app writes --font-ui on <html> from it (lib/typography.ts)
+      const open = async (stall: RegExp | null, height = 844, width = 390): Promise<{ page: Page; errors: string[]; held: () => number; release: () => void; close: () => Promise<void> }> => {
+        const context = await browser.newContext({ viewport: { width, height }, locale: "en-US", hasTouch: true, isMobile: true });
         await context.addInitScript(() => {
           localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
           localStorage.setItem("ovis:ui-font", JSON.stringify('"Pretendard Variable", monospace'));
@@ -105,7 +85,6 @@ try {
       };
 
       {
-        // a short window: a conversation that fits its window has no end to be kept at
         const { page, errors, held, release, close } = await open(null, 480);
         try {
           assert.ok(held() > 0, "the first drawing asked for a face");
@@ -156,7 +135,6 @@ try {
       }
 
       {
-        // a short window, so that the top of this conversation is well away from its end
         const { page, errors, release, close } = await open(null, 480);
         try {
           await page.evaluate(() => { document.querySelector(".chat-view")!.scrollTop = 0; });
@@ -174,13 +152,12 @@ try {
         } finally { await close(); }
       }
 
-      // the tab strip: a workspace given more tabs than a phone's strip shows. The reader scrolls
-      // to the last one and opens it, all in the first drawing; `scrolled` is what they do next.
+      const labels = ["second", "a long tab name for review", "deploy", "release notes draft", "perf investigation", "docs"];
       for (const scrolled of [false, true]) {
-        const { page, errors, release, close } = await open(null);
+        const { page, errors, release, close } = await open(null, 900, 700);
         try {
           const workspace = panes.web.split(":")[0]!;
-          for (const label of ["second", "a long tab name for review", "deploy", "docs"]) {
+          for (const label of labels) {
             const made = await page.evaluate(async (body) => (await fetch("/api/tab/create", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).status, { workspace_id: workspace, label });
             assert.equal(made, 200, `the demo makes the tab "${label}"`);
           }
@@ -192,11 +169,10 @@ try {
             return { left: node.scrollLeft, max: node.scrollWidth - node.clientWidth, open: item.left >= view.left - 1 && item.right <= end + 1 };
           });
           const tabs = strip.locator('[role="tab"]');
-          await tabs.nth(4).waitFor();
-          // a scroll the strip did not make, as each one below: the app sees only the scroll event
+          await tabs.nth(labels.length).waitFor();
           await strip.evaluate((node) => { node.scrollLeft = node.scrollWidth; });
           await frames(page);
-          await tabs.nth(4).tap();
+          await tabs.nth(labels.length).tap();
           await strip.locator('[role="tab"][aria-selected="true"]', { hasText: "docs" }).waitFor();
           await frames(page);
           const opened = await stripOf();

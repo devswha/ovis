@@ -4,7 +4,8 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InteractivePrompt, PromptAnswer } from "../shared/protocol.ts";
-import { handlePromptRequest, KeyRefused, parseInteractivePrompt, type PromptRequestOptions } from "./prompt.ts";
+import { handlePromptRequest, KeyRefused, type OmpLookups, OpenCodePromptState, parseInteractivePrompt, type PromptRequestOptions, shownPromptText } from "./prompt.ts";
+import { sessionSnapshot } from "./herdr/client.ts";
 
 /** A deadline a move that cannot finish reaches at once, so no test waits out the real 4 s */
 const SHORT: PromptRequestOptions = { answerDeadlineMs: 300 };
@@ -14,19 +15,15 @@ import * as conversation from "./conversation.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
 
 // The card moves between a form's questions without answering, as the agent's own keys do: OmO's
-// Tab and Shift+Tab, Codex's ←/→, Hermes's Tab and Shift+Tab. Each key is sent alone and the
-// screen must show the question it moves to before the next one.
+// Tab and Shift+Tab, Codex's ←/→, Hermes's Tab and Shift+Tab.
 
 const fixture = (name: string): string => readFileSync(join(import.meta.dir, "fixtures", `question-steps-${name}`), "utf8");
 // omo 5.1.51 and Codex 0.166 as captured in a 120x40 herdr pane (fixtures/question-steps-captures.md)
 const OMO_SCREENS = ["q1", "q2", "q3", "review"].map((state) => fixture(`omo-5.1.51-${state}.txt`));
-/** omo's form of three questions: `at` 3 is its Submit tab. */
 const omo = (at: number): string => OMO_SCREENS[at]!;
 const OMO_TYPING = fixture("omo-5.1.51-q1-typing.txt");
-/** the session's record of the ask_user_question call behind those screens */
 const OMO_SESSION_CALL = fixture("omo-5.1.51.jsonl").split("\n")[0]!;
 const CODEX_SCREENS = ["q1", "q2"].map((state) => fixture(`codex-0.166.0-${state}.txt`));
-/** Codex's request_user_input with two questions. */
 const codex = (at: number): string => CODEX_SCREENS[at]!;
 
 const HERMES_HINT = "answered · ↑/↓ select · Enter confirm and continue · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel";
@@ -46,7 +43,6 @@ function hermes(at: number, answered: number[] = [], questions = HERMES, typing 
 
 const navigable = (prompt: InteractivePrompt | null) => prompt?.steps?.map((step) => step.can_navigate === true);
 
-/** The session's ask_user_question call behind omo(): the card moves only on a form it can name by its questions. */
 const OMO_CALL: OmoAsk = omoAskOf({ id: "session.jsonl\0toolu_qs", wait: true, args: (JSON.parse(OMO_SESSION_CALL) as { message: { content: { arguments: unknown }[] } }).message.content[0]!.arguments })!;
 const omoCard = (screen: string, ask: OmoAsk | null = OMO_CALL) => parseInteractivePrompt("pi", screen, ask, true, ask ? [ask] : []);
 
@@ -122,7 +118,6 @@ describe("OmO's form: the card goes to another question as Tab and Shift+Tab do"
     expect(unnamed?.steps?.map((step) => step.label)).toEqual(["Color", "Size", "Shape"]);
     expect(navigable(unnamed)).toEqual([false, false, false]);
     expect(unnamed?.can_step_next ?? false).toBe(false);
-    // another call whose questions differ is another form: its identity says so
     const other: OmoAsk = { ...OMO_CALL, questions: OMO_CALL.questions.map((question, at) => at === 2 ? { ...question, options: [{ label: "Circle", description: null }, { label: "Triangle", description: null }] } : question) };
     const ids = [omoCard(omo(1)), omoCard(omo(1), other)].map((prompt) => parsedByPublicPrompt.get(prompt!)?.nativeSteps?.identity);
     expect(ids[0]).toBeDefined();
@@ -180,7 +175,6 @@ describe("Hermes's clarify batch: the card goes to another open question as Tab 
     const identity = (screen: string) => parsedByPublicPrompt.get(parseInteractivePrompt("hermes", screen)!)?.nativeSteps?.identity;
     const open = identity(hermes(1));
     expect(open).toBeDefined();
-    // the same three questions: the first answered, or answered otherwise, is another batch
     expect(identity(hermes(1, [0]))).not.toBe(open);
     expect(identity(hermes(1, [0]).replace("   Red\n", "   Blue\n"))).not.toBe(identity(hermes(1, [0])));
   });
@@ -240,7 +234,6 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
       input += chunk.toString();
       if (!input.includes("\n")) return;
       const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params: { keys?: string[]; text?: string; format?: string } };
-      // a herdr that holds its reply this long (ms)
       const stall = pane.onRpc?.(request.method);
       const answer = (result: unknown) => {
         const reply = () => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
@@ -297,6 +290,27 @@ async function withOmoPane(screen: string, run: (pane: Pane) => Promise<void>, r
   });
 }
 
+function watchReader(): () => Promise<string | null | undefined> {
+  const state = { openCodeState: new OpenCodePromptState(), ompLookups: new Map() as OmpLookups };
+  return async () => {
+    const { panes } = await sessionSnapshot();
+    return shownPromptText(panes[0]!, panes, state);
+  };
+}
+
+describe("a prompt watch's read of a blocked pane", () => {
+  test("tells a fallback card's question changing while the pane stays blocked, as GET offers that card", async () => {
+    await withPane("hermes", "Approve deployment alpha?\n1. Yes\n2. No\n", async pane => {
+      expect((await card()).fallback).toBe(true);
+      const watch = watchReader();
+      const alpha = await watch();
+      expect(alpha).toBeString();
+      pane.screen = pane.screen.replace("alpha", "beta");
+      expect(await watch()).not.toBe(alpha);
+    });
+  });
+});
+
 async function card(): Promise<InteractivePrompt> {
   const url = new URL("http://127.0.0.1/api/pane/prompt?pane_id=p_1");
   const prompt = ((await (await handlePromptRequest(new Request(url), url, {}))!.json()) as { prompt: InteractivePrompt | null }).prompt;
@@ -311,7 +325,6 @@ async function move(promptId: string, action: Omit<PromptAnswer, "pane_id" | "pr
   return { status: response.status, code: body.error?.code };
 }
 
-/** A pane whose form moves as the agent's keys move it, wrapping as they do. */
 function follows(pane: Pane, draw: (at: number) => string, count: number, next: string, previous: string, start = 0): void {
   let at = start;
   pane.onSent = (key) => {
@@ -363,7 +376,6 @@ describe("the answer route moves between questions, one key at a time, each seen
   test("omp: a card read under one call answers no other call drawn the same", async () => {
     await withPane("omp", omp(0), async pane => {
       const stale = await card();
-      // omp asks again with the same questions: the screen draws them alike
       pane.ompCall?.("asked-again");
       expect((await card()).id).not.toBe(stale.id);
       expect(await move(stale.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
@@ -399,10 +411,25 @@ describe("the answer route moves between questions, one key at a time, each seen
     });
   });
 
+  test("omp: a prompt watch's failing session lookups use up none of the card's, so an answer while the lookups fail still sends no key", async () => {
+    await withPane("omp", omp(0), async pane => {
+      const bound = await card();
+      const lookup = conversation.ompTranscriptPath as unknown as { mockRejectedValueOnce: (error: Error) => void };
+      const watch = watchReader();
+      for (let read = 0; read < 3; read++) {
+        lookup.mockRejectedValueOnce(new Error("busy"));
+        await watch();
+      }
+      // the lookups still fail when the card is answered: the tap reads the call it was bound to as unproved
+      (conversation.ompTranscriptPath as unknown as { mockRejectedValue: (error: Error) => void }).mockRejectedValue(new Error("busy"));
+      expect(await move(bound.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    });
+  });
+
   test.each(["answer", "move"] as const)("omp: a call that changes after the last read takes no key (%s)", async kind => {
     await withPane("omp", omp(0), async pane => {
       follows(pane, omp, 4, "tab", "shift+tab");
-      // the look right before the key, after every read: omp has asked again by then
       const beforeKey = async (): Promise<void> => { pane.ompCall?.("asked-again"); };
       const action = kind === "answer" ? { option_index: 0 } : { step_next: true };
       expect(await move((await card()).id, action, { beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
@@ -423,7 +450,6 @@ describe("the answer route moves between questions, one key at a time, each seen
     const alike = [["First", "Proceed?", ["Yes", "No"]], ["Second", "Proceed?", ["Yes", "No"]], ["Shape", "Which shape?", ["Circle", "Square"]]] as const;
     await withPane("omp", omp(0, false, alike), async pane => {
       const first = await card();
-      // the terminal moves on to the second question, drawn as the first was
       pane.screen = omp(1, false, alike);
       expect((await card()).id).not.toBe(first.id);
       expect(await move(first.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
@@ -435,7 +461,6 @@ describe("the answer route moves between questions, one key at a time, each seen
   test("omp: where the strip cannot say which of two questions drawn alike is shown, no key is sent", async () => {
     const alike = [["First", "Proceed?", ["Yes", "No"]], ["Second", "Proceed?", ["Yes", "No"]], ["Shape", "Which shape?", ["Circle", "Square"]]] as const;
     await withPane("omp", omp(0, false, alike), async pane => {
-      // the colours read prove no tab
       pane.visible = omp(1, false, alike).replace(/\x1b\[[0-9;]*m/g, "");
       expect(await move((await card()).id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual([]);
@@ -444,7 +469,6 @@ describe("the answer route moves between questions, one key at a time, each seen
 
   test("omp: a screen that leaves the question while the look before Tab runs takes no Tab", async () => {
     await withPane("omp", omp(0), async pane => {
-      // the review comes up between the move's last read and its key
       const beforeKey = async (): Promise<void> => { pane.screen = omp(3); };
       expect(await move((await card()).id, { step_next: true }, { beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual([]);
@@ -480,7 +504,6 @@ describe("the answer route moves between questions, one key at a time, each seen
     test.each([["Next", { step_next: true }], ["an answer", { option_index: 0 }]] as const)("omp: the review, drawn while the read before %s is still being checked, takes no key", async (_, action) => {
       await withPane("omp", omp(0), async pane => {
         const first = await card();
-        // after the look before the key, the terminal leaves the question while the read's own checks run
         let looked = false;
         const beforeKey = async (): Promise<void> => { looked = true; };
         pane.onRpc = (method) => { if (looked && method === "pane.process_info") { looked = false; pane.screen = omp(3); } };
@@ -535,7 +558,6 @@ describe("the answer route moves between questions, one key at a time, each seen
   test("omp: a different strip after the first key stops the move", async () => {
     await withPane("omp", omp(0), async pane => {
       pane.onSent = () => { pane.screen = omp(1).replace(" Shape ", " Changed "); };
-      // stopped by what it reads, not by the deadline: one far past the test's own time limit
       expect(await move((await card()).id, { step_index: 2 }, { answerDeadlineMs: 60_000 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });
@@ -613,13 +635,11 @@ describe("the answer route moves between questions, one key at a time, each seen
       pane.onSent = (key) => {
         if (key === "tab") at += 1;
         pane.screen = omo(at);
-        // the card's own poll, read while the step is still under way
         poll ??= card();
       };
       expect(await move((await card()).id, { step_next: true })).toEqual({ status: 200, code: undefined });
       const polled = await poll!;
       expect(polled.question).toBe("Which size do you prefer?");
-      // the next tap comes from the card that poll drew: the same asking, not a stale one
       expect(await move(polled.id, { step_next: true })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["tab", "tab"]);
     });
@@ -627,15 +647,11 @@ describe("the answer route moves between questions, one key at a time, each seen
 
   test.skipIf(process.platform !== "linux")("OmO: an answer whose look ends after the request's deadline still sends, as before", async () => {
     await withOmoPane(omo(0), async (pane) => {
-      // pi's look before a key answers once the request's deadline has passed, as a slow look can: the clock is moved
-      // past the deadline from inside the look, so nothing before it depends on how fast this machine is
       let looks = 0;
       const beforeKey = async (): Promise<void> => {
         looks += 1;
-        // only while the look runs: what the answer records after it is at the real time
         setSystemTime(new Date(Date.now() + 120_000));
         try {
-          // the look answers after the route's own timers have had their turn
           await new Promise((resolve) => setImmediate(resolve));
         } finally { setSystemTime(); }
       };
@@ -650,7 +666,6 @@ describe("the answer route moves between questions, one key at a time, each seen
       const first = await card();
       expect(await move(first.id, { step_index: 2 }, SHORT)).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
-      // the Tab went out: the same drawing is asked anew, and the card it left takes no further move
       expect((await card()).id).not.toBe(first.id);
       expect(await move(first.id, { step_index: 1 }, SHORT)).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
@@ -660,7 +675,6 @@ describe("the answer route moves between questions, one key at a time, each seen
   test.skipIf(process.platform !== "linux")("OmO: a move's keys pass the answer's own guard, which may refuse the next one", async () => {
     await withOmoPane(omo(0), async (pane) => {
       follows(pane, omo, 4, "tab", "shift+tab");
-      // the look before each key (a pi-ask form, an omp behind its shell): the second one says no
       const looked: string[] = [];
       const beforeKey = async (paneId: string, agent: string): Promise<void> => {
         looked.push(`${paneId} ${agent}`);
@@ -673,7 +687,6 @@ describe("the answer route moves between questions, one key at a time, each seen
   });
 
   test.skipIf(process.platform !== "linux")("OmO: a new call asked under the move gets no second key, its tabs alike", async () => {
-    // the same headers, its last question asked with other options and another call id: another form, though the tabs read alike
     const CALL_ID = (JSON.parse(OMO_SESSION_CALL) as { message: { content: { id: string }[] } }).message.content[0]!.id;
     const changed = OMO_SESSION_CALL.replace('"label":"Square"', '"label":"Triangle"').replace(CALL_ID, `${CALL_ID}_again`);
     expect(changed).not.toBe(OMO_SESSION_CALL);
@@ -688,7 +701,6 @@ describe("the answer route moves between questions, one key at a time, each seen
       expect(await move((await card()).id, { step_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
     });
-    // and a screen that changed between the card and the move: no key at all
     await withOmoPane(omo(0), async (pane) => {
       const first = await card();
       pane.screen = omo(1);
@@ -753,7 +765,6 @@ describe("the answer route moves between questions, one key at a time, each seen
   });
 
   test("Hermes: another batch with the same questions drawn after a Tab gets no second one", async () => {
-    // the same three questions, asked with other choices
     const OTHER: readonly (readonly [string, readonly string[]])[] = HERMES.map(([question], index) => [question, index === 1 ? ["Tiny", "Huge"] : ["Red", "Blue"]]);
     await withPane("hermes", hermes(0), async (pane) => {
       let at = 0;
@@ -763,7 +774,6 @@ describe("the answer route moves between questions, one key at a time, each seen
       };
       expect((await move((await card()).id, { step_index: 2 })).status).toBe(400);
       expect(pane.sent).toEqual([]);
-      // a single Next lands; the next move is asked against the card it shows
       expect(await move((await card()).id, { step_next: true })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["tab"]);
       expect((await card()).options.map((option) => option.label)).toEqual(["Tiny", "Huge"]);
@@ -773,7 +783,6 @@ describe("the answer route moves between questions, one key at a time, each seen
   test("an answer whose first read outlasts the deadline sends nothing", async () => {
     await withPane("hermes", hermes(0), async (pane) => {
       const first = await card();
-      // herdr answers every read after the deadline
       pane.onRpc = (method) => method === "pane.read" ? 600 : undefined;
       expect(await move(first.id, { option_index: 1 }, SHORT)).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual([]);
@@ -784,7 +793,6 @@ describe("the answer route moves between questions, one key at a time, each seen
     await withOmoPane(omo(0), async (pane) => {
       follows(pane, omo, 4, "tab", "shift+tab");
       const first = await card();
-      // herdr writes the key and holds its reply past any test's budget
       pane.onRpc = (method) => method === "pane.send_keys" ? 60_000 : undefined;
       expect(await move(first.id, { step_index: 2 }, SHORT)).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual(["tab"]);
@@ -798,6 +806,185 @@ describe("the answer route moves between questions, one key at a time, each seen
       expect(await move((await card()).id, { step_next: true, option_index: 0 })).toEqual({ status: 400, code: "invalid_answer" });
       expect(await move((await card()).id, { step_next: true })).toEqual({ status: 400, code: "invalid_answer" });
       expect(pane.sent).toEqual([]);
+    });
+  });
+
+  test("agy: Next sends →, Back sends ←, and answers single, custom write-in, and multi-select questions", async () => {
+    const agySingle = (at: number, cursor = 0, answered = -1, writeIn: string | null = null): string => {
+      const q = at === 0
+        ? ["Question 1/2: Which test runner should we use?", ["(Recommended) Bun test", "Vitest"]]
+        : ["Question 2/2: Which environment?", ["Staging", "Production"]];
+      const rows = [...q[1]!, "Write-in..."].map((label, idx) => {
+        const mark = idx === cursor ? "▸ " : "  ";
+        const check = idx === answered ? "✓ " : "";
+        return `${mark}${idx + 1}. ${check}${label}`;
+      });
+      if (writeIn !== null) {
+        return `Question\n────────────────────────────────────────\n\n${q[0]}\n\n${rows.join("\n")}\n\n  Your answer:\n  > ${writeIn}\n\nenter Submit · esc Back\n`;
+      }
+      const nav = [
+        "↑/↓ Navigate",
+        ...(at > 0 ? ["← Back"] : []),
+        ...(at < 1 ? ["→ Next"] : []),
+        cursor === q[1]!.length ? "enter Write-in" : at === 1 ? "enter Submit All" : "enter Submit",
+        "esc Skip",
+      ].join(" · ");
+      return `Question\n────────────────────────────────────────\n\n${q[0]}\n\n${rows.join("\n")}\n\n${nav}\n`;
+    };
+
+    const first = parseInteractivePrompt("agy", agySingle(0, 0, 1));
+    expect(first).toMatchObject({
+      agent: "agy",
+      kind: "question",
+      title: "Question 1 of 2",
+      question: "Which test runner should we use?",
+      options: [{ label: "(Recommended) Bun test", description: null }, { label: "Vitest", description: null }],
+      multi_select: false,
+      custom_option_index: 2,
+      default_option_index: 1,
+      can_step_next: true,
+    });
+    expect(first?.can_step_back ?? false).toBe(false);
+
+    await withPane("agy", agySingle(0), async (pane) => {
+      let at = 0;
+      let cursor = 0;
+      let writeIn: string | null = null;
+      pane.onSent = (key) => {
+        if (key === "right") { at = 1; cursor = 0; writeIn = null; }
+        else if (key === "left") { at = 0; cursor = 0; writeIn = null; }
+        else if (key === "down") cursor += 1;
+        else if (key === "up") cursor = Math.max(0, cursor - 1);
+        else if (key === "enter" && cursor === 2 && writeIn === null) writeIn = "";
+        else if (key.startsWith("text:") && writeIn !== null) writeIn += key.slice(5);
+        else if (key === "enter" && writeIn !== null) writeIn = null;
+        pane.screen = agySingle(at, cursor, -1, writeIn);
+      };
+      expect(await move((await card()).id, { step_next: true })).toEqual({ status: 200, code: undefined });
+      expect((await card()).question).toBe("Which environment?");
+      expect(await move((await card()).id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["right", "left"]);
+
+      pane.sent.length = 0;
+      expect(await move((await card()).id, { custom_text: "abc\rdef" })).toEqual({ status: 400, code: "invalid_answer" });
+      expect(await move((await card()).id, { custom_text: "abc\u001bdef" })).toEqual({ status: 400, code: "invalid_answer" });
+      expect(pane.sent).toEqual([]);
+
+      expect(await move((await card()).id, { custom_text: "deno\ntest" })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["down", "down", "enter", "text:deno test", "enter"]);
+
+      // If the write-in editor closes before Enter submits, the final Enter is refused.
+      pane.sent.length = 0;
+      at = 0;
+      cursor = 0;
+      writeIn = null;
+      pane.screen = agySingle(0);
+      pane.onSent = (key) => {
+        if (key === "down") cursor += 1;
+        else if (key === "enter" && cursor === 2 && writeIn === null) writeIn = "";
+        else if (key.startsWith("text:")) writeIn = null;
+        pane.screen = agySingle(at, cursor, -1, writeIn);
+      };
+      expect(await move((await card()).id, { custom_text: "deno test" })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["down", "down", "enter", "text:deno test"]);
+
+      // A write-in editor that opens holding text (typed in the terminal or from another device) takes none of the answer.
+      pane.sent.length = 0;
+      cursor = 0;
+      writeIn = null;
+      pane.screen = agySingle(0);
+      pane.onSent = (key) => {
+        if (key === "down") cursor += 1;
+        else if (key === "enter" && cursor === 2 && writeIn === null) writeIn = "foo";
+        else if (key.startsWith("text:") && writeIn !== null) writeIn += key.slice(5);
+        else if (key === "enter" && writeIn !== null) writeIn = null;
+        pane.screen = agySingle(at, cursor, -1, writeIn);
+      };
+      expect(await move((await card()).id, { custom_text: "bar" })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["down", "down", "enter"]);
+
+      // And one that swallowed the typed text is not submitted empty.
+      pane.sent.length = 0;
+      cursor = 0;
+      writeIn = null;
+      pane.screen = agySingle(0);
+      pane.onSent = (key) => {
+        if (key === "down") cursor += 1;
+        else if (key === "enter" && cursor === 2 && writeIn === null) writeIn = "";
+        else if (key === "enter" && writeIn !== null) writeIn = null;
+        pane.screen = agySingle(at, cursor, -1, writeIn);
+      };
+      expect(await move((await card()).id, { custom_text: "bar" })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["down", "down", "enter", "text:bar"]);
+    });
+
+    const agyMulti = (cursor: number, checked: number[], writeIn: string | null = null): string => {
+      const choices = ["Desktop", "Mobile", "Web"];
+      const rows = [
+        ...choices.map((label, idx) => `${idx === cursor ? "▸ " : "  "}${idx + 1}. [${checked.includes(idx) ? "x" : " "}] ${label}`),
+        `${cursor === choices.length ? "▸ " : "  "}4. Write-in...`,
+      ];
+      if (writeIn !== null) {
+        return `Question\n────────────────────────────────────────\n\nQuestion 1/1: Which targets?\n\n${rows.join("\n")}\n\n  Your answer:\n  > ${writeIn}\n\nenter Submit · esc Back\n`;
+      }
+      const enterLabel = cursor === choices.length ? "enter Write-in" : "enter Submit";
+      return `Question\n────────────────────────────────────────\n\nQuestion 1/1: Which targets?\n\n${rows.join("\n")}\n\n↑/↓ Navigate · space Toggle · ${enterLabel} · esc Skip\n`;
+    };
+
+    await withPane("agy", agyMulti(3, [0]), async (pane) => {
+      let cursor = 3;
+      const checked = new Set([0]);
+      let writeIn: string | null = null;
+      pane.onSent = (key) => {
+        if (key === "down") cursor += 1;
+        else if (key === "up") cursor = Math.max(0, cursor - 1);
+        else if (key === "space") {
+          if (!checked.delete(cursor)) checked.add(cursor);
+        } else if (key === "enter" && cursor === 3 && writeIn === null) writeIn = "";
+        else if (key.startsWith("text:") && writeIn !== null) writeIn += key.slice(5);
+        else if (key === "enter" && writeIn !== null) writeIn = null;
+        pane.screen = agyMulti(cursor, [...checked], writeIn);
+      };
+      const prompt = await card();
+      expect(prompt).toMatchObject({
+        title: "Question",
+        multi_select: true,
+        checks_with_text: true,
+        custom_option_index: 3,
+        default_option_indices: [0],
+      });
+      expect(await move(prompt.id, { option_indices: [0, 2] })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["up", "space", "enter"]);
+
+      pane.sent.length = 0;
+      cursor = 3;
+      checked.clear();
+      checked.add(0);
+      writeIn = null;
+      pane.screen = agyMulti(cursor, [...checked]);
+      expect(await move((await card()).id, { option_indices: [0, 2], custom_text: "CLI" })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["up", "space", "down", "enter", "text:CLI", "enter"]);
+    });
+
+    const writeInOpen = [
+      "Question",
+      "────────────────────────────────────────",
+      "",
+      "Question 1/1: Which test runner should we use?",
+      "",
+      "  1. (Recommended) Bun test",
+      "  2. Vitest",
+      "▸ 3. Write-in...",
+      "",
+      "  Your answer:",
+      "  > ",
+      "",
+      "enter Submit · esc Back",
+    ].join("\n");
+    await withPane("agy", writeInOpen, async () => {
+      const url = new URL("http://127.0.0.1/api/pane/prompt?pane_id=p_1");
+      const response = (await (await handlePromptRequest(new Request(url), url, {}))!.json()) as { prompt: InteractivePrompt | null };
+      expect(response.prompt).toBeNull();
     });
   });
 });

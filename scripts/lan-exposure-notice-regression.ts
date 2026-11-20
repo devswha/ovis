@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 
-import "./test-herdr.ts"; // a herdr session of its own: nothing shows in the user's
+import "./test-herdr.ts";
 import { createServer } from "../server/index.ts";
 
 /**
@@ -17,20 +17,13 @@ import { createServer } from "../server/index.ts";
  *      this PC with no token and nothing paired?
  *   2. does it stay away on the same empty configuration bound to loopback, which is
  *      unreachable from the network however it is addressed?
- *
- * The second half is the one that matters. A notice that renders unconditionally is worse than
- * no notice: it would train the owner to ignore a line that is only true sometimes.
- *
- * Needs `dist/` (`bun run build`), the way the other browser scripts here do.
  */
 const NOTICE = '[data-testid="lan-exposure-notice"]';
 
 type Found = {
   visible: boolean;
   text: string | null;
-  /** the notice's computed background beside the danger token resolved on the same page */
   tint: { actual: string; danger: string } | null;
-  /** the title of the Settings page the notice's button opened */
   settings: string | null;
 };
 
@@ -92,8 +85,8 @@ try {
   assert.ok(exposed.text?.includes("0.0.0.0"), "the notice names the address it is reachable at");
   assert.notEqual(exposed.tint?.actual, "rgba(0, 0, 0, 0)", "the notice carries a background of its own");
   assert.equal(exposed.tint?.actual, exposed.tint?.danger, "the notice's background is the danger tint");
-  assert.equal(exposed.settings, "Phone & devices", "the notice's button opens Settings on the devices page");
-  console.log("PASS the open-to-the-network notice appears, names the address and opens Phone & devices");
+  assert.equal(exposed.settings, "Devices and PCs", "the notice's button opens Settings on the devices page");
+  console.log("PASS the open-to-the-network notice appears, names the address and opens Devices and PCs");
 
   const loopback = await read(browser, "127.0.0.1");
   console.log(`loopback  : ${JSON.stringify(loopback)}`);

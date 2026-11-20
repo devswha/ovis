@@ -31,6 +31,21 @@ does not turn invalid evidence into permission to read old history.
 Existing panes with neither proof cannot be recovered by restarting the web server.
 Resume the intended session in the CLI to establish fresh foreground evidence.
 
+### Copilot's own API (`--ui-server`)
+
+When you start Copilot yourself with `--ui-server`, Chat follows the session that Copilot's
+local API names as its foreground session, through foreground switches. It reads that API only
+when the listener is bound to loopback and belongs to the pane's own process. It sends only
+`connect` and `session.getForeground`. Ovis never adds `--ui-server` to a launch.
+
+That API has no authentication. With Copilot CLI 1.0.105, any program that can reach its
+loopback port can control the session, including creating new sessions, and setting
+`COPILOT_CONNECTION_TOKEN` did not change this. Other users on the same PC may be able to reach
+it too. Whether to run Copilot with it is your choice; without it, Chat uses the evidence above.
+On Linux, when a single Copilot process started without it shows terminal output in Chat, a
+notice says the option may help and names its risk, so the choice can be made where the problem
+shows.
+
 ## History and limits
 
 Before its first message, a genuinely new process can show an empty Chat when its
@@ -44,13 +59,42 @@ links. The marker-and-report fallback cannot detect an unobserved switch away an
 
 The reader scans at most 16 MiB of lifecycle-log catch-up per lookup and checkpoints
 complete reads, including unavailable selections. Ambiguity remains unavailable until a
-fresh registration; it does not permanently block later registrations.
+fresh registration; it does not permanently block later registrations. Two descriptors on the
+same log path, as Copilot holds while it copies its log to rotate it, are one log; two logs of
+the same process are ambiguous. While Copilot moves its copies up for a rotation, a missing copy
+with an older one still there leaves that lookup unavailable unless the open log itself registers
+or releases a session; once the new copy is in place, a later lookup follows the rotation from the
+bytes already read.
 Unchanged file identity, size and timestamps reuse the last verification only when both
 mtime and ctime were at least three seconds old at that check and the wall clock has not
 moved behind it; younger timestamps or a clock rollback trigger rehashing
 because a same-size rewrite may share their filesystem tick. Changed logs
 revalidate the entire consumed prefix in 64 KiB chunks, including bytes outside the catch-up
-window; logs over 64 MiB use Terminal without reading or hashing them.
+window; logs over 64 MiB use Terminal without reading or hashing them. Rehashed bytes that match,
+with the same newest copy as at the last read, keep a session the log registered even when only
+the timestamps moved, as when Copilot refreshes its log's timestamps every 15 minutes, but only
+while mtime and ctime differ: a write or truncation sets both to one instant, so a log emptied and
+written back to the same bytes fails closed. A later timestamp refresh cannot be told from that
+by any stat field, so the binding also needs its session's marker to be the only one Copilot holds:
+every switch opens the new session's marker and Copilot keeps the old one. With more than one
+session held, as after `/new`, a timestamp-only change fails closed and the open log is read again
+from its own lines. A held marker's fallback still needs an untouched initial log.
+Copilot 1.0 rotates its log at about 10 MiB: it renames the copies up (`.1.log` to `.2.log`,
+keeping four), writes the new `.1.log` beside them as `.1.log.rotation-staging` and renames it
+into place, then empties the open log. Every rotation makes a new newest copy, so a newest copy
+other than the one last seen (by inode, size and timestamps), or none while an older one is there,
+is followed as a rotation even when the open log still starts with the bytes read. The rotation
+continues from the oldest copy that starts with those bytes and came after the newest copy seen
+at that read; copies of another user are never followed.
+A reader without a checkpoint, such as an Ovis started after a rotation, replays the `.N.log`
+copies oldest first, then the open log, when the copies are numbered without a gap, each is a
+whole-line regular file of the open log's owner, and no copy moved and the newest stayed the same
+while they and the open log were read; with the open log they count against the 64 MiB limit.
+When the oldest begins within five seconds of the start time in the log's name (none was pruned)
+the chain is complete; otherwise only a lifecycle line in the copies counts, and without one the
+open log stands alone, as before. A lookup that lands while Copilot moves its copies up decides
+nothing unless the open log itself registers or releases a session. While the open log is still
+empty, a binding from the copies alone is proven from the whole chain again on each lookup.
 This assumes filesystem timestamps trail this machine's clock by no more than that margin.
 A filesystem with greater timestamp lag, such as a skewed network mount, can retain a stale
 binding until the next append.

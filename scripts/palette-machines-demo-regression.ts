@@ -6,14 +6,13 @@ import { chromium } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// All PCs deliberately reuse every herdr ID. Only this disposable demo fixture rewrites its
-// roster; the app and its bound APIs are the production client. No live session is read.
 const app = mkdtempSync(join(tmpdir(), "herdr-palette-machines-"));
 const patch = `(() => {
   const fetchDemo = window.fetch.bind(window), EventSourceDemo = window.EventSource;
   const detachedRemote = new URLSearchParams(location.search).has("detached");
-  const calls = window.paletteMachineCalls = { branches: [], plugins: [], focus: [], runs: [], closes: [] };
+  const calls = window.paletteMachineCalls = { branches: [], plugins: [], focus: [], runs: [], closes: [], agents: [] };
   let last = null, offline = false, missing = false;
   const sources = new Set();
   const json = (value) => new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
@@ -57,6 +56,19 @@ const patch = `(() => {
     const match = url.pathname.match(/^\\/api\\/machines\\/([^/]+)(\\/.*)$/);
     const machine = match ? decodeURIComponent(match[1]) : "local";
     const path = match ? "/api" + match[2] : url.pathname;
+    if (path === "/api/agents") {
+      calls.agents.push(machine);
+      if (machine === "remote") return json({ agents: [{ kind: "codex", label: "Codex" }, { kind: "letta", label: "Build PC agent" }] });
+    }
+    // the branch readers' one read per PC (#2661): each workspace answered by the list below
+    if (path === "/api/worktree/inventory") {
+      const entries = [];
+      for (const id of url.searchParams.getAll("workspace_id")) {
+        const answer = await window.fetch(url.pathname.slice(0, -"inventory".length) + "list?workspace_id=" + encodeURIComponent(id), init);
+        entries.push({ workspace_id: id, listing: await answer.json() });
+      }
+      return json({ entries });
+    }
     if (path === "/api/worktree/list") {
       calls.branches.push(machine);
       const id = url.searchParams.get("workspace_id");
@@ -78,19 +90,59 @@ try {
   writeFileSync(join(app, "palette-machines.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./palette-machines.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       for (const phone of [false, true]) {
+        const creationContext = await browser.newContext(phone
+          ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" }
+          : { viewport: { width: 1280, height: 900 }, locale: "en-US" });
+        try {
+          await creationContext.addInitScript((paneId) => {
+            localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+            sessionStorage.setItem("ovis:selection", JSON.stringify({ machine_id: "local", pane_id: paneId }));
+          }, panes.api);
+          const page = await creationContext.newPage();
+          await page.goto(`http://127.0.0.1:${server.port}/?machine=remote&new=workspace&agent=codex&view=chat`);
+          const dialog = page.getByRole("dialog", { name: /^New workspace/ });
+          await dialog.waitFor();
+          if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `creation-link-${phone ? "phone" : "desktop"}.png`), animations: "disabled" });
+          assert.equal(await dialog.locator("h2").innerText(), "New workspace · Build PC", "a remote creation link without a pane overrides the remembered local PC");
+          await page.waitForFunction(() => (window as any).paletteMachineCalls.agents.includes("remote"));
+          assert.deepEqual(await page.evaluate(() => (window as any).paletteMachineCalls.agents), ["remote"], "the creation dialog requests only the linked PC's agent choices");
+          assert.equal(await dialog.locator(".agent-picker-label").innerText(), "Codex");
+          await dialog.getByRole("combobox", { name: "Agent", exact: true }).click();
+          await dialog.getByRole("option").filter({ hasText: "Build PC agent" }).waitFor();
+          assert.equal(await dialog.getByRole("option").filter({ hasText: "Claude Code" }).count(), 0, "the visible choices come from the remote catalog, not the local catalog");
+          await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(panes.api)}`);
+          await page.locator('.agents-sidebar .agent-select[aria-current="true"]').first().waitFor({ state: "attached" });
+          await page.evaluate(() => history.pushState(null, "", "?machine=remote&new=workspace&agent=codex&name=Forward"));
+          await page.goBack();
+          await page.goForward();
+          await dialog.waitFor();
+          assert.equal(await dialog.locator("h2").innerText(), "New workspace · Build PC", "Forward to a creation-only link selects the link's PC before opening its dialog");
+          // a dialog open for one PC gives way to the next entry's PC and fields. The app writes where the dialog
+          // opened (its PC's pane and that pane's folder) over the Forward entry once both are in: the next entry is
+          // pushed after that write, or the write lands on it and the entry asks for Build PC again
+          await page.waitForFunction(() => { const query = new URLSearchParams(location.search); return query.get("name") === "Forward" && query.has("pane") && query.has("cwd"); });
+          await page.evaluate(() => history.pushState(null, "", "?new=workspace&agent=codex&name=Here"));
+          await page.goBack();
+          await page.goForward();
+          await page.getByRole("dialog", { name: "New workspace \u00b7 Laptop", exact: true }).waitFor();
+          await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(panes.api)}`);
+          await page.locator('.agents-sidebar .agent-select[aria-current="true"]').first().waitFor({ state: "attached" });
+          const here = await page.evaluate(() => location.search);
+          await page.evaluate((search) => { history.pushState(null, "", "?machine=offline&new=tab&name=WRONG"); history.pushState(null, "", search); }, here);
+          await page.goBack();
+          await page.waitForFunction(() => new URLSearchParams(location.search).get("machine") === "offline");
+          await page.goForward();
+          await page.waitForFunction((search) => location.search === search, here);
+          await page.locator('.agents-sidebar .agent-select[aria-current="true"]').first().waitFor({ state: "attached" });
+          await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+          assert.equal(await page.getByRole("dialog", { name: /^New (tab|workspace)/ }).count(), 0, "an offline PC's tab link left behind opens nothing on this PC");
+          console.log(`PASS ${phone ? "phone" : "desktop"} creation link loads the linked remote PC's dialog and agent choices without a pane`);
+        } finally { await creationContext.close(); }
         const detachedContext = await browser.newContext(phone
           ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" }
           : { viewport: { width: 1280, height: 900 }, locale: "en-US" });
@@ -184,7 +236,6 @@ try {
         console.log("PASS switching PCs through the palette dismisses an old close confirmation even when tab IDs match");
         await page.waitForFunction(() => JSON.parse(sessionStorage.getItem("ovis:selection") ?? "{}").machine_id === "remote");
         const calls = await page.evaluate(() => (window as any).paletteMachineCalls);
-        // a pick is the browser's alone: herdr's focus on either PC stays where it is
         assert.deepEqual(calls.focus.filter((call: { machine: string }) => call.machine === "remote"), [], "selection leaves the remote PC's herdr focus alone");
         await open();
         await page.waitForFunction(() => (window as any).paletteMachineCalls.plugins.includes("remote"));

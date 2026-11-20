@@ -4,18 +4,12 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  agentGet, HerdrError, herdrRpc, LARGE_REPLY_BYTES, LINE_BYTES, makeLineReader, paneFocus, paneProcessInfo, paneRead, paneSwap, paneSwapWith, sessionSnapshot,
+  agentGet, focusFromMove, HerdrError, herdrRpc, LARGE_REPLY_BYTES, LINE_BYTES, makeLineReader, paneFocus, paneMoveBeside, paneProcessInfo, paneRead, paneSwap, paneSwapWith, sessionSnapshot,
   subscribeEvents, type EventFrame,
 } from "./client.ts";
 import type { AgentInfo, PaneInfo, PaneLayoutRect, PaneLayoutSnapshot, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
 import { handlePaneRequest } from "../pane-routes.ts";
 
-// The typed herdr seam (server/herdr/methods.ts). `bun run typecheck` checks the lines marked
-// with ts-expect-error below: each must stay a compile error. They hold for a call without an explicit
-// result type; `herdrRpc<Inline>(…)` still reaches the untyped fallback, which the files in
-// HERDR_RPC_ALLOWED (server/conventions.test.ts) use until a follow-up PR moves them to the
-// wrappers once their open PRs land, so outside server/herdr/ that guard, not the compiler,
-// keeps server code off herdrRpc.
 declare const either: boolean;
 async function typeOnly(): Promise<void> {
   // @ts-expect-error pane.process_info takes pane_id: given target, herdr answers for the focused pane
@@ -26,9 +20,6 @@ async function typeOnly(): Promise<void> {
   await herdrRpc("pane.send_text", { pane_id: "pane-1" });
   // @ts-expect-error a union of typed methods would take either method's params
   await herdrRpc(either ? ("pane.process_info" as const) : ("agent.get" as const), { target: "pane-1" });
-  // Known holes: these still compile, because an explicit result type or a plain-string method
-  // leaves the fallback's `M` at `string`. Splitting the fallback out under its own name (the
-  // follow-up above) turns both into ts-expect-error lines.
   await herdrRpc<unknown>("pane.process_info", { target: "pane-1" });
   const widened: string = "pane.process_info";
   await herdrRpc(widened, { target: "pane-1" });
@@ -40,11 +31,6 @@ async function typeOnly(): Promise<void> {
 }
 void typeOnly;
 
-// A stand-in herdr on a Unix socket. Each accepted connection gathers complete request lines (one
-// read is not one request) and hands each to `answer`, which writes whatever bytes it chooses: a
-// correlated reply, another request's id, a malformed envelope, a frame in pieces or an event
-// stream. Every connection's close is observable from the moment it is accepted, before a byte is
-// sent, and everything is torn down after each test.
 interface Request { id: string; method: string; params: unknown }
 interface Connection { socket: Socket; closed: Promise<void> }
 type Answer = (request: Request, connection: Connection) => void;
@@ -89,7 +75,6 @@ function standIn(result: unknown) {
   return peer((request, { socket }) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`));
 }
 
-/** The real RPC wrapper against a peer that models swap's focus side effect. */
 async function swapPeer() {
   const state = {
     focus: "elsewhere", changed: true, failRestore: false, failSwap: false,
@@ -129,7 +114,6 @@ it("serializes overlapping explicit swaps before the second snapshots temporary 
   const connect = spyOn(Bun, "connect");
   const second = paneSwapWith("second", "target", path);
   try {
-    // The first swap is unanswered; starting another must not even open its snapshot connection.
     await Promise.resolve();
     expect(connect).not.toHaveBeenCalled();
   } finally {
@@ -235,7 +219,274 @@ it("releases the swap queue after a native swap fails without restoring focus", 
   expect(state.focus).toBe("elsewhere");
 });
 
-/** `promise`, or a rejection naming `what` once `ms` pass: an awaited event, never a fixed wait. */
+/**
+ * herdr's pane.move as measured on 0.9.5: into the pane's own tab it answers same_tab (`withinTab`
+ * models a herdr that moves there); a pane moved out to a new tab keeps its ID and leaves herdr's
+ * focus on a pane of the tab it left, which its answer names; an explicit swap focuses its source.
+ */
+async function movePeer({ withinTab = false } = {}) {
+  const state = {
+    tabs: new Map([["source", "tab"], ["target", "tab"], ["sibling", "tab"], ["other", "tab-2"]]),
+    order: ["target", "source", "sibling"], zoomed: false,
+    focus: "elsewhere", failInto: 0, refuseInto: 0, dropInto: 0, refuseSwap: false, dropPassing: false, refusePassing: false, failSwap: false, dropSwap: false,
+    failSnapshot: (_read: number) => false, reads: 0,
+    onInto: () => {},
+  };
+  const fixture = await peer((request, { socket }) => {
+    const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
+    const params = request.params as { pane_id: string; source_pane_id: string; target_pane_id: string; destination: { type: string; tab_id: string; target_pane_id?: string } };
+    const info = (pane_id: string) => ({ pane_id, tab_id: state.tabs.get(pane_id), workspace_id: "ws" });
+    if (request.method === "session.snapshot") {
+      if (state.failSnapshot(++state.reads)) {
+        socket.end(`${JSON.stringify({ id: request.id, error: { code: "internal_error", message: "snapshot failed" } })}\n`);
+        return;
+      }
+      const panes = state.order.map((pane_id, index) => ({ pane_id, focused: pane_id === state.focus, rect: { x: index * 10, y: 0, width: 10, height: 10 } }));
+      answer({ snapshot: { focused_pane_id: state.focus, panes: [...state.tabs.keys()].map(info), layouts: [{ tab_id: "tab", zoomed: state.zoomed, panes }] } });
+    } else if (request.method === "pane.move") {
+      const { pane_id: pane, destination } = params;
+      if (destination.type === "tab" && state.tabs.get(pane) === destination.tab_id && !withinTab) {
+        answer({ move_result: { changed: false, reason: "same_tab", pane: info(pane) } });
+        return;
+      }
+      if (destination.type === "tab") {
+        state.onInto();
+        if (state.failInto > 0) {
+          state.failInto--;
+          socket.end(`${JSON.stringify({ id: request.id, error: { code: "pane_not_found", message: "target pane not found" } })}\n`);
+          return;
+        }
+        if (state.refuseInto > 0) {
+          state.refuseInto--;
+          answer({ move_result: { changed: false, reason: "no_room", pane: info(pane) } });
+          return;
+        }
+      }
+      if (destination.type === "new_tab" && state.refusePassing) {
+        answer({ move_result: { changed: false, reason: "zoomed_tab", pane: info(pane) } });
+        return;
+      }
+      if (destination.type === "new_tab" && state.focus === pane) state.focus = "sibling";
+      state.tabs.set(pane, destination.type === "new_tab" ? "passing" : destination.tab_id);
+      state.order = state.order.filter((id) => id !== pane);
+      if (destination.type === "tab") state.order.splice(state.order.indexOf(destination.target_pane_id!) + 1, 0, pane);
+      if (destination.type === "new_tab" && state.dropPassing) {
+        state.dropPassing = false;
+        socket.end();
+        return;
+      }
+      if (destination.type === "tab" && state.dropInto > 0) {
+        state.dropInto--;
+        socket.end();
+        return;
+      }
+      answer({ move_result: { changed: true, pane: info(pane), closed_tab_id: destination.type === "tab" && withinTab ? null : "passing", source_layout: { focused_pane_id: state.focus } } });
+    } else if (request.method === "pane.swap") {
+      if (state.failSwap) {
+        socket.end(`${JSON.stringify({ id: request.id, error: { code: "internal_error", message: "swap failed" } })}\n`);
+        return;
+      }
+      if (state.refuseSwap) {
+        answer({ swap: { changed: false, reason: "cross_tab", focused_pane_id: state.focus, target_pane_id: params.target_pane_id } });
+        return;
+      }
+      state.focus = params.source_pane_id;
+      const [from, to] = [state.order.indexOf(params.source_pane_id), state.order.indexOf(params.target_pane_id)];
+      [state.order[from], state.order[to]] = [params.target_pane_id, params.source_pane_id];
+      if (state.dropSwap) {
+        state.dropSwap = false;
+        socket.end();
+        return;
+      }
+      answer({ swap: { changed: true, reason: null, focused_pane_id: state.focus, target_pane_id: params.target_pane_id } });
+    } else if (request.method === "pane.focus") {
+      state.focus = params.pane_id;
+      answer({ type: "ok" });
+    } else throw new Error(`unexpected RPC ${request.method}`);
+  });
+  return { ...fixture, state };
+}
+
+const changes = (requests: Request[]) => requests.filter((request) => request.method !== "session.snapshot").map((request) => [request.method, request.params]);
+
+for (const side of ["left", "right", "up", "down"] as const) {
+  it(`moves a pane ${side} of another of its tab through a tab of its own, herdr's focus kept`, async () => {
+    const { path, state, requests } = await movePeer();
+    expect(await paneMoveBeside("source", "target", side, path)).toEqual({ changed: true, reason: null });
+    const into = { type: "tab", tab_id: "tab", target_pane_id: "target", split: side === "left" || side === "right" ? "right" : "down" };
+    const before = side === "left" || side === "up";
+    expect(changes(requests)).toEqual([
+      ["pane.move", { pane_id: "source", destination: into, focus: false }],
+      ["pane.move", { pane_id: "source", destination: { type: "new_tab", workspace_id: "ws" }, focus: false }],
+      ["pane.move", { pane_id: "source", destination: into, focus: false }],
+      // herdr places a moved pane right of or below its target: a swap puts it before
+      ...(before ? [["pane.swap", { source_pane_id: "source", target_pane_id: "target" }], ["pane.focus", { pane_id: "elsewhere" }]] : []),
+    ]);
+    expect(state.tabs.get("source")).toBe("tab");
+    expect(state.focus).toBe("elsewhere");
+  });
+}
+
+it("takes one pane.move where herdr moves a pane within its tab", async () => {
+  const { path, requests } = await movePeer({ withinTab: true });
+  expect(await paneMoveBeside("source", "target", "down", path)).toEqual({ changed: true, reason: null });
+  expect(changes(requests)).toEqual([["pane.move", { pane_id: "source", destination: { type: "tab", tab_id: "tab", target_pane_id: "target", split: "down" }, focus: false }]]);
+});
+
+it("gives herdr's focus back to the moved pane, but not over a focus the user moved meanwhile", async () => {
+  const { path, state } = await movePeer();
+  for (const side of ["right", "up"] as const) {
+    state.focus = "source";
+    state.onInto = () => {};
+    await paneMoveBeside("source", "target", side, path);
+    expect(state.focus).toBe("source");
+    for (const pick of ["target", "other"]) {
+      state.focus = "source";
+      state.onInto = () => { state.focus = pick; };
+      await paneMoveBeside("source", "target", side, path);
+      expect(state.focus).toBe(pick);
+    }
+  }
+});
+
+it("tells herdr's passing focus on a sibling apart from the user's, until the moved pane has it back", async () => {
+  const { path, state } = await movePeer();
+  for (const side of ["right", "up"] as const) {
+    state.focus = "source";
+    const during: boolean[] = [];
+    state.onInto = () => { during.push(focusFromMove("other"), focusFromMove("sibling"), focusFromMove("target")); };
+    await paneMoveBeside("source", "target", side, path);
+    expect(during).toEqual([false, true, true]);
+    // herdr's pane_focused for the moved pane may arrive after the answer: until then the hold stays
+    expect(focusFromMove("sibling")).toBe(true);
+    expect(focusFromMove("source")).toBe(false);
+    expect(focusFromMove("sibling")).toBe(false);
+    state.focus = "source";
+    state.onInto = () => { state.focus = "other"; };
+    await paneMoveBeside("source", "target", side, path);
+    expect(focusFromMove("other")).toBe(false);
+    if (side === "up") expect(focusFromMove("source")).toBe(false);
+    expect(focusFromMove("sibling")).toBe(false);
+  }
+  state.focus = "source";
+  state.failInto = 1;
+  const recovering: boolean[] = [];
+  state.onInto = () => { recovering.push(focusFromMove("sibling")); };
+  await rejection(paneMoveBeside("source", "target", "right", path));
+  expect(recovering).toEqual([true, true]);
+  expect(focusFromMove("source")).toBe(false);
+  expect(focusFromMove("sibling")).toBe(false);
+  state.focus = "elsewhere";
+  state.onInto = () => { expect(focusFromMove("sibling")).toBe(false); };
+  await paneMoveBeside("source", "target", "right", path);
+});
+
+it("refuses a pane beside itself or beside a pane of another tab, moving nothing", async () => {
+  const { path, requests } = await movePeer();
+  expect(await paneMoveBeside("source", "source", "left", path)).toEqual({ changed: false, reason: "same_pane" });
+  expect(await paneMoveBeside("source", "other", "left", path)).toEqual({ changed: false, reason: "cross_tab" });
+  expect((await rejection(paneMoveBeside("source", "gone", "left", path))).code).toBe("pane_not_found");
+  expect((await rejection(paneMoveBeside("gone", "gone", "left", path))).code).toBe("pane_not_found");
+  expect(changes(requests)).toEqual([]);
+});
+
+it("brings a pane herdr will not put beside its target back into its tab, and says where it waits when it cannot", async () => {
+  const { path, state, requests } = await movePeer();
+  state.focus = "source";
+  state.failInto = 1;
+  const failed = await rejection(paneMoveBeside("source", "target", "right", path));
+  expect(failed.code).toBe("pane_not_found");
+  expect(failed.message).toContain("went back into its tab");
+  expect(state.tabs.get("source")).toBe("tab");
+  expect(state.focus).toBe("source");
+  state.refuseInto = 1;
+  const refused = await rejection(paneMoveBeside("source", "target", "down", path));
+  expect(refused.code).toBe("pane_not_moved");
+  expect(refused.message).toContain("no_room");
+  expect(state.tabs.get("source")).toBe("tab");
+  state.failInto = 2;
+  expect((await rejection(paneMoveBeside("source", "target", "right", path))).message).toContain("went back into its tab");
+  expect(state.tabs.get("source")).toBe("tab");
+  expect(changes(requests).filter(([method]) => method === "pane.move").at(-1)).toEqual(["pane.move", { pane_id: "source", destination: { type: "tab", tab_id: "tab", target_pane_id: "sibling", split: "right" }, focus: false }]);
+  state.failInto = 3;
+  const stranded = await rejection(paneMoveBeside("source", "target", "right", path));
+  expect(stranded.code).toBe("pane_not_found");
+  expect(stranded.message).toContain("a tab of its own");
+  expect(state.tabs.get("source")).toBe("passing");
+});
+
+it("brings back a pane herdr moved to a tab of its own without answering", async () => {
+  const { path, state } = await movePeer();
+  state.focus = "source";
+  state.dropPassing = true;
+  expect((await rejection(paneMoveBeside("source", "target", "right", path))).message).toContain("went back into its tab");
+  expect(state.tabs.get("source")).toBe("tab");
+  expect(state.focus).toBe("source");
+});
+
+it("says a pane moved right of its target stays there when herdr refuses the swap that puts it left", async () => {
+  const { path, state } = await movePeer();
+  state.refuseSwap = true;
+  expect(await paneMoveBeside("source", "target", "left", path)).toEqual({ changed: true, reason: "cross_tab" });
+  expect(state.tabs.get("source")).toBe("tab");
+  state.refuseSwap = false;
+  state.failSwap = true;
+  expect(await paneMoveBeside("source", "target", "up", path)).toEqual({ changed: true, reason: "internal_error" });
+  expect(state.tabs.get("source")).toBe("tab");
+  expect(state.focus).toBe("elsewhere");
+});
+
+it("says nothing moved when herdr refuses to move the pane out of its tab, or the tab is zoomed", async () => {
+  const { path, state, requests } = await movePeer();
+  state.refusePassing = true;
+  expect(await paneMoveBeside("source", "target", "right", path)).toEqual({ changed: false, reason: "zoomed_tab" });
+  expect(changes(requests).filter(([method]) => method === "pane.move")).toHaveLength(2);
+  requests.length = 0;
+  state.zoomed = true;
+  expect(await paneMoveBeside("source", "target", "left", path)).toEqual({ changed: false, reason: "zoomed_tab" });
+  // only the move into its own tab, which herdr answers same_tab
+  expect(changes(requests)).toHaveLength(1);
+  expect(state.tabs.get("source")).toBe("tab");
+});
+
+it("takes a pane herdr brought back without answering as back in its tab, herdr's focus with it", async () => {
+  const { path, state } = await movePeer();
+  state.focus = "source";
+  state.dropInto = 1;
+  const lost = await rejection(paneMoveBeside("source", "target", "right", path));
+  expect(lost.message).toContain("went back into its tab");
+  expect(state.tabs.get("source")).toBe("tab");
+  expect(state.focus).toBe("source");
+  state.failInto = 1;
+  state.dropInto = 1;
+  expect((await rejection(paneMoveBeside("source", "target", "right", path))).message).toContain("went back into its tab");
+  expect(state.tabs.get("source")).toBe("tab");
+  state.failInto = 1;
+  state.dropInto = 1;
+  state.reads = 0;
+  state.failSnapshot = (read) => read === 3;
+  expect((await rejection(paneMoveBeside("source", "target", "right", path))).message).toContain("may wait in a tab of its own");
+});
+
+it("reads the layout when a swap's answer is lost, and leaves herdr's focus alone when the read before it fails", async () => {
+  const { path, state, requests } = await movePeer();
+  state.dropSwap = true;
+  expect(await paneMoveBeside("source", "target", "left", path)).toEqual({ changed: true, reason: null });
+  expect(state.order.indexOf("source")).toBeLessThan(state.order.indexOf("target"));
+  expect(state.focus).toBe("elsewhere");
+  state.reads = 0;
+  state.failSnapshot = (read) => read === 2;
+  requests.length = 0;
+  expect(await paneMoveBeside("source", "target", "left", path)).toEqual({ changed: true, reason: "internal_error" });
+  expect(changes(requests).some(([method]) => method === "pane.swap")).toBe(false);
+  expect(state.order.indexOf("source")).toBeGreaterThan(state.order.indexOf("target"));
+  expect(state.focus).toBe("elsewhere");
+  state.focus = "source";
+  state.reads = 0;
+  expect(await paneMoveBeside("source", "target", "left", path)).toEqual({ changed: true, reason: "internal_error" });
+  expect(state.focus).toBe("source");
+});
+
 function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not happen within ${ms}ms`)), ms); });
@@ -248,7 +499,6 @@ async function rejection(promise: Promise<unknown>): Promise<HerdrError> {
   return error;
 }
 
-/** One JSON line of exactly `bytes` bytes before its newline: `build` gets the padding to place. */
 function exactLine(bytes: number, build: (pad: string) => unknown): string {
   const empty = Buffer.byteLength(JSON.stringify(build("")));
   const line = JSON.stringify(build("a".repeat(bytes - empty)));
@@ -256,7 +506,6 @@ function exactLine(bytes: number, build: (pad: string) => unknown): string {
   return line;
 }
 
-/** The diagnostic lines herdrRpc writes, captured for one test and restored after it. */
 function captureDiagnostics() {
   const lines: string[] = [];
   const warn = spyOn(console, "warn").mockImplementation((line) => { lines.push(String(line)); });
@@ -264,7 +513,6 @@ function captureDiagnostics() {
   return { lines, records: () => lines.map((line) => JSON.parse(line) as Record<string, unknown>) };
 }
 
-/** Every timer `run` starts, so a test can see each was cleared again. */
 async function timersOf<T>(run: () => Promise<T>): Promise<{ value: T | HerdrError; open: number }> {
   const started = new Set<unknown>();
   const set = spyOn(globalThis, "setTimeout");
@@ -280,7 +528,6 @@ async function timersOf<T>(run: () => Promise<T>): Promise<{ value: T | HerdrErr
   }
 }
 
-/** A subscription's callbacks, each counted, with promises for the first of each. */
 function subscriber(path: string, expectEvents = 0) {
   const events: EventFrame[] = [];
   const errors: Error[] = [];
@@ -304,11 +551,6 @@ function subscriber(path: string, expectEvents = 0) {
   };
 }
 
-/**
- * A schema-complete session.snapshot (SessionSnapshot in shared/herdr-api.generated.ts) for a large
- * session: every required and optional field of each workspace, tab, layout, pane and agent is
- * filled, with multibyte and JSON-escaped text, so its size is a full snapshot's, not a sketch's.
- */
 function fullSnapshot(workspaceCount: number, tabsPer: number, panesPer: number): SessionSnapshot {
   const rect = (n: number): PaneLayoutRect => ({ x: n * 12, y: n * 4, width: 120, height: 40 });
   const workspaces: WorkspaceInfo[] = [];
@@ -413,7 +655,6 @@ it("rejects null and incoherent envelopes", async () => {
   const unparseable = await rejection(herdrRpc("fixture.read", {}, path));
   expect(unparseable.code).toBe("bad_frame");
   expect(unparseable.message).toBe(`herdr sent an invalid reply to fixture.read (unparseable frame, ${Buffer.byteLength(reply("")) - 1} bytes)`);
-  // a well-formed herdr error is still herdr's own answer, code and message
   reply = (id) => `${JSON.stringify({ id, error: { code: "pane_not_found", message: "no such pane", detail: 1 } })}\n`;
   const refused = await rejection(herdrRpc("fixture.read", {}, path));
   expect([refused.code, refused.message]).toEqual(["pane_not_found", "no such pane"]);
@@ -429,10 +670,8 @@ it("rejects a mismatched reply id", async () => {
     expect(error.code).toBe("bad_frame");
     expect(error.message).toContain("(reply to another request, ");
   }
-  // two lines in one chunk: the foreign one first fails the call, the matching one after it is ignored
   reply = (id) => `${JSON.stringify({ id: `${id}-other`, result: { stolen: true } })}\n${JSON.stringify({ id, result: { ok: true } })}\n`;
   expect((await rejection(herdrRpc("fixture.read", {}, path))).message).toContain("reply to another request");
-  // and the matching one first wins, the rest of the chunk ignored
   reply = (id) => `${JSON.stringify({ id, result: { ok: true } })}\n${JSON.stringify({ id: "br-x", result: { stolen: true } })}\nnull\n`;
   expect(await herdrRpc<unknown>("fixture.read", {}, path)).toEqual({ ok: true });
 });
@@ -451,7 +690,6 @@ it("takes an error under the ids herdr 0.9.0 and 0.9.1 give it as herdr's own", 
   reply = (id) => ({ id: `${id}:sub:0:probe`, error: gone });
   const probe = await rejection(herdrRpc("fixture.read", {}, path));
   expect([probe.code, probe.message]).toEqual([gone.code, gone.message]);
-  // herdr's errors, not transport failures
   expect(diagnostics.records()).toEqual([]);
 
   // only an error may carry those ids, and only this request's probe id
@@ -481,7 +719,6 @@ it("takes an error under the ids herdr 0.9.0 and 0.9.1 give it as herdr's own", 
     expect(refused.errors.map((e) => [(e as HerdrError).code, e.message])).toEqual([[error.code, error.message]]);
     expect([refused.started(), refused.closes()]).toEqual([0, 1]);
   }
-  // and after the acknowledgement, an error under its probe id leaves the stream open
   script = (id, socket) => socket.write(`${ack(id)}${JSON.stringify({ id: `${id}:sub:1:probe`, error: gone })}\n${JSON.stringify(event(1))}\n`);
   const open = subscriber(streamPath, 1);
   await within(open.allEvents, 5_000, "the event after herdr's error");
@@ -505,26 +742,20 @@ it("bounds bytes before a newline or UTF-8 decoding", async () => {
     for (const chunk of chunks) { push(chunk); seen.push(oversize.length); }
     return { lines, oversize, seen };
   };
-  // exactly the limit passes; one byte more fails at the chunk that crosses it, with no newline yet
   expect(read(8, [encode("12345678\n")])).toEqual({ lines: [["12345678", 8]], oversize: [], seen: [0] });
   const over = read(8, [encode("1234"), encode("56789"), encode("more\n{\"after\":1}\n")]);
   expect(over).toEqual({ lines: [], oversize: [9], seen: [0, 1, 1] });
-  // several frames in one chunk, and one frame across many chunks
   expect(read(64, [encode("{\"a\":1}\n{\"b\":2}\n\n{\"c\":3}\n")]).lines.map(([line]) => line)).toEqual(['{"a":1}', '{"b":2}', '{"c":3}']);
   const whole = encode("{\"text\":\"split frame\"}\n");
   expect(read(64, [...whole].map((byte) => Uint8Array.of(byte))).lines).toEqual([['{"text":"split frame"}', whole.length - 1]]);
-  // a multibyte character split between reads decodes whole; CRLF ends a line like LF
   const text = "{\"text\":\"한글 😀 ✓\"}";
   const bytes = encode(`${text}\r\n`);
   const cut = bytes.indexOf(0xf0) + 2; // inside the emoji's four bytes
   const split = read(64, [bytes.subarray(0, bytes.indexOf(0xed) + 1), bytes.subarray(bytes.indexOf(0xed) + 1, cut), bytes.subarray(cut)]);
   expect(split.lines).toEqual([[text, bytes.length - 1]]);
   expect(JSON.parse(split.lines[0]![0])).toEqual({ text: "한글 😀 ✓" });
-  // the limit counts bytes, not characters: four three-byte characters are 12 bytes
   expect(read(11, [encode("한한한한\n")]).oversize).toEqual([12]);
 
-  // through a real socket: an ordinary reply at exactly LINE_BYTES is answered, one byte more fails
-  // the call before any newline arrives, without waiting for the timeout
   let reply: (id: string) => string = () => "";
   const { path, connections } = await peer((request, { socket }) => socket.write(reply(request.id)));
   reply = (id) => `${exactLine(LINE_BYTES, (pad) => ({ id, result: { text: `한 \u001b[1m✓ ${pad}` } }))}\n`;
@@ -541,8 +772,6 @@ it("bounds bytes before a newline or UTF-8 decoding", async () => {
 
 it("delivers the rest of a read when a callback throws", async () => {
   const encode = (text: string) => new TextEncoder().encode(text);
-  // the chunk is split and its tail kept before any callback runs: every line is delivered, then
-  // the first throw is rethrown
   const lines: string[] = [];
   const oversize: number[] = [];
   const push = makeLineReader(16, (line) => { lines.push(line); if (line.startsWith("throw")) throw new Error(line); }, (bytes) => oversize.push(bytes));
@@ -550,12 +779,9 @@ it("delivers the rest of a read when a callback throws", async () => {
   expect(lines).toEqual(["throw 1", "throw 2", "kept"]);
   push(encode(":1}\n"));
   expect(lines).toEqual(["throw 1", "throw 2", "kept", '{"d":1}']);
-  // a line before an oversized one is delivered too, and the oversize still reported
   expect(() => push(encode(`throw 3\n${"x".repeat(17)}`))).toThrow("throw 3");
   expect([lines.at(-1), oversize]).toEqual(["throw 3", [17]]);
 
-  // through a subscription: a subscriber that throws on the first of three events in one read
-  // still gets the other two, and an event cut by the end of that read arrives whole with the next
   const { path, connections } = await peer((request, { socket }) => socket.write(ack(request.id)));
   const events: EventFrame[] = [];
   const started = Promise.withResolvers<void>();
@@ -581,7 +807,6 @@ it("delivers the rest of a read when a callback throws", async () => {
   await within(four.promise, 5_000, "the event cut by the read");
   expect([events, closes]).toEqual([[event(1), event(2), event(3), event(4)] as never, 0]);
 
-  // a subscriber whose onError throws on a bad frame still sees the close, and the socket ends
   const { path: badPath, connections: bad } = await peer((request, { socket }) => socket.write(`${ack(request.id)}null\n`));
   const closed = Promise.withResolvers<void>();
   let badCloses = 0;
@@ -597,7 +822,6 @@ it("delivers the rest of a read when a callback throws", async () => {
 }, 30_000);
 
 it("accepts largest supported pane and snapshot replies", async () => {
-  // escaped and multibyte text with ANSI colour, padded so each reply line is exactly the ceiling
   const screen = "\u001b[1;38;5;208m한글 ✓ 😀\u001b[0m \"quoted\" back\\slash\ttab\r\n";
   let reply: (request: Request) => string = () => "";
   const { path, connections, requests } = await peer((request, { socket }) => socket.end(`${reply(request)}\n`));
@@ -629,7 +853,6 @@ it("accepts largest supported pane and snapshot replies", async () => {
   reply = ({ id }) => {
     idBytes = Buffer.byteLength(id);
     unpadded = Buffer.byteLength(`${JSON.stringify({ id, result: { type: "session_snapshot", snapshot: full } })}\n`);
-    // the same snapshot, padded through one extension field to exactly the ceiling
     return exactLine(LARGE_REPLY_BYTES, (pad) => ({ id, result: { type: "session_snapshot", snapshot: { ...full, added_later: pad } } }));
   };
   const snapshot = await sessionSnapshot(path, 30_000);
@@ -638,7 +861,6 @@ it("accepts largest supported pane and snapshot replies", async () => {
   expect(2 * unpadded).toBeLessThan(8 * 1024 * 1024);
   expect(snapshot).toEqual({ ...full, added_later: expect.any(String) } as never);
 
-  // the large ceiling is for those three methods only: the same 64 MiB answer to any other fails
   const ordinary = await rejection(herdrRpc("pane.get", { pane_id: "pane-1" }, path, 30_000));
   expect(ordinary.code).toBe("bad_frame");
   expect(ordinary.message).toContain(`over the ${LINE_BYTES}-byte line limit`);
@@ -661,7 +883,6 @@ it("keeps subscriptions alive beyond the aggregate line cap", async () => {
   expect(total).toBeGreaterThan(LINE_BYTES);
   expect(s.events[count - 1]).toEqual(event(count - 1, pad) as never);
   expect([s.errors, s.closes(), s.started()]).toEqual([[], 0, 1]);
-  // an explicit close ends the socket without an onClose
   s.subscription.close();
   await within(connections[0]!.closed, 5_000, "closing the subscription socket");
   expect([s.errors, s.closes()]).toEqual([[], 0]);
@@ -680,7 +901,6 @@ it("validates subscription acknowledgement separately from events", async () => 
   good.subscription.close();
   await within(connections[0]!.closed, 5_000, "closing the good subscription");
 
-  // a schema-valid event that also carries `error: null` is still an event, delivered unchanged
   const withError = {
     event: "pane_agent_status_changed",
     data: { type: "pane_agent_status_changed", workspace_id: "w1", pane_id: "p1", agent_status: "working" },
@@ -693,7 +913,6 @@ it("validates subscription acknowledgement separately from events", async () => 
   extended.subscription.close();
   await within(connections[1]!.closed, 5_000, "closing the extended-event subscription");
 
-  // each bad acknowledgement: reported once, closed once, never started
   const badAcks: [string, Script][] = [
     ["reply to another request", (_id, socket) => socket.write(ack("br-someone-else"))],
     ["unexpected acknowledgement", (id, socket) => socket.write(`${JSON.stringify({ id, result: { type: "pane_info" } })}\n`)],
@@ -709,24 +928,20 @@ it("validates subscription acknowledgement separately from events", async () => 
     expect([s.started(), s.closes(), s.events]).toEqual([0, 1, []]);
   }
 
-  // a herdr error answering the subscribe is herdr's own, reported as before
   script = (id, socket) => socket.end(`${JSON.stringify({ id, error: { code: "invalid_request", message: "bad subscription" } })}\n`);
   const refused = subscriber(path);
   await within(refused.closedOnce, 5_000, "closing after herdr's error");
   expect(refused.errors.map((e) => [(e as HerdrError).code, e.message])).toEqual([["invalid_request", "bad subscription"]]);
   expect([refused.started(), refused.closes()]).toEqual([0, 1]);
 
-  // after the acknowledgement, a malformed event or an oversized line closes the stream once
   const badEvents: [string, (id: string) => string][] = [
     ["malformed event", () => "null\n"],
     ["malformed event", () => "[1]\n"],
     ["malformed event", () => `${JSON.stringify({ event: "pane.agent_status_changed" })}\n`],
     ["malformed event", () => `${JSON.stringify({ event: 3, data: {} })}\n`],
-    // a second acknowledgement is no event either
     ["malformed event", (id) => ack(id)],
     ["unparseable frame", () => "{\"event\":\n"],
     ["both result and error", (id) => `${JSON.stringify({ id, result: {}, error: { code: "x", message: "y" } })}\n`],
-    // no newline at all, and a three-byte character on every byte boundary
     [`over the ${LINE_BYTES}-byte line limit`, () => "한".repeat(Math.ceil(LINE_BYTES / 3)) + "x"],
   ];
   for (const [reason, frame] of badEvents) {
@@ -744,31 +959,25 @@ it("closes protocol failures without daemon-death proof", async () => {
   let broken = true;
   const { path, connections } = await peer((request, { socket }) => {
     if (!broken) { socket.end(`${JSON.stringify({ id: request.id, result: { ok: true } })}\n`); return; }
-    // two answers in one chunk, the first carrying another request's id; the socket stays open,
-    // so only the client can close it
     socket.write(`${JSON.stringify({ id: "br-other", result: { secret: "private-reply-text" } })}\n${JSON.stringify({ id: request.id, result: { ok: true } })}\n`);
   });
   const failed = await timersOf(() => herdrRpc("fixture.read", {}, path, 10_000));
   expect(failed.value).toBeInstanceOf(HerdrError);
   const error = failed.value as HerdrError;
-  // a protocol failure, not one of the codes that say herdr is unreachable
   expect(error.code).toBe("bad_frame");
   expect(["connect_failed", "socket_missing", "closed", "socket_error", "timeout"]).not.toContain(error.code);
   expect(failed.open).toBe(0);
-  // the client closed that connection, once, and the peer is still listening
   await within(connections[0]!.closed, 5_000, "the client closing the bad connection");
   expect(diagnostics.records()).toEqual([expect.objectContaining({ event: "herdr.rpc.failed", code: "bad_frame", operation: "fixture.read", phase: "response", pending: 0 })]);
   expect(diagnostics.lines.join("\n")).not.toContain("private-reply-text");
   expect(diagnostics.lines.join("\n")).not.toContain(path);
 
-  // the next call opens a fresh socket on the same peer and recovers
   broken = false;
   const recovered = await timersOf(() => herdrRpc("fixture.read", {}, path, 10_000));
   expect([recovered.value, recovered.open]).toEqual([{ ok: true }, 0]);
   expect(connections).toHaveLength(2);
   expect(diagnostics.records()[1]).toEqual(expect.objectContaining({ event: "herdr.rpc.recovered", operation: "fixture.read", pending: 0 }));
 
-  // a subscription on a peer that breaks the protocol, then reopened on one that does not
   broken = true;
   const { path: streamPath, connections: streams } = await peer((request, { socket }) => {
     socket.write(broken ? `${ack(request.id)}{"event":\n` : `${ack(request.id)}${JSON.stringify(event(1))}\n`);

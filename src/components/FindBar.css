@@ -25,6 +25,12 @@
   min-width: 0;
 }
 
+@media (pointer: coarse) {
+  .find-bar-query .input {
+    height: var(--touch-target);
+  }
+}
+
 .find-bar-query > svg {
   flex: 0 0 auto;
 }

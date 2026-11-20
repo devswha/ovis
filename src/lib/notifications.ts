@@ -11,11 +11,9 @@ import { callNative, hasNativePlugin, PUSH_PLUGIN } from "./nativeApp.ts";
  *
  * The phone app's web view has no Notification either: there the permission is the app's, asked
  * through its push plugin (lib/nativeApp.ts), and the app shows the server's pushes itself.
- *
- * The transition policy is shared with the server (shared/notify-policy.ts).
  */
 
-export { alertStatus, alertsAllow, paneAlertsMuted, shouldNotifyStatus } from "../../shared/notify-policy.ts";
+export { alertPcAllowed, alertStatus, alertsAllow, paneAlertsMuted, shouldNotifyStatus } from "../../shared/notify-policy.ts";
 
 export type NotificationState = "unsupported" | "default" | "granted" | "denied";
 
@@ -71,12 +69,28 @@ export async function requestNotificationPermission(): Promise<NotificationState
 async function show(paneId: string, title: string, body: string, onClick?: () => void, machineId = "local", workspaceId?: string): Promise<void> {
   if (typeof globalThis.Notification === "undefined") return;
   if (globalThis.Notification.permission !== "granted") return;
-  if (typeof document !== "undefined" && !document.hidden) return; // visible tab: the UI already shows it
-  const options: NotificationOptions = { body, tag: paneNotificationTag(paneId, machineId), data: { pane_id: paneId, machine_id: machineId, ...(workspaceId ? { workspace_id: workspaceId } : {}) }, icon: "/icons/icon-192.png?v=sheep1" };
+  if (typeof document !== "undefined" && !document.hidden) return;
+  const tag = paneNotificationTag(paneId, machineId);
+  const alertId = crypto.randomUUID();
+  const options: NotificationOptions = { body, tag, data: { pane_id: paneId, machine_id: machineId, ...(workspaceId ? { workspace_id: workspaceId } : {}), alert_id: alertId }, icon: "/icons/icon-192.png?v=sheep1" };
   try {
     const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : undefined;
     if (registration?.active) {
+      // iOS keeps the pane's earlier alerts despite the tag: close them as a push does (public/sw.js),
+      // only the ones up before this alert, so one shown meanwhile stays
+      const listed = async (): Promise<Notification[]> => {
+        try {
+          return await registration.getNotifications({ tag });
+        } catch {
+          return []; // an older browser without getNotifications: the alert still shows
+        }
+      };
+      const alertIdOf = (alert: Notification) => (alert.data as { alert_id?: string } | null)?.alert_id;
+      const earlier = new Set((await listed()).map(alertIdOf));
       await registration.showNotification(title, options);
+      for (const alert of earlier.size ? await listed() : []) {
+        if (earlier.has(alertIdOf(alert))) alert.close();
+      }
       return;
     }
     const notification = new globalThis.Notification(title, options);
@@ -85,15 +99,31 @@ async function show(paneId: string, title: string, body: string, onClick?: () =>
       onClick?.();
     });
   } catch {
-    /* no way to show it here: the sidebar badge still carries the change */
   }
 }
 
-/** `workspaceId`: the pane's workspace, as the server's push names it (server/push.ts), so a tap after the pane ends opens it. */
-export function showPaneStatusNotification(paneId: string, title: string, status: AgentStatus, onClick?: () => void, machineId = "local", workspaceId?: string): void {
-  void show(paneId, title, statusNotificationBody(status), onClick, machineId, workspaceId);
+/** The page can show its own notifications here: a browser's, not the phone app's web view (the app shows only the server's pushes). */
+export function pageNotifications(): boolean {
+  return !hasNativePlugin(PUSH_PLUGIN) && typeof globalThis.Notification !== "undefined";
 }
 
-export function showPaneEndedNotification(paneId: string, title: string, onClick?: () => void, machineId = "local", workspaceId?: string): void {
-  void show(paneId, title, ENDED_NOTIFICATION_BODY, onClick, machineId, workspaceId);
+export async function showTestNotification(title: string, body: string): Promise<boolean> {
+  if (typeof globalThis.Notification === "undefined" || globalThis.Notification.permission !== "granted") return false;
+  const options: NotificationOptions = { body, tag: "ovis-test", icon: "/icons/icon-192.png?v=sheep1" };
+  try {
+    const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : undefined;
+    if (registration?.active) await registration.showNotification(title, options);
+    else new globalThis.Notification(title, options);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function showPaneStatusNotification(paneId: string, title: string, status: AgentStatus, onClick?: () => void, machineId = "local", workspaceId?: string): Promise<void> {
+  return show(paneId, title, statusNotificationBody(status), onClick, machineId, workspaceId);
+}
+
+export function showPaneEndedNotification(paneId: string, title: string, onClick?: () => void, machineId = "local", workspaceId?: string): Promise<void> {
+  return show(paneId, title, ENDED_NOTIFICATION_BODY, onClick, machineId, workspaceId);
 }

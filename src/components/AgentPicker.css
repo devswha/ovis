@@ -1,4 +1,3 @@
-/* the agent picker: a select whose rows show each agent's mark (New workspace, New worktree, Earlier sessions) */
 .agent-picker {
   position: relative;
 }
@@ -26,8 +25,8 @@
 }
 
 .agent-picker-chevron {
-  width: 16px;
-  height: 16px;
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
   flex: none;
   color: var(--text-dim);
 }
@@ -39,8 +38,8 @@
 }
 
 .agent-picker-shell svg {
-  width: 16px;
-  height: 16px;
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
   color: var(--text-dim);
 }
 
@@ -52,8 +51,6 @@
   overscroll-behavior: contain;
 }
 
-/* aria-selected is the chosen agent (bold); the keyboard/pointer row is data-active and carries
-   the highlight, which the shared menu gives aria-selected elsewhere */
 .agent-picker-menu .menu-item[aria-selected="true"] {
   background: transparent;
   color: var(--text);
@@ -65,18 +62,21 @@
 }
 
 .agent-picker-menu .menu-item[aria-selected="true"] .menu-item-main {
-  font-weight: 600;
+  font-weight: var(--fw-selected);
 }
 
-/* the quiet last row: set apart by a rule, in the dimmer text, and never bold as a chosen agent is */
+.agent-picker-menu .menu-item {
+  flex-shrink: 0;
+}
+
 .agent-picker-menu .agent-picker-add {
   margin-top: var(--space-1);
-  border-top: 1px solid var(--border);
+  border-top: var(--hairline) solid var(--border);
   color: var(--text-dim);
 }
 
 @media (pointer: coarse) {
   .agent-picker-menu .menu-item {
-    height: var(--touch-target);
+    min-height: var(--touch-target);
   }
 }

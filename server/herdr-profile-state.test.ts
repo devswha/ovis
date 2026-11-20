@@ -37,6 +37,16 @@ it("treats default as the unnamed session but does not merge ports or aliases", 
   expect(store.prune(new Set())).toEqual(["id"]);
   expect(store.approved("id", { destination: "BuildBox" })).toBe(false);
 });
+
+it("restores a saved Ovis choice without changing catalog approval", () => {
+  const dir = directory();
+  const store = new HerdrProfileState(dir);
+  const target = { destination: "BuildBox", session: "agents", own_ovis: "/home/u/.config/ovis/hc.sock" };
+  store.allowConnection("id", target); store.approve("id", target); store.flush();
+  const restored = new HerdrProfileState(dir);
+  expect(restored.approved("id", target)).toBe(true);
+  expect(restored.target("id", { destination: "BuildBox", session: "agents" })).toEqual(target);
+});
 it("rejects corrupt approval state without overwriting it", () => {
   const dir = directory(), path = join(dir, "herdr-profile-state.json");
   for (const data of ['{}', '[{"profile_id":"id","binding":"bad","approved":true,"snapshot":null}]']) {
@@ -111,7 +121,6 @@ it("writes unchanged approvals again when their file was deleted or replaced on 
   store.approve("id", { destination: "BuildBox" });
   store.flush();
   expect(readFileSync(path, "utf8")).toBe(saved);
-  // the same length, other bytes
   writeFileSync(path, saved.replace('"id"', '"xx"'));
   store.approve("id", { destination: "BuildBox" });
   store.flush();
@@ -130,7 +139,6 @@ it("writes durably, and only when the document changed", () => {
     store.saveSnapshot("id", { panes: [{ pane_id: "test-pane" }] } as SessionSnapshot);
     store.flush();
     expect(temporaries).toHaveLength(1);
-    // every refresh brings a new snapshot object: the same panes write nothing
     store.saveSnapshot("id", { panes: [{ pane_id: "test-pane" }] } as SessionSnapshot);
     store.flush();
     expect(temporaries).toHaveLength(1);

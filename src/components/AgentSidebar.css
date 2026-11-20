@@ -1,20 +1,9 @@
-/* Agents takes the height of its rows, at most half the sidebar, docked above the footer; the
-   workspace list has the rest. Parted from it by space, not a rule. */
 .agents-sidebar {
+  --agent-since-w: calc(var(--fs-meta) * 2.5 + 2 * var(--space-1));
   display: flex;
-  flex: 0 1 auto;
   flex-direction: column;
   min-height: 0;
-  max-height: 50%;
   padding: var(--space-2) var(--side-gutter) 0;
-}
-
-.agents-sidebar.is-collapsed,
-.agents-sidebar.is-empty { flex: 0 0 auto; }
-
-/* A visible Agents list fills the space released by folded PC groups, up to its existing cap. */
-.sidebar-shell:not(:has(.machine-list .machine-workspaces)):has(.agents-sidebar:not(.is-collapsed):not(.is-empty)) .agents-sidebar {
-  flex: 1 1 auto;
 }
 
 /* positioned: a row's visually hidden label is absolute, and must not size the page instead */
@@ -29,48 +18,36 @@
 
 .agents-sidebar.is-empty .agent-list-contents { flex: 0 0 auto; }
 
-/* a list that is cut fades out; at the end of its scroll the fade lies over its own spare space */
-.agent-list-contents::after {
-  content: "";
-  position: sticky;
-  bottom: 0;
-  display: block;
-  height: var(--space-4);
-  background: linear-gradient(transparent, var(--bg-panel));
-  pointer-events: none;
-}
-
-.agents-sidebar.is-empty .agent-list-contents::after { display: none; }
-
 .agent-section-toggle {
   flex: 0 0 auto;
   width: 100%;
   cursor: pointer;
 }
 
-/* the fold's caret hangs in the leading cell and shows when it is of use */
 .agent-section-caret {
   flex: none;
   width: var(--space-4);
   height: var(--space-4);
   margin-inline: calc((var(--side-box) - var(--space-4)) / 2);
-  opacity: 0;
 }
 
-.agent-section-toggle:focus-visible .agent-section-caret,
-.agents-sidebar.is-collapsed .agent-section-caret { opacity: 1; }
-
-@media (hover: hover) {
-  .agent-section-toggle:hover .agent-section-caret { opacity: 1; }
-}
-
-/* a folded list still says how many agents it holds */
 .agent-section-count {
   width: var(--side-box);
   margin-left: auto;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-meta);
   font-variant-numeric: tabular-nums;
   text-align: center;
+}
+
+.agent-section-waiting {
+  min-width: 0;
+  margin-inline-start: var(--space-2);
+  overflow: hidden;
+  color: var(--status-blocked);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-list {
@@ -79,12 +56,171 @@
   list-style: none;
 }
 
-/* Pinned agents stand first in a card (Sidebar.css); the Agents head stays the list's only head. */
+.agent-group-toggle {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--pointer-target);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  text-align: left;
+  cursor: pointer;
+}
 
-/* The agent row selects its pane; its ⋯ (or a right-click) opens its pin menu. */
-/* The trailing padding keeps the state cell, which the row draws at its right edge after the ⋯, as
-   a workspace row does; the fill is the whole row's. */
+.agent-group-toggle:disabled { cursor: default; }
+:is(.agent-group-toggle, .agent-named-group-toggle):disabled .agent-section-caret { visibility: hidden; }
+.agent-group-toggle:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
+
+.agent-group-label[data-group="blocked"] { --agent-group-ink: var(--status-blocked); }
+.agent-group-label[data-group="working"] { --agent-group-ink: var(--status-working); }
+.agent-group-label[data-group="done"] { --agent-group-ink: var(--status-done); }
+
+.agent-group-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--agent-group-ink, inherit);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-count {
+  flex: none;
+  margin-left: var(--space-2);
+  font-weight: var(--fw-regular);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (hover: hover) {
+  .agent-group-toggle:hover:not(:disabled) { color: var(--text); }
+}
+
+@media (pointer: coarse) {
+  .agent-group-toggle {
+    min-height: var(--side-row);
+    margin-top: 0;
+    padding-top: var(--space-4);
+  }
+}
+
+.agent-background-toggle {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--side-row);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  cursor: pointer;
+}
+
+.agent-background-label:first-child .agent-background-toggle { margin-top: 0; }
+.agent-background-toggle .agent-section-count { font-size: inherit; }
+
+.agent-named-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: var(--side-row);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  cursor: pointer;
+}
+
+.agent-named-group-label:first-child .agent-named-group-toggle { margin-top: 0; }
+.agent-named-group-toggle:disabled { cursor: default; }
+.agent-named-group-toggle .agent-section-caret { opacity: 1; }
+.agent-named-group-toggle .agent-section-count { font-size: inherit; }
+
+.agent-named-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-named-group-dot {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: 50%;
+}
+
+.agent-named-group-dot[data-state="blocked"] { background: var(--status-blocked); }
+.agent-named-group-dot[data-state="working"] { background: var(--status-working); }
+
+@media (hover: hover) {
+  .agent-named-group-toggle:hover:not(:disabled) { color: var(--text); }
+}
+
+.agent-list .agent-item[hidden],
+.agent-list .agent-helpers[hidden] { display: none; }
+
+.agent-helpers { position: relative; }
+
+.agent-helpers-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: var(--side-row);
+  padding: 0 0 0 var(--space-6);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-helpers-toggle:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
+.agent-helpers-toggle .agent-section-caret { margin-inline-end: 0; }
+
+.agent-helpers-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (hover: hover) {
+  .agent-helpers-toggle:hover { background: var(--side-hover); color: var(--text); }
+}
+
+@media (hover: hover) {
+  .agent-background-toggle:hover { color: var(--text); }
+}
+
 .agent-item {
+  --row-fill: var(--bg-panel);
+  --agent-tail: var(--space-6);
+  --agent-time: 0px;
   position: relative;
   display: flex;
   align-items: center;
@@ -109,14 +245,14 @@
   cursor: pointer;
 }
 
-.agent-row:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
+.agent-row:focus-visible { outline-offset: var(--ring-offset); scroll-margin-block: calc(var(--ring-offset) + var(--space-1)); }
 .agent-row:disabled { cursor: default; }
 
 @media (hover: hover) {
-  .agent-item:has(> .agent-row:enabled):hover { background: var(--side-hover); }
+  .agent-item:has(> .agent-row:enabled):hover { --row-fill: var(--side-hover); background: var(--side-hover); }
 }
 
-.agent-item.is-selected { background: var(--side-selected); }
+.agent-item.is-selected { --row-fill: var(--side-selected); background: var(--side-selected); }
 
 /* as a workspace row's in forced colors (Sidebar.css): a Highlight leading bar instead of the erased fill,
    drawn inside the row, since the list scrolls and would clip anything pulled into its edge; beside the focus
@@ -136,8 +272,6 @@
   }
 }
 
-/* As a workspace row's: the ⋯ takes no room until the row is hovered, focused, selected or its
-   menu is open, and stays in the focus order, since the menu hands the focus back to it. */
 .agent-actions {
   display: flex;
   align-items: center;
@@ -145,14 +279,15 @@
   width: 0;
   overflow: hidden;
   opacity: 0;
+  visibility: hidden;
 }
 
 .agent-item:focus-within > .agent-actions,
-.agent-item.is-selected > .agent-actions,
 .agent-actions:has([aria-expanded="true"]) {
   width: auto;
   overflow: visible;
   opacity: 1;
+  visibility: visible;
 }
 
 @media (hover: hover) {
@@ -160,12 +295,17 @@
     width: auto;
     overflow: visible;
     opacity: 1;
+    visibility: visible;
   }
 }
 
-/* as a workspace row's (Sidebar.css): no "..." button where there is a mouse and room for a right-click */
-@media (pointer: fine) and (min-width: 769px) {
-  .agent-actions { display: none; }
+@media (pointer: coarse), (max-width: 768px) {
+  .agent-item.is-selected > .agent-actions {
+    width: auto;
+    overflow: visible;
+    opacity: 1;
+    visibility: visible;
+  }
 }
 
 .agent-copy {
@@ -176,7 +316,6 @@
   min-width: 0;
 }
 
-/* the title and the place; on One line they share a line (below), else each has its own */
 .agent-main { display: contents; }
 
 .agent-title,
@@ -189,18 +328,22 @@
 }
 
 .agent-title {
-  color: var(--text);
+  max-width: 100%;
+  color: var(--text-dim);
   font-size: var(--fs-md);
   font-weight: var(--fw-regular);
 }
 
-.agent-item.is-selected .agent-title { color: var(--text-strong); }
+.agent-item.is-selected .agent-title { color: var(--text-strong); font-weight: var(--fw-selected); }
 
 .agent-title-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
+  height: calc(var(--fs-md) * var(--lh-tight));
+  overflow: hidden;
 }
 
 .agent-context {
@@ -209,37 +352,136 @@
 }
 
 /* What herdr plugins report on the pane (its `$name` tokens: usage left, a task's progress): a
-   line of its own under the place, in either row height, only where the pane has one. Values
-   change while they are read, so their digits keep their width. */
+   line of its own under the place, in either row height, only where the pane has one. */
 .agent-tokens {
   color: var(--text-dim);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 
-/* the live name is what a command names the agent by: it reads in the command's face */
 .agent-name {
   color: var(--text);
   font-family: var(--font-mono);
 }
 
 /* Settings -> Sidebar rows -> One line: a workspace row's height, the place dim after the title.
-   The title keeps its width first; the place takes what is left and gives way with an ellipsis.
-   A pane's plugin tokens add their line under it. */
+   The title keeps its width first. The place shows after it only where at least 4.5em of it fits, cut
+   there with an ellipsis, and is left out whole where less would fit (it wraps to a line the row does
+   not show): a row never ends in a couple of stray letters. A pane's plugin tokens add their line under it. */
 .agents-sidebar.is-one-line .agent-row { min-height: var(--side-row); }
 
 .agents-sidebar.is-one-line .agent-main {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-2);
   min-width: 0;
+  height: calc(var(--fs-md) * var(--lh-tight));
+  overflow: hidden;
 }
 
-.agents-sidebar.is-one-line .agent-title-line { flex: 0 1 auto; }
+.agents-sidebar.is-one-line .agent-title-line {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
 
 .agents-sidebar.is-one-line .agent-context {
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 1 1 4.5em;
+  min-width: 4.5em;
+}
+
+@media (pointer: coarse) {
+  .agents-sidebar.is-one-line .agent-context {
+    position: absolute;
+    width: var(--hairline);
+    min-width: 0;
+    height: var(--hairline);
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+.agents-sidebar.is-one-line .agent-item { padding-right: var(--space-6); }
+
+.agents-sidebar.is-one-line .agent-row > .agent-row-state { width: var(--space-6); }
+
+.agents-sidebar.is-one-line .agent-row > .agent-row-state > .sidebar-status {
+  flex-basis: 100%;
+  width: 100%;
+}
+
+@media (hover: hover) and (pointer: fine) and (min-width: 769px) {
+  .agents-sidebar.is-one-line .agent-item > .agent-actions {
+    position: absolute;
+    inset-block: 0;
+    right: calc(var(--agent-tail) + var(--agent-time));
+    padding-inline-start: var(--space-4);
+    background: linear-gradient(to right, transparent, var(--row-fill) var(--space-4));
+  }
+
+  .agents-sidebar.is-one-line .agent-item > .agent-actions .sidebar-row-action { width: var(--space-6); }
+}
+
+/* a helper an agent started (herdr-core's parent) reads under that agent on one line, a workspace
+   row's height: its row steps in per level, and an elbow drawn from under its parent's mark leads
+   to its own. */
+.agent-item[data-depth] .agent-row { min-height: var(--side-row); }
+.agent-item[data-depth="1"] .agent-row { padding-inline-start: var(--space-6); }
+.agent-item[data-depth="2"] .agent-row { padding-inline-start: calc(2 * var(--space-6)); }
+
+.agent-item[data-depth]::after,
+.agent-helpers::after {
+  position: absolute;
+  top: 0;
+  inset-inline-start: calc(var(--side-box) / 2);
+  width: var(--space-3);
+  height: 50%;
+  border-inline-start: var(--hairline) solid var(--border-strong);
+  border-block-end: var(--hairline) solid var(--border-strong);
+  border-end-start-radius: var(--radius-sm);
+  content: "";
+  pointer-events: none;
+}
+
+.agent-item[data-depth="2"]::after { inset-inline-start: calc(var(--side-box) / 2 + var(--space-6)); }
+
+.agent-item[data-more]::after,
+.agent-helpers[data-more]::after {
+  height: 100%;
+  border: 0;
+  border-end-start-radius: 0;
+  background:
+    linear-gradient(var(--border-strong), var(--border-strong)) 0 0 / var(--hairline) 100% no-repeat,
+    linear-gradient(var(--border-strong), var(--border-strong)) 0 50% / 100% var(--hairline) no-repeat;
+}
+
+.agent-item[data-through]::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(var(--side-box) / 2);
+  width: var(--space-3);
+  background: linear-gradient(var(--border-strong), var(--border-strong)) 0 0 / var(--hairline) 100% no-repeat;
+  content: "";
+  pointer-events: none;
+}
+
+.agent-blocked {
+  flex: none;
+  overflow: hidden;
+  color: var(--status-blocked);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-progress {
+  flex: none;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
 }
 
 .agent-row-status {
@@ -248,13 +490,10 @@
   align-items: center;
 }
 
-/* alerts off for everyone (the row menu's Mute alerts): a crossed bell beside the state, drawn as
-   the background and plan counts are, so the state is told by the glyph and its words, not a colour */
 .agent-muted {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  /* kept off the row's focus ring when it is the last thing in the row */
   margin-inline: var(--space-2) var(--space-1);
   color: var(--text-dim);
 }
@@ -288,13 +527,11 @@
 }
 
 @media (pointer: coarse) {
-  .agent-section-caret { opacity: 1; }
-
-  /* Row menus stay visible on touch. */
   .agent-actions {
     width: auto;
     overflow: visible;
     opacity: 1;
+    visibility: visible;
   }
 }
 
@@ -307,3 +544,101 @@
   .agent-row:enabled:active { opacity: 1; }
   .agent-item:has(> .agent-row:enabled:active) { background: var(--side-hover); }
 }
+
+@media (pointer: fine) {
+  .agents-sidebar.is-compact { --side-row: calc(var(--control-h) - var(--space-1) - var(--hairline) * 2); }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .agents-sidebar.is-compact .agent-item:not(:hover, :focus-within) :is(.agent-row-status > :not(.sidebar-filter-note, .context-count), .agent-blocked, .agent-progress) {
+    position: absolute;
+    width: var(--hairline);
+    height: var(--hairline);
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+.agent-since {
+  flex: 0 0 auto;
+  min-width: var(--agent-since-w);
+  padding-inline: var(--space-1);
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
+  text-align: end;
+  white-space: nowrap;
+}
+
+.agent-item:has(.agent-since) { --agent-time: var(--agent-since-w); }
+
+.agents-sidebar.is-one-line .agent-item.is-filter-context.is-selected { --agent-time: 0px; }
+.agents-sidebar.is-one-line .agent-item.is-filter-context.is-selected .agent-since { display: none; }
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row {
+  display: grid;
+  grid-template-areas: "mark title marks" "mark place since";
+  grid-template-rows: calc(var(--fs-md) * var(--lh-tight)) calc(var(--fs-xs) * var(--lh-tight));
+  grid-template-columns: var(--side-box) minmax(0, 1fr) auto;
+  align-content: center;
+  align-items: center;
+  row-gap: var(--space-1);
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row > .sidebar-mark { grid-area: mark; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-copy { display: contents; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-title-line { grid-area: title; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row:has(> .agent-row-status:empty) .agent-title-line { grid-column: 2 / -1; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-context { grid-area: place; }
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-tokens {
+  grid-row: 3;
+  grid-column: 2 / -1;
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row-status {
+  grid-area: marks;
+  justify-self: end;
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-since {
+  grid-area: since;
+  justify-self: end;
+}
+
+.agents-sidebar .agent-item[data-state-said] {
+  --agent-tail: var(--space-2);
+  padding-right: var(--space-2);
+}
+
+.agents-sidebar .agent-item[data-state-said] .agent-row > .agent-row-state {
+  width: var(--hairline);
+  height: var(--hairline);
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.agents-sidebar .agent-item[data-state-said] .agent-row > .agent-row-state :is(.sidebar-status-dot, .sidebar-status-glyph) { animation: none; }
+
+.agents-sidebar .agent-item[data-state-own] {
+  --agent-tail: calc(var(--space-2) + var(--space-6));
+  padding-right: var(--space-2);
+}
+
+.agents-sidebar .agent-item[data-state-own] .agent-row > .agent-row-state {
+  position: static;
+  flex: none;
+  order: 1;
+  width: var(--space-6);
+}
+
+.agents-sidebar .agent-item[data-state-own] .agent-since { order: 2; }
+
+.agents-sidebar:not(.is-one-line) .agent-item[data-state-own]:not([data-depth]) .agent-row {
+  grid-template-areas: "mark title marks marks" "mark place state since";
+  grid-template-columns: var(--side-box) minmax(0, 1fr) auto auto;
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item[data-state-own]:not([data-depth]) .agent-row > .agent-row-state { grid-area: state; }

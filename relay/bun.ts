@@ -4,18 +4,22 @@
  * README.md). It keeps everything in memory and stores nothing.
  */
 import type { ServerWebSocket } from "bun";
-import { MAX_MESSAGE_BYTES, Room, admit, type Limiters, type SocketInfo, type SocketRequest } from "./core.ts";
-import { memoryLimiters, relayLimits, relayLimitsFromArgs, type BunRelayLimits } from "./bun-limits.ts";
+import { MAX_MESSAGE_BYTES, Room, admit, type Limiters, type RoomAuthorization, type SocketInfo, type SocketRequest } from "./core.ts";
+import { PairRoom, PAIR_GUEST_GAP_MS, type PairInfo, type PairSocketRequest } from "./pair-room.ts";
+import { memoryLimiters, relayLimits, relayLimitsFromArgs, relayPassFromArgs, type BunRelayLimits } from "./bun-limits.ts";
+import { passPolicy, type PassPolicy } from "./pass.ts";
 
-interface SocketData { request: SocketRequest; info: SocketInfo | null; address: string }
+interface SocketData { request: SocketRequest | PairSocketRequest; info: SocketInfo | PairInfo | null; address: string }
 type Socket = ServerWebSocket<SocketData>;
 
 export interface BunRelayOptions {
   port?: number;
   hostname?: string;
-  /** Overrides only rate limiting, not the hard room/socket caps. */
   limiters?: Limiters;
   limits?: Partial<BunRelayLimits>;
+  pairGuestGapMs?: number;
+  /** which PCs get in by their relay pass (pass.ts); every PC without it */
+  pass?: PassPolicy;
 }
 
 export interface BunRelay {
@@ -23,37 +27,47 @@ export interface BunRelay {
   stop(): Promise<void>;
 }
 
-/** how often idle sockets are looked for */
 const SWEEP_MS = 10_000;
 
 export function startBunRelay(options: BunRelayOptions = {}): BunRelay {
   const limits = relayLimits(options.limits);
   const limiters = options.limiters ?? memoryLimiters(limits);
-  const rooms = new Map<string, { room: Room<Socket>; sockets: Set<Socket>; pending: number }>();
+  const rooms = new Map<string, { room: Room<Socket> | PairRoom<Socket>; sockets: Set<Socket>; pending: number }>();
+  const pass = options.pass;
+  const keyOf = (request: SocketRequest | PairSocketRequest) => "kind" in request ? `pair:${request.nameplate}` : request.server_id;
   let socketCount = 0;
-  /** open and upgrading sockets per connecting address; an address with none is forgotten */
   const byAddress = new Map<string, number>();
   const release = (address: string) => {
     const left = (byAddress.get(address) ?? 1) - 1;
     if (left > 0) byAddress.set(address, left);
     else byAddress.delete(address);
   };
-  const roomOf = (serverId: string) => {
-    let entry = rooms.get(serverId);
+  const roomOf = (request: SocketRequest | PairSocketRequest) => {
+    const key = keyOf(request);
+    let entry = rooms.get(key);
     if (!entry) {
       const sockets = new Set<Socket>();
-      const room = new Room<Socket>({
+      const common = {
         sockets: () => sockets,
-        info: (socket) => socket.data.info,
-        setInfo: (socket, info) => { socket.data.info = info; },
-        send: (socket, frame) => { socket.send(frame); },
-        close: (socket, code, reason) => { socket.close(code, reason); },
+        send: (socket: Socket, frame: string | ArrayBuffer | Uint8Array) => { socket.send(frame); },
+        close: (socket: Socket, code: number, reason: string) => { socket.close(code, reason); },
         now: () => Date.now(),
-      });
+      };
+      // a room's pass authorization lives as long as the room, which a reconnecting PC opens again with its pass
+      let until: RoomAuthorization | null = null;
+      const room = "kind" in request
+        ? new PairRoom<Socket>({ ...common, info: (socket) => socket.data.info as PairInfo | null, setInfo: (socket, info) => { socket.data.info = info; }, ...(pass ? { pass } : {}) }, options.pairGuestGapMs ?? PAIR_GUEST_GAP_MS)
+        : new Room<Socket>({ ...common, info: (socket) => socket.data.info as SocketInfo | null, setInfo: (socket, info) => { socket.data.info = info; },
+          ...(pass ? { pass: { policy: pass, until: () => until, setUntil: (value: RoomAuthorization) => { until = value; } } } : {}) });
       entry = { room, sockets, pending: 0 };
-      rooms.set(serverId, entry);
+      rooms.set(key, entry);
     }
     return entry;
+  };
+  const openIn = (room: Room<Socket> | PairRoom<Socket>, socket: Socket) => {
+    const request = socket.data.request;
+    if (room instanceof PairRoom) { if ("kind" in request) room.open(socket, request); }
+    else if (!("kind" in request)) room.open(socket, request);
   };
 
   const server = Bun.serve<SocketData>({
@@ -61,17 +75,20 @@ export function startBunRelay(options: BunRelayOptions = {}): BunRelay {
     hostname: options.hostname ?? "127.0.0.1",
     async fetch(request, bunServer) {
       const address = bunServer.requestIP(request)?.address ?? "";
-      const admitted = await admit(request, address, limiters);
+      const admitted = await admit(request, address, limiters, pass);
       if (admitted instanceof Response) return admitted;
       // refused, never evicted: a socket already open (a signed-in phone, its PC) keeps its place
       if ((byAddress.get(address) ?? 0) >= limits.maxSocketsPerAddress) {
         return new Response("too many open connections from this address", { status: 429, headers: { "retry-after": "60", "cache-control": "no-store" } });
       }
-      if (socketCount >= limits.maxSockets || (!rooms.has(admitted.server_id) && rooms.size >= limits.maxRooms)) {
+      const pairing = "kind" in admitted;
+      // a pairing room needs no PC's key to open, so it never takes one of the places PCs connect to
+      const kindCount = [...rooms.keys()].filter((key) => key.startsWith("pair:") === pairing).length;
+      if (socketCount >= limits.maxSockets || (!rooms.has(keyOf(admitted)) && kindCount >= (pairing ? limits.maxPairRooms : limits.maxRooms))) {
         return new Response("relay capacity reached", { status: 503, headers: { "retry-after": "60", "cache-control": "no-store" } });
       }
       // Reserve synchronously before upgrading: concurrent fetches cannot oversubscribe either cap.
-      const entry = roomOf(admitted.server_id);
+      const entry = roomOf(admitted);
       entry.pending++;
       socketCount++;
       byAddress.set(address, (byAddress.get(address) ?? 0) + 1);
@@ -79,7 +96,7 @@ export function startBunRelay(options: BunRelayOptions = {}): BunRelay {
       entry.pending--;
       socketCount--;
       release(address);
-      if (entry.pending === 0 && entry.sockets.size === 0) rooms.delete(admitted.server_id);
+      if (entry.pending === 0 && entry.sockets.size === 0) rooms.delete(keyOf(admitted));
       return new Response("expected a WebSocket upgrade", { status: 426 });
     },
     websocket: {
@@ -91,23 +108,23 @@ export function startBunRelay(options: BunRelayOptions = {}): BunRelay {
       // the room closes idle sockets itself (IDLE_MS), as on Cloudflare
       idleTimeout: 0,
       open(socket) {
-        const entry = roomOf(socket.data.request.server_id);
+        const entry = roomOf(socket.data.request);
         entry.pending--;
         entry.sockets.add(socket);
-        entry.room.open(socket, socket.data.request);
+        openIn(entry.room, socket);
       },
       message(socket, message) {
-        rooms.get(socket.data.request.server_id)?.room.message(socket, message);
+        rooms.get(keyOf(socket.data.request))?.room.message(socket, message);
       },
       close(socket) {
-        const serverId = socket.data.request.server_id;
-        const entry = rooms.get(serverId);
+        const key = keyOf(socket.data.request);
+        const entry = rooms.get(key);
         if (!entry) return;
         entry.room.closed(socket);
         entry.sockets.delete(socket);
         socketCount--;
         release(socket.data.address);
-        if (entry.pending === 0 && entry.sockets.size === 0) rooms.delete(serverId);
+        if (entry.pending === 0 && entry.sockets.size === 0) rooms.delete(key);
       },
     },
   });
@@ -131,7 +148,7 @@ if (import.meta.main) {
   const port = Number(option("port") ?? process.env["PORT"] ?? 8787);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Usage: bun relay/bun.ts [--port N] [--hostname H]");
   const hostname = option("hostname") ?? "127.0.0.1";
-  const relay = startBunRelay({ port, hostname, limits: relayLimitsFromArgs(args, process.env) });
+  const relay = startBunRelay({ port, hostname, limits: relayLimitsFromArgs(args, process.env), pass: await passPolicy(relayPassFromArgs(args, process.env)) });
   console.log(`Ovis relay listening on http://${hostname}:${relay.port}`);
   const stop = () => { void relay.stop().then(() => process.exit(0)); };
   process.on("SIGINT", stop);

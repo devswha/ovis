@@ -8,7 +8,6 @@ const script = fileURLToPath(new URL("./typecheck.ts", import.meta.url));
 let cwd: string;
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), "ovis-typecheck-"));
-  // A compiler stand-in at Bun's command boundary records each child's actual environment.
   writeFileSync(join(cwd, "package.json"), JSON.stringify({ scripts: { tsc: "bun compiler.ts" } }));
   writeFileSync(join(cwd, "compiler.ts"), `
     const project = process.argv.includes("-p") ? "tools" : "main";
@@ -37,13 +36,13 @@ function run(settings: Record<string, string> = {}) {
 }
 
 it.each([
-  [{}, "400", String(Math.min(32, availableParallelism())), undefined],
-  [{ GOGC: "100" }, "100", String(Math.min(32, availableParallelism())), undefined],
-  [{ GOMAXPROCS: "8" }, "400", "8", undefined],
-  [{ GOMEMLIMIT: "1GiB" }, "400", String(Math.min(32, availableParallelism())), "1GiB"],
+  [{}, "off", String(Math.min(32, availableParallelism())), "8GiB"],
+  [{ GOGC: "100" }, "100", String(Math.min(32, availableParallelism())), "8GiB"],
+  [{ GOMAXPROCS: "8" }, "off", "8", "8GiB"],
+  [{ GOMEMLIMIT: "1GiB" }, "off", String(Math.min(32, availableParallelism())), "1GiB"],
   [{ GOGC: "off", GOMAXPROCS: "4", GOMEMLIMIT: "2GiB" }, "off", "4", "2GiB"],
   [{ GOGC: "", GOMAXPROCS: "", GOMEMLIMIT: "" }, "", "", ""],
-] satisfies [Record<string, string>, string, string, string | undefined][])(
+] satisfies [Record<string, string>, string, string, string][])(
   "passes Go defaults and caller overrides to both compiler processes: %j",
   (settings, GOGC, GOMAXPROCS, GOMEMLIMIT) => {
     const result = run(settings);

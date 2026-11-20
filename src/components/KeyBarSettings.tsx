@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, GripVertical, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronUp, FoldVertical, GripVertical, Keyboard, Paperclip, Plus, X } from "lucide-react";
 
 import "./KeyBarSettings.css";
 
@@ -8,12 +8,45 @@ import { NO_STICKY_MODIFIERS, type StickyModifiers } from "../lib/keys.ts";
 import { useSettings } from "../lib/settings.ts";
 import { useT } from "../lib/i18n.ts";
 import { edgeScrollStep, rowAt } from "../lib/touchReorder.ts";
+import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { SettingsBare, SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
 
 const MODIFIERS: readonly (keyof StickyModifiers)[] = ["ctrl", "alt", "shift"];
 const MODIFIER_CAPS: Record<keyof StickyModifiers, string> = { ctrl: "Ctrl", alt: "Alt", shift: "Shift" };
 const CHARACTER_KEY = "character";
 
-/** The phone's key row: handles are a shortcut; buttons keep editing possible without dragging. */
+function PhonePreview({ keyboard, bar }: { keyboard: boolean; bar: "keys" | "folded" }) {
+  return (
+    <span className="key-bar-phone" data-keyboard={keyboard ? "up" : "down"} data-bar={bar}>
+      <span className="key-bar-phone-screen" />
+      <span className="key-bar-phone-bar" />
+      <span className="key-bar-phone-keyboard" />
+    </span>
+  );
+}
+
+export function KeyBarToggles() {
+  const t = useT();
+  const { settings, update } = useSettings();
+  const touch = useMediaQuery("(pointer: coarse)");
+  if (!touch) return null;
+  return (
+    <SettingsBare.Provider value={true}>
+      <SettingsGroup>
+        <SettingsRow label={t("Don't open the keyboard when tapping the terminal")} description={t("On this device, a tap on the terminal no longer brings up the keyboard; the key bar's keyboard key shows and hides it.")} icon={Keyboard} preview={<PhonePreview keyboard={!settings.terminalKeyboardOnRequest} bar="keys" />} reset={["terminalKeyboardOnRequest"]} keywords={t("Keyboard only from the key bar")}>
+          <Toggle label={t("Don't open the keyboard when tapping the terminal")} checked={settings.terminalKeyboardOnRequest} onChange={(terminalKeyboardOnRequest) => update({ terminalKeyboardOnRequest })} />
+        </SettingsRow>
+        <SettingsRow label={t("Hide the key bar in the input line")} description={t("On this device, with Input line chosen, the key bar stays folded under the line until its Terminal keys button opens it.")} icon={FoldVertical} preview={<PhonePreview keyboard bar={settings.terminalFoldKeyBar ? "folded" : "keys"} />} reset={["terminalFoldKeyBar"]} keywords={t("Fold the key bar")}>
+          <Toggle label={t("Hide the key bar in the input line")} checked={settings.terminalFoldKeyBar} onChange={(terminalFoldKeyBar) => update({ terminalFoldKeyBar })} />
+        </SettingsRow>
+        <SettingsRow label={t("Attach files button")} description={t("Adds a button that picks files on this device, uploads them to the PC and puts their paths in the terminal. It sits in the input line, or in the key bar while you type directly.")} icon={Paperclip} reset={["terminalAttachButton"]}>
+          <Toggle label={t("Attach files button")} checked={settings.terminalAttachButton} onChange={(terminalAttachButton) => update({ terminalAttachButton })} />
+        </SettingsRow>
+      </SettingsGroup>
+    </SettingsBare.Provider>
+  );
+}
+
 export function KeyBarSettings() {
   const t = useT();
   const { settings, update } = useSettings();
@@ -21,7 +54,6 @@ export function KeyBarSettings() {
   const ids = new Set(items.map(keyBarItemId));
   const available = KEY_BAR_KEYS.filter((key) => !ids.has(keyBarItemId({ type: "key", key })));
   const [chosenKey, setChosenKey] = useState<string>(available[0] ?? "");
-  // The combo editor names a base key; shortcuts such as ^C already include a modifier.
   const comboKeys = KEY_BAR_KEYS.filter((key) => !key.startsWith("ctrl-") && key !== "BackTab" && !["pipe", "tilde", "slash"].includes(key));
   const [comboKey, setComboKey] = useState<string>("ArrowLeft");
   const [character, setCharacter] = useState("");
@@ -143,6 +175,7 @@ export function KeyBarSettings() {
 
   return (
     <div className="key-bar-settings">
+      <KeyBarToggles />
       <p className="settings-hint">{t("Choose the keys and their order under the terminal. The keyboard mode button stays first.")}</p>
       <ol ref={listRef} className="key-bar-settings-list" aria-label={t("Key bar keys")}>
         {items.map((item, index) => {

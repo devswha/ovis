@@ -35,6 +35,7 @@ describe("saved herdr machine profiles", () => {
     expect(sameSshSession({ destination: "host" }, { destination: "host", port: 22 })).toBe(false);
     expect(sameSshSession({ destination: "Host" }, { destination: "host" })).toBe(false);
     expect(sameSshSession({ destination: "host", port: 2222 }, { destination: "host", port: 2222 })).toBe(true);
+    expect(sameSshSession({ destination: "host", port: "022" as unknown as number }, { destination: "host", port: 22 })).toBe(true);
   });
   it("runs only the read-only CLI command, honoring the configured binary and environment", async () => {
     const bin = join(root, "fake-herdr");

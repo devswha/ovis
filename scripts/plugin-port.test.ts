@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { canBind, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
+import { canBind, canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
 
 let scratch: string;
 
@@ -32,6 +32,31 @@ describe("canBind", () => {
     expect(await canBind("127.0.0.1", port)).toBe(false);
     await holder.stop(true);
     expect(await canBind("127.0.0.1", port)).toBe(true);
+  });
+});
+
+describe("canServe", () => {
+  it("counts a port taken on ::1 as taken only when the server would open ::1 too", async () => {
+    let holder: ReturnType<typeof Bun.serve> | undefined;
+    // a port held on ::1 whose number is free on 127.0.0.1: the OS picks ::1's number alone, and a test running
+    // beside this one may hold the same number on 127.0.0.1, which would say nothing about canServe
+    for (let attempt = 0; attempt < 20 && holder === undefined; attempt++) {
+      let held: ReturnType<typeof Bun.serve>;
+      try {
+        held = Bun.serve({ hostname: "::1", port: 0, fetch: () => new Response() });
+      } catch {
+        return;
+      }
+      if (await canBind("127.0.0.1", held.port!)) holder = held;
+      else await held.stop(true);
+    }
+    if (holder === undefined) throw new Error("no ::1 port whose number was free on 127.0.0.1 in 20 tries");
+    const port = holder.port!;
+    try {
+      expect(await canServe("127.0.0.1", port, false)).toBe(true);
+      expect(await canServe("127.0.0.1", port, true)).toBe(false);
+    } finally { await holder.stop(true); }
+    expect(await canServe("127.0.0.1", port, true)).toBe(true);
   });
 });
 

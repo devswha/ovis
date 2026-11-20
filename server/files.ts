@@ -1,25 +1,22 @@
-import { readdirSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
+import type { MarkdownDocument, PaneDocuments } from "../shared/files.ts";
 import { fileTask } from "./file-pool.ts";
 
 const CACHE_MS = 5_000;
 const MAX_ENTRIES = 5_000;
-/** git lists paths cheaply, so a tracked data set of thousands of files does not hide the rest */
 const MAX_GIT_ENTRIES = 100_000;
-/** one folder's share of files, so a folder of thousands leaves room for its siblings; its subfolders are always walked */
 const MAX_FOLDER_ENTRIES = 1_000;
 const MAX_DEPTH = 6;
 const SKIP: Record<string, true> = { ".git": true, node_modules: true, dist: true, target: true, ".venv": true };
 const cache = new Map<string, { expires: number; files: string[] }>();
 
-/** What one git listing may print; past it the listing is not used and the walk answers instead. */
 export const GIT_LIST_MAX_BYTES = 16 * 1024 * 1024;
 /** How long one git listing may run, including a process it left holding its output. */
 export const GIT_LIST_DEADLINE_MS = 3_000;
 
 interface GitListOptions {
-  /** the git to run (a stand-in, in tests) */
   git: string;
   deadlineMs: number;
   maxBytes: number;
@@ -28,7 +25,6 @@ interface GitListOptions {
 const GIT_LIST_DEFAULTS: GitListOptions = { git: "git", deadlineMs: GIT_LIST_DEADLINE_MS, maxBytes: GIT_LIST_MAX_BYTES };
 let gitList = GIT_LIST_DEFAULTS;
 
-/** For tests: a stand-in git, a shorter deadline or a smaller cap. No argument restores the defaults. */
 export function setGitListOptions(options: Partial<GitListOptions> = {}): void {
   gitList = { ...GIT_LIST_DEFAULTS, ...options };
 }
@@ -55,7 +51,6 @@ function listedNames(output: Uint8Array): string[] | null {
   return Buffer.from(output.buffer, output.byteOffset, output.byteLength).toString("utf8").split("\0").filter(Boolean);
 }
 
-/** The listing, at most `limit` names of it; null when git failed, overran its cap or its deadline. */
 async function gitFiles(cwd: string, limit = MAX_GIT_ENTRIES): Promise<string[] | null> {
   const { deadlineMs, maxBytes } = gitList;
   let proc: Bun.Subprocess<"ignore", "pipe", "ignore">;
@@ -97,16 +92,23 @@ async function gitFiles(cwd: string, limit = MAX_GIT_ENTRIES): Promise<string[] 
 
 /**
  * Breadth first, each folder taking at most its share, so one huge folder cannot use up the walk.
- * Synchronous: the lookups here run it on a file thread (`file-pool.ts`).
  */
 export function walkFiles(cwd: string): string[] {
+  return walk(cwd).files;
+}
+
+function walk(cwd: string, keep: (name: string) => boolean = () => true, until = Number.POSITIVE_INFINITY): { files: string[]; cut: boolean } {
   const files: string[] = [];
   let visited = 0;
+  let cut = false;
   let level = [cwd];
   for (let depth = 0; depth <= MAX_DEPTH && level.length > 0 && visited < MAX_ENTRIES; depth += 1) {
     const next: string[] = [];
     for (const directory of level) {
-      if (visited >= MAX_ENTRIES) break;
+      if (visited >= MAX_ENTRIES || Date.now() >= until) {
+        cut = true;
+        break;
+      }
       let entries;
       try {
         entries = readdirSync(directory, { withFileTypes: true });
@@ -116,13 +118,20 @@ export function walkFiles(cwd: string): string[] {
       entries.sort((left, right) => Number(left.isDirectory()) - Number(right.isDirectory()) || left.name.localeCompare(right.name));
       let taken = 0;
       for (const entry of entries) {
-        if (visited >= MAX_ENTRIES) break;
+        if (visited >= MAX_ENTRIES) {
+          cut = true;
+          break;
+        }
         if (SKIP[entry.name]) continue;
         const path = join(directory, entry.name);
         if (entry.isDirectory()) {
           visited += 1;
           next.push(path);
-        } else if (entry.isFile() && taken < MAX_FOLDER_ENTRIES) {
+        } else if (entry.isFile() && keep(entry.name)) {
+          if (taken >= MAX_FOLDER_ENTRIES) {
+            cut = true;
+            continue;
+          }
           visited += 1;
           taken += 1;
           files.push(relative(cwd, path).split(sep).join("/"));
@@ -131,7 +140,7 @@ export function walkFiles(cwd: string): string[] {
     }
     level = next;
   }
-  return files;
+  return { files, cut: cut || level.length > 0 };
 }
 
 async function inventory(cwd: string): Promise<string[]> {
@@ -177,10 +186,43 @@ export async function paneFiles(cwd: string, query = "", limit = 20): Promise<st
     .map((item) => item.path);
 }
 
+const MARKDOWN_NAME = /\.(?:md|markdown)$/i;
+export const MAX_MARKDOWN_DOCUMENTS = 500;
+export const MARKDOWN_READ_MS = 2_000;
+
+export function readMarkdownDocuments(cwd: string, listed: string[] | null, budgetMs = MARKDOWN_READ_MS): { documents: MarkdownDocument[]; cut: boolean } {
+  const until = Date.now() + budgetMs;
+  const found = listed === null ? walk(cwd, (name) => MARKDOWN_NAME.test(name), until) : { files: listed, cut: false };
+  const documents: MarkdownDocument[] = [];
+  let cut = found.cut;
+  for (const path of found.files) {
+    if (Date.now() >= until) {
+      cut = true;
+      break;
+    }
+    try {
+      const stat = statSync(join(cwd, path));
+      if (stat.isFile()) documents.push({ path, size: stat.size, modified: stat.mtime.toISOString() });
+    } catch { }
+  }
+  return { documents, cut };
+}
+
+/**
+ * GET /api/pane/docs: the Markdown files under `cwd`, newest first. In a repository, git's listing of
+ * the files it does not ignore, asked afresh (Refresh sees a file made a moment ago); elsewhere a walk
+ * that counts only Markdown files, so a folder of other files does not crowd them out. Every one is
+ * looked at before the newest are kept, and a cap or the read's time limit marks the list cut.
+ */
+export async function paneDocuments(cwd: string, signal?: AbortSignal): Promise<PaneDocuments> {
+  const listed = await gitFiles(cwd, Number.POSITIVE_INFINITY);
+  const { documents, cut } = await fileTask<{ documents: MarkdownDocument[]; cut: boolean }>({ op: "documents", cwd, paths: listed === null ? null : listed.filter((path) => MARKDOWN_NAME.test(path)) }, signal);
+  documents.sort((left, right) => left.modified === right.modified ? left.path.localeCompare(right.path) : left.modified < right.modified ? 1 : -1);
+  return { root: cwd, documents: documents.slice(0, MAX_MARKDOWN_DOCUMENTS), truncated: cut || documents.length > MAX_MARKDOWN_DOCUMENTS };
+}
+
 const walked = new Map<string, { expires: number; files: string[] }>();
-/** One listing per folder at a time: lookups that arrive while it runs share it rather than start their own git. */
 const listing = new Map<string, Promise<string[]>>();
-/** Raised by clearFileCache: a listing begun before it neither fills the cache nor removes a later listing. */
 let generation = 0;
 
 /**
@@ -198,7 +240,6 @@ export async function filesNamed(cwd: string, name: string, limit = 10, anyForm 
     let shared = listing.get(cwd);
     if (shared === undefined) {
       const begun = generation;
-      // not cut to MAX_GIT_ENTRIES: a name is matched against every path
       const pending: Promise<string[]> = gitFiles(cwd, Infinity).then(async (listed) => {
         const found = [...new Set([...listed ?? [], ...await fileTask<string[]>({ op: "walk", cwd })])];
         if (begun === generation) {

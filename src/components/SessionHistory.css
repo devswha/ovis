@@ -1,5 +1,9 @@
 .session-modal {
-  width: min(100%, 560px);
+  width: min(100%, var(--dialog-w));
+}
+.session-modal :is(.input, .select):focus-visible {
+  outline: var(--ring);
+  outline-offset: var(--ring-offset);
 }
 .session-agent {
   margin-bottom: var(--space-4);
@@ -8,7 +12,6 @@
   font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
-/* one row per session, the worktree dialog's row anatomy: text leads, the time and the way on trail */
 .session-list {
   display: flex;
   flex-direction: column;
@@ -34,7 +37,7 @@
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   min-width: 0;
 }
 .session-title {
@@ -48,7 +51,6 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
-/* a session with no words yet shows its id, in mono as a path is */
 .session-title.session-id {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -81,10 +83,12 @@
   align-items: center;
   gap: var(--space-2);
 }
+.session-row .pill {
+  font-size: var(--fs-xs);
+}
 .session-empty {
   margin: 0;
 }
-/* Resuming, the list read again and why: one line kept under the rows, empty or not, so no row moves when it speaks */
 .session-status {
   min-height: calc(var(--fs-xs) * var(--lh-base));
 }
@@ -92,11 +96,22 @@
   color: var(--status-blocked);
   overflow-wrap: anywhere;
 }
-/* a phone: the pill would crowd the button beside a two-line title, so it stands over the button */
 @media (max-width: 640px) {
   .session-actions {
     flex-direction: column;
     align-items: flex-end;
     gap: var(--space-1);
+  }
+}
+@media (pointer: coarse), (max-width: 640px) {
+  .session-modal .input,
+  .session-modal .select,
+  .session-modal .btn,
+  .session-modal .icon-button {
+    min-height: var(--touch-target);
+    height: var(--touch-target);
+  }
+  .session-modal .icon-button {
+    min-width: var(--touch-target);
   }
 }

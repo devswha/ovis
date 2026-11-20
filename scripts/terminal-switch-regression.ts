@@ -1,4 +1,3 @@
-/** Recent terminal switches against owned panes, with click-to-painted-content measurements. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -9,6 +8,8 @@ import { createServer } from "../server/index.ts";
 import { paneSendText, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { UsageService } from "../server/usage.ts";
 import { chromePath } from "./chrome-path.ts";
+import { shownRows } from "./shown-rows.ts";
+import { pickTab } from "./tab-pick.ts";
 
 declare global {
   interface Window {
@@ -56,11 +57,10 @@ try {
       const frame = (id: string) => page.locator(`[data-layout-pane="${id}"]`);
       const ready = (id: string) => frame(id).locator("[data-pane-content]").waitFor();
       const select = async (id: string) => {
-        await page.locator(`.tab-strip [role="tab"][data-tab-id="${tabs.get(id)}"]`).click();
+        await pickTab(page, tabs.get(id)!);
         await ready(id);
       };
       await ready(panes[0]!);
-      // A cold switch: the tab left behind starts its view only after the selected pane's attach
       const cold = frames.length;
       const viewStarted = Promise.withResolvers<void>();
       const viewTimeout = setTimeout(() => viewStarted.reject(new Error("the tab left behind never watched its pane")), 10_000);
@@ -85,7 +85,7 @@ try {
       for (let i = 0; i < 10; i++) {
         const index = i % 2 === 0 ? 1 : 0;
         const id = panes[index]!;
-        await page.evaluate(({ id, marker }) => {
+        await page.evaluate(({ id, marker, shown }) => {
           window.switchResult = new Promise((resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error("switch did not paint")), 10_000);
             document.addEventListener("pointerdown", () => {
@@ -93,7 +93,7 @@ try {
               let contentMs: number | null = null;
               const check = () => {
                 const frame = document.querySelector(`[data-layout-pane="${id}"]`);
-                const rows = frame?.querySelector(".xterm-rows");
+                const rows = frame?.querySelector(shown);
                 const visible = frame && getComputedStyle(frame).visibility === "visible";
                 if (visible && rows?.textContent?.includes(marker)) contentMs ??= performance.now() - start;
                 if (contentMs !== null && frame?.querySelector("[data-pane-content]")) {
@@ -104,7 +104,7 @@ try {
               requestAnimationFrame(check);
             }, { once: true, capture: true });
           });
-        }, { id, marker: `OVIS-SWITCH-${index}` });
+        }, { id, marker: `OVIS-SWITCH-${index}`, shown: shownRows() });
         await select(id);
         samples.push(await page.evaluate(() => window.switchResult));
       }
@@ -123,7 +123,6 @@ try {
       }
       if (evidence) await page.screenshot({ path: join(evidence, `terminal-switch-${width}-${theme}.png`) });
       if (!baseline) {
-        // Output a hidden tab's view receives is kept unparsed while hidden and is on screen on its return.
         const hidden = `OVIS-HIDDEN-${width}-${theme}`;
         const delivered = Promise.withResolvers<void>();
         const deliveredTimeout = setTimeout(() => delivered.reject(new Error("the hidden tab's view never received the output")), 10_000);
@@ -139,16 +138,15 @@ try {
           clearTimeout(deliveredTimeout);
           for (const socket of sockets) socket.off("framereceived", onView);
         }
-        assert.equal(await frame(panes[1]!).locator(".xterm-rows", { hasText: hidden }).count(), 0, "a hidden tab does not parse its view");
+        assert.equal(await frame(panes[1]!).locator(shownRows(), { hasText: hidden }).count(), 0, "a hidden tab does not parse its view");
         await select(panes[1]!);
-        await frame(panes[1]!).locator(".xterm-rows", { hasText: hidden }).waitFor({ state: "attached" });
+        await frame(panes[1]!).locator(shownRows(), { hasText: hidden }).waitFor({ state: "attached" });
         await select(panes[0]!);
         const evicting = frames.length;
         for (const id of panes.slice(2)) await select(id);
         await frame(panes[1]!).waitFor({ state: "detached" });
         assert.ok(frames.slice(evicting).some((frame) => frame.type === "unwatch" && frame.pane_id === panes[1]), "eviction stops the tab's view");
         assert.equal(await page.locator("[data-layout-pane]").count(), 4, "the existing four-tab bound holds");
-        // every recent tab keeps its screen, but a phone watches only the tab before the current one
         const watching = new Set<string>();
         for (const sent of frames) {
           if (sent.type === "watch" && sent.pane_id) watching.add(sent.pane_id);
@@ -156,7 +154,6 @@ try {
         }
         const phone = width === 390;
         assert.deepEqual([...watching].sort(), (phone ? [panes[3]!] : [panes[0]!, panes[2]!, panes[3]!]).sort(), "only the most recent hidden tabs watch");
-        // Leaving the window stops the cached tabs' views even with releasePaneAway off.
         const away = new Set(panes.slice(phone ? 3 : 2, 4));
         const released = Promise.withResolvers<void>();
         const timeout = setTimeout(() => released.reject(new Error("cached views were not stopped")), 5000);
@@ -165,7 +162,6 @@ try {
           if (message.type === "unwatch") away.delete(message.pane_id);
           if (away.size === 0) released.resolve();
         };
-        // Subscribe before blur, including already-open sockets.
         for (const socket of sockets) socket.on("framesent", observe);
         try {
           await page.evaluate(() => {
@@ -177,7 +173,6 @@ try {
           clearTimeout(timeout);
           for (const socket of sockets) socket.off("framesent", observe);
         }
-        // Coming back to the window watches the recent tabs again.
         const watched = new Set(panes.slice(phone ? 3 : 2, 4));
         const rewatched = Promise.withResolvers<void>();
         const rewatchTimeout = setTimeout(() => rewatched.reject(new Error("cached views did not start again on focus")), 5000);

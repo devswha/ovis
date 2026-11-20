@@ -1,20 +1,13 @@
 import { join } from "node:path";
-import { MAX_SEEN, MAX_SEEN_BYTES, mergeSeen, seenFinishBody, seenFinishKey, type SeenFinish } from "../shared/seen.ts";
+import { MAX_SEEN, MAX_SEEN_BYTES, mergeSeen, seenFinishBody, seenFinishKey, seenPresentationOf, type SeenFinish, type SeenPresentation } from "../shared/seen.ts";
 import { badRequest, jsonResponse } from "./http.ts";
 import { damagedCopy, readStateDocument, writeStateDocument } from "./state-document.ts";
 
-/**
- * The finishes some browser of this server presented (shared/seen.ts), kept in the state directory
- * beside preferences.json, so a finish read on the phone is read on the desktop too. A change is
- * held, and told, only once it is on disk. A finish of a herdr run this server knows has ended
- * (MachineManager.finishEnded) is never handed out or taken, and the next write leaves it out of the file.
- */
 export class SeenStore {
-  /** insertion order is write order: the first entries are the oldest */
   private readonly finishes = new Map<string, SeenFinish>();
   private readonly path: string;
-  private readonly listeners = new Set<(finish: SeenFinish) => void>();
-  /** Until this store has replaced the file, a write reads it again first: it may have been damaged or repaired since. */
+  private readonly listeners = new Set<(finish: SeenFinish, presented?: SeenPresentation) => void>();
+  private readonly presentations = new Set<(finish: SeenFinish) => void>();
   private unsettled = true;
 
   /**
@@ -32,11 +25,6 @@ export class SeenStore {
     }
   }
 
-  /**
-   * The finishes on disk, undefined when there is no file. A document that is not a list, or holds
-   * a row that is not a finish, is damaged: the valid rows are used, and the whole file is kept
-   * aside before a write drops the others. Throws when it cannot be read.
-   */
   private readDisk(): { finishes: Map<string, SeenFinish>; damaged: boolean } | undefined {
     const read = readStateDocument(this.path);
     if (read.kind === "missing") return undefined;
@@ -56,14 +44,17 @@ export class SeenStore {
     return [...this.finishes.values()].filter((finish) => !this.over(finish));
   }
 
-  record(finish: SeenFinish): SeenFinish {
-    // answered as sent: a browser that still shows the run that ended has nothing to keep
+  record(finish: SeenFinish, presented?: SeenPresentation): SeenFinish {
     if (this.over(finish)) return finish;
+    const kept = this.keep(finish, presented);
+    if (presented === "new") for (const listener of [...this.presentations]) listener(finish);
+    return kept;
+  }
+
+  private keep(finish: SeenFinish, presented: SeenPresentation | undefined): SeenFinish {
     let base = this.finishes;
     let keepDamaged = false;
     if (this.unsettled) {
-      // the file as it is now, not as it was at start: a repair is kept and the finish merged into
-      // it, and nothing of it is held until the write succeeds
       const disk = this.readDisk();
       if (disk) base = disk.finishes;
       keepDamaged = disk?.damaged ?? false;
@@ -84,13 +75,31 @@ export class SeenStore {
     this.unsettled = false;
     this.finishes.clear();
     for (const [k, v] of finishes) this.finishes.set(k, v);
-    for (const listener of [...this.listeners]) listener(next);
+    for (const listener of [...this.listeners]) listener(next, presented);
     return next;
   }
 
-  subscribe(listener: (finish: SeenFinish) => void): () => void {
+  /**
+   * herdr moved a pane of `pc` under a new ID (#1503): what was read under the old ID is read under the new one,
+   * each finish under the number the server counts it by there (`renumber`, server/finishes.ts moved), and every
+   * browser is told.
+   */
+  moved(pc: string, from: string, to: string, renumber: (id: number) => number = (id) => id): void {
+    if (from === to) return;
+    for (const finish of this.list()) {
+      if (finish.pc !== pc || finish.pane !== from) continue;
+      this.keep({ ...finish, pane: to, id: renumber(finish.id) }, undefined);
+    }
+  }
+
+  subscribe(listener: (finish: SeenFinish, presented?: SeenPresentation) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
+  }
+
+  onPresented(listener: (finish: SeenFinish) => void): () => void {
+    this.presentations.add(listener);
+    return () => { this.presentations.delete(listener); };
   }
 
   private over(finish: SeenFinish): boolean {
@@ -127,6 +136,6 @@ export async function handleSeenRequest(request: Request, store: SeenStore): Pro
   try { raw = JSON.parse(text); } catch { return badRequest("invalid_json", "The body is not JSON"); }
   const finish = seenFinishBody(raw);
   if (finish === null) return badRequest("invalid_body", "Send { pc, epoch, pane: string, id: positive integer, answer?: string }");
-  try { return reply(store.record(finish)); }
+  try { return reply(store.record(finish, seenPresentationOf(raw))); }
   catch (error) { return reply({ error: { code: "seen_unwritable", message: error instanceof Error ? error.message : String(error) } }, 500); }
 }

@@ -7,14 +7,13 @@ interface Workflow {
   jobs: { deploy: { "runs-on": unknown; environment: { name: string }; permissions: Record<string, string>; steps: Step[] } };
 }
 
-/** The workflow at `path` (default: the committed one), as parsed YAML. */
 export const loadWorkflow = (path = process.env.RELAY_DEPLOY_WORKFLOW ?? new URL("../.github/workflows/relay-deploy.yml", import.meta.url).pathname): Workflow =>
   Bun.YAML.parse(readFileSync(path, "utf8")) as Workflow;
 
 test("relay deploy runs on a push to main touching relay/ and by hand", () => {
   const { on } = loadWorkflow();
   expect(on.push.branches).toEqual(["main"]);
-  expect(on.push.paths).toEqual(["relay/**", "shared/relay-server-proof.ts"]);
+  expect(on.push.paths).toEqual(["relay/**", "shared/relay-server-proof.ts", "shared/relay-pass.ts"]);
   expect("workflow_dispatch" in on).toBe(true);
 });
 
@@ -63,7 +62,6 @@ test("the deploy is skipped without the secrets and the health check follows it"
   expect(steps[health]!.if).toContain(`steps.${guardId}.outputs.ready == 'true'`);
 });
 
-/** Runs the health step's script through `bash -e` against a local server that answers each request with the next status. */
 async function runHealthStep(statuses: number[]): Promise<{ code: number; output: string; requests: number }> {
   const step = loadWorkflow().jobs.deploy.steps.find((candidate) => candidate.run?.includes("curl"))!;
   let requests = 0;

@@ -1,17 +1,11 @@
-/*
- * The hosted shell's screens (RelayShell.tsx): the token gate's frame (AccessGate.css), one card
- * centered on the base surface, one sidebar wide, no entrance animation. Only tokens from the
- * styles.css :root block; the buttons are the system's .btn family.
- */
-
 .relay-shell-screen {
   display: grid;
   place-items: center;
   min-height: 100%;
   min-height: 100dvh;
   min-height: var(--app-height, 100dvh);
-  padding: calc(var(--space-4) + env(safe-area-inset-top, 0px)) calc(var(--space-4) + env(safe-area-inset-right, 0px))
-    calc(var(--space-4) + env(safe-area-inset-bottom, 0px)) calc(var(--space-4) + env(safe-area-inset-left, 0px));
+  padding: calc(var(--space-6) + env(safe-area-inset-top, 0px)) calc(var(--space-4) + env(safe-area-inset-right, 0px))
+    calc(var(--space-6) + env(safe-area-inset-bottom, 0px)) calc(var(--space-4) + env(safe-area-inset-left, 0px));
   background: var(--bg);
 }
 
@@ -19,11 +13,24 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  width: min(100%, calc(var(--sidebar-w) + 2 * var(--space-6)));
+  width: min(100%, var(--relay-signin-w));
+  min-width: 0;
   padding: var(--space-6);
   background: var(--bg-panel);
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-md);
+}
+
+.relay-shell-screen > .relay-shell.account-centered {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.relay-shell-signin > .sheep-mascot {
+  align-self: center;
+  margin-bottom: var(--space-4);
 }
 
 .relay-shell-mark {
@@ -36,11 +43,135 @@
 .relay-shell-title {
   margin: 0 0 var(--space-2);
   font-size: var(--fs-lg);
-  font-weight: var(--fw-bold);
+  font-weight: var(--fw-semibold);
   letter-spacing: var(--tracking-tight);
   line-height: var(--lh-tight);
   color: var(--text-strong);
   overflow-wrap: anywhere;
+}
+
+.relay-shell-screen.relay-shell-plain {
+  place-items: stretch center;
+  padding-top: max(var(--space-8), 10dvh);
+}
+
+.relay-shell-plain > .relay-shell {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  text-align: center;
+}
+
+/* the app's mark, small and centred, as the screen's one picture */
+.relay-shell-plain .relay-shell-mark {
+  width: calc(var(--space-6) * 2);
+  height: calc(var(--space-6) * 2);
+  margin: 0 auto var(--space-4);
+  border-radius: var(--radius-lg);
+}
+
+/* two lines of one size: what Ovis is, then what this screen asks, quieter */
+.relay-shell-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 0;
+  font-size: var(--fs-display);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--lh-tight);
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
+.relay-shell-hero-quiet {
+  color: var(--text-dim);
+}
+
+/* the sign-in: the two lines over the buttons, then one quiet line and the way past it, small */
+.relay-shell-signin-hero {
+  margin-bottom: var(--space-6);
+}
+
+.relay-shell-first-time {
+  margin: var(--space-4) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+  text-align: center;
+}
+
+.relay-shell-no-account {
+  align-self: center;
+  margin-top: var(--space-5);
+}
+
+.relay-shell-pair-signin {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.relay-shell-pair-signin .account-sign-in {
+  margin-top: var(--space-5);
+}
+
+.relay-shell-pair-signin .account-providers,
+.relay-shell-plain .relay-shell-actions {
+  gap: var(--space-2);
+}
+
+.relay-shell-plain .relay-shell-actions {
+  margin-top: var(--space-5);
+}
+
+/* every way in weighs the same: one height, one radius, the card colour and a hairline; the mark at the start edge */
+.relay-shell-plain .account-provider {
+  height: calc(var(--touch-target) + var(--space-1));
+  min-height: calc(var(--touch-target) + var(--space-1));
+  background: var(--bg-panel);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-cta);
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+
+@media (hover: hover) {
+  .relay-shell-plain .account-provider:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+    color: var(--text-strong);
+  }
+}
+
+.relay-shell-agreement {
+  margin: var(--space-5) 0 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+  color: var(--text-dim);
+  text-align: center;
+  text-wrap: balance;
+}
+
+.relay-shell-agreement a {
+  color: var(--accent);
+}
+
+/* the way out: one small grey link at the foot of the page */
+.relay-shell-plain .relay-shell-actions.relay-shell-quiet {
+  align-items: center;
+  margin-top: auto;
+  padding-top: var(--space-6);
+}
+
+.relay-shell-plain .relay-shell-quiet .btn {
+  width: auto;
+  min-height: var(--touch-target);
+  padding-inline: var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  background: transparent;
+  border-color: transparent;
 }
 
 .relay-shell-copy {
@@ -48,9 +179,9 @@
   font-size: var(--fs-md);
   line-height: var(--lh-base);
   color: var(--text-dim);
+  text-wrap: pretty;
 }
 
-/* the saved PCs: one row each, the whole row the link, a hairline between rows */
 .relay-shell-pcs {
   margin: var(--space-2) 0 var(--space-4);
   padding: 0;
@@ -71,8 +202,10 @@
   text-decoration: none;
 }
 
-.relay-shell-pc:hover {
-  color: var(--accent);
+@media (hover: hover) {
+  .relay-shell-pc:hover {
+    color: var(--accent);
+  }
 }
 
 .relay-shell-pc-name {
@@ -97,6 +230,14 @@
 
 .relay-shell-actions .btn {
   width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: var(--touch-target);
+  padding-block: var(--space-2);
+  line-height: var(--lh-tight);
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .relay-shell-wait {
@@ -105,13 +246,21 @@
   margin: var(--space-4) 0 0;
 }
 
-/* a PC below the shell's minimum version: its steps to update, each command copyable whole */
 .relay-shell-more {
   margin-top: var(--space-3);
 }
 
+.relay-shell-command-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
 .relay-shell-command {
-  margin: var(--space-2) 0 0;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-input);
   border: var(--hairline) solid var(--border);
@@ -122,6 +271,11 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: all;
+}
+
+.relay-shell-copy-btn {
+  flex: none;
+  min-width: calc(var(--space-8) * 2 + var(--space-2));
 }
 
 .relay-shell-detail {
@@ -138,4 +292,74 @@
   font-size: var(--fs-sm);
   line-height: var(--lh-base);
   color: var(--text-dim);
+}
+
+.relay-shell-digits {
+  margin: var(--space-4) 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-pairing);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-code);
+  text-align: center;
+  color: var(--text-strong);
+}
+
+.relay-shell-keys {
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3);
+  background: var(--bg-input);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.relay-shell-keys dt {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.relay-shell-keys dd {
+  margin: var(--space-1) 0 var(--space-3);
+}
+
+.relay-shell-code-form {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.relay-shell-field-label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-strong);
+  text-align: start;
+}
+
+.input.relay-shell-code-input,
+.relay-shell-code-input {
+  width: 100%;
+  height: var(--touch-target);
+  min-height: var(--touch-target);
+  padding: 0 var(--space-3);
+  background: var(--bg-input);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-input);
+  letter-spacing: var(--tracking-code);
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.input.relay-shell-code-input:focus-visible,
+.relay-shell-code-input:focus-visible {
+  outline: var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+.relay-shell-code-id {
+  margin: var(--space-4) 0;
 }

@@ -6,6 +6,7 @@ import type { UsageProviderId } from "../shared/protocol.ts";
 import type { UsageLoginFollowed, UsageLoginPrompt, UsageLoginStarted } from "../shared/usage-login.ts";
 import { paneClose, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
 import { loginPrompt, screenText, type PromptProvider } from "./usage-login-prompt.ts";
+import { homeBefore, loginAccount, type LoginAccount, type LoginTarget } from "./usage-login-account.ts";
 import { isSecureRequest, parseCookies } from "./auth.ts";
 import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
 import { psQuote } from "./powershell.ts";
@@ -39,10 +40,8 @@ function credentialHomePrefix(shell: PaneShell, name: string, home: string | nul
 }
 
 /**
- * One directory's one name, however it is reached: its real path through any symlink, or for a home
- * not made yet, its nearest existing parent's real path and the rest. Two logins locked by spelling
- * would both write one home reached through an alias. Throws when it cannot be told (a directory it
- * may not read): a guess would let a second login in.
+ * Two logins locked by spelling would both write one home reached through an alias. Throws when it cannot
+ * be told (a directory it may not read): a guess would let a second login in.
  */
 function canonicalPath(path: string): string {
   const absolute = resolve(path);
@@ -61,7 +60,6 @@ function canonicalPath(path: string): string {
  * or the shell exits after it. A pane ID alone is no proof: a restarted herdr hands the same IDs out again.
  */
 interface LoginHolder { readonly pane: string; readonly terminal: string }
-/** A home taken for a launch whose tab has not opened yet: by which server process, since when, and the launch's own id. */
 interface Launch { readonly launch: string; readonly pid: number; readonly at: number }
 /**
  * A login the browser follows, run by the server process `pid` in a terminal of its own since `at`. Saved in
@@ -75,6 +73,11 @@ type Holder = LoginHolder | Launch | PrivateHolder;
 /** A sign-in the browser follows: the CLI in the server's own PTY, never a herdr pane another device could read. */
 interface PrivateLogin {
   readonly provider: PromptProvider;
+  /** the home its CLI writes, and the digests of the tokens there before it started (homeBefore) */
+  readonly target: LoginTarget;
+  readonly before: readonly string[] | undefined;
+  exitCode: number | null;
+  signedIn: LoginAccount | null;
   readonly owner: string;
   /**
    * The secret of the browser that started it, sent back only in its HttpOnly cookie: two browsers can share an
@@ -83,25 +86,25 @@ interface PrivateLogin {
   readonly secret: string;
   /** the browser stopped it: a home it made stays for that account's terminal sign-in, whatever the CLI wrote */
   cancelled: boolean;
-  /** its lock id in the shared file (PrivateHolder.launch) */
+  /** its lease or deadline stopped it: whatever its CLI wrote, it did not sign in */
+  expired: boolean;
   readonly lock: string;
-  /** settles once the CLI has exited and its home is free */
   readonly done: Promise<void>;
   /** the browser has read its prompt: a sign-in nobody comes back to is stopped */
   read: boolean;
-  /** the new account's home it made, removed if the CLI ended leaving it empty, so the name can be used again */
   readonly madeHome: string | null;
   readonly proc: PtySession;
   changed: ReturnType<typeof Promise.withResolvers<void>>;
   /** the CLI's recent output, in memory only, for its prompt; emptied when it ends */
   output: string;
+  /** the screen a code was last typed on: no other code is typed until the CLI has shown something since */
+  typedOn: string | null;
   ended: boolean;
 }
 
 /** A launch opens its tab within the request's 30 s, the CLI's help taking up to 10 of them: one older has failed. */
 const LAUNCH_MS = 60_000;
 
-/** The followed logins kept, newest last: ended ones past this many are forgotten. */
 const PRIVATE_LOGINS_MAX = 32;
 /** the most of a login's output kept for its prompt: its address and code are near the end */
 const PRIVATE_OUTPUT_MAX = 65_536;
@@ -111,7 +114,6 @@ const PRIVATE_COLUMNS = 400;
 const PRIVATE_MAX_MS = 30 * 60_000;
 /** how long a started sign-in waits for its browser to read it before it is stopped (a start whose answer was lost) */
 const PRIVATE_LEASE_MS = 30_000;
-/** the private logins running in this process, by lock id: every service in it (two servers) sees them */
 const liveLocks = new Set<string>();
 
 /** the cookie that carries one followed sign-in's secret; one per sign-in, so two dialogs never overwrite each other's */
@@ -143,9 +145,8 @@ function processAlive(pid: number): boolean {
   catch (error) { return error instanceof Error && "code" in error && error.code === "EPERM"; }
 }
 
-/** Only panes this service launched invalidate usage when their login process exits. */
 export class UsageLoginService {
-  private readonly panes = new Set<string>();
+  private readonly panes = new Map<string, UsageProviderId>();
   /**
    * The sign-ins the browser follows, by the random id only the browser that started one is given: each
    * runs in this server's own PTY, so no herdr pane (read, attached, streamed or listed by any device) ever
@@ -163,21 +164,18 @@ export class UsageLoginService {
     const secret = Buffer.from(login.secret);
     return sent.length === secret.length && timingSafeEqual(sent, secret) ? login : undefined;
   }
-  private readonly endedListeners: (() => void)[] = [];
+  private readonly endedListeners: ((account: string | null, provider: UsageProviderId) => void)[] = [];
   private stopped = false;
 
-  /** Called once a followed sign-in's CLI exits: the usage it may have changed is read again. */
-  onLoginEnded(listener: () => void): void { this.endedListeners.push(listener); }
+  onLoginEnded(listener: (account: string | null, provider: UsageProviderId) => void): void { this.endedListeners.push(listener); }
   /**
    * One login at a time per credential home, Add account and Sign in again alike: two CLIs writing
-   * one home race each other's tokens. By home, the login or launch of this server holding it.
+   * one home race each other's tokens.
    */
   private readonly logins = new Map<string, Holder>();
   /**
    * Where every server on this state dir keeps the homes taken, for the others and for the next one: a
-   * login runs in a herdr tab, which outlives the server that opened it (#2313). Under the file's guard,
-   * each server adds and removes its own entries, and takes over only one it found ended unchanged;
-   * whether an entry still holds, herdr says.
+   * login runs in a herdr tab, which outlives the server that opened it (#2313).
    */
   private file: string | null = null;
 
@@ -185,10 +183,8 @@ export class UsageLoginService {
     private readonly context: UsageContext = { ...systemUsageContext(), home, env },
     private readonly timing: { readonly leaseMs: number; readonly maxMs: number } = { leaseMs: PRIVATE_LEASE_MS, maxMs: PRIVATE_MAX_MS }) {}
 
-  /** Settles once that followed sign-in has ended and its home is free (now, for one unknown or ended). */
   settled(id: string): Promise<void> { return this.privates.get(id)?.done ?? Promise.resolve(); }
 
-  /** Subscribe before reading a prompt: the next output chunk or settlement wakes the reader. */
   changed(id: string): Promise<void> { return this.privates.get(id)?.changed.promise ?? Promise.resolve(); }
 
   /** Stops every followed sign-in this server runs: the server is stopping, and no dialog could reach them after. */
@@ -199,9 +195,11 @@ export class UsageLoginService {
     await Promise.all(running.map((login) => login.done));
   }
 
-  ended(paneId: string): boolean {
+  ended(paneId: string): UsageProviderId | undefined {
     for (const [home, holder] of this.logins) if (isTab(holder) && holder.pane === paneId) this.release(home, holder);
-    return this.panes.delete(paneId);
+    const provider = this.panes.get(paneId);
+    this.panes.delete(paneId);
+    return provider;
   }
 
   persistTo(stateDir: string): void { this.file = join(stateDir, "usage-logins.json"); }
@@ -222,7 +220,7 @@ export class UsageLoginService {
         if (request.method !== "GET") return badRequest("method_not_allowed", "Use GET");
         const login = this.owned(searchParams.get("login") ?? "", request, owner);
         if (login === undefined) return gone();
-        if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true } satisfies UsageLoginPrompt);
+        if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true, succeeded: login.signedIn !== null, account: login.signedIn?.label ?? null } satisfies UsageLoginPrompt);
         login.read = true;
         return jsonResponse({ provider: login.provider, ...loginPrompt(login.provider, screenText(login.output)), ended: false } satisfies UsageLoginPrompt);
       }
@@ -245,10 +243,12 @@ export class UsageLoginService {
         const code = isJsonObject(body) && typeof body["code"] === "string" ? body["code"].trim() : null;
         if (code === null || !SIGN_IN_CODE.test(code)) return badRequest("invalid_code", "Paste the code the sign-in page showed, as it is");
         if (login.ended) return gone();
-        // typed only while the CLI asks for it; nothing is awaited from this check to the write, so two codes
-        // arriving at once are typed one after the other only if the CLI asks again in between
-        if (!loginPrompt(login.provider, screenText(login.output)).wants_code) return conflictResponse("code_not_wanted", "The sign-in is not asking for a code now.");
+        // typed only while the CLI's last output asks for it, and once per asking: a write leaves that output as
+        // it was until the CLI's answer arrives, and a second code checked before then is not typed
+        const screen = screenText(login.output);
+        if (screen === login.typedOn || !loginPrompt(login.provider, screen).wants_code) return conflictResponse("code_not_wanted", "The sign-in is not asking for a code now.");
         if (!login.proc.write(`${code}\r`)) return gone();
+        login.typedOn = screen;
         return new Response(null, { status: 204 });
       }
       return jsonResponse({ error: { code: "not_found", message: "not found" } }, 404);
@@ -257,7 +257,6 @@ export class UsageLoginService {
     }
   }
 
-  /** A followed sign-in's CLI has exited: its output goes, its home is free, and the usage is read again (once). */
   private readonly settling = new Map<string, Promise<void>>();
   private settle(id: string): Promise<void> {
     const known = this.settling.get(id);
@@ -265,10 +264,18 @@ export class UsageLoginService {
     const done = (async () => {
       const login = this.privates.get(id);
       if (login === undefined || login.ended) return;
-      login.ended = true;
       login.output = "";
+      login.typedOn = null;
+      let account: LoginAccount | null = null;
+      try {
+        if (login.exitCode === 0 && !login.cancelled && !login.expired) account = await loginAccount(this.context, login.target, login.before);
+      } catch {
+        // Credential readers may fail; never put their contents in an error or leave the login held.
+        console.warn("Could not identify the account after its sign-in");
+      }
+      // stopped (by its browser, its lease or its deadline) while that read ran: it ended without signing in
+      login.signedIn = login.cancelled || login.expired ? null : account;
       liveLocks.delete(login.lock);
-      login.changed.resolve();
       // a CLI may have written credentials there: only an empty home goes, as for a tab that never ran its login
       if (login.madeHome !== null) {
         try { rmdirSync(login.madeHome); }
@@ -280,7 +287,9 @@ export class UsageLoginService {
         }
       }
       for (const [home, holder] of this.logins) if (isPrivate(holder) && holder.launch === login.lock) this.release(home, holder);
-      for (const listener of this.endedListeners) listener();
+      for (const listener of this.endedListeners) listener(login.signedIn?.key ?? null, login.provider);
+      login.ended = true;
+      login.changed.resolve();
       const ended = [...this.privates].filter(([, entry]) => entry.ended);
       for (const [old] of ended.slice(0, Math.max(0, ended.length - PRIVATE_LOGINS_MAX))) { this.privates.delete(old); this.settling.delete(old); }
     })();
@@ -289,8 +298,8 @@ export class UsageLoginService {
   }
 
   /**
-   * The homes the file names as taken; none when there is no file yet. A file that will not read or parse
-   * throws LoginStateUnreadable: it may name a sign-in still running, so it authorizes no other.
+   * A file that will not read or parse throws LoginStateUnreadable: it may name a sign-in still running, so
+   * it authorizes no other.
    */
   private read(file: string): Map<string, Holder> {
     const found = new Map<string, Holder>();
@@ -319,9 +328,8 @@ export class UsageLoginService {
   }
 
   /**
-   * Reads, changes and writes the file as one step no other server's edit comes between; without a file,
-   * `change` sees none. Throws when the guard cannot be taken or released or the file cannot be written:
-   * a sign-in no other server can see could run beside another.
+   * Throws when the guard cannot be taken or released or the file cannot be written: a sign-in no other
+   * server can see could run beside another.
    */
   private edit<T>(change: (saved: Map<string, Holder>) => T): T {
     const file = this.file;
@@ -339,19 +347,13 @@ export class UsageLoginService {
     });
   }
 
-  /** Frees `home` from `holder`, here and in the file, wherever another has not taken it since. */
   private release(home: string, holder: Holder): void {
     if (this.logins.get(home) === holder) this.logins.delete(home);
-    // left in the file, it holds only until another server finds it ended
     try { this.edit((saved) => { const now = saved.get(home); if (now !== undefined && sameHolder(now, holder)) saved.delete(home); }); }
     catch (error) { console.warn("Could not free a sign-in's credential home for other servers", error); }
   }
 
-  /**
-   * Whether `holder` still holds: a launch while its server runs and it is young enough to open its tab,
-   * a login while its terminal is in herdr, in any tab. When herdr cannot say, it holds: a guess would let
-   * a second login in.
-   */
+  /** When herdr cannot say, it holds: a guess would let a second login in. */
   private async holds(holder: Holder): Promise<boolean> {
     if (isLaunch(holder)) return Date.now() - holder.at <= LAUNCH_MS && processAlive(holder.pid);
     // A deadline requests teardown, not proof it ended. Keep a foreign owner's claim until it releases
@@ -366,12 +368,9 @@ export class UsageLoginService {
 
   /**
    * Takes `home` for one launch, in the file too before anything is awaited, so neither this server nor
-   * another starts a second; null while a login or launch holds it. A holder lets go once `holds()` finds
-   * it ended: its exit went unseen, it ended while no server ran, or its server stopped mid-launch.
+   * another starts a second; null while a login or launch holds it.
    */
   private async reserve(home: string): Promise<Launch | null> {
-    // the file's holder found ended: taken over in the step that finds it unchanged, so a file that cannot
-    // be written never brings it back for another look
     let ended: Holder | undefined;
     for (;;) {
       const own = this.logins.get(home);
@@ -390,7 +389,6 @@ export class UsageLoginService {
           return undefined;
         });
       } catch (error) {
-        // a claim written but not made durable holds nothing: take it back where it landed
         if (!(error instanceof LoginStateUnreadable)) this.release(home, launch);
         throw error;
       }
@@ -453,7 +451,6 @@ export class UsageLoginService {
     if (!executable) return conflictResponse("cli_unavailable", "Install the official CLI on this PC before signing in");
     let unusedCredentialHome: string | null = null;
     let reserved: string | null = null;
-    // what holds the home for this request, its launch and then its login, which only this request may replace or free
     let holding: Holder | null = null;
     try {
       // read from the sign-ins on disk now, not a cached report: a home may hold another account since
@@ -475,7 +472,6 @@ export class UsageLoginService {
         || replacesDefault && body["replace"] !== true) {
         return conflictResponse("account_confirmation_required", "Confirm before signing in again to this provider");
       }
-      // the home the CLI will write: the account's own, a new named one, or the provider's only one
       let loginHome: string;
       try {
         loginHome = place || asDefault ? `${id}:${canonicalPath(place?.home.kind === "dir" ? place.home.dir : join(this.home, id === "claude" ? ".claude" : ".codex"))}`
@@ -511,7 +507,6 @@ export class UsageLoginService {
       const env: Record<string, string> = { HOME: this.home };
       if (process.platform === "win32") env["USERPROFILE"] = this.home;
       const homeVariable = id === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME";
-      // the account's own home, where its expired sign-in is replaced; null is the default home
       const againHome = place?.home.kind === "dir" ? place.home.dir : null;
       if (place) {
         if (againHome !== null) env[homeVariable] = againHome;
@@ -539,6 +534,11 @@ export class UsageLoginService {
         if (againHome !== null) procEnv[homeVariable] = resolve(againHome);
         // the CLI's own home: the variable a parent shell may have set is removed, as the tab's `env -u` does
         if ((place || asDefault) && againHome === null) delete procEnv[homeVariable];
+        // where this CLI writes its sign-in, and what is there now: only a sign-in it wrote there is its own
+        const homeDir = procEnv[homeVariable];
+        const target: LoginTarget = { provider: id === "claude" ? "claude" : "codex", home: homeDir ? { kind: "dir", dir: homeDir } : { kind: "default" } };
+        const before = await homeBefore(this.context, target);
+        if (request.signal.aborted || this.stopped) return conflictResponse("request_cancelled", "The sign-in request was cancelled");
         const loginId = randomUUID();
         const lock = randomUUID();
         const { birth } = newOwnerRecord();
@@ -565,14 +565,16 @@ export class UsageLoginService {
               if (login !== undefined && !login.ended) {
                 const bytes = Buffer.from(login.output + data);
                 let start = Math.max(0, bytes.length - PRIVATE_OUTPUT_MAX);
-                // Keep whole UTF-8 characters while bounding bytes, not JavaScript code units.
                 while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
                 login.output = bytes.subarray(start).toString("utf8");
                 login.changed.resolve();
                 login.changed = Promise.withResolvers<void>();
               }
             },
-            onExit: () => {},
+            onExit: (code) => {
+              const login = this.privates.get(loginId);
+              if (login !== undefined) login.exitCode = code;
+            },
           });
         } catch (error) {
           liveLocks.delete(lock);
@@ -581,12 +583,17 @@ export class UsageLoginService {
         }
         const done = proc.exited.then(() => this.settle(loginId));
         const secret = randomUUID();
-        this.privates.set(loginId, { provider: id === "claude" ? "claude" : "codex", owner, secret, cancelled: false, lock, done, changed: Promise.withResolvers<void>(), read: false, madeHome: unusedCredentialHome, proc, output: "", ended: false });
+        this.privates.set(loginId, {
+          provider: target.provider, target, before,
+          exitCode: null, signedIn: null, owner, secret, cancelled: false, expired: false, lock, done,
+          changed: Promise.withResolvers<void>(), read: false, madeHome: unusedCredentialHome, proc, output: "", typedOn: null, ended: false,
+        });
         unusedCredentialHome = null;
         reserved = null;
         // a start whose answer never reached its browser (the dialog closed meanwhile) leaves no one to end it
-        const lease = setTimeout(() => { const login = this.privates.get(loginId); if (login !== undefined && !login.read && !login.ended) proc.kill(); }, this.timing.leaseMs);
-        const deadline = setTimeout(() => proc.kill(), this.timing.maxMs);
+        const expire = () => { const login = this.privates.get(loginId); if (login !== undefined && !login.ended) login.expired = true; proc.kill(); };
+        const lease = setTimeout(() => { const login = this.privates.get(loginId); if (login !== undefined && !login.read && !login.ended) expire(); }, this.timing.leaseMs);
+        const deadline = setTimeout(expire, this.timing.maxMs);
         void done.then(() => { clearTimeout(lease); clearTimeout(deadline); });
         // the browser that asked has gone: it would never see or end this sign-in
         if (request.signal.aborted) { proc.kill(); return conflictResponse("request_cancelled", "The sign-in request was cancelled"); }
@@ -603,10 +610,9 @@ export class UsageLoginService {
       };
       const created = workspace ? await tabCreate({ ...options, workspaceId: workspace.workspace_id }) : await workspaceCreate(options);
       const paneId = created.root_pane.pane_id;
-      this.panes.add(paneId);
+      this.panes.set(paneId, id);
       trackPane?.(paneId);
-      // the tab is open: from here on its terminal holds the home, also for a server started again. The
-      // login is sent only once the file says so: run under a launch entry that expires, or one another
+      // The login is sent only once the file says so: run under a launch entry that expires, or one another
       // server took over, it could run beside another sign-in after a restart.
       const launch = holding;
       const opened: LoginHolder = { pane: paneId, terminal: created.root_pane.terminal_id };
@@ -620,7 +626,6 @@ export class UsageLoginService {
           return true;
         });
       } catch (error) {
-        // a record written but not made durable holds nothing: take it back where it landed
         this.release(home, opened);
         await paneClose(paneId).catch((closeError: unknown) => console.warn("Could not close a sign-in tab whose login was not sent", closeError));
         throw error;
@@ -643,7 +648,6 @@ export class UsageLoginService {
         await paneSendText(paneId, `${manual ? "printf 'Type /login in Claude to sign in.\\n'; " : ""}exec ${place || asDefault ? credentialHomePrefix("posix", homeVariable, againHome) : ""}${shellCommandLine("posix", executable, args)}\n`);
         unusedCredentialHome = null;
       }
-      // the login runs: the home is its until it exits; a launch that failed before here frees it below
       reserved = null;
       return jsonResponse({
         pane_id: paneId, workspace_id: created.tab.workspace_id, manual, device_auth: device,
@@ -651,7 +655,6 @@ export class UsageLoginService {
     } catch (error) {
       return errorResponse(error);
     } finally {
-      // made for a login that was never sent (failed, refused or cancelled): an Add account retry may name it again
       if (unusedCredentialHome) {
         try { rmdirSync(unusedCredentialHome); }
         catch (cleanupError) {
@@ -662,7 +665,6 @@ export class UsageLoginService {
           }
         }
       }
-      // refused, or failed before its login ran: the home is free again, unless its tab ended and another took it since
       if (reserved !== null && holding !== null) this.release(reserved, holding);
     }
   }

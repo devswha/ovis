@@ -5,11 +5,15 @@ import { sanitizeFontFamily } from "./fontFamily.ts";
 import { sanitizeUiFontSize } from "./typography.ts";
 import { sanitizeKeyBarExtras } from "./keys.ts";
 import { LANGUAGE_SETTINGS, type LanguageSetting } from "./i18n.ts";
-import { CHAT_WIDTHS, DICTATION_LANGUAGES, DIFF_STYLES, MARKDOWN_WIDTHS, VOICE_BUTTONS,
+import { CHAT_WIDTHS, DICTATION_LANGUAGES, DIFF_STYLES, VOICE_BUTTONS,
   QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, USAGE_KEYS_MAX, TERMINAL_FONT_MIN, TERMINAL_FONT_MAX,
   TERMINAL_WHEEL_SPEED_MIN, TERMINAL_WHEEL_SPEED_MAX, CHAT_FONT_MIN, CHAT_FONT_MAX,
   type Settings as CurrentSettings, type ChatWidth, type DictationLanguage, type VoiceButton } from "./settings.ts";
-type Settings = Omit<CurrentSettings, "darkTheme" | "lightTheme" | "fileOpen" | "webLinks" | "claudeLaunchMode" | "codexLaunchMode" | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "uiFontFamily" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts" | "expandThinking" | "foldWork" | "autoTabNames">;
+type Settings = Omit<CurrentSettings, "phoneTabs" | "opencodeParentEnds" | "ompHeldFiles" | "restoreReplacedServer" | "keyBarExpanded" | "herdrPrefixKeys" | "darkTheme" | "lightTheme" | "customThemes" | "fileOpen" | "filesPanel" | "filesDocuments" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode" | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort" | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerNewTabButton" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "uiFontFamily" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad" | "historyPrompts" | "expandThinking" | "foldWork" | "chatRequestDetails" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton" | "agentLocks" | "lockedAgents" | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "markdownOutline" | "fileFontSize" | "fileFontBase" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "editTextFiles" | "reopenFileOnReturn"> & {
+  markdownWidth: "readable" | "full";
+  alertInApp: boolean;
+};
+const MARKDOWN_WIDTHS = ["readable", "full"] as const;
 type Palette = "amber" | "charcoal" | "catppuccin";
 const PALETTES: readonly Palette[] = ["amber", "charcoal", "catppuccin"];
 const STORAGE_KEY = "ovis:settings";
@@ -97,7 +101,6 @@ export function sanitizeSettings(raw: unknown): Settings {
     agentMarks: record["agentMarks"] === "color" || record["agentMarks"] === "mono" ? record["agentMarks"] : DEFAULT_SETTINGS.agentMarks,
     statusIndicators: record["statusIndicators"] === "classic" || record["statusIndicators"] === "dots" || record["statusIndicators"] === "symbols" ? record["statusIndicators"] : DEFAULT_SETTINGS.statusIndicators,
     palette,
-    // a record from before the pair starts both from its one palette, so System mode looks as it did
     paletteLight: PALETTES.find((name) => name === record["paletteLight"]) ?? palette,
     paletteDark: PALETTES.find((name) => name === record["paletteDark"]) ?? palette,
     terminalFontSize: typeof font === "number" && Number.isFinite(font) ? clampFont(font) : DEFAULT_SETTINGS.terminalFontSize,
@@ -124,7 +127,6 @@ export function sanitizeSettings(raw: unknown): Settings {
     alertDone: record["alertDone"] === "off" || record["alertDone"] === "long" || record["alertDone"] === "always" ? record["alertDone"] : DEFAULT_SETTINGS.alertDone,
     alertInApp: typeof record["alertInApp"] === "boolean" ? record["alertInApp"] : DEFAULT_SETTINGS.alertInApp,
     alertSound: typeof record["alertSound"] === "boolean" ? record["alertSound"] : DEFAULT_SETTINGS.alertSound,
-    // kept as typed (a trailing space is the next word being started), only bounded
     quickReplies: Array.isArray(record["quickReplies"])
       ? record["quickReplies"].filter((reply): reply is string => typeof reply === "string").slice(0, QUICK_REPLIES_MAX).map((reply) => reply.slice(0, QUICK_REPLY_MAX_CHARS))
       : [...DEFAULT_SETTINGS.quickReplies],

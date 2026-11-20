@@ -1,36 +1,44 @@
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import { getDevice as getSharedDevice, type RelayDevice, type RelayDeviceStore as SharedRelayDeviceStore } from "../../../shared/relay-device.ts";
 import type { PendingPush, PendingPushStore } from "../push.ts";
 
-export class ServerIdentityChangedError extends Error {
-  readonly code = "server_identity_changed";
-  constructor(readonly serverId: string) {
-    super("This PC's identity changed");
-    this.name = "ServerIdentityChangedError";
-  }
+export { base64url, ServerIdentityChangedError, sign } from "../../../shared/relay-device.ts";
+export type { RelayDevice } from "../../../shared/relay-device.ts";
+
+export interface ObservedVersion { readonly version: string; readonly outdated: boolean }
+export type EnrollmentState = "pending" | "complete" | "failed";
+export type SavedDevice = RelayDevice & { readonly observed_version?: ObservedVersion; readonly account_enrollment?: { readonly account: string; readonly state: EnrollmentState } };
+
+export interface RelayDeviceStore extends SharedRelayDeviceStore {
+  /** Reads and checks `source` in the target's write transaction before applying `change`. */
+  update(serverId: string, change: (current: RelayDevice | undefined) => RelayDevice, source?: { readonly serverId: string; readonly assert: (current: RelayDevice | undefined) => void }): Promise<RelayDevice>;
 }
 
-export interface RelayDevice {
-  readonly server_id: string;
-  readonly device_id: string | null;
-  readonly private_key: CryptoKey;
-  readonly public_spki: string;
-  readonly label: string;
-  readonly server_public_key: string;
-  readonly relay: string;
-  readonly name?: string;
+/** The store the hosted shell keeps its pairings in. */
+export interface ShellDeviceStore extends RelayDeviceStore {
+  /**
+   * Forgets a PC only while its saved record is still the row `deviceId`, read and deleted in one write transaction:
+   * a Forget or a newer pairing made since (another tab) stands. True when it forgot it.
+   */
+  removeRow(serverId: string, deviceId: string): Promise<boolean>;
 }
 
-/** Updates are atomic, including between two tabs the same PC admits at once. */
-export interface RelayDeviceStore {
-  get(serverId: string): Promise<RelayDevice | undefined>;
-  update(serverId: string, change: (current: RelayDevice | undefined) => RelayDevice): Promise<RelayDevice>;
-  /** Every saved PC, in the order they were first saved. */
-  list(): Promise<RelayDevice[]>;
-  /** Forgets a PC: its key is gone for good, and the PC's next pairing makes a new one; a push subscription kept for it goes too. */
-  remove(serverId: string): Promise<void>;
+export function enrollmentOf(device: RelayDevice, account?: string): EnrollmentState | undefined {
+  if (!("account_enrollment" in device)) return undefined;
+  const value: unknown = device.account_enrollment;
+  if (typeof value !== "object" || value === null || !("account" in value) || !("state" in value)) return undefined;
+  if (typeof value.account !== "string" || (account !== undefined && account !== value.account)) return undefined;
+  return value.state === "pending" || value.state === "complete" || value.state === "failed" ? value.state : undefined;
 }
 
-export const indexedDeviceStore: RelayDeviceStore = {
+export function observedVersionOf(device: RelayDevice): ObservedVersion | undefined {
+  if (!("observed_version" in device)) return undefined;
+  const value: unknown = device.observed_version;
+  if (typeof value !== "object" || value === null || !("version" in value) || !("outdated" in value)) return undefined;
+  return typeof value.version === "string" && typeof value.outdated === "boolean" ? { version: value.version, outdated: value.outdated } : undefined;
+}
+
+export const indexedDeviceStore: ShellDeviceStore = {
   async get(serverId) {
     const db = await openDatabase();
     try {
@@ -65,18 +73,39 @@ export const indexedDeviceStore: RelayDeviceStore = {
       });
     } finally { db.close(); }
   },
-  async update(serverId, change) {
+  async removeRow(serverId, deviceId) {
+    const db = await openDatabase();
+    try {
+      return await new Promise<boolean>((resolve, reject) => {
+        const tx = db.transaction(["devices", "pending-push"], "readwrite");
+        const devices = tx.objectStore("devices");
+        let removed = false;
+        const request: IDBRequest<RelayDevice | undefined> = devices.get(serverId);
+        request.onsuccess = () => {
+          if (request.result?.device_id !== deviceId) return;
+          devices.delete(serverId);
+          tx.objectStore("pending-push").delete(serverId);
+          removed = true;
+        };
+        tx.oncomplete = () => resolve(removed);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  },
+  async update(serverId, change, source) {
     const db = await openDatabase();
     try {
       return await new Promise<RelayDevice>((resolve, reject) => {
         const tx = db.transaction("devices", "readwrite");
         const store = tx.objectStore("devices");
         const request: IDBRequest<RelayDevice | undefined> = store.get(serverId);
+        const sourceRequest: IDBRequest<RelayDevice | undefined> | undefined = source === undefined ? undefined : store.get(source.serverId);
         let result: RelayDevice;
         tx.oncomplete = () => resolve(result);
         tx.onabort = () => reject(tx.error);
-        request.onsuccess = () => {
+        const apply = (): void => {
           try {
+            if (source !== undefined && sourceRequest !== undefined) source.assert(sourceRequest.result);
             result = change(request.result);
             store.put(result);
           } catch (error) {
@@ -84,12 +113,14 @@ export const indexedDeviceStore: RelayDeviceStore = {
             reject(error);
           }
         };
+        // Requests execute in order; the final read's callback keeps the transaction active.
+        if (sourceRequest === undefined) request.onsuccess = apply;
+        else sourceRequest.onsuccess = apply;
       });
     } finally { db.close(); }
   },
 };
 
-/** The subscriptions each PC's worker kept for the shell to register (lib/push.ts registerPendingPush). */
 export const indexedPendingPush: PendingPushStore = {
   async get(serverId) {
     const db = await openDatabase();
@@ -117,10 +148,6 @@ export const indexedPendingPush: PendingPushStore = {
   },
 };
 
-/**
- * The shell's database. Version 2 added `pending-push`, which the worker writes too: public/sw.js
- * openRelayDatabase opens the same name and version with the same stores.
- */
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open("ovis-relay", 2);
@@ -134,40 +161,7 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-export function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function checkPin(device: RelayDevice, offer: RelayOffer): RelayDevice {
-  if (device.server_public_key !== offer.server_public_key) throw new ServerIdentityChangedError(offer.server_id);
-  return device;
-}
-
-/**
- * The saved key for the offer's PC, or a new one that is not saved yet: a new key is kept only once
- * the PC admits it (channel.ts), so a link whose PC never does takes no PC's slot.
- */
-export async function getDevice(offer: RelayOffer, store: RelayDeviceStore = indexedDeviceStore, label = "Device"): Promise<RelayDevice> {
-  const stored = await store.get(offer.server_id);
-  if (stored) return checkPin(stored, offer);
-  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-  return {
-    server_id: offer.server_id, server_public_key: offer.server_public_key, relay: offer.relay,
-    ...(offer.name === undefined ? {} : { name: offer.name }),
-    device_id: null, private_key: keys.privateKey,
-    public_spki: base64url(new Uint8Array(await crypto.subtle.exportKey("spki", keys.publicKey))), label,
-  };
-}
-
-/** Raw r||s ECDSA signature; the server verifies this exact domain, nonce and server id. */
-export async function sign(device: RelayDevice, nonce: Uint8Array, serverId: string): Promise<string> {
-  if (nonce.length !== 32 || serverId !== device.server_id) throw new TypeError("Invalid relay authentication challenge");
-  const encoder = new TextEncoder();
-  const domain = encoder.encode("ovis-relay-auth/1");
-  const id = encoder.encode(serverId);
-  const message = new Uint8Array(domain.length + nonce.length + id.length);
-  message.set(domain);
-  message.set(nonce, domain.length);
-  message.set(id, domain.length + nonce.length);
-  return base64url(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, device.private_key, message)));
+/** The saved key for the offer's PC in this browser (IndexedDB unless another store is given), or a new unsaved one. */
+export function getDevice(offer: RelayOffer, store: RelayDeviceStore = indexedDeviceStore, label?: string): Promise<RelayDevice> {
+  return getSharedDevice(offer, store, label);
 }

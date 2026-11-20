@@ -12,11 +12,44 @@ import { t as inCurrentLanguage, type Translate } from "./i18n.ts";
  */
 export function optionName(prompt: InteractivePrompt, label: string): { text: string; recommended: boolean; words: string } {
   if (prompt.text_format === "markdown") return { text: label, recommended: false, words: shownText(parseInline(label, false)) ?? label };
-  const text = label.replace(/\s*\(recommended\)$/i, "");
+  const text = label.replace(/^\(recommended\)\s+|\s*\(recommended\)$/i, "");
   return { text, recommended: text !== label, words: text };
 }
 
-/** Card text the bridge wrote itself (shared/card-text.ts), in the user's language: its key translated, its values filled in. */
+/** What an approval's option grants: this one call, every call like it from now on, or nothing. */
+export type ApprovalScope = "once" | "always" | "deny";
+
+const TRAILING_HINT = /\s*[([][^)\]]*[)\]]\s*$/u;
+
+/**
+ * The scope an approval option's own words state, or `yes` for a bare consent whose scope they
+ * leave unsaid: "No…", "Deny", "Reject" and pi's "Block" deny; a consent that says "don't ask
+ * again", "always", "allow all" or "this session" keeps allowing; one that says "once" or "this
+ * time" allows this once. Any other wording ("Modify with external editor") states no scope.
+ */
+function statedScope(label: string): ApprovalScope | "yes" | null {
+  const words = label.replace(TRAILING_HINT, "").trim().toLowerCase();
+  if (/^(?:no|deny|reject|block)\b/u.test(words)) return "deny";
+  if (!/^(?:yes|allow|approve|always)\b/u.test(words)) return null;
+  if (/\balways\b|\b(?:don'?t|do not|never) ask(?: me)? again\b|\ballow all\b|\b(?:for|during) (?:the rest of )?this (?:session|project)\b|\bfrom now on\b/u.test(words)) return "always";
+  if (/\bonce\b|\bone time\b|\bthis time\b|\bjust this\b/u.test(words)) return "once";
+  return /^(?:yes|allow|approve)(?:,?\s+(?:proceed|allow|approve|run it))?$/u.test(words) ? "yes" : null;
+}
+
+/**
+ * What an approval option grants, read off the agent's own words and never guessed (G-071): the
+ * scope its label states, or, for a bare "Yes" beside an option that keeps allowing (Codex's
+ * "Yes, and don't ask again…", Claude's "Yes, allow all edits this session"), this once. A bare
+ * "Yes" with no such neighbour, any other wording, and every other kind of card get no scope.
+ */
+export function approvalScope(prompt: InteractivePrompt, index: number): ApprovalScope | null {
+  if (prompt.kind !== "approval") return null;
+  const stated = prompt.options.map((option) => statedScope(option.label));
+  const own = stated[index] ?? null;
+  if (own !== "yes") return own;
+  return stated.includes("always") ? "once" : null;
+}
+
 export function cardText(card: CardText, t: Translate = inCurrentLanguage): string {
   const vars = card.vars === undefined ? undefined
     : Object.fromEntries(Object.entries(card.vars).map(([name, value]) => [name, value !== null && typeof value === "object" ? cardText(value, t) : value]));
@@ -26,17 +59,12 @@ export function cardText(card: CardText, t: Translate = inCurrentLanguage): stri
 /**
  * Claude's words read off the screen over its question (`screen_words`, #2088), for the card to show
  * while the chat has no record of them: Claude Code 2.1.311 writes the turn to its session file only
- * with the answer. Once the turn in progress (the transcript's last, Claude's) holds this question's
- * call, still waiting, the session file has the turn and the chat shows Claude's own text: the card
- * leaves the screen's copy out. The call must ask what the card asks, under its header and with its
- * options; a call in an earlier turn (one an interrupted turn left waiting, the same question asked
- * again) says nothing of these words.
+ * with the answer.
  */
 export function screenWordsToShow(prompt: InteractivePrompt, turns: readonly ConversationTurn[]): string | null {
   if (!prompt.screen_words) return null;
   const same = (a: string, b: string): boolean => a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
   const labels = prompt.options.map((option) => option.label);
-  // the card's title is the question's header (`Fix`, or `Fix · 1 of 2` in a form) unless the bridge wrote it
   const headed = (header: string | null): boolean => prompt.own_text?.title !== undefined || header === null
     || same(prompt.title, header) || prompt.title.startsWith(`${header.trim()} · `);
   const asksThis = (input: string): boolean => {
@@ -51,37 +79,25 @@ export function screenWordsToShow(prompt: InteractivePrompt, turns: readonly Con
   return recorded ? null : prompt.screen_words;
 }
 
-/**
- * The card a poll keeps (ChatView). Another prompt, or none, replaces it. The same prompt (its id) keeps
- * its object while nothing it shows changed, so the card is not drawn again, and takes what changed
- * without being replaced, so the card keeps its edits: its navigation (steps, step back, own_text), the
- * words read off the screen over it (screen_words, #2088), and how its words are drawn, an omp card's
- * own Markdown arriving after its first read or withdrawn.
- */
 export function polledPrompt(current: InteractivePrompt | null, next: InteractivePrompt | null): InteractivePrompt | null {
   if (current === null || next === null || current.id !== next.id) return next;
-  const shown = (prompt: InteractivePrompt) => JSON.stringify([prompt.steps, prompt.can_step_back, prompt.own_text, prompt.question, prompt.options, prompt.text_format ?? null, prompt.screen_words ?? null]);
+  const shown = (prompt: InteractivePrompt) => JSON.stringify([prompt.steps, prompt.can_step_back, prompt.own_text, prompt.question, prompt.options, prompt.text_format ?? null, prompt.screen_words ?? null, prompt.option_preview ?? null]);
   if (shown(current) === shown(next)) return current;
-  const { text_format: _format, screen_words: _words, ...kept } = current;
-  // own_text names steps by index: it goes with the steps it was read with
+  const { text_format: _format, screen_words: _words, option_preview: _preview, ...kept } = current;
   return {
     ...kept, steps: next.steps, can_step_back: next.can_step_back, own_text: next.own_text,
     question: next.question, options: next.options, ...(next.text_format ? { text_format: next.text_format } : {}),
     ...(next.screen_words !== undefined ? { screen_words: next.screen_words } : {}),
+    ...(next.option_preview !== undefined ? { option_preview: next.option_preview } : {}),
   };
 }
 
-/** At most `limit` UTF-16 units of `text`, never ending on half of a character (a lone high surrogate). */
-function capped(text: string, limit: number): string {
+export function capped(text: string, limit: number): string {
   const cut = text.slice(0, limit);
   const last = cut.charCodeAt(cut.length - 1);
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
-/**
- * The words a prompt card shows: the bridge's own (`own_text`: a title it gave the card, the Close an
- * Esc is offered as) in the user's language, and the agent's own text as the agent wrote it.
- */
 export function promptWords(prompt: InteractivePrompt, t: Translate = inCurrentLanguage) {
   const own = prompt.own_text;
   const words = (text: string, card: CardText | undefined): string => card === undefined ? text : cardText(card, t);

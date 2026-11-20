@@ -6,6 +6,12 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const USAGE_ZH: Record<string, string> = {
+  "Remove {name}?": "移除 {name}？",
+  "Remove this account from Ovis? Its CLI sign-in and credentials stay on this PC, and Restore under Removed from Ovis brings it back.": "要从 Ovis 移除此账号吗？CLI 登录状态和凭据会保留在这台电脑上，可在“已从 Ovis 移除”中点击“恢复”找回。",
+  "Remove this account from Ovis? {tool} keeps its record of it, and Restore under Removed from Ovis brings it back.": "要从 Ovis 移除此账号吗？{tool} 的记录会保留，可在“已从 Ovis 移除”中点击“恢复”找回。",
+  "Removed from Ovis": "已从 Ovis 移除",
+  "Restore": "恢复",
+  "Restore {name}": "恢复 {name}",
   "Could not load sign-in options": "无法加载登录方式",
   "On the server PC": "在服务器 PC 上登录",
   "Install {cli} on the server PC first.": "请先在服务器 PC 上安装 {cli}。",
@@ -52,7 +58,6 @@ export const USAGE_ZH: Record<string, string> = {
   "No limits reported": "未报告限额",
   "Sign-in expired. Open {name} to renew it.": "登录已过期。请打开 {name} 续期。",
   "Sign-in expired.": "登录已过期。",
-  "Sign in again": "重新登录",
   "Sign in again to {name}": "重新登录 {name}",
   "{name} asked to slow down. These are the last numbers.": "{name} 要求降低请求频率。显示的是上次读取的数值。",
   "{name} could not be reached.": "无法连接 {name}。",
@@ -82,4 +87,16 @@ export const USAGE_ZH: Record<string, string> = {
   "This version signs in only in its terminal. Open it to finish.": "此版本只能在终端中登录。请打开终端完成登录。",
   "The sign-in asked for the code again. Paste it once more.": "登录再次要求输入代码。请再粘贴一次。",
   "{agent} is already signed in on this PC. Continuing may replace that sign-in.": "{agent} 已在这台电脑上登录。继续可能会替换该登录。",
+  "Usage credits": "额外用量",
+  "Credits": "额度",
+  "Unlimited": "无限制",
+  "Available": "可用",
+  "{n} credits": "{n} 额度",
+  "{amount} spent": "已用 {amount}",
+  "Limit resets": "限额重置",
+  "Expires in {time}": "{time}后过期",
+  "{n} left": "剩余 {n} 次",
+  "Recorded by {tool}": "{tool} 的记录",
+  "Recorded by {tool}, {when}": "{tool} 的记录，{when}",
+  "It may have changed since.": "之后可能已有变化。",
 };

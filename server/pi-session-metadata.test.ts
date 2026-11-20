@@ -13,7 +13,6 @@ import { handleSessionHistoryRequest } from "./session-history-routes.ts";
 const roots: string[] = [];
 const readers: PiSessionReader[] = [];
 const releases: Array<() => void> = [];
-/** Every held I/O gate also releases on test failure/timeout, before cleanup waits for readers. */
 function ioGate() {
   const gate = Promise.withResolvers<void>();
   releases.push(gate.resolve);
@@ -232,7 +231,6 @@ describe("Pi stat-keyed streaming reader", () => {
     expect(f.io.calls).toBe(301);
     expect(f.io.bytes).toBe(bytes);
     expect(f.reader.cacheSize()).toBe(151);
-    // A completed empty result is stat-keyed too: a later valid header must become visible.
     appendFileSync(join(f.folder, "headerless-149.jsonl"), header("newly-readable") + name("Appended session"));
     expect(await f.list()).toEqual(rows);
     expect(await f.list()).toMatchObject([{ id: "newly-readable", title: "Appended session" }, { id: "older-real-session" }]);
@@ -277,7 +275,6 @@ describe("Pi stat-keyed streaming reader", () => {
         utimesSync(empty, time - gap, time - gap);
       }
     }
-    // 344 candidates: headerless files must neither evict checkpoints nor hide real sessions.
     await expect(f.list()).rejects.toBeInstanceOf(PiMetadataBusy);
     const rows = await f.list();
     expect(rows.map((row) => row.id)).toEqual(Array.from({ length: 50 }, (_, n) => `long-${n}`));
@@ -298,8 +295,6 @@ describe("Pi stat-keyed streaming reader", () => {
       }) + name(`Session ${n}`));
       utimesSync(path, 1_790_000_000 + n, 1_790_000_000 + n);
     }
-    // No first-line record fits in the first chunk. Keep those checkpoints rather than
-    // walking far enough to evict them before the next open can finish even one header.
     await expect(f.list()).rejects.toBeInstanceOf(PiMetadataBusy);
     const firstReads = f.io.calls;
     const rows = await f.list();
@@ -368,7 +363,6 @@ describe("Pi stat-keyed streaming reader", () => {
       if (phase === "active") await entered.promise;
       now = 51;
       jest.advanceTimersByTime(51);
-      // Drain the rejection handler queued by the timer, not any filesystem work.
       await Promise.resolve();
       const expired = await Promise.race([outcome, Promise.resolve({ pending: true })]);
       expect(expired).toHaveProperty("error");
@@ -419,6 +413,58 @@ describe("Pi stat-keyed streaming reader", () => {
     expect(await f.list()).toMatchObject([{ id: "fixture", title: null }]);
     expect(await f.list()).toMatchObject([{ id: "fixture", title: "Eventually complete" }]);
     expect(positions.filter((position) => position === 0)).toHaveLength(1);
+  });
+
+  it("fills labels on later opens even when the header pass spends the whole listing deadline", async () => {
+    jest.useFakeTimers();
+    let now = 0;
+    spyOn(performance, "now").mockImplementation(() => now);
+    let chunks = 0;
+    const f = fixture({ read: (fd, buffer, length, position) => new Promise((done, fail) => {
+      read(fd, buffer, 0, length, position, (error, count) => {
+        chunks++;
+        now += PI_READ_DEADLINE_MS / 5;
+        if (error) fail(error); else done(count);
+      });
+    }) });
+    writeFileSync(f.file, header() + filler(3 * PI_CHUNK_BYTES) + name("Eventually named"));
+    const original = f.reader.read.bind(f.reader);
+    spyOn(f.reader, "read").mockImplementation((...args) => {
+      if (args[3] === "header") now += PI_READ_DEADLINE_MS + 100;
+      return original(...args);
+    });
+    const titles: Array<string | null> = [];
+    const reads: number[] = [];
+    for (let open = 0; open < 4; open++) {
+      const before = chunks;
+      const rows = await f.list();
+      expect(rows.map((row) => row.id)).toEqual(["fixture"]);
+      titles.push(rows[0]!.title);
+      reads.push(chunks - before);
+    }
+    expect(titles).toEqual([null, "Eventually named", "Eventually named", "Eventually named"]);
+    expect(reads[0]).toBeGreaterThan(1);
+    expect(Math.max(...reads)).toBeLessThanOrEqual(3);
+  });
+
+  it("review regression: labelled rows do not spend the reserve ahead of an unfinished one", async () => {
+    jest.useFakeTimers();
+    let now = 0;
+    spyOn(performance, "now").mockImplementation(() => now);
+    const f = fixture();
+    writeFileSync(f.file, header("unfinished") + filler(2 * PI_CHUNK_BYTES) + name("Eventually named"));
+    utimesSync(f.file, 1, 1);
+    const named = join(f.folder, "named.jsonl");
+    writeFileSync(named, header("named") + name("Already named"));
+    utimesSync(named, 2, 2);
+    const original = f.reader.read.bind(f.reader);
+    spyOn(f.reader, "read").mockImplementation((...args) => {
+      now += args[3] === "header" ? PI_READ_DEADLINE_MS : PI_READ_DEADLINE_MS * 0.15;
+      return original(...args);
+    });
+    const titles: Array<Array<string | null>> = [];
+    for (let open = 0; open < 3; open++) titles.push((await f.list()).map((row) => row.title));
+    expect(titles.at(-1)).toEqual(["Already named", "Eventually named"]);
   });
 
   it("review regression: Windows header eligibility spends the last identity checks only once", async () => {
@@ -529,7 +575,7 @@ describe("Pi stat-keyed streaming reader", () => {
       const first = outcome.rows;
       expect(first.map((row) => row.id)).toEqual(["newest", "middle", "oldest"]);
       expect(first.map((row) => [row.title, row.firstMessage])).toEqual([
-        [null, null], ["Finished middle", "Prompt middle"], ["Finished oldest", "Prompt oldest"],
+        [expiry === "later chunk" ? null : "Finished newest", null], ["Finished middle", "Prompt middle"], ["Finished oldest", "Prompt oldest"],
       ]);
       expect(first.every((row) => row.resume !== null)).toBe(true);
       await f.reader.idle();
@@ -588,8 +634,6 @@ describe("Pi stat-keyed streaming reader", () => {
     expect(f.reader.size()).toEqual({ active: 0, waiting: 0 });
 
     expect(await f.list()).toMatchObject([{ id: "fixture", title: "final name", firstMessage: "first prompt" }]);
-    // No reread of the prefix: even when a whole-file scan exceeds every listing budget,
-    // a stable file makes progress, with one bounded parser and no retained descriptor.
     expect(positions).toEqual([0, PI_CHUNK_BYTES, 2 * PI_CHUNK_BYTES]);
     expect(await f.list()).toMatchObject([{ title: "final name" }]);
     expect(positions).toHaveLength(3);
@@ -880,7 +924,6 @@ describe("Pi stat-keyed streaming reader", () => {
     const short = f.reader.read(() => openSync(f.file, "r"), now + 50);
     const shortOutcome = short.catch((error: unknown) => error);
     try {
-      // Filesystem setup cannot consume the short budget before both reads are held.
       await entered.promise;
       expect(short).not.toBe(long);
       now = 51;
@@ -956,7 +999,6 @@ describe("Pi stat-keyed streaming reader", () => {
     let reads = 0;
     const f = fixture({ read: (fd, buffer, length, position) => new Promise((done, fail) => {
       read(fd, buffer, 0, length, position, (error, count) => {
-        // Each small file uses less than the budget, but both together exceed it.
         reads++;
         now += PI_READ_DEADLINE_MS * 0.75;
         if (error) fail(error); else done(count);
@@ -971,10 +1013,9 @@ describe("Pi stat-keyed streaming reader", () => {
     const original = f.reader.read.bind(f.reader);
     const requested = spyOn(f.reader, "read").mockImplementation((...args) => { deadlines.push(args[1]); return original(...args); });
     try {
-      // Both files fit in a chunk, so their EOF-checked labels need no second scan.
       expect(await f.list()).toMatchObject([{ id: "newer", title: "first row" }, { id: "older", title: "second row" }]);
       expect(reads).toBe(2);
-      expect(deadlines).toEqual([PI_HEADER_DEADLINE_MS, PI_HEADER_DEADLINE_MS, PI_READ_DEADLINE_MS]);
+      expect(deadlines).toEqual([PI_HEADER_DEADLINE_MS, PI_HEADER_DEADLINE_MS]);
       expect(f.reader.size()).toEqual({ active: 0, waiting: 0 });
       expect(await f.list()).toMatchObject([{ id: "newer", title: "first row" }, { id: "older", title: "second row" }]);
       expect(reads).toBe(2);
@@ -1070,8 +1111,6 @@ describe("Pi stat-keyed streaming reader", () => {
             f.reader.close();
             expect(await outcome).toBeInstanceOf(PiMetadataBusy);
           } else {
-            // Cross the listing's deadline while the actual production callback is held,
-            // without relying on a timer racing setup on a loaded filesystem.
             now += PI_READ_DEADLINE_MS + 1;
           }
           expect(f.reader.size().active).toBe(1);
@@ -1079,7 +1118,7 @@ describe("Pi stat-keyed streaming reader", () => {
           if (reason === "shutdown") expect(await outcome).toBeInstanceOf(PiMetadataBusy);
           else expect(await outcome).toMatchObject([{ id: "fixture", title: null, firstMessage: null }]);
           await f.reader.idle();
-          expect(stats).toBe(reason === "deadline" ? 3 : phase === "open" ? 0 : 1);
+          expect(stats).toBe(reason === "deadline" ? 5 : phase === "open" ? 0 : 1);
           expect(f.io.bytes).toBe(reason === "deadline" ? Buffer.byteLength(header()) : 0);
           expect(() => fstatSync(fd)).toThrow();
           expect(f.reader.size()).toEqual({ active: 0, waiting: 0 });
@@ -1220,7 +1259,6 @@ describe("Pi stat-keyed streaming reader", () => {
       return new Promise((done, fail) => read(fd, buffer, 0, length, position, (error, count) => { bytes += count; if (error) fail(error); else done(count); }));
     } });
     writeFileSync(f.file, header());
-    // Synthetic transcript, built in small writes rather than one giant test allocation.
     const block = filler(1024 * 1024);
     for (let n = 0; n < 20; n++) appendFileSync(f.file, block);
     appendFileSync(f.file, prompt("after twenty MiB") + name("large fixture"));

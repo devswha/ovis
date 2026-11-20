@@ -8,11 +8,20 @@
 // first: this script runs before main.tsx, so it moves the settings saved under the old key itself
 import "./lib/legacyStorage.ts";
 import { applyThemeEntry, savedThemeEntry } from "./lib/themeBoot.ts";
+import { regionalAppReady, regionalAppUrl } from "../shared/relay-regions.ts";
+
+// a pairing link for a regional relay opens on the app's copy beside it once that copy answers with
+// this build, while this host is still sending the bundle; not once the app took the offer off the
+// address (src/lib/relay/boot.ts), which means it started pairing here
+const regional = regionalAppUrl(window.location, "Capacitor" in window);
+if (regional !== null) {
+  const offer = window.location.hash;
+  void regionalAppReady(new URL(regional).origin).then((ready) => {
+    if (ready && window.location.hash === offer) window.location.replace(regional);
+  });
+}
 
 const root = document.documentElement;
 const entry = savedThemeEntry(() => window.localStorage);
 applyThemeEntry(root, entry);
-// the frames before the stylesheet arrives: the row's own surface, until the app hands it back to
-// the theme blocks (applyToDocument in lib/settings.ts), or keeps it on the current row when the
-// stylesheet never loaded, so later theme changes are not held by it
 root.style.backgroundColor = entry.bg;

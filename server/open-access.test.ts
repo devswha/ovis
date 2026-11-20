@@ -8,12 +8,6 @@ import { DeviceStore } from "./devices.ts";
 import { forgetAuthAttempts } from "./auth.ts";
 import { PortalService } from "./portal.ts";
 
-/**
- * The access gate at the HTTP seam: what this PC needs to reach, and what a watching
- * device does not. `decideAccess` itself (loopback, Tailscale, token, device, open mode)
- * is covered in server/access.test.ts, and pairing initiation in server/devices.test.ts.
- */
-
 const root = mkdtempSync(join(tmpdir(), "herdr-open-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -50,12 +44,10 @@ describe("a paired watch device", () => {
   let cookie: string;
   let interactCookie: string;
   beforeAll(() => {
-    // paired before the server starts, so its own store holds the device
     const devices = new DeviceStore(root);
     const paired = devices.pair(devices.startPairing().code, "Watch", "watch")!;
     expect(devices.match(paired.token)).not.toBeNull();
     cookie = `ovis_device=${encodeURIComponent(paired.token)}`;
-    // and one that may drive, for what the watcher is refused
     const driver = devices.pair(devices.startPairing().code, "Driver", "drive")!;
     interactCookie = `ovis_device=${encodeURIComponent(driver.token)}`;
     server = createServer({ port: 0, stateDir: root });
@@ -69,7 +61,6 @@ describe("a paired watch device", () => {
   });
 
   it("is refused an agent's commands for a folder before any read, on this PC's path and the proxy's; a driving device gets them", async () => {
-    // a folder with one Codex skill: its description is file text the terminal never showed
     const folder = join(root, "commands-folder");
     mkdirSync(join(folder, ".codex", "skills", "watch-sentinel"), { recursive: true });
     writeFileSync(join(folder, ".codex", "skills", "watch-sentinel", "SKILL.md"), "---\nname: watch-sentinel\ndescription: SENTINEL-NEVER-FOR-A-WATCHER\n---\nBody.\n");
@@ -94,16 +85,13 @@ describe("a paired watch device", () => {
   it("keeps the filesystem, the directory listing and push/test out of reach", async () => {
     // its own credentials are a preference of that device, so signing out keeps working
     expect((await asWatcher("/api/auth", "DELETE")).status).toBe(204);
-    // the filesystem and the directory listing are shape the terminal never shows it
     expect((await asWatcher("/api/fs/file?path=/etc/hostname")).status).toBe(403);
     expect((await asWatcher("/api/workspace/directories?cwd=/tmp")).status).toBe(403);
     expect((await asWatcher("/api/machines/local/workspace/directories?cwd=/tmp")).status).toBe(403);
-    // nor make a folder there
     expect((await asWatcher("/api/workspace/directories", "POST")).status).toBe(403);
     expect((await asWatcher("/api/machines/local/workspace/directories", "POST")).status).toBe(403);
     // sending an alert is not a preference: it makes the server POST somewhere
     expect((await asWatcher("/api/push/test", "POST")).status).toBe(403);
-    // watching is the role's whole point
     expect((await asWatcher("/api/devices")).status).toBe(200);
   });
 
@@ -113,7 +101,6 @@ describe("a paired watch device", () => {
     expect((await read.json() as { error: { code: string } }).error.code).toBe("invalid_source");
     const format = await asWatcher("/api/pane/read?pane_id=w9999:p9999&format=markdown");
     expect((await format.json() as { error: { code: string } }).error.code).toBe("invalid_format");
-    // the same check on this PC, where the method is the only thing wrong
     const posted = await fetch(`${base}/api/pane/read?pane_id=w9999:p9999&source=visible`, { method: "POST", headers: { origin: base, "x-herdr-machine": "1" } });
     expect(posted.status).toBe(400);
     expect((await posted.json() as { error: { code: string } }).error.code).toBe("method_not_allowed");
@@ -154,7 +141,6 @@ describe("a paired watch device", () => {
         expect(await response.text(), path).not.toContain('"commands"');
       }
     }
-    // the device that may drive still reads them
     expect((await fetch(`${base}/api/agent/commands?agent=claude&cwd=${folder}`, { headers: { cookie: interactCookie, origin: base } })).status).toBe(200);
   });
 
@@ -167,9 +153,7 @@ describe("a token set: guessing it", () => {
   let watchToken = "";
   beforeAll(() => {
     forgetAuthAttempts();
-    // a held answer is a wait of one second: the clock stands still, so a slow run cannot outlast it
     setSystemTime(Date.now());
-    // paired before the server starts, so its own store holds the device
     const store = new DeviceStore(stateDir);
     watchToken = store.pair(store.startPairing().code, "Watch", "watch")!.token;
     expect(store.match(watchToken)).not.toBeNull();
@@ -221,24 +205,25 @@ describe("a token set: guessing it", () => {
 describe("a Portal that signs its visitors in", () => {
   const TOKEN = "the-token-only-the-owner-holds";
   const HOST = "herdr-test-0123.relay.example";
+  const SHORT = "herdr-test.relay.example";
   const servers: ReturnType<typeof createServer>[] = [];
   afterAll(() => { for (const server of servers) server.stop(); });
 
-  // a portal that lists the sign-in flags, notes the proof in its environment, says it is ready and runs until stopped
   const dir = mkdtempSync(join(root, "bin-"));
   const bin = join(dir, "portal");
   const noted = join(dir, "proof");
   writeFileSync(bin, [
     "#!/bin/sh",
     'case "$1" in',
-    "  version) echo v2.6.1 ;;",
+    "  version) echo v2.7.3 ;;",
     "  expose)",
     `    [ "$2" = --help ] && { printf '%s\\n' '  -auth string' '  -auth-allow value' '  -auth-identity-headers' '  -auth-identity-proof string'; exit 0; }`,
     `    printf '%s' "\${AUTH_IDENTITY_PROOF-}" > '${noted}'`,
     "    id=''; previous=''; for arg in \"$@\"; do [ \"$previous\" = --identity-path ] && id=\"$arg\"; previous=\"$arg\"; done",
     "    [ -f \"$id\" ] || echo '{}' > \"$id\"",
     "    trap 'exit 0' TERM",
-    `    echo 'INF service ready at https://${HOST}:443'`,
+    // the short address with its DNS root dot: the same name as without it
+    `    echo 'INF service ready at https://${HOST}:443 (short URL: https://${SHORT}.:443)'`,
     "    while :; do sleep 0.05; done ;;",
     `  auth) echo "Redeem URL: https://$3/_portal/auth/login#credential=a-link" ;;`,
     "  *) exit 2 ;;",
@@ -249,7 +234,6 @@ describe("a Portal that signs its visitors in", () => {
   const relay = (async () => Response.json({ data: { release_version: "v2.6.1" } })) as unknown as typeof fetch;
   const credential = { method: "credential", allow: [] };
 
-  /** a server whose Portal can be started on a sign-in, and asked for the proof it was given */
   function serving(recheckMs?: number, savedDrive = false) {
     const stateDir = mkdtempSync(join(root, "portal-"));
     if (savedDrive) {
@@ -275,7 +259,6 @@ describe("a Portal that signs its visitors in", () => {
     };
     return {
       server, main, owner, post, stateDir, service,
-      /** starts Portal and returns the proof it was given, or "" when it was given none */
       async start(auth: unknown): Promise<string> {
         rmSync(noted, { force: true });
         expect((await post("start", { relay: "relay.example", auth })).status).toBe(202);
@@ -291,6 +274,8 @@ describe("a Portal that signs its visitors in", () => {
   /** what Portal sends with a visitor it vouches for: the visitor's Host kept, Forwarded-Proto https, the identity and the proof */
   const identity = { host: HOST, "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.9", "x-portal-user": "alice", "x-portal-auth": "credential" };
   const health = async (base: string, headers: Record<string, string>) => ((await (await fetch(`${base}/api/health?scope=bridge`, { headers })).json()) as { auth: unknown }).auth;
+  const ingress = async (base: string, headers: Record<string, string>) =>
+    ((await (await fetch(`${base}/api/health?scope=bridge`, { headers })).json()) as { security?: { observed_ingress: string } }).security?.observed_ingress;
   const signedIn = { required: false, authenticated: true, via: "portal", role: "watch", portal: { user: "alice", method: "credential" } };
   const refused = { authenticated: false, reason: "token_required" };
 
@@ -350,6 +335,18 @@ describe("a Portal that signs its visitors in", () => {
     }
   });
 
+  it("refuses a saved-drive visitor an alert webhook, which would keep its alerts after access ends", async () => {
+    const portal = serving(undefined, true);
+    const visitor = { ...identity, "x-portal-proof": await portal.start(credential), "content-type": "application/json" };
+    for (const [method, target] of [["PUT", "/api/alerts/webhook"], ["DELETE", "/api/alerts/webhook"], ["POST", "/api/alerts/webhook/test"]] as const) {
+      const denied = await fetch(`${portal.main}${target}`, {
+        method, headers: { ...visitor, origin: `https://${HOST}`, "x-herdr-update": "1" }, body: JSON.stringify({ preset: "json", url: "https://example.com/hook" }),
+      });
+      expect(denied.status, `${method} ${target}`).toBe(403);
+      expect(await denied.json()).toMatchObject({ error: { code: "owner_only" } });
+    }
+  });
+
   it("refuses push status before handling a Portal visitor's subscription", async () => {
     const portal = serving();
     const visitor = { ...identity, "x-portal-proof": await portal.start(credential), "content-type": "application/json" };
@@ -359,7 +356,6 @@ describe("a Portal that signs its visitors in", () => {
     const denied = await status(visitor);
     expect(denied.status).toBe(403);
     expect(await denied.json()).toMatchObject({ error: { code: "owner_only" } });
-    // The owner still reaches input validation in the push handler.
     const owner = await status({ ...visitor, ...portal.owner });
     expect(owner.status).toBe(400);
     expect(await owner.json()).toMatchObject({ error: { code: "invalid_subscription" } });
@@ -378,9 +374,37 @@ describe("a Portal that signs its visitors in", () => {
     for (const path of ["/api/portal", "/api/access", "/api/health"]) {
       expect(await (await fetch(`${portal.main}${path}`, { headers: { ...portal.owner, ...vouched } })).text()).not.toContain(proof);
     }
-    // the token still means the token, and without either it is refused
     expect(await health(portal.main, { ...vouched, ...portal.owner })).toMatchObject({ via: "token", role: "drive" });
     expect(await health(portal.main, {})).toMatchObject(refused);
+  });
+
+  it("says a request Portal vouched for came through Portal, the token's and a paired device's too, and no request without the proof", async () => {
+    const portal = serving();
+    const vouched = { ...identity, "x-portal-proof": await portal.start(credential) };
+    expect(await ingress(portal.main, { ...vouched, ...portal.owner })).toBe("portal");
+    expect(await ingress(portal.main, vouched)).toBe("portal");
+    expect(await ingress(portal.main, { ...identity, "x-portal-proof": "0".repeat(64), ...portal.owner })).toBe("proxy");
+  });
+
+  it("says a request Portal forwarded with no sign-in came through Portal, by the address it keeps in the Host, and no other request", async () => {
+    const portal = serving();
+    expect(await portal.start({ method: "none" })).toBe("");
+    // what Portal sends without a sign-in: the visitor's Host kept, Forwarded-For and Forwarded-Proto https
+    const forwarded = { ...portal.owner, "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.9" };
+    expect(await ingress(portal.main, { ...forwarded, host: HOST })).toBe("portal");
+    expect(await ingress(portal.main, { ...forwarded, host: `${SHORT.toUpperCase()}.` })).toBe("portal");
+    expect(await ingress(portal.main, { ...forwarded, host: SHORT })).toBe("portal");
+    expect(await ingress(portal.main, { ...forwarded, host: `${HOST}:443` })).toBe("portal");
+    // another address, Portal's name on another port, or Portal's without the shape Portal forwards, is some other proxy
+    expect(await ingress(portal.main, { ...forwarded, host: "ovis.example.com" })).toBe("proxy");
+    expect(await ingress(portal.main, { ...forwarded, host: `${HOST}:8443` })).toBe("proxy");
+    expect(await ingress(portal.main, { ...forwarded, host: `${SHORT}:8443` })).toBe("proxy");
+    expect(await ingress(portal.main, { ...portal.owner, host: HOST })).toBe("proxy");
+    expect(await ingress(portal.main, { ...portal.owner, host: HOST, "x-forwarded-for": "203.0.113.9" })).toBe("proxy");
+    expect(await ingress(portal.main, { ...forwarded, host: HOST, "x-forwarded-proto": "http" })).toBe("proxy");
+    // once it stops, its address is no evidence
+    await portal.stop();
+    expect(await ingress(portal.main, { ...forwarded, host: HOST })).toBe("proxy");
   });
 
   it("believes nothing of those headers without the proof, from loopback or through another proxy, whatever Host or forwarding headers come with them", async () => {
@@ -449,7 +473,6 @@ describe("a Portal that signs its visitors in", () => {
     const open = (headers: Record<string, string>) => new Promise<WebSocket | null>((resolve) => {
       const socket = new WebSocket(`ws://127.0.0.1:${new URL(portal.main).port}/ws`, { headers } as unknown as string[]);
       socket.onopen = () => resolve(socket);
-      // a refused upgrade ends in a close, with or without an error
       socket.onclose = () => resolve(null);
       socket.onerror = () => resolve(null);
     });
@@ -497,7 +520,6 @@ describe("a Portal that signs its visitors in", () => {
     expect(owner.readyState).toBe(WebSocket.OPEN);
     owner.close();
     await ownerClosed;
-    // the PCs' event stream too: it ends, and the page opens it again through Portal
     const events = await fetch(`${portal.main}/api/machines/events`, { headers: { ...identity, "x-portal-proof": proof } });
     expect(events.status).toBe(200);
     const drained = events.body!.pipeTo(new WritableStream()).then(() => "ended" as const, () => "ended" as const);
@@ -512,7 +534,6 @@ describe("a Portal that signs its visitors in", () => {
     const send = (method: string, path: string, headers: Record<string, string>, body?: unknown) =>
       fetch(`${portal.main}${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const code = async (response: Response) => ((await response.json()) as { error: { code: string } }).error.code;
-    // what outlives the link or lets others in: links, Portal's own controls, pairing, revoking and push alerts
     const standing: [string, string, unknown?][] = [
       ["POST", "/api/portal/invite", { name: "alice", days: 30 }],
       ["POST", "/api/portal/stop", {}],
@@ -539,12 +560,9 @@ describe("a Portal that signs its visitors in", () => {
     const redeemed = await send("POST", "/api/devices/pair", visitor, { code: "000000" });
     expect(redeemed.status).toBe(403);
     expect(await code(redeemed)).toBe("read_only");
-    // none of that touched Portal
     expect(((await (await send("GET", "/api/portal", portal.owner)).json()) as { phase: string }).phase).toBe("running");
-    // the same requests without the proof are no visitor at all
     const { "x-portal-proof": _proof, ...anonymous } = visitor;
     expect((await send("POST", "/api/portal/invite", anonymous, { name: "alice", days: 30 })).status).toBe(401);
-    // the owner's token may
     const ownerHeaders = { ...portal.owner, "x-herdr-update": "1", "x-herdr-machine": "1", "content-type": "application/json" };
     const issued = await send("POST", "/api/portal/invite", ownerHeaders, { name: "alice", days: 30 });
     expect(issued.status).toBe(200);

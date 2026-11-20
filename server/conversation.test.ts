@@ -1,18 +1,23 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as darwinProcess from "./darwin-process.ts";
 import { Database } from "bun:sqlite";
 import { appendFileSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, win32 } from "node:path";
+import { execFileSync } from "node:child_process";
+import { basename, join, win32 } from "node:path";
 import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
+import * as cmd from "./cmd.ts";
+import * as piTree from "./pi-tree.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
-import { MAX_TURNS, parseOmpTranscript } from "./transcript-records.ts";
+import { MAX_TURNS, parseOmpTranscript, withHcNotes } from "./transcript-records.ts";
 import { turnStarts } from "./transcript-turns.ts";
 import { claudeImageType } from "./claude-transcript.ts";
 import { toolVerb } from "../src/lib/toolVerbs.ts";
 import { continuesHistory } from "../src/lib/chatRows.ts";
 import type { ConversationTurn } from "../shared/protocol.ts";
-import { parseAgyTranscript } from "./agy.ts";
+import { agyCatalog, agyToolOutput, parseAgyTranscript } from "./agy.ts";
+import * as filePool from "./file-pool.ts";
 import { agyStoreFromLocks } from "./agy-store.ts";
 import * as agyStore from "./agy-store.ts";
 import * as herdr from "./herdr/client.ts";
@@ -20,9 +25,63 @@ import { forgetHistoryChains } from "./codex.ts";
 import { DevinHistoryChanged } from "./devin.ts";
 import * as devinSession from "./devin-session.ts";
 import * as omo from "./omo.ts";
+import * as gjcRuntime from "./gjc-runtime.ts";
+import * as processStart from "./process-start.ts";
+import * as runtime from "./herdr-core/runtime.ts";
+import * as served from "./runtime/capabilities.ts";
+import { HERDR_CORE } from "./runtime/capabilities.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneRunsOmo, paneTranscript, parseClaudeTranscript, stoppedAgentJob, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+
+it("sees an OmO below its own Windows pane shell, not below another pane's, with or without a supplied list", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  // herdr on Windows names only the pane's shell
+  const shellOnly = { pane_id: "own-pane", shell_pid: 100, foreground_processes: [{ pid: 100, name: "powershell.exe", argv: ["powershell.exe"] }] };
+  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: shellOnly });
+  const shell = (pid: number) => ({ pid, parent: 1, path: "C:\\Windows\\powershell.exe", commandLine: "powershell.exe" });
+  const omo = (pid: number, parent: number) => ({ pid, parent, path: "C:\\node.exe", commandLine: "node.exe C:\\node_modules\\omo-ai\\bin\\omo.js" });
+  const table = spyOn(gjcRuntime, "recentProcessTable").mockResolvedValue([shell(100), omo(101, 100), shell(200), omo(201, 200)]);
+  const alive = spyOn(processStart, "processAlive").mockReturnValue(true);
+  const born = spyOn(processStart, "processStartedAt").mockReturnValue(null);
+  const home = mkdtempSync(join(tmpdir(), "herdr-omo-win-home-"));
+  const env = { HOME: process.env["HOME"], USERPROFILE: process.env["USERPROFILE"] };
+  process.env["HOME"] = home;
+  process.env["USERPROFILE"] = home;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    expect(await paneRunsOmo("own-pane")).toBe(true);
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(true);
+    table.mockResolvedValue([shell(100), shell(200), omo(201, 200)]);
+    expect(await paneRunsOmo("own-pane")).toBe(false);
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(false);
+    // an OmO a Claude in this pane runs as its tool is not the pane's agent
+    table.mockResolvedValue([shell(100), { pid: 101, parent: 100, path: "C:\\claude.exe", commandLine: "claude.exe" }, omo(102, 101)]);
+    expect(await paneRunsOmo("own-pane")).toBe(false);
+    // the process table is a few seconds old: an OmO that exited since is no longer the pane's
+    table.mockResolvedValue([shell(100), omo(101, 100)]);
+    expect(await paneRunsOmo("own-pane")).toBe(true);
+    alive.mockImplementation((pid: number) => pid !== 101);
+    expect(await paneRunsOmo("own-pane")).toBe(false);
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(false);
+    // herdr is asked about this pane by its id: given `target`, it answers for the focused pane
+    expect(rpc.mock.calls.map(([method, params]) => [method, params])).toContainEqual(["pane.process_info", { pane_id: "own-pane" }]);
+    expect(rpc.mock.calls.every(([, params]) => (params as { pane_id?: string }).pane_id === "own-pane")).toBe(true);
+    // a supplied sample is used as it is, herdr not asked again
+    alive.mockReturnValue(true);
+    rpc.mockClear();
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(true);
+    expect(rpc).not.toHaveBeenCalled();
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    for (const [key, value] of Object.entries(env)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    rmSync(home, { recursive: true, force: true });
+    table.mockRestore();
+    alive.mockRestore();
+    born.mockRestore();
+    rpc.mockRestore();
+  }
+});
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -48,6 +107,96 @@ it("keeps a cached pre-final Claude page distinct from its appended final answer
       .toEqual({ kind: "text", text: "Final answer", phase: "final_answer" });
     expect(before.turns.at(-1)?.parts.at(-1)).toEqual({ kind: "text", text: "Partial answer" });
   } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("says the transcript file's size on the newest page only, and again once it grows", () => {
+  const dir = mkdtempSync(join(tmpdir(), "transcript-bytes-"));
+  const file = join(dir, "session.jsonl");
+  const record = (type: "user" | "assistant", text: string) => JSON.stringify({
+    type, timestamp: "2026-10-19T01:00:00Z", message: { role: type, content: [{ type: "text", text }] },
+  }) + "\n";
+  try {
+    writeFileSync(file, record("user", "first ask") + record("assistant", "x".repeat(TRANSCRIPT_WINDOW_BYTES)) + record("user", "next ask"));
+    const newest = transcriptPage("claude-transcript", file);
+    expect(newest.transcript_bytes).toBe(fs.statSync(file).size);
+    appendFileSync(file, record("assistant", "next answer"));
+    expect(transcriptPage("claude-transcript", file).transcript_bytes).toBe(fs.statSync(file).size);
+    expect(newest.cursor).not.toBeNull();
+    expect(transcriptPage("claude-transcript", file, { before: newest.cursor! }).transcript_bytes).toBeUndefined();
+  } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+describe("an agent the shell stopped as a job", () => {
+  // Given /proc as Linux lays it out: each of the shell's threads lists its children, each child its state and argv.
+  const proc = mkdtempSync(join(tmpdir(), "stopped-job-proc-"));
+  const child = (pid: number, comm: string, state: string, argv: string[], parent = 41000) => {
+    mkdirSync(join(proc, String(pid)), { recursive: true });
+    writeFileSync(join(proc, String(pid), "stat"), `${pid} (${comm}) ${state} ${parent} ${pid} 41000 34816 41000 4194304`);
+    writeFileSync(join(proc, String(pid), "cmdline"), argv.map((word) => `${word}\0`).join(""));
+  };
+  const shell = (pid: number, threads: Record<string, number[]>) => {
+    for (const [thread, children] of Object.entries(threads)) {
+      mkdirSync(join(proc, String(pid), "task", thread), { recursive: true });
+      writeFileSync(join(proc, String(pid), "task", thread, "children"), children.map((id) => `${id} `).join(""));
+    }
+  };
+  child(41001, "opencode", "T", ["/usr/bin/opencode"]);
+  child(41002, "opencode", "S", ["/usr/bin/opencode"]);
+  child(41003, "vim", "T", ["vim", "notes.md"]);
+  child(41004, "node", "T", ["node", "/home/u/.npm/bin/opencode"]);
+  child(41005, "x) T (y", "S", ["/usr/bin/x"]);
+  child(41006, "opencode", "T", ["/bin/sh", "/home/u/bin/opencode"]);
+  shell(41000, { "41000": [41001] });
+  shell(42000, { "42000": [41002, 41003, 41005] });
+  shell(43000, { "43000": [], "43001": [41004] });
+  shell(45000, { "45000": [41006] });
+  child(46001, "sh", "T", ["sh", "-c", "opencode; echo done"]);
+  child(46002, "opencode", "T", ["/usr/bin/opencode"]);
+  shell(46000, { "46000": [46001] });
+  shell(46001, { "46001": [46002] });
+  child(47001, "npm exec opencode", "T", ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js", "opencode"]);
+  child(47002, "node", "T", ["node", "/home/u/.npm/_npx/1/node_modules/.bin/opencode"]);
+  child(47003, "opencode", "T", ["/home/u/.npm/_npx/1/node_modules/opencode-linux-x64/bin/opencode"]);
+  shell(47000, { "47000": [47001] });
+  shell(47001, { "47001": [47002] });
+  shell(47002, { "47002": [47003] });
+  child(48001, "sh", "T", ["sh"]);
+  shell(48000, { "48000": [48001] });
+  shell(48001, { "48001": [48000, 48001] });
+  const crowd = Array.from({ length: 300 }, (_, index) => 49100 + index);
+  for (const pid of crowd) child(pid, "sleep", "S", ["sleep", "600"], 49000);
+  child(49001, "sh", "T", ["sh", "-c", "opencode"], 49000);
+  child(49002, "opencode", "T", ["/usr/bin/opencode"], 49001);
+  shell(49000, { "49000": [...crowd, 49001] });
+  shell(49001, { "49001": [49002] });
+  afterAll(() => rmSync(proc, { recursive: true, force: true }));
+
+  it.each([
+    { shell: 41000, found: true, case: "its stopped child is the agent" },
+    { shell: 42000, found: false, case: "the agent runs, and only another program or a lookalike name is stopped" },
+    { shell: 43000, found: true, case: "another thread started it, under an interpreter" },
+    { shell: 44000, found: false, case: "the shell is gone" },
+    { shell: 45000, found: true, case: "a script named after it runs under a shell" },
+    { shell: 46000, found: true, case: "a wrapper shell runs it as its child" },
+    { shell: 47000, found: true, case: "npx runs it a few processes down" },
+    { shell: 48000, found: false, case: "the children lists loop back to the shell" },
+  ])("finds the agent as a stopped job of the shell when $case", async ({ shell: pid, found }) => {
+    expect(await stoppedAgentJob(pid, "opencode", { proc })).toBe(found);
+  });
+
+  it.each([
+    { pid: 41001, found: true, case: "the stopped OpenCode is that process" },
+    { pid: 41009, found: false, case: "the stopped OpenCode is another one than that process" },
+  ])("counts only the pane's own OpenCode process once it is known, when $case", async ({ pid, found }) => {
+    expect(await stoppedAgentJob(41000, "opencode", { proc, pid })).toBe(found);
+  });
+
+  it.each([
+    { shell: 49000, found: true, case: "it is below that shell, past more processes than the walk reads" },
+    { shell: 41000, found: false, case: "it is below another shell" },
+  ])("follows the pane's own OpenCode up to the shell when $case", async ({ shell, found }) => {
+    expect(await stoppedAgentJob(shell, "opencode", { proc, pid: 49002 })).toBe(found);
+  });
 });
 
 describe("omo skill roots", () => {
@@ -99,7 +248,6 @@ describe("pane process roots", () => {
       const roots = await paneProcessRoots("omo-held-fixture", "claude");
       expect(roots.pid).toBe(302);
       expect(roots.omo?.held).toBeTrue();
-      // with none held, the first omo process still answers, unheld, as before
       identity.mockImplementation(() => ({ agentDir: "/fixture-agent", heldIds: [], custom: false, held: false }));
       expect(await paneProcessRoots("omo-held-fixture", "claude")).toMatchObject({ pid: 301, omo: { held: false } });
     } finally {
@@ -109,7 +257,7 @@ describe("pane process roots", () => {
     }
   });
 
-  for (const agent of ["claude", "codex", "omp", "gjc", "pi", "opencode", "devin", "grok", "hermes", "agy"]) {
+  for (const agent of ["claude", "codex", "omp", "gjc", "pi", "opencode", "devin", "grok", "hermes", "agy", "letta"]) {
     it(`reads ${agent}'s environment from its foreground executable`, async () => {
       const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
         process_info: { foreground_processes: [
@@ -133,6 +281,23 @@ describe("pane process roots", () => {
       }
     });
   }
+
+  it("reads the environment of the bundled pi gentle-shell runs under node (#4198)", async () => {
+    const recorded = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "herdr-0.9.5-gentle-shell-pane.json"), "utf8"));
+    const front = recorded["pane.process_info"].process_info.foreground_processes[0];
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue(recorded["pane.process_info"]);
+    const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue(null);
+    const environ = spyOn(omo, "processEnviron").mockReturnValue(["PI_CODING_AGENT_DIR=/home/user/.gentle-shell/agent"]);
+    try {
+      expect(await paneProcessRoots("gentle-shell-fixture", "pi")).toMatchObject({
+        omo: null, environ: ["PI_CODING_AGENT_DIR=/home/user/.gentle-shell/agent"], pid: front.pid, cwd: front.cwd,
+      });
+    } finally {
+      environ.mockRestore();
+      identity.mockRestore();
+      rpc.mockRestore();
+    }
+  });
 
   it("matches a runtime launcher but never an agent name in unrelated arguments", async () => {
     const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
@@ -216,6 +381,14 @@ describe("Devin pane identity", () => {
   it("never guesses a session from its directory or a stale shell agent_session", () => {
     expect(() => devinSessionForPane(pane, [pane], ["/bin/devin"])).toThrow(ConversationUnavailable);
     expect(() => devinSessionForPane(shell, [shell], ["/bin/devin", "--resume", "stale"])).toThrow(ConversationUnavailable);
+  });
+  it("names a fresh or continued session with no lock and no reported id as unverified, not a missing id", () => {
+    for (const argv of [["/bin/devin"], ["/bin/devin", "--continue"]]) {
+      expect(() => devinSessionForPane(pane, [pane, peer], argv)).toThrow(expect.objectContaining({
+        message: "no_session_id", diagnostic: "devin_current_session_unverified",
+      }));
+    }
+    expect(() => devinSessionForPane(pane, [pane], ["/bin/devin", "--resume"])).toThrow(expect.objectContaining({ diagnostic: undefined }));
   });
   it("accepts only an exact reported or resumed identity and does not consider shell peers", () => {
     expect(devinSessionForPane(reported, [reported, shell], ["/bin/devin"])).toBe("one");
@@ -301,7 +474,6 @@ describe("Devin pane identity", () => {
         }
       } finally { db.close(); }
       const firstText = async (paneId: string) => (await paneConversation(paneId, undefined, {}, dbPath)).turns[0]?.parts[0];
-      // no lock to read (an older Devin, a symlinked store, no lock taken yet): the named session reads as on main
       const resumed = { pane_id: "pane-resumed", cwd, foreground_cwd: cwd, agent: "devin" } as HerdrPane;
       mockedPanes = [resumed];
       mockedProcesses = [{ argv: ["/usr/local/bin/devin", "--resume=one"] }];
@@ -310,12 +482,10 @@ describe("Devin pane identity", () => {
       mockedPanes = [reported];
       mockedProcesses = [{ argv: ["/usr/local/bin/devin"] }];
       expect(await firstText(reported.pane_id)).toEqual({ kind: "text", text: "two synthetic question" });
-      // a lock that is read and names another session than --resume refuses: Devin switched inside the app
       live = "two";
       mockedPanes = [resumed];
       mockedProcesses = [{ argv: ["/usr/local/bin/devin", "--resume=one"] }];
       await expect(paneConversation(resumed.pane_id, undefined, {}, dbPath)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
-      // lock evidence that is read but does not hold up (two locks held) refuses too: no fallback to --resume
       live = "ambiguous";
       await expect(paneConversation(resumed.pane_id, undefined, {}, dbPath)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
     } finally {
@@ -441,10 +611,8 @@ describe("Devin pane identity", () => {
     const pane = { pane_id: "pane-a", cwd, agent: "devin", agent_session: { agent: "devin", kind: "id", value: "one" } } as HerdrPane;
     const db = new Database(dbPath);
     try {
-      // Cache identity needs committed rows, not a durable sync for each fixture node.
       db.exec("PRAGMA synchronous = OFF");
       db.exec("CREATE TABLE sessions(id TEXT, working_directory TEXT, main_chain_id INTEGER, hidden INTEGER, model TEXT); CREATE TABLE message_nodes(session_id TEXT,node_id INTEGER,parent_node_id INTEGER,chat_message TEXT,created_at INTEGER); CREATE TABLE tool_call_state(session_id TEXT,tool_call_id TEXT,tool_call_json TEXT,tool_call_update_json TEXT)");
-      // more turns than one page holds, so the newest page carries a cursor
       db.query("INSERT INTO sessions VALUES ('one', ?, 120, 0, NULL)").run(cwd);
       const insert = db.query("INSERT INTO message_nodes VALUES ('one', ?, ?, ?, 1700000000)");
       db.transaction(() => {
@@ -452,7 +620,6 @@ describe("Devin pane identity", () => {
       })();
       mockedPanes = [pane];
       mockedProcesses = [{ argv: ["/usr/local/bin/devin", "--resume", "one"] }];
-      // the store never changes below, so only a forgotten cache can move the identity
       const read = () => paneConversation(pane.pane_id, undefined, {}, dbPath);
       const initial = await read();
       expect(typeof initial.cursor).toBe("string");
@@ -475,7 +642,6 @@ describe("Devin pane identity", () => {
   }, 15_000); // Seven awaited pane reads, including three complete ancestry/cache builds.
 });
 
-/** Minimal but shape-true slices of a Claude Code session jsonl. */
 const lines = [
   JSON.stringify({ type: "user", timestamp: "2026-09-19T08:00:00.000Z", message: { role: "user", content: "리팩터링 시작해줘" } }),
   JSON.stringify({ type: "assistant", timestamp: "2026-09-19T08:00:02.000Z", message: { role: "assistant", content: [
@@ -509,7 +675,6 @@ describe("parseClaudeTranscript", () => {
       { role: "user", ts: "2026-09-19T08:00:00.000Z", parts: [{ kind: "text", text: "리팩터링 시작해줘" }] },
       { role: "assistant", ts: "2026-09-19T08:00:02.000Z", end_ts: "2026-09-19T08:00:05.000Z", parts: [
         { kind: "text", text: "먼저 상태를 확인하겠습니다." },
-        // the row says what the agent said the command is for; the command stays in the input
         { kind: "tool", name: "Bash", summary: "check tree", input: expect.stringContaining("git status"), output: "M src/app.ts", call_id: "toolu_1", state: "ok" },
         { kind: "thinking", text: "internal reasoning stays private" },
         { kind: "text", text: "변경된 파일이 하나입니다." },
@@ -535,7 +700,6 @@ describe("parseClaudeTranscript", () => {
 
     it("explicit failed result is error", () => {
       expect(tools([prompt, use("toolu_a"), result("toolu_a", "", true)].join("\n"))).toMatchObject([{ call_id: "toolu_a", state: "error", error: true }]);
-      // a result that only reads like a failure is still the success the flag says
       expect(tools([prompt, use("toolu_b"), result("toolu_b", "Error: exit code 1", false)].join("\n"))).toMatchObject([{ call_id: "toolu_b", state: "ok" }]);
     });
 
@@ -550,10 +714,8 @@ describe("parseClaudeTranscript", () => {
     it("append and full poll replacement preserve call id and update or omit state", () => {
       const first = [prompt, use("toolu_a"), use("toolu_b")];
       expect(tools(first.join("\n")).map((part) => part.kind === "tool" && [part.call_id, part.state])).toEqual([["toolu_a", "pending"], ["toolu_b", "pending"]]);
-      // the next poll reads the file again with both results appended
       const second = [...first, result("toolu_a", ""), result("toolu_b", "denied", true)];
       expect(tools(second.join("\n")).map((part) => part.kind === "tool" && [part.call_id, part.state])).toEqual([["toolu_a", "ok"], ["toolu_b", "error"]]);
-      // a cut output keeps the id beside its fetch ref
       const long = tools([prompt, use("toolu_c"), result("toolu_c", "x".repeat(5000))].join("\n"))[0];
       expect(long).toMatchObject({ call_id: "toolu_c", state: "ok", output_ref: "toolu_c", output_size: 5000 });
     });
@@ -624,7 +786,6 @@ describe("parseClaudeTranscript", () => {
   });
 
   it("keeps a turn whole when Claude Code writes a notice while the agent works", () => {
-    // a cross-session notice between a tool's result and the next call: about half of the notices in real transcripts
     const assistant = (block: object, stop: string, ts: string) => JSON.stringify({ type: "assistant", timestamp: ts, message: { role: "assistant", stop_reason: stop, content: [block] } });
     const info = (content: string, ts: string) => JSON.stringify({ type: "system", subtype: "informational", content, level: "warning", timestamp: ts });
     const turns = parseClaudeTranscript([
@@ -638,11 +799,9 @@ describe("parseClaudeTranscript", () => {
     ].join("\n"));
     expect(turns.map((turn) => [turn.role, turn.parts.map((part) => part.kind === "notice" ? part.text : part.kind)])).toEqual([
       ["user", ["text"]],
-      // written inside the turn: shown before it, and the turn is still the last one while it runs
       ["user", ["Cross-session message held by the receiving session"]],
       ["user", ["Cross-session message expired without approval"]],
       ["assistant", ["tool", "text"]],
-      // written after the answer: shown after it
       ["user", ["Unknown command: /xyzabc"]],
     ]);
     expect(turns[3]!.end_ts).toBe("2026-10-08T08:01:03.000Z");
@@ -686,7 +845,6 @@ describe("parseClaudeTranscript", () => {
       .toEqual(["Unknown command: /gaol", "Args from unknown skill: x"]);
     expect(notices([info("Unknown command: /gaol", "2026-10-08T08:06:31.117Z"), info("Args from unknown skill: x", "2026-10-08T08:06:31.118Z"), local(stderr, "2026-10-08T08:06:31.119Z")]))
       .toEqual(["Unknown command: /gaol\nArgs from unknown skill: x"]);
-    // the same words a minute later are another answer, and a notice's own repeat is kept
     expect(notices([local(stderr, "2026-10-08T08:06:31.117Z"), info("Unknown command: /gaol", "2026-10-08T08:07:31.118Z")])).toEqual(["Unknown command: /gaol", "Unknown command: /gaol"]);
     expect(notices([info("Message expired", "2026-10-08T08:06:31.117Z"), info("Message expired", "2026-10-08T08:06:31.118Z")])).toEqual(["Message expired\nMessage expired"]);
   });
@@ -698,10 +856,8 @@ describe("parseClaudeTranscript", () => {
       user("<bash-stdout>  Hello\n    world\n</bash-stdout><bash-stderr></bash-stderr>", "2026-10-27T03:00:00.100Z"),
       user("<bash-input>ls extra</bash-input>", "2026-10-27T03:00:01.000Z"),
       user("<bash-stdout></bash-stdout><bash-stderr>\u001b[31mls: extra: No such file or directory\u001b[39m</bash-stderr>", "2026-10-27T03:00:01.100Z"),
-      // a command whose output was not recorded, then a prompt that quotes the tags
       user("<bash-input>sleep 60</bash-input>", "2026-10-27T03:00:02.000Z"),
       user("Why does <bash-input>ls</bash-input> show here?", "2026-10-27T03:00:03.000Z"),
-      // only a whole output entry is one: a prompt that starts like one is a prompt
       user("<bash-stdout> is the tag I mean", "2026-10-27T03:00:04.000Z"),
     ];
     expect(parseClaudeTranscript(records.join("\n"))).toEqual([
@@ -711,9 +867,7 @@ describe("parseClaudeTranscript", () => {
       { role: "user", ts: "2026-10-27T03:00:03.000Z", parts: [{ kind: "text", text: "Why does <bash-input>ls</bash-input> show here?" }] },
       { role: "user", ts: "2026-10-27T03:00:04.000Z", parts: [{ kind: "text", text: "<bash-stdout> is the tag I mean" }] },
     ]);
-    // a page never starts at an output: it would lose its command
     expect(turnStarts(Buffer.from(records.join("\n")), "claude-transcript")).toHaveLength(5);
-    // an output with no command before it is left out
     expect(parseClaudeTranscript(records[1]!)).toEqual([]);
   });
 
@@ -858,9 +1012,7 @@ describe("parseClaudeTranscript", () => {
   it("shows a slash command's answer only as the whole entry, as text, and not past its length", () => {
     const local = (content: string) => JSON.stringify({ type: "system", subtype: "local_command", timestamp: "2026-10-07T19:00:00.000Z", content });
     const notices = (lines: string[]) => parseClaudeTranscript(lines.join("\n")).flatMap((turn) => turn.parts).filter((part) => part.kind === "notice").map((part) => (part as { text: string }).text);
-    // an echo whose arguments quote the tag is still an echo
     expect(notices([local("<command-name>/goal</command-name>\n<command-args>x <local-command-stdout>quoted</local-command-stdout></command-args>")])).toEqual([]);
-    // a link keeps its text and drops its hidden address; cursor moves and backspaces go too
     expect(notices([local("<local-command-stdout>\u001b]8;;https://example.test/?token=hidden\u0007open\u001b]8;;\u0007 done\u001b[2K\b</local-command-stdout>")])).toEqual(["open done"]);
     const long = notices([local(`<local-command-stdout>${"x".repeat(10_000)}</local-command-stdout>`)])[0]!;
     expect(long.length).toBe(4001);
@@ -870,12 +1022,10 @@ describe("parseClaudeTranscript", () => {
   it("strips an unterminated link, a charset switch, and shows both streams of one entry", () => {
     const local = (content: string) => JSON.stringify({ type: "system", subtype: "local_command", timestamp: "2026-10-07T19:00:00.000Z", content });
     const notices = (lines: string[]) => parseClaudeTranscript(lines.join("\n")).flatMap((turn) => turn.parts).filter((part) => part.kind === "notice").map((part) => (part as { text: string }).text);
-    // an OSC cut off before its BEL or ST still hides its address
     expect(notices([local("<local-command-stdout>done \u001b]8;;https://example.test/?token=hidden</local-command-stdout>")])).toEqual(["done"]);
     // ESC ( B is one sequence: no stray B
     expect(notices([local("<local-command-stdout>\u001b(Bplain\u001b[m text</local-command-stdout>")])).toEqual(["plain text"]);
     expect(notices([local("<local-command-stdout>out</local-command-stdout>\n<local-command-stderr>err</local-command-stderr>")])).toEqual(["out\nerr"]);
-    // a closing tag the output itself prints ends nothing: only one at the end, or before the next stream, does
     expect(notices([local("<local-command-stdout>Use </local-command-stdout> in this example.</local-command-stdout>")])).toEqual(["Use </local-command-stdout> in this example."]);
     expect(notices([local("<local-command-stdout>a </local-command-stdout> b</local-command-stdout>\n<local-command-stderr>err</local-command-stderr>")])).toEqual(["a </local-command-stdout> b\nerr"]);
   });
@@ -883,9 +1033,7 @@ describe("parseClaudeTranscript", () => {
   it("strips escapes in work linear in a malformed answer's length", () => {
     const local = (n: number, unit: string) => JSON.stringify({ type: "system", subtype: "local_command", timestamp: "2026-10-07T19:00:00.000Z", content: `<local-command-stdout>${unit.repeat(n)}</local-command-stdout>` });
     // Counted, not timed: the parse takes well under a millisecond, and two such timings divide
-    // into noise. It reads the answer through these primitives, each charged the characters it
-    // touches. A regex's backtracking cannot be counted, so a run is charged its worst case, the
-    // square of its input: a regex over one character costs one step, one over the answer fails.
+    // into noise.
     const work = (line: string): number => {
       let steps = 0;
       const text = String.prototype;
@@ -924,11 +1072,9 @@ describe("parseClaudeTranscript", () => {
       }
       return steps;
     };
-    // unterminated escapes, and closing tags the output prints itself
     for (const unit of ["\u001b]x", "</local-command-stdout> x"]) {
       // doubling the input doubles the work (2.00 measured for both); a rescan from every
-      // unterminated opener, or from every closing tag, quadruples it. No work counted at all
-      // is NaN here and fails too.
+      // unterminated opener, or from every closing tag, quadruples it.
       expect(work(local(40_000, unit)) / work(local(20_000, unit))).toBeLessThan(2.5);
     }
   });
@@ -998,11 +1144,9 @@ describe("parseClaudeTranscript", () => {
     const transcript = [
       { type: "user", timestamp: "2026-10-02T04:00:00.000Z", message: { role: "user", content: "start" } },
       { type: "assistant", timestamp: "2026-10-02T04:00:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "working" }] } },
-      // the queue pair repeats the text; only the attachment becomes a turn
       { type: "queue-operation", operation: "enqueue", timestamp: "2026-10-02T04:00:05.000Z", content: "also fix the tests" },
       { type: "queue-operation", operation: "remove", timestamp: "2026-10-02T04:00:09.000Z", content: "also fix the tests", reason: "absorbed_mid_turn" },
       queued({ prompt: "also fix the tests", commandMode: "prompt", origin: { kind: "human" }, humanTurn: true }),
-      // a background task's notice and another agent's message are not the person's words
       queued({ prompt: "<task-notification>\n<status>completed</status>\n</task-notification>", commandMode: "task-notification" }),
       queued({ prompt: "<agent-message from=\"reviewer\">\ndone\n</agent-message>", commandMode: "prompt", origin: { kind: "peer" }, isMeta: true }),
       { type: "assistant", timestamp: "2026-10-02T04:00:10.000Z", message: { role: "assistant", content: [{ type: "text", text: "on it" }] } },
@@ -1046,7 +1190,6 @@ describe("parseClaudeTranscript", () => {
   });
 
   it("keeps an unanswered prompt when the next one hangs from another parent", () => {
-    // an ordinary next prompt's parent is the answer before it, not the earlier prompt's
     const turns = parseClaudeTranscript([
       JSON.stringify({ type: "user", uuid: "u1", parentUuid: "p", timestamp: "2026-10-10T08:00:00.000Z", message: { role: "user", content: "first" } }),
       JSON.stringify({ type: "user", uuid: "u2", parentUuid: "q", timestamp: "2026-10-10T08:00:05.000Z", message: { role: "user", content: "second" } }),
@@ -1077,8 +1220,7 @@ describe("parseClaudeTranscript", () => {
   it("hides the cancelled prompt on the live page too once its re-send arrives", () => {
     // Live records: user a35be47b parented on 07055903, cancelled before any reply (only
     // attachment/last-prompt bookkeeping after it), then re-send 7477aa61 on the same
-    // parent and the answer. The re-send opens no new turn, so the cancelled record stays
-    // inside the live tail the sibling rule reparses instead of settling visible.
+    // parent and the answer.
     const root = mkdtempSync(join(tmpdir(), "herdr-resend-page-"));
     try {
       const path = join(root, "session.jsonl");
@@ -1097,7 +1239,6 @@ describe("parseClaudeTranscript", () => {
       expect(texts(warm.turns)).toEqual(["first ask", "first answer", "cherry 2", "Cherry."]);
       forgetTranscriptState();
       expect(transcriptPage("claude-transcript", path).turns).toEqual(warm.turns);
-      // an ordinary next prompt hangs from another parent and still opens a turn of its own
       write(prompt("u9", "p9", "next ask", "2026-10-10T08:02:00.000Z"));
       expect(texts(transcriptPage("claude-transcript", path).turns)).toEqual(["first ask", "first answer", "cherry 2", "Cherry.", "next ask"]);
     } finally {
@@ -1140,8 +1281,6 @@ describe("parseClaudeTranscript", () => {
       expect(transcriptPage("claude-transcript", path).turns).toEqual(warm.turns);
     });
 
-    // the same restore, with a screenshot sent in place of "cherry": a prompt all the same, also
-    // when the picture makes its record longer than the branch reader parses whole
     for (const size of [16, 900 * 1024]) it(`hides the turns a restore left behind when the next prompt is only a picture of ${size} bytes`, () => {
       const path = file();
       const png = Buffer.alloc(size);
@@ -1161,7 +1300,6 @@ describe("parseClaudeTranscript", () => {
     });
 
     it("hides the turns a restore left behind when a screenshot prompt crosses a cold read's window", () => {
-      // a long session read cold: the picture's record starts in the first 16 MiB and ends past them
       const path = file();
       const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
       const rows = [JSON.stringify({ type: "user", uuid: id(0), parentUuid: null, message: { role: "user", content: "apple" } })];
@@ -1171,7 +1309,6 @@ describe("parseClaudeTranscript", () => {
         rows.push(JSON.stringify({ type: "assistant", uuid: id(n), parentUuid: id(n - 1), message: { content: [{ type: "text", text: "x".repeat(200_000) }] } }));
         size += rows.at(-1)!.length + 1;
       }
-      // the turn the restore goes back over, on the newest page
       rows.push(JSON.stringify({ type: "user", uuid: id(800), parentUuid: id(n - 1), message: { role: "user", content: "banana" } }));
       rows.push(JSON.stringify({ type: "assistant", uuid: id(801), parentUuid: id(800), message: { content: [{ type: "text", text: "banana answered" }], stop_reason: "end_turn" } }));
       size += rows.at(-2)!.length + rows.at(-1)!.length + 2;
@@ -1188,7 +1325,6 @@ describe("parseClaudeTranscript", () => {
     });
 
     it("keeps the turns before a message rewound to in the middle", () => {
-      // the same records, rewound to before banana instead: the next prompt hangs from apple's answer
       const path = file();
       const entries = lines.map((line) => JSON.parse(line) as { type?: string; uuid?: string; parentUuid?: string | null; message?: { content?: unknown } });
       const appleAnswer = entries.find((entry) => entry.type === "assistant")!.uuid!;
@@ -1198,8 +1334,6 @@ describe("parseClaudeTranscript", () => {
     });
 
     it("a slash command's echo off the chain hides nothing when the conversation goes on from elsewhere", () => {
-      // the echo hangs from q1, past q1's answer, but the next prompt continues from that answer: the
-      // answer stays on Claude's active chain, so nothing between q1 and the echo is off the branch
       const path = file();
       const base = { isSidechain: false, userType: "external", cwd: "/p", sessionId: "s", version: "2.1.304", gitBranch: "", timestamp: "2026-10-20T10:00:00.000Z" };
       const answer = (uuid: string, parentUuid: string, text: string) => ({ ...base, parentUuid, type: "assistant", message: { role: "assistant", content: [{ type: "text", text }], stop_reason: "end_turn" }, uuid });
@@ -1245,8 +1379,6 @@ describe("parseClaudeTranscript", () => {
     });
 
     it("a send cancelled before any reply and sent again moves no history", () => {
-      // Esc before any reply, then the re-send from the same parent: the cancelled prompt holds no
-      // answer, so the cancelled-prompt rule hides it and the history id stays (paging is kept)
       const path = file();
       const base = { isSidechain: false, userType: "external", cwd: "/p", sessionId: "s", version: "2.1.304", gitBranch: "" };
       const user = (uuid: string, parentUuid: string | null, content: string) => JSON.stringify({ parentUuid, ...base, type: "user", message: { role: "user", content }, uuid, timestamp: "2026-10-20T10:00:00.000Z" });
@@ -1265,7 +1397,6 @@ describe("parseClaudeTranscript", () => {
     afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); forgetTranscriptState(); });
     const block = (summary: string, extra = "<result>found two issues</result>") =>
       `<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>${summary}</summary>\n${extra}\n</task-notification>`;
-    /** the three records one completion is written as */
     const carriers = (content: string, timestamp: string) => [
       { type: "queue-operation", operation: "enqueue", timestamp, content },
       { type: "user", timestamp, message: { role: "user", content } },
@@ -1292,10 +1423,8 @@ describe("parseClaudeTranscript", () => {
       expect(transcriptPage("claude-transcript", path).turns).toEqual(warm.turns);
       write(...carriers(block('Agent "Review" finished').replace("toolu_1", "toolu_2"), "2026-10-05T00:02:00.000Z"));
       expect(cards(transcriptPage("claude-transcript", path))).toHaveLength(2);
-      // Reparse the live suffix after another append; its dedup set must not persist across polls.
       write({ type: "assistant", message: { content: [{ type: "text", text: "answer" }] } });
       expect(cards(transcriptPage("claude-transcript", path))).toHaveLength(2);
-      // Slide the page start past the first carrier. Deduplication belongs to the requested page.
       for (let n = 4; n < MAX_TURNS + 4; n++) write(prompt(n));
       write(notices[1]);
       const newest = transcriptPage("claude-transcript", path);
@@ -1362,7 +1491,6 @@ describe("parseClaudeTranscript", () => {
       const card = () => { forgetTranscriptState(); return transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts).find((candidate) => candidate.kind === "task_result"); };
       const before = card();
       expect(before?.kind === "task_result" ? before.tasks[0] : before).toMatchObject({ title: "Review parser fix", agent: "reviewer", turns: null, tokens: null, duration_ms: null });
-      // the agent goes on working: the card does not change with it
       appendFileSync(work, JSON.stringify({ type: "assistant", timestamp: "2026-10-05T00:09:00.000Z", message: { id: "m2", content: [] } }) + "\n");
       expect(card()).toEqual(before);
     });
@@ -1418,7 +1546,6 @@ describe("parseClaudeTranscript", () => {
       null,
     ].map((entry) => JSON.stringify(entry)).join("\n");
     const turns = parseClaudeTranscript(transcript);
-    // the compaction is no bookkeeping: it marks where the conversation was folded
     expect(turns).toHaveLength(3);
     expect(turns[0]?.parts[0]).toMatchObject({ kind: "tool", output: "result" });
     expect(turns[1]?.parts).toEqual([{ kind: "text", text: "Actual request" }]);
@@ -1426,7 +1553,6 @@ describe("parseClaudeTranscript", () => {
   });
 });
 
-/** Minimal but shape-true slices of an omp session jsonl. */
 const ompLines = [
   JSON.stringify({ type: "title", v: 1, title: "프로젝트 불편사항 패치" }),
   JSON.stringify({ type: "session", version: 3, id: "01a0bdf7-b9e3-72bb-bad1-671dde7082f8" }),
@@ -1514,13 +1640,11 @@ describe("omo transcript resolution", () => {
     expect(isOmoProcess(["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"])).toBeTrue();
     expect(isOmoProcess(["bun", "/home/u/lib/node_modules/omo-ai/bin/omo.js"])).toBeTrue();
     expect(isOmoProcess(["bun", "/home/u/lib/node_modules/omo-ai/node_modules/@code-yeongyu/senpi/dist/bundle/cli.js", "--extension", "/home/u/lib/node_modules/omo-ai/plugin"])).toBeTrue();
-    // the pane herdr labels `claude` because of omo's child still names omo
     expect(isOmoProcess(["/home/u/lib/node_modules/omo-ai/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude", "--output-format", "stream-json"])).toBeTrue();
 
     expect(isOmoProcess(["/home/u/.local/bin/claude"])).toBeFalse();
     expect(isOmoProcess(["omp"])).toBeFalse();
     expect(isOmoProcess(["node", "/home/u/omo-tools/watch.js"])).toBeFalse();
-    // a shell rc file printing a PATH that has omo-ai's bin directory in it
     expect(isOmoProcess(["printf", "%s\\n", "/home/u/.local/bin:/home/u/lib/node_modules/omo-ai/node_modules/.bin:/usr/bin"])).toBeFalse();
     expect(isOmoProcess(["printf", "%s\\n", "/usr/bin:/home/u/.nvm/versions/node/v24.18.0/bin/omo"])).toBeFalse();
   });
@@ -1601,9 +1725,7 @@ describe("gjc sessions", () => {
     try {
       const shown = page([...opening, read("c2", "2026-10-25T00:00:02.000Z", "src/beta.ts")]);
       expect(shown.turns.at(-1)!.parts.flatMap((part) => part.kind === "tool" ? [part.call_id] : [])).toEqual(["c1", "c2"]);
-      // written again with the same calls (a trim): the chat goes on
       expect(continuesHistory(shown, page([...opening, read("c2", "2026-10-25T00:00:02.000Z", "src/beta.ts")]))).toBe(true);
-      // a rewind that read the same file again under another call, later, in the turn that keeps its start
       expect(continuesHistory(shown, page([...opening, read("c3", "2026-10-25T00:00:05.000Z", "src/beta.ts")]))).toBe(false);
     } finally { forgetTranscriptState(); }
   });
@@ -1613,7 +1735,33 @@ describe("gjc sessions", () => {
       JSON.stringify({ type: "message", timestamp: "2026-09-25T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "hi" }] } }),
       JSON.stringify({ type: "message", timestamp: "2026-09-25T00:00:01.000Z", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "401 Authentication Failed" } }),
     ].join("\n");
-    expect(parseOmpTranscript(text).at(-1)?.parts).toEqual([{ kind: "text", text: "Error: 401 Authentication Failed" }]);
+    expect(parseOmpTranscript(text).at(-1)?.parts).toEqual([{ kind: "text", text: "Error: 401 Authentication Failed", failed: true }]);
+  });
+
+  it("keeps each failed request apart from the attempt that followed it in the same turn", () => {
+    const failure = (at: string, error: string) => JSON.stringify({ type: "message", timestamp: at, message: { role: "assistant", content: [], stopReason: "error", errorMessage: error } });
+    const text = [
+      JSON.stringify({ type: "message", timestamp: "2026-09-25T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "hi" }] } }),
+      failure("2026-09-25T00:00:01.000Z", "503 overloaded"),
+      failure("2026-09-25T00:00:05.000Z", "Connection error."),
+      JSON.stringify({ type: "message", timestamp: "2026-09-25T00:00:09.000Z", message: { role: "assistant", content: [{ type: "text", text: "hello" }], stopReason: "stop" } }),
+    ].join("\n");
+    expect(parseOmpTranscript(text).at(-1)?.parts).toEqual([
+      { kind: "text", text: "Error: 503 overloaded", failed: true },
+      { kind: "text", text: "Error: Connection error.", failed: true },
+      { kind: "text", text: "hello", phase: "final_answer" },
+    ]);
+  });
+
+  it("carries the token counts a compaction record states, and none it does not", () => {
+    const compaction = (extra: Record<string, unknown>) => JSON.stringify({ type: "compaction", id: "c1", parentId: "u1", timestamp: "2026-09-25T00:00:02.000Z", summary: "folded", firstKeptEntryId: "u1", ...extra });
+    const card = (extra: Record<string, unknown>) => parseOmpTranscript(compaction(extra)).at(-1)?.parts;
+    // OmO: the tokens before, and what its structural pass saved (senpi.compaction.summary.v1)
+    expect(card({ tokensBefore: 761969, details: { schema: "senpi.compaction.summary.v1", tokenEstimate: 736131, structuralYield: { savedTokens: 493241, savingsRatio: 0.65, tokensBefore: 761969 }, origin: "core-route" }, fromHook: true }))
+      .toEqual([{ kind: "compact", text: "folded", tokens_before: 761969, tokens_saved: 493241 }]);
+    // omp's handoff records the size after; a zero before is no count
+    expect(card({ tokensBefore: 0, tokensAfter: 7189, method: "handoff" })).toEqual([{ kind: "compact", text: "folded", tokens_after: 7189 }]);
+    expect(card({ tokensBefore: "many", details: { structuralYield: { savedTokens: -3 } } })).toEqual([{ kind: "compact", text: "folded" }]);
   });
 
   it("hides agent-attributed IRC deliveries without hiding quoted user text or adding a page boundary", () => {
@@ -1724,7 +1872,6 @@ describe("OmO background task results", () => {
       omoWake("2026-10-05T00:01:00.000Z", [
         completion({ task_id: "st_1", name: "st_1", status: "completed", agent_type: "explore", resolved_model: { display: "lab/luna" }, model: "lab/luna-raw", duration_ms: 58_350, run_stats: { turns: 6, tool_calls: 14, total_tokens: 210_304 }, final_response: "**Found** it." }),
         completion({ task_id: "st_2", name: "st_2", status: "error", category: "visual-engineering", model: "lab/kimi", duration_ms: 9087, run_stats: { turns: 0, tool_calls: 0 }, final_response: "Invalid native tool call event order" }),
-        // the batch result named no summary for it, and its name is its id: the agent it ran as
         completion({ task_id: "st_3", name: "st_3", status: "cancelled", category: "quick" }),
         completion({ task_id: "st_4", name: "named-run", status: "completed", final_response: "x".repeat(16_005) }),
       ]),
@@ -1738,7 +1885,6 @@ describe("OmO background task results", () => {
       { id: "st_3", title: "quick", agent: "quick", model: null, status: "cancelled", duration_ms: null, turns: null, tool_calls: null, tokens: null, result: "" },
       { id: "st_4", title: "named-run", agent: null, model: null, status: "completed", duration_ms: null, turns: null, tool_calls: null, tokens: null, result: "x".repeat(16_000), result_cut: true },
     ] }] });
-    // the row of the call reads the summary it gave, one per task of a batch
     expect(turns[1]!.parts.map((part) => part.kind === "tool" ? part.summary : part.kind)).toEqual(["Find where task records live", "Read shots 1-7 · shots 8-14"]);
   });
 
@@ -1765,14 +1911,55 @@ describe("OmO background task results", () => {
   });
 });
 
+describe("OmO goal continuation and waits", () => {
+  const continuation = (ts: string, objective: string) => JSON.stringify({
+    type: "custom_message", customType: "goal-continuation", display: false, timestamp: ts, details: { ticketId: "t1" },
+    content: `Continue working toward the active thread goal.\n\n<untrusted_objective>\n${objective}\n</untrusted_objective>\n\nUsage so far:\n- Tokens used: 120`,
+  });
+  const turnStart = (ts: string, cause: string) => JSON.stringify({ type: "custom", customType: "engine-turn-start", data: { customType: cause }, timestamp: ts });
+  const warmup = (ts: string, phase: string, dueAtMs: number) => JSON.stringify({
+    type: "custom", customType: "goal-cache-warmup", timestamp: ts,
+    data: { phase, goalId: "g1", delayMs: 270_000, dueAtMs, iteration: 1, activeMonitorCount: 3, wakeSources: { "omo-dag": 1, "omo-wake-queue": 4, "senpi-codemode": 0, "senpi-task": 2, "terminal-background-sessions": 1, "terminal-monitors": 3 } },
+  });
+  const final = (ts: string, text: string) => JSON.stringify({ type: "message", timestamp: ts, message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } });
+  const due = Date.parse("2026-10-05T00:06:30.000Z");
+
+  it("draws a turn OmO started to continue its goal as a notice in the user's seat, with the goal's objective", () => {
+    const text = [
+      omoUser("2026-10-05T00:00:00.000Z", "set a goal"),
+      final("2026-10-05T00:01:00.000Z", "Waiting for CI."),
+      turnStart("2026-10-05T00:02:00.000Z", "goal-continuation"),
+      continuation("2026-10-05T00:02:00.000Z", "Ship the &lt;ver&gt; guard &amp; its test"),
+      final("2026-10-05T00:03:00.000Z", "CI is green."),
+    ].join("\n");
+    const turns = parseOmpTranscript(text);
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(turns[2]).toEqual({ role: "user", ts: "2026-10-05T00:02:00.000Z", parts: [{ kind: "notice", text: "Ship the <ver> guard & its test", source: "goal-continuation" }] });
+  });
+
+  it("shows the goal waiting on background work while it is the conversation's last word, with when it resumes and what it waits on", () => {
+    const waiting = [omoUser("2026-10-05T00:00:00.000Z", "go"), final("2026-10-05T00:02:00.000Z", "Started the checks."), warmup("2026-10-05T00:02:00.000Z", "scheduled", due)];
+    expect(parseOmpTranscript(waiting.join("\n")).at(-1)).toEqual({ role: "user", ts: "2026-10-05T00:02:00.000Z", parts: [{
+      kind: "goal_wait", due_at: "2026-10-05T00:06:30.000Z", waiting_on: { tasks: 2, monitors: 3, terminals: 1, dags: 1, cells: 0 },
+    }] });
+    const kinds = (lines: string[]) => parseOmpTranscript(lines.join("\n")).map((turn) => turn.parts[0]?.kind);
+    expect(kinds([...waiting, warmup("2026-10-05T00:06:30.000Z", "resumed", due)])).toEqual(["text", "text"]);
+    expect(kinds([...waiting, turnStart("2026-10-05T00:03:00.000Z", "senpi-monitor:notification")])).toEqual(["text", "text"]);
+    expect(kinds([...waiting, final("2026-10-05T00:03:00.000Z", "A check failed.")])).toEqual(["text", "text", "text"]);
+    const empty = JSON.stringify({ type: "message", timestamp: "2026-10-05T00:03:00.000Z", message: { role: "assistant", content: [] } });
+    expect(kinds([...waiting, empty])).toEqual(["text", "text", "goal_wait"]);
+    const again = parseOmpTranscript([...waiting, warmup("2026-10-05T00:03:00.000Z", "scheduled", due + 60_000)].join("\n"));
+    expect(again.map((turn) => turn.parts[0]?.kind)).toEqual(["text", "text", "goal_wait"]);
+    expect(again.at(-1)?.parts[0]).toMatchObject({ due_at: "2026-10-05T00:07:30.000Z" });
+  });
+});
+
 const omoUser = (ts: string, text: string) => JSON.stringify({ type: "message", timestamp: ts, message: { role: "user", content: [{ type: "text", text }] } });
-/** an OmO `task` call and the result that names the tasks it started */
 const omoSpawn = (ts: string, id: string, input: Record<string, unknown>, details: Record<string, unknown>) => [
   JSON.stringify({ type: "message", timestamp: ts, message: { role: "assistant", content: [{ type: "toolCall", id, name: "task", arguments: { run_in_background: true, ...input } }] } }),
   JSON.stringify({ type: "message", timestamp: ts, message: { role: "toolResult", toolCallId: id, toolName: "task", content: [{ type: "text", text: "Started task (running)." }], details: { status: "running", mode: "spawn", ...details } } }),
 ].join("\n");
 const completion = (fields: Record<string, unknown>) => ({ continuation_hint: "Use task_send to continue.", ...fields });
-/** how OmO wakes its agent when background tasks end */
 const omoWake = (ts: string, tasks: Record<string, unknown>[]) => JSON.stringify({
   type: "custom_message", customType: "omo-senpi:wake", display: false, timestamp: ts,
   content: "task completion …", details: [{ customType: "senpi-task.completion", details: tasks }],
@@ -1785,7 +1972,6 @@ describe("transcript pages", () => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
   const temp = (): string => { const root = mkdtempSync(join(tmpdir(), "herdr-pages-")); roots.push(root); return root; };
-  /** a prompt, a tool call and its result: the result answers the turn, never the next page */
   const claudeTurn = (n: number) => [
     { type: "user", timestamp: `2026-09-23T00:00:${String(n % 60).padStart(2, "0")}.000Z`, message: { role: "user", content: `prompt ${n}` } },
     { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: `t${n}`, name: "Bash", input: { command: `echo ${n}` } }] } },
@@ -1804,13 +1990,10 @@ describe("transcript pages", () => {
     writeFileSync(path, `${[
       { type: "user", timestamp: "2026-10-08T03:04:00.000Z", message: { role: "user", content: "deck status?" } },
       say("the deck is done"),
-      // arrives between turns: a meta user entry
       { type: "user", isMeta: true, timestamp: "2026-10-08T03:05:01.000Z", origin: origin("R18 is ready"), message: { role: "user", content: `Another Claude session sent a message:\n${envelope("R18 is ready")}` } },
       say("recorded both decisions"),
-      // arrives mid-turn: a queued attachment, its own turn in the order it was taken in
       { type: "attachment", timestamp: "2026-10-08T03:06:00.000Z", attachment: { type: "queued_command", commandMode: "prompt", prompt: envelope("coordinates sent"), origin: origin("coordinates sent") } },
       say("rebuilt slide 4"),
-      // a meta entry that is not another session's message stays hidden
       { type: "user", isMeta: true, message: { role: "user", content: "<local-command-caveat>x</local-command-caveat>" } },
     ].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
     const page = transcriptPage("claude-transcript", path);
@@ -1824,17 +2007,47 @@ describe("transcript pages", () => {
     ]);
   });
 
+  it("shows hc's notes (a child's report, hc's word on a child that exited) as notices in any agent's chat, not as the person's prompt", () => {
+    const path = join(temp(), "hc-notes.jsonl");
+    const say = (text: string) => ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
+    const human = { kind: "human" };
+    writeFileSync(path, `${[
+      { type: "user", timestamp: "2026-11-17T03:04:00.000Z", origin: human, permissionMode: "bypassPermissions", message: { role: "user", content: "<hc>t3m hub-repair-hc exited (signal 1). Read: hc read t3m</hc>" } },
+      say("reading t3m"),
+      { type: "attachment", timestamp: "2026-11-17T03:05:00.000Z", attachment: { type: "queued_command", commandMode: "prompt", prompt: "<hc from=\"t2q try2-cmd\">done: /tmp/x.md</hc>", origin: human } },
+      say("noted"),
+      // the person quoting a note, with words of their own, is still their prompt
+      { type: "user", timestamp: "2026-11-17T03:06:00.000Z", origin: human, permissionMode: "bypassPermissions", message: { role: "user", content: "<hc>t3m exited</hc> why this format?" } },
+    ].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    // any agent's prompt that is only a note, as a codex worker's task from its lead
+    const codex: ConversationTurn[] = [
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t45 lead\" reach=\"hc send t45 when done or stuck\">\nReview x.rs\n</hc>" }] },
+      // a report that quotes a note is still one note; two notes with words between them are not
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">The prompt was <hc>hello</hc></hc>" }] },
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc>a</hc> and <hc>b</hc>" }] },
+      // hc types its own notes on children at once as one paste, a line each: one notice each
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc>t3 exited (signal 1)</hc>\n<hc>t4 is blocked (waiting)</hc>" }] },
+      // hc types a report as it is: one that closes its note and opens another with a sender is no batch of notes
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">Example: </hc>\n<hc from=\"t4 docs\">done</hc>" }] },
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">see <hc>hello</hc bogus></hc>" }] },
+    ];
+    const turns = withHcNotes([...transcriptPage("claude-transcript", path).turns, ...codex]);
+    expect(turns.map((turn) => turn.parts.map((part) => part.kind === "notice" ? `${part.source}|${part.text}` : part.kind === "text" ? part.text : part.kind).join(" "))).toEqual([
+      "hc|t3m hub-repair-hc exited (signal 1). Read: hc read t3m", "reading t3m", "peer:t2q try2-cmd|done: /tmp/x.md", "noted", "<hc>t3m exited</hc> why this format?",
+      "peer:t45 lead|Review x.rs", "peer:t7 review|The prompt was <hc>hello</hc>", "<hc>a</hc> and <hc>b</hc>",
+      "hc|t3 exited (signal 1)", "hc|t4 is blocked (waiting)", "<hc from=\"t7 review\">Example: </hc>\n<hc from=\"t4 docs\">done</hc>", "peer:t7 review|see <hc>hello</hc bogus>",
+    ]);
+  });
+
   it("shows one notice for a delivery Claude recorded twice, and says 'another session' for an unnamed sender", () => {
     const path = join(temp(), "peer-echo.jsonl");
     const origin = { kind: "peer", from: "uds:x", msg_id: "m7", name: "FUSION", body: "R18 is ready" };
     writeFileSync(path, `${[
       { type: "user", timestamp: "2026-10-08T03:04:00.000Z", message: { role: "user", content: "deck status?" } },
       { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "working on it" }] } },
-      // queued mid-turn, then echoed as a meta entry once the turn ended: one message
       { type: "attachment", timestamp: "2026-10-08T03:05:00.000Z", attachment: { type: "queued_command", commandMode: "prompt", prompt: "<cross-session-message from-name=\"FUSION\">\nR18 is ready\n</cross-session-message>", origin } },
       { type: "user", isMeta: true, timestamp: "2026-10-08T03:05:01.000Z", origin, message: { role: "user", content: "Another Claude session sent a message:\n<cross-session-message from-name=\"FUSION\">\nR18 is ready\n</cross-session-message>" } },
       { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "noted" }] } },
-      // a sender without a name
       { type: "user", isMeta: true, timestamp: "2026-10-08T03:06:00.000Z", origin: { kind: "peer", from: "uds:y", msg_id: "m8", body: "ping" }, message: { role: "user", content: "Another Claude session sent a message:\n<cross-session-message>\nping\n</cross-session-message>" } },
     ].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
     const page = transcriptPage("claude-transcript", path);
@@ -1873,7 +2086,6 @@ describe("transcript pages", () => {
       omoUser("2026-10-05T00:00:00.000Z", "start it"),
       omoSpawn("2026-10-05T00:00:01.000Z", "c1", { task_summary: "Survey the repo", subagent_type: "explore", prompt: "go" }, { task_id: "st_1", task_summary: "Survey the repo" }),
     ].join("\n")}\n`);
-    // the first read settles nothing yet; the next prompt makes the spawn's turn settled
     expect(transcriptPage("omo-transcript", path).turns).toHaveLength(2);
     appendFileSync(path, `${omoUser("2026-10-05T00:02:00.000Z", "meanwhile, something else")}\n`);
     expect(transcriptPage("omo-transcript", path).turns).toHaveLength(3);
@@ -1886,6 +2098,21 @@ describe("transcript pages", () => {
     }
   });
 
+  it("keeps OmO's goal wait only while it is the newest page's last turn, live and cold alike", () => {
+    const root = temp();
+    const path = join(root, "omo.jsonl");
+    const wait = JSON.stringify({ type: "custom", customType: "goal-cache-warmup", timestamp: "2026-10-05T00:01:00.000Z", data: { phase: "scheduled", dueAtMs: Date.parse("2026-10-05T00:05:00.000Z"), wakeSources: { "terminal-monitors": 1 } } });
+    const answer = JSON.stringify({ type: "message", timestamp: "2026-10-05T00:00:30.000Z", message: { role: "assistant", content: [{ type: "text", text: "watching" }], stopReason: "stop" } });
+    writeFileSync(path, `${[omoUser("2026-10-05T00:00:00.000Z", "watch it"), answer, wait].join("\n")}\n`);
+    expect(transcriptPage("omo-transcript", path).turns.map((turn) => turn.parts[0]?.kind)).toEqual(["text", "text", "goal_wait"]);
+    appendFileSync(path, `${omoUser("2026-10-05T00:02:00.000Z", "something else")}\n`);
+    const cold = join(root, "cold.jsonl");
+    copyFileSync(path, cold);
+    for (const page of [transcriptPage("omo-transcript", path), transcriptPage("omo-transcript", cold)]) {
+      expect(page.turns.map((turn) => turn.parts[0]?.kind)).toEqual(["text", "text", "text"]);
+    }
+  });
+
   const endedTitles = (page: { turns: ConversationTurn[] }): unknown => {
     const ended = page.turns.at(-1)?.parts[0];
     return ended?.kind === "task_result" ? ended.tasks.map((task) => task.title) : ended;
@@ -1895,9 +2122,7 @@ describe("transcript pages", () => {
     omoUser("2026-10-05T00:00:00.000Z", "start it"),
     omoSpawn("2026-10-05T00:00:01.000Z", "c1", { task_summary: "Survey the repo", subagent_type: "explore", prompt: "go" }, { task_id: taskId, task_summary: "Survey the repo" }),
   ].join("\n")}\n`;
-  /** polled as it grows until the page start passes the first turn, then st_1 ends */
   const pollPastFirstTurn = (path: string) => {
-    // the page start passes the first turn once more prompts than a page holds followed
     for (let n = 0; n < MAX_TURNS / 2 + 2; n += 1) {
       expect(transcriptPage("omo-transcript", path).turns.length).toBeGreaterThan(0);
       appendFileSync(path, `${omoUser(`2026-10-05T00:${String(10 + Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}.000Z`, `prompt ${n}`)}\n`);
@@ -1959,7 +2184,6 @@ describe("transcript pages", () => {
     const path = join(root, "session.jsonl");
     const whole = Buffer.from(`${Array.from({ length: 80 }, (_, n) => claudeTurn(n)).join("\n")}\n`);
     writeFileSync(path, whole.subarray(0, 1000));
-    // appends of every size, cut mid-line too, including one that ends the file without a newline
     for (let at = 1000, step = 1; at < whole.length; step = (step * 7) % 997 + 1) {
       appendFileSync(path, whole.subarray(at, at + step * 23));
       at += step * 23;
@@ -1995,18 +2219,15 @@ describe("transcript pages", () => {
     const path = join(temp(), "session.jsonl");
     writeFileSync(path, `${Array.from({ length: 60 }, (_, n) => claudeTurn(n)).join("\n")}\n`);
     const held = transcriptPage("claude-transcript", path).cursor!;
-    // while the last turn grows, the held start (prompt 10) is still inside the newest page
     const more = JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "still working" }] } });
     writeFileSync(path, `${Array.from({ length: 60 }, (_, n) => claudeTurn(n)).join("\n")}\n${more}\n`);
     const growing = transcriptPage("claude-transcript", path, { from: held });
     expect(growing.cursor).toBe(held);
     expect(texts(growing.turns).at(-1)).toBe("[out 59] answer 59 still working");
-    writeFileSync(path, `${Array.from({ length: 70 }, (_, n) => claudeTurn(n)).join("\n")}\n`);
-    // the newest page slid past it: the answer is the newest page, never more than a page
+    appendFileSync(path, `${Array.from({ length: 10 }, (_, n) => claudeTurn(60 + n)).join("\n")}\n`);
     const newest = transcriptPage("claude-transcript", path, { from: held });
     expect(newest.cursor).not.toBe(held);
     expect(texts(newest.turns)[0]).toBe("prompt 20");
-    // the turns in between come from `before` the newest page, `since` the held start
     const gap = transcriptPage("claude-transcript", path, { before: newest.cursor!, since: held });
     expect(gap.cursor).toBe(held);
     expect(texts(gap.turns)[0]).toBe("prompt 10");
@@ -2020,7 +2241,6 @@ describe("transcript pages", () => {
   it("reads one window for the newest page even when no turn starts in it; an older page reaches the turn's start", () => {
     const path = join(temp(), "session.jsonl");
     const prompt = JSON.stringify({ type: "user", message: { role: "user", content: "run the long job" } });
-    // one turn of 20MB of tool output: no turn starts in the newest window
     const output = JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "y".repeat(1024 * 1024) }] } });
     writeFileSync(path, `${claudeTurn(0)}\n${prompt}\n${Array.from({ length: 20 }, () => output).join("\n")}\n`);
     const size = Buffer.byteLength(`${claudeTurn(0)}\n${prompt}\n`) + 20 * (Buffer.byteLength(output) + 1);
@@ -2046,17 +2266,14 @@ describe("transcript pages", () => {
     const kept = `${meta()}\n${Array.from({ length: 20 }, (_, n) => task(n)).join("\n")}\n`;
     const segment = join(home, "sessions", "2026", "09", "23", `rollout-2026-09-23T10-46-43-${thread}_01a0cbf1-9b0e-7383-a345-80974b279c68.jsonl`);
     writeFileSync(segment, `${meta({ history_base: { thread_id: thread, end_ordinal_exclusive: kept.split("\n").length - 1, end_byte_offset: Buffer.byteLength(kept) } })}\n${Array.from({ length: 60 }, (_, n) => task(20 + n)).join("\n")}\n`);
-    // the earlier rollout is not there yet: the chain stops at the segment
     forgetHistoryChains();
     const newest = transcriptPage("codex-transcript", segment, {}, home);
     const older = transcriptPage("codex-transcript", segment, { before: newest.cursor! }, home);
     expect(texts(older.turns)[0]).toBe("prompt 20");
-    // it appears: positions now count from its start, and the old cursors name another chain
     writeFileSync(join(home, "sessions", "2026", "09", "15", `rollout-2026-09-15T12-58-12-${thread}.jsonl`), kept);
     forgetHistoryChains();
     expect(() => transcriptPage("codex-transcript", segment, { before: newest.cursor! }, home)).toThrow(HistoryChanged);
     expect(() => transcriptPage("codex-transcript", segment, { from: newest.cursor! }, home)).toThrow(HistoryChanged);
-    // read afresh, the pages reach the earlier rollout
     const again = transcriptPage("codex-transcript", segment, {}, home);
     const all = [...transcriptPage("codex-transcript", segment, { before: again.cursor! }, home).turns, ...again.turns];
     expect(texts(all)[0]).toBe("prompt 0");
@@ -2077,19 +2294,126 @@ describe("transcript pages", () => {
     const kept = `${meta()}\n${Array.from({ length: 80 }, (_, n) => task(n)).join("\n")}\n`;
     const parent = join(home, "sessions", "2026", "09", "15", `rollout-2026-09-15T12-58-12-${thread}.jsonl`);
     writeFileSync(parent, kept);
-    // right after a backtrack the live file is small: its newest page reaches into the parent
     const segment = join(home, "sessions", "2026", "09", "23", `rollout-2026-09-23T10-46-43-${thread}_01a0cbf1-9b0e-7383-a345-80974b279c68.jsonl`);
     writeFileSync(segment, `${meta({ history_base: { thread_id: thread, end_ordinal_exclusive: kept.split("\n").length - 1, end_byte_offset: Buffer.byteLength(kept) } })}\n${Array.from({ length: 3 }, (_, n) => task(80 + n)).join("\n")}\n`);
     forgetHistoryChains();
     const before = transcriptPage("codex-transcript", segment, {}, home);
     expect(texts(before.turns)[0]).toBe("prompt 33");
     expect(before.cursor).not.toBeNull();
-    // archived while the complete chain is remembered
     renameSync(parent, join(home, "archived_sessions", `rollout-2026-09-15T12-58-12-${thread}.jsonl`));
     const after = transcriptPage("codex-transcript", segment, {}, home);
     expect(texts(after.turns)).toEqual(["prompt 80", "answer 80", "prompt 81", "answer 81", "prompt 82", "answer 82"]);
-    // a reader holding a position in the old chain reloads once
     expect(() => transcriptPage("codex-transcript", segment, { before: before.cursor! }, home)).toThrow(HistoryChanged);
+  });
+
+  it("answers nothing from another rollout that a folder swap puts at a parent rollout's path around its opens", () => {
+    const home = join(temp(), "codex");
+    const thread = "01a0a337-19e8-7712-92f5-aa0883392afd";
+    const task = (n: number, said = "prompt ") => [
+      { type: "event_msg", timestamp: "2026-09-23T00:00:00.000Z", payload: { type: "task_started" } },
+      { type: "response_item", timestamp: "2026-09-23T00:00:00.000Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `${said}${n}` }] } },
+      { type: "response_item", timestamp: "2026-09-23T00:00:01.000Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `answer ${n}` }] } },
+    ].map((entry) => JSON.stringify(entry)).join("\n");
+    const meta = (extra = {}) => JSON.stringify({ type: "session_meta", payload: { source: "cli", thread_source: "user", ...extra } });
+    const day = join(home, "sessions", "2026", "09", "15");
+    const elsewhere = join(temp(), "15");
+    mkdirSync(day, { recursive: true });
+    mkdirSync(elsewhere);
+    mkdirSync(join(home, "sessions", "2026", "09", "23"), { recursive: true });
+    const name = `rollout-2026-09-15T12-58-12-${thread}.jsonl`;
+    const kept = `${meta()}\n${Array.from({ length: 80 }, (_, n) => task(n)).join("\n")}\n`;
+    writeFileSync(join(day, name), kept);
+    writeFileSync(join(elsewhere, name), `${meta()}\n${Array.from({ length: 80 }, (_, n) => task(n, "FOREIGN")).join("\n")}\n`);
+    const segment = join(home, "sessions", "2026", "09", "23", `rollout-2026-09-23T10-46-43-${thread}_01a0cbf1-9b0e-7383-a345-80974b279c68.jsonl`);
+    writeFileSync(segment, `${meta({ history_base: { thread_id: thread, end_ordinal_exclusive: kept.split("\n").length - 1, end_byte_offset: Buffer.byteLength(kept) } })}\n${Array.from({ length: 3 }, (_, n) => task(80 + n)).join("\n")}\n`);
+    forgetHistoryChains();
+    const parent = join(day, name);
+    const away = join(temp(), "away");
+    let swaps = 0;
+    const { openSync } = fs;
+    const opens = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] !== parent) return openSync(...args);
+      swaps++;
+      renameSync(day, away);
+      renameSync(elsewhere, day);
+      try { return openSync(...args); }
+      finally {
+        renameSync(day, elsewhere);
+        renameSync(away, day);
+      }
+    }) as typeof fs.openSync);
+    let answer: unknown;
+    try { answer = transcriptPage("codex-transcript", segment, {}, home); }
+    catch (error) { answer = error; }
+    finally { opens.mockRestore(); }
+    expect(swaps).toBeGreaterThan(0);
+    expect(JSON.stringify(answer)).not.toContain("FOREIGN");
+    expect(answer).toBeInstanceOf(ConversationReadPending);
+  });
+
+  const codexChain = () => {
+    const home = join(temp(), "codex");
+    const thread = "01a0a337-19e8-7712-92f5-aa0883392afd";
+    const task = (n: number, said = "prompt ") => [
+      { type: "event_msg", timestamp: "2026-09-23T00:00:00.000Z", payload: { type: "task_started" } },
+      { type: "response_item", timestamp: "2026-09-23T00:00:00.000Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `${said}${n}` }] } },
+      { type: "response_item", timestamp: "2026-09-23T00:00:01.000Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `answer ${n}` }] } },
+    ].map((entry) => JSON.stringify(entry)).join("\n");
+    const meta = (extra = {}) => JSON.stringify({ type: "session_meta", payload: { source: "cli", thread_source: "user", ...extra } });
+    const day = join(home, "sessions", "2026", "09", "15");
+    mkdirSync(day, { recursive: true });
+    mkdirSync(join(home, "sessions", "2026", "09", "23"), { recursive: true });
+    const parent = join(day, `rollout-2026-09-15T12-58-12-${thread}.jsonl`);
+    const kept = `${meta()}\n${Array.from({ length: 80 }, (_, n) => task(n)).join("\n")}\n`;
+    writeFileSync(parent, kept);
+    const live = join(home, "sessions", "2026", "09", "23", `rollout-2026-09-23T10-46-43-${thread}_01a0cbf1-9b0e-7383-a345-80974b279c68.jsonl`);
+    writeFileSync(live, `${meta({ history_base: { thread_id: thread, end_ordinal_exclusive: kept.split("\n").length - 1, end_byte_offset: Buffer.byteLength(kept) } })}\n${Array.from({ length: 3 }, (_, n) => task(80 + n)).join("\n")}\n`);
+    const foreign = `${meta()}\n${Array.from({ length: 80 }, (_, n) => task(n, "FOREIGN")).join("\n")}\n`;
+    forgetHistoryChains();
+    return { home, thread, day, parent, live, foreign, task };
+  };
+
+  it("never resolves a Codex chain to another conversation's rollout because a folder swap hid the parent around its open", () => {
+    const { home, thread, day, parent, live, foreign } = codexChain();
+    mkdirSync(join(home, "sessions", "2026", "09", "14"));
+    writeFileSync(join(home, "sessions", "2026", "09", "14", `rollout-2026-09-14T12-58-12-${thread}.jsonl`), foreign);
+    const elsewhere = join(temp(), "15");
+    const away = join(temp(), "away");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, basename(parent)), "not a rollout\n");
+    let swaps = 0;
+    const { openSync } = fs;
+    const opens = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] !== parent) return openSync(...args);
+      swaps++;
+      renameSync(day, away);
+      renameSync(elsewhere, day);
+      try { return openSync(...args); }
+      finally {
+        renameSync(day, elsewhere);
+        renameSync(away, day);
+      }
+    }) as typeof fs.openSync);
+    let answer: unknown;
+    try { answer = transcriptPage("codex-transcript", live, {}, home); }
+    catch (error) { answer = error; }
+    finally { opens.mockRestore(); }
+    expect(swaps).toBeGreaterThan(0);
+    expect(JSON.stringify(answer)).not.toContain("FOREIGN");
+    expect(answer).toBeInstanceOf(ConversationReadPending);
+  });
+
+  it("reads no replacement of a Codex parent rollout its remembered chain was resolved without", () => {
+    const { home, parent, live, task } = codexChain();
+    const before = transcriptPage("codex-transcript", live, {}, home);
+    expect(texts(before.turns)[0]).toBe("prompt 33");
+    const next = `${parent}.next`;
+    writeFileSync(next, `${JSON.stringify({ type: "event_msg", payload: { type: "not_a_rollout" } })}\n${Array.from({ length: 80 }, (_, n) => task(n, "FOREIGN")).join("\n")}\n${"\n".repeat(256)}`);
+    renameSync(next, parent);
+    let after: unknown;
+    try { after = transcriptPage("codex-transcript", live, {}, home); } catch (error) { after = error; }
+    expect(JSON.stringify(after)).not.toContain("FOREIGN");
+    expect(texts((after as { turns: ConversationTurn[] }).turns)).toEqual(["prompt 80", "answer 80", "prompt 81", "answer 81", "prompt 82", "answer 82"]);
   });
 
   it("pages across the rollouts a backtracked Codex conversation continues", () => {
@@ -2162,7 +2486,6 @@ describe("images and compactions in a Claude transcript", () => {
         { type: "tool_result", tool_use_id: "toolu_b", content: [
           { type: "text", text: "read b.png" },
           { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
-          // a type the chat never shows, and bytes that are no picture under a type it does
           { type: "image", source: { type: "base64", media_type: "image/svg+xml", data: "PHN2Zz4=" } },
           { type: "image", source: { type: "base64", media_type: "image/png", data: "PHN2Zz4=" } },
         ] },
@@ -2183,7 +2506,6 @@ describe("images and compactions in a Claude transcript", () => {
       { type: "assistant", message: { content: [{ type: "text", text: "one" }], stop_reason: "end_turn" } },
       { type: "user", uuid: "22222222-2222-3333-4444-555555555555", message: { content: [picture("iVBORw0KGgoAAAANSUhEUg==")] } },
       { type: "assistant", message: { content: [{ type: "text", text: "two" }], stop_reason: "end_turn" } },
-      // what the parser draws no picture for opens nothing either
       { type: "user", uuid: "33333333-2222-3333-4444-555555555555", message: { content: [picture("PHN2Zz4=")] } },
     ].map((record) => JSON.stringify(record));
     const bytes = Buffer.from(records.join("\n"));
@@ -2231,7 +2553,6 @@ describe("transcriptImage", () => {
       const image = transcriptImage(path, `${uuid}:0`);
       expect(image?.mediaType).toBe("image/png");
       expect(Buffer.from(image!.bytes).equals(png)).toBe(true);
-      // a text block, a type a page never shows, another entry's index, a ref that is no ref
       expect(transcriptImage(path, `${uuid}:1`)).toBeNull();
       expect(transcriptImage(path, `${uuid}:2`)).toBeNull();
       expect(transcriptImage(path, "99999999-2222-3333-4444-555555555555:0")).toBeNull();
@@ -2247,7 +2568,6 @@ describe("transcriptImage", () => {
       const uuid = "77777777-2222-3333-4444-555555555555";
       const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
       const image = (media_type: string, data: string) => ({ type: "image", source: { type: "base64", media_type, data } });
-      // just past the endpoint's 8 MiB, behind a real PNG signature
       const huge = png.toString("base64") + "A".repeat(Math.ceil(8 * 1024 * 1024 * 4 / 3));
       const records = [
         { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_b", name: "Read", input: { file_path: "b.png" } }], stop_reason: "tool_use" } },
@@ -2260,11 +2580,8 @@ describe("transcriptImage", () => {
       const read = transcriptImage(path, `${uuid}:1:1`);
       expect(read?.mediaType).toBe("image/png");
       expect(Buffer.from(read!.bytes).equals(png)).toBe(true);
-      // the page names the same one picture the endpoint serves
       const tool = parseClaudeTranscript(readFileSync(path, "utf8")).flatMap((turn) => turn.parts).find((part) => part.kind === "tool");
       expect(tool?.kind === "tool" ? tool.images : null).toEqual([{ media_type: "image/png", ref: `${uuid}:1:1` }]);
-      // the result's text, no picture at that place, a result named as if it were the picture,
-      // bytes that are no picture, a picture past the endpoint's size, a ref that is no ref
       for (const ref of [`${uuid}:1:0`, `${uuid}:0:0`, `${uuid}:1:9`, `${uuid}:1`, `${uuid}:1:2`, `${uuid}:1:3`, `${uuid}:1:1:0`, `${uuid}:1:x`]) expect(transcriptImage(path, ref)).toBeNull();
       // a /clear puts the pictures before it out of reach, as it does their page
       appendFileSync(path, `\n${JSON.stringify({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } })}\n`);
@@ -2286,17 +2603,14 @@ describe("transcriptImage", () => {
       writeFileSync(path, [
         { type: "user", uuid: id(1), parentUuid: null, message: { role: "user", content: "look at the old shot" } },
         read(2, 1), result(3, 2, 2, png), answer(4, 3),
-        // a rewind back to the start, and a prompt that is only a picture
         { type: "user", uuid: id(5), parentUuid: null, message: { role: "user", content: [picture(png)] } },
         read(6, 5),
-        // a record the parser hides, under the id of the result it draws
         result(7, 6, 6, gif, { isMeta: true }), result(7, 6, 6, png), answer(8, 7),
       ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
       const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "image" ? [part.ref] : part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
       expect(refs).toEqual([`${id(5)}:0`, `${id(7)}:0:1`]);
       expect(transcriptImage(path, `${id(5)}:0`)?.mediaType).toBe("image/png");
       expect(transcriptImage(path, `${id(7)}:0:1`)?.mediaType).toBe("image/png");
-      // the Read the rewind left behind is no picture of this conversation's
       expect(transcriptImage(path, `${id(3)}:0:1`)).toBeNull();
     } finally { rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
   });
@@ -2313,13 +2627,9 @@ describe("transcriptImage", () => {
       writeFileSync(path, [
         { type: "user", uuid: id(1), message: { role: "user", content: "read the shots" } },
         call(2, "toolu_a"), user(3, [result("toolu_a")]),
-        // no call made it: an orphan result
         user(4, [result("toolu_none")]),
-        // a second answer to a call already answered
         user(5, [result("toolu_a")]),
-        // answered by the entry's own first result, then again
         call(6, "toolu_b"), user(7, [result("toolu_b", false), result("toolu_b")]),
-        // a call the parser hides
         call(8, "toolu_c", { isMeta: true }), user(9, [result("toolu_c")]),
         { type: "assistant", uuid: id(10), message: { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" } },
       ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
@@ -2344,14 +2654,10 @@ describe("transcriptImage", () => {
       const user = (n: number, toolId: string, pictures: unknown[]) => ({ type: "user", uuid: id(n), message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: pictures }] } });
       writeFileSync(path, [
         { type: "user", uuid: id(1), message: { role: "user", content: "read the shots" } },
-        // one result holding two 5 MiB pictures: a record past the history scan's carry
         call(2, "toolu_big"), user(3, "toolu_big", [png(5 * 1024 * 1024), png(5 * 1024 * 1024)]),
-        // a second answer to it, which the page does not draw
         user(4, "toolu_big", [png(16)]),
-        // a call whose id is written as a number, answered by its text, and one whose id JSON escapes
         call(5, 7), user(6, "7", [png(16)]),
         call(7, 'toolu_"x'), user(8, 'toolu_"x', [png(16)]),
-        // a call's id and a prompt's uuid written with \u escapes: JSON reads them as the plain ones
         call(11, "toolu_e"), user(12, "toolu_e", [png(16)]),
         { type: "assistant", uuid: id(10), message: { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" } },
         { type: "user", uuid: id(13), message: { role: "user", content: [png(16)] } },
@@ -2376,7 +2682,6 @@ describe("transcriptImage", () => {
       const lines: string[] = [JSON.stringify({ type: "user", uuid: id(1), message: { role: "user", content: "read the shot" } })];
       for (let n = 0; n < 20; n += 1) lines.push(filler(100 + n, 1024 * 1024));
       lines.push(JSON.stringify({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } }));
-      // the picture's id ends 3 bytes past a search window's edge, so the edge cuts it in two
       const record = JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [{ type: "text", text: "Read output" }, { type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }] }] }, uuid: id(3) });
       const before = lines.join("\n").length + 1;
       const idEnd = (pad: number) => before + filler(99, pad).length + 1 + record.indexOf(id(3)) + id(3).length;
@@ -2390,7 +2695,6 @@ describe("transcriptImage", () => {
       const image = transcriptImage(path, `${id(3)}:0:1`);
       expect(image?.mediaType).toBe("image/png");
       expect(Buffer.from(image!.bytes).equals(png)).toBe(true);
-      // no read took the transcript whole
       expect(Math.max(...alloc.mock.calls.map(([size]) => Number(size)))).toBeLessThan(transcript.length - 1024 * 1024);
     } finally { alloc.mockRestore(); rmSync(dir, { recursive: true, force: true }); forgetTranscriptState(); }
   });
@@ -2410,22 +2714,16 @@ describe("transcriptImage", () => {
       const pad = "x".repeat(2048);
       const call = (n: number, toolId: unknown) => JSON.stringify({ type: "assistant", uuid: id(n), message: { content: [{ type: "tool_use", id: toolId, name: "Read", input: { file_path: "a.png", pad } }], stop_reason: "tool_use" } });
       const result = (n: number, toolId: string, data = small) => JSON.stringify({ type: "user", uuid: id(n), message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: [png(data)] }] } });
-      // a picture whose every base64 character is written as a \u escape: six times its text
       const escaped = pngBytes(1_500_000);
       const escapedText = [...escaped.toString("base64")].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
       writeFileSync(path, [
         JSON.stringify({ type: "user", uuid: id(1), message: { role: "user", content: "read the shots" } }),
-        // an escape JSON does not have, past where a string is cut: the page reads no such record
         JSON.stringify({ type: "user", uuid: id(2), message: { role: "user", content: [png(small), { type: "text", text: pad }] } }).replace(pad, `${pad}\\q`),
-        // an id that ends as a cut string's mark once did, after a string that is cut
         call(3, "toolu_\u0000cut:0"), result(4, "toolu_\u0000cut:0"),
         call(5, "toolu_esc"), result(6, "toolu_esc").replace(`"data":"${small}"`, `"data":"${escapedText}"`),
-        // a line that is JSON but no record, between a call and its result
         call(7, "toolu_n"), "null", result(8, "toolu_n"),
-        // a call id written as a number in another spelling than the text it is keyed by
         call(9, 1000).replace('"id":1000', '"id":1e3'), result(10, "1000"),
         call(12, 1000).replace('"id":1000', '"id":1e400'), result(13, "Infinity"),
-        // a call id that starts with a BOM is another id than the same text without it
         call(14, `\uFEFF${"a".repeat(1024)}`), result(15, "a".repeat(1024)),
         JSON.stringify({ type: "assistant", uuid: id(11), message: { content: [{ type: "text", text: "done" }], stop_reason: "end_turn" } }),
       ].join("\n") + "\n");
@@ -2444,13 +2742,11 @@ describe("transcriptImage", () => {
       const path = join(dir, "session.jsonl");
       const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
       const picture = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" } };
-      // a result whose shape alone is past what the endpoint holds: thousands of strings under the cut
       const shapeOnly = Array.from({ length: 4200 }, () => "x".repeat(1023));
       writeFileSync(path, [
         { type: "user", uuid: id(1), message: { role: "user", content: "read the shot" } },
         { type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: { file_path: "a.png" } }], stop_reason: "tool_use" } },
         { type: "user", uuid: id(3), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [picture], pad: shapeOnly }] } },
-        // a second answer to the call, which the page does not draw
         { type: "user", uuid: id(4), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [picture] }] } },
       ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
       const refs = transcriptPage("claude-transcript", path).turns.flatMap((turn) => turn.parts.flatMap((part) => part.kind === "tool" ? (part.images ?? []).map((image) => image.ref) : []));
@@ -2470,11 +2766,9 @@ describe("transcriptImage", () => {
       const pad = "x".repeat(20 * 1024 * 1024);
       writeFileSync(path, [
         { type: "user", uuid: id(1), message: { role: "user", content: "read the shot" } },
-        // a call and its result, each padded past the largest picture the chat shows
         { type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "toolu_a", name: "Read", input: { file_path: "a.png", pad } }], stop_reason: "tool_use" } },
         { type: "user", uuid: id(3), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: [{ type: "text", text: pad }, { type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }] }] } },
       ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-      // the first read scans the history once; the endpoint's own reads are what is left
       expect(transcriptImage(path, `${id(3)}:0:1`)?.mediaType).toBe("image/png");
       alloc.mockClear();
       const image = transcriptImage(path, `${id(3)}:0:1`);
@@ -2514,9 +2808,92 @@ describe("a cut tool output and the whole of it", () => {
       const omp = join(dir, "omp.jsonl");
       writeFileSync(omp, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: long }] } }));
       expect(transcriptToolOutput("omp-transcript", omp, "call_1")).toBe(long);
+      expect(transcriptToolOutput("omo-transcript", omp, "call_1")).toBe(long);
+      appendFileSync(omp, `\n${JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_2", content: [{ type: "text", text: "x".repeat(17 * 1024 * 1024) }] } })}\n`);
+      expect(transcriptToolOutput("omo-transcript", omp, "call_2")).toBeNull();
       const codex = join(dir, "codex.jsonl");
       writeFileSync(codex, JSON.stringify({ type: "response_item", payload: { type: "function_call_output", call_id: "call_x", output: long } }));
       expect(transcriptToolOutput("codex-transcript", codex, "call_x")).toBe(long);
+      const kimi = join(dir, "kimi.jsonl");
+      writeFileSync(kimi, [
+        { type: "context.append_loop_event", event: { type: "tool.call", toolCallId: "tool_long", name: "Bash", args: { command: "big" } } },
+        { type: "context.append_loop_event", event: { type: "tool.result", toolCallId: "tool_long", result: { output: long } } },
+      ].map((entry) => JSON.stringify(entry)).join("\n"));
+      expect(transcriptToolOutput("kimi-transcript", kimi, "tool_long")).toBe(long);
+      expect(transcriptToolOutput("kimi-transcript", kimi, "tool_none")).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("returns the exact OMO output budget across decoded chunks and content blocks", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-omo-output-"));
+    const path = join(dir, "session.jsonl");
+    const record = (id: string, content: { type: string; text: string }[]) =>
+      JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: id, content } }) + "\n";
+    try {
+      writeFileSync(path, record("single", [{ type: "text", text: "x".repeat(3_000_000) }]));
+      expect(transcriptToolOutput("omo-transcript", path, "single")).toBe(`${"x".repeat(2_000_000)}\n… trimmed`);
+      const first = "한\\\n".repeat(300_000);
+      const second = "z".repeat(1_500_000);
+      const whole = first + second;
+      writeFileSync(path, record("large", [{ type: "text", text: first }, { type: "text", text: second }]));
+      expect(transcriptToolOutput("omo-transcript", path, "large")).toBe(`${whole.slice(0, 2_000_000)}\n… trimmed`);
+      writeFileSync(path, record("exact", [{ type: "text", text: "x".repeat(2_000_000) }]));
+      expect(transcriptToolOutput("omo-transcript", path, "exact")).toBe("x".repeat(2_000_000));
+      writeFileSync(path, record("over", [{ type: "text", text: "x".repeat(2_000_001) }]));
+      expect(transcriptToolOutput("omo-transcript", path, "over")).toBe(`${"x".repeat(2_000_000)}\n… trimmed`);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("ignores records outside the OMO tail and resets output on context clear", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-omo-tail-"));
+    const path = join(dir, "session.jsonl");
+    const record = (id: string, text: string) => JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text }] } }) + "\n";
+    try {
+      writeFileSync(path, record("old", "old output") + record("huge", "x".repeat(17 * 1024 * 1024)) + record("recent", "recent output"));
+      expect(transcriptToolOutput("omo-transcript", path, "old")).toBeNull();
+      expect(transcriptToolOutput("omo-transcript", path, "huge")).toBeNull();
+      expect(transcriptToolOutput("omo-transcript", path, "recent")).toBe("recent output");
+      appendFileSync(path, JSON.stringify({ type: "custom", customType: "context_clear" }) + "\n");
+      expect(transcriptToolOutput("omo-transcript", path, "recent")).toBeNull();
+      appendFileSync(path, record("recent", "after clear"));
+      expect(transcriptToolOutput("omo-transcript", path, "recent")).toBe("after clear");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("reads a whole OMO record that starts exactly where the tail window does", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-omo-edge-"));
+    const path = join(dir, "session.jsonl");
+    const record = JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "edge", content: [{ type: "text", text: "at the edge" }] } }) + "\n";
+    try {
+      writeFileSync(path, "x".repeat(64 * 1024 - 1) + "\n" + record);
+      fs.truncateSync(path, TRANSCRIPT_WINDOW_BYTES + 64 * 1024 - 1);
+      appendFileSync(path, "\n");
+      expect(transcriptToolOutput("omo-transcript", path, "edge")).toBe("at the edge");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("bounds total OMO output reads to the transcript tail", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-omo-io-"));
+    const path = join(dir, "session.jsonl");
+    const record = (id: string, text: string) => JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text }] } }) + "\n";
+    try {
+      writeFileSync(path, record("old", "outside"));
+      fs.truncateSync(path, 128 * 1024 * 1024);
+      appendFileSync(path, "\n" + record("recent", "inside"));
+      const original = fs.readSync;
+      let bytes = 0;
+      const reads = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+        const got = original(...args); bytes += got; return got;
+      }) as typeof fs.readSync);
+      try {
+        expect(transcriptToolOutput("omo-transcript", path, "recent")).toBe("inside");
+        expect(bytes).toBeGreaterThan(0);
+        expect(bytes).toBeLessThanOrEqual(2 * TRANSCRIPT_WINDOW_BYTES + 1024);
+        bytes = 0;
+        expect(transcriptToolOutput("omo-transcript", path, "old")).toBeNull();
+        expect(bytes).toBeGreaterThan(0);
+        expect(bytes).toBeLessThanOrEqual(2 * TRANSCRIPT_WINDOW_BYTES + 1024);
+      } finally { reads.mockRestore(); }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -2571,6 +2948,775 @@ it("incrementally reads one growing Codex task across split UTF-8, partial recor
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+it("keeps a transcript's history_id across a touch that leaves its bytes alone", () => {
+  // Claude Code sets its open session's times about hourly without writing a byte: not a rewrite.
+  const root = mkdtempSync(join(tmpdir(), "herdr-claude-touch-"));
+  try {
+    const path = join(root, "session.jsonl");
+    const prompt = (n: number, text: string) => `${JSON.stringify({ type: "user", uuid: `u${n}`, parentUuid: n ? `u${n - 1}` : null, timestamp: "2026-11-06T00:00:00.000Z", message: { role: "user", content: text } })}\n`;
+    const id = () => transcriptPage("claude-transcript", path).history_id;
+    const touch = (seconds: number) => utimesSync(path, new Date(), new Date(Date.now() + seconds * 1000));
+    writeFileSync(path, prompt(0, "alpha") + prompt(1, "bravo"));
+    const base = id();
+    touch(1);
+    expect(id()).toBe(base);
+    appendFileSync(path, prompt(2, "charlie"));
+    expect(id()).toBe(base);
+    touch(2);
+    expect(id()).toBe(base);
+    writeFileSync(path, readFileSync(path, "utf8").replace("alpha", "alphA"));
+    touch(3);
+    const rewritten = id();
+    expect(rewritten).not.toBe(base);
+    touch(4);
+    expect(id()).toBe(rewritten);
+    forgetTranscriptState();
+    expect(id()).toBe(base);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("keeps a transcript's history_id across a touch after an image lookup saw it grow", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-claude-touch-image-"));
+  try {
+    const path = join(root, "session.jsonl");
+    const prompt = (n: number) => `${JSON.stringify({ type: "user", uuid: `u${n}`, parentUuid: n ? `u${n - 1}` : null, timestamp: "2026-11-06T00:00:00.000Z", message: { role: "user", content: `prompt ${n}` } })}\n`;
+    const id = () => transcriptPage("claude-transcript", path).history_id;
+    writeFileSync(path, prompt(0));
+    const base = id();
+    appendFileSync(path, prompt(1));
+    expect(await transcriptImageAsync(path, "00000000-0000-0000-0000-000000000000:0")).toBeNull();
+    utimesSync(path, new Date(), new Date(Date.now() + 1000));
+    expect(id()).toBe(base);
+  } finally { forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("changes a transcript's history_id when its first bytes are rewritten while it grows", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-claude-grow-rewrite-"));
+  try {
+    const path = join(root, "session.jsonl");
+    const prompt = (n: number, text: string) => `${JSON.stringify({ type: "user", uuid: `u${n}`, parentUuid: n ? `u${n - 1}` : null, timestamp: "2026-11-06T00:00:00.000Z", message: { role: "user", content: text } })}\n`;
+    const id = () => transcriptPage("claude-transcript", path).history_id;
+    writeFileSync(path, prompt(0, "alpha") + prompt(1, "bravo"));
+    const base = id();
+    writeFileSync(path, prompt(0, "ALPHA") + prompt(1, "bravo") + prompt(2, "charlie"));
+    const grown = id();
+    expect(grown).not.toBe(base);
+    writeFileSync(path, prompt(0, "alpha") + prompt(1, "bravo") + prompt(2, "charlie"));
+    utimesSync(path, new Date(), new Date(Date.now() + 1000));
+    const restored = id();
+    expect(restored).not.toBe(grown);
+    writeFileSync(path, prompt(0, "ALPHA") + prompt(1, "bravo") + prompt(2, "charlie") + prompt(3, "delta"));
+    expect(await transcriptImageAsync(path, "00000000-0000-0000-0000-000000000000:0")).toBeNull();
+    expect(id()).not.toBe(restored);
+  } finally { forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * A link can be made here (Windows wants a privilege for one) and an open can refuse it (O_NOFOLLOW,
+ * which Windows does not have: there the transcript readers follow links alike).
+ */
+const linksRefused = fs.constants.O_NOFOLLOW !== undefined && (() => {
+  const probe = mkdtempSync(join(tmpdir(), "herdr-link-probe-"));
+  try { symlinkSync(probe, join(probe, "link")); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") return false; throw error; }
+  finally { rmSync(probe, { recursive: true, force: true }); }
+})();
+
+it.skipIf(!linksRefused)("never digests a transcript reached through a link, so its touch counts as a rewrite", () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-claude-touch-link-"));
+  try {
+    const path = join(root, "target.jsonl");
+    const link = join(root, "session.jsonl");
+    writeFileSync(path, `${JSON.stringify({ type: "user", uuid: "u0", parentUuid: null, timestamp: "2026-11-06T00:00:00.000Z", message: { role: "user", content: "alpha" } })}\n`);
+    symlinkSync(path, link);
+    const base = transcriptPage("claude-transcript", link).history_id;
+    utimesSync(path, new Date(), new Date(Date.now() + 1000));
+    expect(transcriptPage("claude-transcript", link).history_id).not.toBe(base);
+  } finally { forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
+});
+
+describe("a page read that settles its transcript's revision off the event loop", () => {
+  let root: string;
+  let path: string;
+  const pane = { pane_id: "cmd-settle", agent: "cmd", agent_status: "idle", cwd: "" } as HerdrPane;
+  const restores: { mockRestore(): void }[] = [];
+  let snapshots: { mock: { calls: unknown[] } };
+  const message = (id: string, parentId: string | null, content: string) => JSON.stringify({ type: "message", id, parentId, message: { role: "user", content } }) + "\n";
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "herdr-settle-"));
+    path = join(root, "session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
+    pane.cwd = root;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane], agents: [pane] } as unknown as SessionSnapshot);
+    snapshots = snapshot;
+    restores.push(
+      spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }),
+      snapshot,
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never),
+    );
+  });
+  afterEach(() => {
+    for (const spy of restores.splice(0)) spy.mockRestore();
+    forgetTranscriptState();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const holdFirstStat = () => {
+    const { lstat, open } = fsp;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let held!: () => void;
+    const holding = new Promise<void>((resolve) => { held = resolve; });
+    let first = true;
+    const hold = async <T>(stats: T): Promise<T> => {
+      if (first) { first = false; held(); await gate; }
+      return stats;
+    };
+    restores.push(
+      spyOn(fsp, "lstat").mockImplementation((async (...args: Parameters<typeof fsp.lstat>) => {
+        const stats = await lstat(...args);
+        return args[0] === path ? hold(stats) : stats;
+      }) as typeof fsp.lstat),
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const stat = handle.stat.bind(handle);
+        handle.stat = (async (...rest: Parameters<typeof stat>) => hold(await stat(...rest))) as typeof handle.stat;
+        return handle;
+      }) as typeof fsp.open),
+    );
+    return { holding, release: () => release() };
+  };
+
+  it("keeps the newer revision when an older stat of the transcript answers last", async () => {
+    const base = await paneConversation(pane.pane_id);
+    const stat = holdFirstStat();
+    const older = paneConversation(pane.pane_id);
+    await stat.holding;
+    appendFileSync(path, message("u2", "u1", "again"));
+    const newer = await paneConversation(pane.pane_id);
+    expect(newer.history_id).toBe(base.history_id);
+    stat.release();
+    expect((await older).history_id).toBe(base.history_id);
+    expect((await paneConversation(pane.pane_id, undefined, { since: newer.cursor! })).history_id).toBe(base.history_id);
+  });
+
+  it("records nothing for a pane closed while its transcript settled", async () => {
+    const stat = holdFirstStat();
+    const read = paneConversation(pane.pane_id);
+    await stat.holding;
+    forgetPaneTranscriptState(pane.pane_id);
+    stat.release();
+    await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it("records nothing for a pane closed while its transcript settled, however many panes close after it", async () => {
+    const stat = holdFirstStat();
+    const read = paneConversation(pane.pane_id);
+    await stat.holding;
+    forgetPaneTranscriptState(pane.pane_id);
+    for (let other = 0; other < 200; other++) forgetPaneTranscriptState(`cmd-closed-${other}`);
+    stat.release();
+    await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it("answers nothing from a pane bound to another transcript while its transcript settled", async () => {
+    const other = join(root, "other.jsonl");
+    writeFileSync(other, JSON.stringify({ type: "session", id: "cmd-other", version: 3 }) + "\n" + message("o1", null, "elsewhere"));
+    const stat = holdFirstStat();
+    const read = paneConversation(pane.pane_id);
+    await stat.holding;
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path: other }));
+    expect((await paneTranscript(pane.pane_id)).path).toBe(other);
+    stat.release();
+    await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it("answers nothing from a pane rebound while its transcript settled, though nothing in Ovis looked at the pane meanwhile", async () => {
+    const other = join(root, "other.jsonl");
+    writeFileSync(other, JSON.stringify({ type: "session", id: "cmd-other", version: 3 }) + "\n" + message("o1", null, "elsewhere"));
+    const stat = holdFirstStat();
+    const read = paneConversation(pane.pane_id);
+    await stat.holding;
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path: other }));
+    stat.release();
+    await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it("asks herdr for the pane twice per read: to resolve it, and again once its transcript settled", async () => {
+    await paneConversation(pane.pane_id);
+    appendFileSync(path, message("u2", "u1", "again"));
+    const before = snapshots.mock.calls.length;
+    await paneConversation(pane.pane_id);
+    expect(snapshots.mock.calls.length - before).toBe(2);
+  });
+
+  it("parses an actively written transcript only once its revision settled", async () => {
+    const base = await paneConversation(pane.pane_id);
+    const { open } = fsp;
+    let writes = 0;
+    const parses = spyOn(piTree, "piAbandonedTurns");
+    restores.push(
+      parses,
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const stat = handle.stat.bind(handle);
+        let stats = 0;
+        handle.stat = (async (...rest: Parameters<typeof stat>) => {
+          const taken = await stat(...rest);
+          if (++stats === 2 && writes < 2) { writes++; appendFileSync(path, message(`w${writes}`, writes === 1 ? "u1" : "w1", "more")); }
+          return taken;
+        }) as typeof handle.stat;
+        return handle;
+      }) as typeof fsp.open),
+    );
+    const answer = await paneConversation(pane.pane_id);
+    expect(writes).toBe(2);
+    expect(answer.history_id).toBe(base.history_id);
+    expect(parses).toHaveBeenCalledTimes(1);
+  });
+
+  it("never answers the old history for a transcript rewritten in place and grown that keeps growing through every settle", async () => {
+    const base = await paneConversation(pane.pane_id);
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "HELLO, rewritten"));
+    const { open } = fsp;
+    let writes = 0;
+    restores.push(
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const stat = handle.stat.bind(handle);
+        let stats = 0;
+        handle.stat = (async (...rest: Parameters<typeof stat>) => {
+          const taken = await stat(...rest);
+          if (++stats === 2) { writes++; appendFileSync(path, message(`w${writes}`, writes === 1 ? "u1" : `w${writes - 1}`, "more")); }
+          return taken;
+        }) as typeof handle.stat;
+        return handle;
+      }) as typeof fsp.open),
+    );
+    const answer = await paneConversation(pane.pane_id).catch((error: unknown) => error);
+    expect(writes).toBe(3);
+    expect(answer).toBeInstanceOf(ConversationReadPending);
+    for (const spy of restores.splice(3)) spy.mockRestore();
+    expect((await paneConversation(pane.pane_id)).history_id).not.toBe(base.history_id);
+  });
+
+  it("answers a transcript written to through every settle of two polls on the second, under another history", async () => {
+    const base = await paneConversation(pane.pane_id);
+    const { open } = fsp;
+    let writes = 0;
+    restores.push(
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const stat = handle.stat.bind(handle);
+        let stats = 0;
+        handle.stat = (async (...rest: Parameters<typeof stat>) => {
+          const taken = await stat(...rest);
+          if (++stats === 2) { writes++; appendFileSync(path, message(`w${writes}`, writes === 1 ? "u1" : `w${writes - 1}`, "more")); }
+          return taken;
+        }) as typeof handle.stat;
+        return handle;
+      }) as typeof fsp.open),
+    );
+    await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+    expect((await paneConversation(pane.pane_id)).history_id).not.toBe(base.history_id);
+    expect(writes).toBe(6);
+  });
+
+  it("answers a transcript written to through every settle under one history after its first pending poll, and sees a rewrite once writes stop", async () => {
+    const base = await paneConversation(pane.pane_id);
+    const { open } = fsp;
+    let writing = true;
+    let writes = 0;
+    restores.push(
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const stat = handle.stat.bind(handle);
+        let stats = 0;
+        handle.stat = (async (...rest: Parameters<typeof stat>) => {
+          const taken = await stat(...rest);
+          if (++stats === 2 && writing) { writes++; appendFileSync(path, message(`w${writes}`, writes === 1 ? "u1" : `w${writes - 1}`, "more")); }
+          return taken;
+        }) as typeof handle.stat;
+        return handle;
+      }) as typeof fsp.open),
+    );
+    const polls: (string | "pending")[] = [];
+    for (let poll = 0; poll < 5; poll++) {
+      try { polls.push((await paneConversation(pane.pane_id)).history_id); }
+      catch (error) { if (!(error instanceof ConversationReadPending)) throw error; polls.push("pending"); }
+    }
+    expect(writes).toBe(15);
+    const answered = polls.findIndex((poll) => poll !== "pending");
+    expect(answered).toBeGreaterThanOrEqual(0);
+    expect(answered).toBeLessThanOrEqual(1);
+    const history = polls[answered] ?? "";
+    expect(history).not.toBe(base.history_id);
+    expect(polls.slice(answered)).toEqual(polls.slice(answered).map(() => history));
+    writing = false;
+    expect((await paneConversation(pane.pane_id)).history_id).toBe(history);
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "HELLO, rewritten") + "x".repeat(4096) + "\n");
+    expect((await paneConversation(pane.pane_id)).history_id).not.toBe(history);
+  });
+
+  it("never digests another agent's transcript that a folder swapped in after authorization puts at the path", async () => {
+    const project = join(root, "project");
+    const elsewhere = join(root, "elsewhere");
+    const away = join(root, "away");
+    mkdirSync(project);
+    mkdirSync(elsewhere);
+    path = join(project, "session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
+    writeFileSync(join(elsewhere, "session.jsonl"), JSON.stringify({ type: "session", id: "cmd-foreign", version: 3 }) + "\n" + message("f1", null, "another agent's secret"));
+    const foreign = fs.statSync(join(elsewhere, "session.jsonl")).ino;
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+    const base = await paneConversation(pane.pane_id);
+    // the first call off the event loop for the path after the pane's transcript was authorized swaps
+    // the folder for another agent's; the page read's own stat puts it back
+    let swapped = false;
+    let swaps = 0;
+    const swap = () => {
+      if (swaps++ > 0) return;
+      renameSync(project, away);
+      renameSync(elsewhere, project);
+      swapped = true;
+    };
+    const read: number[] = [];
+    const { lstat, open } = fsp;
+    const { statSync } = fs;
+    restores.push(
+      spyOn(fsp, "lstat").mockImplementation((async (...args: Parameters<typeof fsp.lstat>) => {
+        if (args[0] === path) swap();
+        return lstat(...args);
+      }) as typeof fsp.lstat),
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        if (args[0] === path) swap();
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const { ino } = await handle.stat();
+        const reading = handle.read.bind(handle);
+        handle.read = ((...rest: Parameters<typeof reading>) => { read.push(ino); return reading(...rest); }) as typeof handle.read;
+        return handle;
+      }) as typeof fsp.open),
+      spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => {
+        if (swapped && args[0] === path) {
+          swapped = false;
+          renameSync(project, elsewhere);
+          renameSync(away, project);
+        }
+        return statSync(...args);
+      }) as typeof fs.statSync),
+    );
+    const answer = await paneConversation(pane.pane_id);
+    expect(swaps).toBeGreaterThan(0);
+    expect(read).not.toContain(foreign);
+    expect(answer.history_id).toBe(base.history_id);
+    expect(JSON.stringify(answer.turns)).not.toContain("secret");
+  });
+
+  it("answers nothing from another agent's transcript that a folder swap puts at the path between the settle and the page read", async () => {
+    const project = join(root, "project");
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(project);
+    mkdirSync(elsewhere);
+    path = join(project, "session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
+    writeFileSync(join(elsewhere, "session.jsonl"), JSON.stringify({ type: "session", id: "cmd-foreign", version: 3 }) + "\n" + message("f1", null, "another agent's secret"));
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+    await paneConversation(pane.pane_id);
+    let swaps = 0;
+    const { open } = fsp;
+    restores.push(spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await open(...args);
+      if (args[0] !== path) return handle;
+      const close = handle.close.bind(handle);
+      handle.close = (async () => {
+        await close();
+        if (swaps++ > 0) return;
+        renameSync(project, join(root, "away"));
+        renameSync(elsewhere, project);
+      }) as typeof handle.close;
+      return handle;
+    }) as typeof fsp.open));
+    await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+    expect(swaps).toBe(1);
+  });
+
+  it("answers nothing from another agent's transcript that a folder swap puts at the path only while the page read opens it", async () => {
+    const project = join(root, "project");
+    const elsewhere = join(root, "elsewhere");
+    const away = join(root, "away");
+    mkdirSync(project);
+    mkdirSync(elsewhere);
+    path = join(project, "session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-ownses", version: 3 }) + "\n" + message("u1", null, "the pane's own words"));
+    writeFileSync(join(elsewhere, "session.jsonl"), JSON.stringify({ type: "session", id: "cmd-foreig", version: 3 }) + "\n" + message("u1", null, "PI FOREIGN SECRET..."));
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+    // no page of it is cached: every synchronous open of the path is made with the other agent's folder swapped in, put back
+    // right after: the identity checks around the page read see only the pane's own
+    let swaps = 0;
+    const { openSync } = fs;
+    restores.push(spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] !== path) return openSync(...args);
+      swaps++;
+      renameSync(project, away);
+      renameSync(elsewhere, project);
+      try { return openSync(...args); }
+      finally {
+        renameSync(project, elsewhere);
+        renameSync(away, project);
+      }
+    }) as typeof fs.openSync));
+    const answer: unknown = await paneConversation(pane.pane_id).catch((error: unknown) => error);
+    expect(swaps).toBeGreaterThan(0);
+    expect(JSON.stringify(answer)).not.toContain("FOREIGN");
+    expect(answer).toBeInstanceOf(ConversationReadPending);
+  });
+
+  const swapOpens = (swapping: (open: number) => boolean) => {
+    const project = join(root, "project");
+    const elsewhere = join(root, "elsewhere");
+    const away = join(root, "away");
+    const counts = { opens: 0, swaps: 0 };
+    const { openSync } = fs;
+    restores.push(spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] !== path || !swapping(counts.opens++)) return openSync(...args);
+      counts.swaps++;
+      renameSync(project, away);
+      renameSync(elsewhere, project);
+      try { return openSync(...args); }
+      finally {
+        renameSync(project, elsewhere);
+        renameSync(away, project);
+      }
+    }) as typeof fs.openSync));
+    return counts;
+  };
+  const folders = (own: string, foreign: string) => {
+    mkdirSync(join(root, "project"));
+    mkdirSync(join(root, "elsewhere"));
+    path = join(root, "project", "session.jsonl");
+    writeFileSync(path, own);
+    writeFileSync(join(root, "elsewhere", "session.jsonl"), foreign);
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+  };
+
+  it("answers nothing from another agent's branch index that a folder swap puts at the path for an open after the verified one", async () => {
+    folders(
+      JSON.stringify({ type: "session", id: "cmd-ownses", version: 3 }) + "\n" + message("u1", null, "own words ".repeat(30)),
+      JSON.stringify({ type: "session", id: "cmd-foreig", version: 3 }) + "\n"
+        + JSON.stringify({ type: "branch_summary", id: "s1", parentId: null, summary: "PI FOREIGN SECRET" }) + "\n" + message("u2", "s1", "hi"),
+    );
+    const counts = swapOpens((open) => open > 0);
+    const answer: unknown = await paneConversation(pane.pane_id).catch((error: unknown) => error);
+    expect(counts.swaps).toBeGreaterThan(0);
+    expect(JSON.stringify(answer)).not.toContain("FOREIGN");
+    expect(answer).toBeInstanceOf(ConversationReadPending);
+  });
+
+  it.skipIf(process.platform !== "linux")("is pending, never waits, where a folder swap puts a FIFO at the path for an open after the verified one", async () => {
+    folders(JSON.stringify({ type: "session", id: "cmd-ownses", version: 3 }) + "\n" + message("u1", null, "own words"), "");
+    // the other folder holds a FIFO no one writes: a blocking open of it never returns
+    rmSync(join(root, "elsewhere", "session.jsonl"));
+    execFileSync("mkfifo", [join(root, "elsewhere", "session.jsonl")]);
+    const counts = swapOpens((open) => open > 0);
+    await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+    expect(counts.swaps).toBeGreaterThan(0);
+  });
+
+  it("answers no tool output from another agent's transcript that a folder swap puts at the path around the lookup's opens", async () => {
+    const result = (id: string, text: string) => JSON.stringify({ type: "session", id, version: 3 }) + "\n"
+      + JSON.stringify({ type: "message", id: "a1", parentId: null, message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text }] } }) + "\n";
+    folders(result("cmd-ownses", "the pane's own output"), result("cmd-foreig", "PI FOREIGN SECRET...."));
+    expect(await toolOutput(pane.pane_id, "call_1")).toBe("the pane's own output");
+    const counts = swapOpens(() => true);
+    expect(await toolOutput(pane.pane_id, "call_1")).toBeNull();
+    expect(counts.swaps).toBeGreaterThan(0);
+  });
+
+  it("answers a pending read, not the new file, when the agent replaces its transcript by atomic rename between the settle and the page read", async () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    path = join(project, "session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+    await paneConversation(pane.pane_id);
+    let renames = 0;
+    const { open } = fsp;
+    restores.push(spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await open(...args);
+      if (args[0] !== path) return handle;
+      const close = handle.close.bind(handle);
+      handle.close = (async () => {
+        await close();
+        if (renames++ > 0) return;
+        const next = join(project, "session.jsonl.tmp");
+        writeFileSync(next, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello") + message("u2", "u1", "rewritten"));
+        renameSync(next, path);
+      }) as typeof handle.close;
+      return handle;
+    }) as typeof fsp.open));
+    await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+    expect(renames).toBe(1);
+  });
+
+  it("never answers another session's transcript renamed over the pane's own in its folder between the settle and the page read", async () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    path = join(project, "session.jsonl");
+    const foreign = join(project, "other-session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
+    writeFileSync(foreign, JSON.stringify({ type: "session", id: "cmd-foreign", version: 3 }) + "\n" + message("f1", null, "another session's secret"));
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+    await paneConversation(pane.pane_id);
+    let renames = 0;
+    const { open } = fsp;
+    restores.push(spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await open(...args);
+      if (args[0] !== path) return handle;
+      const close = handle.close.bind(handle);
+      handle.close = (async () => {
+        await close();
+        if (renames++ > 0) return;
+        renameSync(foreign, path);
+      }) as typeof handle.close;
+      return handle;
+    }) as typeof fsp.open));
+    await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+    expect(renames).toBe(1);
+  });
+
+  it("settles again off the event loop a transcript touched between its settle and its page read", async () => {
+    const base = await paneConversation(pane.pane_id);
+    const { open } = fsp;
+    const { statSync } = fs;
+    const order: string[] = [];
+    let touched = false;
+    let fired!: () => void;
+    const timer = new Promise<void>((resolve) => { fired = resolve; });
+    restores.push(
+      spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => {
+        if (!touched && args[0] === path) {
+          touched = true;
+          utimesSync(path, new Date(), new Date(Date.now() + 1000));
+          setTimeout(() => { order.push("timer"); fired(); }, 0);
+        }
+        return statSync(...args);
+      }) as typeof fs.statSync),
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        if (touched && args[0] === path) await timer;
+        return open(...args);
+      }) as typeof fsp.open),
+    );
+    const answer = await paneConversation(pane.pane_id);
+    order.push("answered");
+    expect(order).toEqual(["timer", "answered"]);
+    expect(answer.history_id).toBe(base.history_id);
+  });
+
+  it("answers no tool output for an OmO pane closed while its transcript settled", async () => {
+    const omoPane = { pane_id: "omo-settle", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    const whole = "x".repeat(9_000);
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: whole }] } }) + "\n");
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null }),
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe(whole);
+    const stat = holdFirstStat();
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await stat.holding;
+    forgetPaneTranscriptState(omoPane.pane_id);
+    stat.release();
+    expect(await output).toBeNull();
+  });
+
+  it("answers no tool output for an OmO pane seen bound to another session while its transcript settled", async () => {
+    const omoPane = { pane_id: "omo-rebound", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old session" }] } }) + "\n");
+    writeFileSync(other, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_2", content: [{ type: "text", text: "new session" }] } }) + "\n");
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null }),
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+    const stat = holdFirstStat();
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await stat.holding;
+    restores.push(spyOn(omo, "omoSessionForPane").mockResolvedValue({ path: other, pending: null }));
+    expect((await paneTranscript(omoPane.pane_id)).path).toBe(other);
+    stat.release();
+    expect(await output).toBeNull();
+  });
+
+  it("answers no tool output for an OmO pane rebound while its transcript settled, though nothing in Ovis looked at the pane meanwhile", async () => {
+    const omoPane = { pane_id: "omo-unseen", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old session" }] } }) + "\n");
+    writeFileSync(other, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_2", content: [{ type: "text", text: "new session" }] } }) + "\n");
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null }),
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+    const stat = holdFirstStat();
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await stat.holding;
+    restores.push(spyOn(omo, "omoSessionForPane").mockResolvedValue({ path: other, pending: null }));
+    stat.release();
+    expect(await output).toBeNull();
+  });
+
+  it("answers no tool output for an OmO pane another read saw bound to another session while it was resolved for the last time", async () => {
+    const omoPane = { pane_id: "omo-last", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old session" }] } }) + "\n");
+    writeFileSync(other, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_2", content: [{ type: "text", text: "new session" }] } }) + "\n");
+    const session = spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null });
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      session,
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+    const last = Promise.withResolvers<{ path: string; pending: null }>();
+    let resolving!: () => void;
+    const began = new Promise<void>((resolve) => { resolving = resolve; });
+    session.mockResolvedValueOnce({ path, pending: null }).mockImplementationOnce(() => { resolving(); return last.promise; });
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await began;
+    session.mockResolvedValue({ path: other, pending: null });
+    expect((await paneTranscript(omoPane.pane_id)).path).toBe(other);
+    last.resolve({ path, pending: null });
+    expect(await output).toBeNull();
+    session.mockResolvedValue({ path, pending: null });
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+  });
+
+  it("answers no tool output, not an error, for an OmO transcript replaced by rename while it settled", async () => {
+    const omoPane = { pane_id: "omo-replaced", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old file" }] } }) + "\n");
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null }),
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old file");
+    const stat = holdFirstStat();
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await stat.holding;
+    writeFileSync(`${path}.next`, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "new file" }] } }) + "\n");
+    renameSync(`${path}.next`, path);
+    stat.release();
+    expect(await output).toBeNull();
+  });
+
+  it("answers nothing from a herdr session left while its transcript settled", async () => {
+    const stat = holdFirstStat();
+    const read = paneConversation(pane.pane_id);
+    await stat.holding;
+    restores.push(spyOn(herdr, "herdrSocketPath").mockReturnValue(join(root, "other-session.sock")));
+    stat.release();
+    await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it.skipIf(!linksRefused)("never opens a transcript reached through a link off the event loop", async () => {
+    const target = join(root, "target.jsonl");
+    fs.renameSync(path, target);
+    symlinkSync(target, path);
+    const realOpen = fsp.open;
+    const opened: unknown[] = [];
+    restores.push(spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => { opened.push(args[0]); return realOpen(...args); }) as typeof fsp.open));
+    const base = (await paneConversation(pane.pane_id)).history_id;
+    utimesSync(target, new Date(), new Date(Date.now() + 1000));
+    expect((await paneConversation(pane.pane_id)).history_id).not.toBe(base);
+    expect(opened).not.toContain(path);
+  });
+
+  it.skipIf(!linksRefused)("settles a transcript reached through a link once per read, not once per settle it may take", async () => {
+    const { statSync } = fs;
+    let checks = 0;
+    restores.push(spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => {
+      if (args[0] === path && new Error().stack?.includes("stillAuthorized")) checks++;
+      return statSync(...args);
+    }) as typeof fs.statSync));
+    const target = join(root, "target.jsonl");
+    fs.renameSync(path, target);
+    symlinkSync(target, path);
+    const linked = await paneConversation(pane.pane_id);
+    utimesSync(target, new Date(), new Date(Date.now() + 1000));
+    checks = 0;
+    const touched = await paneConversation(pane.pane_id);
+    expect(checks).toBe(2);
+    expect(touched.history_id).not.toBe(linked.history_id);
+  });
+
+  it.skipIf(!linksRefused)("never answers a linked transcript's old history once it is rewritten in place and grown", async () => {
+    const target = join(root, "target.jsonl");
+    fs.renameSync(path, target);
+    symlinkSync(target, path);
+    const base = await paneConversation(pane.pane_id);
+    writeFileSync(target, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "HELLO, rewritten"));
+    expect((await paneConversation(pane.pane_id)).history_id).not.toBe(base.history_id);
+  });
+
+  it.skipIf(!linksRefused)("answers a transcript replaced by a link to itself and appended to, under another history", async () => {
+    const base = await paneConversation(pane.pane_id);
+    const target = join(root, "target.jsonl");
+    fs.renameSync(path, target);
+    symlinkSync(target, path);
+    appendFileSync(target, message("u2", "u1", "again"));
+    const answer = await paneConversation(pane.pane_id);
+    expect(answer.history_id).not.toBe(base.history_id);
+    expect((await paneConversation(pane.pane_id)).history_id).toBe(answer.history_id);
+  });
+});
+
+it("lets the event loop run while a page read digests a touched transcript", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-touch-async-"));
+  const path = join(root, "session.jsonl");
+  writeFileSync(path, [
+    { type: "session", id: "cmd-session", version: 3 },
+    { type: "message", id: "u1", parentId: null, message: { role: "user", content: "hello" } },
+  ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  const pane = { pane_id: "cmd-touch", agent: "cmd", agent_status: "idle", cwd: root } as HerdrPane;
+  const resolution = spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path });
+  const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane], agents: [pane] } as unknown as SessionSnapshot);
+  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+  const realOpen = fsp.open;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let held!: () => void;
+  const holding = new Promise<string>((resolve) => { held = () => resolve("held"); });
+  let opens: { mockRestore(): void } | undefined;
+  try {
+    const base = (await paneConversation(pane.pane_id)).history_id;
+    utimesSync(path, new Date(), new Date(Date.now() + 1000));
+    opens = spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      if (args[0] === path) { held(); await gate; }
+      return realOpen(...args);
+    }) as typeof fsp.open);
+    let settled = false;
+    const pending = paneConversation(pane.pane_id).finally(() => { settled = true; });
+    expect(await Promise.race([holding, pending.then(() => "answered", () => "failed")])).toBe("held");
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    release();
+    expect((await pending).history_id).toBe(base);
+  } finally {
+    release();
+    opens?.mockRestore(); rpc.mockRestore(); snapshot.mockRestore(); resolution.mockRestore();
+    forgetTranscriptState(); rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("expands inherited Codex tool output without exposing output discarded by a backtrack", () => {
   const home = mkdtempSync(join(tmpdir(), "herdr-tool-history-"));
   try {
@@ -2609,7 +3755,7 @@ describe("Agy native ledger through shared paging", () => {
     db.query("INSERT OR REPLACE INTO steps VALUES (?)").run(index);
     appendFileSync(path, row(index, type, content, extra));
   };
-  const page = () => transcriptPage("agy-transcript", path);
+  const page = () => agyTranscriptPage(path);
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "herdr-agy-unit-"));
     const session = "00000000-0000-4000-8000-000000000001";
@@ -2617,183 +3763,184 @@ describe("Agy native ledger through shared paging", () => {
     mkdirSync(join(path, ".."), { recursive: true });
     mkdirSync(join(root, "conversations"));
     db = new Database(join(root, "conversations", `${session}.db`));
-    // The ledger tests observe committed DB changes, never recovery after a crash.
     db.exec("PRAGMA synchronous = OFF");
     db.exec("CREATE TABLE steps(idx INTEGER PRIMARY KEY)");
     writeFileSync(path, "");
     forgetTranscriptState();
   });
   afterEach(() => { db.close(); forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); });
-  it("tracks native turn boundaries without treating each DONE tool step as completion", () => {
-    expect(page().activity).toBe("idle");
+  it("tracks native turn boundaries without treating each DONE tool step as completion", async () => {
+    expect((await page()).activity).toBe("idle");
     // Agy 1.3.3's captured native sequence: user, context, planner call, result,
     // context, another call/result, then the tool-free final planner answer.
     add(0, "USER_INPUT", "fictional request");
     add(1, "EPHEMERAL_MESSAGE", "hidden context");
-    expect(page().activity).toBe("working");
+    expect((await page()).activity).toBe("working");
     add(2, "PLANNER_RESPONSE", "", { thinking: "saved reasoning", tool_calls: [{ name: "run_command", args: { CommandLine: "echo fiction" } }] });
     add(3, "GENERIC", "fictional output");
     add(4, "EPHEMERAL_MESSAGE", "hidden context");
-    expect(page().activity).toBe("working");
-    expect(JSON.stringify(page().turns)).not.toContain("saved reasoning");
+    expect((await page()).activity).toBe("working");
+    expect(JSON.stringify((await page()).turns)).not.toContain("saved reasoning");
     add(5, "PLANNER_RESPONSE", "More work", { tool_calls: [{ name: "view_file", args: { AbsolutePath: "/fiction.txt" } }] });
     add(6, "GENERIC", "another output");
-    expect(page().activity).toBe("working");
+    expect((await page()).activity).toBe("working");
     add(7, "PLANNER_RESPONSE", "Finished", { tool_calls: [] });
-    expect(page().activity).toBe("idle");
+    expect((await page()).activity).toBe("idle");
     add(8, "GENERIC", "late result");
     add(9, "EPHEMERAL_MESSAGE", "late context");
-    expect(page().activity).toBe("idle");
-    add(10, "USER_INPUT", "next turn");
-    expect(page().activity).toBe("working");
-    // Rewind the new prompt; completion of the retained turn still clears activity.
-    db.exec("DELETE FROM steps WHERE idx >= 10");
-    expect(page().activity).toBe("idle");
+    expect((await page()).activity).toBe("idle");
+    add(10, "SYSTEM_MESSAGE", "<SYSTEM_MESSAGE>background task finished</SYSTEM_MESSAGE>");
+    expect((await page()).activity).toBe("idle");
+    add(11, "PLANNER_RESPONSE", "Woke up and finished", { tool_calls: [] });
+    expect((await page()).activity).toBe("idle");
+    add(12, "USER_INPUT", "next turn");
+    expect((await page()).activity).toBe("working");
+    db.exec("DELETE FROM steps WHERE idx >= 12");
+    expect((await page()).activity).toBe("idle");
     forgetTranscriptState();
-    expect(page().activity).toBe("idle");
+    expect((await page()).activity).toBe("idle");
   });
-  it("does not complete activity from a partial, unadmitted or unfinished planner answer", () => {
+  it("does not complete activity from a partial, unadmitted or unfinished planner answer", async () => {
     add(0, "USER_INPUT", "one");
     add(1, "PLANNER_RESPONSE", "", { thinking: "saved reasoning" });
-    expect(page().activity).toBe("working");
+    expect((await page()).activity).toBe("working");
     add(2, "PLANNER_RESPONSE", "unfinished", { status: "RUNNING" });
-    expect(page().activity).toBe("working");
+    expect((await page()).activity).toBe("working");
     db.exec("INSERT INTO steps VALUES (3)");
     const final = row(3, "PLANNER_RESPONSE", "complete");
     appendFileSync(path, final.slice(0, -2));
-    expect(page().activity).toBe("working");
+    expect((await page()).activity).toBe("working");
     appendFileSync(path, final.slice(-2));
-    expect(page().activity).toBe("idle");
+    expect((await page()).activity).toBe("idle");
     appendFileSync(path, row(4, "USER_INPUT", "export ahead of DB"));
-    expect(page().activity).toBe("idle");
+    expect((await page()).activity).toBe("idle");
     db.exec("INSERT INTO steps VALUES (4)");
-    expect(page().activity).toBe("working");
+    expect((await page()).activity).toBe("working");
     forgetTranscriptState();
-    expect(page().activity).toBe("working");
+    expect((await page()).activity).toBe("working");
   });
-  it("renders native messages, multiple planner calls and independent results without guessed pairing", () => {
+  it("renders native messages, multiple planner calls and independent results without guessed pairing", async () => {
     add(0, "USER_INPUT", "<USER_REQUEST>Keep <USER_REQUEST>literal</USER_REQUEST> tags</USER_REQUEST>\n<ADDITIONAL_METADATA>hidden</ADDITIONAL_METADATA>");
     add(1, "EPHEMERAL_MESSAGE", "hidden context");
     add(2, "PLANNER_RESPONSE", "Checking", { tool_calls: [{ name: "run_command", args: { CommandLine: "echo fiction" } }, { name: "view_file", args: { AbsolutePath: "/fiction.txt" } }] });
     add(3, "GENERIC", "independent output");
     add(4, "CHECKPOINT", "not a result");
     add(5, "USER_INPUT", "next");
-    const turns = page().turns;
+    const turns = (await page()).turns;
     expect(turns[0]!.parts).toEqual([{ kind: "text", text: "Keep <USER_REQUEST>literal</USER_REQUEST> tags" }]);
     expect(turns[1]!.parts.map((p) => p.kind === "tool" ? [p.name, p.summary, p.output] : p.kind === "text" ? p.text : p.kind)).toEqual([
       "Checking", ["run_command", "echo fiction", ""], ["view_file", "/fiction.txt", ""], ["Tool output", "Step 3", "independent output"],
     ]);
     expect(turns[2]!.role).toBe("user");
   });
-  it("keeps paging and refs stable on append, then rejects them on a DB-only idle rewind", () => {
-    // One prompt beyond the 50-prompt page boundary, committed as one fixture batch.
+  it("keeps paging and refs stable on append, then rejects them on a DB-only idle rewind", async () => {
     db.transaction(() => { for (let i = 0; i < 51; i++) { add(i * 2, "USER_INPUT", `prompt ${i}`); add(i * 2 + 1, "GENERIC", "x".repeat(5000)); } })();
-    const first = page();
+    const first = (await page());
     expect(first.cursor).not.toBeNull();
-    const older = transcriptPage("agy-transcript", path, { before: first.cursor! });
+    const older = await agyTranscriptPage(path, { before: first.cursor! });
     const tool = first.turns.flatMap((t) => t.parts).find((p) => p.kind === "tool")!;
     if (tool.kind !== "tool") throw new Error("missing result");
-    expect(transcriptToolOutput("agy-transcript", path, tool.output_ref!)).toBe("x".repeat(5000));
+    expect(await agyToolOutput(path, tool.output_ref!)).toBe("x".repeat(5000));
     add(102, "USER_INPUT", "append");
-    expect(page().history_id).toBe(first.history_id);
-    expect(transcriptPage("agy-transcript", path, { before: first.cursor! })).toEqual(older);
+    expect((await page()).history_id).toBe(first.history_id);
+    expect(await agyTranscriptPage(path, { before: first.cursor! })).toEqual(older);
     db.exec("DELETE FROM steps WHERE idx >= 4");
-    const rewound = page();
+    const rewound = (await page());
     expect(rewound.turns).toHaveLength(4);
     expect(rewound.history_id).not.toBe(first.history_id);
-    expect(() => transcriptPage("agy-transcript", path, { before: first.cursor! })).toThrow(HistoryChanged);
-    expect(transcriptToolOutput("agy-transcript", path, tool.output_ref!)).toBeNull();
+    expect(await agyTranscriptPage(path, { before: first.cursor! }).catch((error: unknown) => error)).toBeInstanceOf(HistoryChanged);
+    expect(await agyToolOutput(path, tool.output_ref!)).toBeNull();
     forgetTranscriptState();
-    expect(page().turns).toEqual(rewound.turns.map((turn) => ({ ...turn, parts: turn.parts.map((part) => part.kind === "tool" ? { ...part, output_ref: expect.any(String) } : part) })));
+    expect((await page()).turns).toEqual(rewound.turns.map((turn) => ({ ...turn, parts: turn.parts.map((part) => part.kind === "tool" ? { ...part, output_ref: expect.any(String) } : part) })));
   });
-  it("replays repeated/backward indices and allows database-only rows", () => {
+  it("replays repeated/backward indices and allows database-only rows", async () => {
     add(0, "USER_INPUT", "one"); add(1, "PLANNER_RESPONSE", "old");
     db.query("INSERT INTO steps VALUES (?)").run(2);
     add(3, "USER_INPUT", "two"); add(4, "PLANNER_RESPONSE", "discard");
-    const before = page();
+    const before = (await page());
     add(3, "USER_INPUT", "replacement");
-    expect(page().turns.map((t) => t.parts[0])).toEqual([{ kind: "text", text: "one" }, { kind: "text", text: "old" }, { kind: "text", text: "replacement" }]);
-    const revision = page().history_id;
+    expect((await page()).turns.map((t) => t.parts[0])).toEqual([{ kind: "text", text: "one" }, { kind: "text", text: "old" }, { kind: "text", text: "replacement" }]);
+    const revision = (await page()).history_id;
     expect(revision).not.toBe(before.history_id);
     add(4, "PLANNER_RESPONSE", "new");
-    expect(page().history_id).toBe(revision);
+    expect((await page()).history_id).toBe(revision);
     add(3, "USER_INPUT", "equal repeat");
-    expect(page().history_id).not.toBe(revision);
-    const warm = page().turns;
+    expect((await page()).history_id).not.toBe(revision);
+    const warm = (await page()).turns;
     forgetTranscriptState();
-    expect(page().turns).toEqual(warm);
+    expect((await page()).turns).toEqual(warm);
   });
-  it("ignores an incomplete tail and does not settle a running row", () => {
+  it("ignores an incomplete tail and does not settle a running row", async () => {
     add(0, "USER_INPUT", "one");
     db.query("INSERT INTO steps VALUES (1)").run();
     const text = row(1, "PLANNER_RESPONSE", "complete");
     appendFileSync(path, text.slice(0, -3));
-    expect(page().turns).toHaveLength(1);
+    expect((await page()).turns).toHaveLength(1);
     appendFileSync(path, text.slice(-3));
-    expect(page().turns).toHaveLength(2);
+    expect((await page()).turns).toHaveLength(2);
     add(2, "PLANNER_RESPONSE", "unfinished", { status: "RUNNING" });
-    expect(JSON.stringify(page().turns)).not.toContain("unfinished");
+    expect(JSON.stringify((await page()).turns)).not.toContain("unfinished");
     add(2, "PLANNER_RESPONSE", "finished");
-    expect(JSON.stringify(page().turns)).toContain("finished");
+    expect(JSON.stringify((await page()).turns)).toContain("finished");
   });
-  it("admits a ledger tail when the DB catches up without changing older cursors", () => {
+  it("admits a ledger tail when the DB catches up without changing older cursors", async () => {
     add(0, "USER_INPUT", "first");
-    const initial = page();
+    const initial = (await page());
     appendFileSync(path, row(1, "PLANNER_RESPONSE", "lagged"));
-    expect(page().turns).toHaveLength(1);
+    expect((await page()).turns).toHaveLength(1);
     db.exec("INSERT INTO steps VALUES (1)");
-    const caughtUp = page();
+    const caughtUp = (await page());
     expect(caughtUp.history_id).toBe(initial.history_id);
     expect(caughtUp.turns).toHaveLength(2);
     add(2, "PLANNER_RESPONSE", "partial", { status: "RUNNING" });
-    const running = page();
+    const running = (await page());
     add(2, "PLANNER_RESPONSE", "complete");
-    expect(page().history_id).toBe(running.history_id);
-    expect(transcriptPage("agy-transcript", path, { from: `${initial.history_id}:0` }).turns).toHaveLength(2);
+    expect((await page()).history_id).toBe(running.history_id);
+    expect((await agyTranscriptPage(path, { from: `${initial.history_id}:0` })).turns).toHaveLength(2);
   });
-  it("never resurrects an observed rewind when replacement DB indices precede their ledger rows", () => {
+  it("never resurrects an observed rewind when replacement DB indices precede their ledger rows", async () => {
     add(0, "USER_INPUT", "kept"); add(1, "GENERIC", "removed".repeat(1000));
-    const before = page();
+    const before = (await page());
     db.exec("DELETE FROM steps WHERE idx=1");
-    const cut = page();
+    const cut = (await page());
     db.exec("INSERT INTO steps VALUES (1)");
-    expect(page().turns).toEqual(cut.turns);
-    expect(page().history_id).toBe(cut.history_id);
+    expect((await page()).turns).toEqual(cut.turns);
+    expect((await page()).history_id).toBe(cut.history_id);
     add(1, "GENERIC", "replacement");
-    expect(JSON.stringify(page().turns)).toContain("replacement");
-    expect(JSON.stringify(page().turns)).not.toContain("removed");
+    expect(JSON.stringify((await page()).turns)).toContain("replacement");
+    expect(JSON.stringify((await page()).turns)).not.toContain("removed");
     const part = before.turns[1]!.parts[0]!;
     if (part.kind !== "tool") throw new Error("missing tool");
-    expect(transcriptToolOutput("agy-transcript", path, part.output_ref!)).toBeNull();
+    expect(await agyToolOutput(path, part.output_ref!)).toBeNull();
   });
-  it("does not hide later turns behind an unfinished or unknown-status historical row", () => {
+  it("does not hide later turns behind an unfinished or unknown-status historical row", async () => {
     add(0, "USER_INPUT", "first");
     add(1, "GENERIC", "unfinished", { status: "UNKNOWN" });
-    expect(page().turns).toHaveLength(1);
+    expect((await page()).turns).toHaveLength(1);
     add(2, "USER_INPUT", "later"); add(3, "PLANNER_RESPONSE", "answer");
-    expect(page().turns.map(t => t.parts[0])).toEqual([
+    expect((await page()).turns.map(t => t.parts[0])).toEqual([
       { kind: "text", text: "first" }, { kind: "text", text: "later" }, { kind: "text", text: "answer" },
     ]);
   });
-  it("uses the same assistant boundaries in full and paged replay around a skipped user row", () => {
+  it("uses the same assistant boundaries in full and paged replay around a skipped user row", async () => {
     add(0, "USER_INPUT", "first"); add(1, "PLANNER_RESPONSE", "before");
     add(2, "USER_INPUT", "hidden", { status: "UNKNOWN" });
     add(3, "PLANNER_RESPONSE", "after");
     const full = parseAgyTranscript(row(0, "USER_INPUT", "first") + row(1, "PLANNER_RESPONSE", "before")
       + row(2, "USER_INPUT", "hidden", { status: "UNKNOWN" }) + row(3, "PLANNER_RESPONSE", "after"));
-    expect(page().turns).toEqual(full);
+    expect((await page()).turns).toEqual(full);
     expect(full).toHaveLength(2);
   });
-  it("continues a bounded cold scan on the next poll", () => {
+  it("continues a bounded cold scan on the next poll", async () => {
     add(0, "USER_INPUT", "start");
     for (let i=1; i<=34; i++) add(i, "EPHEMERAL_MESSAGE", "x".repeat(1024 * 1024));
     add(35, "USER_INPUT", "end");
-    expect(page).toThrow(ConversationUnavailable);
-    expect(page().turns.at(-1)!.parts[0]).toEqual({ kind: "text", text: "end" });
+    expect(await page().catch((error: unknown) => error)).toBeInstanceOf(ConversationUnavailable);
+    expect((await page()).turns.at(-1)!.parts[0]).toEqual({ kind: "text", text: "end" });
   });
-  it("preserves standalone literal user wrapper text", () => {
+  it("preserves standalone literal user wrapper text", async () => {
     add(0, "USER_INPUT", "<USER_REQUEST>literal</USER_REQUEST>");
-    expect(page().turns[0]!.parts[0]).toEqual({ kind: "text", text: "<USER_REQUEST>literal</USER_REQUEST>" });
+    expect((await page()).turns[0]!.parts[0]).toEqual({ kind: "text", text: "<USER_REQUEST>literal</USER_REQUEST>" });
   });
   it.skipIf(process.platform === "win32")("canonicalizes held locks and never chooses among sessions or unheld files", () => {
     const presence = join(root, "presence"); mkdirSync(presence);
@@ -2804,15 +3951,48 @@ describe("Agy native ledger through shared paging", () => {
     expect(agyStoreFromLocks([one, two])).toBeNull();
     expect(agyStoreFromLocks([one])?.path).toBe(path);
     const alias = join(root, "alias"); symlinkSync(presence, alias);
-    // Alias a parent of presence, preserving the native held-path shape.
     const link = join(root, "linked-root"); symlinkSync(root, link);
     expect(agyStoreFromLocks([join(link, "presence", one.split("/").at(-1)!)])?.path).toBe(path);
   });
-  it("distinguishes unreadable database from verified empty history", () => {
+  const duringCatalog = (call: number, during: () => void) => {
+    let calls = 0;
+    return spyOn(filePool, "fileTask").mockImplementation(async (task) => {
+      if (task.op !== "agy-catalog") throw new Error(`unexpected ${task.op}`);
+      calls += 1;
+      if (calls === call) during();
+      return [...agyCatalog(task.path)] as never;
+    });
+  };
+  it("keeps output refs when the ledger's state is forgotten while its catalog is read", async () => {
+    add(0, "USER_INPUT", "one"); add(1, "GENERIC", "x".repeat(5000));
+    const spy = duringCatalog(1, () => forgetTranscriptState());
+    try {
+      const tool = (await page()).turns.flatMap((turn) => turn.parts).find((part) => part.kind === "tool");
+      if (tool?.kind !== "tool") throw new Error("missing tool");
+      expect(await agyToolOutput(path, tool.output_ref!)).toBe("x".repeat(5000));
+    } finally { spy.mockRestore(); }
+  });
+  it("passes busy file threads through to both Agy routes, so they answer 503 and not a missing output", async () => {
+    add(0, "USER_INPUT", "one"); add(1, "GENERIC", "x".repeat(5000));
+    const tool = (await page()).turns.flatMap((turn) => turn.parts).find((part) => part.kind === "tool");
+    if (tool?.kind !== "tool") throw new Error("missing tool");
+    const spy = spyOn(filePool, "fileTask").mockRejectedValue(new filePool.FileBusyError("every file thread is busy"));
+    try {
+      expect(await page().catch((error: unknown) => error)).toBeInstanceOf(filePool.FileBusyError);
+      expect(await agyToolOutput(path, tool.output_ref!).catch((error: unknown) => error)).toBeInstanceOf(filePool.FileBusyError);
+    } finally { spy.mockRestore(); }
+  });
+  it("rejects a page whose ledger is cut while its catalog is read again", async () => {
     add(0, "USER_INPUT", "one");
-    page();
+    const spy = duringCatalog(2, () => writeFileSync(path, ""));
+    try { expect(await page().catch((error: unknown) => error)).toBeInstanceOf(ConversationUnavailable); }
+    finally { spy.mockRestore(); }
+  });
+  it("distinguishes unreadable database from verified empty history", async () => {
+    add(0, "USER_INPUT", "one");
+    (await page());
     db.exec("DROP TABLE steps");
-    expect(page).toThrow(ConversationUnavailable);
+    expect(await page().catch((error: unknown) => error)).toBeInstanceOf(ConversationUnavailable);
   });
   it("falls back when the transcript path cannot be inspected", async () => {
     const loop = join(root, "loop"); symlinkSync(loop, loop);
@@ -2824,6 +4004,268 @@ describe("Agy native ledger through shared paging", () => {
         name: "ConversationUnavailable", message: "transcript_missing",
       });
     } finally { store.mockRestore(); rpc.mockRestore(); }
+  });
+  it("keeps the unwritten greeting while Agy works on its first turn before flushing the JSONL ledger", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    rmSync(path);
+    const pane = { pane_id: "agy-first-turn", cwd: root, agent: "agy", agent_status: "working" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+    try {
+      expect(await paneConversation(pane.pane_id)).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
+      db.query("INSERT INTO steps VALUES (0)").run();
+      expect(await paneConversation(pane.pane_id)).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
+      writeFileSync(path, row(0, "USER_INPUT", "first prompt"));
+      const written = await paneConversation(pane.pane_id);
+      expect(written.turns).toHaveLength(1);
+      rmSync(path);
+      expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+      forgetTranscriptState();
+      db.query("INSERT INTO steps VALUES (1)").run();
+      expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+      forgetTranscriptState();
+      db.exec("DELETE FROM steps");
+      db.query("INSERT INTO steps VALUES (500)").run();
+      expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
+  it("records nothing for a pane forgotten while its status row was read", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    const pane = { pane_id: "agy-forgotten", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [] } }) as never);
+    let forget = true;
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
+      if (forget) forgetPaneTranscriptState(pane.pane_id);
+      return { text: " ? for shortcuts   Gemini 3.8 Flash \u00b7 high\n" } as never;
+    });
+    try {
+      expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+      // the refused read left no mark that this session was written: agy starting it afresh greets
+      forget = false;
+      db.exec("DELETE FROM steps");
+      rmSync(path);
+      expect(await paneConversation(pane.pane_id)).toMatchObject({ history_id: `unwritten:${session}`, turns: [] });
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
+  it("names no model on an unwritten conversation's greeting, whose screen may already show another conversation", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    rmSync(path);
+    const other = join(root, "other.jsonl");
+    writeFileSync(other, row(0, "USER_INPUT", "other session"));
+    const pane = { pane_id: "agy-unwritten-switch", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [] } }) as never);
+    // agy moves the pane to another conversation as its screen is read
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
+      store.mockResolvedValue({ root, session: "other", path: other, pid: 3, started: "other" });
+      return { text: " ? for shortcuts   Gemini 4 Hydrogen \u00b7 medium\n" } as never;
+    });
+    try {
+      const greeting = await paneConversation(pane.pane_id);
+      expect(greeting).toMatchObject({ history_id: `unwritten:${session}`, turns: [], screen: true, metadata: { model: null, reasoning_effort: null } });
+      expect(JSON.stringify(greeting)).not.toContain("Gemini 4 Hydrogen");
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
+  it("reads the live status row after a conversation exists, and not a scrolled frame", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    const pane = { pane_id: "agy-model", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    const footer = " ? for shortcuts   Gemini 3.8 Flash · high\n";
+    let offset = 0;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: offset, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [] } }) as never);
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: footer }) as never);
+    try {
+      const shown = await paneConversation(pane.pane_id);
+      expect(shown.turns).toHaveLength(1);
+      expect(shown.metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
+      expect(shown.screen).toBe(true);
+      offset = 4;
+      const scrolled = await paneConversation(pane.pane_id);
+      expect(scrolled.screen).toBe(true);
+      expect(scrolled.metadata?.model ?? null).toBeNull();
+      expect(scrolled.metadata?.reasoning_effort ?? null).toBeNull();
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
+  it("refuses a conversation whose pane was forgotten or rebound while its status row was read", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    const pane = { pane_id: "agy-model-closed", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    const footer = " ? for shortcuts   Gemini 3.8 Flash \u00b7 high\n";
+    const other = join(root, "other.jsonl");
+    writeFileSync(other, row(0, "USER_INPUT", "other session"));
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [] } }) as never);
+    let during: "show" | "forget" | "rebind" | "switch" = "show";
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
+      if (during === "forget") forgetPaneTranscriptState(pane.pane_id);
+      if (during === "rebind") {
+        store.mockResolvedValue({ root, session: "other", path: other, pid: 3, started: "other" });
+        await paneTranscript(pane.pane_id);
+      }
+      if (during === "switch") {
+        store.mockResolvedValue({ root, session: "other", path: other, pid: 3, started: "other" });
+        return { text: " ? for shortcuts   Gemini 4 Hydrogen \u00b7 medium\n" } as never;
+      }
+      return { text: footer } as never;
+    });
+    const refused = async (message: string, model: string) => {
+      const error = await paneConversation(pane.pane_id).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ name: "ConversationUnavailable", message });
+      expect(JSON.stringify(error)).not.toContain(model);
+    };
+    const reset = () => {
+      forgetTranscriptState();
+      store.mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    };
+    try {
+      expect((await paneConversation(pane.pane_id)).metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
+      during = "forget";
+      await refused("no_session_id", "Gemini 3.8 Flash");
+      reset();
+      during = "rebind";
+      await refused("no_session_path", "Gemini 3.8 Flash");
+      // agy's store moved the pane to another conversation during the read, and nothing else
+      // resolved the pane meanwhile: the old turns never go out with the new model
+      reset();
+      during = "switch";
+      await refused("no_session_path", "Gemini 4 Hydrogen");
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
+  it("retries a transient mid-turn catalog race and answers 503 ConversationReadPending instead of dropping chat", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    add(1, "PLANNER_RESPONSE", "answer");
+    const pane = { pane_id: "agy-race", cwd: root, agent: "agy", agent_status: "working" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+    let spy: ReturnType<typeof spyOn> | undefined;
+    try {
+      const initial = await paneConversation(pane.pane_id);
+      expect(initial.turns).toHaveLength(2);
+      let calls = 0;
+      spy = spyOn(filePool, "fileTask").mockImplementation(async (task) => {
+        if (task.op !== "agy-catalog") throw new Error(`unexpected ${task.op}`);
+        if (++calls === 1) throw new Error("transient WAL copy race");
+        return [...agyCatalog(task.path)] as never;
+      });
+      const recovered = await paneConversation(pane.pane_id, undefined, { history_id: initial.history_id });
+      expect(recovered.turns).toHaveLength(2);
+      spy.mockRestore();
+      spy = spyOn(filePool, "fileTask").mockRejectedValue(new Error("ongoing WAL write"));
+      const catalog = join(root, "conversations", `${session}.db`);
+      utimesSync(catalog, new Date(), new Date());
+      await expect(paneConversation(pane.pane_id, undefined, { history_id: initial.history_id })).rejects.toBeInstanceOf(ConversationReadPending);
+      await expect(paneConversation(pane.pane_id, undefined, { history_id: "other-dev-ino-agy-0" })).rejects.toBeInstanceOf(HistoryChanged);
+      await expect(paneConversation(pane.pane_id, undefined, { from: "other-dev-ino-agy-0:0" })).rejects.toBeInstanceOf(HistoryChanged);
+      utimesSync(catalog, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+      expect(await paneConversation(pane.pane_id, undefined, { history_id: initial.history_id }).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+      utimesSync(catalog, new Date(Date.now() + 86_400_000), new Date(Date.now() + 86_400_000));
+      expect(await paneConversation(pane.pane_id, undefined, { history_id: initial.history_id }).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+      spy.mockRestore();
+      spy = undefined;
+      rmSync(catalog);
+      expect(await paneConversation(pane.pane_id, undefined, { history_id: initial.history_id }).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+    } finally { spy?.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
+  it("never retries a failed catalog race into a ledger renamed over the one it authorized", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    add(1, "PLANNER_RESPONSE", "answer");
+    const pane = { pane_id: "agy-replaced", cwd: root, agent: "agy", agent_status: "working" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+    let spy: ReturnType<typeof spyOn> | undefined;
+    try {
+      const initial = await paneConversation(pane.pane_id);
+      expect(initial.turns).toHaveLength(2);
+      const other = `${path}.other`;
+      let calls = 0;
+      spy = spyOn(filePool, "fileTask").mockImplementation(async (task) => {
+        if (task.op !== "agy-catalog") throw new Error(`unexpected ${task.op}`);
+        if (++calls === 1) { renameSync(other, path); throw new Error("transient WAL copy race"); }
+        return [...agyCatalog(task.path)] as never;
+      });
+      utimesSync(join(root, "conversations", `${session}.db`), new Date(), new Date());
+      writeFileSync(other, row(0, "USER_INPUT", "OTHER SESSION SECRET") + row(1, "PLANNER_RESPONSE", "OTHER SESSION SECRET"));
+      const held = await paneConversation(pane.pane_id, undefined, { history_id: initial.history_id }).catch((error: unknown) => error);
+      expect(JSON.stringify(held)).not.toContain("OTHER SESSION SECRET");
+      expect(held).toBeInstanceOf(HistoryChanged);
+      calls = 0;
+      writeFileSync(other, row(0, "USER_INPUT", "THIRD SESSION SECRET") + row(1, "PLANNER_RESPONSE", "THIRD SESSION SECRET"));
+      const fresh = await paneConversation(pane.pane_id).catch((error: unknown) => error);
+      expect(JSON.stringify(fresh)).not.toContain("THIRD SESSION SECRET");
+      expect(fresh).toBeInstanceOf(ConversationReadPending);
+    } finally { spy?.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
+  it.skipIf(process.platform === "win32")("greets an Agy started in the terminal on its unused start screen", async () => {
+    const screen = [
+      "❯ agy",
+      "",
+      "       ▄▀▀▄         Antigravity CLI 1.4.4",
+      "      ▀▀▀▀▀▀        user@example.test (Demo plan    )",
+      "     ▀▀▀▀▀▀▀▀       Gemini 3.8 Flash (High)",
+      "    ▄▀▀     ▀▀▄      /tmp/project",
+      "   ▄▀▀       ▀▀▄",
+      "",
+      " ────────────────────────────────────────",
+      " >",
+      " ────────────────────────────────────────",
+      " ? for shortcuts   Gemini 3.8 Flash · high",
+    ].join("\n");
+    const pane = { pane_id: "agy-greet", cwd: root, foreground_cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    let currentScreen = screen;
+    let argv = ["agy"];
+    let scrolledUp = 0;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: scrolledUp, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [{ pid: process.pid, name: "agy", argv }] } }) as never);
+    let afterFirstRead: string | null = null;
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
+      const text = currentScreen;
+      if (afterFirstRead !== null) currentScreen = afterFirstRead;
+      return { text } as never;
+    });
+    try {
+      const greeting = await paneConversation(pane.pane_id);
+      expect(greeting).toMatchObject({
+        source: "agy-transcript", turns: [], cursor: null, screen: true,
+        metadata: { model: "Gemini 3.8 Flash", reasoning_effort: "high" },
+      });
+      expect(greeting.history_id).toStartWith(`unwritten:agy:${pane.pane_id}:${process.pid}:`);
+      // the model comes from the frame proven to be the unused start screen, not a later one that
+      // may already show another conversation
+      afterFirstRead = screen.replace(" >", " > hello\n\n \u2726 Hi there\n\n \u2500\u2500\u2500\u2500\n >").replace("Gemini 3.8 Flash \u00b7 high", "Gemini 4 Hydrogen \u00b7 medium");
+      expect((await paneConversation(pane.pane_id)).metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
+      afterFirstRead = null;
+      currentScreen = screen;
+      argv = ["agy", "--continue"];
+      await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationUnavailable);
+      argv = ["agy"];
+      scrolledUp = 2;
+      await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationUnavailable);
+      scrolledUp = 0;
+      currentScreen = screen.replace(" >", " > hello\n\n ✦ Hi there\n\n ────────────────────────────────────────\n >");
+      await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationUnavailable);
+    } finally { snapshot.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
   });
 });
 
@@ -2853,21 +4295,17 @@ describe("a Codex pane that reported no session yet", () => {
       await expect(paneConversation(pane.pane_id, join(root, ".codex"))).rejects.toMatchObject({
         name: "ConversationUnavailable", screen: { model: "gpt-6.1-sol", reasoning_effort: "low" },
       });
-      // switched with /model: the status line says the new one
       screen = FRESH.replace("GPT-6.1-Sol low", "GPT-6-Sol high");
       await expect(paneConversation(pane.pane_id, join(root, ".codex"))).rejects.toMatchObject({ screen: { model: "gpt-6-sol", reasoning_effort: "high" } });
-      // scrolled up by a device, the viewport is history, perhaps an older frame: no model is named
       scrolledUp = 3;
       const scrolled = await paneConversation(pane.pane_id, join(root, ".codex")).catch((error: unknown) => error);
       expect(scrolled).toBeInstanceOf(ConversationUnavailable);
       expect((scrolled as ConversationUnavailable).screen).toBeUndefined();
       scrolledUp = 0;
-      // a picker hiding the footer leaves the model unknown, whatever its options say
       screen = "  >_ OpenAI Codex (v0.163.0)\n  Select Model and Effort\n› 1. GPT-6.1-Sol (default) (current)\n  GPT-6-Sol high · /tmp/project";
       const picker = await paneConversation(pane.pane_id, join(root, ".codex")).catch((error: unknown) => error);
       expect(picker).toBeInstanceOf(ConversationUnavailable);
       expect((picker as ConversationUnavailable).screen).toBeUndefined();
-      // a screen that does not say leaves the scrollback as it was, and so does a page of history
       screen = "$ ";
       const unknown = await paneConversation(pane.pane_id, join(root, ".codex")).catch((error: unknown) => error);
       expect(unknown).toBeInstanceOf(ConversationUnavailable);
@@ -2878,7 +4316,6 @@ describe("a Codex pane that reported no session yet", () => {
     } finally { snapshot.mockRestore(); rpc.mockRestore(); read.mockRestore(); forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
   });
 
-  // the process's start time is read from the OS: this test's own process stands in for Codex's
   it.skipIf(process.platform === "win32")("greets a Codex started in the terminal on no conversation, and only that one", async () => {
     const root = mkdtempSync(join(tmpdir(), "herdr-codex-greet-"));
     const home = join(root, ".codex");
@@ -2886,7 +4323,6 @@ describe("a Codex pane that reported no session yet", () => {
     const pane = { pane_id: "codex-greet", cwd: root, foreground_cwd: root, agent: "codex", agent_status: "done" } as HerdrPane;
     let screen = FRESH;
     let argv = ["codex"];
-    // what a detection read of a short screen also reaches up to (never what decides), and the rows a device scrolled up by
     let above = "";
     let scrolledUp = 0;
     const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] }) as SessionSnapshot);
@@ -2896,7 +4332,6 @@ describe("a Codex pane that reported no session yet", () => {
     const read = spyOn(herdr, "paneRead").mockImplementation(async ({ source }) => ({ text: source === "detection" ? `${above}${screen}` : screen }) as never);
     const ask = () => paneConversation(pane.pane_id, home).catch((error: unknown) => error);
     try {
-      // no store yet, as for a CODEX_HOME Codex has not written to
       const greeting = await ask() as Awaited<ReturnType<typeof paneConversation>>;
       expect(greeting).toMatchObject({ source: "codex-transcript", turns: [], cursor: null, screen: true, metadata: { model: "gpt-6.1-sol", reasoning_effort: "low" } });
       expect(greeting.history_id).toStartWith("unwritten:codex:");
@@ -2905,44 +4340,36 @@ describe("a Codex pane that reported no session yet", () => {
       above = "\u2022 old output from a previous program\n";
       expect(await ask()).toMatchObject({ history_id: greeting.history_id });
       above = "";
-      // scrolled up by a device, the viewport is history: nothing proves the start screen, the terminal
-      // stands in, naming no model until the viewport is back at the bottom
       scrolledUp = 3;
       const scrolled = await ask();
       expect(scrolled).toBeInstanceOf(ConversationUnavailable);
       expect((scrolled as ConversationUnavailable).screen).toBeUndefined();
       scrolledUp = 0;
-      // a store whose threads of this folder all ended before this Codex started
       const db = new Database(join(home, "state_5.sqlite"));
       db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, source TEXT, created_at INTEGER, updated_at INTEGER, archived INTEGER DEFAULT 0, agent_role TEXT)");
       db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at) VALUES ('old', '/nowhere.jsonl', ?, 'cli', 1, 2)").run(root);
       expect(await ask()).toMatchObject({ history_id: greeting.history_id });
-      // a resume or a fork on the command line opens a conversation that exists
       argv = ["codex", "resume"];
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       argv = ["codex", "fork", "--last"];
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       argv = ["codex"];
-      // something said on screen, or a first turn at work
       screen = FRESH.replace("\u203a Ask Codex", "\u203a hello\n\n\u2022 Hi there\n\n\u203a Ask Codex");
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       screen = FRESH;
       pane.agent_status = "working";
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       pane.agent_status = "done";
-      // a thread of this folder written since this Codex started: perhaps its own, unread
       const now = Math.floor(Date.now() / 1000);
       db.query("UPDATE threads SET updated_at = ? WHERE id = 'old'").run(now);
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       db.query("UPDATE threads SET updated_at = 2").run();
       db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at) VALUES ('new', '/nowhere-2.jsonl', ?, 'cli', ?, ?)").run(root, now, now);
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
-      // one in another folder, a subagent's or a `codex exec` run's says nothing about this one
       db.query("UPDATE threads SET cwd = '/elsewhere' WHERE id = 'new'").run();
       db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at, agent_role) VALUES ('sub', '/sub.jsonl', ?, 'cli', ?, ?, 'worker')").run(root, now, now);
       db.query("INSERT INTO threads (id, rollout_path, cwd, source, created_at, updated_at) VALUES ('exec', '/exec.jsonl', ?, 'exec', ?, ?)").run(root, now, now);
       expect(await ask()).toMatchObject({ history_id: greeting.history_id });
-      // a thread with no message yet holds no conversation, whoever made it; one with a message does
       db.exec("ALTER TABLE threads ADD COLUMN first_user_message TEXT");
       db.query("UPDATE threads SET cwd = ?, first_user_message = '' WHERE id = 'new'").run(root);
       expect(await ask()).toMatchObject({ history_id: greeting.history_id });
@@ -2956,7 +4383,6 @@ describe("a Codex pane that reported no session yet", () => {
         pane.foreground_cwd = alias;
         expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       } finally { pane.cwd = root; pane.foreground_cwd = root; rmSync(alias, { force: true }); }
-      // Codex runs in another folder than the pane's shell: that folder's conversations count too
       const elsewhere = mkdtempSync(join(tmpdir(), "herdr-codex-greet-fg-"));
       try {
         db.query("UPDATE threads SET cwd = ? WHERE id = 'new'").run(elsewhere);
@@ -2965,7 +4391,6 @@ describe("a Codex pane that reported no session yet", () => {
         expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       } finally { pane.foreground_cwd = root; rmSync(elsewhere, { recursive: true, force: true }); }
       db.close();
-      // a store that cannot be read tells nothing, nor one that cannot even be looked at
       writeFileSync(join(home, "state_5.sqlite"), "not a database");
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       rmSync(join(home, "state_5.sqlite"));
@@ -2986,7 +4411,6 @@ describe("a Codex pane that reported no session yet", () => {
     const children: Bun.Subprocess[] = [];
     let codexes: { pid: number; argv: string[] }[] = [];
     // each one says it runs before it is asked about: until its exec, the OS shows the environment it was forked with
-    // a string is the CODEX_HOME it starts with; an object sets (or, as undefined, drops) its variables
     const started = async (...homes: (string | Record<string, string | undefined>)[]) => {
       codexes = await Promise.all(homes.map(async (home) => {
         const set = typeof home === "string" ? { CODEX_HOME: home } : home;
@@ -3009,12 +4433,10 @@ describe("a Codex pane that reported no session yet", () => {
       : method === "pane.get" ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 30, viewport_rows: 40 } } }
       : { process_info: { foreground_processes: codexes } }) as never);
     const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: FRESH }) as never);
-    // the server's own default store holds nothing: a home it cannot place must not fall back to it
     const serverHome = process.env["CODEX_HOME"];
     process.env["CODEX_HOME"] = fallback;
     const ask = () => paneConversation(pane.pane_id).catch((error: unknown) => error);
     try {
-      // a home its environment names, with no store yet: the greeting
       await started(own);
       const greeting = await ask() as Awaited<ReturnType<typeof paneConversation>>;
       expect(greeting).toMatchObject({ source: "codex-transcript", turns: [], cursor: null });
@@ -3032,7 +4454,6 @@ describe("a Codex pane that reported no session yet", () => {
       begun(relative);
       await started("rel");
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
-      // a CODEX_HOME that is no directory, or a second Codex whose home cannot be placed
       await started(join(root, "missing"));
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       await started(own, "rel");
@@ -3044,7 +4465,6 @@ describe("a Codex pane that reported no session yet", () => {
       expect(await ask()).toMatchObject({ history_id: expect.stringMatching(/^unwritten:codex:/) });
       begun(join(user, ".codex"));
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
-      // with no HOME, or a relative one, there is no telling where it is
       await started({ CODEX_HOME: undefined, HOME: undefined });
       expect(await ask()).toBeInstanceOf(ConversationUnavailable);
       await started({ CODEX_HOME: undefined, HOME: "user" });
@@ -3120,14 +4540,11 @@ describe("a model drawn only in the history above the live screen", () => {
       return (answer as ConversationUnavailable).screen?.model ?? null;
     };
     expect(await named([[0, 30], [0, 30]])).toBe("gpt-6.1-sol");
-    // scrolled up when the read began, scrolled up by its end, or a row pushed into the history meanwhile
     expect(await named([[3, 30], [0, 30]])).toBeNull();
     expect(await named([[0, 30], [3, 30]])).toBeNull();
     expect(await named([[0, 30], [0, 31]])).toBeNull();
-    // a scroll known for one read and not the other proves nothing
     expect(await named([null, [0, 30]])).toBeNull();
     expect(await named([[0, 30], null])).toBeNull();
-    // nor does a lookup that failed
     expect(await named(["fail", "fail"])).toBeNull();
     expect(await named([[0, 30], "fail"])).toBeNull();
   });
@@ -3142,7 +4559,6 @@ describe("a model drawn only in the history above the live screen", () => {
       { agent: "gjc", frame: " \u2b22 opus-5.5 \u00b7 \u25c9 xhigh \u00b7 1.5% / main / project\n\u2502 > Type your message... \u2502\n", model: "claude-opus-5-5", effort: "xhigh" },
     ];
     for (const { agent, frame, model, effort } of screens) {
-      // an agent this server started, before its first message: the same frame names its model with a scroll
       const cases: [[number, number] | null, { model: string | null; reasoning_effort: string | null }][] = [
         [[0, 30], { model, reasoning_effort: effort }], [null, { model: null, reasoning_effort: null }]];
       for (const [scroll, metadata] of cases) {
@@ -3154,7 +4570,6 @@ describe("a model drawn only in the history above the live screen", () => {
         for (const mock of mocks.splice(0)) mock.mockRestore();
       }
     }
-    // a Codex started in the terminal: the terminal stands in, naming no model
     const terminal = shown("codex", "working", "", codex, [null]);
     const answer = await paneConversation(terminal, join(root, ".codex")).catch((error: unknown) => error);
     expect(answer).toBeInstanceOf(ConversationUnavailable);
@@ -3162,7 +4577,280 @@ describe("a model drawn only in the history above the live screen", () => {
   });
 });
 
-// any client snapshot starts the Claude subagent refresh that reads this, also the one a pending message is checked against (#1545)
+// herdr-core names only the shell in front on Windows, with no session hook: Claude below it is found in the process table (#2896)
+it("finds the Claude below a Windows pane's shell and its session by the PID record", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const home = mkdtempSync(join(tmpdir(), "claude-win32-shell-"));
+  const previousHome = process.env["HOME"];
+  const previousProfile = process.env["USERPROFILE"];
+  const session = "5c7e1f40-2d1b-4f9e-8a3c-6b5d4e3f2a10";
+  const cwd = join(home, "work");
+  const started = 1_793_000_000_000;
+  mkdirSync(join(home, ".claude", "projects", claudeProjectDir(cwd)), { recursive: true });
+  writeFileSync(join(home, ".claude", "projects", claudeProjectDir(cwd), `${session}.jsonl`), "");
+  mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
+  const procStart = String((BigInt(started) + 11_644_473_600_000n) * 10_000n);
+  writeFileSync(join(home, ".claude", "sessions", "10108.json"), JSON.stringify({ pid: 10108, kind: "interactive", sessionId: session, procStart }));
+  const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get"
+    ? { agent: {} }
+    : { process_info: { shell_pid: 3244, foreground_processes: [{ pid: 3244, name: "pwsh.exe", argv: ["C:\\Program Files\\PowerShell\\7\\pwsh.exe"] }] } }) as unknown as typeof herdr.herdrRpc);
+  const table = spyOn(gjcRuntime, "recentProcessTable").mockResolvedValue([
+    { pid: 3244, parent: 900, path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", commandLine: "pwsh.exe", started: started - 60_000 },
+    { pid: 10108, parent: 3244, path: "C:\\Users\\demo\\.local\\bin\\claude.exe", commandLine: "claude", started },
+  ]);
+  // Windows reads the home from USERPROFILE first (user-home.ts)
+  process.env["HOME"] = home;
+  process.env["USERPROFILE"] = home;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    const found = await claudePaneSession({ pane_id: "claude-win32", cwd, foreground_cwd: cwd } as HerdrPane);
+    expect(found?.path).toBe(join(home, ".claude", "projects", claudeProjectDir(cwd), `${session}.jsonl`));
+    expect(found?.pid).toBe(10108);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    if (previousHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = previousHome;
+    if (previousProfile === undefined) delete process.env["USERPROFILE"]; else process.env["USERPROFILE"] = previousProfile;
+    table.mockRestore(); rpc.mockRestore();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Real stand-ins for Claude under one shell (#3009): `count` processes whose argv[0] is `claude`, each
+ * printing its pid once it runs under that name, and waiting on the test's stdin. Linux only: Claude's
+ * PID record is checked against the process's start in /proc.
+ */
+async function claudeStandIns(count: number): Promise<{ leader: number; pids: number[]; start: (pid: number) => string; stop: () => void }> {
+  // a background job's stdin would be /dev/null: each stand-in reads the test's pipe through fd 3
+  const one = "(exec -a claude bash -c 'echo $$; read -r line' <&3)";
+  const job = Bun.spawn(["bash", "-c", `exec 3<&0; ${Array.from({ length: count }, () => `${one} &`).join(" ")} wait`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+  const reader = job.stdout.getReader();
+  let text = "";
+  while (text.split("\n").length <= count) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`the stand-ins ended early: ${text}`);
+    text += new TextDecoder().decode(value);
+  }
+  const pids = text.trim().split("\n").map(Number);
+  const start = (pid: number) => { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); return stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19]!; };
+  return { leader: job.pid, pids, start, stop: () => { for (const pid of [...pids, job.pid]) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } } };
+}
+
+function claudeHome(pid: number, procStart: string): { home: string; cwd: string; transcript: string; restore: () => void } {
+  const home = mkdtempSync(join(tmpdir(), "claude-job-"));
+  const session = "6d1f2e3a-4b5c-4d6e-8f70-81a2b3c4d5e6";
+  const cwd = join(home, "work");
+  const transcript = join(home, ".claude", "projects", claudeProjectDir(cwd), `${session}.jsonl`);
+  mkdirSync(join(home, ".claude", "projects", claudeProjectDir(cwd)), { recursive: true });
+  writeFileSync(transcript, "");
+  mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
+  writeFileSync(join(home, ".claude", "sessions", `${pid}.json`), JSON.stringify({ pid, kind: "interactive", sessionId: session, procStart }));
+  const previousHome = process.env["HOME"];
+  const previousDir = process.env["CLAUDE_CONFIG_DIR"];
+  process.env["HOME"] = home;
+  delete process.env["CLAUDE_CONFIG_DIR"];
+  return {
+    home, cwd, transcript, restore: () => {
+      if (previousHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = previousHome;
+      if (previousDir !== undefined) process.env["CLAUDE_CONFIG_DIR"] = previousDir;
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+}
+
+/**
+ * A sandbox wrapper in front of Claude (#3931): `bwrap --new-session` runs Claude in a session of its own, so
+ * no process in the pane's job is Claude. The wrapper's processes carry herdr's agent hint, HERDR_AGENT=claude,
+ * and the store they hand Claude; herdr has the session the wrapper's hook reported.
+ */
+describe.skipIf(process.platform !== "linux")("a Claude a sandbox wrapper runs outside the pane's job (#3931)", () => {
+  const SESSION = "6d1f2e3a-4b5c-4d6e-8f70-81a2b3c4d5e6";
+
+  /** Wrapper stand-ins, one per store, each with the hint and that store in its environment, waiting on the test's stdin. */
+  async function wrapped(stores: string[], reported: string | null, runtime = served.HERDR) {
+    const home = mkdtempSync(join(tmpdir(), "claude-wrapped-"));
+    const cwd = join(home, "work");
+    const store = join(home, "project-store");
+    const transcript = join(store, "projects", claudeProjectDir(cwd), `${SESSION}.jsonl`);
+    mkdirSync(join(transcript, ".."), { recursive: true });
+    writeFileSync(transcript, "");
+    const wrappers: ReturnType<typeof Bun.spawn>[] = [];
+    const restores: (() => void)[] = [];
+    const previousHome = process.env["HOME"];
+    const previousDir = process.env["CLAUDE_CONFIG_DIR"];
+    try {
+      for (const dir of stores) {
+        mkdirSync(join(home, dir), { recursive: true });
+        wrappers.push(Bun.spawn(["bash", "-c", "echo; read -r line"], { env: { PATH: process.env["PATH"] ?? "", HOME: home, HERDR_AGENT: "claude", CLAUDE_CONFIG_DIR: join(home, dir) }, stdin: "pipe", stdout: "pipe", stderr: "ignore" }));
+      }
+      for (const wrapper of wrappers) if ((await (wrapper.stdout as ReadableStream<Uint8Array>).getReader().read()).done) throw new Error("the wrapper stand-in ended early");
+      process.env["HOME"] = home;
+      delete process.env["CLAUDE_CONFIG_DIR"];
+      const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get"
+        ? { agent: reported === null ? {} : { agent_session: { agent: "claude", source: "herdr:claude", kind: "id", value: reported } } }
+        : { process_info: { pane_id: "w1:p1", shell_pid: 1, foreground_processes: wrappers.map((wrapper) => ({ pid: wrapper.pid, name: "bash", argv: ["bash", "/opt/sandbox/claude-wrapped"] })) } }) as unknown as typeof herdr.herdrRpc);
+      restores.push(() => rpc.mockRestore());
+      const serving = spyOn(served, "capabilities").mockReturnValue(runtime);
+      restores.push(() => serving.mockRestore());
+      return { found: (await claudePaneSession({ pane_id: "w1:p1", cwd, foreground_cwd: cwd } as HerdrPane))?.path ?? null, transcript };
+    } finally {
+      for (const restore of restores.reverse()) restore();
+      for (const wrapper of wrappers) wrapper.kill("SIGKILL");
+      if (previousHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = previousHome;
+      if (previousDir !== undefined) process.env["CLAUDE_CONFIG_DIR"] = previousDir;
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  it("reads the reported session in the store the hinted wrapper hands Claude", async () => {
+    const { found, transcript } = await wrapped(["project-store", "project-store"], SESSION);
+    expect(found).toBe(transcript);
+  });
+
+  it("binds none when the hinted processes name two stores: either could be a guess", async () => {
+    expect((await wrapped(["project-store", "other-store"], SESSION)).found).toBeNull();
+  });
+
+  it("binds none when herdr has no session reported: the wrapper is no Claude whose PID record could say", async () => {
+    expect((await wrapped(["project-store"], null)).found).toBeNull();
+  });
+
+  it("takes no hint on herdr-core, which names the job's leader alone: a process below it may name another store", async () => {
+    expect((await wrapped(["project-store"], SESSION, HERDR_CORE)).found).toBeNull();
+  });
+});
+
+// herdr-core names only the first process of the foreground job: a launcher in front of Claude hid it (#3009)
+describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name in front (#3009)", () => {
+  const launcher = (leader: number) => ({ process_info: { pane_id: "t1", shell_pid: 1, foreground_processes: [{ pid: leader, name: "bun", argv: ["bun", "launch.ts"] }] } });
+
+  it("finds the one Claude a launcher runs, and its session by the PID record", async () => {
+    const job = await claudeStandIns(1);
+    const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get" ? { agent: {} } : launcher(job.leader)) as unknown as typeof herdr.herdrRpc);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
+    try {
+      const found = await claudePaneSession({ pane_id: "t1", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane);
+      expect([found?.path, found?.pid]).toEqual([store.transcript, job.pids[0]]);
+    } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
+  });
+
+  it("binds none when two Claudes run below the foreground: which one the pane shows cannot be told", async () => {
+    const job = await claudeStandIns(2);
+    const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get" ? { agent: {} } : launcher(job.leader)) as unknown as typeof herdr.herdrRpc);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
+    try {
+      expect(await claudePaneSession({ pane_id: "t1", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane)).toBeNull();
+    } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
+  });
+
+  const OWN = { HOME: "/home/u", XDG_RUNTIME_DIR: "/run/user/1000", XDG_CONFIG_HOME: "/nonexistent/config" };
+
+  /**
+   * A tab running `hc attach <word>` (t3), its hc client a real process with `clientEnv`; herdr-core's
+   * answers for it and for the terminal hc resolves the word to. The client has printed a line before
+   * this answers: /proc shows a process just spawned with its parent's environment until its exec, and
+   * with none for a moment after it (#3514).
+   */
+  async function viewer(word: string, resolved: string, claudePid: number, clientEnv: Record<string, string> = OWN) {
+    const client = Bun.spawn(["bash", "-c", "echo; read -r line"], { env: { PATH: process.env["PATH"] ?? "", ...clientEnv }, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+    if ((await client.stdout.getReader().read()).done) throw new Error("the hc client stand-in ended early");
+    const rpc = (async (method: string, params: { pane_id?: string }) => {
+      if (method === "agent.get") return { agent: {} };
+      if (params.pane_id === "t3") return { process_info: { pane_id: "t3", shell_pid: 1, foreground_processes: [{ pid: client.pid, name: "hc", argv: ["/usr/local/bin/hc", "attach", word] }] } };
+      return { process_info: { pane_id: resolved, shell_pid: 1, foreground_processes: [{ pid: claudePid, name: "claude", argv: ["claude"] }] } };
+    }) as unknown as typeof herdr.herdrRpc;
+    return { rpc, stop: () => client.kill("SIGKILL") };
+  }
+
+  async function viewed(word: string, resolved: string, clientEnv?: Record<string, string>) {
+    const job = await claudeStandIns(1);
+    const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
+    const tab = await viewer(word, resolved, job.pids[0]!, clientEnv).catch((error: unknown) => { job.stop(); store.restore(); throw error; });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(tab.rpc);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
+    const core = spyOn(runtime, "coreSocketPath").mockReturnValue("/run/user/1000/herdr-core/default.sock");
+    try {
+      const found = await claudePaneSession({ pane_id: "t3", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane);
+      return { found: found === null ? null : [found.path, found.pid], expected: [store.transcript, job.pids[0]!] };
+    } finally { core.mockRestore(); serving.mockRestore(); rpc.mockRestore(); tab.stop(); job.stop(); store.restore(); }
+  }
+
+  it("shows the conversation of the local terminal an `hc attach <t>` tab views", async () => {
+    const { found, expected } = await viewed("t2", "t2");
+    expect(found).toEqual(expected);
+  });
+
+  it("follows no `hc attach` word hc resolves to another terminal's address, as a name", async () => {
+    expect((await viewed("review", "t2")).found).toBeNull();
+  });
+
+  // terminal numbers start at t1 in every core: the same word names another terminal there
+  it("follows no `hc attach` whose client reaches another core", async () => {
+    expect((await viewed("t2", "t2", { ...OWN, HC_SESSION: "other" })).found).toBeNull();
+  });
+});
+
+// the native claude.exe the shell started can run the session in a child claude.exe, and only that child writes the PID record
+it("finds a Windows pane's session by the child claude.exe holding the PID record, not the one its shell started", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const home = mkdtempSync(join(tmpdir(), "claude-win32-launcher-"));
+  const previousHome = process.env["HOME"];
+  const previousProfile = process.env["USERPROFILE"];
+  // or the lookup reads the developer's own store too
+  const previousConfig = process.env["CLAUDE_CONFIG_DIR"];
+  delete process.env["CLAUDE_CONFIG_DIR"];
+  const session = "7d9f3a52-4e2c-4b1a-9c5d-8e7f6a5b4c32";
+  const cwd = join(home, "work");
+  const started = 1_793_000_000_000;
+  const exe = "C:\\Users\\demo\\.local\\bin\\claude.exe";
+  const transcript = join(home, ".claude", "projects", claudeProjectDir(cwd), `${session}.jsonl`);
+  const pidRecord = join(home, ".claude", "sessions", "20108.json");
+  mkdirSync(join(home, ".claude", "projects", claudeProjectDir(cwd)), { recursive: true });
+  writeFileSync(transcript, "");
+  mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
+  const procStart = String((BigInt(started) + 11_644_473_600_000n) * 10_000n);
+  writeFileSync(pidRecord, JSON.stringify({ pid: 20108, kind: "interactive", sessionId: session, procStart }));
+  const shellOnly = { shell_pid: 3244, foreground_processes: [{ pid: 3244, name: "pwsh.exe", argv: ["C:\\Program Files\\PowerShell\\7\\pwsh.exe"] }] };
+  const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get" ? { agent: {} } : { process_info: shellOnly }) as unknown as typeof herdr.herdrRpc);
+  const table = spyOn(gjcRuntime, "recentProcessTable").mockResolvedValue([
+    { pid: 3244, parent: 900, path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", commandLine: "pwsh.exe", started: started - 60_000 },
+    { pid: 20107, parent: 3244, path: exe, commandLine: `"${exe}"`, started: started - 1_000 },
+    { pid: 20108, parent: 20107, path: exe, commandLine: `"${exe}" --permission-mode auto`, started },
+  ]);
+  process.env["HOME"] = home;
+  process.env["USERPROFILE"] = home;
+  const pane = { pane_id: "claude-win32-launcher", agent: "claude", cwd, foreground_cwd: cwd } as HerdrPane;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    const found = await claudePaneSession(pane);
+    expect(found?.path).toBe(transcript);
+    expect(found?.pid).toBe(20108);
+    expect(await claudePanePid(pane)).toBe(20108);
+    expect(await paneTranscript(pane.pane_id, undefined, { panes: [pane] } as unknown as SessionSnapshot)).toMatchObject({ source: "claude-transcript", path: transcript });
+    for (const other of ["linux", "darwin"]) {
+      Object.defineProperty(process, "platform", { value: other });
+      table.mockClear();
+      expect(await claudePaneSession(pane)).toBeNull();
+      expect(await claudePanePid(pane)).toBeNull();
+      expect(table).not.toHaveBeenCalled();
+    }
+    Object.defineProperty(process, "platform", { value: "win32" });
+    rmSync(pidRecord);
+    expect(await claudePaneSession(pane)).toBeNull();
+    expect(await claudePanePid(pane)).toBe(20107);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    if (previousHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = previousHome;
+    if (previousProfile === undefined) delete process.env["USERPROFILE"]; else process.env["USERPROFILE"] = previousProfile;
+    if (previousConfig === undefined) delete process.env["CLAUDE_CONFIG_DIR"]; else process.env["CLAUDE_CONFIG_DIR"] = previousConfig;
+    table.mockRestore(); rpc.mockRestore();
+    forgetTranscriptState();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 it("reads a Claude pane's process start from the kernel on macOS, with no ps for it", async () => {
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   const home = mkdtempSync(join(tmpdir(), "claude-darwin-start-"));
@@ -3193,4 +4881,43 @@ it("reads a Claude pane's process start from the kernel on macOS, with no ps for
     awaited.mockRestore(); blocking.mockRestore(); kernel.mockRestore(); rpc.mockRestore();
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+it("serves no Claude tool output from another transcript that a folder swap puts at the path around the lookup's open", () => {
+  const root = mkdtempSync(join(tmpdir(), "claude-output-swap-"));
+  try {
+    const folder = join(root, "project");
+    const elsewhere = join(root, "elsewhere");
+    const away = join(root, "away");
+    mkdirSync(folder);
+    mkdirSync(elsewhere);
+    const path = join(folder, "session.jsonl");
+    const transcript = (result: string) => [
+      { type: "assistant", uuid: "a1", parentUuid: null, message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: {} }] } },
+      { type: "user", uuid: "u1", parentUuid: "a1", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: result }] } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    writeFileSync(path, transcript("the pane's own output"));
+    writeFileSync(join(elsewhere, "session.jsonl"), transcript("FOREIGN SECRET OUTPUT"));
+    expect(transcriptToolOutput("claude-transcript", path, "toolu_1")).toBe("the pane's own output");
+    let swaps = 0;
+    const swapped = <T>(read: () => T): T => {
+      swaps++;
+      renameSync(folder, away);
+      renameSync(elsewhere, folder);
+      try { return read(); }
+      finally {
+        renameSync(folder, elsewhere);
+        renameSync(away, folder);
+      }
+    };
+    const { openSync, readFileSync } = fs;
+    const opens = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) =>
+      args[0] === path ? swapped(() => openSync(...args)) : openSync(...args)) as typeof fs.openSync);
+    const reads = spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof fs.readFileSync>) =>
+      args[0] === path ? swapped(() => readFileSync(...args)) : readFileSync(...args)) as typeof fs.readFileSync);
+    let answered: string | null;
+    try { answered = transcriptToolOutput("claude-transcript", path, "toolu_1"); } finally { opens.mockRestore(); reads.mockRestore(); }
+    expect(swaps).toBeGreaterThan(0);
+    expect(answered).toBeNull();
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

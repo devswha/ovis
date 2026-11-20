@@ -1,0 +1,117 @@
+.sidebar-split {
+  position: relative;
+  flex: none;
+  height: calc(var(--space-3) - var(--hairline));
+  margin: 0 var(--side-gutter);
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.sidebar-split::before {
+  content: "";
+  position: absolute;
+  top: calc(50% - var(--hairline) / 2);
+  right: 0;
+  left: 0;
+  height: var(--hairline);
+  background: var(--border);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.sidebar-split:focus-visible {
+  outline: var(--ring);
+  outline-offset: calc(var(--ring-offset) * -1);
+}
+
+@media (forced-colors: active) {
+  .sidebar-split:focus-visible {
+    outline: var(--hairline) solid Highlight;
+    outline-offset: calc(var(--hairline) * -1);
+  }
+}
+
+/* a pointer's floor (G-033): the band is --pointer-target tall by its own box, the hairline still centred in it;
+   the PCs' list gives the 13px, so the Agents head and the footer keep their place */
+@media (pointer: fine) {
+  .sidebar-split { height: var(--pointer-target); }
+}
+
+@media (hover: hover) {
+  .sidebar-split:hover::before { background: var(--border-strong); }
+}
+
+.sidebar-split.is-dragging::before,
+.sidebar-split:focus-visible::before {
+  top: calc(50% - var(--hairline));
+  height: calc(var(--hairline) * 2);
+  background: var(--accent);
+}
+
+.sidebar-split.is-dragging.is-snapping::before { background: var(--text-dim); }
+
+.sidebar-split-grip {
+  position: absolute;
+  top: calc(50% - var(--hairline) * 2);
+  left: calc(50% - var(--space-4));
+  width: var(--space-8);
+  height: calc(var(--hairline) * 4);
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .sidebar-split:hover .sidebar-split-grip { opacity: 1; }
+}
+
+.sidebar-split.is-dragging .sidebar-split-grip,
+.sidebar-split.is-snapping .sidebar-split-grip { opacity: 0; }
+
+@media (pointer: coarse) {
+  .sidebar-split { height: var(--touch-target); }
+
+  .sidebar-split::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: 0;
+    left: 0;
+    z-index: 1;
+    height: var(--touch-target);
+    transform: translateY(-50%);
+  }
+
+  .sidebar-split-grip { opacity: 1; }
+}
+
+.agents-sidebar.will-fold { opacity: 0.4; }
+
+.pcs-sidebar,
+.agents-sidebar {
+  overflow: hidden;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.sidebar-shell.is-splitting > .pcs-sidebar,
+.sidebar-shell.is-splitting > .agents-sidebar { min-height: 0; }
+
+.sidebar-shell.has-split:not(:has(> .agents-sidebar:is(.is-collapsed, .is-empty))),
+.sidebar-shell.is-splitting {
+  --pcs-flex: 0 0 var(--split-top);
+  --agents-flex: 1 1 0;
+  --section-max: none;
+}
+
+.sidebar-shell.is-agents-first.has-split:not(:has(> .agents-sidebar:is(.is-collapsed, .is-empty))),
+.sidebar-shell.is-agents-first.is-splitting {
+  --pcs-flex: 1 1 0;
+  --agents-flex: 0 0 var(--split-top);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-split::before,
+  .sidebar-split-grip,
+  .pcs-sidebar,
+  .agents-sidebar { transition: none; }
+}

@@ -5,7 +5,9 @@
 <h1 align="center">Ovis</h1>
 
 <p align="center">
-  <strong>Every coding agent, on every screen.</strong>
+  <strong>Your coding agents, on desktop, phone and browser.</strong>
+  <br>
+  Chat with Claude Code, Codex and other agents running on your computer, and answer them with a tap.
 </p>
 
 <p align="center">
@@ -20,87 +22,75 @@
   <br>
   <a href="https://ovis.sh/">website</a> ·
   <a href="#install">install</a> ·
-  <a href="https://ovis.sh/demo/">try the demo</a> ·
-  <a href="docs/guide.md#quick-start">quick start</a> ·
-  <a href="docs/guide.md#faq">faq</a> ·
-  <a href="#docs">docs</a>
+  <a href="https://ovis.sh/demo/">demo</a> ·
+  <a href="docs/guide.md">docs</a> ·
+  <a href="https://ovis.sh/discord">discord</a>
 </p>
 
-Ovis shows the coding agents on your computer as chats you answer with a click or a tap, in any browser, the Mac app or your phone. A client for [herdr](https://github.com/herdrdev/herdr), formerly herdr web UI.
+<p align="center">
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-and-phone.webp" width="830" alt="Ovis in a desktop browser and on a phone. The desktop shows a sidebar of workspaces and agents beside a Claude Code conversation read as a chat. The phone shows a Codex pane asking Allow command? for git push origin feat/export-guard, with Yes, Yes and don't ask again for git push, and No as the choices."></a>
+</p>
 
+Ovis runs on the computer where your agents work, and your phone or any browser connects to it. It is built on [herdr](https://github.com/herdrdev/herdr) and can show the same live terminals as herdr and the [Herdr app](https://herdr.dev/download/), so they work side by side. [How they fit together →](docs/guide.md#how-ovis-fits-with-herdr)
+
+## Install
+
+**Desktop app:** [Mac](https://ovis.sh/Ovis-mac-arm64.dmg) ([Intel](https://ovis.sh/Ovis-mac-x64.dmg)) · [Windows](https://ovis.sh/Ovis-win-x64.exe) · [Linux](https://ovis.sh/Ovis-linux-x64.deb) ([all builds](docs/guide.md#the-desktop-app)). It needs nothing else, and its terminals are its own: to see the ones you already have in herdr or the Herdr app, install with the command below instead.
+
+**With herdr or the Herdr app:** one command sets Ovis up beside it. On Linux or macOS:
+
+```bash
+curl -fsSL https://ovis.sh/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://ovis.sh/install.ps1 | iex
+```
+
+**On your phone:** on the computer, open **Settings → Devices and PCs → Add a connection → Ovis relay**, switch it on, and scan its QR code with the phone. Where the tab asks you to sign in first, sign in and add this computer to your account, then choose **Show the QR code** and scan it with a phone signed in to the same account: the computer is then in the account, and it asks any other phone to sign in to that account instead of scanning. The iPhone app is on the [App Store](https://apps.apple.com/app/id6824664162) and the Android app is on [Google Play](https://play.google.com/store/apps/details?id=sh.ovis.app). [Phone setup →](docs/guide.md#on-your-phone)
+
+<a href="https://apps.apple.com/app/id6824664162"><img src="ovis-site/assets/app-store/badge-en.svg" alt="Download on the App Store" height="48"></a> <a href="https://play.google.com/store/apps/details?id=sh.ovis.app"><img src="ovis-site/assets/google-play/badge-en.svg" alt="Get it on Google Play" height="48"></a>
+
+## Features
+
+- **Agents as a chat.** Claude Code, Codex and [more](docs/guide.md#supported-agents), with a turn's commands and edits folded into one line.
+- **Answers with a tap.** Approvals and questions arrive as cards.
+- **Push alerts.** Even with the app closed.
+- **The real terminal, one click away.** With a key bar on phones.
+- **New agents from anywhere.** In a folder you pick, from the desktop or the phone.
+- **Every workspace in one list.** Other PCs over SSH too.
+
+[All features →](docs/guide.md#features)
+
+<details>
+<summary>Watch it in motion (a 25-second clip)</summary>
 <p align="center">
   <a href="https://ovis.sh/demo/"><img src="docs/media/readme/hero.webp" alt="Screen recording of Ovis on the demo: in a desktop browser, a follow-up is sent to Claude Code and its turn streams in step by step; then the desktop and a phone side by side, where Codex asks Allow command? for git push origin feat/export-guard, Yes is tapped on the phone and the card closes on both screens; then a click on the release tab opens a shell pane as a live terminal running git log and bun test."></a>
   <br>
   <sub>Recorded on the <a href="https://ovis.sh/demo/">demo</a>, which runs in your browser.</sub>
 </p>
+</details>
 
-## install
+**Limits:** your computer has to be on and reachable (the Ovis relay, Tailscale, a VPN or an SSH tunnel). Chat is complete for Claude Code and thinner for other agents; the real terminal always works. On Windows, the one-line install starts on herdr until you switch to the Herdr app's terminals in **Settings → About → Terminals**.
 
-**On your computer**
+**Privacy:** sessions stay on your computer, and no account is needed. The relay is end-to-end encrypted ([trust model](docs/relay.md#trust-model)). Anonymous usage counts are on by default; **Settings → About** or `OVIS_TELEMETRY=0` turns them off ([what is sent](docs/guide.md#anonymous-usage-counts)).
 
-- **Mac:** download [Ovis.dmg](https://ovis.sh/Ovis.dmg), open it and click **Install**.
-- **Windows:** download [Ovis.exe](https://ovis.sh/Ovis.exe), run it and click **Install**.
-- **Linux:** run this in a terminal.
-  ```bash
-  curl -fsSL https://ovis.sh/install.sh | sh
-  ```
+## Documentation
 
-Each one adds herdr and Bun if they are missing; Node is not needed. Other ways to install, step by step: [INSTALL.md](INSTALL.md).
+- **[User guide](docs/guide.md):** [quick start](docs/guide.md#quick-start) · [supported agents](docs/guide.md#supported-agents) · [phone](docs/guide.md#on-your-phone) · [remote PCs](docs/remote-pcs.md) · [terminal client](docs/tui.md) · [configuration](docs/guide.md#configuration) · [FAQ](docs/guide.md#faq)
+- **[INSTALL.md](INSTALL.md):** every way to install, step by step.
+- **[Demo](https://ovis.sh/demo/)** · **[Changelog](CHANGELOG.md)**
 
-**On your phone**
+## Contributing
 
-- **iPhone:** the TestFlight beta, from [ovis.sh/beta](https://ovis.sh/beta/).
-- **Android:** the Google Play beta, from [ovis.sh/beta](https://ovis.sh/beta/).
-- **Browser:** no app needed; add the page to the home screen.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the setup and the checks, with [development](docs/development.md), [DESIGN.md](DESIGN.md) and [SECURITY.md](SECURITY.md). Coding agents install Ovis for someone with [INSTALL.md](INSTALL.md), and follow [AGENTS.md](AGENTS.md) and the [review rules](.github/REVIEW.md) for changes.
 
-With Tailscale on in both, scan the QR code your computer shows to connect. No Tailscale? Turn on the end-to-end encrypted **Ovis relay** under **Settings → Phone & devices** and scan its QR code with the phone's camera: it opens Ovis in the phone's browser. [How it works →](docs/guide.md#through-the-ovis-relay)
+## Thanks
 
-## what you get
+Built on [herdr](https://github.com/herdrdev/herdr), with inspiration from [chatmux](https://github.com/devswha/chatmux), and powered by [xterm.js](https://xtermjs.org), [React](https://react.dev), [Bun](https://bun.sh) and [Lucide](https://lucide.dev). Thanks to everyone who has contributed, including [@Yoonwoo-Ha](https://github.com/Yoonwoo-Ha), and to [@sanguneo](https://github.com/sanguneo), who helped design the icon and the website.
 
-- **Any agent herdr runs.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok and more, most as a chat. [Supported agents →](docs/guide.md#supported-agents)
-- **Prompts as cards.** Checked as still current before your answer is sent.
-- **The live terminal, one click away.** The same pane herdr shows, with a key bar on phones.
-- **Every workspace in one list.** Tabs, splits and other PCs over SSH, with the ones waiting on you marked.
-- **Push alerts.** When an agent asks something or finishes, even with the app closed.
-- **Free and MIT.** Runs on your own computer, with no account to sign up for.
-
-[All features →](docs/guide.md#features)
-
-**Limits:** Ovis needs [herdr](https://github.com/herdrdev/herdr) and your own computer, switched on, and your phone has to reach it (Tailscale, a VPN, an SSH tunnel or the Ovis relay).
-
-**Privacy:** sessions stay on the computer that runs each agent, and Ovis has no account. Its optional relay, off until you turn it on, sees which phone connects to which PC, from which address, when and how much, but can't read what is sent ([trust model](docs/relay.md#trust-model)). Anonymous usage counts are on by default; **Settings → About → Anonymous usage counts** shows what is sent and turns them off, as does `OVIS_TELEMETRY=0`. [What is sent →](docs/guide.md#anonymous-usage-counts)
-
-## docs
-
-- **[User guide](docs/guide.md):** [quick start](docs/guide.md#quick-start) · [supported agents](docs/guide.md#supported-agents) · [features](docs/guide.md#features) · [phone](docs/guide.md#on-your-phone) · [remote PCs](docs/remote-pcs.md) · [Ovis relay](docs/relay.md) · [access and safety](docs/guide.md#access-and-safety) · [configuration](docs/guide.md#configuration) · [keyboard shortcuts](docs/guide.md#keyboard-shortcuts)
-- **[FAQ](docs/guide.md#faq):** herdr's own TUI, Tailscale, what leaves your machine, and how Ovis compares with collie, Happy, Paseo and others.
-- **[INSTALL.md](INSTALL.md):** every way to install, step by step, and what to do when a step fails.
-- **[Demo](https://ovis.sh/demo/):** the real app on a made-up session, in your browser.
-- **[Changelog](CHANGELOG.md)**
-
-## thanks
-
-Built on [herdr](https://github.com/herdrdev/herdr), with inspiration from [chatmux](https://github.com/devswha/chatmux), and powered by [xterm.js](https://xtermjs.org), [React](https://react.dev), [Bun](https://bun.sh) and [Lucide](https://lucide.dev).
-
-Thanks to everyone who has contributed, including [@Yoonwoo-Ha](https://github.com/Yoonwoo-Ha), and to [@sanguneo](https://github.com/sanguneo), who helped design the icon and the website.
-
-## agent instructions
-
-Helping someone install the app? Follow [INSTALL.md](INSTALL.md). For repository changes, follow [CONTRIBUTING.md](CONTRIBUTING.md), the [review rules](.github/REVIEW.md) and [AGENTS.md](AGENTS.md).
-
-## development
-
-```bash
-git clone https://github.com/devswha/ovis.git
-cd ovis
-bun install
-
-bun run server      # API + WebSocket on :7317
-bun run dev         # Vite on :5173; run in a second terminal
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) to send a change, [development](docs/development.md) for tests, media and releases, and [DESIGN.md](DESIGN.md) for UI conventions. Report security problems privately: [SECURITY.md](SECURITY.md).
-
-## license
+## License
 
 [MIT](LICENSE). Copyright © 2026 devswha.

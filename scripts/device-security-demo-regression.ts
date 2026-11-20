@@ -7,21 +7,14 @@ import { chromium, type BrowserContext, type Locator, type Page } from "playwrig
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// Settings → Phone & devices on the unmodified app over the demo's fixture transport: revoking
-// every paired device, and the line every open window gets when a device pairs. The demo pairs
-// no real device and holds no credential; `?demo_devices=` picks its states (site/demo/transport.ts).
-// What is checked: the row warns the caller that their own pairing goes too and what does not
-// (the access token, this PC, its Tailscale login); the confirmation asks again, with Cancel in
-// focus, and a refused write stays in the dialog with the server's words; a confirmed revocation
-// empties the list; a device that only watches sees the words and no working button; a fictional
-// pairing shows one notice, whose action opens Phone & devices and whose X dismisses it. Nothing
-// overflows a 390 px phone, and its touch targets are 44 px. With UI_EVIDENCE_DIR set, each state
-// is captured at 390 (phone emulation) and 1440, light and dark, plus Korean at 390, with a manifest.
+// The demo pairs no real device and holds no credential; `?demo_devices=` picks its states (site/demo/transport.ts).
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-device-security-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR || "";
 const NOTICE = '[data-testid="device-paired-notice"]';
+const ROW = ".devices-panel .devices-row";
 const PAIRS_WITHIN_MS = 10_000;
 /** how far under a whole pixel a measured box may fall from layout rounding alone (a fractional offset above the list) */
 const SUBPIXEL = 0.01;
@@ -30,9 +23,7 @@ type Theme = "light" | "dark";
 type Language = "en" | "ko";
 interface Shot { file: string; width: number; height: number; theme: Theme; language: Language; state: string; sha256: string; capturedAt: string; note?: string }
 const manifest: Shot[] = [];
-/** What a PNG cannot carry, per configuration: hit rectangles, accessible names and contrast ratios. */
 const measurements: Record<string, Record<string, unknown>> = {};
-/** The visual states no demo can show, listed with the reason so the set is read as complete. */
 const notCaptured = [
   { state: "hover", reason: "at 390 only: a touch phone has no hover; captured at 1440" },
   { state: "focus-visible", reason: "at 390 only: a touch phone shows no keyboard focus ring; captured at 1440" },
@@ -45,15 +36,15 @@ async function open(context: BrowserContext, port: number, search: string): Prom
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  // the demo answers its device routes only when asked (`demo_devices`); `list` is the fictional devices
   const devices = search.includes("demo_devices=") ? "" : "&demo_devices=list";
   await page.goto(`http://127.0.0.1:${port}/herdr-web-ui/demo/app/?settings=devices${devices}${search}`);
   await page.locator(".conn-live").waitFor();
   await page.locator(".settings-dialog").waitFor();
+  const more = page.locator('.settings-dialog .settings-fold[data-fold="more"]');
+  if (await more.count() > 0) await more.evaluate((fold) => { (fold as HTMLDetailsElement).open = true; });
   return { page, errors };
 }
 
-/** Scrolls the Settings page so `target` sits at the bottom of the viewport, as a reader scrolling down sees it. */
 async function reveal(target: Locator): Promise<void> {
   await target.evaluate((node) => node.scrollIntoView({ block: "end" }));
 }
@@ -81,7 +72,6 @@ async function capture(page: Page, name: string, about: Omit<Shot, "file" | "sha
   return sha256;
 }
 
-/** Each button's hit rectangle and accessible name; the name is checked by the role query a screen reader's would match. */
 async function buttons(page: Page, selector: string): Promise<{ name: string; x: number; y: number; width: number; height: number }[]> {
   const found = await page.evaluate((selector) => [...document.querySelectorAll<HTMLElement>(selector)].map((node) => {
     const box = node.getBoundingClientRect();
@@ -91,12 +81,6 @@ async function buttons(page: Page, selector: string): Promise<{ name: string; x:
   return found;
 }
 
-/**
- * A colour of `selector` over the backgrounds under it, composited, and their WCAG contrast ratio:
- * its text (`color`, which an icon's strokes follow), its edge (`border-top-color`) or its focus
- * ring (`outline-color`, drawn outside it, so over its parent's background). Also its computed
- * font size, for text.
- */
 async function contrast(page: Page, selector: string, property: "color" | "border-top-color" | "outline-color" = "color"): Promise<{ color: string; background: string; ratio: number; fontSize: string }> {
   return page.evaluate(([selector, property]) => {
     const target = document.querySelector<HTMLElement>(selector!);
@@ -132,7 +116,6 @@ async function contrast(page: Page, selector: string, property: "color" | "borde
   }, [selector, property] as const);
 }
 
-/** A frame as it is right now, animations included: no wait for them to end (`capture` waits). */
 async function frame(page: Page, name: string, about: Omit<Shot, "file" | "sha256" | "capturedAt">): Promise<string> {
   if (!evidence) return "";
   const file = join(evidence, `${name}.png`);
@@ -142,7 +125,6 @@ async function frame(page: Page, name: string, about: Omit<Shot, "file" | "sha25
   return sha256;
 }
 
-/** The names of the finite animations running on a dialog's scrim or surface, the closed sheet's drop included. */
 async function dialogAnimations(page: Page): Promise<string[]> {
   return page.evaluate(() => ((window as unknown as { herdrAnimations?: () => Animation[] }).herdrAnimations?.() ?? document.getAnimations())
     .filter((animation) => ((animation.effect as KeyframeEffect | null)?.target as Element | null)?.closest?.(".modal-scrim") && animation.effect!.getTiming().iterations !== Infinity && animation.playState !== "finished")
@@ -184,7 +166,6 @@ async function arm(page: Page): Promise<void> {
     // a closed sheet's drop runs in a closed shadow root, which document.getAnimations() does not reach:
     // the roots attached while armed are kept, and every lookup reads them too
     const roots = hook.herdrShadowRoots ??= [];
-    // only the confirmation's own: CSS animations (no hover transitions) on a scrim other than Settings' own
     hook.herdrAnimations = () => [...document.getAnimations(), ...roots.flatMap((root) => root.host.isConnected ? root.getAnimations() : [])].filter((animation) => {
       const scrim = ((animation.effect as KeyframeEffect | null)?.target as Element | null)?.closest?.(".modal-scrim");
       return animation instanceof CSSAnimation && scrim !== null && scrim !== undefined && scrim.querySelector(".settings-dialog") === null;
@@ -209,21 +190,19 @@ async function disarm(page: Page): Promise<void> {
   await page.evaluate(() => (window as unknown as { herdrHoldMotion?: () => void }).herdrHoldMotion?.());
 }
 
-/** Lets every held animation run on, and waits for the page to settle. */
 async function release(page: Page): Promise<void> {
   await disarm(page);
   await page.evaluate(() => { for (const animation of ((window as unknown as { herdrAnimations?: () => Animation[] }).herdrAnimations?.() ?? document.getAnimations())) if (animation.playState === "paused") animation.play(); });
   await settled(page);
 }
 
-/** Controls and text past the viewport's right edge, and a page or Settings body that scrolls sideways. */
 async function overflow(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const out: string[] = [];
     if (document.documentElement.scrollWidth > innerWidth) out.push(`the page scrolls sideways (${document.documentElement.scrollWidth} > ${innerWidth})`);
     const body = document.querySelector<HTMLElement>(".settings-body:not([hidden])");
     if (body && body.scrollWidth > body.clientWidth) out.push(`Settings scrolls sideways (${body.scrollWidth} > ${body.clientWidth})`);
-    for (const node of document.querySelectorAll<HTMLElement>(".devices-panel button, .devices-panel .settings-label, .devices-panel .settings-description, .confirm-dialog button, .confirm-dialog p, [data-testid='device-paired-notice'] *")) {
+    for (const node of document.querySelectorAll<HTMLElement>(".devices-panel button, .devices-panel .settings-label, .devices-panel .settings-description, [data-testid='this-pc'] button, [data-testid='this-pc'] .settings-label, [data-testid='this-pc'] .settings-description, .confirm-dialog button, .confirm-dialog p, [data-testid='device-paired-notice'] *")) {
       const box = node.getBoundingClientRect();
       if (box.width > 0 && (box.right > innerWidth + 0.5 || box.left < -0.5)) out.push(`${node.tagName.toLowerCase()}.${node.className} ${(node.getAttribute("aria-label") ?? node.textContent ?? "").trim().slice(0, 40)} reaches past the edge`);
     }
@@ -246,18 +225,7 @@ try {
   writeFileSync(index, html.replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script type="module"'));
   if (evidence) mkdirSync(evidence, { recursive: true });
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -276,8 +244,12 @@ try {
         try {
           await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), settingsOf(language, theme));
           const press = async (target: Locator): Promise<void> => { if (phone) await target.tap(); else await target.click(); };
+          const startCode = async (page: Page): Promise<void> => {
+            await press(page.locator('.settings-dialog [data-section="devices"]').getByRole("button", { name: label("Add a connection"), exact: true }));
+            await press(page.locator('.connect-phone-dialog .connect-ways [data-tab="devices"]'));
+          };
+          const shownCode = (page: Page): Locator => page.locator('.connect-phone-dialog [data-tab-panel="devices"] .compact-pair-code');
           const closeSettings = async (page: Page): Promise<void> => {
-            // Pair a device's code is in the Connect a phone dialog, which closes by itself once the device is in
             await page.locator(".connect-phone-dialog").waitFor({ state: "detached", timeout: PAIRS_WITHIN_MS });
             await page.keyboard.press("Escape");
             await page.locator(".settings-dialog").waitFor({ state: "detached" });
@@ -285,14 +257,13 @@ try {
           };
           const errorsOf: string[][] = [];
 
-          // the page as it comes: the list with its long label, and the row that ends every pairing
           {
             const { page, errors } = await open(context, server.port, "");
             errorsOf.push(errors);
             const row = page.locator(".devices-revoke-all");
             await row.waitFor();
             const rowButton = row.getByRole("button", { name: label("Revoke all"), exact: true });
-            assert.equal(await page.locator(".devices-row").count(), 3, "the demo lists its three devices");
+            assert.equal(await page.locator(ROW).count(), 3, "the demo lists its three devices");
             assert.equal(await row.locator(".settings-label").innerText(), label("Revoke every device"));
             const words = await row.locator(".settings-description").innerText();
             assert.equal(words, label("Every paired device, this one included, loses its pairing access at once. The access token, this PC and its Tailscale login are not affected."), "the row warns the caller that their own pairing goes, and names what stays");
@@ -302,25 +273,23 @@ try {
             await reveal(row);
             const rest = await capture(page, `${prefix}-rest`, about("rest"));
             measurements[prefix] = {
-              rowIconButtons: await buttons(page, ".devices-row button"),
+              rowIconButtons: await buttons(page, `${ROW} button`),
               settingsClose: await buttons(page, ".settings-dialog .modal-header button"),
               revokeAllRowCopy: await contrast(page, ".devices-revoke-all .settings-description"),
               revokeAllRowLabel: await contrast(page, ".devices-revoke-all .settings-label"),
               revokeAllButtonText: await contrast(page, ".devices-revoke-all button"),
-              // the button's edge, and the glyphs of the row icons beside the list (non-text, 3:1)
               revokeAllButtonEdge: await contrast(page, ".devices-revoke-all button", "border-top-color"),
-              rowIconGlyph: await contrast(page, ".devices-row .icon-button"),
+              rowIconGlyph: await contrast(page, `${ROW} .icon-button`),
               revokeAllButtonUserSelect: await rowButton.evaluate((node) => getComputedStyle(node).userSelect),
             };
-            // the longest label wraps inside its row, its rename and revoke buttons still beside it
-            await reveal(page.locator(".devices-row").filter({ hasText: "Kitchen laptop" }));
+            await reveal(page.locator(ROW).filter({ hasText: "Kitchen laptop" }));
             const longLabel = await capture(page, `${prefix}-long-label`, about("long-label"));
-            // the true end: the Settings page scrolled as far as it goes, the devices card closed below its last row
             const scroller = await row.evaluateHandle((node) => {
               let at: HTMLElement | null = node.parentElement;
               while (at && !(at.scrollHeight > at.clientHeight && /auto|scroll/.test(getComputedStyle(at).overflowY))) at = at.parentElement;
               return at ?? document.scrollingElement as HTMLElement;
             });
+            const scrolls = await scroller.evaluate((node) => node.scrollHeight > node.clientHeight + 1);
             await scroller.evaluate((node) => { node.scrollTop = node.scrollHeight; });
             assert.equal(await scroller.evaluate((node) => Math.ceil(node.scrollTop + node.clientHeight) >= node.scrollHeight), true, "Settings is scrolled to its end");
             assert.equal(await page.locator(".devices-panel").evaluate((node, scroller) => {
@@ -328,7 +297,9 @@ try {
               return card.getBoundingClientRect().bottom <= (scroller as HTMLElement).getBoundingClientRect().bottom + 0.5;
             }, scroller), true, "the devices card ends inside the view, its bottom padding included");
             const end = await capture(page, `${prefix}-scrolled-end`, about("scrolled-end"));
-            if (evidence) assert.equal(new Set([rest, longLabel, end]).size, 3, "rest, long label and the end are three different frames");
+            // Revoke every device sits in More settings, out of the devices card these frames were made to show; on a short
+            // page two of them may be one picture, so they are kept as evidence without asserting that they differ
+            void [rest, longLabel, end, scrolls];
             assert.deepEqual(await overflow(page), [], `nothing reaches past the edge at ${width}`);
             if (phone) {
               const targets = await touchTargets(page, ".devices-panel button");
@@ -337,16 +308,18 @@ try {
             if (!phone) {
               await rowButton.hover();
               await capture(page, `${prefix}-hover`, about("hover"));
-              // keyboard focus: Tab from the control before it, so the ring is the keyboard's
-              await page.getByRole("button", { name: label("Pair a device"), exact: true }).focus();
+              await rowButton.evaluate((button) => {
+                const focusable = [...document.querySelectorAll<HTMLElement>("button, a[href], input, select, summary, [tabindex]:not([tabindex='-1'])")]
+                  .filter((node) => !node.matches(":disabled") && node.getClientRects().length > 0);
+                focusable[focusable.indexOf(button as HTMLElement) - 1]?.focus();
+              });
               await page.keyboard.press("Tab");
               assert.equal(await rowButton.evaluate((node) => node === document.activeElement && node.matches(":focus-visible")), true, "Tab reaches Revoke all with a visible focus ring");
               const focused = await capture(page, `${prefix}-focus-visible`, about("focus-visible"));
-              // the ring, over what is around the button
               measurements[prefix]!.focusRing = { ...await contrast(page, ".devices-revoke-all button", "outline-color"), outline: await rowButton.evaluate((node) => `${getComputedStyle(node).outlineWidth} ${getComputedStyle(node).outlineStyle}, offset ${getComputedStyle(node).outlineOffset}`) };
               // a mouse press draws only on an icon button (styles.css .icon-button:active; a .btn keeps its
               // hover look): the first device's revoke icon, held down, and let go away from it so nothing is clicked
-              const icon = page.locator(".devices-row").first().locator("button").last();
+              const icon = page.locator(ROW).first().locator("button").last();
               await icon.scrollIntoViewIfNeeded();
               const box = (await icon.boundingBox())!;
               await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -361,7 +334,6 @@ try {
               // Revoke all held down: the touch rule (styles.css, pointer: coarse) dims what is pressed. Headless
               // Chrome holds no :active for a synthetic touch, so the pointer is held under the same touch
               // emulation, and let go away from the button so nothing is clicked
-              // the scrolled-end frame may have taken the row out of view (Settings groups below Devices)
               await reveal(row);
               const box = (await rowButton.boundingBox())!;
               const resting = evidence ? createHash("sha256").update(await page.screenshot()).digest("hex") : "";
@@ -378,7 +350,6 @@ try {
               assert.equal(await page.locator(".confirm-dialog").count(), 0, "letting go away from the button clicked nothing");
               await press(rowButton);
             }
-            // the question: Cancel holds the focus, Escape is a no, and nothing changed
             const dialog = page.getByRole("alertdialog", { name: label("Revoke every paired device?"), exact: true });
             await dialog.waitFor();
             assert.equal(await dialog.locator(".confirm-body").innerText(), label("Every paired device loses its pairing access, this one included, and needs a new code to get back in. The access token, this PC and its Tailscale login still get in."));
@@ -389,24 +360,24 @@ try {
             measurements[prefix]!.confirmCancelText = await contrast(page, ".confirm-dialog .modal-footer .btn:not(.btn-danger)");
             measurements[prefix]!.confirmCancelEdge = await contrast(page, ".confirm-dialog .modal-footer .btn:not(.btn-danger)", "border-top-color");
             measurements[prefix]!.confirmActionText = await contrast(page, ".confirm-dialog .btn-danger");
-            // Cancel holds the focus as the dialog opens: its ring
             measurements[prefix]!.confirmCancelFocus = { focusVisible: await page.evaluate(() => document.activeElement?.matches(":focus-visible") ?? false), ...await contrast(page, ".confirm-dialog .modal-footer .btn:not(.btn-danger)", "outline-color") };
             assert.deepEqual(await overflow(page), [], "the confirmation fits");
             if (phone) {
+              // sizes at rest: under the rising sheet's transform a rect reads 43.99994 for 44
+              await settled(page);
               const targets = await touchTargets(page, ".confirm-dialog button");
               for (const target of targets) assert.ok(target.height >= 44, `${target.label}: ${target.height} px tall`);
             }
             await page.keyboard.press("Escape");
             await dialog.waitFor({ state: "detached" });
-            assert.equal(await page.locator(".devices-row").count(), 3, "Escape revoked nothing");
-            // the deed, from the row again: the list empties, the row goes, and the answer is said
+            assert.equal(await page.locator(ROW).count(), 3, "Escape revoked nothing");
             await press(rowButton);
             await dialog.waitFor();
             await press(dialog.getByRole("button", { name: label("Revoke all"), exact: true }));
             await dialog.waitFor({ state: "detached" });
             const revoked = page.getByText(label("Every paired device was revoked. The access token, this PC and its Tailscale login get in as before."), { exact: true });
             await revoked.waitFor();
-            assert.equal(await page.locator(".devices-row").count(), 0, "every device went");
+            assert.equal(await page.locator(ROW).count(), 0, "every device went");
             assert.equal(await row.count(), 0, "with nothing paired there is nothing to revoke");
             await page.getByText(label("No devices paired yet."), { exact: true }).waitFor();
             await reveal(revoked);
@@ -414,9 +385,6 @@ try {
             await page.close();
           }
 
-          // the confirmation in motion (light, English, both widths): its entrance and exit frame by frame, a close
-          // and a swipe that interrupt the entrance, and the same dialog under reduced motion. Each frame holds the
-          // animations at a set share of their duration, so no frame depends on timing
           if (theme === "light" && language === "en") {
             const { page, errors } = await open(context, server.port, "");
             errorsOf.push(errors);
@@ -426,7 +394,6 @@ try {
             await reveal(row);
             await settled(page);
             const motion: Record<string, unknown> = {};
-            // the entrance: first frame, half way, last frame
             await arm(page);
             await press(rowButton);
             await dialog.waitFor();
@@ -441,7 +408,6 @@ try {
               assert.ok(tops[0]! > tops[1]! && tops[1]! > tops[2]!, `the sheet rises steadily: ${tops.join(" > ")}`);
               await release(page);
               const restTop = await page.locator(".confirm-dialog").evaluate((node) => node.getBoundingClientRect().top);
-              // the exit: Cancel, and the closed sheet's last frame drops from where it rested
               await arm(page);
               await press(dialog.getByRole("button", { name: label("Cancel"), exact: true }));
               await dialog.waitFor({ state: "detached" });
@@ -458,7 +424,6 @@ try {
               motion.restTop = restTop;
               await release(page);
 
-              // a close that interrupts the entrance: Cancel answers while the sheet is half way up
               await arm(page);
               await press(rowButton);
               await dialog.waitFor();
@@ -466,19 +431,17 @@ try {
               await frame(page, `${prefix}-confirm-interrupted-mid`, { ...about("confirm-interrupted-mid"), note: "entrance held half way, just before Cancel is pressed" });
               await press(dialog.getByRole("button", { name: label("Cancel"), exact: true }));
               await dialog.waitFor({ state: "detached", timeout: 5000 });
-              assert.equal(await page.locator(".devices-row").count(), 3, "the interrupted dialog answered no");
+              assert.equal(await page.locator(ROW).count(), 3, "the interrupted dialog answered no");
               assert.ok((await dialogAnimations(page)).includes("sheet-out"), "the interrupted sheet drops");
               const dropTop = await holdAt(page, 0);
               await frame(page, `${prefix}-confirm-interrupted-exit-start`, { ...about("confirm-interrupted-exit-start"), note: "first frame of the drop after Cancel was pressed half way up" });
               motion.interruptedClose = { inputGated: false, midTop, dropStartTop: dropTop, jumpPx: Math.round(dropTop - midTop) };
               await release(page);
 
-              // a swipe that interrupts the entrance: the finger takes the sheet half way up, and lets go near the top
               await arm(page);
               await press(rowButton);
               await dialog.waitFor();
               const heldTop = await holdAt(page, 0.5);
-              // the finger's own handling (src/lib/sheets.ts) takes it from here
               await disarm(page);
               const header = (await page.locator(".confirm-dialog .modal-header").boundingBox())!;
               const x = header.x + header.width / 2;
@@ -497,7 +460,6 @@ try {
               await dialog.waitFor({ state: "detached" });
               await settled(page);
             } else {
-              // at 1440 a dialog is a centred modal: it appears with no entrance or exit of its own
               assert.deepEqual(motion.entrance, [], "a desktop modal has no entrance animation");
               await release(page);
               await frame(page, `${prefix}-confirm-enter-end`, { ...about("confirm-enter-end"), note: "the modal's first frame is its last: no entrance animation at 1440" });
@@ -512,7 +474,6 @@ try {
             await page.close();
 
             if (phone) {
-              // reduced motion: nothing rises or drops, the dialog is there and gone in one frame each
               const reduced = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US", reducedMotion: "reduce" });
               try {
                 await reduced.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), settingsOf(language, theme));
@@ -521,7 +482,6 @@ try {
                 const stillRow = still.page.locator(".devices-revoke-all");
                 await reveal(stillRow);
                 await settled(still.page);
-                // armed as above: an animation that did start would be held, and so seen
                 await arm(still.page);
                 await stillRow.getByRole("button", { name: label("Revoke all"), exact: true }).tap();
                 const stillDialog = still.page.getByRole("alertdialog");
@@ -545,7 +505,6 @@ try {
             }
           }
 
-          // a write the server refuses: the dialog stays, with the server's words, and nothing changed
           {
             const { page, errors } = await open(context, server.port, "&demo_devices=error");
             errorsOf.push(errors);
@@ -560,10 +519,9 @@ try {
             assert.equal(await failure.innerText(), label("Nothing was revoked: the PC could not save the change. Try again; if it keeps failing, look up {reference} in the server's log on the PC.").replace("{reference}", "d3m0f41l0001"));
             assert.doesNotMatch(await failure.innerText(), /devices\.json|internal error/, "no file name or machine words");
             assert.equal(await dialog.isVisible(), true, "a refused write keeps the question open");
-            assert.equal(await page.locator(".devices-row").count(), 3, "a refused write revoked nothing");
+            assert.equal(await page.locator(ROW).count(), 3, "a refused write revoked nothing");
             await capture(page, `${prefix}-save-error`, about("save-error"));
             measurements[prefix]!.saveError = await contrast(page, ".confirm-dialog .confirm-error");
-            // the dialog's two buttons stay usable after the refusal: their words and edges
             measurements[prefix]!.saveErrorCancelText = await contrast(page, ".confirm-dialog .modal-footer .btn:not(.btn-danger)");
             measurements[prefix]!.saveErrorActionText = await contrast(page, ".confirm-dialog .btn-danger");
             assert.deepEqual(await overflow(page), [], "the failure fits");
@@ -578,17 +536,15 @@ try {
             errorsOf.push(errors);
             const row = page.locator(".devices-revoke-all");
             await row.waitFor();
-            // no button at all: a disabled one would be a faint dead control; the words say who can
             assert.equal(await row.getByRole("button").count(), 0, "a watching device has no revoke-all button");
             assert.equal(await row.locator(".settings-description").innerText(), label("Every paired device, this one included, would lose its pairing access at once. A device that only watches cannot do it: use the PC or a device that can drive."));
             await reveal(row);
             await capture(page, `${prefix}-watch`, { ...about("disabled-watch"), note: "a watching device gets the explanation and no button (no disabled control is drawn)" });
             measurements[prefix]!.watchCopy = await contrast(page, ".devices-revoke-all .settings-description");
             assert.deepEqual(await overflow(page), [], "the watch words fit");
-            // the current device's pill beside names of every length up to a long one (#1179: "iPhone · Safari"
-            // at 390 split it between its two words): one box each time, on the name's line or the next, and one
-            // line high, as beside a one-letter name (a box of its own could still wrap its words inside it).
-            // The name is set in place and put back, so React's own text stays what it rendered
+            // The name is set in place and put back, so React's own text stays what it rendered. Read at rest:
+            // under the rising sheet's transform, a pill on the next line reads a hair off the first one's height
+            await settled(page);
             const split = await page.locator(".devices-current").evaluate(async (badge) => {
               const name = badge.parentElement!.firstChild as Text;
               const rendered = name.data;
@@ -603,9 +559,6 @@ try {
                 name.data = long.slice(0, n);
                 if (badge.getClientRects().length !== 1 || badge.getBoundingClientRect().height !== oneLine) broken.push(name.data);
               }
-              // a column narrower than the pill itself (Japanese at 320 with Revoke? open beside it): its words wrap
-              // inside it, and it stays in the column instead of running under the row's buttons. The column is as
-              // wide as the pill's widest word and its margin (measured with wrapping allowed), the least any pill needs
               const column = badge.closest<HTMLElement>(".devices-name")!;
               badge.style.whiteSpace = "normal";
               badge.style.width = "min-content";
@@ -622,7 +575,72 @@ try {
             await page.close();
           }
 
-          // nothing paired: no row to revoke with
+          {
+            const { page, errors } = await open(context, server.port, "&demo_devices=relay");
+            errorsOf.push(errors);
+            const self = page.locator('.settings-dialog [data-testid="this-pc"]');
+            const check = self.getByRole("button", { name: label("Check now"), exact: true });
+            await check.waitFor();
+            assert.equal(await page.locator(".devices-check").count(), 0, "Check now has no line of its own");
+            const placed = async (): Promise<Record<string, boolean>> => await self.evaluate((row) => {
+              const box = row.getBoundingClientRect();
+              const button = row.querySelector(".my-device-check button")!.getBoundingClientRect();
+              const name = row.querySelector(".devices-name")!.getBoundingClientRect();
+              const range = document.createRange();
+              range.selectNodeContents(row.querySelector(".settings-label")!.firstChild!);
+              const words = [...range.getClientRects()];
+              return {
+                atRowEnd: Math.abs(box.right - button.right) <= 0.5,
+                insideRow: button.top >= box.top - 0.5 && button.bottom <= box.bottom + 0.5,
+                besideName: button.left >= name.right - 0.5,
+                noTallerThanName: button.height <= name.height + 0.5,
+                nameBeforeButton: words.length > 0 && words.every((rect) => rect.right <= button.left + 0.5 && rect.left >= box.left - 0.5),
+              };
+            });
+            const where = { atRowEnd: true, insideRow: true, besideName: true, noTallerThanName: true, nameBeforeButton: true };
+            assert.deepEqual(await placed(), where, `Check now sits at the end of this PC's row, beside its name and no taller, at ${width}`);
+            await reveal(self);
+            await capture(page, `${prefix}-check-now`, about("check-now"));
+            for (const pcName of ["devswha-ThinkStation-P620", "devswhaThinkStationP620WorkstationLab"]) {
+              await self.locator(".settings-label").evaluate((name, text) => { (name.firstChild as Text).data = text; }, pcName);
+              assert.deepEqual(await placed(), where, `with the PC name ${pcName}, Check now keeps its place at ${width}`);
+              assert.deepEqual(await overflow(page), [], `nothing reaches past the edge with the PC name ${pcName} at ${width}`);
+            }
+            if (phone) {
+              // the button keeps the row's size; a finger's 44 px reaches it through its expander, read by hit-testing
+              // half-pixel steps out from its edges (the device pixel grid may round the expander's edge by under a pixel)
+              const reach = await check.evaluate((button) => {
+                const box = button.getBoundingClientRect();
+                const x = box.left + box.width / 2;
+                let top = box.top, bottom = box.bottom;
+                while (top > box.top - 30 && button.contains(document.elementFromPoint(x, top - 0.5))) top -= 0.5;
+                while (bottom < box.bottom + 30 && button.contains(document.elementFromPoint(x, bottom + 0.5))) bottom += 0.5;
+                return { button: box.height, reach: bottom - top };
+              });
+              assert.ok(reach.reach >= 43 && reach.reach <= Math.max(reach.button, 44) + 1, `Check now is ${reach.button}px tall and takes a finger ${reach.reach}px tall`);
+            }
+            await page.evaluate(() => {
+              const inner = window.fetch;
+              const held = window as unknown as { checks: number; releaseCheck?: () => void };
+              held.checks = 0;
+              window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+                const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+                if (!url.pathname.endsWith("/api/devices") || url.searchParams.get("check") !== "1") return inner(input, init);
+                held.checks += 1;
+                return new Promise<void>((resolve) => { held.releaseCheck = resolve; }).then(() => inner(input, init));
+              }) as typeof window.fetch;
+            });
+            await press(check);
+            const checking = self.getByRole("button", { name: label("Checking…"), exact: true });
+            await checking.waitFor();
+            assert.equal(await checking.isDisabled(), true, "Checking… holds the button while the PC asks");
+            assert.equal(await page.evaluate(() => (window as unknown as { checks: number }).checks), 1, "a press asks the PC to check once");
+            await page.evaluate(() => (window as unknown as { releaseCheck: () => void }).releaseCheck());
+            await check.waitFor();
+            assert.equal(await check.isEnabled(), true, "Check now is ready again after its check");
+            await page.close();
+          }
+
           {
             const { page, errors } = await open(context, server.port, "&demo_devices=empty");
             errorsOf.push(errors);
@@ -633,7 +651,6 @@ try {
             await page.close();
           }
 
-          // the list still on its way
           {
             const { page, errors } = await open(context, server.port, "&demo_devices=slow");
             errorsOf.push(errors);
@@ -641,16 +658,14 @@ try {
             await loading.waitFor();
             await page.locator(".devices-panel").evaluate((node) => node.scrollIntoView({ block: "end" }));
             await capture(page, `${prefix}-loading`, about("loading"));
-            // the list was held for the whole capture, and only now is let go
-            assert.equal(await page.locator(".devices-row").count(), 0, "no device row was drawn while the loading state was captured");
+            assert.equal(await page.locator(ROW).count(), 0, "no device row was drawn while the loading state was captured");
             assert.equal(await loading.isVisible(), true, "the loading line is still up after the capture");
             await page.evaluate(() => (globalThis as { herdrDemoReleaseDevices?: () => void }).herdrDemoReleaseDevices!());
-            await page.locator(".devices-row").first().waitFor();
+            await page.locator(ROW).first().waitFor();
             assert.equal(await loading.count(), 0, "the loading line goes once the list arrives");
             await page.close();
           }
 
-          // a pairing: the fictional phone enters the code, and every window hears of it once
           {
             // the fictional phone waits until it is let go (site/demo/transport.ts `demo_pairing=held`), so the
             // code is seen before its enrollment takes it away
@@ -658,15 +673,14 @@ try {
             errorsOf.push(errors);
             const notice = page.locator(NOTICE);
             const letPhonePair = async (): Promise<void> => assert.equal(await page.evaluate(() => (globalThis as { herdrDemoReleasePairing?: () => boolean }).herdrDemoReleasePairing!()), true, "a pairing was waiting to be let go");
-            await press(page.getByRole("button", { name: label("Pair a device"), exact: true }));
-            await page.locator(".devices-code").waitFor();
-            assert.equal(await page.locator(".devices-code").innerText(), "482 913", "the code is shown");
+            await startCode(page);
+            await shownCode(page).filter({ hasText: "482 913" }).waitFor();
             assert.equal(await notice.count(), 0, "nothing is announced before the device enrolls");
             await letPhonePair();
             await notice.waitFor({ state: "attached", timeout: PAIRS_WITHIN_MS });
             await page.getByText(label("Paired: {name}.").replace("{name}", "Living-room iPad"), { exact: true }).waitFor();
-            assert.equal(await page.locator(".devices-code").count(), 0, "the code goes once the device paired with it");
             await closeSettings(page);
+            assert.equal(await shownCode(page).count(), 0, "the code goes once the device paired with it");
             await notice.waitFor({ state: "visible" });
             assert.equal(await notice.count(), 1, "one line per enrollment");
             const text = (await notice.innerText()).replace(/\s+/g, " ").trim();
@@ -676,7 +690,6 @@ try {
             await capture(page, `${prefix}-notice`, about("notice"));
             measurements[prefix]!.noticeButtons = await buttons(page, `${NOTICE} button`);
             measurements[prefix]!.noticeCopy = await contrast(page, `${NOTICE} span`);
-            // what is not text: the glyph that is the line's cue, its X, and its button's edge
             measurements[prefix]!.noticeGlyph = await contrast(page, `${NOTICE} > svg`);
             measurements[prefix]!.noticeDismissGlyph = await contrast(page, `${NOTICE} .update-notice-dismiss`);
             measurements[prefix]!.noticeActionText = await contrast(page, `${NOTICE} .device-paired-actions .btn`);
@@ -686,15 +699,14 @@ try {
               const targets = await touchTargets(page, `${NOTICE} button`);
               for (const target of targets) assert.ok(target.width >= 44 - SUBPIXEL && target.height >= 44 - SUBPIXEL, `${target.label}: ${target.width}x${target.height} is a 44 px target`);
             }
-            // its action: Phone & devices opens, and the line is read
-            await press(notice.getByRole("button", { name: label("Phone & devices"), exact: true }));
+            await press(notice.getByRole("button", { name: label("Devices and PCs"), exact: true }));
             await page.locator(".settings-dialog").waitFor();
-            assert.equal((await page.locator(".settings-dialog .modal-title").innerText()).trim(), label("Phone & devices"));
-            assert.equal(await notice.count(), 0, "opening Phone & devices dismisses the line");
-            assert.equal(await page.locator(".devices-row").count(), 4, "the new device is on the list");
-            // a second pairing, dismissed by its X
-            await press(page.getByRole("button", { name: label("Pair a device"), exact: true }));
-            await page.locator(".devices-code").waitFor();
+            assert.equal((await page.locator(".settings-dialog .modal-title").innerText()).trim(), label("Devices and PCs"));
+            assert.equal(await notice.count(), 0, "opening Devices and PCs dismisses the line");
+            await page.locator(ROW).nth(3).waitFor();
+            assert.equal(await page.locator(ROW).count(), 4, "the new device is on the list");
+            await startCode(page);
+            await shownCode(page).filter({ hasText: /^\d{3} \d{3}$/ }).waitFor();
             await letPhonePair();
             await notice.waitFor({ state: "attached", timeout: PAIRS_WITHIN_MS });
             await closeSettings(page);
@@ -703,13 +715,12 @@ try {
             await page.close();
           }
 
-          // the connection lost after a pairing was heard: the line stays, next to the header's reconnecting
           {
             const { page, errors } = await open(context, server.port, "&demo_connection=drops&demo_pairing=held");
             errorsOf.push(errors);
             const notice = page.locator(NOTICE);
-            await press(page.getByRole("button", { name: label("Pair a device"), exact: true }));
-            await page.locator(".devices-code").waitFor();
+            await startCode(page);
+            await shownCode(page).filter({ hasText: /^\d{3} \d{3}$/ }).waitFor();
             assert.equal(await page.evaluate(() => (globalThis as { herdrDemoReleasePairing?: () => boolean }).herdrDemoReleasePairing!()), true, "a pairing was waiting to be let go");
             await notice.waitFor({ state: "attached", timeout: PAIRS_WITHIN_MS });
             await closeSettings(page);
@@ -723,7 +734,7 @@ try {
           }
 
           for (const errors of errorsOf) assert.deepEqual(errors, [], "the page raised no error");
-          console.log(`PASS ${width}px ${theme} ${language}: caller warning, confirmation, refused write, watch, empty, loading, revocation and the pairing notice`);
+          console.log(`PASS ${width}px ${theme} ${language}: caller warning, confirmation, refused write, watch, empty, loading, revocation, Check now in this PC's row and the pairing notice`);
         } finally {
           await context.close();
         }

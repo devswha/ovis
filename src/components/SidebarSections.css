@@ -1,0 +1,59 @@
+
+/* A grid, not a column flexbox:
+   Safari sizes a column flexbox's max-content (Sidebar.css caps the section at it) from its 0 flex
+   basis, which left the list one row tall (issue 3267). */
+.pcs-sidebar {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  padding-top: var(--space-2);
+}
+
+.machine-list,
+.agent-list-contents {
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, var(--bg-panel) var(--fade-top), var(--bg-panel) calc(100% - var(--fade-bottom)), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, var(--bg-panel) var(--fade-top), var(--bg-panel) calc(100% - var(--fade-bottom)), transparent 100%);
+}
+
+.machine-list[data-fade-top],
+.agent-list-contents[data-fade-top] { --fade-top: var(--space-4); }
+
+.machine-list[data-fade-bottom],
+.agent-list-contents[data-fade-bottom] { --fade-bottom: var(--space-4); }
+
+/* Forced colors paint every edge in full: there a fade would only take contrast from the words it covers. */
+@media (forced-colors: active) {
+  .machine-list,
+  .agent-list-contents {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
+.machine-header { position: relative; }
+
+.machine-agent-count {
+  position: absolute;
+  top: 0;
+  right: var(--side-gutter);
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--side-box);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (hover: hover) and (pointer: fine) and (not (any-pointer: coarse)) {
+  .machine-header:not(:hover):not(:focus-within) > :is(.machine-toggle, .machine-new) { opacity: 0; }
+
+  .machine-header:not(:hover):not(:focus-within) > .machine-agent-count { opacity: 1; }
+}
+
+.machine-title { cursor: pointer; }

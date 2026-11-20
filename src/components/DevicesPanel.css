@@ -28,11 +28,7 @@
   flex-direction: column;
 }
 
-/* one pill: beside a name that fills the line it moves to the next line whole, never split across two lines.
-   Its own words wrap inside it only in a column narrower than the pill (a phone's row with Revoke? open).
-   `via relay` is the same pill in neutral tones: a category, not this device's own mark */
-.devices-current,
-.devices-via-relay {
+.devices-current {
   display: inline-block;
   margin-left: var(--space-2);
   padding: 0 var(--space-2);
@@ -46,9 +42,39 @@
   vertical-align: middle;
 }
 
-.devices-via-relay {
-  background: var(--bg-input);
-  color: var(--text-dim);
+.devices-check {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.my-device-check:empty {
+  display: none;
+}
+
+.my-device-self .settings-label {
+  overflow-wrap: anywhere;
+}
+
+.my-device-check .btn {
+  height: calc(var(--control-h) - var(--space-2));
+  padding: 0 var(--space-2);
+  font-size: var(--fs-xs);
+}
+
+@media (pointer: coarse), (any-pointer: coarse) {
+  .my-device-check .btn {
+    position: relative;
+    height: calc(var(--control-h) - var(--space-2));
+    min-width: var(--touch-target);
+  }
+
+  /* measured from inside the button's border (100% is its padding box), so the border's width is added back on
+     each side; from the button's own height, so a button already a finger tall (pointer: coarse) reaches no further */
+  .my-device-check .btn::before {
+    content: "";
+    position: absolute;
+    inset: min(calc(-1 * var(--hairline)), calc((100% + 2 * var(--hairline) - var(--touch-target)) / 2 - var(--hairline))) 0;
+  }
 }
 
 .devices-actions,
@@ -100,7 +126,6 @@
   }
 }
 
-/* the one action that ends every pairing at once: parted from the pairing controls above it by a hairline */
 .devices-revoke-all {
   padding-top: var(--space-3);
   border-top: var(--hairline) solid var(--border);
@@ -129,12 +154,10 @@
   color: var(--accent);
 }
 
-/* a wallet address or an email is one long word */
 .devices-portal {
   overflow-wrap: anywhere;
 }
 
-/* on the phone itself the code is what the other device types: as large as the screen allows, read at a glance */
 .devices-pairing-phone {
   flex-direction: column;
   gap: var(--space-2);
@@ -143,4 +166,46 @@
 .devices-code-large {
   margin: 0;
   font-size: calc(var(--fs-pairing) * 1.25);
+}
+
+.devices-kind {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  vertical-align: middle;
+}
+
+.devices-kind.is-self {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+
+.my-device-id {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.my-devices {
+  display: flex;
+  flex-direction: column;
+}
+
+.my-devices > .my-pcs,
+.my-devices > .my-pc-self,
+.my-devices .devices-panel > .devices-list {
+  border-top: 0;
+}
+
+.devices-add .btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.devices-row.is-away > .devices-name > .settings-label {
+  opacity: 0.55;
 }

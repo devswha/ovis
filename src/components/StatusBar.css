@@ -1,0 +1,101 @@
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 0 0 auto;
+  height: var(--bar-control-h);
+  padding: 0 var(--space-3);
+  background: var(--bg-panel);
+  border-top: var(--hairline) solid var(--divider);
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+  font-variant-numeric: var(--font-numeric);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.status-bar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.status-bar-item svg {
+  flex: 0 0 auto;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+.status-bar-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-bar-place {
+  flex: 0 1 auto;
+}
+
+.status-bar-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.status-bar-watch {
+  color: var(--text-strong);
+}
+
+.status-bar-waiting {
+  height: var(--pointer-target);
+  min-height: var(--pointer-target);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--status-blocked) 14%, transparent);
+  color: var(--text-strong);
+  font: inherit;
+  font-variant-numeric: var(--font-numeric);
+  cursor: pointer;
+}
+
+.status-bar-waiting svg {
+  color: var(--status-blocked);
+}
+
+.status-bar-waiting[aria-disabled="true"] {
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .status-bar-waiting:not([aria-disabled="true"]):hover {
+    background: color-mix(in srgb, var(--status-blocked) 24%, transparent);
+  }
+}
+
+.status-bar-waiting:not([aria-disabled="true"]):active {
+  background: color-mix(in srgb, var(--status-blocked) 30%, transparent);
+}
+
+.status-bar-dot {
+  width: var(--dot-size-sm);
+  height: var(--dot-size-sm);
+  border-radius: var(--radius-pill);
+  background: var(--status-done);
+}
+
+.status-bar-conn.is-lost {
+  color: var(--status-reconnecting);
+}
+
+.status-bar-conn.is-lost .status-bar-dot {
+  background: var(--status-reconnecting);
+}
+
+@media (max-width: 768px) {
+  .status-bar {
+    display: none;
+  }
+}

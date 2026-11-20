@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 /**
- * PTY host: runs ONE command on a real pseudo-terminal and bridges it to its parent.
- *
  * Bun.Terminal exists, but Bun 1.4.2 has no public output pause/resume API.
  * node-pty supplies that control so browser acknowledgements can stop PTY reads.
  * Keep it in Node: loading node-pty in Bun has panicked (oven-sh/bun#18546).
@@ -18,7 +16,8 @@
  *             {"t":"w"}                       signal SIGWINCH to the child at its current size
  *   stdout: raw pty bytes, unmodified
  *   stderr: diagnostics only
- *   exit:   mirrors the child's exit code
+ *   exit:   mirrors the child's exit code; 128 + the signal's number when a signal this host did not
+ *           send ended it (POSIX)
  */
 
 // node-pty must never load inside Bun (AGENTS.md): a `node` that is Bun stops here, before the import
@@ -27,6 +26,7 @@ if (process.versions.bun) {
   process.exit(70);
 }
 const pty = await import("@lydell/node-pty");
+const { constants } = await import("node:os");
 
 const [colsRaw, rowsRaw, command, ...args] = process.argv.slice(2);
 if (!command) {
@@ -75,10 +75,44 @@ const EXIT_DRAIN_LIMIT_MS = 2000;
 const EXIT_HELD_LIMIT_MS = 15_000;
 /** node-pty's destroy once it asked for it: the command has exited */
 let finalRead = null;
+const KILL_AFTER_MS = 2000;
+const sent = new Set();
+/** whether the command is still there: not yet reaped (node-pty reaps it as it exits) */
+function running() {
+  try { process.kill(term.pid, 0); return true; } catch { return false; }
+}
+function endGroup(signal) {
+  if (running()) sent.add(signal);
+  killGroup(signal);
+}
+/** A command that closed its terminal (EIO) may be dying: closing the pty here would hang it up first. */
+let closing = null;
+const CLOSING_POLL_MS = 10;
 const socket = process.platform === "win32" ? undefined : term._socket;
 if (socket) {
   const destroy = socket.destroy.bind(socket);
   socket.destroy = (...args) => {
+    if (args[0] && !finalRead && closing === null) {
+      // an EIO'd pty is readable forever: reading stops, or it spins until the close
+      socket._handle?.readStop?.();
+      const until = Date.now() + EXIT_QUIET_MS;
+      const close = () => { clearInterval(closing.timer); closing.done = true; destroy(...args); };
+      closing = { done: false, close, timer: setInterval(() => {
+        if (!running()) return close();
+        if (Date.now() < until) return;
+        endGroup("SIGHUP");
+        setTimeout(() => { if (!exited) endGroup("SIGKILL"); }, KILL_AFTER_MS).unref();
+        close();
+      }, CLOSING_POLL_MS) };
+      return socket;
+    }
+    // node-pty's own close while the close is held: the command exited, so the pty closes now, with no
+    // second quiet wait; one after it goes through
+    if (closing !== null) {
+      if (!closing.done) closing.close();
+      else destroy(...args);
+      return socket;
+    }
     if (finalRead || args[0]) return destroy(...args);
     killGroup("SIGKILL");
     finalRead = { destroy: () => destroy(...args), heldUntil: Date.now() + EXIT_HELD_LIMIT_MS, since: null, timer: undefined };
@@ -118,11 +152,13 @@ function killGroup(signal) {
     if (error.code !== "ESRCH") throw error;
   }
 }
-term.onExit(({ exitCode }) => {
+term.onExit(({ exitCode, signal }) => {
   if (process.platform !== "win32") killGroup("SIGKILL");
   exited = true;
-  // Let the native exit callback unwind and stdout drain before Node exits.
-  process.exitCode = exitCode ?? 0;
+  // Let the native exit callback unwind and stdout drain before Node exits. node-pty reports a signal's
+  // end as exit code 0: one this host did not send is told as a shell tells it, never as the success a 0 says.
+  const name = signal ? Object.keys(constants.signals).find((key) => constants.signals[key] === signal) : undefined;
+  process.exitCode = signal && !sent.has(name) ? 128 + signal : exitCode ?? 0;
   process.stdin.destroy();
   process.stdout.end();
 });
@@ -173,17 +209,16 @@ const stop = () => {
   if (!exited && !stopping) {
     stopping = true;
     try {
-      killGroup("SIGHUP");
+      endGroup("SIGHUP");
       // A paused reader still needs to observe EOF after the parent leaves.
       term.resume();
     } catch {
-      /* already gone */
     }
     // A child can ignore SIGHUP, and a blocked pipe must not pin the sidecar.
     setTimeout(() => {
-      if (!exited) { try { killGroup("SIGKILL"); } catch { /* already gone */ } }
+      if (!exited) { try { endGroup("SIGKILL"); } catch {} }
       process.exit(0);
-    }, 2000).unref();
+    }, KILL_AFTER_MS).unref();
   }
 };
 process.on("SIGTERM", () => { stop(); process.stdin.destroy(); });

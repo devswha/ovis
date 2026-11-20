@@ -1,10 +1,11 @@
-/* the folder (and file) browser: new-session Browse, and the Files dialog */
 .dir-browser {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg-elevated);
+  background: var(--surface-raised);
   overflow: hidden;
 }
 
@@ -17,8 +18,6 @@
   border-bottom: var(--hairline) solid var(--border);
 }
 
-/* a long path keeps its end, the part that says where you are; a zero basis keeps it on the
-   controls' row (cut, not wrapped), while the controls still wrap at very narrow widths */
 .dir-browser-path {
   flex: 1 1 0;
   min-width: 0;
@@ -33,12 +32,10 @@
   font-size: var(--fs-xs);
 }
 
-/* a pressed eye shows that hidden entries are included */
 .dir-browser-bar .icon-button[aria-pressed="true"] {
   color: var(--accent);
 }
 
-/* a folder picker's search and confirm share one compact row */
 .dir-browser-tools {
   display: flex;
   align-items: center;
@@ -60,7 +57,6 @@
   flex: none;
 }
 
-/* New folder's name field, under the bar it was opened from */
 .dir-browser-new {
   display: flex;
   flex-direction: column;
@@ -74,6 +70,8 @@
 }
 
 .dir-browser-list {
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: calc(var(--control-h) * 7);
   margin: 0;
   padding: var(--space-1) 0;
@@ -124,6 +122,11 @@
   font-size: var(--fs-sm);
 }
 
+.dir-browser-hint {
+  display: block;
+  margin-top: var(--space-1);
+}
+
 .dir-browser-error {
   color: var(--status-blocked);
 }
@@ -141,6 +144,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  min-height: var(--pointer-target);
   color: var(--text-dim);
   font-size: var(--fs-sm);
   cursor: pointer;
@@ -150,8 +154,8 @@
   flex: none;
   margin-left: auto;
   color: var(--text-dim);
-  font-size: var(--fs-2xs);
-  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-meta);
+  font-variant-numeric: var(--font-numeric);
 }
 
 .dir-browser-item.is-file svg {
@@ -161,16 +165,25 @@
 @media (pointer: coarse) {
   .dir-browser-item {
     min-height: var(--touch-target);
+    font-size: var(--fs-dense-row);
+  }
+
+  .dir-browser-note {
+    font-size: var(--fs-dense-row);
   }
 
   .dir-browser-bar .icon-button {
     width: var(--touch-target);
     height: var(--touch-target);
   }
+
+  .dir-browser-hidden {
+    min-height: var(--touch-target);
+  }
 }
 
 .files-dialog {
-  width: min(100%, 560px);
+  width: min(100%, var(--dialog-w));
 }
 
 .files-dialog .dir-browser-list {

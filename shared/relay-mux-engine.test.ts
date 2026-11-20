@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { OutputWindow, OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_LOW_BYTES, OUTPUT_STALL_MS } from "../server/output-window.ts";
 import { HttpStream, MuxEngine, MuxStreamError, MUX_FLIGHT, MUX_RECEIVE_RESERVATION_BYTES, WsStream } from "./relay-mux-engine.ts";
 import type { MuxClock, MuxOptions, WsClose } from "./relay-mux-engine.ts";
-import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError, WS_CONTINUATION_CAPACITY, WS_START_CAPACITY } from "./relay-mux.ts";
+import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MAX_LARGE_WS_MESSAGE_BYTES, MuxProtocolError, WS_CONTINUATION_CAPACITY, WS_START_CAPACITY } from "./relay-mux.ts";
 import type { HeaderList, MuxFrame } from "./relay-mux.ts";
 
 const KiB = 1024;
@@ -112,7 +112,6 @@ function pair(options: PairOptions = {}) {
   const make = (role: "client" | "server") => new MuxEngine({
     role, clock, outboundWireByteLength: wireCost, routingOverhead: 12, maxWireMessageBytes: 32 * KiB,
     send: async (bytes) => {
-      // Simulated transport serialization advances the injected monotonic clock, not wall time.
       clock.advance(1);
       calls[role]++;
       const decoded = decodeFrame(bytes);
@@ -141,7 +140,6 @@ function pair(options: PairOptions = {}) {
     client, server, clock, traces, http, ws, hold, held, calls, peaks, closes, errors, sample,
     intercept(callback: typeof intercept) { intercept = callback; },
     async flush() {
-      // Subscribe to sender-idle transitions. No time-based settling or fixed microtask count.
       let budget = 10_000;
       do {
         if (--budget === 0) throw new Error("Sender/receipt loop did not quiesce");
@@ -258,7 +256,6 @@ describe("stream IDs and retirement", () => {
   }
   it("exhausts the last ID with GOAWAY and never wraps", async () => {
     const e = endpoint();
-    // Reach the u31 boundary without allocating a billion streams.
     Reflect.set(e.engine, "lastOpenId", 0x7ffffffd);
     const last = e.engine.openHttp({ method: "GET", target: "/last", headers: [], body: "none" });
     await e.engine.flush();
@@ -613,7 +610,7 @@ describe("WebSockets", () => {
     const { local, remote } = await socket(p);
     let delivered = 0;
     remote.onMessage = () => { delivered++; };
-    local.sendWindow = 64 * KiB; // Deliberately incorrect model of the window, not a production option.
+    local.sendWindow = 64 * KiB;
     local.send(new Uint8Array(MiB));
     await p.flush();
     expect(delivered).toBe(0);
@@ -645,8 +642,6 @@ describe("WebSockets", () => {
       const closed: WsClose[] = [];
       remote.onMessage = () => { delivered++; };
       remote.onClose = (event) => { closed.push(event); };
-      // These adversarial frames are not sent by the client engine. Its receipt ledger
-      // therefore must not be fed receipts for this independent peer's injected traffic.
       p.hold.server = true;
       const id = required(local.id);
       const start = frame({ type: FrameType.WS_DATA, flags: 1, stream_id: id, payload: { total_message_bytes: 3, data: new Uint8Array([1]) } });
@@ -666,6 +661,61 @@ describe("WebSockets", () => {
       } else expect(remote.cancelled).toBe(true);
     });
   }
+  it("carries a message over 1 MiB to a peer that takes large messages, crediting it as it arrives", async () => {
+    const p = pair();
+    p.client.receiveLargeMessages();
+    p.server.sendLargeMessages();
+    const { local, remote } = await socket(p);
+    const reserved = p.client.stats.reservedBytes;
+    const received = deferred<string | Uint8Array>();
+    local.onMessage = received.resolve;
+    const snapshot = "한".repeat(600_000);
+    expect(remote.send(snapshot)).toBeGreaterThan(0);
+    expect(await received.promise).toBe(snapshot);
+    await p.flush();
+    expect(p.client.stats.reservedBytes).toBe(reserved);
+    expect(p.client.stats.inboundBytes).toBe(0);
+    expect(remote.getBufferedAmount()).toBe(0);
+    expect(remote.send(new Uint8Array(MAX_LARGE_WS_MESSAGE_BYTES))).toBeGreaterThan(0);
+    expect(remote.send(new Uint8Array(MiB))).toBeGreaterThan(0);
+    expect(remote.live).toBe(true);
+    const closed = deferred<WsClose>();
+    local.onClose = closed.resolve;
+    expect(remote.send(new Uint8Array(MAX_LARGE_WS_MESSAGE_BYTES + 1))).toBe(0);
+    expect((await closed.promise).code).toBe(1009);
+    expect(p.closes).toEqual([]);
+  });
+  it("keeps the 1 MiB cap toward a peer that did not offer large messages", async () => {
+    const p = pair();
+    p.client.receiveLargeMessages();
+    const { local, remote } = await socket(p);
+    const closed = deferred<WsClose>();
+    local.onClose = closed.resolve;
+    expect(remote.send(new Uint8Array(MiB + 1))).toBe(0);
+    expect((await closed.promise).code).toBe(1009);
+    expect(p.closes).toEqual([]);
+  });
+  it("closes a large message with 1009 when its reservation would pass the receive bound", async () => {
+    const p = pair();
+    p.client.receiveLargeMessages();
+    p.server.sendLargeMessages();
+    const sockets = [];
+    for (let i = 0; i < LIMITS_V1.max_ws_streams; i++) sockets.push(await socket(p));
+    // 8 WS windows (8 MiB) and four HTTP windows (1.25 MiB) leave less than the message under the 12 MiB bound
+    for (let i = 0; i < 4; i++) p.client.openHttp({ method: "GET", target: "/api/held", headers: [], body: "none" });
+    await p.flush();
+    const { local, remote } = required(sockets[0]);
+    let delivered = 0;
+    local.onMessage = () => { delivered++; };
+    const closed = deferred<WsClose>();
+    local.onClose = closed.resolve;
+    remote.send(new Uint8Array(MAX_LARGE_WS_MESSAGE_BYTES));
+    expect((await closed.promise).code).toBe(1009);
+    await p.flush();
+    expect(delivered).toBe(0);
+    expect(p.client.active).toBe(true);
+    expect(p.client.stats.reservedBytes).toBeLessThanOrEqual(MUX_RECEIVE_RESERVATION_BYTES);
+  });
   for (const code of [1000, 1008, 1012, 3000, 4008]) {
     it(`passes through close ${code} on the virtual socket`, async () => {
       const p = pair();
@@ -826,7 +876,7 @@ describe("credit and receipts", () => {
     expect((await reader.read()).value?.length).toBe(100);
     await p.flush();
     expect(remote.peerConsumed).toBe(100n);
-    p.hold.server = true; // Injected peer frames have no entries in the client's send ledger.
+    p.hold.server = true;
     p.server.receive(credit(1, 100n));
     p.server.receive(credit(1, 50n));
     await p.flush();
@@ -842,7 +892,6 @@ describe("credit and receipts", () => {
     e.engine.receive(data(1, 10));
     const reader = local.body.getReader();
     const reading = reader.read();
-    // ReadableStream pull returns storage before the scheduled CREDIT can leave.
     await reading;
     const granted = local.granted;
     expect(granted <= local.consumed).toBe(true);
@@ -1060,7 +1109,6 @@ describe("scheduling and isolation", () => {
     expect([OUTPUT_HIGH_BYTES, OUTPUT_LOW_BYTES, OUTPUT_HARD_BYTES, OUTPUT_STALL_MS]).toEqual([256 * KiB, 64 * KiB, MiB, 2000]);
     output.write(OUTPUT_HIGH_BYTES);
     expect(output.check(terminal.remote.getBufferedAmount(), p.clock.now())).toBe("pause");
-    // Neither mux CREDIT nor RECEIVED is a pty-ack.
     expect(output.acknowledged).toBe(0);
     p.clock.advance(2000);
     expect(output.check(terminal.remote.getBufferedAmount(), p.clock.now())).toBe("stop");
@@ -1215,7 +1263,6 @@ describe("limits and liveness", () => {
     e.engine.receive(open(1, "http", "/slow"));
     e.engine.receive(open(3, "http", "/api/machines/events"));
     await e.engine.flush();
-    // Liveness is independent of route timeouts: supply matching probes at their deadlines.
     for (let i = 0; i < 9; i++) {
       e.clock.advance(20_000);
       await e.engine.flush();
@@ -1241,6 +1288,49 @@ describe("limits and liveness", () => {
     e.clock.advance(1);
     await e.engine.flush();
     expect(e.errors[0]?.code).toBe("timeout");
+  });
+  it("measures its keepalive's round trip from the matching PONG only", async () => {
+    const e = endpoint("server");
+    expect(e.engine.rttMs).toBeUndefined();
+    e.clock.advance(20_000);
+    await e.engine.flush();
+    const ping = required(e.sent.find((f) => f.type === FrameType.PING));
+    if (ping.type !== FrameType.PING) throw new Error("Missing PING");
+    e.clock.advance(20);
+    e.engine.receive(frame({ ...ping, type: FrameType.PONG, payload: ping.payload ^ 1n }));
+    expect(e.engine.rttMs).toBeUndefined();
+    e.clock.advance(17);
+    e.engine.receive(frame({ ...ping, type: FrameType.PONG }));
+    expect(e.engine.rttMs).toBe(37);
+  });
+  it("measures on demand: pings at once and resolves with the round trip, or undefined once closed", async () => {
+    const e = endpoint("server");
+    const measured = e.engine.measure();
+    await e.engine.flush();
+    const ping = required(e.sent.find((f) => f.type === FrameType.PING));
+    if (ping.type !== FrameType.PING) throw new Error("Missing PING");
+    e.clock.advance(12);
+    e.engine.receive(frame({ ...ping, type: FrameType.PONG }));
+    expect(await measured).toBe(12);
+    const pending = e.engine.measure();
+    e.engine.carrierLost();
+    expect(await pending).toBeUndefined();
+    expect(await e.engine.measure()).toBeUndefined();
+  });
+  it("measures with one probe: a keepalive due meanwhile and a second measure share it, never replace it", async () => {
+    const e = endpoint("server");
+    e.clock.advance(19_000);
+    const first = e.engine.measure();
+    await e.engine.flush();
+    e.clock.advance(1_000);
+    const second = e.engine.measure();
+    await e.engine.flush();
+    const pings = e.sent.filter((f) => f.type === FrameType.PING);
+    expect(pings).toHaveLength(1);
+    const ping = required(pings[0]);
+    if (ping.type !== FrameType.PING) throw new Error("Missing PING");
+    e.engine.receive(frame({ ...ping, type: FrameType.PONG }));
+    expect([await first, await second]).toEqual([1_000, 1_000]);
   });
   it("invalidates hidden probes and stale PONGs on wake", async () => {
     const e = endpoint();

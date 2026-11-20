@@ -1,4 +1,3 @@
-/** Fictional native Grok records -> real server -> existing React chat and output cache. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -7,6 +6,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
+import { SLEEP } from "./fixtures/sleep.ts";
 
 if (process.platform !== "linux") { console.log("SKIP Grok browser QA stand-in uses Linux /proc"); process.exit(0); }
 const root = mkdtempSync(join(tmpdir(), "herdr-grok-browser-"));
@@ -21,7 +21,7 @@ const user = (text: string) => event({ sessionUpdate: "user_message_chunk", cont
 const output = (text: string) => event({ sessionUpdate: "tool_call_update", toolCallId: "fictional-call", content: [{ type: "content", content: { type: "text", text } }], status: "completed" });
 writeFileSync(path, user("Show a fictional Grok conversation.") + event({ sessionUpdate: "tool_call", toolCallId: "fictional-call", _meta: { "x.ai/tool": { name: "read_file" } }, title: "Read fictional file", rawInput: { path: "fiction.txt" } }) + output("FIRST ".repeat(900) + "FIRST_END") + event({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Fictional Grok answer." } }));
 const executable = join(root, "grok");
-copyFileSync("/bin/sleep", join(root, "grok-1.0.50-linux-x86_64")); symlinkSync("grok-1.0.50-linux-x86_64", executable); chmodSync(executable, 0o755);
+copyFileSync(SLEEP, join(root, "grok-1.0.50-linux-x86_64")); symlinkSync("grok-1.0.50-linux-x86_64", executable); chmodSync(executable, 0o755);
 let workspace: string | undefined;
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -50,11 +50,13 @@ try {
   if (await head.getAttribute("aria-expanded") !== "true") await head.click();
   await log.locator(".work-row-head").click();
   await log.locator(".chat-tool-more").click();
+  await log.locator(".chat-tool-io.is-whole + .chat-tool-result-more[aria-expanded=false]").click();
   await log.getByText(/FIRST_END/).waitFor();
   appendFileSync(path, output("UPDATED ".repeat(900) + "UPDATED_END"));
   await log.locator(".chat-tool-more").waitFor();
   assert.equal(await log.getByText(/FIRST_END/).count(), 0, "a changed ref must clear React's retained whole output");
   await log.locator(".chat-tool-more").click();
+  await log.locator(".chat-tool-io.is-whole + .chat-tool-result-more[aria-expanded=false]").click();
   await log.getByText(/UPDATED_END/).waitFor();
   appendFileSync(path, output("short replacement"));
   await log.getByText("short replacement", { exact: true }).waitFor();
@@ -63,7 +65,6 @@ try {
   appendFileSync(path, event({ sessionUpdate: "rewind_marker", target_prompt_index: 0 }, true) + user("Replacement after rewind."));
   await log.getByText("Replacement after rewind.", { exact: true }).waitFor();
   assert.equal(await log.getByText("Fictional Grok answer.", { exact: true }).count(), 0);
-  // The stand-in never reports working. Native events still show activity and open tool rows.
   let promptIndex = 0;
   for (const viewport of [{ width: 1100, height: 800 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport);
@@ -76,7 +77,6 @@ try {
     const box = await activity.boundingBox();
     assert.ok(box && box.y >= 0 && box.y + box.height <= viewport.height, "working status is visible above the composer");
     appendFileSync(path, event({ sessionUpdate: "tool_call", toolCallId: `activity-${promptIndex}`, title: `Activity tool ${promptIndex}`, rawInput: { path: "fiction.txt" } }));
-    // a tool row opens the turn's work block, whose head says Working: the line under it goes
     await log.locator(".work-block.is-live .work-row-head").last().waitFor({ state: "visible" });
     await log.locator(".work-block.is-live .work-block-title", { hasText: "Working…" }).waitFor();
     await activity.waitFor({ state: "detached" });
@@ -93,8 +93,6 @@ try {
   assert.deepEqual(errors, []);
   console.log("PASS Grok native tools, output refresh, rewind, desktop/mobile silent activity and unavailable-chat notice");
 } finally {
-  // Attempt every cleanup even if an earlier one fails. A cleanup error never replaces
-  // the original failure; it is reported and fails a run that otherwise passed.
   const cleanupErrors: unknown[] = [];
   try { await browser?.close(); } catch (error) { cleanupErrors.push(error); }
   try { server?.stop(); } catch (error) { cleanupErrors.push(error); }

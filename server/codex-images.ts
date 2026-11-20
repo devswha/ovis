@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { constants, createReadStream, lstatSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { closeSync, createReadStream, fstatSync, lstatSync, read, statSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { ConversationPart } from "../shared/protocol.ts";
+import { type FileIdentity, openBound, readBound } from "./conversation-shared.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
 
 type ImagePart = Extract<ConversationPart, { kind: "image" }>;
@@ -11,38 +11,24 @@ type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" ? value as RecordValue : {};
 const TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
 const DATA_IMAGE = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]*={0,2})$/;
-/** The largest picture the image endpoint serves, from any agent's transcript. */
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const RASTER_TYPES = new Set(Object.values(TYPES));
 
-/** How many bytes a base64 string decodes to, its padding left out. */
 export function base64Size(data: string): number {
   return Math.floor(data.length * 3 / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
 }
 
-/**
- * The type of a picture a transcript holds inline as base64, by its leading bytes: a raster the
- * chat shows, declared as one, within the size the image endpoint serves. Null for anything else.
- * The parsers and the image endpoint ask the same question, so a page never names a picture the
- * endpoint refuses.
- */
 export function inlineImageType(declared: unknown, data: unknown): string | null {
   if (typeof data !== "string") return null;
   return inlineType(declared, data.length, data.slice(0, 16), data.slice(-2));
 }
 
-/** inlineImageType from what it reads of the text: its length, its first 16 and its last 2 characters. */
 function inlineType(declared: unknown, length: number, head: string, tail: string): string | null {
   if (typeof declared !== "string" || !RASTER_TYPES.has(declared)) return null;
   if (Math.floor(length * 3 / 4) - (tail.endsWith("==") ? 2 : tail.endsWith("=") ? 1 : 0) > MAX_IMAGE_BYTES) return null;
   return imageType(Buffer.from(head, "base64"));
 }
 
-/**
- * inlineImageType asked of a text seen a piece at a time and never held whole: `push` each piece in
- * order, then `type` gives the answer inlineImageType gives for the whole text. A picture the endpoint
- * only counts on its way to the one it serves is checked so, in a window's memory.
- */
 export class InlinePictureScan {
   #head = "";
   #tail = "";
@@ -57,13 +43,8 @@ export class InlinePictureScan {
   }
 }
 
-/** The start of a data URL codexOutputPicture takes: `data:<raster type>;base64,`. */
 const DATA_IMAGE_PREFIX = /^data:(image\/(?:png|jpeg|gif|webp));base64,/;
 
-/**
- * codexOutputPicture's check of a data URL seen a piece at a time and never held whole: `push` each
- * piece in order, then `type` gives the type codexOutputPicture gives for the whole URL, or null.
- */
 export class DataUrlPictureScan {
   #prefix = "";
   #declared: string | undefined;
@@ -77,7 +58,6 @@ export class DataUrlPictureScan {
       const seen = this.#prefix + piece;
       const prefix = DATA_IMAGE_PREFIX.exec(seen);
       if (prefix === null) {
-        // the longest prefix is 23 characters: past that, no URL it could start
         if (seen.length >= 32) this.#valid = false;
         else this.#prefix = seen;
         return;
@@ -86,7 +66,6 @@ export class DataUrlPictureScan {
       this.#prefix = "";
       rest = seen.slice(prefix[0].length);
     }
-    // base64 letters, then at most two `=` that end it, as DATA_IMAGE takes it
     if (this.#padding > 0) {
       if (!/^=*$/.test(rest) || this.#padding + rest.length > 2) { this.#valid = false; return; }
       this.#padding += rest.length;
@@ -130,8 +109,7 @@ export function ompBlobPicture(blobs: string, declared: unknown, data: unknown):
 }
 
 /**
- * ompBlobPicture, read in steps a window apart (Steps): the image endpoint gives the event loop its turn
- * between them. `anchor` is the identity the store had when the transcript was authorized
+ * `anchor` is the identity the store had when the transcript was authorized
  * (ompBlobAnchor): the blob is read only from that very directory.
  */
 export function* ompBlobPictureSteps(blobs: string, declared: unknown, data: unknown, anchor?: string): Steps<{ mediaType: string; bytes: Buffer } | null> {
@@ -153,30 +131,33 @@ export function ompBlobAnchor(blobs: string | null): { path: string; identity: s
   return identity === null ? null : { path: blobs, identity };
 }
 
-/**
- * Steps a windowed reader takes: it yields between two windows of a file, where an async reader gives
- * the event loop its turn (finishAsync) and a synchronous one goes straight on (finish).
- */
-export type Steps<T> = Generator<void, T, void>;
+export type Steps<T> = Generator<void | Promise<void>, T, void>;
 
-/** Runs a reader's steps straight through. */
 export function finish<T>(steps: Steps<T>): T {
   for (;;) {
     const step = steps.next();
     if (step.done) return step.value;
+    if (step.value !== undefined) throw new Error("synchronous steps cannot wait for an asynchronous read");
   }
 }
 
-/** Runs a reader's steps with the event loop running between them, so a large file never holds the bridge for more than a window's work. */
 export async function finishAsync<T>(steps: Steps<T>): Promise<T> {
+  let failed: { error: unknown } | undefined;
   for (;;) {
-    const step = steps.next();
+    const step = failed === undefined ? steps.next() : steps.throw(failed.error);
+    failed = undefined;
     if (step.done) return step.value;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (step.value === undefined) await new Promise<void>((resolve) => setImmediate(resolve));
+    else try { await step.value; } catch (error) { failed = { error }; }
   }
 }
 
-/** How much of a blob is read at a time, and all a blob not served costs to check. */
+export function* awaited<T>(pending: Promise<T>): Steps<T> {
+  let value!: T;
+  yield pending.then((result) => { value = result; });
+  return value;
+}
+
 const BLOB_WINDOW = 1024 * 1024;
 
 /**
@@ -192,20 +173,15 @@ function blobStoreIdentity(blobs: string): string | null {
   } catch { return null; }
 }
 
-/** The platform openBlob reads blobs on: a test sets another to run the branch it takes there (blobPlatformForTests). */
 let blobPlatform: NodeJS.Platform = process.platform;
 
-/** Lets a test run openBlob as on `platform`, or as on this one again (null). */
 export function blobPlatformForTests(platform: NodeJS.Platform | null): void {
   blobPlatform = platform ?? process.platform;
 }
 
-/** What openBlob opens: the store directory, then the blob in it. */
 type BlobOpening = "store" | "blob";
-/** Where a test stands around openBlob's opens, to change the store at that moment (aroundBlobOpenForTests). */
 let aroundBlobOpen: ((opening: BlobOpening, open: () => Held) => Held) | null = null;
 
-/** Lets a test run `around` each of openBlob's opens, or stops it (null). */
 export function aroundBlobOpenForTests(around: ((opening: BlobOpening, open: () => Held) => Held) | null): void {
   aroundBlobOpen = around;
 }
@@ -267,19 +243,12 @@ function* ompBlobSteps(blobs: string, digest: string, keep: boolean, anchor?: st
   } catch { return null; } finally { blob.close(); }
 }
 
-/** ompBlobPicture's answer for a blob, without holding it: the type, or null when ompBlobPicture would refuse it. */
 function ompBlobType(blobs: string, digest: string): string | null {
   return finish(ompBlobSteps(blobs, digest, false))?.mediaType ?? null;
 }
 
-/** What ompBlobType answered for a blob, a picture or not, and the file it answered for. */
 const ompBlobTypes = new Map<string, { file: string; type: string | null }>();
 
-/**
- * The type of the picture an omp blob ref names now (ompBlobPicture), for a parser naming it. The
- * answer is kept for as long as the blob is the same file, so a page polled again reads a blob once,
- * whether it was a picture or not; a blob that is gone or changed is asked again.
- */
 export function ompBlobImageType(blobs: string, declared: unknown, data: unknown): string | null {
   const digest = ompBlobDigest(declared, data);
   if (digest === null) return null;
@@ -301,15 +270,14 @@ export function ompBlobImageType(blobs: string, declared: unknown, data: unknown
   return type;
 }
 
-/** Forget every blob answer kept (forgetTranscriptState). */
 export function forgetOmpBlobTypes(): void {
   ompBlobTypes.clear();
 }
 
 /**
  * A picture a Codex tool returned in its output, `{ type: "input_image", image_url }` with the bytes
- * inline as a data URL, checked as inlineImageType checks any inline picture. The parser and the image
- * endpoint both read a tool's pictures here. Null for anything else: a remote URL, a path, an svg.
+ * inline as a data URL, checked as inlineImageType checks any inline picture. Null for anything else:
+ * a remote URL, a path, an svg.
  */
 export function codexOutputPicture(value: unknown): { mediaType: string; data: string } | null {
   const part = record(value);
@@ -320,10 +288,8 @@ export function codexOutputPicture(value: unknown): { mediaType: string; data: s
   return mediaType === null ? null : { mediaType, data: inline[2]! };
 }
 
-/** A picture a Codex tool returned: the call its output answers, and its place among that output's pictures. */
 export const CODEX_TOOL_IMAGE_REF = /^codex-tool:([A-Za-z0-9_.\-]{1,128}):(\d{1,3})$/;
 
-/** The pictures of a Codex tool's output, in order, each with the type its bytes announce. */
 export function codexOutputPictures(output: unknown): { mediaType: string; data: string }[] {
   return Array.isArray(output) ? output.flatMap((value) => codexOutputPicture(value) ?? []) : [];
 }
@@ -365,7 +331,6 @@ function hasBytes(bytes: Buffer, offset: number, signature: string): boolean {
   return bytes.subarray(offset, offset + signature.length).equals(Buffer.from(signature, "latin1"));
 }
 
-/** The raster type its leading bytes announce: a signature check, not a decode. */
 export function imageType(bytes: Buffer): string | null {
   if (hasBytes(bytes, 0, "\x89PNG\r\n\x1a\n")) return "image/png";
   if (hasBytes(bytes, 0, "\xff\xd8\xff")) return "image/jpeg";
@@ -380,22 +345,41 @@ async function imageBytes(value: string, cwd: string): Promise<Buffer | null> {
     const bytes = Buffer.from(inline[2]!, "base64");
     return bytes.length <= MAX_IMAGE_BYTES ? bytes : null;
   }
-  const file = await open(resolve(cwd, value), constants.O_RDONLY | constants.O_NONBLOCK);
+  // the file the path names as its record is found, opened at once and held to it: another put there around
+  // the open (a folder swapped in) is refused, not read (openBound, non-blocking: a FIFO there is not waited on)
+  const target = resolve(cwd, value);
+  const identity = statSync(target, { throwIfNoEntry: false });
+  if (identity === undefined || !identity.isFile()) return null;
+  const fd = readBound([[target, identity]], () => openBound(target));
   try {
-    const stat = await file.stat();
+    const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > MAX_IMAGE_BYTES) return null;
     const bytes = Buffer.alloc(stat.size);
-    const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
-    return bytes.subarray(0, bytesRead);
-  } finally { await file.close(); }
+    for (let got = 0; got < bytes.length;) {
+      const more = await new Promise<number>((done, fail) => read(fd, bytes, got, bytes.length - got, got, (error, count) => error ? fail(error) : done(count)));
+      if (more === 0) return null;
+      got += more;
+    }
+    return bytes;
+  } finally { closeSync(fd); }
 }
 
 /** Scan the bound history only, including inherited rollouts but excluding backtracked bytes. */
-export async function codexTranscriptImage(segments: { path: string; end: number }[], ref: string, cwd: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+export async function codexTranscriptImage(segments: { path: string; end: number; identity?: FileIdentity }[], ref: string, cwd: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
   if (!CODEX_IMAGE_REF.test(ref)) return null;
-  for (const segment of segments) {
+  // each rollout is read as the file it was when its chain was resolved (an earlier one's `identity`), the live
+  // one as its path names it as the lookup begins: an open after an await that finds another file there (a
+  // folder swapped in around it) answers nothing
+  let identities: (FileIdentity | undefined)[];
+  try { identities = segments.map((segment) => segment.identity ?? statSync(segment.path, { throwIfNoEntry: false })); } catch { return null; }
+  for (const [at, segment] of segments.entries()) {
     if (segment.end === 0) continue;
-    const stream = createReadStream(segment.path, { end: segment.end - 1, encoding: "utf8" });
+    const identity = identities[at];
+    if (identity === undefined) return null;
+    let fd: number;
+    try { fd = readBound([[segment.path, identity]], () => openBound(segment.path)); } catch { return null; }
+    let stream: ReturnType<typeof createReadStream>;
+    try { stream = createReadStream(segment.path, { fd, end: segment.end - 1, encoding: "utf8" }); } catch { closeSync(fd); return null; }
     const lines = createInterface({ input: stream, crlfDelay: Infinity });
     try {
       for await (const line of lines) {

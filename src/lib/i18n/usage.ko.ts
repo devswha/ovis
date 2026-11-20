@@ -6,6 +6,12 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const USAGE_KO: Record<string, string> = {
+  "Remove {name}?": "{name} 계정을 제거할까요?",
+  "Remove this account from Ovis? Its CLI sign-in and credentials stay on this PC, and Restore under Removed from Ovis brings it back.": "Ovis에서 이 계정을 제거할까요? CLI 로그인과 인증 정보는 이 PC에 그대로 남고, \"Ovis에서 제거됨\"의 복원으로 되돌릴 수 있습니다.",
+  "Remove this account from Ovis? {tool} keeps its record of it, and Restore under Removed from Ovis brings it back.": "Ovis에서 이 계정을 제거할까요? {tool}의 기록은 그대로 남고, \"Ovis에서 제거됨\"의 복원으로 되돌릴 수 있습니다.",
+  "Removed from Ovis": "Ovis에서 제거됨",
+  "Restore": "복원",
+  "Restore {name}": "{name} 복원",
   "Could not load sign-in options": "로그인 방법을 불러오지 못했습니다",
   "On the server PC": "서버 PC에서 로그인",
   "Install {cli} on the server PC first.": "먼저 서버 PC에 {cli}를 설치하세요.",
@@ -52,7 +58,6 @@ export const USAGE_KO: Record<string, string> = {
   "No limits reported": "보고된 한도 없음",
   "Sign-in expired. Open {name} to renew it.": "로그인이 만료되었습니다. 갱신하려면 {name}에서 다시 로그인하세요.",
   "Sign-in expired.": "로그인이 만료되었습니다.",
-  "Sign in again": "다시 로그인",
   "Sign in again to {name}": "{name}에 다시 로그인",
   "{name} asked to slow down. These are the last numbers.": "{name}에서 요청 속도 제한을 걸었습니다. 마지막으로 읽은 값입니다.",
   "{name} could not be reached.": "{name}에 연결하지 못했습니다.",
@@ -82,4 +87,16 @@ export const USAGE_KO: Record<string, string> = {
   "This version signs in only in its terminal. Open it to finish.": "이 버전은 터미널에서만 로그인합니다. 터미널을 열어 마무리하세요.",
   "The sign-in asked for the code again. Paste it once more.": "로그인에서 코드를 다시 요청했습니다. 한 번 더 붙여 넣으세요.",
   "{agent} is already signed in on this PC. Continuing may replace that sign-in.": "{agent}는 이미 이 PC에 로그인되어 있습니다. 계속하면 그 로그인을 대체할 수 있습니다.",
+  "Usage credits": "사용 크레딧",
+  "Credits": "크레딧",
+  "Unlimited": "무제한",
+  "Available": "사용 가능",
+  "{n} credits": "{n} 크레딧",
+  "{amount} spent": "{amount} 사용",
+  "Limit resets": "한도 초기화권",
+  "Expires in {time}": "{time} 후 만료",
+  "{n} left": "{n}회 남음",
+  "Recorded by {tool}": "{tool} 기록",
+  "Recorded by {tool}, {when}": "{tool} 기록, {when}",
+  "It may have changed since.": "그 뒤로 달라졌을 수 있어요.",
 };

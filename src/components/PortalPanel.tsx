@@ -12,7 +12,6 @@ import { PortalInvite } from "./PortalInvite.tsx";
 import { Address } from "./PhonePanel.tsx";
 import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
 
-const PORTAL_INSTALL = "https://github.com/gosuda/portal-tunnel#quick-start";
 
 /**
  * Settings → Phone & devices → Portal: a public HTTPS address for this PC through a relay the
@@ -24,7 +23,6 @@ const PORTAL_INSTALL = "https://github.com/gosuda/portal-tunnel#quick-start";
 export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
   const t = useT();
   const { status, error, pending, busy, request } = usePortal();
-  // what was typed; until then, the relay and the sign-in this PC used last
   const [typed, setTyped] = useState<string | null>(null);
   const [edited, setEdited] = useState<AuthDraft | null>(null);
   if (!status?.supported) return null;
@@ -33,7 +31,6 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
   const problem = draft.method === "none" ? null : authProblem(draft);
   const offered = draft.method === "none" || status.auth_methods.includes(draft.method);
   const on = status.phase !== "idle";
-  // a Portal that ended on its own is started again once by the server; Stop still ends it
   const progress = status.phase === "starting" ? t("Starting…") : status.phase === "recovering" ? t("Recovering…") : status.phase === "stopping" ? t("Stopping…") : null;
   let control;
   if (on) {
@@ -45,17 +42,6 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
           <button type="button" className="btn" disabled={readOnly || pending || status.phase === "stopping"} onClick={() => void request("stop")}>{t("Stop")}</button>
         </SettingsRow>
       </>
-    );
-  } else if (status.blocked !== null) {
-    control = <p className="settings-item settings-hint">{status.blocked === "token_required" ? t("Set OVIS_TOKEN on this PC and restart the app to start Portal.") : t("Portal is a second way in: unset OVIS_TAILSCALE_SERVE_ONLY on this PC and restart the app first.")}</p>;
-  } else if (!status.usable) {
-    control = (
-      <div className="settings-item">
-        <p className="settings-hint">
-          {status.version === null ? t("Portal is not installed on this PC.") : t("This PC has Portal {version}; the app needs {min} or later.", { version: status.version, min: status.min_version })}{" "}
-          <a className="settings-link" href={PORTAL_INSTALL} target="_blank" rel="noreferrer">{t("Get Portal")}</a>
-        </p>
-      </div>
     );
   } else {
     control = (
@@ -76,13 +62,12 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
       {status.url !== null && (
         <div className="settings-item phone-panel">
           <Address url={status.url} title={t("Portal serves this PC")} />
-          <p className="settings-description">{status.auth.method === "none" ? t("Open it on your phone and sign in with the access token, or pair the phone: Devices, below.") : t("Open it on your phone and sign in the way you chose here. The access token is not asked after it.")}</p>
+          <p className="settings-description">{status.auth.method === "none" ? t("Open it on your phone and sign in with the access token, or pair the phone with a pairing code.") : t("Open it on your phone and sign in the way you chose here. The access token is not asked after it.")}</p>
         </div>
       )}
       {control}
       {progress !== null && <p className="settings-item settings-hint portal-progress" role="status">{progress}</p>}
       {error !== null && <p className="settings-item settings-hint portal-error" role="alert">{error}</p>}
-      {/* the server's account of the last failure, then Portal's own words */}
       {status.phase === "error" && status.error !== null && (
         <div className="settings-item">
           <p className="settings-hint portal-error" role="alert">{status.error}</p>

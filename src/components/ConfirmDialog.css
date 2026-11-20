@@ -18,3 +18,7 @@
   font-size: var(--fs-xs);
   overflow-wrap: anywhere;
 }
+
+.modal-scrim:has(> .confirm-dialog) {
+  z-index: calc(var(--z-modal) + 4);
+}

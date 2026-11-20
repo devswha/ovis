@@ -1,7 +1,7 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import {
   decodeFrame, encodeFrame, FrameType, HTTP_END_FLAGS, LIMITS_V1,
-  MAX_FRAME_BYTES, MuxProtocolError, REQUEST_HEADERS, RESPONSE_HEADERS,
+  MAX_FRAME_BYTES, MAX_LARGE_WS_MESSAGE_BYTES, MuxProtocolError, REQUEST_HEADERS, RESPONSE_HEADERS,
   SESSION_ERRORS, STREAM_ERRORS, validateHeaders, validateTarget, WS_DATA_FLAGS,
   WS_CONTINUATION_CAPACITY, WS_START_CAPACITY,
 } from "./relay-mux.ts";
@@ -260,7 +260,6 @@ describe("metadata constraints", () => {
       const invalid = { ...welcome.payload, limits: { ...LIMITS_V1, [key]: value + 1 } };
       rejects(() => decodeFrame(wire(FrameType.WELCOME, JSON.stringify(invalid))));
     }
-    // The pre-release old HTTP window must not silently negotiate asymmetric credit.
     rejects(() => decodeFrame(wire(FrameType.WELCOME, JSON.stringify({
       ...welcome.payload, limits: { ...LIMITS_V1, http_window_bytes: 65536 },
     }))));
@@ -326,7 +325,7 @@ describe("WS fragment arithmetic", () => {
     expect(MAX_FRAME_BYTES).toBe(first.length);
   });
   for (const [flags, total, length] of [
-    [4, undefined, 1], [1, 1, 0], [3, 1, 0], [1, 0, 1], [1, 1048577, 1],
+    [4, undefined, 1], [1, 1, 0], [3, 1, 0], [1, 0, 1], [1, MAX_LARGE_WS_MESSAGE_BYTES + 1, 1],
     [3, 2, 1], [1, 1, 1], [0, undefined, 0], [2, undefined, 0],
     [0, 1, 1], [1, 1048576, 16373], [0, undefined, 16377],
   ] as const) {
@@ -339,7 +338,55 @@ describe("WS fragment arithmetic", () => {
   });
   it("rejects declared oversize START before any reassembly", () => {
     const payload = new Uint8Array(5);
-    new DataView(payload.buffer).setUint32(0, 1048577);
+    new DataView(payload.buffer).setUint32(0, MAX_LARGE_WS_MESSAGE_BYTES + 1);
     rejects(() => decodeFrame(wire(FrameType.WS_DATA, payload, 1)));
+  });
+});
+
+describe("relay hints", () => {
+  const authOk = (relays?: unknown) => ({ type: FrameType.AUTH_OK, flags: 0, stream_id: 0,
+    payload: { session_id: "a".repeat(32), device_id: "b".repeat(16), role: "drive", ...(relays === undefined ? {} : { relays }) } }) as MuxFrame;
+
+  it("carries a PC's relays in AUTH_OK, and none when it names none", () => {
+    const relays = ["wss://relay-ap.ovis.sh", "wss://relay.ovis.sh"];
+    expect(decodeFrame(encodeFrame(authOk(relays))).payload).toEqual(authOk(relays).payload);
+    expect(decodeFrame(encodeFrame(authOk())).payload).not.toHaveProperty("relays");
+  });
+
+  it("fits two of the longest relay origins in one AUTH_OK", () => {
+    const longest = (letter: string) => `wss://${letter.repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(49)}.example`;
+    expect(longest("a").length).toBeLessThanOrEqual(256);
+    expect(() => encodeFrame(authOk([longest("a"), longest("e")]))).not.toThrow();
+  });
+
+  it("takes only a few wss origins", () => {
+    for (const relays of [["https://relay.ovis.sh"], ["wss://relay.ovis.sh/path"], ["wss://user@relay.ovis.sh"], "wss://relay.ovis.sh",
+      ["wss://a.example", "wss://b.example", "wss://c.example"]]) {
+      expect(() => encodeFrame(authOk(relays))).toThrow(MuxProtocolError);
+    }
+  });
+});
+
+describe("direct carriers", () => {
+  const authOk = (direct: unknown) => ({ type: FrameType.AUTH_OK, flags: 0, stream_id: 0,
+    payload: { session_id: "a".repeat(32), device_id: "b".repeat(16), role: "drive", direct } }) as MuxFrame;
+
+  it("carries a PC's private addresses in AUTH_OK", () => {
+    const direct = ["ws://192.168.0.10:7319", "ws://10.1.2.3:7319", "ws://172.31.255.1:40000", "ws://169.254.3.4:1"];
+    expect(decodeFrame(encodeFrame(authOk(direct))).payload).toEqual(authOk(direct).payload);
+  });
+
+  it("carries a PC's Tailscale address in AUTH_OK, from either end of Tailscale's range", () => {
+    const direct = ["ws://192.168.0.10:7319", "ws://100.64.0.1:7319", "ws://100.127.255.255:7319"];
+    expect(decodeFrame(encodeFrame(authOk(direct))).payload).toEqual(authOk(direct).payload);
+  });
+
+  it("takes only ws://<private or Tailscale IPv4>:<port>, at most four", () => {
+    for (const direct of [["wss://192.168.0.10:7319"], ["ws://192.168.0.10"], ["ws://192.168.0.10:7319/v1/ws"], ["ws://8.8.8.8:7319"],
+      ["ws://127.0.0.1:7319"], ["ws://100.63.255.255:7319"], ["ws://100.128.0.1:7319"], ["ws://172.32.0.1:7319"], ["ws://192.168.0.010:7319"], ["ws://192.168.0.10:65536"],
+      ["ws://pc.local:7319"], ["ws://[fe80::1]:7319"], "ws://192.168.0.10:7319",
+      ["ws://10.0.0.1:1", "ws://10.0.0.2:1", "ws://10.0.0.3:1", "ws://10.0.0.4:1", "ws://10.0.0.5:1"]]) {
+      expect(() => encodeFrame(authOk(direct))).toThrow(MuxProtocolError);
+    }
   });
 });

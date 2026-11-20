@@ -1,4 +1,3 @@
-/** Explicit reviewed deviations from mapTheme. Add alongside the CSS edit, never generate. */
 import { normalizeThemeValue, parseThemeBlocks } from "../src/lib/themeCss.ts";
 import { ROLES, SUPPORTED_ENTRIES } from "../src/lib/themes.ts";
 import { LIGHT_ANSI_ROLES } from "../src/lib/themeRoles.ts";
@@ -9,7 +8,6 @@ import type { AnsiRole, HerdrThemeId } from "./herdr-themes.ts";
 import { mapTheme } from "./herdr-theme-proposal.ts";
 import type { Role } from "./herdr-theme-proposal.ts";
 
-/** The app's own themes besides the legacy three: no herdr palette, so no mapping to check. */
 export const APP_THEME_IDS: ReadonlySet<string> = new Set(["codex", "black"]);
 
 export type ThemeOverride = {
@@ -307,9 +305,15 @@ export const OVERRIDES: readonly ThemeOverride[] = [
   {"theme":"rose-pine-dawn","mode":"light","role":"syntax-type","value":"#9e5600","dE":23.02522815963855,"reason":"AA lightness repair on serialized hex (target 4.6; chroma reduction at most 5%)"},
   {"theme":"rose-pine-dawn","mode":"light","role":"syntax-meta","value":"#33717c","dE":11.64373069428541,"reason":"AA lightness repair on serialized hex (target 4.6; chroma reduction at most 5%)"},
   {"theme":"rose-pine-dawn","mode":"light","role":"primary","value":"#7e659b","dE":6.5855528356763084,"reason":"AA lightness repair of the primary fill under primary-text (target 4.5)"},
+  {"theme":"tokyo-night-day","mode":"light","role":"notice","value":"#674f2e","dE":10.93064636964968,"reason":"AA lightness repair on serialized hex (target 4.6 on --bg, --bg-panel and --bg-elevated, as DESIGN.md promises for --notice; hue kept)"},
+  {"theme":"gruvbox-light","mode":"light","role":"notice","value":"#84560f","dE":12.814379430968865,"reason":"AA lightness repair on serialized hex (target 4.6 on --bg, --bg-panel and --bg-elevated, as DESIGN.md promises for --notice; hue kept)"},
+  {"theme":"one-light","mode":"light","role":"notice","value":"#916301","dE":12.630060256838274,"reason":"AA lightness repair on serialized hex (target 4.6 on --bg, --bg-panel and --bg-elevated, as DESIGN.md promises for --notice; hue kept)"},
+  {"theme":"solarized","mode":"dark","role":"notice","value":"#c29300","dE":3.5258189058456098,"reason":"AA lightness repair on serialized hex (target 4.6 on --bg, --bg-panel and --bg-elevated, as DESIGN.md promises for --notice; hue kept)"},
+  {"theme":"solarized-light","mode":"light","role":"notice","value":"#826200","dE":14.278828970178875,"reason":"AA lightness repair on serialized hex (target 4.6 on --bg, --bg-panel and --bg-elevated, as DESIGN.md promises for --notice; hue kept)"},
+  {"theme":"kanagawa-lotus","mode":"light","role":"notice","value":"#605c33","dE":7.4568085683284115,"reason":"AA lightness repair on serialized hex (target 4.6 on --bg, --bg-panel and --bg-elevated, as DESIGN.md promises for --notice; hue kept)"},
+  {"theme":"rose-pine-dawn","mode":"light","role":"notice","value":"#945c0f","dE":23.284735824692458,"reason":"AA lightness repair on serialized hex (target 4.6 on --bg, --bg-panel and --bg-elevated, as DESIGN.md promises for --notice; hue kept)"},
 ];
 
-/** Pure policy used by the test and by temporary-copy QA. A diagnostic always names entry/role. */
 export function provenanceFailures(
   css: string,
   entries: readonly { readonly id: string; readonly mode: Mode }[] = SUPPORTED_ENTRIES,
@@ -319,9 +323,7 @@ export function provenanceFailures(
   const legacy = new Set([...Object.keys(baseline.combos), "catppuccin-latte/light"]);
   for (const { id, mode } of entries) {
     const key = `${id}/${mode}`;
-    // App themes have their sources and surface changes documented in DESIGN.md.
     if (APP_THEME_IDS.has(id)) continue;
-    // Legacy UI roles stay frozen, but Latte's newly added ANSI roles have provenance too.
     const legacyAnsi = key === "catppuccin-latte/light";
     if (legacy.has(key) && !legacyAnsi) continue;
     if (!isHerdrThemeId(id) || KIND[id] !== mode) {

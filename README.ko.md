@@ -5,7 +5,9 @@
 <h1 align="center">Ovis</h1>
 
 <p align="center">
-  <strong>모든 코딩 에이전트를, 모든 화면에서.</strong>
+  <strong>코딩 에이전트를 데스크톱, 휴대폰, 브라우저에서.</strong>
+  <br>
+  내 컴퓨터에서 돌아가는 Claude Code, Codex 같은 에이전트와 채팅하고, 탭 한 번으로 답합니다.
 </p>
 
 <p align="center">
@@ -20,100 +22,78 @@
   <br>
   <a href="https://ovis.sh/">웹사이트</a> ·
   <a href="#install">설치</a> ·
-  <a href="https://ovis.sh/demo/">데모 체험</a> ·
-  <a href="docs/guide.md#quick-start">빠른 시작</a> ·
-  <a href="docs/guide.md#faq">자주 묻는 질문</a> ·
-  <a href="#docs">문서</a>
+  <a href="https://ovis.sh/demo/">데모</a> ·
+  <a href="docs/guide.md">문서</a> ·
+  <a href="https://ovis.sh/discord">디스코드</a>
 </p>
-
-Ovis는 내 컴퓨터의 코딩 에이전트를 채팅으로 보여 주고, 아무 브라우저, Mac 앱, 폰에서 클릭이나 탭으로 답하게 합니다. [herdr](https://github.com/herdrdev/herdr)의 클라이언트이며, 이전 이름은 herdr web UI입니다.
 
 <p align="center">
-  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/hero.webp" alt="데모에서 녹화한 Ovis 화면: 데스크톱 브라우저에서 Claude Code에 후속 메시지를 보내자 턴이 단계별로 진행되고, 이어서 데스크톱과 폰이 나란히 나와 git push origin feat/export-guard 실행을 묻는 Codex의 Allow command? 카드에서 폰으로 Yes를 누르면 두 화면에서 함께 카드가 닫히고, 마지막으로 release 탭을 누르면 셸 pane이 git log와 bun test를 실행하는 실제 터미널로 열립니다."></a>
-  <br>
-  <sub>브라우저에서 바로 열리는 <a href="https://ovis.sh/demo/">데모</a>로 녹화했습니다.</sub>
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-and-phone.webp" width="830" alt="데스크톱 브라우저와 휴대폰에서 본 Ovis. 데스크톱에는 워크스페이스와 에이전트 목록 옆에 Claude Code와의 대화가 채팅으로 보이고, 휴대폰에는 Codex가 git push origin feat/export-guard를 실행해도 되는지 묻는 Allow command? 카드가 Yes, Yes and don't ask again for git push, No 선택지와 함께 보입니다."></a>
 </p>
+
+Ovis는 에이전트가 돌아가는 바로 그 컴퓨터에서 실행되고, 휴대폰이나 어느 브라우저에서든 그 컴퓨터에 접속합니다. [herdr](https://github.com/herdrdev/herdr) 위에서 만들었고, herdr나 [Herdr 앱](https://herdr.dev/download/)에서 보는, 지금 돌아가는 바로 그 터미널을 보여 줄 수 있어 함께 쓰면 됩니다. [서로 어떻게 맞물리는지 →](docs/guide.md#how-ovis-fits-with-herdr)
 
 <a id="install"></a>
 
 ## 설치
 
-**컴퓨터에서**
+**데스크톱 앱:** [Mac](https://ovis.sh/Ovis-mac-arm64.dmg) ([Intel](https://ovis.sh/Ovis-mac-x64.dmg)) · [Windows](https://ovis.sh/Ovis-win-x64.exe) · [Linux](https://ovis.sh/Ovis-linux-x64.deb) ([모든 빌드](docs/guide.md#the-desktop-app)). 따로 설치할 것이 없습니다. 터미널은 이 앱이 직접 띄운 것만 보입니다. herdr나 Herdr 앱에서 쓰던 터미널을 보려면 데스크톱 앱 대신 아래 명령으로 설치하세요.
 
-- **Mac:** [Ovis.dmg](https://ovis.sh/Ovis.dmg)를 내려받아 열고 **설치**(Install)를 누릅니다.
-- **Windows:** [Ovis.exe](https://ovis.sh/Ovis.exe)를 내려받아 실행하고 **설치**(Install)를 누릅니다.
-- **Linux:** 터미널에서 실행합니다.
-  ```bash
-  curl -fsSL https://ovis.sh/install.sh | sh
-  ```
+**herdr나 Herdr 앱을 쓰고 있다면:** 명령 한 줄로 Ovis를 함께 설치합니다. Linux나 macOS에서:
 
-어느 쪽이든 herdr와 Bun이 없으면 함께 설치하며, Node는 필요 없습니다. 다른 설치 방법과 단계별 안내: [INSTALL.md](INSTALL.md).
+```bash
+curl -fsSL https://ovis.sh/install.sh | sh
+```
 
-**폰에서**
+Windows에서는 PowerShell에서:
 
-- **iPhone:** TestFlight 베타, [ovis.sh/ko/beta](https://ovis.sh/ko/beta/)에서.
-- **Android:** Google Play 베타, [ovis.sh/ko/beta](https://ovis.sh/ko/beta/)에서.
-- **브라우저:** 앱 없이, 페이지를 홈 화면에 추가합니다.
+```powershell
+irm https://ovis.sh/install.ps1 | iex
+```
 
-컴퓨터와 폰 모두 Tailscale을 켜고, 컴퓨터에 뜬 QR 코드를 스캔하면 연결됩니다.
+**휴대폰에서:** 컴퓨터에서 **설정 → 기기와 PC → 연결 추가 → Ovis 릴레이**를 열어 스위치를 켜고, 나온 QR 코드를 휴대폰으로 찍으세요. 먼저 로그인하라는 안내가 나오면 로그인해 이 컴퓨터를 내 계정에 추가한 뒤 **QR 코드 표시**를 누르고, 같은 계정으로 로그인한 휴대폰으로 찍으세요. 그렇게 찍고 나면 컴퓨터가 그 계정에 들어가고, 그 뒤로 다른 휴대폰에는 QR 코드 대신 그 계정으로 로그인하라고 안내합니다. iPhone 앱은 [App Store](https://apps.apple.com/app/id6824664162)에, Android 앱은 [Google Play](https://play.google.com/store/apps/details?id=sh.ovis.app)에 있습니다. [휴대폰 설정 →](docs/guide.md#on-your-phone)
 
-## 할 수 있는 일
+<a href="https://apps.apple.com/app/id6824664162"><img src="ovis-site/assets/app-store/badge-ko.svg" alt="App Store에서 다운로드하기" height="48"></a> <a href="https://play.google.com/store/apps/details?id=sh.ovis.app"><img src="ovis-site/assets/google-play/badge-ko.svg" alt="Google Play에서 다운로드" height="48"></a>
 
-- **herdr가 돌리는 에이전트라면 무엇이든.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok 등, 대부분 채팅으로 봅니다. [지원 에이전트 →](docs/guide.md#supported-agents)
-- **요청은 카드로.** 답을 보내기 전에 그 요청이 아직 유효한지 확인합니다.
-- **실제 터미널이 클릭 한 번 거리에.** herdr가 보여 주는 그 pane 그대로이고, 폰에는 키 바가 붙습니다.
-- **모든 워크스페이스를 한 목록에.** 탭, 분할 pane, SSH로 붙인 다른 PC까지 보이고, 나를 기다리는 것은 표시됩니다.
-- **푸시 알림.** 에이전트가 질문하거나 일을 끝내면, 앱이 닫혀 있어도 옵니다.
-- **무료, MIT.** 내 컴퓨터에서 돌아가고, 가입할 계정이 없습니다.
+## 기능
+
+- **에이전트를 채팅으로.** Claude Code, Codex [등](docs/guide.md#supported-agents). 한 턴의 명령과 수정은 한 줄로 접힙니다.
+- **요청과 승인은 카드로.** 탭 한 번으로 답합니다.
+- **푸시 알림.** 앱이 닫혀 있어도 옵니다.
+- **클릭 한 번이면 실제 터미널.** 휴대폰에는 키 바가 붙습니다.
+- **어디서든 새 에이전트 시작.** 데스크톱에서든 휴대폰에서든 폴더만 고르면 됩니다.
+- **모든 워크스페이스를 한 목록에.** SSH로 연결한 다른 PC까지.
 
 [전체 기능 →](docs/guide.md#features)
 
-**한계:** Ovis는 [herdr](https://github.com/herdrdev/herdr)와 켜져 있는 내 컴퓨터가 필요하고, 폰에서 그 컴퓨터에 닿아야 합니다(Tailscale, VPN, SSH 터널, Ovis 릴레이).
+<details>
+<summary>움직이는 모습 보기 (25초 영상)</summary>
+<p align="center">
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/hero.webp" alt="데모에서 녹화한 Ovis 화면: 데스크톱 브라우저에서 Claude Code에 후속 메시지를 보내자 턴이 단계별로 진행되고, 이어서 데스크톱과 휴대폰이 나란히 나와 git push origin feat/export-guard 실행을 묻는 Codex의 Allow command? 카드에서 휴대폰으로 Yes를 누르면 두 화면에서 함께 카드가 닫히고, 마지막으로 release 탭을 누르면 셸 패널이 git log와 bun test를 실행하는 실제 터미널로 열립니다."></a>
+  <br>
+  <sub>브라우저에서 바로 열리는 <a href="https://ovis.sh/demo/">데모</a>로 녹화했습니다.</sub>
+</p>
+</details>
 
-**개인정보:** 세션은 각 에이전트를 실행하는 컴퓨터에 남고, Ovis에는 계정이 없습니다. 직접 켜기 전까지 꺼져 있는 Ovis 릴레이는 어느 폰이 어느 PC에 어떤 주소에서 언제, 얼마나 주고받는지는 볼 수 있지만 내용은 읽지 못합니다([신뢰 모델](docs/relay.md#trust-model)). 익명 사용 집계는 기본적으로 켜져 있으며, **Settings → About → Anonymous usage counts**에서 보내는 내용을 확인하고 끌 수 있습니다. `OVIS_TELEMETRY=0`으로도 끌 수 있습니다. [보내는 내용 →](docs/guide.md#anonymous-usage-counts)
+**한계:** 내 컴퓨터가 켜져 있고 접속할 수 있는 상태여야 합니다(Ovis 릴레이, Tailscale, VPN, SSH 터널). 채팅 기능은 Claude Code에서 모두 갖춰져 있고, 다른 에이전트에서는 그보다 적습니다. 실제 터미널은 언제나 쓸 수 있습니다. Windows에서 한 줄 설치를 하면 처음에는 herdr로 실행되고, **설정 → 정보 → 터미널**에서 Herdr 앱의 터미널로 바꿀 수 있습니다.
 
-<a id="docs"></a>
+**개인정보:** 세션은 내 컴퓨터에 남고, 계정 없이 쓸 수 있습니다. 릴레이는 종단 간 암호화됩니다([신뢰 모델](docs/relay.md#trust-model)). 익명 사용 집계는 기본으로 켜져 있고, **설정 → 정보**나 `OVIS_TELEMETRY=0`으로 끕니다([보내는 내용](docs/guide.md#anonymous-usage-counts)).
 
 ## 문서
 
-- **[사용자 가이드](docs/guide.md):** [빠른 시작](docs/guide.md#quick-start) · [지원 에이전트](docs/guide.md#supported-agents) · [기능](docs/guide.md#features) · [폰](docs/guide.md#on-your-phone) · [원격 PC](docs/remote-pcs.md) · [접근과 보안](docs/guide.md#access-and-safety) · [설정](docs/guide.md#configuration) · [키보드 단축키](docs/guide.md#keyboard-shortcuts)
-- **[자주 묻는 질문](docs/guide.md#faq):** herdr 자체 TUI, Tailscale, 내 컴퓨터 밖으로 나가는 것, collie·Happy·Paseo 등과의 차이.
-- **[INSTALL.md](INSTALL.md):** 모든 설치 방법을 단계별로, 그리고 단계가 실패했을 때 할 일.
-- **[데모](https://ovis.sh/demo/):** 가상의 세션으로 돌아가는 실제 앱을 브라우저에서.
-- **[변경 기록](CHANGELOG.md)**
+- **[사용자 가이드](docs/guide.md):** [빠른 시작](docs/guide.md#quick-start) · [지원 에이전트](docs/guide.md#supported-agents) · [휴대폰](docs/guide.md#on-your-phone) · [원격 PC](docs/remote-pcs.md) · [설정](docs/guide.md#configuration) · [자주 묻는 질문](docs/guide.md#faq)
+- **[INSTALL.md](INSTALL.md):** 모든 설치 방법을 단계별로.
+- **[데모](https://ovis.sh/demo/)** · **[변경 기록](CHANGELOG.md)**
 
 문서는 영어로 쓰여 있습니다.
 
-<a id="thanks"></a>
+## 기여
+
+준비 과정과 검사는 [CONTRIBUTING.md](CONTRIBUTING.md)에 있고, [개발 문서](docs/development.md), [DESIGN.md](DESIGN.md), [SECURITY.md](SECURITY.md)도 참고하세요. 코딩 에이전트는 누군가의 설치를 도울 때 [INSTALL.md](INSTALL.md)를, 저장소를 바꿀 때 [AGENTS.md](AGENTS.md)와 [리뷰 규칙](.github/REVIEW.md)을 따릅니다.
 
 ## 감사
 
-[herdr](https://github.com/herdrdev/herdr) 위에서 만들었고, [chatmux](https://github.com/devswha/chatmux)에서 영감을 받았으며, [xterm.js](https://xtermjs.org), [React](https://react.dev), [Bun](https://bun.sh), [Lucide](https://lucide.dev)를 사용합니다.
-
-기여해 주신 모든 분께 감사드립니다. 특히 [@Yoonwoo-Ha](https://github.com/Yoonwoo-Ha)님께 감사드립니다. 아이콘과 홈페이지 디자인을 도와주신 [@sanguneo](https://github.com/sanguneo)님께도 감사드립니다.
-
-<a id="agent-instructions"></a>
-
-## 에이전트용 안내
-
-누군가의 설치를 돕고 있다면 [INSTALL.md](INSTALL.md)를 따르세요. 저장소를 바꿀 때는 [CONTRIBUTING.md](CONTRIBUTING.md), [리뷰 규칙](.github/REVIEW.md), [AGENTS.md](AGENTS.md)를 따르세요.
-
-<a id="development"></a>
-
-## 개발
-
-```bash
-git clone https://github.com/devswha/ovis.git
-cd ovis
-bun install
-
-bun run server      # API + WebSocket, :7317
-bun run dev         # Vite, :5173 (다른 터미널에서 실행)
-```
-
-변경을 보내려면 [CONTRIBUTING.md](CONTRIBUTING.md)를, 테스트·미디어·릴리스는 [개발 문서](docs/development.md)를, UI 규칙은 [DESIGN.md](DESIGN.md)를 보세요. 보안 문제는 [SECURITY.md](SECURITY.md)에 따라 비공개로 알려 주세요.
-
-<a id="license"></a>
+[herdr](https://github.com/herdrdev/herdr) 위에서 만들었고, [chatmux](https://github.com/devswha/chatmux)에서 영감을 받았으며, [xterm.js](https://xtermjs.org), [React](https://react.dev), [Bun](https://bun.sh), [Lucide](https://lucide.dev)를 사용합니다. 기여해 주신 모든 분께 감사드립니다. 특히 [@Yoonwoo-Ha](https://github.com/Yoonwoo-Ha)님께 감사드립니다. 아이콘과 홈페이지 디자인을 도와주신 [@sanguneo](https://github.com/sanguneo)님께도 감사드립니다.
 
 ## 라이선스
 

@@ -11,6 +11,22 @@
   overflow-wrap: anywhere;
 }
 
+.settings-updates .settings-row,
+.settings-herdr-update .settings-row {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+
+.settings-updates .settings-row > .settings-fact {
+  flex-shrink: 1;
+  max-width: none;
+  overflow-wrap: normal;
+}
+
+.settings-updates .settings-row > .btn {
+  margin-inline-start: auto;
+}
+
 .update-notice {
   flex: 0 0 auto;
   justify-content: space-between;
@@ -21,14 +37,12 @@
   font-size: var(--fs-xs);
 }
 
-/* the text takes the room, the buttons keep to the end of the line and wrap under it on a phone */
 .update-notice > span {
   flex: 1 1 12rem;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-/* a release's line never wraps: its sentence is cut with an ellipsis, its buttons keep their width */
 .update-notice.is-line {
   flex-wrap: nowrap;
 }
@@ -45,7 +59,24 @@
   white-space: nowrap;
 }
 
-/* the reload warning is read in full on a phone: its sentence wraps instead of being cut */
+.update-notice.is-line > .update-notice-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: start;
+  color: inherit;
+  font: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.update-notice-text:focus-visible { text-decoration: underline; }
+@media (hover: hover) {
+  .update-notice-text:hover { text-decoration: underline; }
+}
+
 .update-notice.is-line.is-warning { flex-wrap: wrap; }
 .update-notice.is-line.is-warning > span { white-space: normal; overflow: visible; text-overflow: clip; }
 
@@ -53,11 +84,20 @@
   margin-inline-end: calc(var(--space-2) * -1);
 }
 
+@media (pointer: coarse) {
+  .update-notice {
+    padding-block: var(--space-1);
+  }
+
+  .update-notice.is-line > .update-notice-text {
+    min-height: var(--touch-target);
+  }
+}
+
 .update-progress {
   max-width: 32rem;
 }
 
-/* on the line: the step and its count, then the bar in the rest of the row */
 .update-notice .update-progress {
   max-width: none;
   flex-direction: row;
@@ -98,21 +138,15 @@
   overflow-wrap: anywhere;
 }
 
-/* focused from code when a button points at the section: it is where reading starts, not a control */
 .settings-updates:focus {
   outline: none;
 }
 
-/* a release's notes: read in a box of their own, so a long release does not push the
-   buttons out of the dialog */
 .update-notes {
   --chat-fs-body: var(--fs-sm);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  max-height: min(24rem, calc(var(--app-height, 100dvh) * 0.5));
-  overflow-y: auto;
-  overscroll-behavior: contain;
   padding: var(--space-3);
   color: var(--text);
   background: var(--bg-elevated);
@@ -137,7 +171,6 @@
   font-weight: var(--fw-regular);
 }
 
-/* a release as patch notes: short lines under what is new, improved and fixed */
 .update-summary {
   display: flex;
   flex-direction: column;
@@ -165,9 +198,17 @@
   padding-inline-start: var(--space-4);
 }
 
-/* the release's changelog section, on request */
 .update-details {
   margin-top: var(--space-2);
+}
+
+.update-changelog {
+  max-height: min(24rem, calc(var(--app-height, 100dvh) * 0.5));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
 }
 
 .update-details > summary {
@@ -181,7 +222,6 @@
   margin-bottom: var(--space-2);
 }
 
-/* Added, Changed, Fixed: labels over their lists, as the dialog's own section titles */
 .update-notes .markdown h3 {
   margin: var(--space-3) 0 var(--space-1);
   color: var(--text-dim);

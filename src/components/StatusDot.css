@@ -1,0 +1,32 @@
+.status-dot {
+  flex: none;
+  width: calc(2 * var(--dot-size));
+  height: calc(2 * var(--dot-size));
+  overflow: visible;
+  color: var(--text-dim);
+}
+
+.status-dot[data-size="inline"] {
+  width: var(--dot-size);
+  height: var(--dot-size);
+}
+
+.status-dot > * {
+  stroke-width: 1.5px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.status-dot[data-state="ready"] { color: var(--status-done); }
+.status-dot:is([data-state="needs-you"], [data-state="updating"]) { color: var(--notice); }
+.status-dot[data-state="offline"] { color: var(--text-dim); }
+.status-dot[data-state="checking"] { color: var(--status-working); }
+.status-dot[data-state="failed"] { color: var(--status-blocked); }
+
+@media (forced-colors: active) {
+  .status-dot[data-state] {
+    forced-color-adjust: none;
+    color: CanvasText;
+  }
+}

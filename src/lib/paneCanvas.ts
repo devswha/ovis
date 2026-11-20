@@ -1,13 +1,10 @@
 import type { PaneLayoutSnapshot } from "../../shared/protocol.ts";
 type PaneLayoutSplit = PaneLayoutSnapshot["splits"][number];
 
-/** Where a split has no room: a tab's panes are shown one at a time (PaneCanvas) and picked from the tab's menu (TabStrip). */
 export const SOLO_PANE_QUERY = "(max-width: 768px)";
 
-/** A short phone screen (landscape, a small phone): a lone tab is not drawn there (TabStrip). */
-export const CRAMPED_QUERY = "(max-width: 768px) and (max-height: 600px)";
-/** Whether the tab strip is left out of a workspace's view: a lone tab on a cramped screen. */
-export const loneTabHidden = (cramped: boolean, tabCount: number): boolean => cramped && tabCount === 1;
+export const CRAMPED_QUERY = "(max-width: 768px) and (max-height: 700px)";
+export const tabRowHidden = (cramped: boolean, tabCount: number, inHeader: boolean): boolean => inHeader || (cramped && tabCount === 1);
 
 /**
  * The pane a tab shows alone, or null when every pane is drawn: herdr's zoomed pane, else on a
@@ -44,7 +41,6 @@ export function splitPath(id: string): boolean[] | null {
   return match[1] === "root" ? [] : [...match[1]!].map((side) => side === "1");
 }
 
-/** Changes in ratios/terminal size are harmless; changes in topology cancel a drag. */
 export function layoutTopology(layout: PaneLayoutSnapshot): string {
   return JSON.stringify([layout.tab_id, layout.zoomed, layout.panes.map((pane) => pane.pane_id),
     layout.splits.map((split) => [split.id, split.direction])]);

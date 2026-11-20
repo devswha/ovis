@@ -18,7 +18,6 @@ const FIELDS = ["api_key", "base_url", "transcribe_model", "polish_model"] as co
 type Field = typeof FIELDS[number];
 type VoiceFile = Partial<Record<Field, string>>;
 
-/** without a language from the client: the app's first users dictate Korean with English code terms */
 const DEFAULT_LANGUAGE = "ko";
 /** OpenAI-compatible servers may cap a multipart body's fields (codex-lb refuses more than 32) */
 const PROVIDER_FORM_FIELDS_MAX = 32;
@@ -34,8 +33,9 @@ const POLISH_PROMPT = [
 /**
  * GPT-5.1 and later reason before answering unless told not to: tidying needs no reasoning and
  * the wait is the user's. Older models take no reasoning setting and keep a fixed temperature.
+ * A router such as OpenRouter names the model after its vendor (`openai/gpt-6-luna`).
  */
-const REASONING_MODEL = /^gpt-(?:5\.\d|[6-9])/;
+const REASONING_MODEL = /^(?:[\w.-]+\/)*gpt-(?:5\.\d|[6-9])/;
 const POLISH_MODE: Record<VoiceMode, string> = {
   chat: "The text is a message to a coding agent.",
   terminal: "The text is a shell command line: no trailing period, no added capitals.",
@@ -63,12 +63,10 @@ const text = (value: unknown): string | null => typeof value === "string" && val
 
 export interface VoiceClip {
   audio: Blob;
-  /** `audio.<ext>` with the browser's container */
   filename: string;
   mode: VoiceMode;
   polish: boolean;
   keywords: string[];
-  /** the speaker's language and English, for the code terms said in it */
   languages: string[];
 }
 
@@ -121,7 +119,7 @@ function scrub(message: string, key: string): string {
 async function providerFailure(response: Response, key: string): Promise<VoiceError> {
   const raw = await response.text();
   let detail = raw.trim();
-  try { detail = text(record(record(JSON.parse(raw))["error"])["message"]) ?? detail; } catch { /* not JSON: the raw text is the detail */ }
+  try { detail = text(record(record(JSON.parse(raw))["error"])["message"]) ?? detail; } catch {}
   const message = scrub(`The provider answered ${response.status}${detail ? `: ${detail}` : ""}`, key);
   return new VoiceError(response.status === 401 || response.status === 403 ? "provider_auth" : "provider_error", 502, message);
 }
@@ -130,10 +128,7 @@ function record(value: unknown): Record<string, unknown> {
   return isJsonObject(value) ? value : {};
 }
 
-/**
- * The transcript from the provider's SSE answer, calling `onDelta` per piece as it arrives. A
- * line may be split across chunks. The `done` event's text wins over the joined pieces.
- */
+/** A line may be split across chunks. The `done` event's text wins over the joined pieces. */
 async function readTranscript(body: ReadableStream<Uint8Array> | null, onDelta: (delta: string) => void): Promise<string> {
   if (!body) return "";
   const reader = body.getReader();
@@ -170,7 +165,6 @@ async function readTranscript(body: ReadableStream<Uint8Array> | null, onDelta: 
   return final ?? joined;
 }
 
-/** The checked multipart body of POST /api/voice/transcribe. */
 export function parseClip(form: FormData): VoiceClip {
   const audio = form.get(VOICE_FORM.audio);
   if (audio === null || typeof audio === "string") throw new VoiceError("invalid_audio", 400, "Send the recording as the audio part");
@@ -263,7 +257,6 @@ export class VoiceService {
     };
   }
 
-  /** `change` is a VoiceConfigUpdate off the wire, checked here; a missing field stays, null removes it. */
   update(change: unknown): VoiceStatus {
     if (!isJsonObject(change)) throw invalid("Send a JSON object");
     const extra = Object.keys(change).find((field) => !(FIELDS as readonly string[]).includes(field));
@@ -288,11 +281,6 @@ export class VoiceService {
     return this.status();
   }
 
-  /**
-   * Starts the transcription and answers once the provider accepted it: a refusal before that
-   * throws a VoiceError, anything after is an `error` line. `signal` is the client's: when it goes,
-   * the provider's requests are dropped too.
-   */
   async transcribe(clip: VoiceClip, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
     const { key, base, transcribeModel, polishModel } = this.settings(this.read());
     if (!key) throw new VoiceError("voice_not_configured", 409, "Set an OpenAI API key for voice input");

@@ -30,7 +30,8 @@ function claudeScreen(lines: string[]): Screen {
   return { model: `claude-${named[1]!.toLowerCase()}-${named[2]}${named[3] === undefined ? "" : `-${named[3]}`}`, reasoning_effort: null };
 }
 
-const CODEX_PROMPT = /^\s*›(?:\s|$)/u;
+/** A prompt line of Codex's: one sent (`›`), or its composer, which it marks `»` at Ultra reasoning effort (0.164 on, its `prompt_glyph`). */
+const CODEX_PROMPT = /^\s*[›»](?:\s|$)/u;
 
 /** The lines under the last Codex session header down to its composer footer, the model and
  * effort that footer states, or null when the screen does not show both. */
@@ -40,7 +41,8 @@ function codexLayout(lines: string[]): { header: number; visible: string[]; end:
   while (header >= 0 && !/^[\s\u2502|]*>_ OpenAI Codex \(v\d[^)]*\)[\s\u2502|]*$/u.test(lines[header]!)) header--;
   if (header < 0) return null;
   const visible = lines.slice(header + 1);
-  const footer = new RegExp(`^\\s*(GPT-[\\w.-]+) (${EFFORT})(?: \\w+)? · `, "u");
+  // one word: OpenAI's `GPT-6-Luna`, or the name a custom model provider gives it (`gpt-6.1-terra`, `DeepSeek4.1flash(OpenCode)`, #3263)
+  const footer = new RegExp(`^\\s*([^\\s·]+) (${EFFORT}|ultra)(?: \\w+)? · `, "u");
   let end = visible.length - 1;
   while (end >= 0 && visible[end]!.trim() === "") end--;
   if (end < 1 || !/^\s*[←?].*(?:for agents|shortcuts)/u.test(visible[end]!)) return null;
@@ -50,10 +52,12 @@ function codexLayout(lines: string[]): { header: number; visible: string[]; end:
 }
 
 /** Only the live composer footer owns a Codex model. Text above it (an answer quoting the
- * /model picker, a draft) never does, and while a popup hides the footer the model is unknown. */
+ * /model picker, a draft) never does, and while a popup hides the footer the model is unknown.
+ * OpenAI's `GPT-…` is given as its id; a model another provider names is kept as written. */
 function codexScreen(lines: string[]): Screen {
   const found = codexLayout(lines)?.model;
-  return found ? { model: found[1]!.toLowerCase(), reasoning_effort: found[2]! } : NOTHING;
+  if (!found) return NOTHING;
+  return { model: /^GPT-/u.test(found[1]!) ? found[1]!.toLowerCase() : found[1]!, reasoning_effort: found[2]! };
 }
 
 /** A cell Codex draws for something said or done: an answer or a tool call, a warning, an error. */
@@ -77,6 +81,68 @@ export function codexStartScreenUnused(screen: string): boolean {
     && !lines.slice(composer + 1).some((line) => CODEX_PROMPT.test(line) || CODEX_CELL.test(line));
 }
 
+const AGY_HEADER = /^(?:\s*[▄▀]+)*\s*Antigravity CLI \d[\d.]*\s*$/u;
+const AGY_RULE = /^\s*─{10,}\s*$/u;
+const AGY_PROMPT = /^\s*>(?:\s|$)/u;
+const AGY_CELL = /^\s*[✦●•■](?:\s|$)/u;
+
+/**
+ * Whether an Agy screen is its start screen with nothing said in it yet: under the last session
+ * header, its banner and optional startup warning, then the composer (`>` between two full-width
+ * rules) and its `? for shortcuts` footer, with no prompt, command, answer, or panel above or
+ * below the composer.
+ */
+export function agyStartScreenUnused(screen: string): boolean {
+  const all = screen.split("\n");
+  let header = all.length - 1;
+  while (header >= 0 && !AGY_HEADER.test(all[header]!)) header--;
+  if (header < 0 || all.slice(0, header).some((line) => AGY_RULE.test(line) || AGY_PROMPT.test(line) || AGY_CELL.test(line))) return false;
+  const visible = all.slice(header + 1);
+  let end = visible.length - 1;
+  while (end >= 0 && visible[end]!.trim() === "") end--;
+  if (end < 3 || !/^\s*\? for shortcuts(?:\s|$)/u.test(visible[end]!)) return false;
+  let lower = end - 1;
+  while (lower >= 0 && visible[lower]!.trim() === "") lower--;
+  if (lower < 2 || !AGY_RULE.test(visible[lower]!)) return false;
+  let upper = lower - 1;
+  while (upper >= 0 && !AGY_RULE.test(visible[upper]!)) upper--;
+  if (upper < 0 || visible.slice(0, upper).some((line) => AGY_RULE.test(line) || AGY_PROMPT.test(line) || AGY_CELL.test(line))) return false;
+  const box = visible.slice(upper + 1, lower).filter((line) => line.trim() !== "");
+  return box.length > 0 && AGY_PROMPT.test(box[0]!) && box.slice(1).every((line) => /^\s{2,}\S/u.test(line));
+}
+
+/** OpenCode's logo as its home screen draws it (2.0.32 to 2.2.2): "open" and "code" side by side, or, in a narrow pane, "open" over "code". */
+const OPENCODE_OPEN = ["█▀▀█ █▀▀█ █▀▀█ █▀▀▄", "█  █ █  █ █▀▀▀ █  █", "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀"];
+const OPENCODE_CODE = ["█▀▀▀ █▀▀█ █▀▀█ █▀▀█", "█    █  █ █  █ █▀▀▀", "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"];
+const OPENCODE_LOGO = OPENCODE_OPEN.map((row, index) => `${row} ${OPENCODE_CODE[index]}`);
+/** The dot over the logo's "d". */
+const OPENCODE_DOT = "▄";
+/** A line of a box (OpenCode's composer, a dialog) or of a panel's frame. */
+const OPENCODE_FRAME = /[┃╹│┌┐└┘╭╮╰╯]/u;
+
+/**
+ * Whether an OpenCode screen is its home screen, which shows no session: OpenCode draws it while it
+ * has none open, and opens a session (and with it a screen of turns, with no logo) on the first
+ * prompt. From the top, only the logo (and the dot over its "d"), then notices under it (an update),
+ * then the composer (rows behind `┃`, closed by `╹▀▀…`) with whatever draft it holds, then the footer
+ * (folder, key hints) and the version. A dialog or an autocomplete drawn over it, a toast, or any
+ * text above the logo leaves the screen unknown, and this says no.
+ */
+export function opencodeStartScreenUnused(screen: string): boolean {
+  const lines = screen.split("\n").map((line) => line.trim());
+  const top = lines.findIndex((line) => line !== "" && line !== OPENCODE_DOT);
+  const drawn = (at: number, logo: readonly string[]) => logo.every((row, index) => lines[at + index] === row);
+  let below: number;
+  if (top >= 0 && drawn(top, OPENCODE_LOGO)) below = top + OPENCODE_LOGO.length;
+  else if (top >= 0 && drawn(top, OPENCODE_OPEN) && lines[top + 3] === OPENCODE_DOT && drawn(top + 4, OPENCODE_CODE)) below = top + 7;
+  else return false;
+  const composer = lines.findIndex((line, index) => index >= below && OPENCODE_FRAME.test(line));
+  if (composer < 0 || !lines[composer]!.startsWith("┃")) return false;
+  let end = composer;
+  while (lines[end]?.startsWith("┃")) end++;
+  return /^╹▀+$/u.test(lines[end] ?? "") && !lines.slice(end + 1).some((line) => OPENCODE_FRAME.test(line));
+}
+
 /** ` ⬢ opus-5.5 · ◉ xhigh · 1.5% / …`, the status line over the composer. */
 function gjcScreen(lines: string[]): Screen {
   const found = lastMatch(lines, new RegExp(`⬢ (\\S+) · ◉ (${EFFORT})(?: |$)`, "u"));
@@ -86,10 +152,49 @@ function gjcScreen(lines: string[]): Screen {
   return { model, reasoning_effort: found[2]! };
 }
 
+/**
+ * `? for shortcuts          Gemini 3.8 Flash · high`, the status row under the composer. The left
+ * is `? for shortcuts`, `esc to cancel` while a turn or question is up, or blank while a panel is
+ * open. The right is the display name and the effort word. A mode word may sit in front
+ * (`auto · Gemini 4 Hydrogen · medium`). The banner's `Gemini 3.8 Flash (High)` is not this row,
+ * and a missing or cut-off row names none.
+ */
+const AGY_EFFORT = new RegExp(`^(?:${EFFORT}|extra-low)$`, "u");
+
+function agyScreen(lines: string[]): Screen {
+  let end = lines.length - 1;
+  while (end >= 0 && lines[end]!.trim() === "") end--;
+  if (end < 0) return NOTHING;
+  const hinted = /^\s*(?:\? for shortcuts|esc to cancel)\s{2,}(\S(?:.*\S)?)\s*$/u.exec(lines[end]!);
+  const aligned = hinted ?? /^\s{2,}(\S(?:.*\S)?)\s*$/u.exec(lines[end]!);
+  if (!aligned) return NOTHING;
+  const parts = aligned[1]!.split(" · ");
+  if (parts.length < 2 || parts.length > 3 || !AGY_EFFORT.test(parts[parts.length - 1]!)) return NOTHING;
+  if (parts.length === 3 && /\s/u.test(parts[0]!)) return NOTHING;
+  const model = parts.length === 3 ? parts[1]! : parts[0]!;
+  if (model === "" || model !== model.trim()) return NOTHING;
+  return { model, reasoning_effort: parts[parts.length - 1]! };
+}
+
+/**
+ * `0.0%/262k (auto)          (provider) model-id • high`, the stats row of Pi's footer: the context
+ * figure on the left, the model id its transcript records on the right, then its thinking level
+ * when the model reasons (` • thinking off` when that level is off). Pi cuts a right side too wide
+ * to fit down to two columns after the stats, with no marker: a row padded by only two may hold a
+ * cut-off id, so it names none.
+ */
+function piScreen(lines: string[]): Screen {
+  const found = lastMatch(lines, new RegExp(`(?:\\d+(?:\\.\\d)?%|\\?)/\\d+(?:\\.\\d)?[kM]?(?: \\(auto\\))?(?: • xp)? {3,}(?:\\([^()\\s]+\\) )?(\\S+)(?: • (?:thinking (off)|(${EFFORT})))?(?: → \\S+(?: • \\S+)?)?\\s*$`, "u"));
+  if (!found || found[1] === "no-model") return NOTHING;
+  return { model: found[1]!, reasoning_effort: found[2] ?? found[3] ?? null };
+}
+
 const SCREENS: Partial<Record<ConversationResponse["source"], (lines: string[]) => Screen>> = {
+  "agy-transcript": agyScreen,
   "claude-transcript": claudeScreen,
   "codex-transcript": codexScreen,
   "gjc-transcript": gjcScreen,
+  "pi-transcript": piScreen,
 };
 
 export function readsStartScreen(source: ConversationResponse["source"]): boolean {

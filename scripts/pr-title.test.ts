@@ -19,7 +19,6 @@ const ci = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/ci.yml"), "
 const steps = workflow.jobs.title!.steps;
 const step = steps.find((candidate) => candidate.name === "Check the pull request title")!;
 
-/** Runs the workflow step's own script, as `shell: node {0}` does, against one event payload. */
 function check(eventName: string, payload?: unknown, raw?: string) {
   const dir = mkdtempSync(join(tmpdir(), "pr-title-"));
   try {
@@ -41,9 +40,9 @@ function check(eventName: string, payload?: unknown, raw?: string) {
 const titled = (action: string, title: unknown) => check("pull_request", { action, pull_request: { title } });
 
 describe.skipIf(process.platform === "win32")("PR title check", () => {
-  it("runs alone in a hosted job that checks out nothing, reading the title as data", () => {
+  it("runs alone in a job that checks out nothing, fork pull requests hosted, reading the title as data", () => {
     expect(Object.keys(workflow.jobs)).toEqual(["title"]);
-    expect(workflow.jobs.title!["runs-on"]).toBe("ubuntu-24.04");
+    expect(workflow.jobs.title!["runs-on"]).toStartWith("${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || ");
     expect(steps).toEqual([step]);
     expect(step.shell).toBe("node {0}");
     expect(step.env).toBeUndefined();

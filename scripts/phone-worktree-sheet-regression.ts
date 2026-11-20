@@ -1,4 +1,3 @@
-/** A phone's New worktree sheet, on a herdr of the run's own. Run after `bun run build`. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
@@ -9,6 +8,7 @@ import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { UsageService } from "../server/usage.ts";
 import { chromePath } from "./chrome-path.ts";
+import { shownRows } from "./shown-rows.ts";
 
 // The sheet's open agent list floats over it: a stroke down on the list at its top is the list's,
 // and the sheet stays where it is. A checkout made with Shell opens its terminal: the sheet steps
@@ -43,7 +43,6 @@ try {
     await page.locator(".row-sheet").getByRole("button", { name: "New worktree", exact: true }).click();
     const sheet = page.getByRole("dialog", { name: /^New worktree/ });
     await sheet.waitFor();
-    // the sheet has risen: a drag moves it from where it rests
     await page.waitForFunction(() => document.querySelector(".modal-scrim")?.getAnimations({ subtree: true }).length === 0);
 
     const agent = sheet.getByRole("combobox", { name: "Agent" });
@@ -73,7 +72,7 @@ try {
     await sheet.waitFor({ state: "detached" });
     await page.waitForFunction((pane) => new URLSearchParams(location.search).get("pane") === pane, opened.pane_id, { timeout: 10_000 });
     assert.equal(await page.locator(".pane-frame.is-current").getAttribute("data-layout-pane"), opened.pane_id, "the checkout's shell pane is the one shown");
-    await page.locator(".pane-frame.is-current .xterm-rows").waitFor();
+    await page.locator(shownRows(".pane-frame.is-current")).waitFor();
     assert.deepEqual(errors, []);
     console.log("PASS a phone's New worktree with Shell opens the checkout's terminal");
     await context.close();
@@ -97,7 +96,7 @@ try {
     await workspaceClose(workspace.workspace_id).catch(() => undefined);
   }
   // herdr keeps the repository's folder under its worktree directory once the checkout is gone: only an empty one is ours to drop
-  try { rmdirSync(join(homedir(), ".herdr", "worktrees", basename(repo))); } catch { /* not there, or not empty: not ours */ }
+  try { rmdirSync(join(homedir(), ".herdr", "worktrees", basename(repo))); } catch {}
   for (const id of owned.reverse()) await workspaceClose(id).catch(() => {});
   server.stop();
   rmSync(root, { recursive: true, force: true });

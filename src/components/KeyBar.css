@@ -1,44 +1,47 @@
-/*
- * Touch key bar under the terminal (KeyBar.tsx): the keys a soft keyboard has
- * no room for. Hidden on fine-pointer desktops, shown on coarse pointers and
- * narrow viewports. A key never takes focus (KeyBar.tsx cancels pointerdown and
- * mousedown), so the soft keyboard stays up and xterm's textarea keeps every
- * keystroke; the row scrolls sideways when the keys outgrow the viewport, and the
- * edge that hides more keys fades out (KeyBar.tsx sets data-overflow-start/end).
- */
-
 .key-bar {
-  /* a key's drawn height: the bar's height less room above and below it, so the keys sit evenly in
-     the bar instead of meeting its rule and the screen's edge; each key still takes a
-     --touch-target tap through its invisible expander (.key::before) */
   --key-h: calc(var(--keybar-h) - 3 * var(--space-1));
-  /* the fade's width at an edge with keys out of view */
-  --keybar-fade: var(--space-6);
-  --keybar-fade-start: 0px;
-  --keybar-fade-end: 0px;
   display: none;
   flex: none;
-  align-items: center;
+  align-items: stretch;
   gap: var(--space-1);
   height: var(--keybar-h);
-  /* the keys stand off the pane's edges rather than against its border */
   padding: 0 var(--space-2);
   border-top: var(--hairline) solid var(--border);
   background: var(--bg-panel);
+}
+
+.key-bar,
+.key-bar-row {
+  --keybar-fade: var(--space-6);
+  --keybar-fade-start: 0px;
+  --keybar-fade-end: 0px;
+}
+
+.key-bar-row {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
 }
 
-.key-bar::-webkit-scrollbar {
+.key-bar::-webkit-scrollbar,
+.key-bar-row::-webkit-scrollbar {
   display: none;
 }
 
-/* a mask rather than a painted overlay: the fade is the bar's own colours in every palette, it
-   needs no element over the scroller, and it is static, so reduced motion has nothing to stop */
+.key-bar > .key[data-key="more"] {
+  align-self: center;
+}
+
 .key-bar[data-overflow-start],
-.key-bar[data-overflow-end] {
+.key-bar[data-overflow-end],
+.key-bar-row[data-overflow-start],
+.key-bar-row[data-overflow-end] {
   mask-image: linear-gradient(
     to right,
     transparent,
@@ -48,17 +51,16 @@
   );
 }
 
-.key-bar[data-overflow-start] {
+.key-bar[data-overflow-start],
+.key-bar-row[data-overflow-start] {
   --keybar-fade-start: var(--keybar-fade);
 }
 
-.key-bar[data-overflow-end] {
+.key-bar[data-overflow-end],
+.key-bar-row[data-overflow-end] {
   --keybar-fade-end: var(--keybar-fade);
 }
 
-/* the bar at the bottom of the screen (KeyBar.tsx) keeps clear of the home indicator, though
-   less than the whole safe area: the bar's own padding around its keys is part of that room,
-   as the composer's is (Composer.css) */
 .key-bar.is-at-screen-bottom {
   height: calc(var(--keybar-h) + max(0px, env(safe-area-inset-bottom, 0px) - var(--space-2)));
   padding-bottom: max(0px, calc(env(safe-area-inset-bottom, 0px) - var(--space-2)));
@@ -70,8 +72,6 @@
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  /* the touch target's width; a wider cap (Shift, Enter) grows the key, never shrinks it. Its
-     height is drawn at --key-h and reaches the touch target through the expander below */
   min-width: var(--touch-target);
   height: var(--key-h);
   padding: 0 var(--space-1);
@@ -93,8 +93,6 @@
     border-color var(--dur-fast) var(--ease-out);
 }
 
-/* the key's --touch-target tap area: measured from the key's padding box, inside its hairline
-   edge, so the edge is counted out (as CommandPalette.css's filter chips) */
 .key::before {
   content: "";
   position: absolute;
@@ -111,21 +109,17 @@
   margin-inline: var(--space-1);
 }
 
-/* what Paste needs, said in the bar's own row after its fixed controls, which start with the Input
-   line key it names (KeyBar.tsx),
-   in place of the other keys for a moment: never painted over the terminal's output. Two lines
-   fit the key's height; the row does not scroll while it shows */
 .key-bar-note {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
+  max-width: 8.5rem;
   margin: 0;
   color: var(--text);
   font-size: var(--fs-chat);
   line-height: var(--lh-tight);
-  overflow-wrap: anywhere;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
-/* hover only where a pointer can hover: a tapped key must not stay lit */
 @media (hover: hover) {
   .key:hover {
     background: var(--bg-hover);
@@ -137,37 +131,118 @@
   background: var(--bg-elevated);
   border-color: var(--accent);
   color: var(--text-strong);
+  font-weight: var(--fw-selected, var(--fw-semibold));
 }
 
-/* a key shows its press in its own colours, not with the dim other buttons take (styles.css) */
+.key.is-locked {
+  background: var(--accent-tint);
+}
+
+.key.is-locked::after {
+  content: "";
+  position: absolute;
+  inset-inline: var(--space-2);
+  bottom: var(--space-1);
+  height: calc(2 * var(--hairline));
+  border-radius: var(--hairline);
+  background: var(--accent);
+}
+
+@media (forced-colors: active) {
+  .key.is-armed {
+    outline: var(--hairline) solid Highlight;
+    outline-offset: calc(-2 * var(--hairline));
+  }
+
+  .key.is-locked::after {
+    background: Highlight;
+  }
+}
+
 .key:active {
   opacity: 1;
 }
 
-/* the bar scrolls sideways and so clips what overflows it: the ring is drawn inside the key */
 .key:focus-visible {
   outline-offset: calc(var(--ring-offset) * -1);
 }
 
-/* a key with nothing to send to or to show the keyboard for (offline, held, ended, a composition)
-   says so by its dim glyph; the keyboard control that refuses a tap is live (aria-disabled, so the
-   press keeps the focus and the composition) and reads the same */
 .key:disabled,
 .key[aria-disabled="true"] {
   color: var(--text-dim);
   cursor: default;
 }
 
-/* a refused tap is no press: the key stays at rest */
 .key[aria-disabled="true"]:active {
   background: transparent;
   border-color: var(--border);
   color: var(--text-dim);
 }
 
+.key-bar.is-expanded {
+  --keybar-pad-block: calc(1.5 * var(--space-1) - (var(--touch-target) - var(--key-h)) / 2);
+  grid-template-columns: minmax(0, 1fr) repeat(3, var(--touch-target));
+  grid-template-rows: repeat(2, var(--touch-target));
+  align-items: center;
+  height: auto;
+  padding-block: var(--keybar-pad-block);
+}
+
+.key-bar.is-expanded.is-at-screen-bottom {
+  height: auto;
+  padding-bottom: calc(var(--keybar-pad-block) + max(0px, env(safe-area-inset-bottom, 0px) - var(--space-2)));
+}
+
+.key-bar-second-row {
+  display: flex;
+  grid-column: 1 / 3;
+  grid-row: 1;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.key-bar-second-row .key {
+  flex: 0 1 var(--touch-target);
+  min-width: 0;
+}
+
+.key-bar.is-expanded .key-bar-row {
+  grid-column: 1;
+  grid-row: 2;
+  height: 100%;
+}
+
+.key-bar-arrow-pad {
+  display: contents;
+}
+
+.key-bar-arrow-pad .key[data-key="ArrowUp"] { grid-area: 1 / 3; }
+.key-bar-arrow-pad .key[data-key="ArrowLeft"] { grid-area: 2 / 2; }
+.key-bar-arrow-pad .key[data-key="ArrowDown"] { grid-area: 2 / 3; }
+.key-bar-arrow-pad .key[data-key="ArrowRight"] { grid-area: 2 / 4; }
+.key-bar.is-expanded > .key[data-key="more"] { grid-area: 1 / 4; }
+
 @media (pointer: coarse), (max-width: 768px) {
   .key-bar {
     display: flex;
+  }
+
+  .key-bar.is-expanded {
+    display: grid;
+  }
+}
+
+@media (max-width: 359px) {
+  .key-bar:not(.is-expanded) {
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .key-bar:not(.is-expanded) .key-bar-row {
+    display: contents;
   }
 }
 

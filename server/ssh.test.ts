@@ -1,15 +1,21 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, watch, writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { refusalHint, SshConnection, sshClient } from "./ssh.ts";
+import type { BridgeDescriptor } from "./bridge.ts";
+import type { CompletionTracker } from "./completion.ts";
+import { MachineManager } from "./machines.ts";
+import type { PushService } from "./push.ts";
+import { forwardSaysReady, refusalHint, SshConnection, sshClient, sshVerboseLine, sweepSshDirs } from "./ssh.ts";
+import { posixHost, type HostInspection } from "./remote-host.ts";
 
 // The direct mode Windows uses (its OpenSSH has no connection sharing), run here against a
 // stand-in ssh. Windows itself runs it against real hosts; this sh stand-in needs a POSIX shell.
 const FAKE_SSH = String.raw`#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_DIR/calls"
-kh=""; batch=""; learn=""; config=""; tunnel=""; forward=""; prev=""; last=""
+kh=""; batch=""; learn=""; config=""; tunnel=""; forward=""; verbose=""; prev=""; last=""
 for a in "$@"; do
   if [ "$prev" = "-o" ]; then
     case "$a" in
@@ -21,6 +27,7 @@ for a in "$@"; do
   [ "$prev" = "-L" ] && forward="$a"
   [ "$a" = "-G" ] && config=1
   [ "$a" = "-N" ] && tunnel=1
+  [ "$a" = "-v" ] && verbose=1
   prev="$a"; last="$a"
 done
 if [ -n "$config" ]; then
@@ -49,14 +56,35 @@ fi
 if [ -n "$tunnel" ]; then
   [ -z "$forward" ] && exec sleep 30
   port=$(printf '%s' "$forward" | cut -d: -f2)
-  exec "$FAKE_BUN" -e "let opened = 0; Bun.listen({ hostname: '127.0.0.1', port: $port, socket: { open() { if (++opened === Number(process.env.FAKE_TUNNEL_ENDS_AT)) process.exit(0); }, data() {} } });"
+  rport=$(printf '%s' "$forward" | cut -d: -f4)
+  # a ProxyJump's ssh gets -v too, shares stderr and enters its own session in the jump host first
+  [ -n "$verbose" ] && [ -n "$FAKE_JUMP" ] && printf 'debug1: Entering interactive session.\r\n' >&2
+  # a ProxyCommand child that outlives ssh and keeps its stderr open
+  [ -n "$FAKE_HOLD_STDERR" ] && { sleep 600 & echo $! > "$FAKE_DIR/holder.pid"; }
+  [ -n "$FAKE_AUTH_GATE" ] && read -r _ < "$FAKE_AUTH_GATE"
+  # what OpenSSH 10.2 says: the first lines come before its bind, the last once its forwards stand;
+  # with LogVerbose each debug line carries its source location after the level
+  exec "$FAKE_BUN" -e "
+const say = (line) => require('node:fs').writeSync(2, line + '\r\n');
+const debug = (where, message) => say('debug1: ' + ('$FAKE_LOG_VERBOSE' ? where + ' ' : '') + message);
+if ('$verbose') debug('ssh.c:2015 ssh_init_forwarding():', 'Local connections to 127.0.0.1:$port forwarded to remote address 127.0.0.1:$rport');
+if ('$verbose') debug('channels.c:3810 channel_setup_fwd_listener_tcpip():', 'Local forwarding listening on 127.0.0.1 port $port.');
+let opened = 0;
+try { Bun.listen({ hostname: '127.0.0.1', port: $port, socket: { open() { if (++opened === Number(process.env.FAKE_TUNNEL_ENDS_AT)) process.exit(0); }, data() {} } }); }
+catch { say('bind [127.0.0.1]:$port: Address already in use'); say('channel_setup_fwd_listener_tcpip: cannot listen to port: $port'); say('Could not request local forwarding.'); process.exit(255); }
+if ('$verbose') debug('clientloop.c:1470 client_loop():', 'Entering interactive session.');
+"
 fi
 [ "$last" = "exit" ] && exit 0
+case "$FAKE_FLOOD" in
+  whitespace) head -c 8388608 /dev/zero | tr '\0' ' '; printf '[]'; exit 0 ;;
+  stdout) exec yes ;;
+  stderr) exec yes >&2 ;;
+esac
 echo ran
 `;
 
-// `ssh-keygen -l -f <known_hosts>` for the ed25519 lines the stand-in ssh learns. CI's runner
-// image has no OpenSSH, so the real one cannot be relied on.
+// CI's runner image has no OpenSSH, so the real one cannot be relied on.
 const FAKE_SSH_KEYGEN = String.raw`#!/bin/sh
 for file; do :; done
 exec "$FAKE_BUN" -e '
@@ -68,7 +96,7 @@ for (const line of readFileSync(process.argv.at(-1), "utf8").trim().split("\n"))
 }' "$file"
 `;
 
-const FAKE_KEYS = ["FAKE_DIR", "FAKE_BUN", "FAKE_PASSPHRASE", "FAKE_PROMPT", "FAKE_HOSTKEY_LINE", "FAKE_INTRUDER", "FAKE_CONFIG_FORWARD", "FAKE_TUNNEL_ENDS_AT"];
+const FAKE_KEYS = ["FAKE_DIR", "FAKE_BUN", "FAKE_PASSPHRASE", "FAKE_PROMPT", "FAKE_HOSTKEY_LINE", "FAKE_INTRUDER", "FAKE_CONFIG_FORWARD", "FAKE_TUNNEL_ENDS_AT", "FAKE_FLOOD", "FAKE_AUTH_GATE", "FAKE_JUMP", "FAKE_LOG_VERBOSE", "FAKE_HOLD_STDERR"];
 
 describe.skipIf(process.platform === "win32")("SSH without connection sharing", () => {
   const cleanups: (() => void)[] = [];
@@ -113,6 +141,15 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
     expect(ssh.connected()).toBe(true);
   });
 
+  // a PC's discovery answer is read only up to its cap: past it the command is stopped, and nothing it said is taken, so a
+  // PC cannot pad a list nor stream until the command's timeout
+  it.each(["whitespace", "stdout", "stderr"])("stops reading a PC's herdr discovery past its cap: %s", async (flood) => {
+    const { ssh, ask } = fixture({ FAKE_FLOOD: flood });
+    await ssh.start(ask("unused"));
+    await expect(posixHost.discoverSessions!(ssh, { runtimeDir: "/fixture/runtime" } as HostInspection)).rejects.toThrow("more output than expected");
+    expect(ssh.connected()).toBe(true);
+  });
+
   it("runs the ssh OVIS_SSH names instead of the one on PATH", async () => {
     const { root, ssh, calls, ask } = fixture({}, { onPath: false });
     await ssh.start(ask("unused"));
@@ -130,7 +167,6 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
 
   it("tells a refused connection through Git's ssh that Windows' agent service is not read", async () => {
     const { ssh } = fixture({ FAKE_PASSPHRASE: "secret" }, { onPath: false });
-    // what discovery marks on Windows, which this POSIX stand-in cannot reach
     const own = ssh as unknown as { client: { git?: true } };
     own.client = { ...own.client, git: true };
     await expect(ssh.start()).rejects.toThrow("does not read Windows' ssh-agent service");
@@ -212,9 +248,8 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
   });
 
   describe("forwards", () => {
-    it("opens the loopback port, and its ending ends the connection", async () => {
-      // the tunnel ends at its second connection: the first is forward()'s own readiness check
-      const { ssh, ask } = fixture({ FAKE_TUNNEL_ENDS_AT: "2" });
+    for (const [how, extra] of [["", {}], [" behind a ProxyJump", { FAKE_JUMP: "1" }], [" with LogVerbose", { FAKE_LOG_VERBOSE: "1" }]] as const) it(`opens the loopback port, and its ending ends the connection${how}`, async () => {
+      const { ssh, ask } = fixture({ FAKE_TUNNEL_ENDS_AT: "1", ...extra });
       await ssh.start(ask("unused"));
       const ended = Promise.withResolvers<void>();
       ssh.onExit = () => ended.resolve();
@@ -228,11 +263,128 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
       expect(ssh.connected()).toBe(false);
     });
 
+    // freePort() closes the port it found before ssh binds it, and another process on this PC may
+    // take it in between: the bridge's token must never reach that process.
+    it("ends a forward still waiting for ssh at once when the connection closes, though a child holds ssh's stderr", async () => {
+      const { root, ssh, ask } = fixture({ FAKE_HOLD_STDERR: "1" });
+      await ssh.start(ask("unused"));
+      const gate = join(root, "auth");
+      await Bun.$`mkfifo ${gate}`;
+      process.env["FAKE_AUTH_GATE"] = gate;
+      const free = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+      const port = free.port;
+      free.stop(true);
+      // the second holder's pid: the fake's `echo $! > holder.pid` makes the file before the pid is in it, and
+      // process.kill(0) (an empty file's Number) would signal this test's own process group
+      const holderPid = (): number | null => {
+        try { const pid = Number(readFileSync(join(root, "holder.pid"), "utf8")); return Number.isInteger(pid) && pid > 0 ? pid : null; } catch { return null; }
+      };
+      cleanups.push(() => { const pid = holderPid(); if (pid !== null) try { process.kill(pid); } catch {} });
+      const holding = Promise.withResolvers<void>();
+      const watcher = watch(root, (_event, name) => { if (name === "holder.pid" && holderPid() !== null) holding.resolve(); });
+      cleanups.push(() => watcher.close());
+      const forwarding = ssh.forward(port, 7317);
+      forwarding.catch(() => {});
+      await holding.promise;
+      ssh.close();
+      await expect(forwarding).rejects.toThrow("Connection cancelled");
+    }, 5_000);
+
+    // a ProxyJump's ssh enters its own session before this ssh has even authenticated
+    for (const [how, extra] of [["", {}], [", behind a ProxyJump", { FAKE_JUMP: "1" }], [", with LogVerbose", { FAKE_LOG_VERBOSE: "1" }]] as const) it(`never hands the bridge token to a process that took the port before ssh bound it${how}`, async () => {
+      const { root, ssh, ask } = fixture({ ...extra });
+      await ssh.start(ask("unused"));
+      const gate = join(root, "auth");
+      await Bun.$`mkfifo ${gate}`;
+      process.env["FAKE_AUTH_GATE"] = gate;
+      const token = "b".repeat(64);
+      let heard = "";
+      const forward = ssh.forward.bind(ssh);
+      ssh.forward = async (port: number, remotePort: number) => {
+        const squatter = Bun.listen({ hostname: "127.0.0.1", port, socket: { data(socket, data) {
+          heard += data.toString();
+          socket.end("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}");
+        } } });
+        cleanups.push(() => squatter.stop(true));
+        const opened = forward(port, remotePort);
+        await writeFile(gate, "\n");
+        return opened;
+      };
+      const manager = new MachineManager(join(root, "manager"), {} as PushService, {} as CompletionTracker);
+      cleanups.push(() => manager.stop());
+      const descriptor = { port: 7317, token, pid: process.pid, socket_path: "/s", bridge_protocol: 0, bundle_version: "" } as BridgeDescriptor;
+      const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
+      const told = await verify(ssh, descriptor, "/s").then(() => "verified", (error: Error) => error.message);
+      expect(heard).not.toContain(token);
+      expect(told).toContain("Could not request local forwarding.");
+    });
+
     it("refuses a host whose SSH config adds forwards of its own", async () => {
       const { ssh, ask } = fixture({ FAKE_CONFIG_FORWARD: "1" });
       await ssh.start(ask("unused"));
       await expect(ssh.forward(40_000, 7317)).rejects.toThrow("LocalForward, RemoteForward or DynamicForward");
     });
+  });
+
+  it("leaves no folder behind for connections that never start, and removes a started one's on close", async () => {
+    const { root, ssh, ask } = fixture();
+    const idle = Array.from({ length: 20 }, () => new SshConnection({ destination: "pc" }, join(root, "state"), undefined, false, false));
+    expect(idle.map((connection) => connection["dir"]).filter((dir) => dir && existsSync(dir))).toEqual([]);
+    await ssh.start(ask("unused"));
+    const dir = ssh["dir"];
+    expect(existsSync(join(dir, "askpass"))).toBe(true);
+    ssh.close();
+    expect(existsSync(dir)).toBe(false);
+    const cancelled = new SshConnection({ destination: "pc" }, join(root, "state"), undefined, false, false);
+    cancelled.close();
+    await expect(cancelled.start(ask("unused"))).rejects.toThrow("Connection cancelled");
+    expect(cancelled["dir"]).toBe("");
+  });
+});
+
+describe("sweeping connection folders an earlier server left", () => {
+  it("removes only this prefix's empty folders older than the limit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-ssh-sweep-"));
+    try {
+      const old = (Date.now() - 2 * 60 * 60_000) / 1000;
+      for (const name of ["herdr-ssh-old1", "herdr-ssh-old2", "herdr-ssh-busy", "herdr-ssh-new", "other-old"]) mkdirSync(join(root, name));
+      writeFileSync(join(root, "herdr-ssh-busy", "askpass"), "");
+      for (const name of ["herdr-ssh-old1", "herdr-ssh-old2", "herdr-ssh-busy", "other-old"]) utimesSync(join(root, name), old, old);
+      expect(await sweepSshDirs(root)).toBe(2);
+      expect(["herdr-ssh-old1", "herdr-ssh-old2", "herdr-ssh-busy", "herdr-ssh-new", "other-old"].filter((name) => existsSync(join(root, name)))).toEqual(["herdr-ssh-busy", "herdr-ssh-new", "other-old"]);
+      expect(await sweepSshDirs(join(root, "missing"))).toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("which ssh says a forward is bound", () => {
+  // Windows' own OpenSSH writes no -v line to a pipe: forward() must not wait for one from it, or every
+  // Windows connect without Git for Windows times out after 25 s
+  it("waits for the word from Git for Windows' ssh and from OpenSSH outside Windows, never from Windows' own", () => {
+    expect(forwardSaysReady({ git: true }, "win32")).toBe(true);
+    expect(forwardSaysReady({}, "win32")).toBe(false);
+    expect(forwardSaysReady({ git: false }, "win32")).toBe(false);
+    expect(forwardSaysReady({}, "linux")).toBe(true);
+    expect(forwardSaysReady({}, "darwin")).toBe(true);
+  });
+
+  // a failed forward's error is ssh's own words: the lines -v adds, prefixed or not, stay out of it
+  it("keeps ssh's own words and drops what -v adds", () => {
+    const stderr = [
+      "OpenSSH_10.0p2, OpenSSL 3.5.1 1 Jul 2025",
+      "debug1: Reading configuration data /etc/ssh/ssh_config",
+      "Authenticated to example.test ([192.0.2.7]:22) using \"publickey\".",
+      "bind [127.0.0.1]:41234: Address already in use",
+      "channel_setup_fwd_listener_tcpip: cannot listen to port: 41234",
+      "Could not request local forwarding.",
+      "Transferred: sent 2944, received 2792 bytes, in 0.1 seconds",
+      "Bytes per second: sent 29440.0, received 27920.0",
+    ];
+    expect(stderr.filter((line) => !sshVerboseLine(line))).toEqual([
+      "bind [127.0.0.1]:41234: Address already in use",
+      "channel_setup_fwd_listener_tcpip: cannot listen to port: 41234",
+      "Could not request local forwarding.",
+    ]);
   });
 });
 

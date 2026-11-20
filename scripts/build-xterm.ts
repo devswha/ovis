@@ -1,17 +1,15 @@
 /** xterm's source uses const enums in .d.ts files; TypeScript must inline them before Vite. */
 import ts from "typescript-api";
 import type { BunPlugin } from "bun";
+import type { Terminal } from "@xterm/xterm";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 /**
- * Emits xterm's source into a directory of node_modules/.cache/herdr-xterm named after what it is
- * built from (the patched source, TypeScript's version and the options), and returns it. A finished
- * directory is never written again: builds running at once in one checkout (the browser lane's
- * workers) read it while another may be emitting, and a module rewritten in place reads as missing
- * its exports (#2021). A new one is emitted into a private directory renamed into place whole; a
- * build that loses that rename to another uses the other's.
+ * A finished directory is never written again: builds running at once in one checkout (the browser
+ * lane's workers) read it while another may be emitting, and a module rewritten in place reads as
+ * missing its exports (#2021).
  *
  * TypeScript compiles the very bytes that were hashed, never the files as they are on disk by then: a
  * source changed in between would otherwise be published under the old source's key (#2148).
@@ -53,11 +51,9 @@ export function buildXtermSource(root: string): string {
   if (existsSync(output)) return output;
   mkdirSync(cache, { recursive: true });
   removeAbandonedStaging(cache);
-  // named after this process, so a later build can tell whether it is still being written
   const staging = mkdtempSync(`${output}.tmp-${process.pid}-`);
   try {
     const host = ts.createCompilerHost(options);
-    // inside xterm's package only the hashed files exist, as they were hashed
     const xterm = canonical(join(source, "..")) + "/";
     const { fileExists, readFile, realpath, writeFile } = host;
     const inside = (path: string) => canonical(path).startsWith(xterm);
@@ -103,7 +99,15 @@ export function xtermSourcePlugin(xterm: string): BunPlugin {
   };
 }
 
-/** One spelling per file for TypeScript's paths and node's alike. */
+/** The patched Terminal the app ships, for a test under Bun (the package's own build lacks the patch). */
+export async function patchedTerminal(root: string): Promise<typeof Terminal> {
+  const source = buildXtermSource(root);
+  const bundle = await Bun.build({ entrypoints: [join(source, "browser/public/Terminal.js")], plugins: [xtermSourcePlugin(source)], target: "bun" });
+  if (!bundle.success) throw new AggregateError(bundle.logs, "Could not build xterm");
+  const xterm: { Terminal: typeof Terminal } = await import(`data:text/javascript;base64,${Buffer.from(await bundle.outputs[0]!.text()).toString("base64")}`);
+  return xterm.Terminal;
+}
+
 function canonical(path: string): string {
   const slashed = path.replaceAll("\\", "/");
   return ts.sys.useCaseSensitiveFileNames ? slashed : slashed.toLowerCase();
@@ -118,7 +122,6 @@ function canonical(path: string): string {
 function removeAbandonedStaging(cache: string, now = Date.now()): void {
   for (const name of readdirSync(cache)) {
     if (!name.includes(".tmp-")) continue;
-    // a name from before staging carried its pid has none and is judged by its age alone
     const pid = Number(/\.tmp-(\d+)-[^.]+$/.exec(name)?.[1]);
     if (pid && running(pid)) continue;
     const path = join(cache, name);

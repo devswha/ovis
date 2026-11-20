@@ -22,7 +22,6 @@ const bigIds = (peer: string) => `{"BackendState":"Running","Self":{"UserID":${B
 
 describe("parseSoleTailnetLogin", () => {
   it("names the login a tailnet one login owns, phones and offline peers included", () => {
-    // the shape of the reported tailnet: this Mac plus six of the owner's own untagged devices
     expect(parseSoleTailnetLogin(tailnet([7511875822626835, undefined], Array.from({ length: 6 }, () => [7511875822626835, undefined] as [number, undefined])))).toBe("user7511875822626835@example.com");
     expect(parseSoleTailnetLogin(tailnet([42, undefined]))).toBe("user42@example.com");
     // an id past 2^53 names its login by the digits written, not by the double they round to
@@ -57,7 +56,6 @@ const serveRequest = (identity: TailnetIdentity, host: string | null = HOST) => 
   return access.level === "full" ? access.via : `refused:${access.reason}`;
 };
 
-/** a source whose cache holds `status` (none, when undefined) as read `minutesAgo` minutes ago, and whose reads from then on answer `read` */
 async function withCachedStatus(status: string | null | undefined, minutesAgo: number, read: () => Promise<string | null>, body: (source: TailnetIdentitySource) => Promise<void>): Promise<void> {
   let warm = status !== undefined ? status : null;
   const source = new TailnetIdentitySource(async () => {
@@ -151,6 +149,60 @@ describe("the owner's grant read, by Host and by outcome", () => {
       expect(serveRequest(await source.freshIdentity(HOST))).toBe("refused:pairing_required");
       expect(call).toBe(2);
     });
+  });
+});
+
+describe("loginIdentity", () => {
+  function source(reads: (string | null)[]) {
+    let now = 1_000_000;
+    let count = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const identities = new TailnetIdentitySource(async () => reads[Math.min(count++, reads.length - 1)] ?? null);
+    return { identities, reads: () => count, later: (ms: number) => { now += ms; }, restore: () => clock.mockRestore() };
+  }
+  const booting = JSON.stringify({ BackendState: "NoState", Self: { DNSName: "" } });
+
+  it("reads again after a boot read named no owner, at most every two seconds", async () => {
+    const s = source([booting, booting, tailnet([42, undefined])]);
+    try {
+      expect((await s.identities.loginIdentity()).owner).toBeNull();
+      // within two seconds of a read, requests answer from it: nothing can keep the CLI spawning
+      for (let i = 0; i < 20; i++) await s.identities.loginIdentity();
+      expect(s.reads()).toBe(1);
+      s.later(2_000);
+      expect((await s.identities.loginIdentity()).owner).toBeNull();
+      s.later(2_000);
+      expect((await s.identities.loginIdentity()).owner).toBe("user42@example.com");
+      expect(s.reads()).toBe(3);
+      s.later(2_000);
+      await s.identities.loginIdentity();
+      expect(s.reads()).toBe(3);
+    } finally { s.restore(); }
+  });
+
+  it("keeps a known owner through a failed read and a daemon that is not Running", async () => {
+    const s = source([tailnet([42, undefined]), null, booting]);
+    try {
+      expect((await s.identities.loginIdentity()).owner).toBe("user42@example.com");
+      for (let i = 0; i < 2; i++) {
+        s.later(6 * 60_000);
+        await s.identities.freshIdentity(HOST);
+        expect((await s.identities.loginIdentity()).owner).toBe("user42@example.com");
+      }
+      expect(s.reads()).toBe(3);
+    } finally { s.restore(); }
+  });
+
+  it("reads the new login on a login request after the daemon restarts under another account", async () => {
+    const s = source([tailnet([42, undefined]), booting, tailnet([43, undefined])]);
+    try {
+      expect((await s.identities.loginIdentity()).owner).toBe("user42@example.com");
+      s.later(6 * 60_000);
+      await s.identities.freshIdentity(HOST);
+      s.later(2_000);
+      expect((await s.identities.loginIdentity()).owner).toBe("user43@example.com");
+      expect(s.reads()).toBe(3);
+    } finally { s.restore(); }
   });
 });
 

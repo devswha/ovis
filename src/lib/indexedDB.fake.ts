@@ -1,17 +1,8 @@
-/**
- * Test support, never shipped: the part of IndexedDB the hosted shell uses (lib/relay/device.ts and
- * public/sw.js): open with a version and an upgrade, object stores keyed by `server_id`, and one
- * transaction's get, put and delete, each answered asynchronously as a browser's is. Values are
- * structured-cloned in and out, so a test sees what a later reader would.
- */
-
 type Row = { server_id: string };
 
 export interface FakeIndexedDB {
   readonly factory: { open(name: string, version: number): unknown };
-  /** a store's rows as they stand, keyed by server_id */
   rows(store: string): Map<string, unknown>;
-  /** the version the database was last opened at */
   version(): number;
 }
 
@@ -37,8 +28,9 @@ export function fakeIndexedDB(): FakeIndexedDB {
         return {
           get: (key: string) => request(() => (rows.has(key) ? structuredClone(rows.get(key)) : undefined)),
           getAll: () => request(() => [...rows.values()].map((row) => structuredClone(row))),
-          put: (value: Row) => request(() => { rows.set(value.server_id, structuredClone(value)); return value.server_id; }),
+          put: (value: Row, key?: string) => request(() => { const id = key ?? value.server_id; rows.set(id, structuredClone(value)); return id; }),
           delete: (key: string) => request(() => { rows.delete(key); return undefined; }),
+          clear: () => request(() => { rows.clear(); return undefined; }),
         };
       },
     };

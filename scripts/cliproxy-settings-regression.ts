@@ -1,4 +1,3 @@
-/** Account setup and hub OAuth against an isolated backend and deterministic provider fixture. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -74,24 +73,21 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
   await page.goto(`${origin}/?settings=agents`);
   await openSettingsPage(page, "Agents");
   await page.locator(".usage-accounts-row").first().waitFor();
-  const add = page.locator("[data-section='other-accounts'] .agents-head").getByRole("button", { name: "Add account", exact: true });
+  const add = page.locator("[data-section='other-accounts'] .settings-row").getByRole("button", { name: "Add account", exact: true });
   const modal = page.locator(".usage-account-dialog");
   const before = await page.locator(".usage-accounts-row").count();
 
-  // Given: Plan limits closes the page, the status-line switch after the meters' last option; Add heads Other accounts.
   const statusline = page.getByRole("switch", { name: "Read Claude's limits from its status line", exact: true });
   await statusline.waitFor();
   await page.getByRole("button", { name: "Session", exact: true }).focus();
   await page.keyboard.press("Tab");
   assert.equal(await statusline.evaluate((toggle) => toggle === document.activeElement), true);
   await add.focus();
-  // When: Enter walks provider -> method.
   await page.keyboard.press("Enter");
   await modal.waitFor();
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Claude");
   await page.keyboard.press("Enter");
   await modal.getByRole("button", { name: /^On this PC/ }).waitFor();
-  // Then: Escape closes just the picker and returns to Add.
   await page.keyboard.press("Escape");
   await modal.waitFor({ state: "hidden" });
   assert.equal(await add.evaluate((button) => button === document.activeElement), true);
@@ -165,9 +161,8 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
   await modal.getByRole("button", { name: /^Through the hub/ }).waitFor();
   await second.close();
   await modal.getByRole("button", { name: "Close", exact: true }).click();
-  await page.waitForFunction(() => document.activeElement === document.querySelector("[data-section='other-accounts'] .agents-head .btn"));
+  await page.waitForFunction(() => document.activeElement === document.querySelector("[data-section='other-accounts'] .settings-row .btn"));
 
-  // Given: a hub session is still waiting when its dialog is dismissed.
   await add.click();
   await modal.getByRole("button", { name: /^Claude/ }).click();
   const dismissedReady = page.waitForEvent("popup");
@@ -183,11 +178,9 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
     return url.pathname === "/api/cliproxy/login" && url.searchParams.get("state") === dismissedState
       && response.request().method() === "DELETE";
   }, { timeout: 5000 });
-  // When: Escape unmounts the account dialog, rather than pressing Cancel.
   await modal.getByRole("button", { name: "Close", exact: true }).focus();
   await page.keyboard.press("Escape");
   await modal.waitFor({ state: "hidden" });
-  // Then: cancellation reaches the backend and releases that exact fixture session.
   assert.equal((await dismissedCancel).status(), 200);
   assert.equal(fake.sessions.has(dismissedState), false);
   await dismissed.close();
@@ -195,7 +188,7 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
   console.log("PASS: Escape cancels the pending hub state and removes its session");
   const config: { url: string } = await (await page.request.get(`${origin}/api/cliproxy`)).json();
   const connection = page.locator('[data-section="usage-connection"]');
-  await page.getByRole("switch", { name: "Show plan limits", exact: true }).click();
+  await page.locator('.segmented[aria-label="Plan limits"]').getByRole("button", { name: "Off", exact: true }).click();
   assert.equal(await page.locator(".usage-provider").count(), 0);
   let usageRequests = 0;
   page.on("request", (request) => { if (new URL(request.url()).pathname === "/api/usage") usageRequests++; });
@@ -218,7 +211,7 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
   await confirm.getByRole("button", { name: "Remove", exact: true }).click();
   assert.equal((await removed).status(), 200);
   await connection.waitFor({ state: "hidden" });
-  await page.waitForFunction(() => document.activeElement === document.querySelector("[data-section='other-accounts'] .agents-head .btn"));
+  await page.waitForFunction(() => document.activeElement === document.querySelector("[data-section='other-accounts'] .settings-row .btn"));
   assert.equal(deletes, 1);
   await add.click();
   await modal.getByRole("button", { name: "Claude", exact: true }).click();
@@ -250,7 +243,7 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
   await modal.getByRole("button", { name: "Done", exact: true }).click();
   assert.equal(usageRequests, 0, "editing or removing a connection with plan limits off never requests usage");
   assert.equal(usageRequests, 0, "all connection actions with meters off avoid /api/usage");
-  await page.getByRole("switch", { name: "Show plan limits", exact: true }).click();
+  await page.locator('.segmented[aria-label="Plan limits"]').getByRole("button", { name: "Used", exact: true }).click();
   await page.locator(".usage-accounts-row").first().waitFor();
   await connection.getByRole("button", { name: "Edit", exact: true }).click();
   await modal.getByRole("button", { name: "Connect", exact: true }).click();

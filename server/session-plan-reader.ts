@@ -1,13 +1,12 @@
-import type { PlanStep } from "../shared/protocol.ts";
+import type { ConversationMetadata, PlanStep } from "../shared/protocol.ts";
 import { parseTodoAnswer, type TodoStatus } from "../shared/todos.ts";
 import { plain, readLines, remember } from "./claude-subagents.ts";
+import { withoutPictureBytes } from "./claude-transcript.ts";
+import { contextOf, parseConversationMetadata } from "./conversation-metadata.ts";
+import { isContextClear } from "./transcript-records.ts";
+import { claudeCommandEchoRecord, opensTurn } from "./transcript-turns.ts";
 
 /**
- * The plan an agent keeps for its session, read back from the session's transcript, for the
- * sidebar's progress and the plan panel. Nothing new is asked of the agent: Claude Code's task
- * list (`TaskCreate`/`TaskUpdate`, whose `blockedBy` gives the flow) and Codex's `update_plan`
- * checklist are already written there.
- *
  * Claude: a task is taken when its tool call is answered without an error, with the id Claude
  * gave it. Claude empties its list once every task in it is done, and so does this: the first
  * task created after that starts a new plan. A teammate of an agent team that changes a task
@@ -16,10 +15,9 @@ import { plain, readLines, remember } from "./claude-subagents.ts";
  * Codex: each explicit `update_plan` call sends the whole checklist, so the last one is the plan.
  * Code inside an `exec` call may quote a plan without calling the tool, and is ignored.
  * OmO: the last complete `todo` tool answer replaces the plan; an empty list clears it.
- * Dropped tasks are omitted, blocked tasks stay pending, and no dependency edges are invented.
  *
- * A transcript is read from its start, PLAN_BUDGET bytes per call, then only what was appended;
- * until the first read has reached the end, no plan is told.
+ * A Claude rewind leaves the answers it went back over in the file, and the next prompt hangs from
+ * the record it went back to (followClaudeBranch, which the chat follows).
  */
 export const PLAN_BUDGET = 32 * 1024 * 1024;
 const LINE_BUDGET = 8 * 1024 * 1024;
@@ -39,54 +37,142 @@ interface Read {
   id: string;
   offset: number;
   skipping: boolean;
-  /** the first read has not reached the end of what was written yet */
   catching: boolean;
-  /** the last read stopped for its budget: what follows has not been read */
   behind: boolean;
   steps: Map<string, PlanStep>;
-  /** Claude's task calls still waiting for their answer, by tool_use id */
   calls: Map<string, { name: string; input: Row }>;
+  metadata: ConversationMetadata;
+  claude?: ClaudeChain;
+}
+
+const CHAIN_LINE = 1024 * 1024;
+const MAX_SINCE = 10_000;
+const MAX_PLACES = 2_000;
+const MAX_FIGURES = 2_000;
+/** a uuid longer than this (Claude Code writes 36 characters) gets no place */
+const MAX_UUID = 64;
+
+interface Figure { at: number; context: ConversationMetadata["context"] }
+
+interface ClaudeChain {
+  since: Set<string | null> | null;
+  forked: { context?: ConversationMetadata["context"] } | null;
+  last: string | null;
+  echo?: { line: Set<string>; forked: { context?: ConversationMetadata["context"] }; figures: Figure[] };
+  count: number;
+  places: Map<string, number>;
+  figures: Figure[];
 }
 const reads = new Map<string, Read>();
 
-/**
- * The plan in `path` now: its steps in the order they were made, null when there is none (or it
- * is still being read). `budget`: the bytes this read may take, shared by every read of one poll.
- */
 export function readPlan(source: PlanSource, path: string, budget = { left: PLAN_BUDGET }): PlanStep[] | null {
   return planState(source, path, budget).steps;
 }
 
-export function planState(source: PlanSource, path: string, budget: { left: number }): { steps: PlanStep[] | null; behind: boolean } {
+export function planState(source: PlanSource, path: string, budget: { left: number }): { steps: PlanStep[] | null; behind: boolean; metadata: ConversationMetadata | null } {
   const stat = plain(path);
-  if (stat === null) return { steps: null, behind: false };
+  if (stat === null) return { steps: null, behind: false, metadata: null };
   const key = `${source}\0${path}`;
   let state = reads.get(key);
   if (!state || state.id !== stat.id || state.offset > stat.size) {
-    state = { id: stat.id, offset: 0, skipping: false, catching: true, behind: true, steps: new Map(), calls: new Map() };
+    state = { id: stat.id, offset: 0, skipping: false, catching: true, behind: true, steps: new Map(), calls: new Map(), metadata: { model: null, reasoning_effort: null } };
+    if (source === "claude-transcript") state.claude = { since: new Set([null]), forked: null, last: null, count: 0, places: new Map(), figures: [] };
   }
   remember(reads, key, state, MAX_FILES);
   const read = state;
   const readers = { "claude-transcript": claudeLine, "codex-transcript": codexLine, "omo-session": omoLine } satisfies Record<PlanSource, (read: Read, line: string) => void>;
-  const each = (line: string) => readers[source](read, line);
+  const each = (line: string) => { readers[source](read, line); contextLine(read, source, line); };
   read.behind = read.offset < stat.size;
   while (read.offset < stat.size && budget.left > 0) {
-    const done = readLines(path, read.offset, stat.size, LINE_BUDGET, each, read.skipping);
-    // the file could not be read this time (gone, out of descriptors): not caught up, tried again at the next poll
+    const done = readLines(path, read.offset, stat, LINE_BUDGET, each, read.skipping);
+    if (done.skipping && read.claude) read.claude = { since: null, forked: {}, last: null, count: 0, places: new Map(), figures: [] };
     if (done.failed) { read.behind = true; break; }
     const consumed = done.offset - read.offset;
     read.offset = done.offset;
     read.skipping = done.skipping;
     read.behind = done.more;
     budget.left -= consumed;
-    // what is left is a line still being written: the next read takes it whole
     if (consumed === 0 || !done.more) break;
   }
   if (!read.behind) read.catching = false;
-  return { steps: read.catching || read.steps.size === 0 ? null : [...read.steps.values()].map((step) => ({ ...step, blocked_by: [...step.blocked_by] })), behind: read.behind };
+  return { steps: read.catching || read.steps.size === 0 ? null : [...read.steps.values()].map((step) => ({ ...step, blocked_by: [...step.blocked_by] })), behind: read.behind, metadata: read.catching ? null : onBranch(read) };
 }
 
-/** Forgets every read (tests). */
+function onBranch(read: Read): ConversationMetadata {
+  const forked = forkOf(read.claude);
+  if (!forked) return read.metadata;
+  const { context: _, ...metadata } = read.metadata;
+  return forked.context === undefined ? metadata : { ...metadata, context: forked.context };
+}
+
+function forkOf(chain: ClaudeChain | undefined): ClaudeChain["forked"] {
+  return chain?.echo && chain.last !== null && chain.echo.line.has(chain.last) ? chain.echo.forked : chain?.forked ?? null;
+}
+
+function followChain(chain: ClaudeChain, line: string): number | null {
+  if (!line.includes('"uuid"')) return null;
+  const text = line.length > CHAIN_LINE ? withoutPictureBytes(line) : line;
+  let entry: Row | null = null;
+  if (text.length <= CHAIN_LINE) try { entry = row(JSON.parse(text)); } catch { }
+  if (entry === null) { chain.since = null; chain.last = null; return null; }
+  const uuid = entry["uuid"];
+  if (typeof uuid !== "string" || entry["isSidechain"] === true) return null;
+  chain.last = uuid;
+  const place = chain.count++;
+  if (isContextClear(entry, "claude-transcript")) { chain.since = new Set([null, uuid]); chain.forked = null; chain.echo = undefined; chain.places.clear(); chain.figures = []; return place; }
+  if (uuid.length <= MAX_UUID) remember(chain.places, uuid, place, MAX_PLACES);
+  // a compaction's boundary starts a chain of its own, and names the record it continues
+  const parent = entry["parentUuid"] === null ? typeof entry["logicalParentUuid"] === "string" ? entry["logicalParentUuid"] : null
+    : typeof entry["parentUuid"] === "string" ? entry["parentUuid"] : undefined;
+  const answer = entry["type"] === "assistant";
+  const offChain = !answer && parent !== undefined && chain.since !== null && !chain.since.has(parent);
+  const echo = chain.echo;
+  const prompt = !answer && (echo !== undefined || offChain) && opensTurn("claude-transcript", text, null) !== false;
+  if (echo && typeof parent === "string" && echo.line.has(parent)) {
+    if (prompt || echo.line.add(uuid).size > MAX_SINCE) { chain.forked = echo.forked; chain.figures = echo.figures; chain.echo = undefined; }
+  } else if (prompt) chain.echo = undefined;
+  if (offChain && (prompt || claudeCommandEchoRecord(entry))) {
+    const at = typeof parent === "string" ? chain.places.get(parent) : undefined;
+    const figures = at === undefined ? [] : chain.figures.filter((figure) => figure.at <= at);
+    const forked = { context: figures.at(-1)?.context };
+    if (prompt) { chain.forked = forked; chain.figures = figures; } else chain.echo = { line: new Set([uuid]), forked, figures };
+  }
+  if (answer) chain.since = new Set([uuid]);
+  else if (chain.since !== null) {
+    chain.since.add(uuid);
+    if (chain.since.size > MAX_SINCE) chain.since = null;
+  }
+  return place;
+}
+
+function note(figures: Figure[], at: number, context: ConversationMetadata["context"]): void {
+  if (figures.at(-1)?.context === context) return;
+  figures.push({ at, context });
+  if (figures.length > MAX_FIGURES) figures.shift();
+}
+
+const CONTEXT_MARKS: Record<PlanSource, readonly string[]> = {
+  "claude-transcript": ['"usage"', "command-name>", "local-command-stdout>"],
+  "codex-transcript": ['"token_count"', '"turn_context"', '"session_meta"'],
+  // OmO's figure has no window: the ring would draw nothing
+  "omo-session": [],
+};
+
+function contextLine(read: Read, source: PlanSource, line: string): void {
+  const chain = read.claude;
+  const place = chain ? followChain(chain, line) : null;
+  if (source !== "omo-session" && CONTEXT_MARKS[source].some((mark) => line.includes(mark))) {
+    const before = read.metadata.context;
+    read.metadata = parseConversationMetadata(line, source, read.metadata);
+    const { context, model } = read.metadata;
+    if (context !== undefined && context !== before) for (const forked of [chain?.forked, chain?.echo?.forked]) if (forked) forked.context = contextOf(context.used, model, null, forked.context);
+  }
+  if (chain && place !== null) {
+    note(chain.figures, place, chain.forked ? chain.forked.context : read.metadata.context);
+    if (chain.echo) note(chain.echo.figures, place, chain.echo.forked.context);
+  }
+}
+
 export function forgetPlans(): void {
   reads.clear();
 }
@@ -169,7 +255,6 @@ function codexLine(read: Read, line: string): void {
   const items = row(args)?.["plan"];
   if (!Array.isArray(items)) return;
   const at = stamp(entry["timestamp"]);
-  // a step keeps the times it had in the checklists before, found by its words
   const before = new Map([...read.steps.values()].map((step) => [step.label, step]));
   read.steps.clear();
   for (const item of items.slice(0, MAX_STEPS)) {
@@ -189,7 +274,6 @@ function codexLine(read: Read, line: string): void {
   }
 }
 
-/** Dropped work is no longer part of the plan; blocked work remains pending, never done. */
 const OMO_STATUSES = {
   pending: "pending", in_progress: "in_progress", completed: "completed", blocked: "pending", dropped: null,
 } as const satisfies Record<TodoStatus, PlanStep["status"] | null>;

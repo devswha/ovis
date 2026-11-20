@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { sanitizeFontFamily, TERMINAL_FONT_STACK } from "./fontFamily.ts";
 import { UI_FONT_MAX, UI_FONT_MIN, UI_FONT_PRESETS, UI_FONT_PRESET_FAMILY, UI_FONT_STACK, fontScale, sanitizeUiFontSize, uiFontPreset, uiFontStack } from "./typography.ts";
-import { DEFAULT_SETTINGS, SETTING_SCOPE, chatFontSize, sanitizeSettings, uiFontSize } from "./settings.ts";
+import { CHAT_FONT_MAX, CHAT_FONT_MIN, DEFAULT_SETTINGS, SETTING_SCOPE, chatFontSize, fileFontSize, sanitizeSettings, uiFontSize } from "./settings.ts";
 
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const token = (name: string): string => new RegExp(`${name}:\\s*([^;]+);`).exec(styles)![1]!.trim();
@@ -41,7 +41,6 @@ describe("interface font", () => {
 
   it("puts the UI language's Noto CJK family first", () => {
     expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, "ja")).toBe('"Noto Sans", "Noto Sans JP", "Noto Sans CJK JP", "Noto Sans KR", "Noto Sans CJK KR", "Noto Sans SC", "Noto Sans CJK SC", "Noto Sans TC", "Noto Sans CJK TC", sans-serif');
-    // a Korean device with the CJK collection's KR but only the per-language JP still gets Korean shapes
     expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, "ko")).toStartWith('"Noto Sans", "Noto Sans KR", "Noto Sans CJK KR", "Noto Sans JP", ');
     expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, "zh")).toStartWith('"Noto Sans", "Noto Sans SC", "Noto Sans CJK SC", "Noto Sans TC", ');
   });
@@ -101,5 +100,17 @@ describe("in Settings", () => {
     expect(uiFontSize(sanitizeSettings({ density: "compact", uiFontSize: 16 }))).toBe(16);
     expect(chatFontSize(sanitizeSettings({ uiFontSize: 16 }))).toBe(16);
     expect(chatFontSize(sanitizeSettings({ uiFontSize: 16, chatFontSize: 12 }))).toBe(12);
+  });
+
+  it("gives a file's text the chat's size until it has its own, on this device", () => {
+    expect(DEFAULT_SETTINGS.fileFontSize).toBeNull();
+    expect(SETTING_SCOPE.fileFontSize).toBe("device");
+    expect(fileFontSize(sanitizeSettings({ uiFontSize: 16 }))).toBe(16);
+    expect(fileFontSize(sanitizeSettings({ uiFontSize: 16, chatFontSize: 12 }))).toBe(12);
+    expect(fileFontSize(sanitizeSettings({ chatFontSize: 12, fileFontSize: 19 }))).toBe(19);
+    expect(sanitizeSettings({ fileFontSize: 99 }).fileFontSize).toBe(CHAT_FONT_MAX);
+    expect(sanitizeSettings({ fileFontSize: 2 }).fileFontSize).toBe(CHAT_FONT_MIN);
+    expect(sanitizeSettings({ fileFontSize: 15.6 }).fileFontSize).toBe(16);
+    expect(sanitizeSettings({ fileFontSize: "18" }).fileFontSize).toBeNull();
   });
 });

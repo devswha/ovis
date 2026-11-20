@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientMessage, ServerMessage } from "../../shared/protocol.ts";
@@ -21,7 +22,6 @@ export function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-/** Event barriers fail boundedly; no sleeps or polling of mutable state. */
 export async function bounded<T>(promise: Promise<T>, milliseconds = 10_000): Promise<T> {
   const failure = deferred<T>();
   const timer = setTimeout(() => failure.reject(new Error("Relay test event timed out")), milliseconds);
@@ -52,6 +52,49 @@ export class TestClock implements MuxClock {
   }
 }
 
+export async function relayPhone(transport: Transport, serverPublicKey: string) {
+  const welcome = deferred<Extract<SessionFrame, { type: typeof FrameType.WELCOME }>>();
+  const admitted = deferred<{ device_id: string }>();
+  const error = deferred<SessionError>();
+  let mux: MuxEngine | undefined;
+  const channel = await bounded(openClientSecureChannel(transport, {
+    daemonPublicKeyB64: serverPublicKey,
+    events: {
+      onmessage: (data) => {
+        if (typeof data === "string") throw new Error("Unencrypted application message");
+        const frame = decodeFrame(new Uint8Array(data));
+        if (frame.type === FrameType.SESSION_ERROR) error.resolve(frame.payload.code);
+        mux?.receive(new Uint8Array(data));
+      },
+      onclose: () => mux?.carrierLost(),
+    },
+  }));
+  mux = new MuxEngine({
+    role: "client", clock: relayClock, send: (bytes) => channel.send(bytes.slice().buffer),
+    close: (code) => channel.close(code), outboundWireByteLength: (bytes) => channel.outboundWireByteLength(bytes.slice().buffer),
+    routingOverhead: 0, maxWireMessageBytes: 64 * 1024,
+    onSession: (frame) => {
+      if (frame.type === FrameType.WELCOME) welcome.resolve(frame);
+      if (frame.type === FrameType.AUTH_OK) { mux?.authenticate(frame.payload.device_id); admitted.resolve(frame.payload); }
+    },
+  });
+  const engine = mux;
+  engine.sendSession({ type: FrameType.HELLO, flags: 0, stream_id: 0, payload: { protocol: "ovis-mux", versions: [1], features: [], required_features: [] } });
+  const greeting = (await bounded(welcome.promise)).payload;
+  return {
+    admitted: admitted.promise, error: error.promise,
+    async pair(code: string, keys: CryptoKeyPair) {
+      engine.sendSession({ type: FrameType.PAIR, flags: 0, stream_id: 0,
+        payload: { code, label: "New phone", public_key: Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url") } });
+    },
+    async auth(device: { id: string; keys: CryptoKeyPair }, serverId: string) {
+      const signature = Buffer.from(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, device.keys.privateKey,
+        Buffer.concat([Buffer.from("ovis-relay-auth/1"), Buffer.from(greeting.nonce, "base64url"), Buffer.from(serverId)]))).toString("base64url");
+      engine.sendSession({ type: FrameType.AUTH, flags: 0, stream_id: 0, payload: { scheme: "device-key", device_id: device.id, signature } });
+    },
+  };
+}
+
 class DuplexTransport implements Transport {
   onmessage: Transport["onmessage"] = null;
   onclose: Transport["onclose"] = null;
@@ -77,8 +120,8 @@ class DuplexTransport implements Transport {
 }
 
 export function relayFixture(serveOnly = false, options: NonNullable<Parameters<typeof createServer>[0]> = {}) {
-  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-session-"));
-  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, tailscaleServeOnly: serveOnly, ...options });
+  const stateDir = options.stateDir ?? mkdtempSync(join(tmpdir(), "ovis-relay-session-"));
+  const app = createServer({ port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, sidecar: false, tailscaleServeOnly: serveOnly, ...options, stateDir });
   const closes: (() => void)[] = [];
   return {
     stateDir, app, closes,
@@ -88,6 +131,17 @@ export function relayFixture(serveOnly = false, options: NonNullable<Parameters<
       rmSync(stateDir, { recursive: true, force: true });
     },
   };
+}
+
+export async function relayAccountFixture(role: "drive" | "watch" = "drive", account = "acct_1", options: NonNullable<Parameters<typeof createServer>[0]> = {}) {
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-account-"));
+  const member = { id: randomBytes(8).toString("hex"), label: "Account phone", role, token_hash: randomBytes(32).toString("hex"),
+    relay_public_key: publicKey, account, created_at: new Date().toISOString(), last_seen_at: null };
+  writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ gate_closed_at: member.created_at, devices: [member] }), { mode: 0o600 });
+  const fixture = relayFixture(false, { ...options, stateDir });
+  return { fixture, member: { keys, publicKey, id: member.id } };
 }
 
 export async function relayDevice(fixture: ReturnType<typeof relayFixture>, role: "drive" | "watch" = "drive") {
@@ -164,17 +218,17 @@ export async function relayConnection(fixture: ReturnType<typeof relayFixture>,
     closed.promise.then(() => { throw new Error("Relay closed before admission"); }),
   ]);
   return {
-    session, mux, channel, daemon, frames, serverError: serverError.promise, closed: closed.promise,
+    session, mux, channel, daemon, frames, serverError: serverError.promise, closed: closed.promise, welcome: welcome.promise,
     get peakBuffered() { observe(); return peakBuffered; },
     set onFrame(listener: ((frame: MuxFrame) => void) | undefined) { onFrame = listener; },
     set transformClientFrame(change: ((bytes: Uint8Array) => Uint8Array) | undefined) { transform = change; },
-    async hello() {
+    async hello(features: readonly string[] = [], required: readonly string[] = []) {
       mux.sendSession({ type: FrameType.HELLO, flags: 0, stream_id: 0,
-        payload: { protocol: "ovis-mux", versions: [1], features: [], required_features: [] } });
+        payload: { protocol: "ovis-mux", versions: [1], features, required_features: required } });
       return (await bounded(beforeClose(welcome.promise))).payload;
     },
-    async auth(device: Awaited<ReturnType<typeof relayDevice>>) {
-      const greeting = await this.hello();
+    async auth(device: Awaited<ReturnType<typeof relayDevice>>, features: readonly string[] = [], required: readonly string[] = []) {
+      const greeting = await this.hello(features, required);
       const signature = Buffer.from(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, device.keys.privateKey,
         Buffer.concat([Buffer.from("ovis-relay-auth/1"), Buffer.from(greeting.nonce, "base64url"),
           Buffer.from(options.serverId ?? "0123456789abcdef0123456789abcdef")]))).toString("base64url");
@@ -188,7 +242,6 @@ export async function relayConnection(fixture: ReturnType<typeof relayFixture>,
       return (await bounded(beforeClose(authenticated.promise))).payload;
     },
     async flush() {
-      // Subscribe to idle transitions on both senders, including their receipt replies.
       let budget = 10_000;
       do {
         if (--budget === 0) throw new Error("Relay senders did not quiesce");

@@ -1,4 +1,3 @@
-/** Real ChatView with an unavailable conversation and a stalled optional terminal. */
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +12,13 @@ import type {} from "./chat-fallback-fixture.tsx";
 import { parseInteractivePrompt } from "../server/prompt.ts";
 import { parseOmpTranscript } from "../server/transcript-records.ts";
 import piNavigation from "../server/fixtures/pi-ask-navigation.json";
+/** `until`, or a failure naming `what` after 10 s: a callback the chat never makes fails the script, not the runner's timeout */
+const bounded = async (what: string, until: Promise<unknown>): Promise<void> => {
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([until, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error(what)), 10_000); })]);
+  } finally { clearTimeout(deadline); }
+};
 const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-chat-fallback-")));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -25,9 +31,9 @@ try {
   const terminalReads: string[] = [];
   let structured = false, resolveAgent!: () => void, agentReadArrived!: () => void;
   let lookupTimeout = false;
+  let copilotWaiting = false;
   let source = "codex-transcript";
   let prompt: InteractivePrompt | null = null;
-  // the answers of pane "screen": settings read off the agent's own screen (ConversationResponse.screen)
   let screenAnswer: Record<string, unknown> = {};
   let turns: ConversationTurn[] = [{ role: "assistant", ts: null, parts: [{ kind: "text", text: "Structured conversation arrived" }] }];
   // resolved by the server's handler: a browser-side waitForRequest can win the race against it
@@ -35,10 +41,10 @@ try {
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const url = new URL(request.url), pane = url.searchParams.get("pane_id");
     if (url.pathname === "/api/pane/prompt") return Response.json({ prompt, outcomes: [] });
-    // the chat's skill matcher asks for the pane's commands
     if (url.pathname === "/api/pane/commands") return Response.json({ commands: [] });
     if (url.pathname === "/api/pane/conversation") {
       if (pane === "screen") return Response.json({ cursor: null, turns: [], ...screenAnswer });
+      if (copilotWaiting && pane === "agent") return Response.json({ source: "scrollback", turns: [], recovery: "waiting" });
       if (lookupTimeout && pane === "agent") return Response.json({ error: { code: "read_timeout", message: "Conversation read timed out." } }, { status: 504 });
       return Response.json({ source: (structured && pane === "agent") || pane === "empty" ? source : "scrollback", cursor: null, turns: structured && pane === "agent" ? turns : [] });
     }
@@ -99,8 +105,6 @@ try {
   await page.evaluate(() => window.chatFallbackQA.pane("error"));
   await summary.waitFor();
   await summary.click();
-  // the failure is one line naming what failed, Try again beside it (no cause is known), and the
-  // advice with the server's words folded behind Details (lib/userError.ts, ChatView FailureLine)
   const fallbackError = page.locator(".chat-terminal-fallback [role=\"alert\"]");
   await fallbackError.waitFor();
   assert.equal(await fallbackError.count(), 1, "terminal-read failures are announced as errors");
@@ -116,8 +120,6 @@ try {
   await page.evaluate(() => window.chatFallbackQA.pane("empty"));
   await page.getByText("No conversation yet — say something below", { exact: true }).waitFor();
   assert.equal(await page.locator(".chat-terminal-fallback").count(), 0, "an empty structured conversation keeps its ordinary prompt");
-  // Native parser output crosses HTTP into the real ChatView. Later activity must not
-  // move a final reply into the fold or duplicate it. Only explicit commentary joins the tools there.
   const jsonl = (...records: unknown[]) => records.map((record) => JSON.stringify(record)).join("\n");
   source = "claude-transcript";
   turns = parseClaudeTranscript(jsonl(
@@ -179,8 +181,6 @@ try {
     console.log("PASS Claude hook narration and replies stay visible outside folded work; the tool remains inside");
   }
   {
-    // A turn reads in the agent's own order, as its terminal does: words written before a tool call
-    // stay above it, and each run of work sits between the words around it.
     const rows = () => page.locator(".chat-turn-agent").last().evaluate((turn) => [...turn.children].flatMap((child) => {
       if (child.classList.contains("chat-turn-meta")) return [];
       if (child.classList.contains("work-block")) return [["work", ...[".work-block-title", ".work-block-summary"].map((part) => child.querySelector(part)?.textContent ?? "")].join(" ")];
@@ -223,7 +223,6 @@ try {
     await page.evaluate(() => { window.chatFallbackQA.agent("claude"); window.chatFallbackQA.refresh(); });
     await page.getByText("No book is on loan.", { exact: true }).waitFor();
     assert.deepEqual(await rows(), ["Checking the catalog first.", "work Worked \u00b7 1 command", "Three books. Now the loans.", "work Worked \u00b7 1 command", "No book is on loan."], "each run of work stays between the words around it");
-    // the turn still at work: one that ended on its final answer stays finished while the agent works again
     turns = catalog(null);
     await page.evaluate(() => { window.chatFallbackQA.status("working"); window.chatFallbackQA.refresh(); });
     const live = page.locator(".chat-turn-agent").last().locator(".work-block.is-live");
@@ -231,7 +230,6 @@ try {
     assert.deepEqual(await rows(), ["Checking the catalog first.", "work Worked \u00b7 1 command", "Three books. Now the loans.", "work Working\u2026 \u00b7 1 command", "No book is on loan."], "while the turn runs, only its last run of work reads Working");
     assert.equal(await live.count(), 1, "one Working at a time");
     if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "claude-runs-live.png") });
-    // An earlier run splits when its blank text gets words: every block keeps the fold it had.
     const bash = (command: string) => ({ kind: "tool" as const, name: "Bash", summary: command, input: JSON.stringify({ command }), output: "" });
     const said = (value: string) => ({ kind: "text" as const, text: value });
     const shelves = (first: string): ConversationTurn[] => [
@@ -257,8 +255,7 @@ try {
     await headRows.waitFor({ state: "hidden" });
     if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "claude-run-split.png") });
     // Words before a run's tools join it later (a Codex record marks them commentary): the run
-    // keeps the fold the reader gave it (#2063). A history without an ID keeps each row's memory
-    // by its place, so the turn sits on row 5, which the four rows above left with none.
+    // keeps the fold the reader gave it (#2063).
     const sorting = (words: { kind: "text"; text: string; phase?: "commentary" }): ConversationTurn[] => [
       ...shelves("Shelf a is empty."),
       { role: "user", ts: null, parts: [said("Sort the shelves.")] },
@@ -274,7 +271,6 @@ try {
     assert.deepEqual(await opened(), [false], "the reader folds the working run");
     turns = sorting({ ...said("Sorting shelf a."), phase: "commentary" });
     await page.evaluate(() => window.chatFallbackQA.refresh());
-    // drawn once the words left the turn for its run of work
     await page.waitForFunction(() => [...[...document.querySelectorAll(".chat-turn-agent")].at(-1)!.children].every((child) => child.classList.contains("work-block")));
     assert.deepEqual(await opened(), [false], "words that join the run keep it folded");
     assert.equal(await page.getByText("Sorting shelf a.", { exact: true }).isVisible(), false, "and fold with it");
@@ -290,8 +286,6 @@ try {
     await page.evaluate(() => { window.chatFallbackQA.agent("claude"); window.chatFallbackQA.refresh(); });
     const card = page.locator(".prompt-card");
     await card.locator(".prompt-card-words").waitFor({ state: "attached" });
-    // the context, its caption and the question in the card's order, each box whole, and the
-    // context at eight lines at rest (its content, when shorter) and two when the card is short
     const layout = await card.evaluate(node => {
       const text = node.querySelector(".prompt-card-words-text")!;
       const caption = node.querySelector(".prompt-card-words .prompt-card-hint")!.getBoundingClientRect();
@@ -346,7 +340,6 @@ try {
     assert.equal(await back.isEnabled(), true);
     assert.equal(await question.isEnabled(), true);
     if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `pi-navigation-${width}.png`) });
-    // Start the next width with a new occurrence so its initial navigation state is observed.
     prompt = null;
     await page.evaluate(() => window.chatFallbackQA.refresh());
     await card.waitFor({ state: "detached" });
@@ -359,7 +352,8 @@ try {
   polling.on("request", (request) => {
     if (new URL(request.url()).pathname === "/api/pane/conversation") pollingReads += 1;
   });
-  await polling.clock.install();
+  // pauseAt installs the fake clock itself; an install() first starts it running in real time, and
+  // under load it can pass the pause time before pauseAt arrives ("Cannot fast-forward to the past")
   await polling.clock.pauseAt(new Date());
   await polling.addInitScript(() => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
@@ -367,15 +361,23 @@ try {
   await polling.goto(`http://127.0.0.1:${server.port}/?pushes`);
   await polling.locator(".chat-terminal-fallback summary").waitFor();
   const codexReads = pollingReads;
+  // a response is in before the chat has handled it, and only then does it set the next poll: the
+  // clock moves on once the chat forwarded that read's metadata, in the same task that sets it
+  const forwarded = () => polling.evaluate(() => window.chatFallbackQA.forwarded());
+  const handled = (before: number) => bounded("the chat never handled the poll's read", polling.evaluate((before) => window.chatFallbackQA.until(() => window.chatFallbackQA.forwarded() > before), before));
   await polling.clock.runFor(2000);
   assert.equal(pollingReads, codexReads, "non-Copilot terminal fallback keeps its 10s backstop");
   const codexBackstop = polling.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation");
+  const beforeBackstop = await forwarded();
   await polling.clock.runFor(8000);
   await codexBackstop;
+  await handled(beforeBackstop);
   assert.equal(pollingReads, codexReads + 1);
   const changedAgent = polling.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation");
+  const beforeChange = await forwarded();
   await polling.evaluate(() => window.chatFallbackQA.agent("copilot"));
   await changedAgent;
+  await handled(beforeChange);
   const copilotReads = pollingReads;
   const copilotPoll = polling.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation");
   await polling.clock.runFor(2000);
@@ -383,6 +385,57 @@ try {
   assert.equal(pollingReads, copilotReads + 1, "only Copilot terminal fallback uses the 2s recovery poll");
   await polling.close();
   console.log("PASS fallback polling keeps 10s for other agents and 2s for Copilot under a controlled clock");
+  {
+    source = "copilot-transcript"; structured = true;
+    turns = [{ role: "assistant", ts: null, parts: [{ kind: "text", text: "Copilot turn before the wait" }] }];
+    const paused = await browser.newPage();
+    let reads = 0;
+    paused.on("request", (request) => { if (new URL(request.url()).pathname === "/api/pane/conversation") reads += 1; });
+    await paused.clock.pauseAt(new Date());
+    await paused.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+    await paused.goto(`http://127.0.0.1:${server.port}/?pushes`);
+    await paused.evaluate(() => window.chatFallbackQA.agent("copilot"));
+    await paused.getByText("Copilot turn before the wait", { exact: true }).waitFor();
+    copilotWaiting = true;
+    const waited = paused.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation");
+    await paused.evaluate(() => window.chatFallbackQA.refresh());
+    await waited;
+    const banner = paused.getByText("Updates paused — waiting for the agent's next activity", { exact: true });
+    await banner.waitFor();
+    assert.equal(await paused.getByText("Copilot turn before the wait", { exact: true }).isVisible(), true, "a wait keeps the turns shown");
+    assert.equal(await paused.locator(".chat-terminal-fallback").count(), 0, "a wait does not swap the turns for the terminal");
+    const before = reads;
+    await paused.clock.runFor(30_000);
+    assert.equal(reads, before, "a wait schedules no backstop reads");
+    await paused.evaluate(() => window.chatFallbackQA.until(() => window.chatFallbackQA.listening()));
+    copilotWaiting = false; lookupTimeout = true;
+    const failed = paused.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation");
+    await paused.evaluate(() => window.chatFallbackQA.output());
+    await failed;
+    // the response is in before the chat has handled it: the backstop is set once the failure ends
+    // the wait (setWaiting), in the same effects that stop listening to the terminal
+    await bounded("the chat never stopped listening to the terminal after the failed read", paused.evaluate(() => window.chatFallbackQA.until(() => !window.chatFallbackQA.listening())));
+    copilotWaiting = true; lookupTimeout = false;
+    const afterFailure = reads;
+    const retried = paused.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation", { timeout: 5000 })
+      .catch(() => assert.fail("a read that failed while waiting is retried without pane activity"));
+    // just past the 10s backstop: further on, the read's own timeout would cancel it before it answers
+    await paused.clock.runFor(11_000);
+    await retried;
+    assert.ok(reads > afterFailure, "a read that failed while waiting is retried without pane activity");
+    await banner.waitFor();
+    copilotWaiting = false;
+    turns = [...turns, { role: "assistant", ts: null, parts: [{ kind: "text", text: "Copilot turn after the wait" }] }];
+    const woken = paused.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation");
+    await paused.evaluate(() => window.chatFallbackQA.output());
+    await woken;
+    await paused.getByText("Copilot turn after the wait", { exact: true }).waitFor();
+    await banner.waitFor({ state: "detached" });
+    if (process.env.UI_EVIDENCE_DIR) await paused.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "copilot-recovered.png") });
+    await paused.close();
+    structured = false; source = "codex-transcript";
+    console.log("PASS a Copilot wait keeps the turns, reads on activity only, and resumes them");
+  }
   {
     // A Codex that reported no session: the scrollback stands in with the model its live footer
     // states, and a conversation not begun with the model its screen states. No file changes when
@@ -394,7 +447,6 @@ try {
       const url = new URL(request.url());
       if (url.pathname === "/api/pane/conversation" && url.searchParams.get("pane_id") === "screen") screenReads += 1;
     });
-    await screen.clock.install();
     await screen.clock.pauseAt(new Date());
     await screen.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
     await screen.goto(`http://127.0.0.1:${server.port}/?pushes`);
@@ -416,7 +468,6 @@ try {
       else await screen.evaluate(() => window.chatFallbackQA.refresh());
       await forwarded("gpt-6.1-sol", "low");
       await listening(true, `a ${source} answer read off the screen never listened to the terminal`);
-      // a model switched in the terminal: its output, once the 1s bound since the last read has passed, reads it
       screenAnswer = { source, metadata: luna, screen: true };
       await screen.clock.runFor(1000);
       const reads = screenReads;
@@ -424,7 +475,6 @@ try {
       await forwarded("gpt-6-luna", "medium");
       assert.equal(screenReads, reads + 1, `terminal output re-reads a ${source} answer read off the screen once`);
     }
-    // a conversation whose settings come from its transcript has a file to watch: output reads nothing
     screenAnswer = { source: "codex-transcript", metadata: sol };
     await screen.evaluate(() => window.chatFallbackQA.refresh());
     await forwarded("gpt-6.1-sol", "low");

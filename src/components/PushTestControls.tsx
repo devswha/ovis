@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import { useContext, useRef } from "react";
+import { BellRing } from "lucide-react";
 import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { inNativeApp } from "../lib/nativeApp.ts";
@@ -8,11 +9,11 @@ import { repairFailed, runPushAction, usePushHealth, type PushActionOutcome, typ
 import { repairOutcome } from "../lib/useNotifications.ts";
 import { useSettings } from "../lib/settings.ts";
 import { repairFailureText } from "./PushHealthNotice.tsx";
+import { matchesSettingsQuery, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
 
 export function PushTestControls({ onEnable }: { onEnable: () => Promise<PushActionResult> }) {
   const { settings } = useSettings();
   const t = useT();
-  // the same state as the notice over the pane (lib/pushHealth.ts): one fault, one repair, wherever it is read
   const { health, busy, result } = usePushHealth();
   const wanted = useRef(settings.alertsOn);
   wanted.current = settings.alertsOn;
@@ -21,8 +22,6 @@ export function PushTestControls({ onEnable }: { onEnable: () => Promise<PushAct
   const enable = !settings.alertsOn || health.repair || repairFailed(result) || result === "missing" || result === "gone" || result === "permission";
 
   const send = (repair: boolean) => runPushAction(repair ? "repair" : "test", async (): Promise<PushActionOutcome> => {
-    // the subscription the line will be about: the one tested, or the one the repair registered; none
-    // held when the test found none, and unknown (the next look's) when the action stopped before it knew
     let endpoint: string | undefined;
     try {
       if (repair) return repairOutcome(await onEnable());
@@ -40,7 +39,6 @@ export function PushTestControls({ onEnable }: { onEnable: () => Promise<PushAct
   const hint = !supported || result === "unsupported" ? t("Push alerts need HTTPS or localhost, and on iPhone the home-screen app.")
     : denied ? inNativeApp() ? t("Allow notifications for Ovis in the phone's Settings, then try again.") : t("Allow notifications in your browser settings, then try again.")
     : result === "sent" ? t("Test notification sent. Check this device for the alert.")
-    // a repair that failed says why before the fault it did not mend
     : repairFailureText(t, result) ?? (result === "missing" || health.problem === "missing" ? t("This device's push subscription is missing. Turn alerts on again.")
     : result === "gone" || health.problem === "gone" ? t("The push service retired this device's subscription. Turn alerts on again to make a new one.")
     : result === "permission" ? t("Allow notifications to test alerts on this device.")
@@ -51,17 +49,17 @@ export function PushTestControls({ onEnable }: { onEnable: () => Promise<PushAct
     : health.transient !== null ? t("The last alert did not reach this device; the next one is tried as usual. Send a test to check.")
     : !settings.alertsOn ? t("Alerts off") : null);
 
+  const words = useContext(SettingsQuery);
+  const label = t("Test notification");
+  const description = t("Sends one alert to this device now, so you can check that push alerts arrive here. If it cannot be sent, the line under the name says so.");
+  const found = words.length > 0 && matchesSettingsQuery(words, label, description, hint, t("Send test"));
+
   return (
-    <div className="settings-item">
-      <div className="settings-row">
-        <div className="settings-row-text">
-          <span className="settings-label">{t("Test notification")}</span>
-          <span className="settings-description">{t("Check whether this device can receive push alerts")}</span>
-          {/* always in the document, empty until there is something to say: a live region */}
-          <span className="settings-hint" role="status" data-testid="push-health-hint">{hint}</span>
-        </div>
+    <div className="settings-item" data-found={found ? "" : undefined}>
+      <SettingsRow held icon={BellRing} label={label} description={description}
+        condition={<span className="settings-hint" role="status" data-testid="push-health-hint">{hint}</span>}>
         <button type="button" className="btn" disabled={busy !== null || !settings.alertsOn || !supported || denied || result === "read-only"} onClick={() => void send(false)}>{busy === "test" ? t("Sending…") : t("Send test")}</button>
-      </div>
+      </SettingsRow>
       {enable && supported && !denied && <div className="settings-actions">
         <button type="button" className="btn btn-primary" disabled={busy !== null} onClick={() => void send(true)}>{busy === "repair" ? t("Turning alerts on…") : t("Turn alerts on again")}</button>
       </div>}

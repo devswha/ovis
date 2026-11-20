@@ -1,9 +1,11 @@
-import { afterEach, expect, it, spyOn } from "bun:test";
+import { afterEach, expect, it, jest, setSystemTime, spyOn } from "bun:test";
 import * as fs from "node:fs";
-import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import * as fsp from "node:fs/promises";
+import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandHistory, commandHistorySize, historyVersion, holdCommandHistory, resetCommandHistory, waitCommandHistory, watchCommandHistory } from "./claude-command-history.ts";
+import { commandHistory, commandHistorySettled, commandHistorySize, historyVersion, holdCommandHistory, resetCommandHistory, waitCommandHistory, watchCommandHistory } from "./claude-command-history.ts";
+import { TranscriptBusyError, transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 
 const roots: string[] = [];
 const release: (() => void)[] = [];
@@ -22,7 +24,6 @@ function fixture(name = "parent") {
 const json = (entry: unknown): string => `${JSON.stringify(entry)}\n`;
 const notice = (id: string, status = "completed"): string => json({ type: "queue-operation", operation: "enqueue", timestamp: "2026-10-01T12:00:00.000Z", content: `<task-notification><task-id>${id}</task-id><status>${status}</status><summary>Background command finished</summary></task-notification>` });
 const filler = json({ type: "progress", value: "x".repeat(1024) }).repeat(1024);
-/** Resolves on the first change of `path`'s history for which `test` holds. */
 function heard(path: string, test: () => boolean): Promise<void> {
   return new Promise((resolve) => {
     const stop = watchCommandHistory(path, () => { if (test()) { stop!(); resolve(); } });
@@ -81,14 +82,12 @@ it("times the recheck within a version's tick for a watch taken again after the 
   writeFileSync(s.path, notice("same"));
   utimesSync(s.path, tick, tick);
   await waitCommandHistory(s.path, s.limit());
-  // asked while nobody watches: the recheck is held back untimed
   commandHistory(s.path, s.limit());
   expect(commandHistorySize().timers).toBe(0);
   release.push(watchCommandHistory(s.path, () => {})!);
   expect(commandHistorySize().timers).toBe(1);
 });
 
-/** `body` written with a timestamp a minute ahead, so every check of the test begins within its tick, and read through. */
 async function racy(body: string) {
   const s = fixture();
   const tick = Math.ceil(Date.now() / 1000) + 60;
@@ -97,14 +96,12 @@ async function racy(body: string) {
   await waitCommandHistory(s.path, s.limit());
   return s;
 }
-/** The bytes `run` asks fs.readSync for, and how many reads. */
 function reads(run: () => unknown): Promise<{ bytes: number; calls: number }> {
   const spy = spyOn(fs, "readSync");
   return Promise.resolve(run()).then(() => ({ bytes: spy.mock.calls.reduce((sum, call) => sum + ((call as unknown[])[3] as number), 0), calls: spy.mock.calls.length })).finally(() => spy.mockRestore());
 }
 
 it("tells the ends whose lines it reads again within a tick, past the most it reads at once, and all to a request it checked for", async () => {
-  // five ends of 900 KB lines: more than one call reads again
   const big = (id: string) => json({ ...JSON.parse(notice(id)), pad: "x".repeat(900 * 1024) });
   const ids = ["a", "b", "c", "d", "e"];
   const s = await racy(ids.map(big).join(""));
@@ -142,7 +139,6 @@ it("rechecks a version whose mtime is far ahead of the clock within the check in
     expect(delays).toHaveLength(1);
     expect(delays[0]).toBeLessThanOrEqual(5000);
   } finally { timers.mockRestore(); }
-  // and once that interval is past, the check is due, not put off again
   const clock = spyOn(Date, "now").mockReturnValue(Date.now() + 6000);
   try {
     commandHistory(s.path, s.limit());
@@ -159,7 +155,6 @@ it("reads again no more than its budget of bytes, the gaps between lines read at
 
 it("forgets every end once any byte it read is rewritten, though the transcript only grew", async () => {
   const s = fixture();
-  // the rewritten notice sits mid-file, far from the first and last bytes read
   const head = filler.repeat(2);
   writeFileSync(s.path, head + notice("same") + filler.repeat(2));
   expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["same"]);
@@ -182,7 +177,6 @@ it("tells no end it read before a rewrite that also grew the transcript until th
   writeSync(fd, Buffer.from(notice("else")), 0, Buffer.byteLength(notice("else")), Buffer.byteLength(head));
   closeSync(fd);
   appendFileSync(s.path, notice("next"));
-  // asked before any check of the grown transcript: what it read is unknown, not ended
   expect(commandHistory(s.path, limit)).toMatchObject({ complete: false, ends: [] });
   const checked = await waitCommandHistory(s.path, limit);
   expect(checked).toMatchObject({ complete: true });
@@ -206,7 +200,6 @@ it.each([["the newline after it", 0], ["the newline before it (joining it to the
 it("tells an end at once while the transcript grows, when its line begins exactly where a read chunk began", async () => {
   const s = fixture();
   const pad = json({ type: "progress", value: "" });
-  // the first record fills the first 1 MiB chunk exactly: the notice begins the next one
   const first = json({ type: "progress", value: "x".repeat(1024 * 1024 - Buffer.byteLength(pad)) });
   expect(Buffer.byteLength(first)).toBe(1024 * 1024);
   writeFileSync(s.path, first + notice("same") + filler);
@@ -223,7 +216,6 @@ it("tells the ends it read at once while the transcript only grows, before any c
   await waitCommandHistory(s.path, limit);
   appendFileSync(s.path, notice("next"));
   expect(commandHistory(s.path, limit, false)).toMatchObject({ complete: true, ends: [{ id: "same" }] });
-  // only the ids asked for
   expect(commandHistory(s.path, limit, false, new Set(["other"]))!.ends).toEqual([]);
 });
 
@@ -259,7 +251,6 @@ it("answers a request at once while a record waits to be written whole, and read
   const record = notice("finished");
   writeFileSync(s.path, record.slice(0, -4));
   const boundary = s.limit();
-  // the test's own timeout fails it if the request waits for its deadline
   const partial = await waitCommandHistory(s.path, boundary, 60_000);
   expect(partial).toMatchObject({ complete: false, through: 0, ends: [] });
   expect(commandHistorySize().waiting).toBe(0);
@@ -310,14 +301,12 @@ it("evicts the least recently used read, never a watched one", () => {
   for (const path of paths.slice(3)) { const watch = watchCommandHistory(path, () => {}); release.push(watch!); }
   const watched = watchCommandHistory(extra.path, () => {});
   release.push(watched!);
-  // every read is watched: a new one is refused, and nothing watched goes
   expect(commandHistory(paths[2]!, 0, false)).toBeNull();
   expect(commandHistorySize().sessions).toBe(16);
 });
 
 it("lets a small session finish before a large one, a slice each in turn", async () => {
   const large = fixture();
-  // every line a notice: the large read takes many slices
   writeFileSync(large.path, Array.from({ length: 40_000 }, (_, index) => notice(`l${index}`)).join(""));
   commandHistory(large.path, large.limit());
   let largeDone = false;
@@ -338,3 +327,580 @@ it("drops every read and timer once the last server lets go", async () => {
   hold();
   expect(commandHistorySize()).toMatchObject({ sessions: 0, waiting: 0, timers: 0 });
 });
+
+const gate = () => { let open!: () => void; const opened = new Promise<void>((resolve) => { open = resolve; }); return { opened, open }; };
+type Work = (file: TranscriptFile) => Promise<unknown>;
+function wrapReads(wrap: (path: string, work: Work) => Work): void {
+  const read = transcriptReader.read.bind(transcriptReader);
+  const spy = spyOn(transcriptReader, "read").mockImplementation(((path: string, work: Work, options?: { deadline?: number }) => read(path, wrap(path, work), options)) as typeof transcriptReader.read);
+  release.push(() => spy.mockRestore());
+}
+function holdSlices() {
+  const entered = gate(), held = gate();
+  wrapReads((_, work) => async (file) => { entered.open(); await held.opened; return work(file); });
+  return { entered: entered.opened, release: held.open };
+}
+/**
+ * Every window read takes 10 ms of the clock (performance.now), more than a slice, and opening a
+ * transcript `openMs`, though no time passes: storage as slow as an SSHFS home.
+ */
+function slowReads(read: (path: string, reads: number) => void = () => {}, openMs = 0, look?: number) {
+  const real = performance.now.bind(performance), base = real();
+  let looked = 0;
+  const clock = look === undefined ? real : () => base + (looked += look);
+  let waited = 0;
+  const reads = new Map<string, number>(), leases = new Map<string, number>();
+  const now = spyOn(performance, "now").mockImplementation(() => clock() + waited);
+  release.push(() => now.mockRestore());
+  wrapReads((path, work) => { leases.set(path, (leases.get(path) ?? 0) + 1); waited += openMs; return (file) => work({ ...file, waited: () => true, window: async (position, length) => {
+    const bytes = await file.window(position, length);
+    waited += 10;
+    reads.set(path, (reads.get(path) ?? 0) + 1);
+    read(path, reads.get(path)!);
+    return bytes;
+  } }); });
+  return Object.assign((path: string) => reads.get(path) ?? 0, { leases: (path: string) => leases.get(path) ?? 0, elapsed: () => waited });
+}
+/** An open on remote storage: several round trips (open, stat, the path's stat), each slower than a read. */
+const OPEN_MS = 100;
+const took = (reads: number, opens: number) => reads * 10 + opens * OPEN_MS;
+const MIB = 1024 * 1024;
+
+it("backs off a read the reader is too busy for without counting it a failure of the transcript", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("late"));
+  let now = Date.now();
+  const busy = spyOn(transcriptReader, "read").mockImplementation(() => Promise.reject(new TranscriptBusyError()));
+  try {
+    for (let round = 0; round < 6; round++) {
+      setSystemTime(new Date(now += 60_000));
+      expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: false, through: 0, ends: [] });
+    }
+    expect(busy.mock.calls.length).toBeGreaterThanOrEqual(6);
+    busy.mockRestore();
+    setSystemTime(new Date(now += 60_000));
+    const read = await waitCommandHistory(s.path, s.limit(), 60_000);
+    expect(read).toMatchObject({ complete: true, through: s.limit() });
+    expect(read!.ends.map((end) => end.id)).toEqual(["late"]);
+  } finally { busy.mockRestore(); setSystemTime(); }
+}, 5000);
+
+it("keeps the chunks it read and checked when a read gives up on its stat after a chunk", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("first") + filler.repeat(4));
+  const past = Math.floor(Date.now() / 1000) - 60;
+  utimesSync(s.path, past, past);
+  const chunks = Math.ceil(s.limit() / MIB);
+  let windows = 0, failed = false;
+  wrapReads((_, work) => (file) => work({ ...file,
+    window: async (position, length) => { windows++; return file.window(position, length); },
+    stat: async () => { if (windows === 2 && !failed) { failed = true; throw new TranscriptBusyError(); } return file.stat(); } }));
+  let now = Date.now();
+  try {
+    expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: false });
+    expect(failed).toBe(true);
+    setSystemTime(new Date(now += 60_000));
+    const read = await waitCommandHistory(s.path, s.limit(), 60_000);
+    expect(read).toMatchObject({ complete: true, through: s.limit() });
+    expect(read!.ends.map((end) => end.id)).toEqual(["first"]);
+    expect(windows).toBe(chunks + 1);
+  } finally { setSystemTime(); }
+}, 5000);
+
+it("lets the event loop run while a slice waits for the disk", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("slow") + filler);
+  const held = holdSlices();
+  let answered = false;
+  const waiting = waitCommandHistory(s.path, s.limit(), 60_000).then((found) => { answered = true; return found; });
+  await held.entered;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(answered).toBe(false);
+  expect(commandHistorySize().draining).toBe(true);
+  held.release();
+  expect((await waiting)!.ends.map((end) => end.id)).toEqual(["slow"]);
+}, 5000);
+
+it("queues a session asked for while its slice reads only once", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("slow") + filler.repeat(3));
+  const reads = slowReads((_, count) => { if (count === 1) commandHistory(s.path, s.limit()); });
+  const waits: number[] = [];
+  const waiting = waitCommandHistory(s.path, s.limit(), 60_000);
+  release.push(watchCommandHistory(s.path, () => waits.push(commandHistorySize().waiting))!);
+  expect((await waiting)!.ends.map((end) => end.id)).toEqual(["slow"]);
+  expect(reads(s.path)).toBeGreaterThan(1);
+  expect(Math.max(...waits)).toBe(1);
+}, 5000);
+
+it("keeps what it read when a slice's stat is older than one a poll took while the slice waited", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("kept") + filler);
+  expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["kept"]);
+  appendFileSync(s.path, notice("next"));
+  const held = holdSlices();
+  commandHistory(s.path, s.limit());
+  await held.entered;
+  appendFileSync(s.path, notice("later"));
+  commandHistory(s.path, s.limit(), false);
+  const changed = heard(s.path, () => true);
+  held.release();
+  await changed;
+  expect(commandHistory(s.path, s.limit(), false)!.ends.map((end) => end.id)).toContain("kept");
+  expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["kept", "next", "later"]);
+}, 5000);
+
+it("starts over on a transcript cut short in place while a slice reads it", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("old") + filler.repeat(3));
+  slowReads((_, count) => { if (count === 1) writeFileSync(s.path, notice("new")); });
+  const read = await waitCommandHistory(s.path, s.limit(), 3000);
+  expect(read).toMatchObject({ complete: true, through: s.limit() });
+  expect(read!.ends.map((end) => end.id)).toEqual(["new"]);
+}, 5000);
+
+it("reads on by whole chunks when every read outlasts a slice, as on slow storage", async () => {
+  const s = fixture();
+  writeFileSync(s.path, Array.from({ length: 1500 }, (_, index) => notice(`c${index}`) + json({ type: "progress", value: "x".repeat(2048) })).join(""));
+  const reads = slowReads(undefined, 0, 0.001);
+  const known: number[] = [];
+  let probing = true;
+  const probe = () => { if (!probing) return; known.push(commandHistory(s.path, s.limit(), false)?.ends.length ?? 0); setImmediate(probe); };
+  release.push(() => { probing = false; });
+  probe();
+  const history = await waitCommandHistory(s.path, s.limit(), 60_000);
+  probing = false;
+  expect(history).toMatchObject({ complete: true, through: s.limit() });
+  expect(history!.ends).toHaveLength(1500);
+  expect(reads(s.path)).toBeLessThanOrEqual(Math.ceil(s.limit() / MIB) + 1);
+  const heard = known.slice(1).map((ends, index) => ends - known[index]!).filter((more) => more > 0);
+  expect(heard.length).toBeGreaterThan(0);
+  expect(Math.min(...heard)).toBeGreaterThan(100);
+}, 5000);
+
+it("takes in the rest of a window a slice ended in without reading it again", async () => {
+  const s = fixture();
+  const ids = Array.from({ length: 3000 }, (_, index) => `c${index}`);
+  writeFileSync(s.path, ids.map((id) => notice(id) + json({ type: "progress", value: "x".repeat(1024) })).join(""));
+  const clock = performance.now.bind(performance);
+  let moved = 0;
+  const now = spyOn(performance, "now").mockImplementation(() => clock() + (moved += 0.02));
+  release.push(() => now.mockRestore());
+  let windows = 0;
+  wrapReads((_, work) => (file) => work({ ...file, window: (position, length) => { windows++; return file.window(position, length); } }));
+  const history = await waitCommandHistory(s.path, s.limit(), 60_000);
+  expect(history).toMatchObject({ complete: true, through: s.limit() });
+  expect(history!.ends.map((end) => end.id)).toEqual(ids);
+  expect(windows).toBeLessThanOrEqual(Math.ceil(s.limit() / MIB) + 1);
+}, 5000);
+
+it("starts over on a transcript rewritten and grown while it reads a window ahead", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("a") + filler.repeat(4));
+  let rewritten = false;
+  wrapReads((_, work) => (file) => work({ ...file, ahead: (position, length) => {
+    file.ahead(position, length);
+    if (!rewritten) { rewritten = true; writeFileSync(s.path, notice("b") + filler.repeat(5)); }
+  } }));
+  const read = await waitCommandHistory(s.path, s.limit(), 60_000);
+  expect(rewritten).toBe(true);
+  expect(read).toMatchObject({ complete: true });
+  expect(read!.ends.map((end) => end.id)).toEqual(["b"]);
+}, 5000);
+
+it("lets a small session have its turn after each slow read of a large one", async () => {
+  const large = fixture();
+  writeFileSync(large.path, notice("large") + filler.repeat(8));
+  const small = fixture("small");
+  writeFileSync(small.path, notice("small"));
+  let answered: Promise<number> | undefined;
+  const reads = slowReads((path, count) => {
+    if (path === large.path && count === 1) answered = waitCommandHistory(small.path, small.limit(), 60_000).then((found) => {
+      expect(found!.ends.map((end) => end.id)).toEqual(["small"]);
+      return reads(large.path);
+    });
+  });
+  const reading = waitCommandHistory(large.path, large.limit(), 60_000);
+  expect((await reading)!.complete).toBe(true);
+  expect(reads(large.path)).toBeGreaterThan(8);
+  expect(await answered!).toBe(1);
+}, 5000);
+
+it("keeps a transcript open across turns while no other session waits", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(8));
+  const reads = slowReads(undefined, OPEN_MS);
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  expect(reads(s.path)).toBeGreaterThan(8);
+  expect(reads.elapsed()).toBeLessThan(took(reads(s.path), 2));
+}, 5000);
+
+it("lets go of a transcript it keeps open at the end of the turn another session is asked for in", async () => {
+  const large = fixture();
+  writeFileSync(large.path, notice("large") + filler.repeat(8));
+  const small = fixture("small");
+  writeFileSync(small.path, notice("small"));
+  let answered: Promise<number> | undefined;
+  const reads = slowReads((path, count) => {
+    if (path === large.path && count === 3) answered = waitCommandHistory(small.path, small.limit(), 60_000).then((found) => {
+      expect(found!.ends.map((end) => end.id)).toEqual(["small"]);
+      return reads(large.path);
+    });
+  });
+  expect((await waitCommandHistory(large.path, large.limit(), 60_000))!.complete).toBe(true);
+  expect(await answered!).toBeLessThan(reads(large.path));
+}, 5000);
+
+it("lets go of a transcript it keeps open well before the read's deadline", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(8));
+  let now = Date.now();
+  setSystemTime(new Date(now));
+  try {
+    slowReads((_, count) => { if (count === 2 || count === 4) setSystemTime(new Date(now += 5_000)); });
+    expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: true, through: s.limit() });
+  } finally { setSystemTime(); }
+}, 5000);
+
+it("lets go of a transcript it keeps open at the end of the turn another reader waits for it in", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(8));
+  let other: Promise<number> | undefined;
+  const reads = slowReads((_, count) => { if (count === 3) other = transcriptReader.read(s.path, async () => reads(s.path)); });
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  expect(await other!).toBe(3);
+}, 5000);
+
+it("lets go of a transcript it keeps open at the end of a turn that told a watcher of an end", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("first") + filler.repeat(8));
+  let heard = -1;
+  const reads = slowReads();
+  commandHistory(s.path, s.limit(), false);
+  release.push(watchCommandHistory(s.path, () => { if (heard < 0 && commandHistory(s.path, s.limit(), false)!.ends.length > 0) heard = reads(s.path); })!);
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  expect(heard).toBe(1);
+}, 5000);
+
+it("reads on in the same lease when the session it reads is asked for again", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(8));
+  let at = 0;
+  const reads = slowReads((_, count) => { at = reads.elapsed(); if (count === 3) commandHistory(s.path, s.limit()); }, OPEN_MS);
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  expect(reads(s.path)).toBeGreaterThan(8);
+  expect(at).toBe(took(reads(s.path), 1));
+}, 5000);
+
+it("gives each turn of a transcript it keeps open a slice of its own", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(16));
+  const bytes = readFileSync(s.path);
+  let waited = 0;
+  const base = performance.now();
+  const now = spyOn(performance, "now").mockImplementation(() => base + waited);
+  release.push(() => now.mockRestore());
+  wrapReads((_, work) => (file) => work({ ...file, stat: async () => file.initial, ahead: () => {}, waited: () => false, window: async (position, length) => {
+    waited += 1;
+    return bytes.subarray(position, position + length);
+  } }));
+  const runs: number[] = [];
+  let probing = true;
+  const probe = () => { runs.push(waited); if (probing) setImmediate(probe); };
+  release.push(() => { probing = false; });
+  probe();
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  probing = false;
+  expect(waited).toBeGreaterThan(16);
+  const held = runs.slice(1).map((at, index) => at - runs[index]!).filter((ms) => ms > 0);
+  expect(Math.max(...held)).toBeLessThanOrEqual(5);
+  expect(held.slice(0, -1).every((ms) => ms >= 2)).toBe(true);
+}, 5000);
+
+it.skipIf(process.platform !== "linux")("holds the event loop no longer than a slice and the call that ended it when it reads on the event loop", async () => {
+  const s = fixture();
+  writeFileSync(s.path, Array.from({ length: 6000 }, (_, index) => notice(`c${index}`) + json({ type: "progress", value: "x".repeat(1024) })).join(""));
+  let clock = performance.now();
+  const statfs = fsp.statfs;
+  const local = spyOn(fsp, "statfs").mockImplementation((async (directory: string) => {
+    const found = { ...(await statfs(directory)), type: 0x9123683e };
+    clock += 2;
+    return found;
+  }) as typeof statfs);
+  const now = spyOn(performance, "now").mockImplementation(() => clock += 0.01);
+  const readSync = fs.readSync, fstatSync = fs.fstatSync;
+  const reads = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof readSync>) => { clock += 0.5; return readSync(...args); }) as typeof readSync);
+  const stats = spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fstatSync>) => { clock += 0.5; return fstatSync(...args); }) as typeof fstatSync);
+  release.push(() => { local.mockRestore(); now.mockRestore(); reads.mockRestore(); stats.mockRestore(); });
+  const runs: number[] = [];
+  let probing = true;
+  const probe = () => { runs.push(clock); if (probing) setImmediate(probe); };
+  release.push(() => { probing = false; });
+  probe();
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  probing = false;
+  expect(reads.mock.calls.length).toBeGreaterThanOrEqual(Math.ceil(s.limit() / MIB));
+  const held = runs.slice(1).map((at, index) => at - runs[index]!);
+  expect(held.filter((ms) => ms > 4).length).toBeGreaterThan(4);
+  expect(Math.max(...held)).toBeLessThanOrEqual(4 + 0.5 + 0.5 + 0.5);
+}, 5000);
+
+it("reads one slice for a request nobody watches or waits for", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(9));
+  slowReads();
+  commandHistory(s.path, s.limit());
+  await commandHistorySettled();
+  const { through } = commandHistory(s.path, s.limit(), false)!;
+  expect(through).toBeGreaterThan(0);
+  expect(through).toBeLessThan(s.limit());
+  expect(commandHistorySize()).toMatchObject({ draining: false, waiting: 0, timers: 0 });
+}, 5000);
+
+it("reads on in one lease for a tracker's watch after it hears the first end", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(9));
+  const reads = slowReads();
+  commandHistory(s.path, s.limit());
+  const done = gate();
+  let first: number | null = null;
+  release.push(watchCommandHistory(s.path, () => {
+    const history = commandHistory(s.path, s.limit(), false)!;
+    if (first === null && history.ends.length > 0) first = history.through;
+    if (history.complete) done.open();
+  })!);
+  await done.opened;
+  expect(reads(s.path)).toBeGreaterThan(9);
+  expect(first).not.toBeNull();
+  expect(first!).toBeLessThan(s.limit());
+}, 5000);
+
+it("lets go of a transcript it keeps open at the end of the turn it started over in", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("a") + filler.repeat(16));
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.ends.map((end) => end.id)).toEqual(["a"]);
+  let waited = 0, reads = 0, heard = -1, through = -1;
+  const base = performance.now();
+  const now = spyOn(performance, "now").mockImplementation(() => base + waited);
+  release.push(() => now.mockRestore());
+  wrapReads((_, work) => (file) => work({ ...file, window: async (position, length) => {
+    const bytes = await file.window(position, length);
+    waited += 1;
+    reads++;
+    return bytes;
+  } }));
+  release.push(watchCommandHistory(s.path, () => { if (heard < 0) { heard = reads; through = commandHistory(s.path, s.limit(), false)!.through; } })!);
+  writeFileSync(s.path, notice("a") + json({ type: "progress", value: "y".repeat(1024) }) + filler.repeat(17));
+  const read = await waitCommandHistory(s.path, s.limit(), 60_000);
+  expect(read!.ends.map((end) => end.id)).toEqual(["a"]);
+  expect(reads).toBeGreaterThan(16);
+  expect(heard).toBeGreaterThan(0);
+  expect(through).toBeLessThan(s.limit());
+}, 5000);
+
+function controlledClock() {
+  jest.useFakeTimers();
+  release.push(() => jest.useRealTimers());
+}
+
+function holdWindows(...paths: string[]) {
+  const holds = new Map(paths.map((path) => {
+    const entered = gate(), held = gate();
+    release.push(held.open);
+    return [path, { entered: entered.opened, release: held.open, open: entered.open, held: held.opened }];
+  }));
+  wrapReads((path, work) => {
+    const hold = holds.get(path);
+    return hold === undefined ? work : (file) => work({ ...file, waited: () => true, window: async (position, length) => {
+      hold.open();
+      await hold.held;
+      return file.window(position, length);
+    } });
+  });
+  return (path: string) => holds.get(path)!;
+}
+
+it("reads another transcript while one transcript's read is stuck on its disk", async () => {
+  const a = fixture("a"), b = fixture("b");
+  writeFileSync(a.path, notice("a"));
+  writeFileSync(b.path, notice("b"));
+  const held = holdWindows(a.path)(a.path);
+  controlledClock();
+  const first = waitCommandHistory(a.path, a.limit(), 60_000);
+  await held.entered;
+  const other = waitCommandHistory(b.path, b.limit(), 60_000);
+  jest.advanceTimersByTime(50);
+  const found = await other;
+  expect(found).toMatchObject({ complete: true, through: b.limit() });
+  expect(found!.ends.map((end) => end.id)).toEqual(["b"]);
+  held.release();
+  expect(await first).toMatchObject({ complete: true, ends: [{ id: "a" }] });
+}, 5000);
+
+it("reads no other session beside a transcript it keeps open that takes its turns, however long it reads", async () => {
+  const large = fixture();
+  writeFileSync(large.path, notice("large") + filler.repeat(8));
+  const small = fixture("small");
+  writeFileSync(small.path, notice("small"));
+  controlledClock();
+  let answered: Promise<unknown> | undefined;
+  const open: number[] = [];
+  const reads = slowReads((path, count) => {
+    if (path === small.path) open.push(transcriptReader.size().active);
+    else if (count === 3) {
+      setImmediate(() => {
+        answered = waitCommandHistory(small.path, small.limit(), 60_000).then(() => reads(large.path));
+        jest.advanceTimersByTime(50);
+      });
+    }
+  });
+  expect((await waitCommandHistory(large.path, large.limit(), 60_000))!.complete).toBe(true);
+  expect(await answered!).toBeLessThan(reads(large.path));
+  expect(open).toEqual([1]);
+}, 5000);
+
+it("starts no more slices beside stuck ones than the reader has room for", async () => {
+  const a = fixture("a"), b = fixture("b"), c = fixture("c");
+  for (const s of [a, b, c]) writeFileSync(s.path, notice("done"));
+  const holds = holdWindows(a.path, b.path);
+  const heldA = holds(a.path), heldB = holds(b.path);
+  controlledClock();
+  const first = waitCommandHistory(a.path, a.limit(), 60_000);
+  await heldA.entered;
+  const second = waitCommandHistory(b.path, b.limit(), 60_000);
+  jest.advanceTimersByTime(50);
+  await heldB.entered;
+  const third = waitCommandHistory(c.path, c.limit(), 150);
+  jest.advanceTimersByTime(50);
+  for (let turn = 0; turn < 3; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+  jest.advanceTimersByTime(100);
+  expect(await third).toMatchObject({ complete: false, through: 0 });
+  expect(transcriptReader.size()).toMatchObject({ active: transcriptReader.capacity, waiting: 0 });
+  heldA.release();
+  expect(await first).toMatchObject({ complete: true });
+  const after = waitCommandHistory(c.path, c.limit(), 60_000);
+  jest.advanceTimersByTime(50);
+  expect(await after).toMatchObject({ complete: true });
+  heldB.release();
+  expect(await second).toMatchObject({ complete: true });
+}, 5000);
+
+it("gives up a read stuck in flight once the last server lets go", async () => {
+  const a = fixture("a"), b = fixture("b");
+  writeFileSync(a.path, notice("a"));
+  writeFileSync(b.path, notice("b"));
+  const held = holdWindows(a.path)(a.path);
+  const hold = holdCommandHistory();
+  const first = waitCommandHistory(a.path, a.limit(), 60_000);
+  await held.entered;
+  hold();
+  expect(await first).toBeNull();
+  await commandHistorySettled();
+  expect(commandHistorySize()).toMatchObject({ draining: false, sessions: 0, waiting: 0 });
+  expect(transcriptReader.size().active).toBe(1);
+  expect(await waitCommandHistory(b.path, b.limit(), 1000)).toMatchObject({ complete: true, ends: [{ id: "b" }] });
+  const again = waitCommandHistory(a.path, a.limit(), 60_000);
+  held.release();
+  expect(await again).toMatchObject({ complete: true, ends: [{ id: "a" }] });
+  await transcriptReader.settled();
+  expect(transcriptReader.size()).toEqual({ active: 0, waiting: 0, paths: 0 });
+}, 5000);
+
+it("waits out another reader's lease of the transcript, however long, and counts its own time from its lease", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("large") + filler.repeat(8));
+  controlledClock();
+  const held = gate(), entered = gate();
+  const other = transcriptReader.read(s.path, async () => { entered.open(); await held.opened; });
+  await entered.opened;
+  slowReads((_, count) => { if (count === 3) jest.advanceTimersByTime(5_000); });
+  const reading = waitCommandHistory(s.path, s.limit(), 60_000);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(transcriptReader.size()).toMatchObject({ active: 1, waiting: 1 });
+  jest.advanceTimersByTime(18_000);
+  held.open();
+  await other;
+  expect(await reading).toMatchObject({ complete: true, through: s.limit() });
+}, 5000);
+
+it("gives up the wait for the lease of a read let go of meanwhile, and never opens the transcript for it", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("evicted"));
+  const held = gate(), entered = gate();
+  release.push(held.open);
+  const other = transcriptReader.read(s.path, async () => { entered.open(); await held.opened; });
+  await entered.opened;
+  let leased = 0;
+  wrapReads((path, work) => async (file) => { if (path === s.path) leased++; return work(file); });
+  commandHistory(s.path, s.limit());
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(transcriptReader.size()).toMatchObject({ active: 1, waiting: 1 });
+  for (let index = 0; index < 16; index++) {
+    const other = fixture(`other${index}`);
+    writeFileSync(other.path, notice(`o${index}`));
+    commandHistory(other.path, 0, false);
+  }
+  expect(transcriptReader.size()).toMatchObject({ active: 1, waiting: 0 });
+  await commandHistorySettled();
+  held.open();
+  await other;
+  await transcriptReader.settled();
+  expect(leased).toBe(0);
+}, 5000);
+
+it("drops a window read across a start over that a request made while the window waited for the disk", async () => {
+  const s = fixture();
+  const tick = Math.ceil(Date.now() / 1000) + 60;
+  writeFileSync(s.path, notice("a") + filler + notice("c") + filler);
+  utimesSync(s.path, tick, tick);
+  const second = gate(), secondEntered = gate(), rest = gate(), restEntered = gate();
+  release.push(second.open, rest.open);
+  let held = 0;
+  wrapReads((_, work) => (file) => work({ ...file, ahead: () => {}, window: async (position, length) => {
+    if (position > 0) {
+      if (held++ === 0) { secondEntered.open(); await second.opened; } else { restEntered.open(); await rest.opened; }
+    }
+    return file.window(position, length);
+  } }));
+  commandHistory(s.path, s.limit());
+  release.push(watchCommandHistory(s.path, () => {})!);
+  await secondEntered.opened;
+  writeFileSync(s.path, notice("b") + filler + notice("c") + filler);
+  utimesSync(s.path, tick, tick);
+  expect(commandHistory(s.path, s.limit(), false)!.ends).toEqual([]);
+  second.open();
+  await restEntered.opened;
+  expect(commandHistory(s.path, s.limit(), false)!.ends.map((end) => end.id)).toEqual(["b"]);
+  rest.open();
+  expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: true, ends: [{ id: "b" }, { id: "c" }] });
+}, 5000);
+
+it("reads another transcript while one on a network filesystem is stuck in its native read", async () => {
+  // every transcript on NFS: read through the thread pool, where a read can wait on the network for good
+  const statfs = fsp.statfs;
+  const network = spyOn(fsp, "statfs").mockImplementation((async (directory: string) => ({ ...(await statfs(directory)), type: 0x6969 })) as typeof statfs);
+  release.push(() => network.mockRestore());
+  const a = fixture("a"), b = fixture("b");
+  writeFileSync(a.path, notice("a"));
+  writeFileSync(b.path, notice("b"));
+  const entered = gate(), held = gate();
+  release.push(held.open);
+  const open = fsp.open;
+  const opens = spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof open>) => {
+    const handle = await open(...args);
+    if (args[0] === a.path) {
+      const read = handle.read.bind(handle) as (...rest: unknown[]) => Promise<unknown>;
+      handle.read = (async (...rest: unknown[]) => { entered.open(); await held.opened; return read(...rest); }) as typeof handle.read;
+    }
+    return handle;
+  }) as typeof open);
+  release.push(() => opens.mockRestore());
+  controlledClock();
+  const first = waitCommandHistory(a.path, a.limit(), 60_000);
+  await entered.opened;
+  const other = waitCommandHistory(b.path, b.limit(), 60_000);
+  jest.advanceTimersByTime(50);
+  expect(await other).toMatchObject({ complete: true, through: b.limit(), ends: [{ id: "b" }] });
+  held.open();
+  expect(await first).toMatchObject({ complete: true, ends: [{ id: "a" }] });
+}, 5000);

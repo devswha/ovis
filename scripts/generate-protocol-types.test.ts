@@ -2,14 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-/**
- * The generated herdr wire types must never silently drift from the schema they
- * were derived from. These tests are the gate that turns drift into a red build.
- */
-
 const ROOT = join(import.meta.dir, "..");
 const GENERATOR = join(ROOT, "scripts", "generate-protocol-types.ts");
 const GENERATED = join(ROOT, "shared", "herdr-api.generated.ts");
+// in this file, not beside the hc generator's tests: these rewrite both outputs, so they must not run alongside another file doing so
+const HC_GENERATED = join(ROOT, "server", "herdr-core", "hc-api.generated.ts");
 
 async function runGenerator(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn(["bun", "run", GENERATOR, ...args], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
@@ -36,8 +33,20 @@ describe("generate-protocol-types --check", () => {
     } finally {
       writeFileSync(GENERATED, original);
     }
-    // the repo is left exactly as it was found
     expect(readFileSync(GENERATED, "utf8")).toBe(original);
+  });
+
+  it("fails, naming the hc file, when the hc types drifted", async () => {
+    const original = readFileSync(HC_GENERATED, "utf8");
+    try {
+      writeFileSync(HC_GENERATED, `${original}\nexport type DriftSentinel = "stale";\n`);
+      const result = await runGenerator(["--check"]);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout + result.stderr).toContain("hc-api.generated.ts is STALE");
+    } finally {
+      writeFileSync(HC_GENERATED, original);
+    }
+    expect(readFileSync(HC_GENERATED, "utf8")).toBe(original);
   });
 
   it("is deterministic: regenerating produces a byte-identical file", async () => {
@@ -52,8 +61,6 @@ describe("generated types", () => {
   it("spells ReadSource the way the JSON API accepts it", async () => {
     // The CLI flag is --source recent-unwrapped, but the JSON API rejects that
     // hyphenated spelling with invalid_request and demands recent_unwrapped.
-    // A hand-written type carried the CLI spelling; generating from the schema is
-    // what keeps the two from being confused again.
     const source = readFileSync(GENERATED, "utf8");
     expect(source).toContain("recent_unwrapped");
     expect(source).not.toContain("recent-unwrapped");

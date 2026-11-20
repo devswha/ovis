@@ -10,8 +10,8 @@
  * - B: the `pty-data` frames as the browser's WebSocket receives them;
  * - C: the client's `pty-ack` for each frame, sent from xterm's write callback in the task that
  *   parsed it, so a frame not yet acked has not been parsed whole;
- * - D: every render of xterm's rows (a MutationObserver on `.xterm-rows`), decoded back to the
- *   frame each row belongs to.
+ * - D: every render of the rows the pane shows (a MutationObserver on `shownRows`: libghostty's
+ *   while it draws, xterm's otherwise), decoded back to the frame each row belongs to.
  *
  * A render is `torn` when xterm had parsed a herdr block's open but not its close, and `mixed` when
  * its rows are not all one frame. xterm 5.5 did not honour mode 2026, so a herdr block split over
@@ -36,17 +36,16 @@ import { PtySession, type PtySessionOptions } from "../server/pty/session.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { STARTUP_PROBES } from "../server/attach-output.ts";
 import { chromePath } from "./chrome-path.ts";
+import { shownRows } from "./shown-rows.ts";
 
 type Variant = "plain" | "heavy" | "korean";
 
-/** Row `r` of frame `n`, as the producer draws it and the page decodes it: every cell changes from one frame to the next. */
 function rowText(variant: string, n: number, r: number, cols: number): string {
   const head = String(n % 10000).padStart(4, "0") + "|";
   const set = variant === "korean" ? "가나다라마바사아자차카타파하" : "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const count = variant === "korean" ? Math.floor((cols - head.length) / 2) : cols - head.length;
   let body = "";
   for (let i = 0; i < count; i++) body += set[(n + r + i) % set.length];
-  // a column too narrow for a wide character is cleared, so no earlier frame shows through it
   return head + body + (variant === "korean" && (cols - head.length) % 2 === 1 ? " " : "");
 }
 
@@ -86,7 +85,6 @@ for (let step = 1; ; step++) {
 }
 `;
 
-/** One read or frame on a hop, with the synchronized-update switches in it. */
 interface HopChunk { t: number; data: string }
 
 interface HopSummary {
@@ -96,22 +94,16 @@ interface HopSummary {
   closes: number;
   /** blocks opened and closed (an open inside an open block is herdr's, counted once) */
   blocks: number;
-  /** blocks whose open and close came in different chunks */
   split: number;
-  /** the most chunks one block spanned */
   maxSpan: number;
-  /** the largest block, in UTF-16 units */
   maxBlock: number;
-  /** a block still open at the end */
   openAtEnd: boolean;
 }
 
 const SYNC = /\x1b\[\?2026([hl])/g;
 
-/** Counts the blocks on a hop and how many of them were split between chunks. */
 function summarizeHop(chunks: readonly HopChunk[]): HopSummary {
   const summary: HopSummary = { chunks: chunks.length, bytes: 0, opens: 0, closes: 0, blocks: 0, split: 0, maxSpan: 0, maxBlock: 0, openAtEnd: false };
-  // a switch cut between two chunks is read whole from their join
   const text = chunks.map((chunk) => chunk.data).join("");
   const ends: number[] = [];
   let at = 0;
@@ -150,24 +142,17 @@ function summarizeHop(chunks: readonly HopChunk[]): HopSummary {
   return summary;
 }
 
-/** What the page records; installed before the app (`installSyncTap`). */
 interface PageTap {
   messages: Array<{ t: number; stream: string; offset: number; data: string; replay: boolean; openAfter: boolean }>;
   acks: Array<{ t: number; stream: string; offset: number }>;
   renders: Array<{ t: number; torn: boolean; frame: string | null; rows?: string[] }>;
-  /** decode rows of these variants at this width; null: record parse state only */
   expect: { variants: string[]; cols: number } | null;
   keepRows: boolean;
   last: string | null;
-  /** decodes the rows on screen now: a frame drawn before `expect` was set is read again */
   current?: () => string | null;
 }
 
-/**
- * The page-side taps: the WebSocket's `pty-data` frames in, its `pty-ack`s out, and each render
- * of the rows with the parse state it was drawn from. `rowSource` is rowText's source.
- */
-function installSyncTap(rowSource: string): void {
+function installSyncTap({ rowSource, shown }: { rowSource: string; shown: string }): void {
   // the one generator the producer draws with; the context bypasses the app's CSP for it
   const rowText = new Function(`return ${rowSource}`)() as (variant: string, n: number, r: number, cols: number) => string;
   const sync = /\x1b\[\?2026([hl])/g;
@@ -212,7 +197,6 @@ function installSyncTap(rowSource: string): void {
       const n = Number(rows[r]!.slice(0, 4));
       const variant = expect.variants.find((v) => rows[r] === rowText(v, n, r, expect.cols).trimEnd());
       if (!variant || /\D/.test(rows[r]!.slice(0, 4))) return "mixed";
-      // heavy rows read as plain ones: the frame number alone names the frame
       const key = String(n);
       if (frame !== null && frame !== key) return "mixed";
       frame = key;
@@ -220,23 +204,28 @@ function installSyncTap(rowSource: string): void {
     return frame;
   };
   tap.current = () => {
-    const container = document.querySelector(".pane-terminal .xterm-rows");
+    const container = document.querySelector(shown);
     return container ? decode([...container.children].map((row) => (row.textContent ?? "").trimEnd())) : null;
   };
+  let shownText: string | null = null;
   new MutationObserver((records) => {
-    const target = records.find((record) => (record.target instanceof Element ? record.target : record.target.parentElement)?.closest(".xterm-rows"));
+    const target = records.find((record) => (record.target instanceof Element ? record.target : record.target.parentElement)?.closest(shown));
     if (!target) return;
-    const container = (target.target instanceof Element ? target.target : target.target.parentElement)!.closest(".xterm-rows")!;
+    const container = (target.target instanceof Element ? target.target : target.target.parentElement)!.closest(shown)!;
     const ack = tap.acks.at(-1);
-    const torn = ack ? openAfter.get(`${ack.stream}:${ack.offset}`) === true : false;
     const rows = [...container.children].map((row) => (row.textContent ?? "").trimEnd());
+    // a render of the same text drew nothing of an open block: libghostty redraws the shown rows when a late font
+    // face (the first Hangul) loads, whenever that is. Every cell changes from frame to frame, so a block's rows never
+    // come out as the text already shown
+    const text = rows.join("\n");
+    const torn = text !== shownText && (ack ? openAfter.get(`${ack.stream}:${ack.offset}`) === true : false);
+    shownText = text;
     const frame = decode(rows);
     tap.last = frame;
     tap.renders.push({ t: Date.now(), torn, frame, ...(tap.keepRows && frame === "mixed" ? { rows } : {}) });
   }).observe(document, { subtree: true, childList: true, characterData: true });
 }
 
-/** Records every read of each `herdr terminal attach` the server starts from now on. */
 function tapAttachReads(): HopChunk[] {
   const reads: HopChunk[] = [];
   const proto = PtySession.prototype as unknown as { pump(this: { options: PtySessionOptions }): Promise<void> };
@@ -256,7 +245,7 @@ function tapAttachReads(): HopChunk[] {
 async function openTerminalPage(browser: Browser, port: number, pane: string, viewport = { width: 1600, height: 1000 }): Promise<Page> {
   const context = await browser.newContext({ viewport, bypassCSP: true });
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })));
-  await context.addInitScript(installSyncTap, rowText.toString());
+  await context.addInitScript(installSyncTap, { rowSource: rowText.toString(), shown: shownRows() });
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
   await page.goto(`http://127.0.0.1:${port}/?pane=${encodeURIComponent(pane)}`);
@@ -275,10 +264,8 @@ async function run(): Promise<void> {
   let browser: Browser | undefined;
   const reads = tapAttachReads();
   let step = 0;
-  /** Hands the producer one step and waits for its answer: the step's bytes are written. */
   const produce = async (message: Record<string, unknown>): Promise<{ cols: number; rows: number; bytes: number }> => {
     step++;
-    // written whole before the producer can see it: it reads a step as soon as its name exists
     writeFileSync(join(dir, "next"), JSON.stringify(message));
     renameSync(join(dir, "next"), join(dir, `step-${step}`));
     const ack = join(dir, `ack-${step}`);
@@ -289,12 +276,10 @@ async function run(): Promise<void> {
     return JSON.parse(readFileSync(ack, "utf8"));
   };
   try {
-    // Given: the producer in a real pane of the test herdr, and the pane open in a browser.
     writeFileSync(join(state, "producer.mjs"), PRODUCER(dir));
     const made = await workspaceCreate({ cwd: state, label: "ovis-test-sync-output" });
     workspaces.push(made.workspace.workspace_id);
     const pane = made.root_pane.pane_id;
-    // armed before the command is typed; settled to an outcome so a failed send leaves no rejection unheard
     const ready = herdrRpc("pane.wait_for_output", { pane_id: pane, source: "visible", match: { type: "substring", value: "PRODUCER_READY" }, timeout_ms: 10000 }, undefined, 12000)
       .then(() => null, (error: unknown) => error);
     await herdrRpc("pane.send_input", { pane_id: pane, text: `exec ${quote(process.execPath)} ${quote(join(state, "producer.mjs"))}`, keys: ["enter"] });
@@ -303,18 +288,16 @@ async function run(): Promise<void> {
     server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(state, "server"), tailscaleOwner: null, usage: new UsageService(undefined, []) });
     browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     const page = await openTerminalPage(browser, server.port, pane);
-    await page.locator(".pane-terminal .xterm-rows", { hasText: "PRODUCER_READY" }).waitFor();
-    const grid = await page.evaluate(() => {
-      const rows = document.querySelector(".pane-terminal .xterm-rows")!.children.length;
+    await page.locator(shownRows(), { hasText: "PRODUCER_READY" }).waitFor();
+    const grid = await page.evaluate((shown) => {
+      const rows = document.querySelector(shown)!.children.length;
       return { rows };
-    });
+    }, shownRows());
 
     let n = 0;
-    /** frames drawn with their close */
     let whole = 0;
     let size = { cols: 0, rows: 0 };
     const results: Record<string, unknown> = {};
-    /** Draws frame `n` in `parts` chunks, one step each, and waits until the browser shows it whole. */
     const frame = async (variant: Variant, parts: number, options: { open?: boolean } = {}): Promise<number> => {
       n++;
       let bytes = 0;
@@ -330,17 +313,15 @@ async function run(): Promise<void> {
           tap.expect = { variants: ["plain", "korean"], cols };
         }, size);
         await page.waitForFunction((key) => (window as unknown as { __syncTap: PageTap }).__syncTap.current!() === key, String(n)).catch(async (error) => {
-          const rows = await page.evaluate(() => [...document.querySelector(".pane-terminal .xterm-rows")!.children].map((row) => (row.textContent ?? "").trimEnd()));
+          const rows = await page.evaluate((shown) => [...document.querySelector(shown)!.children].map((row) => (row.textContent ?? "").trimEnd()), shownRows());
           throw new Error(`frame ${variant}:${n} (${size.cols}x${size.rows}) never showed whole; the rows:\n${rows.join("\n")}`, { cause: error });
         });
       }
       return bytes;
     };
 
-    // a whole first frame, before any render is judged: the shell's screen is no frame
     await frame("plain", 1);
     assert.equal(size.rows, grid.rows, `the producer draws ${size.rows} rows, xterm shows ${grid.rows}`);
-    // the first frame is drawn and acked, and the pane is still: nothing else is on its way
     const { armed, messagesArmed } = await page.evaluate(() => {
       const tap = (window as unknown as { __syncTap: PageTap }).__syncTap;
       return { armed: tap.renders.length, messagesArmed: tap.messages.length };
@@ -348,7 +329,6 @@ async function run(): Promise<void> {
     const readsArmed = reads.length;
     const wholeArmed = whole;
 
-    // When: a block is left open while herdr shows the pane, then closed by the next frame.
     await produce({ kind: "raw", data: "\x1b[?2026h\x1b[1;1HSTALLMARK" });
     const parsed = await herdrRpc("pane.wait_for_output", { pane_id: pane, source: "visible", match: { type: "substring", value: "STALLMARK" }, timeout_ms: 3000 }, undefined, 5000)
       .then(() => true, () => false);
@@ -359,7 +339,6 @@ async function run(): Promise<void> {
     results["stall"] = { herdrParsedInsideBlock: parsed, readsWhileOpen: reads.length - readsBeforeStall, leaked };
     await frame("plain", 1);
 
-    // When: frames of each kind, each split over several chunks inside one block.
     const frames: Record<string, { frames: number; producerBytes: number }> = {};
     for (const [variant, parts, count] of [["plain", 3, 20], ["heavy", 4, 20], ["korean", 4, 20]] as const) {
       let producerBytes = 0;
@@ -368,12 +347,10 @@ async function run(): Promise<void> {
     }
     results["frames"] = frames;
 
-    // When: a frame's close never comes, and the next frame opens and closes its own block.
     await frame("heavy", 2, { open: true });
     await frame("plain", 2);
     const frameCount = whole - wholeArmed;
 
-    // Then: what each hop carried.
     const tap = await page.evaluate(() => (window as unknown as { __syncTap: PageTap }).__syncTap);
     const attachText = reads.map((read) => read.data).join("");
     // herdr's startup questions: the server answers them and keeps them off hop B
@@ -401,7 +378,6 @@ async function run(): Promise<void> {
     const evidence = process.env["CHECK_BROWSER_EVIDENCE_DIR"];
     if (evidence) writeFileSync(join(evidence, "terminal-sync-output.json"), JSON.stringify(report, null, 1));
 
-    // Then: the bridge passes herdr's stream as it is, every block closed.
     assert.equal(strip(attachText), hopB, "the browser's bytes are not the attach stream's");
     // a frame over a pty read (64 KiB) always comes in pieces: without blocks, or without one split, nothing was tested
     assert.ok(hops.B.blocks >= frameCount, `the browser saw ${hops.B.blocks} blocks for ${frameCount} frames`);

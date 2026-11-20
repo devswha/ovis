@@ -6,6 +6,12 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const USAGE_JA: Record<string, string> = {
+  "Remove {name}?": "{name}を削除しますか？",
+  "Remove this account from Ovis? Its CLI sign-in and credentials stay on this PC, and Restore under Removed from Ovis brings it back.": "このアカウントをOvisから削除しますか？CLIのログインと認証情報はこのPCに残り、「Ovisから削除済み」の「復元」で戻せます。",
+  "Remove this account from Ovis? {tool} keeps its record of it, and Restore under Removed from Ovis brings it back.": "このアカウントをOvisから削除しますか？{tool} の記録はそのまま残り、「Ovisから削除済み」の「復元」で戻せます。",
+  "Removed from Ovis": "Ovisから削除済み",
+  "Restore": "復元",
+  "Restore {name}": "{name} を復元",
   "Could not load sign-in options": "ログイン方法を読み込めませんでした",
   "On the server PC": "サーバーPCでログイン",
   "Install {cli} on the server PC first.": "先にサーバーPCに{cli}をインストールしてください。",
@@ -52,7 +58,6 @@ export const USAGE_JA: Record<string, string> = {
   "No limits reported": "上限の報告なし",
   "Sign-in expired. Open {name} to renew it.": "サインインの有効期限が切れました。{name} を開いて更新してください。",
   "Sign-in expired.": "サインインの有効期限が切れました。",
-  "Sign in again": "もう一度サインイン",
   "Sign in again to {name}": "{name} にもう一度サインイン",
   "{name} asked to slow down. These are the last numbers.": "{name} からリクエストの制限を受けました。最後に取得した値です。",
   "{name} could not be reached.": "{name} に接続できませんでした。",
@@ -82,4 +87,16 @@ export const USAGE_JA: Record<string, string> = {
   "This version signs in only in its terminal. Open it to finish.": "このバージョンはターミナルでのみログインします。ターミナルを開いて完了してください。",
   "The sign-in asked for the code again. Paste it once more.": "ログインがコードを再度求めました。もう一度貼り付けてください。",
   "{agent} is already signed in on this PC. Continuing may replace that sign-in.": "{agent} はこの PC ですでにログインしています。続けるとそのログインが置き換わる場合があります。",
+  "Usage credits": "使用クレジット",
+  "Credits": "クレジット",
+  "Unlimited": "無制限",
+  "Available": "利用可能",
+  "{n} credits": "{n} クレジット",
+  "{amount} spent": "{amount} 使用済み",
+  "Limit resets": "制限リセット",
+  "Expires in {time}": "{time}後に期限切れ",
+  "{n} left": "残り{n}回",
+  "Recorded by {tool}": "{tool} の記録",
+  "Recorded by {tool}, {when}": "{tool} の記録、{when}",
+  "It may have changed since.": "その後変わった可能性があります。",
 };

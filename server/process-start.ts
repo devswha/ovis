@@ -24,16 +24,28 @@ export function processStartedAt(pid: number): number | null {
   return linuxBirth(pid);
 }
 
-/**
- * Linux: /proc/stat's `btime` and the start's ticks after boot. The same on every read, so it is the
- * process's identity (pending input compares it exactly); but `btime` is whole seconds and stays
- * where it was when the clock is stepped later, so it may be up to a second before the real start.
- */
+/** Linux: /proc/stat's `btime` and the start's ticks after boot. */
 function linuxBirth(pid: number): number | null {
   try {
     const ticks = Number(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").pop()!.split(" ")[19]);
     const boot = Number(readFileSync("/proc/stat", "utf8").match(/^btime (\d+)$/m)?.[1]);
     return Number.isFinite(ticks) && Number.isFinite(boot) ? boot * 1000 + ticks * 10 : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What tells one process from another on every read, however the wall clock moves: Linux's start in
+ * ticks after boot (`btime`, and so processStartedAt, follows a clock that is set later), macOS's
+ * kernel start record. null where neither answers.
+ */
+export function processStartIdentity(pid: number): number | null {
+  if (process.platform === "darwin") return darwinStart(pid);
+  if (process.platform !== "linux") return null;
+  try {
+    const ticks = Number(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").pop()!.split(" ")[19]);
+    return Number.isFinite(ticks) ? ticks : null;
   } catch {
     return null;
   }
@@ -57,10 +69,7 @@ export async function processStartedAtAsync(pid: number): Promise<number | null>
   return processStartedAt(pid);
 }
 
-/**
- * processStartUpperBound for a caller that awaits it; every platform's read is synchronous now.
- * Where no start time is known (Windows), null.
- */
+/** Where no start time is known (Windows), null. */
 export async function processStartUpperBoundAsync(pid: number): Promise<number | null> {
   if (process.platform !== "linux" && process.platform !== "darwin") return null;
   return processStartUpperBound(pid);

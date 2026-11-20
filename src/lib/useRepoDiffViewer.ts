@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { WEB_PANEL_BELOW_KEY, sheetStep, webPagesBelow } from "./historyKeys.ts";
+import { backUnderCurrentEntry } from "./historyNavigation.ts";
 import { diffTargetFromState, diffTargetState, type RepoDiffTarget } from "./repoDiff.ts";
 
-/**
- * A repository diff is a history entry above the Files list, as a file preview is (useFileViewer):
- * Android Back closes it, and a reload or Forward restores it with its PC, pane and comparison.
- */
 export function useRepoDiffViewer() {
   const [viewing, setViewing] = useState(() => diffTargetFromState(window.history.state));
   const closing = useRef(false);
 
   useEffect(() => {
     const onPop = (event: PopStateEvent): void => {
+      if (sheetStep.taking(event) || sheetStep.holds(event)) return;
       closing.current = false;
       setViewing(diffTargetFromState(event.state));
     };
@@ -22,9 +21,11 @@ export function useRepoDiffViewer() {
   const openDiff = useCallback((target: RepoDiffTarget) => {
     if (closing.current) return;
     const state = diffTargetState(window.history.state, target);
-    // another file of the same list replaces the entry: Back still returns to the list in one step
     if (diffTargetFromState(window.history.state)) window.history.replaceState(state, "");
-    else window.history.pushState(state, "");
+    else {
+      const { [WEB_PANEL_BELOW_KEY]: _below, ...pushed } = state;
+      window.history.pushState(pushed, "");
+    }
     setViewing(target);
   }, []);
 
@@ -32,11 +33,10 @@ export function useRepoDiffViewer() {
     if (closing.current) return;
     if (diffTargetFromState(window.history.state)) {
       closing.current = true;
-      window.history.back();
+      backUnderCurrentEntry(1 + webPagesBelow(window.history.state))?.catch(() => { closing.current = false; });
     } else setViewing(null);
   }, []);
 
-  /** Hand the current entry to another viewer without traversing back to the list. */
   const releaseDiff = useCallback(() => {
     window.history.replaceState(diffTargetState(window.history.state, null), "");
     setViewing(null);

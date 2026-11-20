@@ -5,13 +5,15 @@ import { join } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gzipSync, gunzipSync } from "node:zlib";
 import { compressResponse } from "./compress.ts";
 
-// The real static handler derives dist from its module directory. Copy its exact
-// source into an owned fixture rather than replacing the checkout's built client.
+/** a WebAssembly module's magic and version, then zeros: what the terminal's libghostty-vt module starts with */
+const WASM = Buffer.concat([Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]), Buffer.alloc(4096)]);
+
 async function fixture(check: (serve: (path: string, encoding?: string | null) => Promise<Response>) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), "herdr-static-encoding-"));
-  mkdirSync(join(root, "server")); mkdirSync(join(root, "dist", "assets"), { recursive: true });
+  mkdirSync(join(root, "server")); mkdirSync(join(root, "shared")); mkdirSync(join(root, "dist", "assets"), { recursive: true });
   const body = 'console.log("synthetic static file");\n';
-  writeFileSync(join(root, "server", "static.ts"), readFileSync(join(import.meta.dir, "static.ts")));
+  for (const file of ["static.ts", "entries.ts"]) writeFileSync(join(root, "server", file), readFileSync(join(import.meta.dir, file)));
+  writeFileSync(join(root, "shared", "web-policy.ts"), readFileSync(join(import.meta.dir, "..", "shared", "web-policy.ts")));
   writeFileSync(join(root, "dist", "index.html"), "<html>fixture shell</html>");
   writeFileSync(join(root, "dist", "sw.js"), body);
   writeFileSync(join(root, "dist", "assets", "legacy.js"), body);
@@ -21,11 +23,18 @@ async function fixture(check: (serve: (path: string, encoding?: string | null) =
     const path = join(root, "dist", "assets", name!);
     writeFileSync(path, value!); writeFileSync(path + ".gz", gzipSync(value!)); writeFileSync(path + ".br", brotliCompressSync(value!));
   }
+  const wasm = join(root, "dist", "assets", "module-hash.wasm");
+  writeFileSync(wasm, WASM); writeFileSync(wasm + ".gz", gzipSync(WASM)); writeFileSync(wasm + ".br", brotliCompressSync(WASM));
   const gzipOnly = join(root, "dist", "assets", "gzip-only.js");
   writeFileSync(gzipOnly, body);
   writeFileSync(`${gzipOnly}.gz`, gzipSync(body));
+  const exported = process.env["OVIS_ASSETS"];
+  delete process.env["OVIS_ASSETS"];
   try { await check((await import(join(root, "server", "static.ts"))).serveStatic); }
-  finally { rmSync(root, { recursive: true, force: true }); }
+  finally {
+    if (exported !== undefined) process.env["OVIS_ASSETS"] = exported;
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 test("serves compressed immutable scripts with original MIME and encoding-specific bytes", () => fixture(async serve => {
@@ -41,6 +50,20 @@ test("serves compressed immutable scripts with original MIME and encoding-specif
   expect(br.headers.get("content-type")).toBe("text/css; charset=utf-8");
   expect(br.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
   expect(brotliDecompressSync(await br.arrayBuffer()).toString()).toBe("body { display: block; }");
+}));
+
+test("serves the terminal's WebAssembly module compressed, as application/wasm", () => fixture(async serve => {
+  const br = await serve("/assets/module-hash.wasm", "br, gzip");
+  expect(br.headers.get("content-encoding")).toBe("br");
+  expect(br.headers.get("content-type")).toBe("application/wasm");
+  expect(br.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+  expect(brotliDecompressSync(await br.arrayBuffer())).toEqual(WASM);
+  const gzip = await serve("/assets/module-hash.wasm", "gzip");
+  expect(gzip.headers.get("content-encoding")).toBe("gzip");
+  expect(gunzipSync(await gzip.arrayBuffer())).toEqual(WASM);
+  const plain = await serve("/assets/module-hash.wasm", null);
+  expect(plain.headers.get("content-encoding")).toBeNull();
+  expect(plain.headers.get("content-type")).toBe("application/wasm");
 }));
 
 test("honors encoding preferences, explicit exclusions, wildcards and identity fallback", () => fixture(async serve => {

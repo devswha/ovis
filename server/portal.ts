@@ -35,6 +35,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkEntry, checkPortalAuth, NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, PORTAL_INVITE_DAYS, PORTAL_OIDC_SECRET_VARIABLE, type PortalAuth, type PortalSignIn } from "../shared/portal.ts";
 import type { DeviceRole, PortalStatus } from "../shared/protocol.ts";
+import { hostName } from "./access.ts";
 import { errorResponse, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { chunksOf } from "./remote-bundle.ts";
 import { updateRequestAllowed } from "./update-api.ts";
@@ -42,6 +43,11 @@ import { windowsArgv, windowsProcessTable } from "./windows-processes.ts";
 
 /** the first release with `--strip-request-header` and an address tied to the identity */
 const PORTAL_VERSION = "v2.6.1";
+/**
+ * The first release that binds a sign-in to the hosts it was made on. Before it, a session cookie
+ * from the short address passes for whoever holds the same `--name` once Portal registers again.
+ */
+const SIGN_IN_VERSION = "v2.7.3";
 /** a relay that answers but will not take the tunnel is only ever retried, never refused */
 const READY_TIMEOUT_MS = 60_000;
 /** Portal unregisters from the relay on SIGTERM; one still running after this is killed, within the 6 s the supervisor gives this server to stop */
@@ -52,9 +58,7 @@ const VERSION_TIMEOUT_MS = 2_500;
 /** the panel polls the status; `portal version` and `portal expose --help` are a process each time */
 const PROBE_CACHE_MS = 5_000;
 const RELAY_TIMEOUT_MS = 5_000;
-/** what is still in Portal's pipes when it exits: its last words */
 const PIPE_GRACE_MS = 250;
-/** Portal's last words kept for the panel */
 const OUTPUT_LINES = 30;
 /** `portal auth issue` reads the identity file and signs: a local call */
 const ISSUE_TIMEOUT_MS = 10_000;
@@ -73,18 +77,15 @@ interface Guards {
 }
 interface StartRequest extends Guards {
   relay: string;
-  /** this server's port, Portal's upstream */
   port: number;
   /** who may open the address; unset, only the app's own token or a paired device */
   auth?: PortalAuth;
 }
-/** a start as it runs: the sign-in settled */
 type Launch = Required<StartRequest>;
 /** what a relaunch must find unchanged: the exited child's saved pid and the identity it served with */
 interface Recovery {
   pid: number;
   identity: string;
-  /** how the exited child ended, for the error a failed relaunch leaves */
   stopped: string;
 }
 interface SavedState {
@@ -92,7 +93,6 @@ interface SavedState {
   relay: string | null;
   /** the server that started it: another one on this state directory leaves its Portal alone */
   port: number | null;
-  /** the Portal last started, so the next server can stop it if it is still running */
   pid: number | null;
   /** who may open the address, for a start that comes from this file (the boot's resume, a relaunch) */
   auth: PortalAuth;
@@ -101,19 +101,14 @@ interface SavedState {
 }
 
 export interface PortalServiceOptions {
-  /** Portal's identity and on/off choice live in its portal/ */
   stateDir: string;
-  /** the portal to run; unset, `portal` from PATH, read at each start */
   bin?: string;
   fetch?: typeof fetch;
-  /** READY_TIMEOUT_MS and STOP_GRACE_MS; tests shorten them */
   readyTimeoutMs?: number;
   stopGraceMs?: number;
-  /** PORTAL_RECHECK_MS; tests shorten it */
   recheckMs?: number;
 }
 
-/** "v2.6.1" → [2, 6, 1]; null for anything else. */
 function parseVersion(text: string): [number, number, number] | null {
   const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(text.trim());
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
@@ -125,6 +120,25 @@ export function atLeast(version: string, minimum: string): boolean {
   if (have === null || need === null) return false;
   for (let i = 0; i < 3; i++) if (have[i] !== need[i]) return have[i]! > need[i]!;
   return true;
+}
+
+/**
+ * A whole semver version with an optional leading v: no leading zeros, at most 9 digits a part (so
+ * each is a safe integer), dot-separated pre-release identifiers that are neither empty nor
+ * zero-led numbers, and build identifiers that are not empty.
+ */
+const SEMVER = /^v?(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})(-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+/**
+ * Whether `version` is the release `minimum` or later by semver: a pre-release comes before its
+ * release, build metadata counts for nothing, and anything that is not a whole semver version is too old.
+ */
+function releaseAtLeast(version: string, minimum: string): boolean {
+  const have = SEMVER.exec(version);
+  const need = SEMVER.exec(minimum);
+  if (have === null || need === null) return false;
+  for (let i = 1; i <= 3; i++) if (Number(have[i]) !== Number(need[i])) return Number(have[i]) > Number(need[i]);
+  return have[4] === undefined;
 }
 
 /** A relay as the user gave it, as an https origin; null for anything with a path, a query, credentials or a second host. */
@@ -327,19 +341,23 @@ function isPortalExpose(argv: readonly string[], identityPath: string): boolean 
   return false;
 }
 
-/** Portal's last warning or error, else its last line, for a failure that has no words of its own. */
 function lastWords(lines: readonly string[]): string {
   const line = [...lines].reverse().find((candidate) => /\b(WRN|ERR|FTL)\b/.test(candidate)) ?? lines.at(-1);
   return line === undefined ? "" : ` Portal said: ${line}`;
 }
 
-async function readVersion(bin: string): Promise<string | null> {
+type VersionRead = { tag: string } | { problem: "missing" | "unreadable" };
+const NO_PORTAL_BIN: VersionRead = { problem: "missing" };
+
+async function readVersion(bin: string): Promise<VersionRead> {
   try {
     const proc = Bun.spawn([bin, "version"], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: portalEnv(), windowsHide: true, timeout: VERSION_TIMEOUT_MS, killSignal: "SIGKILL" });
     const [text, code] = await Promise.all([new Response(proc.stdout as ReadableStream<Uint8Array>).text(), proc.exited]);
     const tag = /\bv?\d+\.\d+\.\d+\S*/.exec(text)?.[0];
-    return code === 0 && tag !== undefined ? tag : null;
-  } catch { return null; }
+    return code === 0 && tag !== undefined ? { tag } : { problem: "unreadable" };
+  } catch (error) {
+    return processErrorCode(error) === "ENOENT" ? NO_PORTAL_BIN : { problem: "unreadable" };
+  }
 }
 
 /**
@@ -365,10 +383,8 @@ async function readSignIns(bin: string): Promise<PortalSignIn[]> {
   } catch { return []; }
 }
 
-/** What a `portal` subcommand said, and when and of which `portal`. */
 interface Probe<T> { at: number; bin: string | null; value: Promise<T> }
 
-/** `last` while it is recent and of the same `bin`, else a new question: the panel polls, and each one is a process. */
 function ask<T>(last: Probe<T> | null, bin: string | null, fresh: boolean, read: (bin: string) => Promise<T>, none: T): Probe<T> {
   const now = Date.now();
   if (!fresh && last !== null && last.bin === bin && now - last.at < PROBE_CACHE_MS) return last;
@@ -382,21 +398,16 @@ export class PortalService {
   private error: string | null = null;
   private lines: string[] = [];
   private child: Child | null = null;
-  /** a start between its request and its process, or the boot's cleanup: one at a time */
   private launching = false;
-  /** invalidates starts/resumes that are still waiting on a version, relay or old process */
   private operation = 0;
-  /** shutdown is final for this server instance, even if a start has not spawned yet */
   private shutdownRequested = false;
   private cleanup: Promise<void> | null = null;
-  /** a child asked to end, once: its exit is no failure */
   private ending: Child | null = null;
-  private versionRead: Probe<string | null> | null = null;
+  private versionRead: Probe<VersionRead> | null = null;
   private signInsRead: Probe<PortalSignIn[]> | null = null;
   /** who may open the address: the running Portal's, else the saved choice the next start uses */
   private auth: PortalAuth = NO_PORTAL_AUTH;
   private invites: NonNullable<SavedState["invites"]> = [];
-  /** the short host of the address being served (`shortReadyUrl`), reported only while `url` is */
   private shortUrl: string | null = null;
   /** the port this service represents; a service for another port must not change the owner's saved choice */
   private serverPort: number | null = null;
@@ -404,10 +415,8 @@ export class PortalService {
   private guards: (() => Guards) | null = null;
   /** what the running Portal, started with a sign-in, sends with the identity it vouches for; made at its launch, kept here and nowhere else */
   private proof: string | null = null;
-  /** the child that printed its address, and the identity file it served with */
   private readyChild: Child | null = null;
   private readyIdentity: string | null = null;
-  /** the one relaunch an explicit start, a stop or the boot's resume allows has been used */
   private recovered = false;
   private readonly dir: string;
 
@@ -438,8 +447,8 @@ export class PortalService {
     return this.options.bin ?? Bun.which("portal");
   }
 
-  private version(fresh = false): Promise<string | null> {
-    this.versionRead = ask(this.versionRead, this.bin(), fresh, readVersion, null);
+  private version(fresh = false): Promise<VersionRead> {
+    this.versionRead = ask(this.versionRead, this.bin(), fresh, readVersion, NO_PORTAL_BIN);
     return this.versionRead.value;
   }
 
@@ -449,9 +458,10 @@ export class PortalService {
   }
 
   async status(guards: Guards): Promise<PortalStatus> {
-    const version = await this.version();
+    const read = await this.version();
+    const version = "tag" in read ? read.tag : null;
     const usable = version !== null && atLeast(version, PORTAL_VERSION);
-    const methods = usable ? await this.signIns() : [];
+    const methods = usable && releaseAtLeast(version, SIGN_IN_VERSION) ? await this.signIns() : [];
     return {
       supported: true,
       version,
@@ -519,6 +529,24 @@ export class PortalService {
     return proofMatches(this.proof, given);
   }
 
+  /**
+   * Whether `host`, a request's Host, names an address the Portal running now with no sign-in
+   * serves. Such a Portal sends no proof (Portal sends one only beside an identity it verified), so
+   * the visitor's Host it keeps is the one mark it leaves: it says how a request came, never who
+   * sent it. With a sign-in only the proof counts, which every request Portal lets through carries.
+   */
+  serves(host: string | null): boolean {
+    const name = host === null ? null : hostName(host);
+    if (name === null || this.url === null || this.auth.method !== "none") return false;
+    // its port too: the same name on another port is another server's (https's own port when none is given)
+    const port = Number(/:(\d{1,5})$/.exec(host!)?.[1] ?? 443);
+    return [this.url, this.shortUrl].some((url) => {
+      if (url === null) return false;
+      const served = new URL(url);
+      return hostName(served.host) === name && Number(served.port || 443) === port;
+    });
+  }
+
   /** Only private links have invite records; every unrecorded Portal identity may watch. */
   roleFor(user: string | null, method: string | null): DeviceRole {
     return method === "credential" ? this.invites.find((invite) => invite.name === user)?.role ?? "watch" : "watch";
@@ -561,14 +589,12 @@ export class PortalService {
   private run(request: Launch, operation: number, recovery: Recovery | null): void {
     this.launching = true;
     void this.launch(request, operation, recovery)
-      // a start stopped meanwhile failed for no one
       .catch((error: unknown) => {
         if (this.isCurrentStart(operation)) this.fail(recovery === null ? messageOf(error) : `${recovery.stopped} It was not restarted: ${messageOf(error)}${lastWords(this.lines)}`);
       })
       .finally(() => { this.launching = false; });
   }
 
-  /** Takes this server's address down and remembers that it is off when this server owns the saved state. */
   stop(): void {
     this.operation++;
     this.url = null;
@@ -578,14 +604,12 @@ export class PortalService {
       this.phase = "stopping";
       this.end(this.child);
     } else if (this.phase === "starting" || this.phase === "recovering" || this.phase === "error") {
-      // a start still asking its relay ends there
       this.phase = "idle";
     }
     const saved = this.saved();
     if (saved.port === null || saved.port === this.serverPort) this.save({ enabled: false });
   }
 
-  /** The server is going away: Portal goes with it, and the saved choice stays for the next server. Settles once Portal has exited. */
   shutdown(): Promise<void> {
     this.shutdownRequested = true;
     this.operation++;
@@ -644,11 +668,17 @@ export class PortalService {
     const { relay, port, auth } = request;
     if (recovery !== null) this.checkRecovery(request, recovery);
     const bin = this.bin();
-    const version = bin === null ? null : await this.version(true);
+    const read = bin === null ? NO_PORTAL_BIN : await this.version(true);
     if (!this.isCurrentStart(operation)) return;
-    if (bin === null || version === null) throw new Error("Portal is not installed on this PC.");
+    if (bin === null || "problem" in read) {
+      throw new Error("problem" in read && read.problem === "unreadable"
+        ? "Could not read the Portal version on this PC. Check that `portal version` works, or install Portal again."
+        : "Portal is not installed on this PC.");
+    }
+    const version = read.tag;
     if (!atLeast(version, PORTAL_VERSION)) throw new Error(`This PC has Portal ${version}; the app needs ${PORTAL_VERSION} or later.`);
     if (auth.method !== "none") {
+      if (!releaseAtLeast(version, SIGN_IN_VERSION)) throw new Error(`This PC has Portal ${version}; a sign-in needs Portal ${SIGN_IN_VERSION} or later. Update Portal, or start without a sign-in.`);
       const offered = await this.signIns(true);
       if (!this.isCurrentStart(operation)) return;
       if (!offered.includes(auth.method)) throw new Error(`The Portal on this PC does not support --auth ${auth.method} yet. Update it, or choose another sign-in.`);
@@ -660,7 +690,6 @@ export class PortalService {
     // another server of this app on this identity: two Portals keep taking the address from each other
     await this.cleanLeftover(this.saved().pid);
     if (!this.isCurrentStart(operation)) return;
-    // what was true before the awaits may not be now
     if (recovery !== null) this.checkRecovery(request, recovery);
     // Portal needs its identity parent before it starts; it contains the saved address.
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
@@ -738,7 +767,6 @@ export class PortalService {
       this.error = `${stopped} It was not restarted: its identity file could not be read. Start it again.${lastWords(this.lines)}`;
       return;
     }
-    // the one relaunch is spent before anything is awaited, so no second exit can take another
     this.recovered = true;
     this.phase = "recovering";
     this.error = null;
@@ -758,11 +786,10 @@ export class PortalService {
         }
       }
       this.line(pending + decoder.decode(), child);
-    } catch { /* the pipe closes with the process */ }
+    } catch { }
   }
 
   private line(raw: string, child: Child): void {
-    // NO_COLOR is set; a terminal's codes would be no use here either way
     const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
     if (line === "" || this.child !== child) return;
     this.lines = [...this.lines, line].slice(-OUTPUT_LINES);
@@ -902,7 +929,6 @@ export class PortalService {
     return { enabled, relay: origin, port: port as number | null, pid: pid as number | null, auth: auth.auth, ...(invites.length > 0 ? { invites } : {}) };
   }
 
-  /** at once, not awaited: a stop and a start's own save never interleave */
   private save(change: Partial<SavedState>): void {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const temp = `${this.statePath}.tmp-${process.pid}`;
@@ -922,7 +948,6 @@ export async function handlePortalRequest(request: Request, pathname: string, po
   const fail = (code: string, message: string, http: number) => reply({ error: { code, message } }, http);
   if (pathname === "/api/portal" && request.method === "GET") {
     setRequestRoute(pathname);
-    // a server started without the service (tests, an embedding) offers nothing
     return reply(portal ? await portal.status(context) : NO_PORTAL);
   }
   const action = pathname.slice("/api/portal/".length);
@@ -937,7 +962,7 @@ export async function handlePortalRequest(request: Request, pathname: string, po
     return reply({ accepted: true }, 202);
   }
   let body: unknown = null;
-  try { body = await request.json(); } catch { /* checked below */ }
+  try { body = await request.json(); } catch { }
   if (action === "invite") {
     const fields = isJsonObject(body) ? body : {};
     const name = checkEntry("credential", typeof fields["name"] === "string" ? fields["name"] : "");

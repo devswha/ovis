@@ -11,8 +11,6 @@ import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./he
 type TestBridge = { port: number; stop: () => void };
 type ConversationChanged = Extract<ServerMessage, { type: "conversation-changed" }>;
 
-// These integration tests exercise real native-file stat ticks and asynchronous herdr/WS
-// lifecycles. Platform timers cannot be faked; all waits name a condition and a deadline.
 async function until(check: () => boolean | Promise<boolean>, label: string): Promise<void> {
   const deadline = Date.now() + 12_000;
   while (!(await check())) {
@@ -174,7 +172,6 @@ describe("native conversation invalidation", () => {
     await reader.waitFor((frame) => frame.type === "pane-geometry" && frame.pane_id === paneId, afterDisable);
     expect(monitor.size).toBe(0);
 
-    // Idempotent terminal attachment must not implicitly restore chat interest.
     const disabledCalls = watchCalls();
     attach(reader);
     await barrier(reader);
@@ -190,7 +187,6 @@ describe("native conversation invalidation", () => {
 
     reader.ws.close();
     await until(() => monitor.size === 0, "closing the only interested client kept no monitor");
-    // The uninterested terminal is still attached, and can subscribe without attaching again.
     const after = terminal.frames.length;
     await barrier(terminal, "observe");
     await terminal.waitFor((frame) => frame.type === "pane-geometry" && frame.pane_id === paneId, after);
@@ -222,12 +218,57 @@ describe("native conversation invalidation", () => {
     const after = socket.frames.length;
     watch(socket);
     await socket.waitFor((frame) => frame.type === "error" && frame.code === "not_attached", after);
-    // Disabling an already released subscription is harmless.
     watch(socket, false);
     await barrier(socket, "observe");
     expect(socket.ws.readyState).toBe(WebSocket.OPEN);
     socket.ws.close();
   });
+
+  it("follows a pane's conversation without attaching it, through the pane's attach and detach, until a detached disable or close", async () => {
+    const socket = await connect();
+    const snapshot = socket.frames.find((frame) => frame.type === "snapshot");
+    expect(snapshot?.type === "snapshot" && snapshot.features?.includes("conversation-watch-detached")).toBe(true);
+    const follow = (target: TranscriptSocket, enabled: boolean, id = paneId): void => target.send({ type: "conversation-watch", pane_id: id, enabled, detached: true });
+    follow(socket, true);
+    await socket.changed(paneId);
+    const monitor = monitors.get(paneId)!;
+    expect(monitor.size).toBe(1);
+    let after = socket.frames.length;
+    appendFileSync(path, `${JSON.stringify({ type: "model_change", modelId: "detached-model" })}\n`);
+    await socket.changed(paneId, after);
+    expect((await read()).metadata?.model).toBe("detached-model");
+
+    attach(socket);
+    await socket.waitFor((frame) => frame.type === "pane-geometry" && frame.pane_id === paneId);
+    watch(socket, false);
+    socket.send({ type: "detach", pane_id: paneId });
+    await barrier(socket);
+    expect(monitor.size).toBe(1);
+    after = socket.frames.length;
+    appendFileSync(path, `${JSON.stringify({ type: "model_change", modelId: "still-followed-model" })}\n`);
+    await socket.changed(paneId, after);
+    expect(socket.frames.some((frame) => frame.type === "error")).toBe(false);
+
+    follow(socket, false);
+    await barrier(socket);
+    expect(monitor.size).toBe(0);
+    after = socket.frames.length;
+    follow(socket, true);
+    await socket.changed(paneId, after);
+    socket.ws.close();
+    await until(() => monitor.size === 0, "closing the connection released its detached interest");
+
+    const crowded = await connect();
+    for (let i = 0; i < 32; i++) follow(crowded, true, `${paneId}-detached-${i}`);
+    after = crowded.frames.length;
+    follow(crowded, true, `${paneId}-detached-32`);
+    await crowded.waitFor((frame) => frame.type === "error" && frame.code === "too_many_conversation_watches", after);
+    after = crowded.frames.length;
+    crowded.ws.send(JSON.stringify({ type: "conversation-watch", pane_id: paneId, enabled: true, detached: "yes" }));
+    await crowded.waitFor((frame) => frame.type === "error" && frame.code === "invalid_conversation_watch", after);
+    crowded.ws.close();
+    await until(() => monitor.size === 0, "closing the crowded connection released every detached interest");
+  }, 30_000);
 
   it("shares interested pane monitors, notices metadata/tear/replacement/missing/new-session writes and releases detach/close claims", async () => {
     const first = await connect();
@@ -294,7 +335,7 @@ describe("native conversation invalidation", () => {
     afterFirst = first.frames.length;
     rmSync(path);
     await first.changed(paneId, afterFirst);
-    expect(await read()).toEqual({ source: "scrollback", turns: [] });
+    expect(await read()).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
     afterFirst = first.frames.length;
     writeFileSync(path, transcript());
     await first.changed(paneId, afterFirst);
@@ -306,7 +347,6 @@ describe("native conversation invalidation", () => {
     await first.changed(paneId, afterFirst);
     expect(JSON.stringify((await read()).turns)).toContain("new session answer");
 
-    // The role ACK is a frame-order barrier: detach was processed before the write.
     first.send({ type: "detach", pane_id: paneId });
     await barrier(first, "observe");
     expect(monitor.size).toBe(1);
@@ -324,7 +364,6 @@ describe("native conversation invalidation", () => {
     third.send({ type: "detach", pane_id: paneId });
     await barrier(third, "observe");
     await until(() => monitor.size === 0, "the last interest detached while terminal-only clients stayed");
-    // A detached client reattaching later has no interest until it opts in again.
     const beforeReattach = first.frames.length;
     attach(first);
     await first.waitFor((frame) => frame.type === "pane-geometry" && frame.pane_id === paneId, beforeReattach);
@@ -461,8 +500,6 @@ describe("native conversation invalidation", () => {
     attach(socket);
     watch(socket);
     await socket.changed(paneId);
-    // interest is accepted while the attach is still being created: a pane closed before the
-    // client joined answers the attach with an error, not pty-exit, so wait for the join
     await socket.waitFor((frame) => frame.type === "pane-geometry" && frame.pane_id === paneId && frame.fixed === true);
     const monitor = monitors.get(paneId)!;
     await workspaceClose(workspaceId);

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { join as winJoin } from "node:path/win32";
 import { guardPath } from "./owner-guard.ts";
 import { readProcessBirth } from "./process-owner.ts";
@@ -32,25 +32,24 @@ describe("remote entry socket selection", () => {
   });
 
   it("uses APPDATA when Windows XDG_CONFIG_HOME is absent", () => {
-    // control: APPDATA stays the Windows fallback
     expect(windowsSocket({ APPDATA: "C:\\Users\\u\\AppData\\Roaming", HERDR_REMOTE_SESSION: "qa" }))
       .toBe("C:\\Users\\u\\AppData\\Roaming\\herdr\\sessions\\qa\\herdr.sock");
   });
 
   it("uses the roaming profile when both Windows config variables are absent", () => {
-    // control: preserve the standard Windows profile fallback
     expect(windowsSocket({ HERDR_REMOTE_SESSION: "qa" }))
       .toBe("C:\\Users\\u\\AppData\\Roaming\\herdr\\sessions\\qa\\herdr.sock");
   });
 });
 
-/** A well-formed birth no running process has: this platform's form, at the epoch. */
+/**
+ * A socket's path as the entry reports it: its folder resolved, its own name kept. macOS refuses realpath on a
+ * socket file itself (EOPNOTSUPP), and a last part that is a socket is no link.
+ */
+const realSocket = (socket: string) => join(realpathSync(dirname(socket)), basename(socket));
+
 const earlierBirth = { platform: process.platform, value: process.platform === "linux" ? `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:1` : process.platform === "darwin" ? "Thu Jan 1 00:00:00 1970" : "1" };
 
-/**
- * The real entry under a temporary home: herdr's socket is missing and its binary is a path that
- * does not exist, so a start that gets past the startup lock ends at "start herdr", touching no herdr.
- */
 describe("remote entry startup lock", () => {
   let home = "", descriptor = "", lock = "";
   const others: Bun.Subprocess<"pipe", "ignore", "ignore">[] = [];
@@ -76,12 +75,11 @@ describe("remote entry startup lock", () => {
     writeFileSync(join(lock, "pid"), String(pid));
     writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid, generation: "earlier-start", birth }));
   }
-  /** One run of the entry; one still running after 30 s (a bridge left serving) is killed and reported as such. */
-  async function start(preload?: string) {
+  async function start(preload?: string, choice: Record<string, string> = {}) {
     const entry = join(import.meta.dir, "remote-entry.ts");
     const proc = Bun.spawn([process.execPath, ...(preload ? ["--preload", preload] : []), entry], {
       cwd: home, stdin: "ignore", stdout: "pipe", stderr: "pipe", windowsHide: true,
-      env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, "config"), OVIS_HERDR_BIN: join(home, "missing-herdr"), HERDR_REMOTE_SESSION: "", HERDR_SOCKET: "" },
+      env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, "config"), OVIS_HERDR_BIN: join(home, "missing-herdr"), HERDR_REMOTE_SESSION: "", HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_START_NEW: "", HERDR_REMOTE_RESULT: "", HERDR_SOCKET: "", ...choice },
     });
     let serving = false;
     const deadline = setTimeout(() => { serving = true; proc.kill("SIGKILL"); }, 30_000);
@@ -94,9 +92,7 @@ describe("remote entry startup lock", () => {
     writeFileSync(preload, `const kill = process.kill.bind(process);\nprocess.kill = ((target, signal) => { if (target === ${pid}) throw Object.assign(new Error("kill EPERM"), { code: "EPERM" }); return kill(target, signal); });\n`);
     return preload;
   }
-  /** A herdr that answers only ping, at the socket the entry looks for. */
-  function fakeHerdr(): { socket: string; stop(): void } {
-    const socket = join(home, "config", "herdr", "herdr.sock");
+  function fakeHerdr(socket = join(home, "config", "herdr", "herdr.sock")): { socket: string; stop(): void } {
     mkdirSync(dirname(socket), { recursive: true });
     const listener = Bun.listen<{ buffer: string }>({
       unix: socket,
@@ -113,18 +109,103 @@ describe("remote entry startup lock", () => {
         },
       },
     });
-    return { socket: realpathSync(socket), stop: () => listener.stop(true) };
+    return { socket: realSocket(socket), stop: () => listener.stop(true) };
   }
 
+  it.skipIf(process.platform === "win32")("refuses a second daemon and accepts only an explicit new-start choice", async () => {
+    const socket = join(home, "config/herdr/sessions/work/herdr.sock");
+    mkdirSync(dirname(socket), { recursive: true });
+    const listener = Bun.listen({ unix: socket, socket: { data() {} } });
+    const result = join(home, "startup.result");
+    try {
+      const refused = await start(undefined, { HERDR_REMOTE_RESULT: result });
+      expect(refused.code).toBe(2);
+      expect(JSON.parse(readFileSync(result, "utf8"))).toEqual({ code: "herdr_sessions_found", sessions: [{ socket_path: realSocket(socket), session: "work", label: "work" }] });
+      expect(refused.output).not.toContain(join(home, "missing-herdr"));
+      // Explicit consent alone reaches the attempted daemon spawn (a nonexistent test binary).
+      const allowed = await start(undefined, { HERDR_REMOTE_START_NEW: "1" });
+      expect(allowed.code).not.toBe(0);
+      expect(allowed.output).toContain(join(home, "missing-herdr"));
+    } finally { listener.stop(true); }
+  }, 60_000);
+
+  it.skipIf(process.platform === "win32")("never creates a daemon for a selected socket that has disappeared", async () => {
+    const resultFile = join(home, "gone.result");
+    const result = await start(undefined, { HERDR_REMOTE_SOCKET: join(home, "desktop/herdr/herdr.sock"), HERDR_REMOTE_RESULT: resultFile });
+    expect(result.code).toBe(2);
+    expect(result.output).toContain("chosen herdr session is no longer running");
+    expect(JSON.parse(readFileSync(resultFile, "utf8"))).toEqual({ code: "herdr_session_gone", sessions: [] });
+    expect(result.output).not.toContain(join(home, "missing-herdr"));
+  }, 60_000);
+
+  it.skipIf(process.platform === "win32")("starts herdr without extra consent when no sessions exist", async () => {
+    const resultFile = join(home, "empty.result");
+    const result = await start(undefined, { HERDR_REMOTE_RESULT: resultFile });
+    expect(result.output).toContain(join(home, "missing-herdr"));
+    expect(result.code).not.toBe(0);
+    expect(existsSync(resultFile)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(process.platform === "win32")("offers another live session when the selected socket has disappeared", async () => {
+    const chosen = join(home, "config/herdr/sessions/gone/herdr.sock");
+    const other = fakeHerdr(join(home, "config/herdr/sessions/other/herdr.sock"));
+    const resultFile = join(home, "gone-with-other.result");
+    try {
+      const result = await start(undefined, { HERDR_REMOTE_SOCKET: chosen, HERDR_REMOTE_RESULT: resultFile });
+      expect(result.code).toBe(2);
+      expect(JSON.parse(readFileSync(resultFile, "utf8"))).toEqual({ code: "herdr_session_gone", sessions: [{ socket_path: other.socket, session: "other", label: "other" }] });
+      expect(result.output).not.toContain(join(home, "missing-herdr"));
+    } finally { other.stop(); }
+  }, 60_000);
+
+  it.skipIf(process.platform === "win32").each(["symlink", "parent symlink", "outside", "file"])("refuses a chosen %s before any bridge connection", async (kind) => {
+    const actual = join(home, kind === "outside" ? "other" : "config/herdr", "herdr.sock");
+    mkdirSync(dirname(actual), { recursive: true });
+    let connections = 0;
+    const listener = kind === "file" ? undefined : Bun.listen({ unix: actual, socket: { open(socket) { connections++; socket.end(); }, data() {} } });
+    if (!listener) writeFileSync(actual, "not a socket");
+    let selected = actual;
+    if (kind === "symlink") { selected = join(home, "config/herdr/sessions/link/herdr.sock"); mkdirSync(dirname(selected), { recursive: true }); symlinkSync(actual, selected); }
+    if (kind === "parent symlink") { symlinkSync(dirname(actual), join(home, "alias")); selected = join(home, "alias/herdr.sock"); }
+    const resultFile = join(home, "refused.result");
+    try {
+      const result = await start(undefined, { HERDR_REMOTE_SOCKET: selected, HERDR_REMOTE_RESULT: resultFile });
+      expect(result.code).toBe(2);
+      expect(existsSync(resultFile)).toBe(true);
+      expect(result.output).not.toContain(join(home, "missing-herdr"));
+      // Only the explicit rejection may be reported; a ping to the untrusted target already violates the boundary.
+      if (kind === "outside" || kind === "file") expect(connections).toBe(0);
+    } finally { listener?.stop(true); }
+  });
+
+  it("removes stale startup results but keeps this start, recent results and other bridge files", async () => {
+    const registry = dirname(descriptor);
+    const files = ["startup-cancelled.result", "startup-current.result", "startup-recent.result", "bridge.log", "other.result"];
+    const old = new Date(Date.now() - 20 * 60_000);
+    for (const name of files) {
+      const path = join(registry, name);
+      writeFileSync(path, name);
+      if (name !== "startup-recent.result") utimesSync(path, old, old);
+    }
+    const directory = join(registry, "startup-directory.result");
+    mkdirSync(directory); utimesSync(directory, old, old);
+    const bridge = other();
+    writeFileSync(descriptor, JSON.stringify({ port: 1, token: "registered-secret", pid: bridge.pid, socket_path: "s", bridge_protocol: 1, bundle_version: "v" }));
+    const run = await start(undefined, { HERDR_REMOTE_RESULT: join(registry, ".", "startup-current.result") });
+    expect(run.code).toBe(0);
+    expect(files.filter((name) => existsSync(join(registry, name)))).toEqual(["startup-current.result", "startup-recent.result", "bridge.log", "other.result"]);
+    expect(readFileSync(join(registry, "startup-current.result"), "utf8")).toBe("startup-current.result");
+    expect(existsSync(directory)).toBe(true);
+    expect(existsSync(descriptor)).toBe(true);
+  });
+
   it("reclaims a startup lock whose PID another process now holds", async () => {
-    // regression (fails on main, which waited for any live PID): a reused PID is not a starter
     const reused = other();
     ownerLock(reused.pid, earlierBirth);
     const run = await start();
     expect(run.output).not.toContain("Another bridge is starting");
     expect(run.output).toContain(join(home, "missing-herdr"));
     expect(run.code).not.toBe(0);
-    // its own lock went with it; the guard stays for the next starter
     expect(existsSync(lock)).toBe(false);
     expect(existsSync(guardPath(lock))).toBe(true);
     expect(alive(reused.pid)).toBe(true);
@@ -143,7 +224,6 @@ describe("remote entry startup lock", () => {
   }, 60_000);
 
   it("keeps a live starter's lock and a live bridge's descriptor whose recorded birth is malformed", async () => {
-    // regression: a missing, numeric or empty birth once read as another process's
     const starter = other(), bridge = other();
     ownerLock(starter.pid, { platform: process.platform, value: "" });
     const owner = readFileSync(join(lock, "owner.json"), "utf8");
@@ -155,7 +235,6 @@ describe("remote entry startup lock", () => {
     const text = JSON.stringify({ port: 1, token: "registered-secret", pid: bridge.pid, generation: "g", birth: { platform: process.platform }, socket_path: "s", bridge_protocol: 1, bundle_version: "v" });
     writeFileSync(descriptor, text);
     const run = await start();
-    // the live bridge is left serving: no herdr is started and its descriptor is untouched
     expect(run.code).toBe(0);
     expect(run.output).not.toContain(join(home, "missing-herdr"));
     expect(readFileSync(descriptor, "utf8")).toBe(text);
@@ -178,9 +257,6 @@ describe("remote entry startup lock", () => {
   }, 60_000);
 
   it("starts over a registered bridge whose PID a process it may not signal now holds", async () => {
-    // regression: a refused probe (EPERM) once read as a live bridge, so after a reboot that handed
-    // the old bridge's PID to another user's process the entry exited without starting one, while
-    // the app, whose own kill -0 is refused too, waited for a new descriptor in vain
     const reused = other();
     const preload = refusing(reused.pid);
     // an older version's descriptor has no birth: outside Windows the refusal alone proves it someone else's
@@ -194,8 +270,6 @@ describe("remote entry startup lock", () => {
   }, 60_000);
 
   it.skipIf(process.platform === "win32")("stops a bridge it could not register", async () => {
-    // regression: a bridge whose registration was refused kept serving, unreachable, and every
-    // retry of the app started one more
     const herdr = fakeHerdr();
     try {
       const registered = join(home, ".config/herdr-web-ui/bridges", createHash("sha256").update(herdr.socket).digest("hex") + ".json");
@@ -207,7 +281,6 @@ describe("remote entry startup lock", () => {
       expect(run.output).toContain(`This bridge stopped because it was not registered (descriptor ${registered})`);
       expect(run.code).not.toBe(0);
       expect(existsSync(registered)).toBe(false);
-      // its startup lock went with it
       expect(existsSync(registered + ".lock")).toBe(false);
     } finally { herdr.stop(); }
   }, 60_000);
@@ -220,7 +293,6 @@ describe("remote entry startup lock", () => {
       writeFileSync(descriptor, JSON.stringify({ port: 1, token: "registered-secret", pid, generation: "g", birth, socket_path: "s", bridge_protocol: 1, bundle_version: "v" }));
     registered(reused.pid, earlierBirth);
     expect((await start()).output).toContain(join(home, "missing-herdr"));
-    // control: a live bridge is left serving, and no herdr is started for it
     registered(bridge.pid, reading.birth);
     const run = await start();
     expect(run.code).toBe(0);

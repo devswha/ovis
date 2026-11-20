@@ -1,5 +1,5 @@
 import {
-  decodeFrame, encodeFrame, FrameType, HTTP_END_FLAGS, LIMITS_V1, MAX_FRAME_BYTES,
+  decodeFrame, encodeFrame, FrameType, HTTP_END_FLAGS, LIMITS_V1, MAX_FRAME_BYTES, MAX_LARGE_WS_MESSAGE_BYTES,
   MuxProtocolError, WS_CONTINUATION_CAPACITY, WS_DATA_FLAGS, WS_START_CAPACITY,
 } from "./relay-mux.ts";
 import type { HeaderList, LimitsV1, MuxFrame, SessionError, StreamError } from "./relay-mux.ts";
@@ -8,14 +8,17 @@ type Payload<T extends MuxFrame["type"]> = Extract<MuxFrame, { type: T }>["paylo
 export type HttpRequest = Payload<typeof FrameType.HTTP_OPEN>;
 export type HttpResponse = Payload<typeof FrameType.HTTP_HEADERS>;
 export type WsRequest = Payload<typeof FrameType.WS_OPEN>;
-export type SessionFrame = Extract<MuxFrame, { type: 1 | 2 | 3 | 4 | 10 }>;
+export type SessionFrame = Extract<MuxFrame, { type: 1 | 2 | 3 | 4 | 10 | 11 | 12 | 13 | 14 }>;
+/** Setup frames only a phone sends; the others (WELCOME, PAIR_CHALLENGE, AUTH_OK) come from the PC. */
+const CLIENT_SETUP: readonly number[] = [FrameType.HELLO, FrameType.AUTH, FrameType.PAIR, FrameType.PAIR_REQUEST, FrameType.PAIR_REVEAL, FrameType.PAIR_CONFIRM];
 type Traffic = "interactive" | "bulk" | "control";
 type CancelTimer = () => void;
 const U64_MAX = 0xffffffffffffffffn;
+export const MUX_SETUP_MS = 10_000;
 const KiB = 1024;
 const MiB = 1024 * KiB;
 // See docs/relay-mux-limits.md: >= 5 MB/s at 50 ms RTT, with 24 KiB kept for
-// interactive records and an independent control reserve. Only RECEIVED releases flight.
+// interactive records and an independent control reserve.
 export const MUX_FLIGHT = { ordinary: 408 * KiB, bulk: 384 * KiB, control: 16 * KiB, total: 424 * KiB } as const;
 // Reserve before admitting streams; even counting reservations AND their payloads, the worst
 // accounted total is 2 * 12 MiB + 4 MiB + 1 MiB + 64 KiB + 424 KiB < 32 MiB.
@@ -24,7 +27,6 @@ const QUEUE = { outgoing: 4 * MiB, nonterminal: 3 * MiB, metadata: MiB, control:
 
 export interface MuxClock {
   now(): number;
-  /** The adapter owns platform timers; returning the cancellation function also works in browsers. */
   setTimeout(callback: () => void, milliseconds: number): CancelTimer;
 }
 
@@ -42,7 +44,6 @@ export interface MuxOptions {
   /** Negotiation and device-key verification belong to the session adapter, not this engine. */
   readonly onSession?: (frame: SessionFrame) => void;
   readonly onClose?: (error: MuxProtocolError) => void;
-  /** The HTTP adapter supplies its route policy, including slow machine operations and SSE. */
   readonly requestTimeoutMs?: (request: HttpRequest) => number;
   /** Server adapters may drop untrusted identity headers, after syntax and size validation. */
   readonly filterRequestHeaders?: boolean;
@@ -76,7 +77,6 @@ function classify(request: HttpRequest | WsRequest): "interactive" | "bulk" {
     ? "interactive" : "bulk";
 }
 
-// All state below is per-channel mutable accounting. No counter or queue survives carrierLost().
 interface Entry {
   readonly bytes: Uint8Array;
   readonly type: MuxFrame["type"];
@@ -138,7 +138,6 @@ abstract class MuxStream {
   cleanupPending = 0;
   blockedTimer: CancelTimer | undefined;
   routeTimer: CancelTimer | undefined;
-  /** Adapters abort their Request, detach backends and cancel subscriptions here. */
   onDispose: ((error?: MuxStreamError) => void | Promise<void>) | undefined;
 
   constructor(readonly engine: MuxEngine, readonly request: HttpRequest | WsRequest) {
@@ -155,7 +154,6 @@ abstract class MuxStream {
 }
 
 /**
- * Request-like metadata and an inbound body; write/end produce the opposite direction.
  * On clients body is the response; on servers body is the request. HWM zero is deliberate:
  * CREDIT is returned only by a pending read, never by ReadableStream prefetch.
  */
@@ -284,11 +282,10 @@ export class HttpStream extends MuxStream {
   }
   stopUpload(): void {
     this.stopped = true;
-    // The response body is still being read, so its CREDIT must survive.
     this.engine.dropQueue(this, new MuxStreamError("cancelled"), false);
     this.cancelSource();
     this.onUploadStopped?.();
-    if (this.endedOut) return; // A normal END already committed may cross STOP.
+    if (this.endedOut) return;
     this.endQueued = true;
     this.engine.enqueue(this, {
       type: FrameType.HTTP_END, flags: HTTP_END_FLAGS.STOPPED, stream_id: this.id ?? 1, payload: { trailers: [] },
@@ -332,7 +329,6 @@ export class HttpStream extends MuxStream {
   private cancelSource(): void {
     const reader = this.source;
     if (reader) {
-      // Cancellation is cleanup, not a resend opportunity. Keep the reservation until it settles.
       this.engine.cleanup(this, reader.cancel(new MuxStreamError("cancelled")));
     }
   }
@@ -354,12 +350,11 @@ export class WsStream extends MuxStream {
   rejection: HttpStream | undefined;
   onAccept: ((protocol: string | null, headers: HeaderList) => void) | undefined;
   onClose: ((event: WsClose) => void) | undefined;
-  /** The peer's graceful CLOSE arrived and every message before it was handled; onClose still follows. */
   onPeerClose: ((event: Omit<WsClose, "clean">) => void) | undefined;
   private handler: ((message: string | Uint8Array) => void | Promise<void>) | undefined;
-  private readonly messages: { data: string | Uint8Array; bytes: number }[] = [];
+  private readonly messages: { data: string | Uint8Array; bytes: number; held: number }[] = [];
   private delivering = false;
-  private assembling: { data: Uint8Array; offset: number; text: boolean } | undefined;
+  private assembling: { data: Uint8Array; offset: number; text: boolean; held: number } | undefined;
   private closing: Payload<typeof FrameType.WS_CLOSE> | undefined;
   private receivedClose: Payload<typeof FrameType.WS_CLOSE> | undefined;
   private notified = false;
@@ -388,12 +383,11 @@ export class WsStream extends MuxStream {
     http.headers(status, headers);
     return http;
   }
-  /** Accepted once, even if still queued. Never retry this message based on this return value. */
   send(message: string | Uint8Array): number {
     if (!this.live || this.closing || this.rejection) throw new MuxStreamError("cancelled");
-    if (message.length > LIMITS_V1.max_ws_message_bytes) { this.close(1009, "message too large", true); return 0; }
+    if (message.length > this.engine.sendMessageBytes) { this.close(1009, "message too large", true); return 0; }
     const data = typeof message === "string" ? new TextEncoder().encode(message) : message;
-    if (data.length > LIMITS_V1.max_ws_message_bytes) {
+    if (data.length > this.engine.sendMessageBytes) {
       this.close(1009, "message too large", true);
       return 0;
     }
@@ -418,7 +412,11 @@ export class WsStream extends MuxStream {
       if (this.assembling) { this.reset("stream_protocol_error"); return; }
       const length = frame.payload.total_message_bytes;
       if (length === undefined) { this.reset("stream_protocol_error"); return; }
-      this.assembling = { data: new Uint8Array(length), offset: 0, text: !!(frame.flags & WS_DATA_FLAGS.TEXT) };
+      // A message over the v1 limit (LARGE_WS_MESSAGES) cannot wait for the window to credit it: its whole
+      // size is reserved against the receive bound before it is allocated, and each fragment credited as it comes.
+      const held = length > LIMITS_V1.max_ws_message_bytes ? length : 0;
+      if (held && !this.engine.reserve(this, held)) { this.close(1009, "message too large", true); return; }
+      this.assembling = { data: new Uint8Array(length), offset: 0, text: !!(frame.flags & WS_DATA_FLAGS.TEXT), held };
     }
     const message = this.assembling;
     if (!message || message.offset + frame.payload.data.length > message.data.length) {
@@ -427,6 +425,7 @@ export class WsStream extends MuxStream {
     message.data.set(frame.payload.data, message.offset);
     message.offset += frame.payload.data.length;
     this.inboundBytes += frame.payload.data.length;
+    if (message.held) this.engine.consume(this, frame.payload.data.length);
     if (!!(frame.flags & WS_DATA_FLAGS.END) !== (message.offset === message.data.length)) {
       this.reset("stream_protocol_error"); return;
     }
@@ -444,7 +443,7 @@ export class WsStream extends MuxStream {
     // Zero-length messages still own queue entries. Bound those independently of DATA credit.
     if (!this.engine.retainMetadata(this, 8)) return;
     this.pendingInbound++;
-    this.messages.push({ data, bytes: message.offset });
+    this.messages.push({ data, bytes: message.offset, held: message.held });
     this.deliver();
   }
   private deliver(): void {
@@ -461,7 +460,8 @@ export class WsStream extends MuxStream {
       this.inboundBytes -= message.bytes;
       this.pendingInbound--;
       this.engine.releaseMetadata(this, 8);
-      this.engine.consume(this, message.bytes);
+      if (message.held) this.engine.release(this, message.held);
+      this.engine.consume(this, message.held ? 0 : message.bytes);
       this.peerClosed();
       this.finishClose();
       this.deliver();
@@ -512,7 +512,6 @@ export class WsStream extends MuxStream {
       this.finishClose();
     } else this.closeTimer = this.engine.timer(() => this.reset("upstream_lost"), 5000);
   }
-  /** The peer closed gracefully before this side did: messages it sent before that may still be handed over. */
   get closedByPeer(): boolean { return this.peerFirst; }
   private peerClosed(): void {
     if (!this.receivedClose || this.receivedClose.abort || this.pendingInbound || this.peerNotified || !this.live) return;
@@ -544,7 +543,8 @@ export class WsStream extends MuxStream {
 
 export class MuxEngine {
   readonly limits: LimitsV1;
-  /** Local admission can resume only after retirement releases the receive reservation. */
+  sendMessageBytes: number = LIMITS_V1.max_ws_message_bytes;
+  receiveMessageBytes: number = LIMITS_V1.max_ws_message_bytes;
   onStreamAvailable: (() => void) | undefined;
   generation = 0;
   private state: "active" | "failing" | "closed" = "active";
@@ -580,6 +580,9 @@ export class MuxEngine {
   private idleTimer: CancelTimer | undefined;
   private probeTimer: CancelTimer | undefined;
   private probe: bigint | undefined;
+  private probeSentAt = 0;
+  private readonly rttWaiters: ((ms: number | undefined) => void)[] = [];
+  rttMs: number | undefined;
   private hidden = false;
 
   constructor(readonly options: MuxOptions) {
@@ -592,10 +595,9 @@ export class MuxEngine {
       && largest <= options.maxWireMessageBytes, "Transport cannot carry a maximum frame", "unsupported_transport");
     this.openBucket = new Bucket(32, 64, options.clock);
     this.frameBucket = new Bucket(4096, 8192, options.clock);
-    this.setupTimer = this.timer(() => this.fail("timeout", "Mux setup timed out"), 10_000);
+    this.setupTimer = this.timer(() => this.fail("timeout", "Mux setup timed out"), MUX_SETUP_MS);
   }
   get active(): boolean { return this.state === "active"; }
-  /** Wait for the ordered sender to become idle (which may mean credit-blocked, not delivered). */
   flush(): Promise<void> {
     if (this.state === "closed" || !this.sending && !this.scheduled) return Promise.resolve();
     return new Promise((resolve) => { this.idleWaiters.push(resolve); });
@@ -612,8 +614,7 @@ export class MuxEngine {
       submitted: this.submitted, acknowledged: this.acknowledged, receivedFrames: this.receivedFrames,
       bufferedBytes: this.queued + this.metadata + this.controlQueued + inbound + this.ordinaryFlight + this.controlFlight,
       // With fixed windows/concurrency this conservative count is below 32 MiB, including
-      // a reservation as well as each counted inbound payload. Retained backing stores are
-      // intentionally not counted (the plan's narrower payload/queue accounting contract).
+      // a reservation as well as each counted inbound payload.
       accountedBytes: this.reserved + this.queued + this.metadata + this.controlQueued + inbound + this.ordinaryFlight + this.controlFlight,
     };
   }
@@ -624,9 +625,35 @@ export class MuxEngine {
     this.setupTimer();
     this.refreshIdle();
   }
+  /**
+   * Replaces the setup deadline: a pairing by comparing digits waits for a person on both ends
+   * (shared/relay-pair-sas.ts PAIR_APPROVAL_MS), not the 10 seconds a code or a signature takes.
+   */
+  extendSetup(ms: number): void {
+    check(this.active && this.deviceId === undefined, "Session setup already ended");
+    this.setupTimer();
+    this.setupTimer = this.timer(() => this.fail("timeout", "Mux setup timed out"), ms);
+  }
+  receiveLargeMessages(): void {
+    this.receiveMessageBytes = MAX_LARGE_WS_MESSAGE_BYTES;
+  }
+  sendLargeMessages(): void {
+    this.sendMessageBytes = MAX_LARGE_WS_MESSAGE_BYTES;
+  }
+  reserve(stream: WsStream, bytes: number): boolean {
+    if (this.reserved + bytes > MUX_RECEIVE_RESERVATION_BYTES) return false;
+    stream.reservation += bytes;
+    this.reserved += bytes;
+    return true;
+  }
+  release(stream: WsStream, bytes: number): void {
+    stream.reservation -= bytes;
+    this.reserved -= bytes;
+    queueMicrotask(() => { if (this.active) this.onStreamAvailable?.(); });
+  }
   sendSession(frame: SessionFrame): void {
     check(this.active && this.deviceId === undefined, "Session setup already ended");
-    const clientFrame = frame.type === FrameType.HELLO || frame.type === FrameType.AUTH || frame.type === FrameType.PAIR;
+    const clientFrame = CLIENT_SETUP.includes(frame.type);
     check(clientFrame === (this.options.role === "client"), "Wrong setup direction");
     this.enqueueControl(frame);
   }
@@ -749,7 +776,6 @@ export class MuxEngine {
   enqueueControl(frame: MuxFrame, stream?: MuxStream, committed?: () => void): void {
     if (!this.active) return;
     const entry = this.entry(frame, "control", stream, committed);
-    // Coalesce consumption reports; duplicate CREDIT is not useful work.
     const previous = frame.type === FrameType.CREDIT
       ? this.urgent.findIndex((item) => item.type === frame.type && item.owner === stream) : -1;
     if (previous >= 0) {
@@ -806,7 +832,6 @@ export class MuxEngine {
   private select(): Entry | undefined {
     const urgentIndex = this.urgent.findIndex((entry) => this.fits(entry));
     const urgent = this.urgent[urgentIndex];
-    // Graceful CLOSE is urgent only once all previously accepted messages have drained.
     const closing = [...this.streams].find((s) => s.queue[0]?.traffic === "control" && this.fits(s.queue[0]));
     const receipt = this.receivedFrames > this.receiptSent;
     if (this.urgentBurst < 8 || ![...this.streams].some((s) => s.queue[0] && s.queue[0].traffic !== "control" && this.eligible(s, s.queue[0]))) {
@@ -873,7 +898,6 @@ export class MuxEngine {
           }
         }
         if (stream) this.touch(stream);
-        // Commit state before invoking the sink: an in-memory/fast carrier can reply synchronously.
         entry.committed?.();
         if (this.generation !== generation || !this.active) return;
         await this.options.send(entry.bytes);
@@ -945,13 +969,12 @@ export class MuxEngine {
     }
   }
   /**
-   * The codec bounds START lengths before returning a frame. Map that particular limit to
-   * WS 1009, not a carrier error. Validate the original envelope through the codec using an
+   * The codec bounds START lengths before returning a frame. Validate the original envelope through the codec using an
    * empty-message payload; no oversized declaration ever reaches reassembly allocation.
    */
   private oversizedMessage(bytes: Uint8Array): boolean {
     if (bytes.length < 12 || bytes.length > MAX_FRAME_BYTES || bytes[1] !== FrameType.WS_DATA || !((bytes[3] ?? 0) & WS_DATA_FLAGS.START)) return false;
-    if (new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(8) <= LIMITS_V1.max_ws_message_bytes) return false;
+    if (new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(8) <= this.receiveMessageBytes) return false;
     const envelope = bytes.slice(0, 12);
     envelope[3] = (envelope[3] ?? 0) | WS_DATA_FLAGS.END;
     envelope.fill(0, 8);
@@ -971,7 +994,13 @@ export class MuxEngine {
       case FrameType.SESSION_ERROR: this.shutdown(new MuxProtocolError(frame.payload.code, frame.payload.message)); return;
       case FrameType.PING: this.enqueueControl({ ...frame, type: FrameType.PONG }); return;
       case FrameType.PONG:
-        if (frame.payload === this.probe) { this.probe = undefined; this.probeTimer?.(); this.refreshIdle(); }
+        if (frame.payload === this.probe) {
+          this.probe = undefined;
+          this.probeTimer?.();
+          this.rttMs = this.options.clock.now() - this.probeSentAt;
+          for (const resolve of this.rttWaiters.splice(0)) resolve(this.rttMs);
+          this.refreshIdle();
+        }
         return;
       case FrameType.GOAWAY:
         check(frame.payload.last_open_id <= this.lastOpenId, "Future GOAWAY watermark");
@@ -979,8 +1008,9 @@ export class MuxEngine {
         for (const stream of this.streams) if (stream.id === undefined || stream.id > frame.payload.last_open_id) this.reset(stream, "refused", false);
         this.timer(() => this.carrierLost(new MuxProtocolError("timeout", "GOAWAY drained")), frame.payload.drain_ms);
         return;
-      case FrameType.HELLO: case FrameType.WELCOME: case FrameType.AUTH: case FrameType.AUTH_OK: case FrameType.PAIR: {
-        const clientFrame = frame.type === FrameType.HELLO || frame.type === FrameType.AUTH || frame.type === FrameType.PAIR;
+      case FrameType.HELLO: case FrameType.WELCOME: case FrameType.AUTH: case FrameType.AUTH_OK: case FrameType.PAIR:
+      case FrameType.PAIR_REQUEST: case FrameType.PAIR_CHALLENGE: case FrameType.PAIR_REVEAL: case FrameType.PAIR_CONFIRM: {
+        const clientFrame = CLIENT_SETUP.includes(frame.type);
         check(this.deviceId === undefined && clientFrame === (this.options.role === "server"), "Unexpected setup frame");
         this.options.onSession?.(frame);
         return;
@@ -1198,17 +1228,28 @@ export class MuxEngine {
   }
   ping(): void {
     if (!this.active || this.hidden) return;
+    // the idle keepalive is this probe now: left armed, it would replace the probe before its PONG came back
+    this.idleTimer?.();
     this.probeTimer?.();
     const random = crypto.getRandomValues(new Uint32Array(2));
     this.probe = (BigInt(random[0] ?? 0) << 32n) | BigInt(random[1] ?? 0);
+    this.probeSentAt = this.options.clock.now();
     this.enqueueControl({ type: FrameType.PING, flags: 0, stream_id: 0, payload: this.probe });
     this.probeTimer = this.timer(() => this.fail("timeout", "PONG timed out"), 60_000);
+  }
+  measure(): Promise<number | undefined> {
+    if (!this.active || this.hidden) return Promise.resolve(undefined);
+    const answer = new Promise<number | undefined>((resolve) => { this.rttWaiters.push(resolve); });
+    // a probe already out is shared, never replaced: replacing it would restart its PONG deadline
+    if (this.probe === undefined) this.ping();
+    return answer;
   }
   setHidden(hidden: boolean): void {
     check(this.options.role === "client", "Only clients suspend liveness");
     const changed = this.hidden !== hidden;
     this.hidden = hidden;
     this.probe = undefined;
+    for (const resolve of this.rttWaiters.splice(0)) resolve(undefined);
     this.probeTimer?.();
     this.idleTimer?.();
     if (changed) for (const timer of this.timers.values()) {
@@ -1233,6 +1274,7 @@ export class MuxEngine {
     this.state = "closed";
     this.generation++;
     for (const resolve of this.idleWaiters.splice(0)) resolve();
+    for (const resolve of this.rttWaiters.splice(0)) resolve(undefined);
     for (const stop of this.timers.keys()) stop();
     for (const stream of this.streams) this.reset(stream, "upstream_lost", false);
     this.urgent.length = 0;

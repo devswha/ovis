@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { IBufferCell, IBufferLine } from "@xterm/xterm";
-import { columnAt, contrastRatio, paletteColor, readableColor, rowHtml, webLinkAt, wideGridKey, wideGrids } from "./terminalFold.ts";
+import { cellStyle, columnAt, contrastRatio, dimmedColor, paletteColor, readableColor, rowHtml, webLinkAt, wideGridKey, wideGrids } from "./terminalFold.ts";
 
 interface Cell { chars: string; width?: number; fg?: number; bg?: number; bgRgb?: number; bold?: boolean; dim?: boolean; inverse?: boolean }
 
-/** A grid row of plain cells: what rowHtml reads of xterm's buffer, palette colours only. */
 function line(cells: Cell[], cols: number): IBufferLine {
   const at = (x: number): Cell => cells[x] ?? { chars: "" };
   const cell = (x: number): IBufferCell => {
@@ -61,9 +60,26 @@ describe("the folded view of a mirrored grid", () => {
     expect(rowHtml(line([], 4), 4, {}, scratch)).toBe("");
   });
 
-  test("dim text fades its colour, not its background", () => {
+  test("dim text fades its colour, not its background, and meets >= 4.5:1 contrast on light and dark terminal backgrounds", () => {
     expect(rowHtml(line([{ chars: "d", fg: 2, bg: 0, dim: true }], 1), 1, {}, scratch))
       .toBe('<span style="color:color-mix(in srgb, #4e9a06 50%, transparent);background:#2e3436;">d</span>');
+    const dimCell = line([{ chars: "d", dim: true }], 1).getCell(0, scratch)!;
+    const darkStyle = cellStyle(dimCell, { foreground: "#d8d0c3", background: "#181613" }, 4.5);
+    const darkHex = /color:(#[0-9a-f]{6});/i.exec(darkStyle)?.[1];
+    expect(darkHex).toBeDefined();
+    expect(contrastRatio(darkHex!, "#181613")!).toBeGreaterThanOrEqual(4.5);
+    const lightStyle = cellStyle(dimCell, { foreground: "#2a251f", background: "#faf8f3" }, 4.5);
+    const lightHex = /color:(#[0-9a-f]{6});/i.exec(lightStyle)?.[1];
+    expect(lightHex).toBeDefined();
+    expect(contrastRatio(lightHex!, "#faf8f3")!).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("faint text on a cell background the browser hands back as rgb() is lifted as on its hex", () => {
+    // a span's style.backgroundColor reads back serialized: "#2e3436" comes back as "rgb(46, 52, 54)"
+    const onHex = dimmedColor("#4e9a06", "#2e3436", 4.5);
+    expect(onHex).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(dimmedColor("#4e9a06", "rgb(46, 52, 54)", 4.5)).toBe(onHex);
+    expect(contrastRatio(dimmedColor("#d8d0c3", "rgb(24, 22, 19)", 4.5), "#181613")!).toBeGreaterThanOrEqual(4.5);
   });
 
   test("a tap on a folded row finds the http(s) address it is on, without the punctuation after it", () => {
@@ -109,10 +125,8 @@ describe("the folded view of a mirrored grid", () => {
     const theme = { foreground: "#eeeeee", background: "#111111", cursor: "#ff0000", cursorAccent: "#000000" };
     expect(rowHtml(line(plain("abc"), 6), 6, theme, scratch, 1, { x: 1, shape: "block" }))
       .toBe('a<span class="terminal-fold-cursor" style="background:#ff0000;color:#000000;">b</span>c');
-    // a shell's prompt ends in a blank the caret stands after
     expect(rowHtml(line(plain("ab"), 6), 6, theme, scratch, 1, { x: 3, shape: "outline" }))
       .toBe('ab <span class="terminal-fold-cursor" style="box-shadow:inset 0 0 0 1px #ff0000;"> </span>');
-    // on the second half of a wide glyph: the glyph is the cursor's
     expect(rowHtml(line([{ chars: "한", width: 2 }, { chars: "", width: 0 }, { chars: "x" }], 3), 3, theme, scratch, 1, { x: 1, shape: "none" }))
       .toBe('<span class="terminal-fold-cursor">한</span>x');
     // a write that filled the row: the cursor waits past the last column, and stands on the last cell
@@ -133,7 +147,6 @@ describe("the folded view of a mirrored grid", () => {
       expect(heard).toBe(2);
       wideGrids.set(first, null);
       expect(wideGrids.snapshot().has(pane)).toBe(true);
-      // the other terminal moved on to another pane: this one is no longer wide anywhere
       wideGrids.set(second, wideGridKey("pc", "w1:p2"));
       expect(wideGrids.snapshot().has(pane)).toBe(false);
       wideGrids.set(second, null);

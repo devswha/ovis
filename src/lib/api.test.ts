@@ -1,7 +1,7 @@
 import { afterEach, expect, it, jest } from "bun:test";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
-import { NOTICE_VERSION } from "../../shared/telemetry.ts";
-import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, fetchAgentKinds, fetchTelemetry, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { NOTICE_VERSION } from "../../shared/telemetry-notice.ts";
+import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, fetchAgentCatalog, fetchAgentKinds, fetchPaneSummaries, fetchTelemetry, SUMMARY_REQUEST_MS, movePaneBeside, requestRelay, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
 import { movingHerdrFocusOn } from "./followFocus.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot } from "./settings.ts";
 
@@ -32,6 +32,25 @@ it("suppresses this PC's focus frames until an explicit swap answers, including 
     }
     expect(movingHerdrFocusOn("office")).toBe(false);
   }
+});
+
+it("asks the pane's PC to move it beside another pane, holding that PC's focus frames until it answers", async () => {
+  const response = Promise.withResolvers<Response>();
+  const sent: { url: string; body: unknown }[] = [];
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    sent.push({ url, body: JSON.parse(String(init?.body)) });
+    return response.promise;
+  }) as typeof fetch;
+  const pending = movePaneBeside("source", "target", "up", "office");
+  try {
+    expect(movingHerdrFocusOn("office")).toBe(true);
+    expect(movingHerdrFocusOn("local")).toBe(false);
+  } finally {
+    response.resolve(Response.json({ ok: true, changed: true, reason: null }));
+  }
+  expect(await pending).toEqual({ ok: true, changed: true, reason: null });
+  expect(sent).toEqual([{ url: "/api/machines/office/pane/move", body: { pane_id: "source", target_pane_id: "target", side: "up" } }]);
+  expect(movingHerdrFocusOn("office")).toBe(false);
 });
 
 it("offers installed Copilot in agent menus while filtering missing and unsupported agents", async () => {
@@ -141,6 +160,41 @@ it("treats a missing telemetry route as unavailable for reads and an API error f
   expect(error).toMatchObject({ status: 404, code: "not_found" });
 });
 
+it("gives up a summary request a stalled PC holds after SUMMARY_REQUEST_MS, as a failed request", async () => {
+  jest.useFakeTimers();
+  try {
+    const requests = heldFetch();
+    const answer = fetchPaneSummaries("stalled-pc", ["w1:p1"]).catch((error: unknown) => error);
+    jest.advanceTimersByTime(SUMMARY_REQUEST_MS - 1);
+    expect(requests[0]!.signal.aborted).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(await answer).toMatchObject({ name: "AbortError" });
+  } finally { jest.useRealTimers(); }
+});
+
+it("asks a PC for its panes' summaries, and answers null each time a bridge has no summary route", async () => {
+  const requests: string[] = [];
+  const summaries = { server_time: "2026-11-12T10:00:00.000Z", summaries: { "w1:p1": null } };
+  globalThis.fetch = (async (url: string) => {
+    requests.push(url);
+    if (url.startsWith("/api/machines/old-pc/")) return Response.json({ error: { code: "not_found", message: "Not found" } }, { status: 404 });
+    if (url.startsWith("/api/machines/broken-pc/")) return Response.json({ error: { code: "summary_failed", message: "Could not read" } }, { status: 500 });
+    return Response.json(summaries);
+  }) as typeof fetch;
+
+  expect(await fetchPaneSummaries("summary-pc", ["w1:p1", "w2:p3"])).toEqual(summaries);
+  expect(await fetchPaneSummaries("old-pc", ["w1:p1"])).toBeNull();
+  expect(await fetchPaneSummaries("old-pc", ["w1:p1"])).toBeNull();
+  const error = await fetchPaneSummaries("broken-pc", ["w1:p1"]).catch((failure: unknown) => failure);
+  expect(error).toMatchObject({ status: 500, code: "summary_failed" });
+  expect(requests).toEqual([
+    "/api/machines/summary-pc/pane/summary?pane_id=w1%3Ap1&pane_id=w2%3Ap3",
+    "/api/machines/old-pc/pane/summary?pane_id=w1%3Ap1",
+    "/api/machines/old-pc/pane/summary?pane_id=w1%3Ap1",
+    "/api/machines/broken-pc/pane/summary?pane_id=w1%3Ap1",
+  ]);
+});
+
 /**
  * An older browser the build still targets (safari14): Safari 16.0 to 17.3 has AbortSignal.timeout
  * but not AbortSignal.any, and Safari 14 and 15 have neither.
@@ -149,7 +203,6 @@ function withoutAbortSignalStatics(...names: ("any" | "timeout")[]): void {
   for (const name of names) Object.defineProperty(AbortSignal, name, { value: undefined, configurable: true });
 }
 
-/** a fetch that answers only when told, and fails as a browser does once its signal ends */
 function heldFetch() {
   const requests: { url: string; signal: AbortSignal; answer: (response: Response) => void }[] = [];
   globalThis.fetch = ((url: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
@@ -172,7 +225,6 @@ it("proves a PC's source boot on a browser without AbortSignal.any, and lets go 
   requests[0]!.answer(Response.json({ machines: [], verified_source_boot: { machine_id: "pc 2", boot_id: "boot-b" } }));
   expect(await proof).toEqual({ machines: [], boot_id: "boot-b" });
 
-  // the coordinator aborts a check it replaced; one that already answered must not be ended by it
   caller.abort();
   expect(requests[0]!.signal.aborted).toBe(false);
 });
@@ -197,6 +249,41 @@ it("ends a source boot check when the caller aborts it or after 20 s, without Ab
   expect(requests[2]!.signal.aborted).toBe(false);
   jest.advanceTimersByTime(1);
   expect(await slow).toMatchObject({ name: "AbortError" });
+});
+
+it("ends a relay start that never answers after 20 s, so Turn on can be pressed again", async () => {
+  withoutAbortSignalStatics("any", "timeout");
+  jest.useFakeTimers();
+  const requests = heldFetch();
+
+  const stalled = requestRelay("start").catch((error: unknown) => error);
+  jest.advanceTimersByTime(19_999);
+  expect(requests[0]!.signal.aborted).toBe(false);
+  jest.advanceTimersByTime(1);
+  // the deadline's own words, not the abort the browser answered with
+  expect(await stalled).toMatchObject({ name: "TimeoutError", message: "No answer" });
+
+  // a stop may take the server longer: it is waited for
+  void requestRelay("stop").catch(() => undefined);
+  jest.advanceTimersByTime(60_000);
+  expect(requests[1]!.signal.aborted).toBe(false);
+});
+
+it("ends an agent catalog read that never answers after 30 s, so Check again can try again", async () => {
+  withoutAbortSignalStatics("any", "timeout");
+  jest.useFakeTimers();
+  const requests = heldFetch();
+
+  const stalled = fetchAgentCatalog("local", new AbortController().signal).catch((error: unknown) => error);
+  jest.advanceTimersByTime(29_999);
+  expect(requests[0]!.signal.aborted).toBe(false);
+  jest.advanceTimersByTime(1);
+  expect(await stalled).toMatchObject({ name: "AbortError" });
+
+  const caller = new AbortController();
+  const cancelled = fetchAgentCatalog("local", caller.signal).catch((error: unknown) => error);
+  caller.abort();
+  expect(await cancelled).toMatchObject({ name: "AbortError" });
 });
 
 it("offers Letta Code in the agent menus where it is installed, and from an older bridge that does not say", async () => {

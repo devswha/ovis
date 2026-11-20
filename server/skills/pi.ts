@@ -24,13 +24,16 @@ const PI_DESCRIPTIONS: Record<string, string> = {
   bug: "Report a bug to the Pi developers", trust: "Save project trust decision for future sessions",
   reload: "Reload keybindings, extensions, skills, prompts, themes, and context files", hotkeys: "Show all keyboard shortcuts",
   changelog: "Show changelog entries", quit: "Quit pi", tree: "Navigate session tree (switch branches)",
+  debug: "Write debug output to a log file", arminsayshi: "Armin says hi", dementedelves: "Show the Earendil announcement",
 };
 
+// Pi 1.4's submit handler runs these itself when typed exactly, though its menu does not list them.
+const PI_AGENT_HIDDEN = ["debug", "arminsayshi", "dementedelves"];
 // Canonical builtins and behavior from earendil-works/pi 5c1736f82d201d09664642ab0d88147da94b450e.
 const PI_BUILTINS = [
   "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "bug", "copy",
   "name", "session", "changelog", "hotkeys", "fork", "clone", "trust", "login", "logout", "new",
-  "compact", "resume", "reload", "quit",
+  "compact", "resume", "reload", "quit", ...PI_AGENT_HIDDEN,
 ];
 const PI_TERMINAL_BOUND = [
   "tree",
@@ -44,7 +47,8 @@ const PI_FORMS: NonNullable<AgentCommandSource["forms"]> = {
   settings: [{ match: "bare", interaction: "terminal" }],
   "scoped-models": [{ match: "bare", interaction: "terminal" }],
   login: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "terminal" }],
-  compact: [{ match: "bare", interaction: "none" }],
+  // `/compact <instructions>` focuses the summary
+  compact: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }],
   session: [{ match: "bare", interaction: "terminal" }],
   hotkeys: [{ match: "bare", interaction: "terminal" }],
   changelog: [{ match: "bare", interaction: "terminal" }],
@@ -60,10 +64,13 @@ const PI_FORMS: NonNullable<AgentCommandSource["forms"]> = {
   trust: [{ match: "bare", interaction: "terminal" }],
   reload: [{ match: "bare", interaction: "terminal" }],
   quit: [{ match: "bare", interaction: "terminal" }],
+  debug: [{ match: "bare", interaction: "terminal" }],
+  arminsayshi: [{ match: "bare", interaction: "terminal" }],
+  dementedelves: [{ match: "bare", interaction: "terminal" }],
 };
 
 
-const readJson = (path: string): unknown => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; /* absent or not JSON */ } };
+const readJson = (path: string): unknown => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; } };
 const canonical = (path: string): string => { try { return realpathSync(path); } catch { return resolve(path); } };
 
 /** PI_CODING_AGENT_DIR from the pane's own environ first, then the server's, else ~/.pi/agent. */
@@ -157,17 +164,16 @@ function discoverSkills({ home, cwd, env, serverEnv }: AgentCommandContext): Sla
 }
 
 export const source: AgentCommandSource = {
-  // Extension and package commands are runtime-only and are not listed; typed commands still send
-  // through the terminal and receive an unknown outcome.
+  // Extension and package commands are runtime-only: only the running pi lists them, through the web
+  // UI's extension (piExtensionCommands in ../pi.ts). Typed without it, they still send.
   // The upstream quit description uses `${APP_NAME}`; its pinned app name is "pi".
   pin: "1.3.0",
   builtins: PI_BUILTINS,
   descriptions: PI_DESCRIPTIONS,
   forms: PI_FORMS,
   terminalBound: PI_TERMINAL_BOUND,
+  agentHidden: PI_AGENT_HIDDEN,
   discover(ctx) {
-    // pi's packages and extension commands stay out: no file scan can know them, and they are in
-    // the terminal's own `/` menu either way
     const { home, cwd } = ctx;
     const agentDir = agentDirectory(home, ctx.env, ctx.serverEnv);
     const trusted = cwd !== null && cwd !== undefined && projectTrusted(agentDir, plainObject(readJson(join(agentDir, "settings.json"))), cwd);

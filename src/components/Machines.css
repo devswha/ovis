@@ -1,67 +1,18 @@
-/* One PC per group: its name is the head of its workspaces. The monitor sits in the rows'
-   leading cell, over the workspaces' folders, and the state line starts where the name does.
-   The fold and the + close the header at its right. */
 .machine-list {
   position: relative;
-  flex: 1 1 0;
   min-height: 0;
-  padding-top: var(--space-2);
   overflow-y: auto;
   overscroll-behavior: contain;
   scroll-padding-bottom: var(--space-4);
 }
 
-/* When every PC is folded, keep this section at its headings instead of reserving the whole
-   flexible column, whether or not Agents has rows: a visible Agents list takes the space below
-   it (AgentSidebar.css) and the footer stays at the bottom (Sidebar.css). */
-.sidebar-shell:not(:has(.machine-list .machine-workspaces)) .machine-list {
-  flex: 0 1 auto;
-}
-
-/* a list that is cut fades out at its lower edge */
-.machine-list::after {
-  content: "";
-  position: sticky;
-  bottom: 0;
-  display: block;
-  height: var(--space-4);
-  background: linear-gradient(transparent, var(--bg-panel));
-  pointer-events: none;
-}
-
 .machine-list > .tree-state { padding-left: calc(var(--side-gutter) + var(--side-box)); }
-
-/* PCs kept out on this device (Settings → Remote PCs): one quiet line under the PCs shown, which
-   opens the page that shows them again */
-.machine-hidden-note {
-  display: block;
-  margin: var(--space-2) 0 0;
-  padding: var(--space-2) var(--space-2) var(--space-2) calc(var(--side-gutter) + var(--side-box));
-  background: transparent;
-  border: 0;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: var(--fs-xs);
-  text-align: left;
-  cursor: pointer;
-}
-
-.machine-hidden-note:hover,
-.machine-hidden-note:focus-visible {
-  color: var(--text);
-  text-decoration: underline;
-}
-
-@media (pointer: coarse) {
-  .machine-hidden-note { min-height: var(--touch-target); }
-}
 
 .machine-group {
   --machine-indent: calc(var(--side-gutter) + var(--side-box));
 }
 
-/* a PC the sidebar's filter hides stays in the list, hidden: the gap is between the groups that show */
-.machine-group:not([hidden]) ~ .machine-group { margin-top: var(--space-4); }
+.machine-group:not(.is-folded):not([hidden]) { padding-bottom: var(--space-2); }
 
 .machine-header {
   display: flex;
@@ -75,17 +26,70 @@
   flex: 1 1 auto;
   min-width: 0;
   min-height: var(--side-row);
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
   color: var(--text-strong);
+  font: inherit;
   font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
   line-height: var(--lh-tight);
+  text-align: left;
 }
+
+button.machine-title { cursor: pointer; }
+button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
 
 .machine-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.machine-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: calc(var(--control-h) - var(--space-2));
+  margin-left: calc(-1 * var(--space-1));
+  padding: 0 var(--space-2) 0 calc(var(--space-1) - var(--hairline));
+  font-weight: var(--fw-semibold);
+}
+
+.machine-rename-input:focus-visible {
+  outline-offset: var(--ring-inset-offset);
+}
+
+.machine-menu-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-half);
+  min-width: 0;
+  line-height: var(--lh-tight);
+}
+
+.machine-menu-name {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-sheet-head .machine-menu-name { font-size: var(--fs-md); }
+
+.machine-menu-state,
+.machine-menu-note {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.machine-menu-note {
+  margin-top: var(--space-1);
+  overflow-wrap: anywhere;
 }
 
 .machine-kind {
@@ -114,12 +118,8 @@
   animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
 }
 
-/* the + fills the rows' status cell */
 .machine-new { width: var(--side-box); }
 
-/* The lone Host's group has no header (MachineSidebar.tsx): its + is this last row of the list, on the rows'
-   grid, the + in the folders' leading cell and its words as dim as a section head's, so it reads as an action
-   and not as one more workspace. Hover and focus are a row's. */
 .machine-new-row {
   display: flex;
   align-items: center;
@@ -159,8 +159,6 @@
   .machine-new-row { min-height: var(--touch-target); }
 }
 
-/* An SSH PC's manage button takes no room until its header is hovered or focused, its panel is
-   open or the PC is not connected. It stays in the focus order. */
 .machine-manage {
   width: 0;
   overflow: hidden;
@@ -183,18 +181,38 @@
   }
 }
 
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .machine-manage {
     width: var(--side-action);
     overflow: visible;
     opacity: 1;
   }
+}
 
+@media (pointer: coarse) {
   .machine-new {
     width: var(--touch-target);
     height: var(--touch-target);
     margin-right: calc((var(--side-box) - var(--touch-target)) / 2);
   }
+}
+
+@media (max-width: 768px) and (pointer: coarse) {
+  .machine-group:not(.is-two-line) .machine-new { margin-right: calc((var(--space-6) - var(--touch-target)) / 2); }
+  .machine-group:not(.is-two-line) .machine-toggle { padding-inline-start: calc(var(--touch-target) - var(--space-6)); }
+}
+
+/* a + that is off (its PC away, a device that only watches) rests in view there wherever a finger may come, beside a
+   mouse too (SidebarSections.css hides a PC's actions at rest only where none can): it keeps more ink than the 0.55
+   of a row action (Sidebar.css), the least round step that holds its glyph at 3:1 on the drawer's surface in every
+   shipped theme */
+@media (max-width: 768px) and (any-pointer: coarse) {
+  .machine-header > .machine-new:disabled { opacity: 0.75; }
+}
+
+@media (max-width: 768px) {
+  .machine-new-row:disabled { cursor: default; }
+  .machine-new-row:disabled > .sidebar-mark { opacity: 0.75; }
 }
 
 .machine-state {
@@ -207,6 +225,8 @@
   line-height: var(--lh-tight);
 }
 
+.machine-state.visually-hidden { padding: 0; }
+
 .machine-state-word {
   color: var(--text-dim);
   font-weight: var(--fw-medium);
@@ -216,19 +236,69 @@
 .machine-state.is-connecting .machine-state-word,
 .machine-state.is-reconnecting .machine-state-word { color: var(--status-working); }
 
-/* the server's own words can run long (socket paths): two lines, the full text on hover */
 .machine-state-detail {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   color: var(--text-dim);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+.machine-state-raw {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+.machine-state-next {
+  color: var(--text);
+}
+
+.machine-off {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 0 var(--side-gutter) var(--space-2) var(--machine-indent);
+}
+
+/* a narrow sidebar puts Check again under the words rather than squeezing them */
+.machine-off .machine-state {
+  flex: 1 1 8rem;
+  min-width: 0;
+  padding: 0;
+}
+
+/* why it is off is the row's point, and a touch screen has no tooltip: shown whole */
+.machine-off .machine-state-detail {
+  display: block;
+  overflow: visible;
   overflow-wrap: anywhere;
 }
 
-/* the step to take when the server's words name one (MachineSidebar.tsx): a notch above its words */
-.machine-state-next {
-  color: var(--text);
+.machine-recheck {
+  flex: none;
+}
+
+.btn.machine-recheck[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .btn.machine-recheck[aria-disabled="true"]:hover {
+    background: var(--bg-elevated);
+  }
 }
 
 .machine-empty {
@@ -236,76 +306,6 @@
 }
 
 .machine-offline { opacity: 0.5; }
-
-.machine-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  min-width: 0;
-  gap: var(--space-2);
-  margin: 0 var(--space-3) var(--space-2);
-  padding: var(--space-3);
-  background: var(--bg-elevated);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-md);
-}
-
-/* the rename form reflows: Rename sits at the end of the name field's row where the two fit, and
-   under the field, at its start, where they do not (a 240px sidebar, a phone's drawer) */
-.machine-controls form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  min-width: 0;
-  gap: var(--space-2);
-}
-
-.machine-controls form > .field {
-  flex: 1 1 10rem;
-}
-
-/* buttons that share a row share its height (the default stretch), so a wrapped label never
-   leaves its neighbours hanging from the row's bottom edge */
-.machine-control-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  min-width: 0;
-  gap: var(--space-2);
-}
-
-.machine-controls .field {
-  min-width: 0;
-  margin-bottom: 0;
-}
-
-/* a one-line label is the standard control's height (--control-h as a floor; the block padding is
-   small enough to stay under it); only a label that wraps grows its button */
-.machine-controls .btn {
-  max-width: 100%;
-  min-width: 0;
-  min-height: var(--control-h);
-  height: auto;
-  padding-block: var(--space-1);
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-/* fingers: a touch-sized Rename is taller than the field, so it keeps its own line under it */
-@media (pointer: coarse) {
-  .machine-controls .btn {
-    min-height: var(--touch-target);
-  }
-
-  .machine-controls form > .field {
-    flex-basis: 100%;
-  }
-}
-
-/* only the removal in flight (MachineSidebar.tsx marks it aria-busy) keeps its full strength, so its
-   warning stays readable while the request runs: dimmed even to 0.9, its text fell under 4.5:1 in
-   Tokyo Night. Disabled because another action of the panel is running, it dims like its neighbours */
-.machine-controls .btn-danger[aria-busy="true"] {
-  opacity: 1;
-}
 
 .machine-dialog {
   width: min(560px, calc(100vw - 24px));
@@ -324,16 +324,13 @@
   .machine-dialog {
     width: 100%;
     max-width: none;
-    max-height: 92%;
+    max-height: min(92%, calc(100% - env(safe-area-inset-top, 0px) - var(--space-2)));
     margin: auto auto 0;
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
 
-/* the phone's keyboard is up (lib/viewport.ts): as the sheet does, this one ends where the
-   keyboard begins instead of sitting behind it — the same reason styles.css drops the sheet's
-   bottom padding here */
 @media (max-width: 640px) {
   [data-keyboard] .machine-dialog {
     inset-block-start: 0;
@@ -367,13 +364,19 @@
   cursor: pointer;
 }
 
+@media (pointer: coarse) {
+  .machine-dialog summary {
+    min-height: var(--touch-target);
+    padding-block: max(var(--space-2), calc((var(--touch-target) - 1lh) / 2));
+  }
+}
+
 .machine-challenge pre {
   font-size: var(--fs-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* the host-key question: the fingerprint to compare, one sentence, ssh's own words folded */
 .machine-fingerprint-label {
   margin: 0 0 var(--space-1);
   color: var(--text-dim);
@@ -400,13 +403,11 @@
   cursor: pointer;
 }
 
-/* a finger's floor: the toggle keeps its one line and takes a --touch-target hit area, both ways,
-   through an invisible expander around it */
 @media (pointer: coarse) {
-  .machine-ssh-fold > summary::before {
-    content: "";
-    position: absolute;
-    inset: calc((1lh - var(--touch-target)) / 2) min(0px, calc((100% - var(--touch-target)) / 2));
+  .machine-ssh-fold > summary {
+    min-width: var(--touch-target);
+    min-height: var(--touch-target);
+    padding-block: calc((var(--touch-target) - 1lh) / 2);
   }
 }
 
@@ -421,7 +422,6 @@
   overflow-wrap: anywhere;
 }
 
-/* what ssh printed while it waits: a check URL to visit, a banner; bounded, the newest lines stay */
 .machine-ssh-output {
   max-height: 9em;
   margin: var(--space-2) 0 0;
@@ -472,7 +472,6 @@
   .machine-dot.is-reconnecting { animation: none; }
 }
 
-/* a PC that retrying cannot reconnect: the next step, spelled out, with its button */
 .machine-action {
   display: flex;
   flex-direction: column;
@@ -500,7 +499,6 @@
   font-weight: var(--fw-medium);
 }
 
-
 .machine-action-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -516,7 +514,6 @@
   width: calc(100% - var(--space-3) - var(--machine-indent));
 }
 
-/* a bridge install: the step, a bar, the bytes and time left */
 .bridge-progress {
   display: flex;
   flex-direction: column;
@@ -556,7 +553,6 @@
   transition: width 0.3s ease;
 }
 
-/* no size to measure (install, restart): a band that keeps moving */
 .bridge-progress-bar span.is-indeterminate {
   width: 35%;
   animation: bridge-progress-slide 1.4s ease-in-out infinite;
@@ -572,13 +568,11 @@
   .bridge-progress-bar span.is-indeterminate { left: 0; width: 100%; animation: none; opacity: 0.5; }
 }
 
-/* an update in progress is news, not an error */
 .machine-action.is-updating .machine-action-text strong { color: var(--status-working); }
 
 .machine-action.is-setup { border-color: var(--border); }
 .machine-action.is-setup .machine-action-text strong { color: var(--text); }
 
-/* where a PC's own Ovis answers: a link it gave, or its address to copy */
 .machine-own-address {
   display: flex;
   flex-direction: column;
@@ -605,4 +599,20 @@ p.machine-own-address {
   overflow-wrap: anywhere;
   color: var(--text-strong);
   font-family: var(--font-mono);
+}
+
+.machine-header.is-compact .machine-title {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+}
+
+.machine-list:has(.machine-group:nth-of-type(2)) .machine-header:not(.is-compact) .machine-title:not(.is-current) {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.machine-list:has(.machine-group:nth-of-type(2)) .machine-header.is-compact .machine-title.is-current {
+  color: var(--text);
+  font-weight: var(--fw-selected);
 }

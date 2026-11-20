@@ -41,7 +41,6 @@ describe("applyPaneStatus", () => {
     const next = applyPaneStatus(current, "w1:p1", "blocked" as AgentStatus);
     expect(next.panes.find((pane) => pane.pane_id === "w1:p1")?.agent_status).toBe("blocked");
     expect(next.agents.find((agent) => agent.pane_id === "w1:p1")?.agent_status).toBe("blocked");
-    // untouched panes keep their object identity: React re-renders only what changed
     expect(next.panes.find((pane) => pane.pane_id === "w1:p2")).toBe(current.panes[1]);
   });
 
@@ -53,7 +52,6 @@ describe("applyPaneStatus", () => {
     const done = applyPaneStatus(counted, "w1:p1", "done" as AgentStatus);
     expect(done.panes.find((pane) => pane.pane_id === "w1:p1")).toMatchObject({ agent_status: "done", background_tasks: 2 });
     expect(applyPaneStatus(done, "w1:p1", "done" as AgentStatus, 2)).toBe(done);
-    // none left: the field goes, so the badge does
     const none = applyPaneStatus(done, "w1:p1", "done" as AgentStatus, 0);
     expect("background_tasks" in none.panes.find((pane) => pane.pane_id === "w1:p1")!).toBe(false);
   });
@@ -67,6 +65,17 @@ describe("applyPaneStatus", () => {
     expect(applyPaneStatus(counted, "w1:p1", "working", undefined, false, { done: 1, total: 3, current: "Building" })).toBe(counted);
     const none = applyPaneStatus(counted, "w1:p1", "working", undefined, false, null);
     expect("plan" in none.panes.find((pane) => pane.pane_id === "w1:p1")!).toBe(false);
+  });
+
+  it("carries a pane's context, keeps it through frames that say nothing of it, and drops it on null", () => {
+    const current = snapshotFixture();
+    const filled = applyPaneStatus(current, "w1:p1", "working", undefined, false, undefined, undefined, undefined, { used: 50_000, window: 200_000 });
+    expect(filled.panes.find((pane) => pane.pane_id === "w1:p1")).toMatchObject({ context: { used: 50_000, window: 200_000 } });
+    expect(applyPaneStatus(filled, "w1:p1", "working", undefined, false, undefined, undefined, undefined, { used: 50_000, window: 200_000 })).toBe(filled);
+    const kept = applyPaneStatus(filled, "w1:p1", "idle");
+    expect(kept.panes.find((pane) => pane.pane_id === "w1:p1")).toMatchObject({ context: { used: 50_000, window: 200_000 } });
+    const none = applyPaneStatus(kept, "w1:p1", "idle", undefined, false, undefined, undefined, undefined, null);
+    expect("context" in none.panes.find((pane) => pane.pane_id === "w1:p1")!).toBe(false);
   });
 
   it("returns the same snapshot object when the status already matches", () => {

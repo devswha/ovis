@@ -27,8 +27,11 @@ async function pngOf(image: HTMLImageElement): Promise<Blob> {
     const blob = await response.blob();
     if (response.ok && blob.type.split(";", 1)[0] === "image/png") return blob;
   } catch {
-    /* the bytes could not be read again: the decoded picture is drawn instead */
   }
+  return drawnPng(image);
+}
+
+export async function drawnPng(image: HTMLImageElement): Promise<Blob> {
   if (image.naturalWidth === 0 || image.naturalHeight === 0) throw new Error("image not decoded");
   const canvas = document.createElement("canvas");
   canvas.width = image.naturalWidth;
@@ -41,7 +44,6 @@ async function pngOf(image: HTMLImageElement): Promise<Blob> {
   });
 }
 
-/** Selects everything inside `node`, so the user can long-press or Ctrl+C it. */
 export function selectContents(node: HTMLElement): void {
   const range = document.createRange();
   range.selectNodeContents(node);
@@ -64,7 +66,6 @@ export async function copyText(text: string, fallback?: HTMLElement | null): Pro
       return true;
     }
   } catch {
-    /* no clipboard API here, or the browser refused */
   }
   // A refusal can come late. If focus has moved on by then, the user is elsewhere (the message box,
   // a terminal, perhaps mid-IME): taking focus to copy would cut into what they are typing.
@@ -86,7 +87,6 @@ export async function copyText(text: string, fallback?: HTMLElement | null): Pro
     input.select();
     copied = document.execCommand("copy");
   } catch {
-    /* the legacy copy command can be refused too */
   } finally {
     input.remove();
     if (active instanceof HTMLElement) active.focus({ preventScroll: true });

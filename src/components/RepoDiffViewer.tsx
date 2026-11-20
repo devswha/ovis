@@ -30,28 +30,87 @@ const RepoDiff = lazy(() => import("./RepoDiff.tsx"));
 export interface RepoDiffViewerProps {
   target: RepoDiffTarget;
   onClose: () => void;
-  /** opens the file itself (an absolute path on the PC that holds the repository) in the file viewer */
   onOpenFile: (path: string) => void;
-  /** a file preview or Settings above it takes Escape */
   keyboardActive?: boolean;
-  /**
-   * Notes on a line (#1603), for the next message of the diff's own pane (`target`'s PC and pane):
-   * the PC's name the note names, and why that pane cannot take one now (null when it can).
-   */
   note?: { machine: string; blocked: string | null };
 }
 
-/** A note being written: the line and the quote captured when it was begun, which a later patch does not change. */
 interface Writing { line: DiffFindLine; quote: string }
 
-/** `stale`: a branch patch answered for another identity than the list's, which is never drawn as this one */
+interface DiffNoteDraft {
+  writing: Writing;
+  text: string;
+  open: boolean;
+}
+
+const diffTargetDrafts = new Map<string, DiffNoteDraft>();
+interface DiffLineDraft { text: string; quote: string }
+const diffLineDrafts = new Map<string, DiffLineDraft>();
+
+function diffTargetDraftKey(target: RepoDiffTarget): string {
+  return `${target.machineId}\n${target.paneId ?? ""}\n${target.directory ?? ""}\n${target.scope}\n${target.base ?? ""}\n${target.head ?? ""}\n${target.path}`;
+}
+
+function diffLineDraftKey(target: RepoDiffTarget, line: Pick<DiffFindLine, "side" | "line">): string {
+  return `${diffTargetDraftKey(target)}\n${line.side}:${line.line}`;
+}
+
+function readDiffTargetDraft(target: RepoDiffTarget): DiffNoteDraft | null {
+  const key = diffTargetDraftKey(target);
+  const mem = diffTargetDrafts.get(key);
+  if (mem !== undefined) return mem;
+  try {
+    const raw = window.sessionStorage?.getItem(`ovis:diff-note-target:${key}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DiffNoteDraft>;
+    if (parsed.writing && typeof parsed.text === "string") {
+      return { writing: parsed.writing, text: parsed.text, open: parsed.open === true };
+    }
+  } catch {}
+  return null;
+}
+
+function writeDiffTargetDraft(target: RepoDiffTarget, draft: DiffNoteDraft | null): void {
+  const key = diffTargetDraftKey(target);
+  if (draft === null || draft.text.trim() === "") {
+    diffTargetDrafts.delete(key);
+    try { window.sessionStorage?.removeItem(`ovis:diff-note-target:${key}`); } catch {}
+    return;
+  }
+  diffTargetDrafts.set(key, draft);
+  try { window.sessionStorage?.setItem(`ovis:diff-note-target:${key}`, JSON.stringify(draft)); } catch {}
+}
+
+function readDiffLineDraft(target: RepoDiffTarget, line: Pick<DiffFindLine, "side" | "line">): DiffLineDraft | null {
+  const key = diffLineDraftKey(target, line);
+  const mem = diffLineDrafts.get(key);
+  if (mem !== undefined) return mem;
+  try {
+    const raw = window.sessionStorage?.getItem(`ovis:diff-note-line:${key}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DiffLineDraft>;
+    if (typeof parsed.text === "string" && typeof parsed.quote === "string") return { text: parsed.text, quote: parsed.quote };
+  } catch {}
+  return null;
+}
+
+function writeDiffLineDraft(target: RepoDiffTarget, writing: Writing, text: string): void {
+  const key = diffLineDraftKey(target, writing.line);
+  if (text.trim() === "") {
+    diffLineDrafts.delete(key);
+    try { window.sessionStorage?.removeItem(`ovis:diff-note-line:${key}`); } catch {}
+    return;
+  }
+  const draft = { text, quote: writing.quote };
+  diffLineDrafts.set(key, draft);
+  try { window.sessionStorage?.setItem(`ovis:diff-note-line:${key}`, JSON.stringify(draft)); } catch {}
+}
+
 type Load = { status: "pending" } | { status: "failed"; error: unknown } | { status: "stale" } | { status: "ready"; answer: RepoDiffFilePatch };
 const PENDING: Load = { status: "pending" };
 
-/** the text shown as one selected box when the clipboard is out of reach: the patch, or the file's path */
 type Shown = { kind: "patch" | "path"; text: string };
 
-/** Copies a text (disabled until there is one); without a clipboard, hands it over to be shown as a selected text box instead. */
 function CopyButton({ text, label, doneLabel, icon, onShowText }: { text: string | null; label: string; doneLabel: string; icon: ReactNode; onShowText: (text: string) => void }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -70,7 +129,6 @@ function CopyButton({ text, label, doneLabel, icon, onShowText }: { text: string
   </button>;
 }
 
-/** Where the active match is, in words: its kind and its line on its side, so it is not told by the row's tint alone. */
 function matchPlace(t: Translate, match: DiffFindLine): string {
   const line = match.line.toLocaleString();
   switch (match.kind) {
@@ -80,11 +138,6 @@ function matchPlace(t: Translate, match: DiffFindLine): string {
   }
 }
 
-/**
- * The small editor of a note on one line (#1603): where the line is, its text as captured, the note,
- * and Add to next message (Mod+Enter) or Cancel. Docked along the viewer's bottom edge, over the
- * rows, so a phone's keyboard meets it.
- */
 function DiffNoteForm({ writing, path, text, error, disabled, onText, onSave, onCancel }: {
   writing: Writing; path: string; text: string; error: string | null; disabled: boolean;
   onText: (value: string) => void; onSave: () => void; onCancel: () => void;
@@ -112,7 +165,6 @@ function DiffNoteForm({ writing, path, text, error, disabled, onText, onSave, on
 
 const DIFF_SKELETON_ROWS = 6;
 
-/** Rows the size of a diff's, a number and a line each, while the patch is read or its viewer loads: the dialog holds its shape. */
 function DiffSkeleton({ label }: { label: string }) {
   return <div className="repo-diff-loading" role="status">
     <span className="visually-hidden">{label}</span>
@@ -123,13 +175,6 @@ function DiffSkeleton({ label }: { label: string }) {
   </div>;
 }
 
-/**
- * One changed file of a repository, compared as the Changes list was: its patch as a window of
- * rows, unified or side by side (Settings → File viewer, one column on a phone), with the context
- * around each change folded to a line or shown whole, the file's status and counts in the header
- * (their places kept while the patch is on its way), the file itself a tap away in the file viewer,
- * and the patch copied as git printed it, or the file's path on its own.
- */
 export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = true, note }: RepoDiffViewerProps) {
   const t = useT();
   const { settings, update, resolvedEntry } = useSettings();
@@ -140,38 +185,45 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
   const [folded, setFolded] = useState(false);
   const [shown, setShown] = useState<Shown | null>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
-  // Find in this diff: local to the dialog, over the loaded patch only
   const [finding, setFinding] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
-  // each open (the button, Ctrl/Cmd+F) focuses the query, also on a bar already open
   const [findRequest, setFindRequest] = useState(0);
   const findInput = useRef<HTMLInputElement>(null);
   const findButton = useRef<HTMLButtonElement>(null);
-  // the control that opened Find, which gets the focus back when it closes
   const findOpener = useRef<HTMLElement | null>(null);
   const findingRef = useRef(finding);
   findingRef.current = finding;
-  // a note on a line: the line picked (an index into the patch's logical lines), and the note being written
+  const initialDraft = readDiffTargetDraft(target);
   const [cursor, setCursor] = useState<{ index: number; quiet: boolean } | null>(null);
-  const [writing, setWriting] = useState<Writing | null>(null);
-  const [noteText, setNoteText] = useState("");
+  const [writing, setWriting] = useState<Writing | null>(() => initialDraft?.open ? initialDraft.writing : null);
+  const [noteText, setNoteText] = useState(() => initialDraft?.open ? initialDraft.text : "");
   const [noteError, setNoteError] = useState<string | null>(null);
   const [noteAdded, setNoteAdded] = useState(false);
   const writingRef = useRef<{ open: boolean; empty: boolean }>({ open: false, empty: true });
   writingRef.current = { open: writing !== null, empty: noteText.trim() === "" };
   const bodyRef = useRef<HTMLDivElement>(null);
-  // the row's + calls the latest, which reads the answer of the render it was drawn in
   const beginNoteRef = useRef<(line: DiffFindLine) => void>(() => {});
   useSheetSwipe(surface, onClose);
 
-  const { paneId, directory, scope, base, head, comparison, path, oldPath } = target;
+  const { machineId, paneId, directory, scope, base, head, comparison, path, oldPath } = target;
+  useEffect(() => {
+    const saved = readDiffTargetDraft(target);
+    if (saved?.open) {
+      setWriting(saved.writing);
+      setNoteText(saved.text);
+    } else {
+      setWriting(null);
+      setNoteText("");
+    }
+    setNoteError(null);
+    setNoteAdded(false);
+  }, [machineId, paneId, directory, scope, base, head, path]);
   useEffect(() => {
     let live = true;
     setLoad(PENDING);
     setShown(null);
     fetchRepoDiffFile({ paneId, directory, scope, base, head, comparison }, path, oldPath).then(
-      // a branch patch is the list's comparison or nothing: one answered for another identity is not drawn
       (answer) => { if (live) setLoad(sameComparison(answer.comparison ?? null, comparison) ? { status: "ready", answer } : { status: "stale" }); },
       (error: unknown) => { if (live) setLoad({ status: "failed", error }); },
     );
@@ -179,19 +231,15 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
   }, [fetchRepoDiffFile, paneId, directory, scope, base, head, comparison, path, oldPath]);
 
   const patchText = load.status === "ready" ? load.answer.patch : null;
-  // a new file, comparison or patch drops the query and its active match: their lines were another patch's
   useEffect(() => {
     setQuery("");
     setActiveIndex(null);
-    // the picked line was another patch's; a note being written keeps what it captured
     setCursor(null);
   }, [patchText]);
 
   const openFind = useCallback((): void => {
     const focused = document.activeElement;
-    // Ctrl/Cmd+F again on an open bar only refocuses the query: the control that first opened it keeps the return
     if (!findingRef.current || findOpener.current?.isConnected !== true) findOpener.current = focused instanceof HTMLElement && focused !== findInput.current ? focused : findButton.current;
-    // the copy fallback's text stands in for the diff: Find goes back to the rows it marks
     setShown(null);
     setFinding(true);
     setFindRequest((request) => request + 1);
@@ -201,7 +249,6 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
     findInput.current?.focus();
     findInput.current?.select();
   }, [findRequest]);
-  // the query and its active match stay for a reopen, which shows them again; a new patch drops both (above)
   const closeFind = useCallback((): void => {
     setFinding(false);
     const opener = findOpener.current;
@@ -215,7 +262,6 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
       if (event.isComposing || event.keyCode === 229 || nativeModalOver(surface.current)) return;
       // Ctrl/Cmd+F is this dialog's: the browser's own find cannot reach the rows not mounted
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "f") {
-        // a dialog above the viewer (the palette) keeps its own keys while it has the focus
         const focused = document.activeElement;
         const owner = focused instanceof Element && surface.current?.contains(focused) !== true ? focused.closest("dialog, [aria-modal='true']") : null;
         if (owner !== null && surface.current !== null && !owner.contains(surface.current)) return;
@@ -224,7 +270,6 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
         return;
       }
       if (event.key !== "Escape") return;
-      // Escape in the find bar is Find's; otherwise a note being written takes it: it closes while empty, and a written one is never lost to it
       const inFind = document.activeElement instanceof Element && document.activeElement.closest(".repo-diff-find") !== null;
       if (findingRef.current && inFind) { event.preventDefault(); closeFind(); return; }
       if (writingRef.current.open) {
@@ -232,7 +277,6 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
         if (writingRef.current.empty) { setWriting(null); bodyRef.current?.focus({ preventScroll: true }); }
         return;
       }
-      // Escape closes Find first, the viewer on the next press
       if (findingRef.current) { event.preventDefault(); closeFind(); return; }
       onClose();
     };
@@ -264,33 +308,42 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
   const current = activeIndex !== null && activeIndex < matches.length ? activeIndex : null;
   const activeMatch = current === null ? null : matches[current] ?? null;
   const step = (direction: 1 | -1): void => { setActiveIndex(stepMatch(current, matches.length, direction)); setCursor(null); };
-  // the line a note goes on: Find's active match while Find is open, else the line picked by a click, a tap or the arrow keys
   const cursorLine = cursor === null ? null : findLines[cursor.index] ?? null;
-  // a line picked since Find's match moved (a click, a tap, the arrow keys) is the one the note goes on
   const pointed: DiffFindLine | null = finding && activeMatch !== null && cursor === null ? activeMatch : cursorLine;
-  /** A line's place among the patch's logical lines, by side and number: Find's matches are copies. */
   const indexOf = (line: DiffFindLine): number => findLines.findIndex((item) => item.side === line.side && item.line === line.line);
   const blocked = note?.blocked ?? null;
   const commentsKey = target.paneId === null ? null : replyCommentsKey(paneStorageId(target.machineId, target.paneId));
   const beginNote = (line: DiffFindLine): void => {
-    // a note being written is never replaced by another line's
     if (note === undefined || answer === null || patch === null || blocked !== null || (writing !== null && noteText.trim() !== "")) return;
     const quote = diffNoteQuote({ machine: note.machine, repository: answer.repository.root, comparison: capturedComparison(answer, patch), path, line });
-    setWriting({ line, quote });
-    setNoteText("");
+    const restored = readDiffLineDraft(target, line);
+    const nextWriting = { line, quote: restored?.quote ?? quote };
+    const text = restored?.text ?? "";
+    setWriting(nextWriting);
+    setNoteText(text);
+    writeDiffTargetDraft(target, { writing: nextWriting, text, open: text.trim() !== "" });
     setNoteError(null);
     setNoteAdded(false);
   };
   beginNoteRef.current = beginNote;
   const closeNote = (): void => {
+    if (writing !== null) writeDiffLineDraft(target, writing, noteText);
+    writeDiffTargetDraft(target, null);
     setWriting(null);
     setNoteError(null);
     bodyRef.current?.focus({ preventScroll: true });
   };
+  const updateNoteText = (value: string): void => {
+    setNoteText(value);
+    setNoteError(null);
+    if (writing !== null) {
+      writeDiffLineDraft(target, writing, value);
+      writeDiffTargetDraft(target, { writing, text: value, open: value.trim() !== "" });
+    }
+  };
   const saveNote = (): void => {
     if (writing === null || commentsKey === null || target.paneId === null || noteText.trim() === "" || blocked !== null) return;
     const draft = composerDrafts.read(`ovis:composer-draft:${paneStorageId(target.machineId, target.paneId)}`).text;
-    // the draft and the comments already waiting stay as they are: a note that would not fit is refused, not cut
     if (noteOverflows(replyComments.unreserved(replyComments.read(commentsKey)), draft, writing.quote, noteText)) {
       setNoteError(t("This note would make your next message too long. Shorten the note or the message, or remove a waiting comment."));
       return;
@@ -299,8 +352,13 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
       setNoteError(t("This note could not be saved on this device."));
       return;
     }
+    writeDiffLineDraft(target, writing, "");
+    writeDiffTargetDraft(target, null);
     setNoteAdded(true);
-    closeNote();
+    setWriting(null);
+    setNoteText("");
+    setNoteError(null);
+    bodyRef.current?.focus({ preventScroll: true });
   };
   const onLine = useCallback((side: "deletions" | "additions", lineNumber: number, open: boolean): void => {
     const line = lineAtRow(findLines, side, lineNumber);
@@ -372,8 +430,8 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
           </div>
           <div className="repo-diff-actions">
             <div className="segmented repo-diff-styles" role="group" aria-label={t("Diff layout")}>
-              <button type="button" aria-pressed={style === "unified"} onClick={() => update({ diffStyle: "unified" })}><Rows3 aria-hidden="true" /><span className="repo-diff-style-word">{t("Unified")}</span></button>
-              <button type="button" aria-pressed={style === "split"} disabled={narrow} title={narrow ? t("Split view needs a wider screen") : undefined} onClick={() => update({ diffStyle: "split" })}><Columns2 aria-hidden="true" /><span className="repo-diff-style-word">{t("Split")}</span></button>
+              <button type="button" aria-pressed={style === "unified"} title={t("Unified")} onClick={() => update({ diffStyle: "unified" })}><Rows3 aria-hidden="true" /><span className="repo-diff-style-word">{t("Unified")}</span></button>
+              <button type="button" aria-pressed={style === "split"} disabled={narrow} title={narrow ? t("Split view needs a wider screen") : t("Split")} onClick={() => update({ diffStyle: "split" })}><Columns2 aria-hidden="true" /><span className="repo-diff-style-word">{t("Split")}</span></button>
             </div>
             <div className="repo-diff-group">
               <button ref={findButton} type="button" className="icon-button repo-diff-action" aria-pressed={finding} aria-label={t("Find in diff")} title={patch === null && !finding ? t("There is no loaded patch to search.") : t("Find in diff")} disabled={patch === null && !finding} onClick={() => (finding ? closeFind() : openFind())}><Search aria-hidden="true" /></button>
@@ -416,7 +474,7 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
             {noteAdded ? t("Note added. It goes first in the next message you send from this pane's Chat (not with a slash command, a ! line or an answer to a question).")
               : blocked !== null ? blocked
               : pointed !== null ? matchPlace(t, pointed)
-              : t("Click or tap a line, or use the arrow keys, to add a note on it.")}
+              : t("Pick a line to add a note.")}
           </p>
           <button type="button" className="btn repo-diff-line-note-open" disabled={pointed === null || blocked !== null} title={blocked ?? undefined}
             onClick={() => pointed !== null && beginNote(pointed)}>
@@ -424,7 +482,7 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
           </button>
         </div>}
         {writing !== null && <DiffNoteForm writing={writing} path={path} text={noteText} error={noteError ?? blocked} disabled={blocked !== null}
-          onText={(value) => { setNoteText(value); setNoteError(null); }} onSave={saveNote} onCancel={closeNote} />}
+          onText={updateNoteText} onSave={saveNote} onCancel={closeNote} />}
       </section>
     </div>
   );

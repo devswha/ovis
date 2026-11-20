@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import type { PaneLayoutRect, PaneLayoutSnapshot } from "../../shared/protocol.ts";
-import { closeLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "./layoutTree.ts";
+import { closeLayoutPane, moveLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "./layoutTree.ts";
 
 const rect = (x: number, y: number, width: number, height: number): PaneLayoutRect => ({ x, y, width, height });
 const area = rect(0, 0, 120, 40);
@@ -15,7 +15,6 @@ function split(layout: PaneLayoutSnapshot, id: string, made: string, direction: 
   expect(splitLayout(layout, id, { pane_id: made, focused: false, rect: area }, direction)).toBe(true);
 }
 
-/** the rects tile the area: each inside it, none over another, and together they cover it */
 function expectTiling(panes: PaneLayoutSnapshot["panes"]): void {
   let covered = 0;
   for (const [index, pane] of panes.entries()) {
@@ -32,7 +31,6 @@ function expectTiling(panes: PaneLayoutSnapshot["panes"]): void {
   expect(covered).toBe(area.width * area.height);
 }
 
-// split right, then the right pane down: the review's layout
 let nested: PaneLayoutSnapshot;
 beforeEach(() => {
   nested = tab([{ id: "left", rect: rect(0, 0, 60, 40) }, { id: "top", rect: rect(60, 0, 60, 20) }, { id: "bottom", rect: rect(60, 20, 60, 20) }]);
@@ -45,7 +43,6 @@ describe("resizeLayout", () => {
     split(layout, "top-left", "top-right", "right");
     split(layout, "bottom-left", "bottom-right", "right");
     expect(layout.splits.map((split) => split.id)).toEqual(["split_0_root", "split_1_0", "split_2_1"]);
-    // A saved fixture's aligned grid has two possible geometric trees. Its native paths disambiguate them.
     const saved = structuredClone(layout);
     expect(setLayoutSplitRatio(saved, [true], 0.75)).toBe(true);
     expect(rectOf(saved.panes, "bottom-left").width).toBe(90);
@@ -135,7 +132,6 @@ describe("resizeLayout", () => {
   });
 
   it("moves the opposite border of a pane with no neighbour on the side named, as herdr does", () => {
-    // nothing stands to the right of the top pane: the root split moves and the left pane grows
     const narrower = resizeLayout(nested, "top", "right", 0.05)!;
     expect(rectOf(narrower, "left").width).toBe(66);
     expect(rectOf(narrower, "top").x).toBe(66);
@@ -152,7 +148,6 @@ describe("resizeLayout", () => {
   });
 
   it("takes the amount on the split's own extent, caps it at herdr's half and holds the ratio to a tenth", () => {
-    // a quarter of the inner split's 60 columns, not of the tab's 120
     const columns = tab([{ id: "left", rect: rect(0, 0, 60, 40) }, { id: "mid", rect: rect(60, 0, 30, 40) }, { id: "right", rect: rect(90, 0, 30, 40) }]);
     const mid = resizeLayout(columns, "mid", "right", 0.25)!;
     expect(rectOf(mid, "mid")).toEqual(rect(60, 0, 45, 40));
@@ -174,5 +169,22 @@ describe("resizeLayout", () => {
     ]);
     expectTiling(pinwheel.panes);
     expect(resizeLayout(pinwheel, "centre", "right", 0.05)).toBeNull();
+  });
+});
+
+describe("moveLayoutPane", () => {
+  it("measures the target's room once the pane has left the tree, and changes nothing when there is none", () => {
+    const pair = tab([{ id: "narrow", rect: rect(0, 0, 1, 40) }, { id: "wide", rect: rect(1, 0, 119, 40) }]);
+    expect(moveLayoutPane(pair, "wide", "narrow", "right")).toBe(true);
+    expect(rectOf(pair.panes, "narrow")).toEqual(rect(0, 0, 60, 40));
+    expect(rectOf(pair.panes, "wide")).toEqual(rect(60, 0, 60, 40));
+    expectTiling(pair.panes);
+    const three = tab([{ id: "narrow", rect: rect(0, 0, 1, 40) }, { id: "top", rect: rect(1, 0, 119, 20) }, { id: "bottom", rect: rect(1, 20, 119, 20) }]);
+    const before = structuredClone(three);
+    expect(moveLayoutPane(three, "bottom", "narrow", "right")).toBe(false);
+    expect(three).toEqual(before);
+    expect(moveLayoutPane(three, "bottom", "narrow", "down")).toBe(true);
+    expect(rectOf(three.panes, "bottom")).toEqual(rect(0, 20, 1, 20));
+    expectTiling(three.panes);
   });
 });

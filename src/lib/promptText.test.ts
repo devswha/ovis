@@ -2,11 +2,10 @@ import { describe, expect, it } from "bun:test";
 
 import type { ConversationTurn, InteractivePrompt } from "../../shared/protocol.ts";
 import { type Language, translate } from "./i18n.ts";
-import { polledPrompt, promptWords, screenWordsToShow } from "./promptText.ts";
+import { approvalScope, optionName, polledPrompt, promptWords, screenWordsToShow } from "./promptText.ts";
 
 const inLanguage = (language: Language) => (key: string, vars?: Record<string, string | number>) => translate(language, key, vars);
 
-/** Claude Code's /goal card as the bridge hands it over: its title and Close are the bridge's, the goal and its status Claude's */
 const goal: InteractivePrompt = {
   id: "g", agent: "claude", kind: "menu", title: "Goal active", question: "the file hello.txt exists", body: "running 25s · 0 tokens",
   options: [{ label: "Close", description: null }], multi_select: false, custom_option_index: null,
@@ -35,6 +34,14 @@ describe("a polled prompt card (#2220 review)", () => {
     const worded = polledPrompt(plain, { ...plain, screen_words: "There are two ways to fix it." })!;
     expect(worded.screen_words).toBe("There are two ways to fix it.");
     expect(polledPrompt(worded, plain)!.screen_words).toBeUndefined();
+  });
+
+  it("takes the preview Claude redraws as its cursor moves over the same card (#1212)", () => {
+    const first = polledPrompt(plain, { ...plain, option_preview: { option_index: 0, text: "+--+" } })!;
+    expect(first.option_preview).toEqual({ option_index: 0, text: "+--+" });
+    const moved = polledPrompt(first, { ...plain, option_preview: { option_index: 1, text: "row 1", hidden_lines: 31 } })!;
+    expect(moved.option_preview).toEqual({ option_index: 1, text: "row 1", hidden_lines: 31 });
+    expect(polledPrompt(moved, plain)!.option_preview).toBeUndefined();
   });
 
   it("keeps the same object for a card that did not change, and gives another card as it is", () => {
@@ -76,7 +83,6 @@ describe("a prompt card's words", () => {
   it("caps a translated body as the bridge caps the English one", () => {
     const long: InteractivePrompt = { ...goal, body: "x".repeat(12_000), own_text: { body: { key: "Comment: {comment}", vars: { comment: "x".repeat(20_000) } } } };
     expect(promptWords(long, inLanguage("ko")).body).toHaveLength(12_000);
-    // the cap lands between the two halves of an emoji: the emoji goes whole, never half of it
     const prefix = translate("ko", "Comment: {comment}", { comment: "" }).length;
     const split: InteractivePrompt = { ...long, own_text: { body: { key: "Comment: {comment}", vars: { comment: `${"x".repeat(11_999 - prefix)}\u{1F600}` } } } };
     const body = promptWords(split, inLanguage("ko")).body!;
@@ -88,6 +94,12 @@ describe("a prompt card's words", () => {
     const { own_text: _, ...older } = goal;
     const words = promptWords(older, inLanguage("ko"));
     expect([words.title, words.label(0)]).toEqual(["Goal active", "Close"]);
+  });
+
+  it("strips both leading and trailing (Recommended) tags from plain option labels", () => {
+    expect(optionName(goal, "(Recommended) Bun test")).toEqual({ text: "Bun test", recommended: true, words: "Bun test" });
+    expect(optionName(goal, "Bun test (Recommended)")).toEqual({ text: "Bun test", recommended: true, words: "Bun test" });
+    expect(optionName(goal, "Vitest")).toEqual({ text: "Vitest", recommended: false, words: "Vitest" });
   });
 });
 
@@ -121,7 +133,6 @@ describe("Claude's words read off the screen over its question (#2088)", () => {
   });
 
   it("shows them while the same question asked in an earlier, interrupted turn still waits there", () => {
-    // the call left waiting by an interrupt; the new turn has nothing in the session file yet
     expect(screenWordsToShow(asked, [asking, call("pending"), asking])).toBe("There are two ways to fix it.");
   });
 
@@ -141,5 +152,28 @@ describe("Claude's words read off the screen over its question (#2088)", () => {
   it("shows nothing for a card without them", () => {
     const { screen_words: _, ...plain } = asked;
     expect(screenWordsToShow(plain, [asking])).toBeNull();
+  });
+});
+
+describe("what an approval option grants, read off its own words (G-071)", () => {
+  const approval = (agent: string, ...labels: string[]): InteractivePrompt => ({
+    id: "p", agent, kind: "approval", title: "Allow command?", question: "Allow command?", body: "git push",
+    options: labels.map((label) => ({ label, description: null })), multi_select: false, custom_option_index: null,
+  });
+  const scopes = (prompt: InteractivePrompt) => prompt.options.map((_, index) => approvalScope(prompt, index));
+
+  it("reads Codex's, Claude's and pi's menus as they are drawn", () => {
+    expect(scopes(approval("codex", "Yes", "Yes, and don't ask again for git push", "No, and tell Codex what to do differently"))).toEqual(["once", "always", "deny"]);
+    expect(scopes(approval("codex", "Yes, proceed (y)", "Yes, and don't ask again for commands that start with curl", "No, and tell Codex what to do differently (esc)"))).toEqual(["once", "always", "deny"]);
+    expect(scopes(approval("claude", "Yes", "Yes, allow all edits this session [shift+tab]", "No, and tell Claude what to do differently (esc)"))).toEqual(["once", "always", "deny"]);
+    expect(scopes(approval("claude", "Yes", "Yes, don't ask again for `printf` commands in this project", "No"))).toEqual(["once", "always", "deny"]);
+    expect(scopes(approval("pi", "Allow once", "Always allow", "Block"))).toEqual(["once", "always", "deny"]);
+  });
+
+  it("states no scope a label does not: a lone Yes, other wording, another kind of card", () => {
+    expect(scopes(approval("codex", "Yes, proceed (y)", "No, and tell Codex what to do differently (esc)"))).toEqual([null, "deny"]);
+    expect(scopes(approval("gemini", "Yes, allow once", "Yes, allow always", "Modify with external editor", "No, suggest changes (esc)"))).toEqual(["once", "always", null, "deny"]);
+    expect(scopes(approval("codex", "Yes, and run it in the sandbox", "Yes, and don't ask again", "Abort"))).toEqual([null, "always", null]);
+    expect(scopes({ ...approval("claude", "Yes", "Yes, allow all edits this session", "No"), kind: "question" })).toEqual([null, null, null]);
   });
 });

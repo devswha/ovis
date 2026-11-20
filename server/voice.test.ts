@@ -46,7 +46,6 @@ async function events(response: Response): Promise<VoiceEvent[]> {
   return (await response.text()).split("\n").filter(Boolean).map((line) => JSON.parse(line) as VoiceEvent);
 }
 
-/** an SSE answer cut at fixed byte offsets: mid-line and mid-character */
 function sse(events: unknown[], cuts: number[]): Response {
   const bytes = new TextEncoder().encode(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
   const bounds = [0, ...cuts, bytes.length];
@@ -270,6 +269,26 @@ describe("voice transcribe", () => {
     voice.update({ polish_model: "gpt-4.1-mini" });
     await events(await transcribe(voice, clipForm({ polish: "1" })));
     expect(body).toMatchObject({ model: "gpt-4.1-mini", temperature: 0 });
+    expect("reasoning_effort" in body).toBe(false);
+  });
+
+  it("reads the model past a provider prefix such as OpenRouter's", async () => {
+    let body: Record<string, unknown> = {};
+    handler = (url, init) => {
+      if (url.endsWith("/audio/transcriptions")) return transcriptAnswer();
+      body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return Response.json({ choices: [{ message: { content: "tidy" } }] });
+    };
+    const voice = service({ OVIS_OPENAI_API_KEY: KEY, OVIS_OPENAI_BASE_URL: "https://openrouter.ai/api/v1" });
+    for (const model of ["openai/gpt-6-luna", "openai/gpt-5.1"]) {
+      voice.update({ polish_model: model });
+      await events(await transcribe(voice, clipForm({ polish: "1" })));
+      expect(body).toMatchObject({ model, reasoning_effort: "none" });
+      expect("temperature" in body).toBe(false);
+    }
+    voice.update({ polish_model: "openai/gpt-4.1-mini" });
+    await events(await transcribe(voice, clipForm({ polish: "1" })));
+    expect(body).toMatchObject({ model: "openai/gpt-4.1-mini", temperature: 0 });
     expect("reasoning_effort" in body).toBe(false);
   });
 

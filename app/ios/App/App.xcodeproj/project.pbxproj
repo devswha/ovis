@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		A67F098E31CE4D459B240001 /* OvisPushPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67F098E31CE4D459B240002 /* OvisPushPlugin.swift */; };
+		A67F098E31CE4D459B240040 /* OvisAuthPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67F098E31CE4D459B240041 /* OvisAuthPlugin.swift */; };
+		D1EC7A0000000000000000A2 /* OvisDirectPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1EC7A0000000000000000A1 /* OvisDirectPlugin.swift */; };
 		A67F098E31CE4D459B240003 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A67F098E31CE4D459B240004 /* NotificationService.swift */; };
 		A67F098E31CE4D459B240005 /* OvisPushCore in Frameworks */ = {isa = PBXBuildFile; productRef = A67F098E31CE4D459B240006 /* OvisPushCore */; };
 		A67F098E31CE4D459B240007 /* OvisPushCore in Frameworks */ = {isa = PBXBuildFile; productRef = A67F098E31CE4D459B240008 /* OvisPushCore */; };
@@ -33,6 +35,7 @@
 		4E5244520000000000000004 /* HerdrShellPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E5244520000000000000003 /* HerdrShellPlugin.swift */; };
 		4E5244520000000000000002 /* HerdrBridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E5244520000000000000001 /* HerdrBridgeViewController.swift */; };
 		5C0BE9A70000000000000002 /* ScopePath.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0BE9A70000000000000001 /* ScopePath.swift */; };
+		5C0BE9A70000000000000004 /* OpeningWatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0BE9A70000000000000003 /* OpeningWatch.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -61,6 +64,8 @@
 
 /* Begin PBXFileReference section */
 		A67F098E31CE4D459B240002 /* OvisPushPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OvisPushPlugin.swift; sourceTree = "<group>"; };
+		A67F098E31CE4D459B240041 /* OvisAuthPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OvisAuthPlugin.swift; sourceTree = "<group>"; };
+		D1EC7A0000000000000000A1 /* OvisDirectPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OvisDirectPlugin.swift; sourceTree = "<group>"; };
 		A67F098E31CE4D459B240004 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		A67F098E31CE4D459B24000A /* OvisNotifications.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OvisNotifications.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A67F098E31CE4D459B24000E /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
@@ -80,6 +85,7 @@
 		4E5244520000000000000003 /* HerdrShellPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrShellPlugin.swift; sourceTree = "<group>"; };
 		4E5244520000000000000001 /* HerdrBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrBridgeViewController.swift; sourceTree = "<group>"; };
 		5C0BE9A70000000000000001 /* ScopePath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScopePath.swift; sourceTree = "<group>"; };
+		5C0BE9A70000000000000003 /* OpeningWatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpeningWatch.swift; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -139,9 +145,12 @@
 				9582B6822FE993A50072D4E8 /* SceneDelegate.swift */,
 				4E5244520000000000000003 /* HerdrShellPlugin.swift */,
 				A67F098E31CE4D459B240002 /* OvisPushPlugin.swift */,
+				A67F098E31CE4D459B240041 /* OvisAuthPlugin.swift */,
+				D1EC7A0000000000000000A1 /* OvisDirectPlugin.swift */,
 				A67F098E31CE4D459B24000E /* App.entitlements */,
 				4E5244520000000000000001 /* HerdrBridgeViewController.swift */,
 				5C0BE9A70000000000000001 /* ScopePath.swift */,
+				5C0BE9A70000000000000003 /* OpeningWatch.swift */,
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
@@ -281,8 +290,11 @@
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 				4E5244520000000000000004 /* HerdrShellPlugin.swift in Sources */,
 				A67F098E31CE4D459B240001 /* OvisPushPlugin.swift in Sources */,
+				A67F098E31CE4D459B240040 /* OvisAuthPlugin.swift in Sources */,
+				D1EC7A0000000000000000A2 /* OvisDirectPlugin.swift in Sources */,
 				4E5244520000000000000002 /* HerdrBridgeViewController.swift in Sources */,
 				5C0BE9A70000000000000002 /* ScopePath.swift in Sources */,
+				5C0BE9A70000000000000004 /* OpeningWatch.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -390,7 +402,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 11;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -409,7 +421,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.2;
 				MTL_ENABLE_DEBUG_INFO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
@@ -449,7 +461,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 11;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -462,7 +474,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.2;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;

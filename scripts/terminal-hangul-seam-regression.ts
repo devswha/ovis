@@ -1,5 +1,5 @@
 /**
- * A Hangul run on a background colour joins the next cell without a seam. lib/terminalGlyphs.ts fits
+ * lib/terminalGlyphs.ts fits
  * a wide glyph to its two cells (centered, enlarged or widened with scaleX), and did it in the span
  * xterm drew, which also paints the cells' background, clipping that span's trailing half at its
  * last cell. The clipped (and stretched) edge fell inside a device pixel, drawn half-covered, while
@@ -17,6 +17,7 @@ import { createServer } from "../server/index.ts";
 import { UsageService } from "../server/usage.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
+import { shownRows } from "./shown-rows.ts";
 
 const DARK = "\x1b[48;2;38;38;38m\x1b[38;2;220;220;220m";
 const LIGHT = "\x1b[48;2;232;232;232m\x1b[38;2;30;30;30m";
@@ -25,16 +26,13 @@ const ROWS = [
   `${DARK} 화씨, 섭씨를 바꿀 수 있도록 UI를 임시로 넣어 ${RESET}`,
   `${LIGHT} 다만 이건 하나의 의견이니 너의 의견도 ${RESET}`,
   `\x1b[7m 지금은 F는 2도, C는 1도로 했는데 \x1b[27m`,
-  // a run whose next cell has no background of its own: the block's colour stays on its cells
   `${DARK} 한글${RESET}|`,
-  // the fitted runs still close on the Latin row's column, and an underline stays under its cells
   "|abcdefghijklmn|",
   "|가나다라마바사|",
   `\x1b[4m밑줄 친 한글\x1b[24m|`,
 ];
 // the bundled faces, so every machine draws the same: the Latin's 0.6em cell beside 1em Hangul, as Menlo on a Mac
 const TERMINAL_FONT = "Ovis Hangul Mono, JetBrains Mono Web";
-// how far (0-255, per channel) a pixel may stray from the background and still count as background
 const TOLERANCE = 24;
 
 const state = mkdtempSync(join(tmpdir(), "terminal-hangul-seam-"));
@@ -48,10 +46,11 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 interface Span { left: number; right: number; background: number[] | null; fitted: boolean; text: string }
 interface Row { top: number; height: number; spans: Span[] }
 
-/** The rows as drawn: each span's place on the page, its background and whether it was fitted. */
+const FITTED = "[style*='clip-path'], .ghostty-wide";
+
 const drawnRows = (page: Page, count: number): Promise<{ rows: Row[]; frame: { left: number; top: number; width: number; height: number } }> =>
-  page.evaluate((count) => {
-    const container = document.querySelector<HTMLElement>(".pane-terminal .xterm-rows")!;
+  page.evaluate(([count, shown, fitted]) => {
+    const container = document.querySelector<HTMLElement>(shown)!;
     const canvas = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
     const rgba = (value: string): number[] | null => {
       canvas.clearRect(0, 0, 1, 1);
@@ -65,14 +64,13 @@ const drawnRows = (page: Page, count: number): Promise<{ rows: Row[]; frame: { l
       const box = row.getBoundingClientRect();
       const spans = [...row.children].filter((node): node is HTMLElement => node instanceof HTMLElement).map((span): Span => {
         const rect = span.getBoundingClientRect();
-        return { left: rect.left, right: rect.right, background: rgba(getComputedStyle(span).backgroundColor), fitted: span.style.clipPath !== "" || span.querySelector("[style*='clip-path']") !== null, text: span.textContent ?? "" };
+        return { left: rect.left, right: rect.right, background: rgba(getComputedStyle(span).backgroundColor), fitted: span.style.clipPath !== "" || span.querySelector(fitted) !== null, text: span.textContent ?? "" };
       });
       return { top: box.top, height: box.height, spans };
     });
     return { rows, frame: { left: frame.left, top: frame.top, width: frame.width, height: frame.height } };
-  }, count);
+  }, [count, shownRows(), FITTED] as const);
 
-/** The screenshot's pixels, decoded by the page itself. */
 async function pixels(page: Page, png: Buffer): Promise<{ width: number; height: number; data: number[] }> {
   return page.evaluate(async (base64) => {
     const image = new Image();
@@ -88,7 +86,6 @@ async function pixels(page: Page, png: Buffer): Promise<{ width: number; height:
 }
 
 try {
-  // Given: a pane that prints Korean in blocks of a background colour.
   const program = join(state, "rows.mjs");
   writeFileSync(program, `process.stdout.write(${JSON.stringify(`\x1b[2J\x1b[H${ROWS.join("\r\n")}\r\nROWS_READY\r\n`)});
 setInterval(() => {}, 1 << 30);
@@ -118,12 +115,11 @@ setInterval(() => {}, 1 << 30);
       page.on("pageerror", error => errors.push(error.message));
       await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
       await page.locator(".conn-live").waitFor();
-      await page.locator(".pane-terminal .xterm-rows", { hasText: "한글" }).waitFor();
-      // both faces loaded and the rows drawn again with them
+      await page.locator(shownRows(), { hasText: "한글" }).waitFor();
       await page.evaluate(() => document.fonts.ready.then(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))));
-      await page.locator(".pane-terminal .xterm-rows [style*='clip-path']").first().waitFor();
+      await page.waitForFunction(([shown, fitted]) => document.querySelector(shown)?.querySelector(fitted) != null, [shownRows(), FITTED] as const);
+      const renderer = await page.evaluate(() => document.querySelector<HTMLElement>(".pane-terminal")?.dataset["renderer"] ?? "xterm");
 
-      // When: the rows are drawn, the pixels at each fitted run's last edge are read.
       const { rows, frame } = await drawnRows(page, ROWS.length);
       const clip = { x: frame.left, y: rows[0]!.top, width: frame.width, height: rows.at(-1)!.top + rows.at(-1)!.height - rows[0]!.top };
       const png = await page.screenshot({ clip });
@@ -135,19 +131,15 @@ setInterval(() => {}, 1 << 30);
       const seams: string[] = [];
       let edges = 0;
       rows.forEach((row, index) => {
-        // the first and last device rows of the row: above and below the Hangul's ink
         const lines = [Math.ceil((row.top - clip.y) * deviceScaleFactor), Math.floor((row.top + row.height - clip.y) * deviceScaleFactor) - 1];
         row.spans.forEach((span, at_) => {
           const next = row.spans[at_ + 1];
           if (!span.fitted || !span.background || !next) return;
-          // the device pixels either side of where the run's cells end
           const edge = (next.left - clip.x) * deviceScaleFactor;
           const columns = [Math.floor(edge) - 1, Math.floor(edge), Math.floor(edge) + 1].filter(x => x >= 0 && x < shot.width);
           edges += 1;
           for (const y of lines) {
             for (const x of columns) {
-              // left of the edge is the run's own colour; right of it the next cell's, or the pane's when it has none
-              // (read at the row's far end, where no row of the sample reaches)
               const expected = x < Math.round(edge) ? span.background : next.background ?? at(shot.width - 2, y);
               const stray = off(at(x, y), expected);
               if (stray > TOLERANCE) seams.push(`row ${index} after "${span.text}" x=${x} y=${y}: ${at(x, y).join(",")} vs ${expected.join(",")}`);
@@ -155,7 +147,7 @@ setInterval(() => {}, 1 << 30);
           }
         });
       });
-      const bars = await page.evaluate(() => [...document.querySelector(".pane-terminal .xterm-rows")!.children].slice(4, 6).map((row) => {
+      const bars = await page.evaluate((shown) => [...document.querySelector(shown)!.children].slice(4, 6).map((row) => {
         const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
         let right = Number.NaN;
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -167,16 +159,15 @@ setInterval(() => {}, 1 << 30);
           right = range.getBoundingClientRect().left;
         }
         return right;
-      }));
+      }), shownRows());
       if (!(Math.abs(bars[0]! - bars[1]!) < 0.5)) failures.push(`${name}: the Korean row's closing bar stands at ${bars[1]}, the Latin row's at ${bars[0]}`);
-      console.log(`${name}: ${edges} fitted run edges checked, ${seams.length} stray pixels, bars at ${bars.join(" / ")}`);
+      console.log(`${name} (${renderer}): ${edges} fitted run edges checked, ${seams.length} stray pixels, bars at ${bars.join(" / ")}`);
       if (edges === 0) failures.push(`${name}: no fitted Hangul run was drawn`);
       if (seams.length > 0) failures.push(`${name}: ${seams.slice(0, 6).join("; ")}`);
       if (errors.length > 0) failures.push(`${name}: page errors ${errors.join("; ")}`);
       await context.close();
     }
   }
-  // Then: no fitted run leaves a pixel off its own or its neighbour's background.
   assert.deepEqual(failures, []);
   console.log("PASS a fitted Hangul run's background meets the next cell's without a seam");
 } finally {

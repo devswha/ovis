@@ -4,11 +4,11 @@ import type { SshTarget } from "../shared/machines.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { writePrivateState } from "./private-state.ts";
 import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-document.ts";
+import { validateTarget } from "./machine-security.ts";
 
 /** `retiring`: this binding's key removal was started and has not succeeded yet. */
-interface ProfileState { binding: string; approved: boolean; connectionApproved: boolean; snapshot: SessionSnapshot | null; retiring?: true }
+interface ProfileState { binding: string; approved: boolean; connectionApproved: boolean; snapshot: SessionSnapshot | null; retiring?: true; herdrChoice?: Pick<SshTarget, "herdr_socket" | "start_new_herdr" | "own_ovis"> }
 
-// Existing routes accept UUID-shaped machine IDs; deriving one keeps browser storage stable.
 export function herdrMachineId(profileId: string): string {
   const digest = createHash("sha256").update("herdr-profile:" + profileId).digest("hex");
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20, 32)}`;
@@ -22,10 +22,7 @@ export class HerdrProfileState {
   private entries = new Map<string, ProfileState>();
   private dirty = false;
   private path: string;
-  /** the document this store last wrote: a flush that would write the same bytes writes nothing
-   * while the file still holds them */
   private written: string | undefined;
-  /** where a file that was not JSON was moved at startup (setAsideDamaged), its approvals with it */
   readonly setAside: string | null = null;
   constructor(directory: string) {
     this.path = join(directory, "herdr-profile-state.json");
@@ -45,6 +42,10 @@ export class HerdrProfileState {
         || (item.retiring !== undefined && item.retiring !== true)
         || (item.snapshot !== null && (!item.snapshot || typeof item.snapshot !== "object" || !Array.isArray(item.snapshot.panes)))) throw new Error("Invalid herdr-profile-state.json; approvals were preserved");
       this.entries.set(item.profile_id, { binding: item.binding, approved: item.approved, connectionApproved: item.connectionApproved ?? item.approved, snapshot: item.snapshot, ...(item.retiring ? { retiring: true as const } : {}) });
+      if (item.herdrChoice !== undefined) {
+        const choice = validateTarget({ ...item.herdrChoice, destination: "stored-choice" });
+        this.entries.get(item.profile_id)!.herdrChoice = { herdr_socket: choice.herdr_socket, start_new_herdr: choice.start_new_herdr, own_ovis: choice.own_ovis };
+      }
     }
   }
   reconcile(id: string, target: SshTarget | null, retire?: () => void): boolean {
@@ -68,11 +69,18 @@ export class HerdrProfileState {
   }
   allowConnection(id: string, target: SshTarget): void {
     this.reconcile(id, target);
-    this.entries.get(id)!.connectionApproved = true; this.dirty = true;
+    const entry = this.entries.get(id)!;
+    entry.connectionApproved = true;
+    entry.herdrChoice = { herdr_socket: target.herdr_socket, start_new_herdr: target.start_new_herdr, own_ovis: target.own_ovis };
+    this.dirty = true;
+  }
+  target(id: string, catalog: SshTarget): SshTarget {
+    const entry = this.entries.get(id);
+    return { ...catalog, ...(entry?.binding === binding(catalog) ? entry.herdrChoice : {}) };
   }
   private revoke(id: string): void {
     const entry = this.entries.get(id)!;
-    entry.approved = false; entry.connectionApproved = false; entry.snapshot = null; this.dirty = true;
+    entry.approved = false; entry.connectionApproved = false; entry.snapshot = null; delete entry.herdrChoice; this.dirty = true;
   }
   approve(id: string, target: SshTarget): void {
     this.reconcile(id, target);
@@ -95,15 +103,12 @@ export class HerdrProfileState {
     return removed;
   }
   /**
-   * Writes the approvals durably (writePrivateState): a crash must not leave the file unreadable. A
-   * refresh hands over a new snapshot object each time, so an unchanged one still marks the state
-   * dirty; only a document that differs from the one on disk pays for the write and its fsync.
+   * Writes the approvals durably (writePrivateState): a crash must not leave the file unreadable.
    */
   flush(): void {
     if (!this.dirty) return;
     const document = [...this.entries].map(([profile_id, state]) => ({ profile_id, ...state }));
     const text = JSON.stringify(document);
-    // the file on disk may have been deleted or replaced since this store wrote it
     if (text !== this.written || !holdsDocument(this.path, text)) { writePrivateState(this.path, document); this.written = text; }
     this.dirty = false;
   }

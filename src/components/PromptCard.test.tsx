@@ -1,9 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { translate } from "../lib/i18n.ts";
+import * as settingsModule from "../lib/settings.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { PromptCard, type PromptCardProps } from "./PromptCard.tsx";
 
@@ -13,7 +15,7 @@ const goal: InteractivePrompt = {
   own_text: { title: { key: "Goal active" }, labels: { 0: { key: "Close" } } },
 };
 
-const render = (prompt: InteractivePrompt, languages: string[], screenWords: string | null = null, state: Pick<PromptCardProps, "answered" | "stale"> = {}): string => {
+const render = (prompt: InteractivePrompt, languages: string[], screenWords: string | null = null, state: Pick<PromptCardProps, "answered" | "stale" | "context"> = {}): string => {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: languages });
   try {
@@ -27,6 +29,16 @@ const render = (prompt: InteractivePrompt, languages: string[], screenWords: str
 };
 
 describe("a prompt card's own words", () => {
+  it("associates each card with its own PC and workspace without a visible row", () => {
+    for (const context of ["Claude · checkout-api · workstation", "Codex · export-guard · laptop"]) {
+      const html = render(goal, ["en"], null, { context });
+      const id = /aria-describedby="([^"]+)"/.exec(html)?.[1];
+      expect(id).toBeDefined();
+      expect(html).toContain(`<p id="${id}" class="visually-hidden">${context}</p>`);
+    }
+    expect(render(goal, ["en"])).not.toContain("aria-describedby=");
+  });
+
   it("shows both translated status messages when an answered card becomes stale", () => {
     for (const language of ["en", "ko"] as const) {
       const html = render(goal, [language], null, { answered: true, stale: true });
@@ -71,6 +83,33 @@ describe("Claude's words over its question, read off the screen (#2088)", () => 
   });
 });
 
+describe("the preview Claude draws for the option under its cursor (#1212)", () => {
+  const layout: InteractivePrompt = {
+    id: "p", agent: "claude", kind: "question", title: "Layout", question: "Which layout?", body: null,
+    options: [{ label: "Grid", description: null }, { label: "Wide", description: null }, { label: "Tall", description: null }], multi_select: false, custom_option_index: null,
+  };
+
+  it("shows it under that option, as drawn, with the rows Claude cut in the reader's language", () => {
+    const html = render({ ...layout, option_preview: { option_index: 2, text: "row 1\nrow 2", hidden_lines: 31 } }, ["ko"]);
+    expect(html).toContain("row 1\nrow 2");
+    expect(html.indexOf("Tall")).toBeLessThan(html.indexOf("row 1"));
+    expect(html.indexOf("Wide")).toBeLessThan(html.indexOf("Tall"));
+    expect(html).toContain(translate("ko", "{n} more lines Claude left out", { n: 31 }));
+  });
+
+  it("shows it on a multiple choice too", () => {
+    const html = render({ ...layout, multi_select: true, option_preview: { option_index: 1, text: "wide wide" } }, ["en"]);
+    expect(html).toContain("wide wide");
+    expect(html.indexOf("Wide")).toBeLessThan(html.indexOf("wide wide"));
+    expect(html.indexOf("wide wide")).toBeLessThan(html.indexOf("Tall"));
+  });
+
+  it("shows no preview without one, and no cut note for a whole one", () => {
+    expect(render(layout, ["en"])).not.toContain("prompt-card-option-preview");
+    expect(render({ ...layout, option_preview: { option_index: 0, text: "+--+" } }, ["en"])).not.toContain("more lines Claude left out");
+  });
+});
+
 describe("an omp Ask card in the agent's own Markdown (#1644)", () => {
   const ask: InteractivePrompt = {
     id: "a", agent: "omp", kind: "question", title: "Question", body: null, text_format: "markdown",
@@ -84,7 +123,6 @@ describe("an omp Ask card in the agent's own Markdown (#1644)", () => {
     expect(html).toContain("<strong><span>route</span></strong>");
     expect(html).toContain('href="https://example.com/guide"');
     expect(html).toContain("<code>local</code>");
-    // an option answers when clicked: its link is its words
     expect(html).not.toContain("https://example.com/relay");
     expect(html).toContain("the relay");
   });
@@ -132,5 +170,48 @@ describe("a form whose questions the agent's own keys move between", () => {
   it("has no Next where the card cannot go on", () => {
     const { can_step_next: _, ...last } = form;
     expect(render(last, ["en"])).not.toContain("prompt-card-next");
+  });
+});
+
+describe("a question's typed answer survives a page reload (G-008)", () => {
+  const asked: InteractivePrompt = {
+    id: "g008", agent: "codex", kind: "question", title: "저장소 선택", question: "멱등성 키를 어디에 저장할까요?", body: null,
+    options: [{ label: "Postgres", description: null }, { label: "직접 입력", description: null }], multi_select: false, custom_option_index: 1,
+  };
+
+  it("hands the typed text to its owner, keeps no store of its own, and shows the owner's text again after a reload", async () => {
+    const settingsSpy = spyOn(settingsModule, "useSettings").mockReturnValue({
+      settings: settingsModule.DEFAULT_SETTINGS,
+      resolvedLanguage: "ko",
+    } as ReturnType<typeof settingsModule.useSettings>);
+    const session = new Map<string, string>();
+    const local = new Map<string, string>();
+    const storage = (store: Map<string, string>) => ({ getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } });
+    const listen = { addEventListener() {}, removeEventListener() {} };
+    const savedWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const savedAct = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
+    Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: { ...listen, matchMedia: () => ({ matches: false, ...listen }), sessionStorage: storage(session), localStorage: storage(local) } });
+    let owned: string | undefined;
+    const card = (initialText?: string) => createElement(PromptCard, {
+      paneId: "w1:p1", prompt: asked, onPromptChanged: () => {}, onAnswered: () => {}, onTextChange: (text) => { owned = text; }, ...(initialText === undefined ? {} : { initialText }),
+    });
+    const field = (renderer: ReactTestRenderer) => renderer.root.find((node) => node.type === "input");
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => { renderer = create(card()); });
+      await act(async () => { field(renderer!).props.onChange({ currentTarget: { value: "이 질문의 답변 초안 보존 시험" } }); });
+      expect(owned).toBe("이 질문의 답변 초안 보존 시험");
+      expect([...session.keys(), ...local.keys()].filter((key) => key.startsWith("ovis:prompt-draft:"))).toEqual([]);
+
+      await act(async () => { renderer!.unmount(); });
+      await act(async () => { renderer = create(card(owned)); });
+      expect(field(renderer!).props.value).toBe("이 질문의 답변 초안 보존 시험");
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+      settingsSpy.mockRestore();
+      if (savedWindow) Object.defineProperty(globalThis, "window", savedWindow); else Reflect.deleteProperty(globalThis, "window");
+      if (savedAct) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", savedAct); else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    }
   });
 });

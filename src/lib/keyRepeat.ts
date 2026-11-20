@@ -24,11 +24,9 @@ export interface KeyRepeatClock {
 
 export interface KeyRepeat {
   press: (x: number, y: number) => void;
-  /** Returns true only when movement cancels a hold that has not started repeating. */
   move: (x: number, y: number) => boolean;
-  release: () => void;
-  cancel: () => void;
-  /** Consumes the one click suppressed by a released, repeating hold. */
+  release: () => boolean;
+  cancel: () => boolean;
   takeClick: () => boolean;
 }
 
@@ -37,7 +35,6 @@ const defaultClock: KeyRepeatClock = {
   clearTimeout: (timer) => globalThis.clearTimeout(timer as number),
 };
 
-/** A hold sends only from timers; a tap stays on the caller's ordinary click path. */
 export function createKeyRepeat(send: () => void, clock: KeyRepeatClock = defaultClock): KeyRepeat {
   let timer: unknown = null;
   let generation = 0;
@@ -68,7 +65,6 @@ export function createKeyRepeat(send: () => void, clock: KeyRepeatClock = defaul
         timer = null;
         repeating = true;
         send();
-        // Sending may synchronously release/cancel this hold or start a new one.
         if (active && generation === pressedGeneration) timer = clock.setTimeout(repeat, KEY_REPEAT_INTERVAL_MS);
       };
       timer = clock.setTimeout(repeat, KEY_REPEAT_DELAY_MS);
@@ -82,12 +78,16 @@ export function createKeyRepeat(send: () => void, clock: KeyRepeatClock = defaul
       return true;
     },
     release() {
-      if (repeating) suppressClick = true;
+      const repeated = repeating;
+      if (repeated) suppressClick = true;
       stop();
+      return repeated;
     },
     cancel() {
+      const repeated = repeating;
       stop();
       suppressClick = false;
+      return repeated;
     },
     takeClick() {
       const allowed = !suppressClick;

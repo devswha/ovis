@@ -1,30 +1,34 @@
-/* The sidebar's right edge, a grip centred on its seam. Only where the sidebar is a column
-   (from 769px): a phone's drawer keeps its own width. */
 .sidebar-resizer {
   position: absolute;
   top: 0;
-  right: calc(var(--space-1) * -1);
+  right: calc(var(--space-2) * -1);
   bottom: 0;
   z-index: var(--z-banner);
   display: none;
-  width: var(--space-2);
+  width: var(--pointer-target);
   cursor: col-resize;
   touch-action: none;
 }
 
-/* the seam itself lights up: stronger under a pointer, amber while it is held or focused */
+.sidebar-resizer.is-yielding {
+  pointer-events: none;
+}
+
 .sidebar-resizer::after {
   content: "";
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc(50% - var(--hairline));
+  left: calc(100% - var(--space-2) - var(--hairline));
   width: calc(var(--hairline) * 2);
   background: transparent;
   transition: background-color var(--dur-fast) var(--ease-out);
 }
 
-.sidebar-resizer:focus-visible { outline: none; }
+.sidebar-resizer:focus-visible {
+  outline: var(--ring);
+  outline-offset: var(--ring-inset-offset);
+}
 
 @media (hover: hover) {
   .sidebar-resizer:hover::after { background: var(--border-strong); }

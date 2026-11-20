@@ -1,15 +1,12 @@
-/* what the relay is doing now is read, not a footnote: one step above a row's sentence, never above its label */
 .relay-status {
   font-size: var(--fs-sm);
   overflow-wrap: anywhere;
 }
 
-/* the relay's or the server's sentence can carry an address */
 .relay-error {
   overflow-wrap: anywhere;
 }
 
-/* the QR code beside its words, as the Phone group draws an address; one under the other on a phone */
 .relay-pairing {
   flex-direction: row;
   align-items: flex-start;
@@ -32,4 +29,26 @@
   .relay-pairing {
     flex-direction: column;
   }
+}
+
+.relay-codeless-link {
+  display: block;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.relay-pairing-id {
+  margin-top: var(--space-3);
+}
+
+.relay-typed-code {
+  margin-top: var(--space-2);
+}
+
+.relay-typed-code-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-pairing);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-code);
+  user-select: all;
 }

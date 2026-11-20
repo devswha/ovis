@@ -1,3 +1,5 @@
+import type { AlertKind } from "./notify-policy.ts";
+
 /** GET /api/push: base64url VAPID public key, the `applicationServerKey` a browser subscribes with. */
 export interface PushKey {
   readonly public_key: string;
@@ -17,6 +19,34 @@ export interface PushPayload {
   title: string;
   body: string;
   tag: string;
+  /**
+   * What the alert is about (shared/notify-policy.ts AlertKind). Absent from the test push, a
+   * pairing notice and an older server. The server already left out every device that does not
+   * want this kind or this PC: a device shows what it gets.
+   */
+  kind?: AlertKind;
+  /**
+   * The prompt the pane shows, when its alert can answer it: the id POST /api/pane/prompt/answer
+   * checks, and the options its buttons pick. Only for a single-choice approval or question of at
+   * most two short options, to a device that may answer it; any other alert opens the pane.
+   */
+  prompt_id?: string;
+  actions?: PushAction[];
+  /**
+   * The subscription endpoint this push was sent to, and this PC's relay ID where it has one. Only in
+   * a pane alert to the phone app's push relay: the app keeps one endpoint per PC, so its tap opens
+   * the PC that sent the alert (app/android/ovis-push OvisMessagingService). A browser's worker
+   * knows its PC by its own scope and never gets them. Absent from an older server, and from an
+   * alert they would take past what the relay passes on (server/push.ts RELAY_MAX_BODY_BYTES).
+   */
+  endpoint?: string;
+  server_id?: string;
+}
+
+/** One answer button on an alert: the prompt's option it picks, and that option's label. */
+export interface PushAction {
+  option_index: number;
+  label: string;
 }
 
 /**

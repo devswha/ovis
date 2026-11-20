@@ -10,6 +10,7 @@ import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./he
 import type { ConversationPart, ConversationResponse } from "../shared/protocol.ts";
 import { forgetTranscriptState } from "./conversation.ts";
 import { hermesTerminalId, isHermesProcess, processHermesHome } from "./hermes.ts";
+import { SLEEP } from "../scripts/fixtures/sleep.ts";
 
 interface RunningServer {
   port: number;
@@ -82,7 +83,6 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** Reads the owned pane through the authenticated conversation route. */
 const read = async (page: { before?: string; since?: string; from?: string } = {}): Promise<ConversationResponse> => {
   const query = new URLSearchParams({ pane_id: paneId, ...page });
   const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/conversation?${query}`);
@@ -90,7 +90,6 @@ const read = async (page: { before?: string; since?: string; from?: string } = {
   return await response.json() as ConversationResponse;
 };
 
-/** Writes the real Hermes columns read by the bridge, with one complete exchange per session. */
 function hermesStore(home: string, sessions: ReadonlyArray<{ id: string; answer: string }>): void {
   mkdirSync(home, { recursive: true });
   const db = new Database(join(home, "state.db"));
@@ -358,7 +357,7 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("select
   ]);
   hermesStore(fallback, [{ id: fallbackSession, answer: "Answer from the bridge default" }]);
   const executable = join(root, "hermes");
-  copyFileSync("/bin/sleep", executable);
+  copyFileSync(SLEEP, executable);
   chmodSync(executable, 0o755);
   const workspaces: string[] = [];
   const servers: RunningServer[] = [];

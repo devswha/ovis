@@ -7,8 +7,8 @@
  * when it can hold the focus itself (a dialog whose controls are all disabled while it works).
  */
 import { useEffect, useLayoutEffect, useRef, type MutableRefObject, type RefObject } from "react";
+import { typeAheadFocused } from "./typeAhead.ts";
 
-/** Tab stops in DOM order; what a user reaches with Tab inside the surface. */
 const FOCUSABLE = [
   "a[href]",
   "area[href]",
@@ -25,29 +25,71 @@ const FOCUSABLE = [
 ].join(",");
 
 export interface FocusTrapOptions {
-  /** focused on open when the dialog has one control to start at (ConfirmDialog's Cancel) */
   initialFocus?: RefObject<HTMLElement | null>;
-  /** the focus returns to the opener unless this says otherwise when the surface goes */
   shouldRestore?: () => boolean;
-  /** suspend keyboard ownership while another surface covers this one */
   paused?: boolean;
+  leadingStops?: () => readonly HTMLElement[];
+  startOnSurface?: boolean;
 }
 
-/** The tab stops a user can actually land on, in order: rendered, and not disabled or skipped. */
-function tabStops(surface: HTMLElement): HTMLElement[] {
-  return [...surface.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((node) => {
-    if (node.hasAttribute("disabled") || node.getAttribute("aria-hidden") === "true") return false;
-    if (node.tabIndex < 0) return false;
-    // hidden ancestors and collapsed sections report no box at all
-    return node.getClientRects().length > 0;
-  });
+const heldSurfaces = new Set<HTMLElement>();
+
+export function inFocusTrap(node: Element): boolean {
+  for (const surface of heldSurfaces) if (surface.contains(node)) return true;
+  return false;
+}
+
+function reachable(node: HTMLElement): boolean {
+  if (node.hasAttribute("disabled") || node.getAttribute("aria-hidden") === "true") return false;
+  if (node.tabIndex < 0) return false;
+  // a disconnected PC's cached rows are inert: the browser refuses them the focus, so Tab must not stop there
+  if (node.closest("[inert]") !== null) return false;
+  // hidden ancestors and collapsed sections report no box at all
+  return node.getClientRects().length > 0;
+}
+
+function tabStops(surface: HTMLElement, options: FocusTrapOptions): HTMLElement[] {
+  return [...(options.leadingStops?.() ?? []), ...surface.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(reachable);
 }
 
 /**
- * The traps open now, oldest first. Dialogs stack (a file preview over Files, Settings over a
- * preview) and every trap listens on the window: only the top one may move the focus, or the one
- * beneath pulls it out of the dialog in front and the one in front sends it back to its start.
+ * The stops of what lies over every dialog without being one: a device waiting for this PC's approval
+ * (components/RelayPairingPrompt.tsx). They follow the dialog's own in its Tab order, so a prompt that
+ * left the focus in one of the dialog's fields can still be answered by keyboard. Each prompt is a stop
+ * itself, before its buttons: Tab from the dialog lands on the prompt, never straight on Approve, and so
+ * does Shift+Tab, which would reach its last button first (`overlayEntry`).
  */
+export function overlayStops(): HTMLElement[] {
+  const stops: HTMLElement[] = [];
+  for (const prompt of document.querySelectorAll<HTMLElement>(".relay-pairing-prompt")) {
+    // refused the focus under an inert column, or not drawn: no stop
+    if (prompt.closest("[inert]") !== null || prompt.getClientRects().length === 0) continue;
+    stops.push(prompt, ...[...prompt.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(reachable));
+  }
+  return stops;
+}
+
+function overlayOf(stop: HTMLElement): HTMLElement | undefined {
+  return [...document.querySelectorAll<HTMLElement>(".relay-pairing-prompt")].find((prompt) => prompt.contains(stop));
+}
+
+/**
+ * Where the focus goes when Tab's next stop is `next`: a button of a waiting prompt is reached only from
+ * inside that prompt. From outside it (Shift+Tab from the dialog's first stop, or from the prompt below)
+ * the prompt itself is entered first, so two Shift+Tabs and an Enter typed for the dialog never press Approve.
+ */
+export function overlayEntry(next: HTMLElement, active: Element | null): HTMLElement {
+  const overlay = overlayOf(next);
+  return overlay === undefined || overlay === next || (active !== null && overlay.contains(active)) ? next : overlay;
+}
+
+export function tabTarget(stops: readonly HTMLElement[], active: Element | null, back: boolean): HTMLElement | undefined {
+  const at = active === null ? -1 : stops.indexOf(active as HTMLElement);
+  return back
+    ? (at <= 0 ? stops[stops.length - 1] : stops[at - 1])
+    : (at === stops.length - 1 ? stops[0] : stops[at + 1]);
+}
+
 const openTraps: object[] = [];
 
 /**
@@ -64,9 +106,18 @@ export function nativeModalOver(surface: HTMLElement | null): boolean {
   return false;
 }
 
+/**
+ * The keyboard is in another `aria-modal` surface than this one. Window and document listeners run in the order
+ * they were added, not the order the dialogs are drawn in, so a dialog beneath leaves this Escape to the one in
+ * front, the one with the focus (#3037).
+ */
+export function focusInOtherModal(surface: HTMLElement | null): boolean {
+  const focused = document.activeElement?.closest("[aria-modal='true']");
+  return focused != null && focused !== surface;
+}
+
 export function useFocusTrap<T extends HTMLElement>(open: boolean, options: FocusTrapOptions = {}): MutableRefObject<T | null> {
   const surface = useRef<T | null>(null);
-  // read in the listeners, so a dialog that changes its mind mid-life is not held to its first render
   const latest = useRef(options);
   latest.current = options;
   // Own the keyboard in the opening commit: a menu can just have restored the terminal,
@@ -75,8 +126,12 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
     if (!open) return;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     return () => {
-      // a covering dialog owns focus; otherwise return it only when this surface closes
-      if (!latest.current.paused && latest.current.shouldRestore?.() !== false && opener?.isConnected && !nativeModalOver(surface.current)) opener.focus({ preventScroll: true });
+      if (latest.current.paused || latest.current.shouldRestore?.() === false || !opener?.isConnected || nativeModalOver(surface.current)) return;
+      opener.focus({ preventScroll: true });
+      if (document.activeElement !== opener) queueMicrotask(() => {
+        const active = document.activeElement;
+        if (opener.isConnected && (active === null || active === document.body)) opener.focus({ preventScroll: true });
+      });
     };
   }, [open]);
 
@@ -87,11 +142,20 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
       // AutoFocus or a child's layout effect may already have placed focus inside the surface.
       // Otherwise try the preferred control, then a tab stop, then the surface: a connected
       // control can still refuse focus (disabled, hidden or inside a disabled fieldset).
-      const wanted = latest.current.initialFocus?.current;
+      const wanted = latest.current.startOnSurface ? node : latest.current.initialFocus?.current;
       wanted?.focus({ preventScroll: true });
-      if (!node.contains(document.activeElement)) tabStops(node)[0]?.focus({ preventScroll: true });
+      const own = [...node.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(reachable);
+      if (!node.contains(document.activeElement)) own[0]?.focus({ preventScroll: true });
       if (!node.contains(document.activeElement)) node.focus({ preventScroll: true });
     }
+  }, [open, options.paused]);
+
+  useLayoutEffect(() => {
+    if (!open || options.paused) return;
+    const node = surface.current;
+    if (!node) return;
+    heldSurfaces.add(node);
+    return () => { heldSurfaces.delete(node); };
   }, [open, options.paused]);
 
   useEffect(() => {
@@ -99,21 +163,22 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
     const trap = {};
     openTraps.push(trap);
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== "Tab" || openTraps.at(-1) !== trap) return;
+      if (event.key !== "Tab" || openTraps.at(-1) !== trap || typeAheadFocused()) return;
       const node = surface.current;
       if (!node || nativeModalOver(node)) return;
-      const stops = tabStops(node);
-      // every control disabled (a deed that cannot be undone): Tab goes nowhere rather than out
-      if (stops.length === 0) { event.preventDefault(); return; }
-      const active = document.activeElement;
-      const at = active instanceof HTMLElement ? stops.indexOf(active) : -1;
-      const next = event.shiftKey
-        ? (at <= 0 ? stops[stops.length - 1] : stops[at - 1])
-        : (at === stops.length - 1 ? stops[0] : stops[at + 1]);
-      // focus already inside, in the middle: let the browser's own order carry on
-      if (!next) return;
+      const holder = document.activeElement;
+      if (holder instanceof Element && !node.contains(holder) && holder.closest('[role="dialog"], [role="alertdialog"], [role="menu"]') !== null) return;
+      const stops = [...tabStops(node, latest.current), ...overlayStops()];
+      const stop = tabTarget(stops, document.activeElement, event.shiftKey);
+      const next = stop && overlayEntry(stop, document.activeElement);
       event.preventDefault();
-      next.focus({ preventScroll: true });
+      next?.focus({ preventScroll: true });
+      // several waiting prompts in a short window scroll: the one Tab lands in is brought into view, its
+      // words and number first and then the button on it, so nothing is approved unread
+      const overlay = next && overlayOf(next);
+      if (!overlay) return;
+      overlay.scrollIntoView({ block: "nearest" });
+      if (next !== overlay) next.scrollIntoView({ block: "nearest" });
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
@@ -125,14 +190,6 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
   return surface;
 }
 
-/**
- * The return alone, for a surface that is no dialog (the file panel beside the pane): nothing
- * holds Tab or moves the focus in, but when the surface goes and took the focus with it (Close
- * file, Escape inside it), the focus goes back to what opened it, as a dialog's does. A focus
- * that is elsewhere by then (the pane's composer, the sidebar row that moved to another pane)
- * stays there. Owned by the surface's parent, not the surface: a surface remade for another
- * file must not send the focus back meanwhile.
- */
 export function useFocusReturn(shown: boolean): void {
   useLayoutEffect(() => {
     if (!shown) return;

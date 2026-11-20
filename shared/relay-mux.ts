@@ -2,15 +2,19 @@ import { createScanner, ScanError, SyntaxKind } from "jsonc-parser";
 
 /** The relay wire generation: the envelope's first byte and WELCOME's `relay_protocol`. A PC on another one is refused outright. */
 export const RELAY_PROTOCOL = 1;
+export const RELAY_HINTS = "relay-hints";
+/** The address is a hint: Noise against the pinned PC key proves the PC. */
+export const DIRECT_CARRIER = "direct-carrier";
 /**
- * The oldest Ovis server the hosted shell connects to: 0.4.21 (package.json read 0.4.20 when the
- * relay landed; v0.4.21 itself holds no server/relay/, so the first release that does is newer).
+ * Offered beside DIRECT_CARRIER by a client that can also open a direct carrier on the PC's Tailscale
+ * address (100.64.0.0/10): only then does AUTH_OK name one. A client without it would refuse the whole
+ * AUTH_OK over an address its older isDirectCarrier does not take.
+ */
+export const DIRECT_TAILNET = "direct-tailnet";
+export const MAX_DIRECT_CARRIERS = 4;
+/**
  * Raise it only in a PR that makes the shell need a newer server API, with a changelog line. A
- * server below it gets the update screen (src/lib/relay/skew.ts). No CI job runs the shell against
- * older releases yet: that comes with the relay end-to-end run, once a release holds server/relay/.
- *
- * A branch the shell keeps for a server older than its own version is marked
- * `// COMPAT(relay): added in <v>, remove after <v+2>`, so raising this constant finds it.
+ * server below it gets the update screen (src/lib/relay/skew.ts).
  */
 export const MIN_SERVER_VERSION = "0.4.21";
 export const MAX_FRAME_BYTES = 16384;
@@ -22,12 +26,34 @@ export const FrameType = {
   HELLO: 0x01, WELCOME: 0x02, AUTH: 0x03, AUTH_OK: 0x04,
   SESSION_ERROR: 0x05, GOAWAY: 0x06, PING: 0x07, PONG: 0x08,
   RECEIVED: 0x09, PAIR: 0x0a,
+  PAIR_REQUEST: 0x0b, PAIR_CHALLENGE: 0x0c, PAIR_REVEAL: 0x0d, PAIR_CONFIRM: 0x0e,
   HTTP_OPEN: 0x10, HTTP_ACCEPT: 0x11, HTTP_HEADERS: 0x12,
   HTTP_DATA: 0x13, HTTP_END: 0x14, HTTP_STOP_REQUEST: 0x15,
   WS_OPEN: 0x20, WS_ACCEPT: 0x21, WS_DATA: 0x22, WS_CLOSE: 0x23,
   CREDIT: 0x30, RESET: 0x31,
 } as const;
 export type FrameType = typeof FrameType[keyof typeof FrameType];
+export const PAIR_SAS_FEATURE = "pair-sas";
+export const ACCOUNT_FEATURE = "account";
+export const PAIR_INTENT_PC = "pair-intent-pc";
+export const PAIR_INTENT_ACCOUNT = "pair-intent-account";
+/**
+ * A PC's server pairing with another PC of its account, vouched for by a signed-in device's admission
+ * (docs/account.md, "Adding a PC of your account"): taken only under the account join's gates, shown to the
+ * account's members as "pair this PC", and it makes a plain row there, never an account member.
+ */
+export const PAIR_INTENT_VOUCHED = "pair-intent-pc-vouched";
+export const LARGE_WS_MESSAGES = "large-ws-messages";
+/**
+ * A phone without it refuses a
+ * header it does not list, so a PC sends it only to a phone that offered this in HELLO.
+ */
+export const SERVER_TIME_HEADER = "server-time-header";
+/**
+ * A 4 MiB outgoing queue (relay-mux-engine.ts) holds one such message and, behind it, the 1 MiB a PC's
+ * core still sends to a client while it drains (server/output-window.ts OUTPUT_HARD_BYTES).
+ */
+export const MAX_LARGE_WS_MESSAGE_BYTES = 3 * 1024 * 1024;
 export const HTTP_END_FLAGS = { STOPPED: 0x0001 } as const;
 export const WS_DATA_FLAGS = { START: 0x0001, END: 0x0002, TEXT: 0x0004 } as const;
 
@@ -69,6 +95,7 @@ export const RESPONSE_HEADERS = [
   "content-type", "content-length", "content-range", "accept-ranges", "etag",
   "last-modified", "cache-control", "content-disposition", "retry-after", "x-request-id",
   "content-security-policy", "x-content-type-options", "cross-origin-resource-policy", "referrer-policy",
+  "x-server-time",
 ] as const;
 /** The only read-only routes a browser resource may load through a shell worker. */
 export const RELAY_RESOURCE_ROUTES = ["fs/file", "fs/favicon", "pane/conversation/image"] as const;
@@ -95,15 +122,19 @@ type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 type JsonObject = { readonly [key: string]: unknown };
 type Payloads = {
   readonly 0x01: { readonly protocol: "ovis-mux"; readonly versions: readonly number[]; readonly features: readonly string[]; readonly required_features: readonly string[] };
-  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string };
+  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true };
   readonly 0x03: { readonly scheme: "device-key"; readonly device_id: string; readonly signature: string };
-  readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch" };
+  readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[]; readonly direct?: readonly string[] };
   readonly 0x05: { readonly code: SessionError; readonly message: string };
   readonly 0x06: { readonly code: "shutdown" | "id_exhausted"; readonly last_open_id: number; readonly drain_ms: number };
   readonly 0x07: bigint;
   readonly 0x08: bigint;
   readonly 0x09: bigint;
   readonly 0x0a: { readonly code: string; readonly label: string; readonly public_key: string };
+  readonly 0x0b: { readonly label: string; readonly public_key: string; readonly commitment: string };
+  readonly 0x0c: { readonly nonce: string };
+  readonly 0x0d: { readonly nonce: string };
+  readonly 0x0e: { readonly confirmed: true };
   readonly 0x10: { readonly device_id: string; readonly method: Method; readonly target: string; readonly headers: HeaderList; readonly body: "none" | "stream" };
   readonly 0x11: null;
   readonly 0x12: { readonly status: number; readonly headers: HeaderList };
@@ -125,7 +156,6 @@ function requireProtocol(condition: unknown, message: string): asserts condition
   if (!condition) throw new MuxProtocolError("protocol_error", message);
 }
 
-/** Counts UTF-8 without allocating an encoded copy. */
 function utf8Bytes(value: string): number {
   let bytes = 0;
   for (let i = 0; i < value.length; i++) {
@@ -171,6 +201,20 @@ function base64url(value: unknown, bytes: number): string {
   const last = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".indexOf(result.at(-1) ?? "");
   requireProtocol(bytes % 3 === 0 || (last & (bytes % 3 === 1 ? 15 : 3)) === 0, "Noncanonical base64url");
   return result;
+}
+
+/** DER SubjectPublicKeyInfo for id-ecPublicKey + prime256v1 + an uncompressed P-256 point. */
+function p256Spki(value: unknown): string {
+  const public_key = base64url(value, 91);
+  const der = atob(public_key.replace(/-/g, "+").replace(/_/g, "/"));
+  const prefix = [0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04];
+  requireProtocol(prefix.every((byte, i) => der.charCodeAt(i) === byte), "Invalid P-256 SPKI");
+  return public_key;
+}
+function pairLabel(value: unknown): string {
+  const label = text(value, 256);
+  requireProtocol([...label].length <= 64, "Pair label too long");
+  return label;
 }
 
 const HTTP_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -227,6 +271,52 @@ function feature(value: unknown): string {
   requireProtocol(/^[a-z0-9-]{1,32}$/.test(result), "Invalid feature");
   return result;
 }
+function relayOrigin(value: unknown): string {
+  const result = text(value, 256);
+  let origin: string | null = null;
+  // relay-offer.ts isWssOrigin, not imported: relay-offer reaches this module through relay-e2ee
+  try { const url = new URL(result); origin = url.protocol === "wss:" ? url.origin : null; } catch { }
+  requireProtocol(origin === result, "Invalid relay origin");
+  return result;
+}
+function directOrigin(value: unknown): string {
+  const result = text(value, 32);
+  requireProtocol(isDirectCarrier(result), "Invalid direct carrier");
+  return result;
+}
+
+type Subnet = readonly [number, number, number];
+const PRIVATE_IPV4: readonly Subnet[] = [[10, 0, 8], [172, 16, 12], [192, 168, 16], [169, 254, 16]];
+/** Tailscale's IPv4 range (shared CGNAT space, which Tailscale assigns its nodes from). */
+const TAILNET_IPV4: readonly Subnet[] = [[100, 64, 10]];
+
+function carrierIn(text: string, subnets: readonly Subnet[]): boolean {
+  const match = /^ws:\/\/((?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}):([1-9]\d{0,4})$/.exec(text);
+  if (!match) return false;
+  const octets = match[1]!.split(".").map(Number);
+  const port = Number(match[2]);
+  if (port > 65535 || octets.some((octet) => octet > 255)) return false;
+  const address = ((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0;
+  return subnets.some(([a, b, bits]) => address >>> (32 - bits) === (((a << 24) | (b << 16)) >>> 0) >>> (32 - bits));
+}
+
+/** Exactly `ws://<Tailscale IPv4>:<port>`: an address in 100.64.0.0/10, a port written out, nothing else. */
+export function isTailnetCarrier(text: string): boolean {
+  return carrierIn(text, TAILNET_IPV4);
+}
+
+export function isTailnetAddress(address: string): boolean {
+  return isTailnetCarrier(`ws://${address}:1`);
+}
+
+/**
+ * Exactly `ws://<private IPv4>:<port>`: an RFC 1918, link-local or Tailscale (isTailnetCarrier) address, a
+ * port written out, nothing else.
+ */
+export function isDirectCarrier(text: string): boolean {
+  return carrierIn(text, PRIVATE_IPV4) || isTailnetCarrier(text);
+}
+
 function protocol(value: unknown): string {
   const result = text(value, 128);
   requireProtocol(HTTP_TOKEN.test(result), "Invalid WS subprotocol");
@@ -264,12 +354,11 @@ function envelope(type: unknown, flags: unknown, id: unknown, size: number): Fra
   const f = integer(flags, 0, 0xffff);
   const mask = t === FrameType.HTTP_END ? 1 : t === FrameType.WS_DATA ? 7 : 0;
   requireProtocol((f & ~mask) === 0 && (t !== FrameType.WS_DATA || !(f & 4) || !!(f & 1)), "Reserved flags");
-  if (t <= FrameType.PAIR) requireProtocol(id === 0, "Session frame needs stream zero");
+  if (t < FrameType.HTTP_OPEN) requireProtocol(id === 0, "Session frame needs stream zero");
   else streamId(id, false);
   return t;
 }
 
-/** Only payload-local rules live here; ordering, reassembly and credit belong to the engine. */
 function metadata(type: FrameType, flags: number, stream_id: number, input: unknown, filterRequestHeaders = false): MuxFrame {
   const v = object(input);
   const common = { flags, stream_id };
@@ -285,26 +374,28 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
     }
     case FrameType.WELCOME:
       requireProtocol(v.protocol === "ovis-mux" && v.version === 1, "Invalid welcome protocol");
-      // another relay_protocol is read, not refused here: the shell names it an update (src/lib/relay/channel.ts)
       return { ...common, type, payload: { protocol: "ovis-mux", version: 1, features: list(v.features, 16, feature), limits: limits(v.limits),
-        nonce: base64url(v.nonce, 32), server_version: text(v.server_version, 64), relay_protocol: integer(v.relay_protocol, 1, 65535), min_supported_client: text(v.min_supported_client, 64) } };
+        nonce: base64url(v.nonce, 32), server_version: text(v.server_version, 64), relay_protocol: integer(v.relay_protocol, 1, 65535), min_supported_client: text(v.min_supported_client, 64),
+        ...(v.provisional === undefined ? {} : (requireProtocol(v.provisional === true, "Invalid provisional welcome"), { provisional: true as const })) } };
     case FrameType.AUTH:
       requireProtocol(v.scheme === "device-key", "Invalid auth scheme");
       return { ...common, type, payload: { scheme: "device-key", device_id: hex(v.device_id, 16), signature: base64url(v.signature, 64) } };
     case FrameType.PAIR: {
       const code = text(v.code, 6);
       requireProtocol(/^[0-9]{6}$/.test(code), "Invalid pairing code");
-      // DER SubjectPublicKeyInfo for id-ecPublicKey + prime256v1 + an uncompressed P-256 point.
-      const public_key = base64url(v.public_key, 91);
-      const der = atob(public_key.replace(/-/g, "+").replace(/_/g, "/"));
-      const prefix = [0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04];
-      requireProtocol(prefix.every((byte, i) => der.charCodeAt(i) === byte), "Invalid P-256 SPKI");
-      const label = text(v.label, 256);
-      requireProtocol([...label].length <= 64, "Pair label too long");
-      return { ...common, type, payload: { code, label, public_key } };
+      return { ...common, type, payload: { code, label: pairLabel(v.label), public_key: p256Spki(v.public_key) } };
     }
+    case FrameType.PAIR_REQUEST:
+      return { ...common, type, payload: { label: pairLabel(v.label), public_key: p256Spki(v.public_key), commitment: base64url(v.commitment, 32) } };
+    case FrameType.PAIR_CHALLENGE: case FrameType.PAIR_REVEAL:
+      return { ...common, type, payload: { nonce: base64url(v.nonce, 32) } };
+    case FrameType.PAIR_CONFIRM:
+      requireProtocol(v.confirmed === true && Object.keys(v).length === 1, "Invalid pairing confirmation");
+      return { ...common, type, payload: { confirmed: true } };
     case FrameType.AUTH_OK:
-      return { ...common, type, payload: { session_id: hex(v.session_id, 32), device_id: hex(v.device_id, 16), role: choice(v.role, ["drive", "watch"]) } };
+      return { ...common, type, payload: { session_id: hex(v.session_id, 32), device_id: hex(v.device_id, 16), role: choice(v.role, ["drive", "watch"]),
+        ...(v.relays === undefined ? {} : { relays: list(v.relays, 2, relayOrigin) }),
+        ...(v.direct === undefined ? {} : { direct: list(v.direct, MAX_DIRECT_CARRIERS, directOrigin) }) } };
     case FrameType.SESSION_ERROR:
       return { ...common, type, payload: { code: choice(v.code, SESSION_ERRORS), message: text(v.message, 256) } };
     case FrameType.GOAWAY:
@@ -344,7 +435,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
 
 function wsFragment(flags: number, data: Uint8Array, total: unknown): Payloads[0x22] {
   if (flags & WS_DATA_FLAGS.START) {
-    const length = integer(total, 0, LIMITS_V1.max_ws_message_bytes);
+    // the engine holds each message to what its peer takes (LARGE_WS_MESSAGES) before this
+    const length = integer(total, 0, MAX_LARGE_WS_MESSAGE_BYTES);
     requireProtocol(data.byteLength <= length && (!!(flags & WS_DATA_FLAGS.END) ? data.byteLength === length : data.byteLength < length), "Invalid first fragment length");
     requireProtocol(data.byteLength > 0 || ((flags & 3) === 3 && length === 0), "Empty nonfinal fragment");
     return { total_message_bytes: length, data };
@@ -417,7 +509,6 @@ export function decodeFrame(bytes: Uint8Array, filterRequestHeaders = false): Mu
   }
 }
 
-/** Exact JSON wire size, before allocating serialization or encoded bytes. */
 function jsonBytes(value: unknown): number {
   if (typeof value === "string") {
     let size = 2;

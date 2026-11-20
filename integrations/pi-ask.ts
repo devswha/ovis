@@ -14,6 +14,8 @@ import {
   type PiAskBridgeState,
   type PiAskFlow,
   type PiAskSubmitReply,
+  type PiBridgeCommand,
+  type PiBridgeCommands,
 } from "../shared/pi-ask-bridge.ts";
 
 export interface PiEventBus {
@@ -28,6 +30,8 @@ export interface PiSessionContext {
 
 export interface PiExtensionAPI {
   events: PiEventBus;
+  /** pi 1.3.0+: the commands `prompt` can run in this session, extension ones first */
+  getCommands?(): unknown;
   on(event: "session_start" | "session_shutdown", handler: (event: unknown, context: PiSessionContext) => unknown): void;
 }
 
@@ -37,6 +41,8 @@ export interface PiAskBridgeOptions {
   pid?: number;
   platform?: NodeJS.Platform;
   submitTimeoutMs?: number;
+  /** pi's own command list (`pi.getCommands()`), read at each request: a /reload changes it */
+  commands?: () => unknown;
 }
 
 export interface PiAskBridge {
@@ -82,10 +88,7 @@ function readBody(request: IncomingMessage): Promise<string | null> {
   });
 }
 
-/**
- * Tracks the forms pi-ask reports open and relays the server's answers to it as pi-ask's own
- * submit events. Nothing here reads or types into the terminal; a pi without a UI serves nothing.
- */
+/** Nothing here reads or types into the terminal; a pi without a UI serves nothing. */
 export function createPiAskBridge(options: PiAskBridgeOptions): PiAskBridge {
   const { events, socketPath } = options;
   const pid = options.pid ?? process.pid;
@@ -116,6 +119,24 @@ export function createPiAskBridge(options: PiAskBridgeOptions): PiAskBridge {
     try {
       const branch = context?.sessionManager?.getBranch?.();
       return Array.isArray(branch) ? branch.reduce<string[]>(piAskOpenCalls, []) : null;
+    } catch { return null; }
+  };
+
+  /** The extension commands in pi's list, or null when pi cannot say (it throws before its runtime is bound). */
+  const extensionCommands = (): PiBridgeCommand[] | null => {
+    try {
+      const all = options.commands?.();
+      if (!Array.isArray(all)) return null;
+      return all.flatMap((command: unknown): PiBridgeCommand[] => {
+        if (!isRecord(command) || command["source"] !== "extension" || typeof command["name"] !== "string") return [];
+        const info = isRecord(command["sourceInfo"]) ? command["sourceInfo"] : {};
+        return [{
+          name: command["name"],
+          ...(typeof command["description"] === "string" ? { description: command["description"] } : {}),
+          ...(typeof info["scope"] === "string" ? { scope: info["scope"] } : {}),
+          ...(typeof info["origin"] === "string" ? { origin: info["origin"] } : {}),
+        }];
+      });
     } catch { return null; }
   };
 
@@ -161,10 +182,14 @@ export function createPiAskBridge(options: PiAskBridgeOptions): PiAskBridge {
         send(response, 200, { version: PI_ASK_BRIDGE_VERSION, pid, sessionFile: sessionFile(), flows: [...flows.values()], openCalls: openCalls() } satisfies PiAskBridgeState);
         return;
       }
+      if (request.url === "/v1/commands" && request.method === "GET") {
+        send(response, 200, { version: PI_ASK_BRIDGE_VERSION, pid, commands: extensionCommands() } satisfies PiBridgeCommands);
+        return;
+      }
       if (request.url === "/v1/submit" && request.method === "POST") {
         const text = await readBody(request);
         let body: unknown = null;
-        try { body = text === null ? null : JSON.parse(text); } catch { /* answered as invalid below */ }
+        try { body = text === null ? null : JSON.parse(text); } catch {}
         const { status, reply } = await submit(body);
         send(response, status, reply);
         return;
@@ -177,7 +202,7 @@ export function createPiAskBridge(options: PiAskBridgeOptions): PiAskBridge {
 
   const removeSocket = (): void => {
     if (isSocket(socketPath)) {
-      try { unlinkSync(socketPath); } catch { /* already gone */ }
+      try { unlinkSync(socketPath); } catch {}
     }
   };
 
@@ -220,7 +245,11 @@ export function createPiAskBridge(options: PiAskBridgeOptions): PiAskBridge {
 }
 
 export default function piAskBridgeExtension(pi: PiExtensionAPI): void {
-  const bridge = createPiAskBridge({ events: pi.events, socketPath: join(piAgentDir(), PI_ASK_BRIDGE_DIRECTORY, `${process.pid}.sock`) });
+  const bridge = createPiAskBridge({
+    events: pi.events,
+    socketPath: join(piAgentDir(), PI_ASK_BRIDGE_DIRECTORY, `${process.pid}.sock`),
+    commands: () => pi.getCommands?.(),
+  });
   pi.on("session_start", (_event, context) => bridge.start(context));
   pi.on("session_shutdown", () => bridge.stop());
 }

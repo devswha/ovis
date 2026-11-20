@@ -11,7 +11,6 @@ import { userErrorMessage, type UserError } from "../lib/userError.ts";
 
 
 export interface AccessGateProps {
-  /** why the server refused this browser, when it said */
   reason: AccessRefusal | null;
   /** the unconsumed address code to display; automatic submission must claim it first */
   initialCode: string;
@@ -37,7 +36,7 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
   const codeRef = useRef<HTMLInputElement | null>(null);
   const tokenRef = useRef<HTMLInputElement | null>(null);
   const [code, setCode] = useState(initialCode);
-  const [token, setToken] = useState("");
+  // the token lives in its field alone, read at submit and cleared once it unlocked (src/AGENTS.md, G-108)
   const [submitting, setSubmitting] = useState<"code" | "token" | null>(null);
   const [error, setError] = useState<UserError | null>(null);
   const [codeShort, setCodeShort] = useState(false);
@@ -58,7 +57,6 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
     }
   };
 
-  // a scanned QR code brings the code along: no typing on the phone
   useEffect(() => {
     if (!scanned.current) return;
     scanned.current = false;
@@ -77,11 +75,13 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
   const submitToken = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (submitting) return;
+    const token = tokenRef.current?.value ?? "";
     if (token === "") { tokenRef.current?.focus(); return; }
     setSubmitting("token");
     setError(null);
     try {
       await authenticate(token);
+      if (tokenRef.current) tokenRef.current.value = "";
       onUnlocked();
     } catch (err) {
       setError(err instanceof ApiError && err.status === 401 ? { message: t("Token does not match."), detail: null } : userErrorMessage(err));
@@ -95,7 +95,7 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
       <div className="access-gate" data-testid="token-gate">
         <img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="access-gate-mark" />
         <h1 id="access-gate-title" className="access-gate-title">
-          Ovis
+          {t(reason === "token_required" ? "Unlock" : "Pair this device")}
         </h1>
         {reason === "other_user" && (
           <p className="access-gate-refused" role="status">{t("Tailscale says this device belongs to someone other than this PC's owner. The owner can still let it in with a pairing code.")}</p>
@@ -138,8 +138,6 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
               name="token"
               autoComplete="current-password"
               inputMode="text"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
             />
             <button type="submit" className="access-gate-submit" disabled={submitting !== null}>
               {t(submitting === "token" ? "Unlocking…" : "Unlock")}
@@ -152,7 +150,6 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
         {error !== null && (
           <p id="access-gate-error" className="access-gate-error" role="alert">{error.message}{error.detail !== null && <><br /><code>{error.detail}</code></>}</p>
         )}
-        {/* in the iOS app (app/) this page is all there is: the way back to its list of PCs */}
         {inNativeApp() && (
           <p className="access-gate-copy"><button type="button" className="btn" onClick={() => void changePc()}>{t("Change PC")}</button></p>
         )}

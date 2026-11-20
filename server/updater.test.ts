@@ -3,7 +3,7 @@ import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, 
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { releaseSupervisor as launcherSupervisor } from "./managed.ts";
-import { isReleaseFolder, NOTES_FILE_LIMIT, readNotesFile, RELEASE_FOLDER_REASON, Updater, runCommand, type Release } from "./updater.ts";
+import { isReleaseFolder, latestTag, NOTES_FILE_LIMIT, readNotesFile, RELEASE_FOLDER_REASON, UPDATE_CHANNEL_FILE, updateChannel, Updater, runCommand, type Release } from "./updater.ts";
 import { updateStateDir } from "./update-state.ts";
 import { spawnSync } from "node:child_process";
 import { symlinkSync } from "node:fs";
@@ -12,7 +12,6 @@ import type { UpdateCommand } from "../shared/update.ts";
 
 let directory: string, upstream: string, root: string, stateDir: string;
 let updater: Updater;
-/** every install step the updater published, in order, repeats left out */
 let steps: Array<string | null>;
 const git = (cwd: string, ...args: string[]) => runCommand(cwd, ["git", ...args]);
 async function commit(contents: string, failBuild = false) {
@@ -22,7 +21,6 @@ async function commit(contents: string, failBuild = false) {
   await git(upstream, "commit", "-qm", contents);
   return git(upstream, "rev-parse", "HEAD");
 }
-/** Commit and publish it as a release tag; only tags make an update available. */
 async function release(contents: string, tag: string, options: { failBuild?: boolean; annotated?: boolean } = {}) {
   const revision = await commit(contents, options.failBuild);
   await git(upstream, "tag", ...(options.annotated ? ["-a", "-m", tag] : []), tag);
@@ -55,16 +53,36 @@ afterEach(() => {
 });
 
 /**
- * A real launcher + supervisor + bridge on a free port, serving the fixture checkout. Given `home`,
- * they run with it as $HOME and keep their state in the default dir under it, as an install not
- * told OVIS_STATE_DIR does.
+ * A port for the managed bridge that nothing listens on, held for a moment to make sure, then given
+ * back. The bridge binds it three process starts later (launcher, supervisor, bridge), and again
+ * each time an update or a restart replaces the bridge.
+ *
+ * Below 32768, under the ports a system hands out on its own by default: Linux gives a listener on
+ * port 0 or an outgoing connection one from 32768 up (ip_local_port_range), macOS and Windows from
+ * 49152 up. A port asked of the system with port 0 and given back is one of those: the next
+ * `port: 0` server of a test file running beside this one can be handed it before the bridge binds
+ * it, and the bridge then fails to start (EADDRINUSE) while the test waits for its answer. Below
+ * 20000 too, where scripts/check.test.ts takes the ports of its runs: the unit tests run beside
+ * this file in `bun run check concurrent`.
  */
+function bridgePort(): number {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const port = 10_000 + Math.floor(Math.random() * 10_000);
+    try {
+      Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }).stop(true);
+      return port;
+    } catch { }
+  }
+  throw new Error("no free port for the managed bridge");
+}
+
 async function managedFixture(supervisor?: string, slowHealth = false, home?: string) {
   updater.stop();
   mkdirSync(join(upstream, "server"), { recursive: true });
   const entry = `
-    import { createServer } from ${JSON.stringify(join(import.meta.dir, "index.ts"))};
-    import { connectUpdater } from ${JSON.stringify(join(import.meta.dir, "update-api.ts"))};
+    process.env.OVIS_ASSETS = require("node:path").join(import.meta.dir, "..");
+    const { createServer } = await import(${JSON.stringify(join(import.meta.dir, "index.ts"))});
+    const { connectUpdater } = await import(${JSON.stringify(join(import.meta.dir, "update-api.ts"))});
     ${slowHealth ? `
     // a busy PC: the bridge answers, but its first six health checks outlast the supervisor's 1 s probe
     // timeout, so they are refused on any machine and the start takes about 6.6 s (fixed 800 ms let a
@@ -82,13 +100,10 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
   if (supervisor !== undefined) writeFileSync(join(upstream, "server/supervisor.ts"), supervisor);
   await commit("managed initial");
   await git(root, "pull", "--ff-only", "--quiet");
-  const reservation = Bun.serve({ port: 0, fetch: () => new Response() });
-  const port = reservation.port!; reservation.stop(true);
+  const port = bridgePort();
   const origin = `http://127.0.0.1:${port}`;
   const headers = { authorization: "Bearer test-managed-token", "x-herdr-update": "1" };
-  // what the launcher, the supervisor and the bridge print: a failed test prints it
   const log = join(directory, "managed.log");
-  // its own config home: the launcher links the default state dirs it finds there
   const env: Record<string, string | undefined> = { ...process.env, PORT: String(port), HOST: "127.0.0.1", OVIS_STATE_DIR: stateDir,
     XDG_CONFIG_HOME: join(directory, "config"), OVIS_TOKEN: "test-managed-token", OVIS_AUTO_UPDATE: "0", SUPERVISOR_MARKER: join(directory, "marker") };
   if (home !== undefined) {
@@ -97,7 +112,6 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
     Object.assign(env, { HOME: home, HERDR_SOCKET: process.env["HERDR_SOCKET"] });
   }
   const launch = () => {
-    // one file for every launch of a test: a separator says which launch printed what
     appendFileSync(log, `--- launch at ${new Date().toISOString()} ---\n`);
     const output = openSync(log, "a");
     try {
@@ -121,14 +135,12 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
     }
   };
   const request = async (command: string) => {
-    // an install names the release on offer, as the app's controls do
     const offered = command === "install" ? (await readStatus())?.latest_revision : undefined;
     const response = await fetch(`${origin}/api/updates/${command}`, offered === undefined ? { method: "POST", headers }
       : { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ expected_revision: offered }) });
     expect(response.status).toBe(202);
   };
   const health = async () => (await (await fetch(`${origin}/api/health`)).json()) as { web_ui: { revision: string; boot_id: string } };
-  /** Print the update status and the managed processes' output when the test fails, then fail as it did. */
   const explain = async (error: unknown): Promise<never> => {
     console.error(`managed update status: ${JSON.stringify(await readStatus())}`);
     console.error(`managed process output:\n${existsSync(log) ? readFileSync(log, "utf8").slice(-8000) : "(none)"}`);
@@ -136,17 +148,12 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
   };
   return { launch, readStatus, until, request, health, origin, explain };
 }
-/** A release's own supervisor: records that it ran, then runs the real one (or fails on purpose). */
 const releaseSupervisor = (broken = false) => broken ? "process.exit(3);\n" : `
   import { appendFileSync } from "node:fs";
   appendFileSync(process.env.SUPERVISOR_MARKER, "release\\n");
   const { runSupervisor } = await import(${JSON.stringify(join(import.meta.dir, "supervisor.ts"))});
   await runSupervisor(process.env.OVIS_SOURCE_ROOT);
 `;
-/**
- * The real supervisor and the files it imports, copied into the fixture's tree: an installed release
- * then runs it from its own folder and finds its state from there, as a real one does.
- */
 function copySupervisor(into: string) {
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   const repo = resolve(import.meta.dir, "..");
@@ -156,7 +163,8 @@ function copySupervisor(into: string) {
     const copy = join(into, relative(repo, file));
     mkdirSync(dirname(copy), { recursive: true });
     writeFileSync(copy, source);
-    for (const { path } of transpiler.scanImports(source)) {
+    for (const { path, kind } of transpiler.scanImports(source)) {
+      if (kind !== "import-statement") continue;
       const imported = resolve(dirname(file), path);
       if (path.startsWith(".") && !files.includes(imported)) files.push(imported);
     }
@@ -175,19 +183,15 @@ async function shallowPlugin() {
   return plugin;
 }
 /**
- * Stands in for the unshallow fetch, which the fixture's local origin would answer in
- * milliseconds: counts its calls, records the timeout it was given, and fails each time the way
- * an offline or too-slow link does (#1252). `leaves` names what each attempt writes into the
- * checkout's pack directory before it ends, the way git leaves a half-written `tmp_pack_*`
- * behind; a name ending in "/" is a directory, whose removal then fails. `succeeds` ends the
- * attempt without an error, the way a fetch that finishes does.
+ * `leaves` names what each attempt writes into the checkout's pack directory before it ends, the
+ * way git leaves a half-written `tmp_pack_*` behind; a name ending in "/" is a directory, whose
+ * removal then fails.
  */
 class OfflineUnshallow extends Updater {
   fetches = 0;
   readonly timeouts: number[] = [];
   leaves: string[] = [];
   succeeds = false;
-  /** the message each failed attempt ends with */
   failure = "unshallow fixture offline";
   protected async unshallowFetch(timeout: number, _run?: typeof runCommand): Promise<string> {
     this.fetches++;
@@ -201,8 +205,6 @@ class OfflineUnshallow extends Updater {
     if (this.succeeds) return "unshallow fixture done";
     throw new Error(this.failure);
   }
-  /** The real fetch method (past this class's stand-in) with a stand-in runner, for a test
-   * that checks what it hands on. */
   realUnshallowFetch(timeout: number, run: typeof runCommand): Promise<string> {
     return super.unshallowFetch(timeout, run);
   }
@@ -210,7 +212,7 @@ class OfflineUnshallow extends Updater {
 /**
  * Stands in for the tag fetch of a check: writes the half-written `tmp_pack_*` a failed fetch
  * leaves behind however it ends and then does not finish, ending the way a cancelled or timed-out
- * one does (#1252). Every other git command runs for real.
+ * one does (#1252).
  */
 class CancelledTagFetch extends Updater {
   fetches = 0;
@@ -224,7 +226,6 @@ class CancelledTagFetch extends Updater {
     });
   }
 }
-/** An updater on the shallow plugin fixture whose unshallow fetch never succeeds. */
 const offlineUpdater = (plugin: string) => new OfflineUnshallow({ root: plugin, stateDir: join(directory, "plugin-state"),
   autoUpdate: false, pluginCheckout: true, publish() {}, activate: async (_next, persist) => persist() });
 
@@ -299,7 +300,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     for (const [recordedUnder, resumedFrom] of [[stateDir, linked], [linked, stateDir]] as const) {
       writeFileSync(join(stateDir, "current.json"), JSON.stringify({ ...saved, directory: join(recordedUnder, basename(saved.directory)) }));
       const resumed = new Updater({ ...updater.options, stateDir: resumedFrom });
-      // named as its own state dir names it
       expect((await resumed.initialize())?.directory).toBe(join(resumedFrom, basename(saved.directory)));
       resumed.stop();
     }
@@ -308,7 +308,6 @@ describe("managed source updates with real Git repositories and builds", () => {
   it("keeps the release it replaces when that one was recorded under the other name of its state dir (#2029)", async () => {
     await release("second", "v0.2.0");
     await updater.request("install");
-    // recorded under the real path; resumed through a link to it
     const replaced = updater.release!.directory;
     const linked = join(directory, "linked-state");
     symlinkSync(stateDir, linked);
@@ -318,7 +317,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     await resumed.request("install");
     expect(resumed.status.error).toBeNull();
     expect(resumed.status.current_revision).toBe(target);
-    // the launcher falls back to the replaced release's supervisor when the new one cannot start
     expect(existsSync(join(replaced, "package.json"))).toBe(true);
     resumed.stop();
   });
@@ -352,12 +350,71 @@ describe("managed source updates with real Git repositories and builds", () => {
     expect(launcherSupervisor(root, stateDir)).toBe(join(saved.directory, "server", "supervisor.ts"));
   });
 
+  it("keeps an offer up while a later check runs, and ends it only with a check's answer (#3325)", async () => {
+    const target = await release("second", "v0.2.0");
+    // the page polls the published status: a check that withdrew the offer while it ran made the
+    // app-wide line blink out, and the terminal under it resize
+    const published: Array<{ phase: string; available: boolean }> = [];
+    const watched = new Updater({ ...updater.options, publish(status) { published.push({ phase: status.phase, available: status.available }); } });
+    await watched.initialize();
+    await watched.request("check");
+    expect(watched.status).toMatchObject({ available: true, latest_revision: target });
+    published.length = 0;
+    await watched.request("check");
+    expect(published.at(0)).toEqual({ phase: "checking", available: true });
+    expect(published.filter((status) => !status.available)).toEqual([]);
+
+    await git(root, "remote", "set-url", "origin", join(directory, "missing"));
+    await watched.request("check");
+    expect(watched.status).toMatchObject({ phase: "error", available: false });
+    await git(root, "remote", "set-url", "origin", upstream);
+    await watched.request("check");
+    expect(watched.status).toMatchObject({ phase: "idle", available: true });
+
+    writeFileSync(join(root, "local-change.txt"), "x");
+    await watched.request("check");
+    expect(watched.status.blocked_reason).not.toBeNull();
+    expect(watched.status.available).toBe(false);
+    watched.stop();
+  });
+
+  it("ends the offer when the checkout becomes blocked while the release builds (#3325)", async () => {
+    await release("second", "v0.2.0");
+    const building = new Updater({ ...updater.options, publish(status) {
+      if (status.step === "build" && !existsSync(join(root, "local-change.txt"))) writeFileSync(join(root, "local-change.txt"), "x");
+    } });
+    await building.initialize();
+    await building.request("install");
+    expect(building.status.phase).toBe("error");
+    expect(building.status.blocked_reason).toContain("local changes");
+    expect(building.status.available).toBe(false);
+    building.stop();
+  });
+
+  it("never shows an offer under a channel it was not made on while the check runs (#3325)", async () => {
+    const appState = join(directory, "app-state");
+    mkdirSync(appState);
+    writeFileSync(join(appState, UPDATE_CHANNEL_FILE), "beta\n");
+    const published: Array<{ phase: string; channel: string | undefined; available: boolean }> = [];
+    const switched = new Updater({ root, stateDir, autoUpdate: false, activate: async (_next, persist) => persist(),
+      publish(status) { published.push({ phase: status.phase, channel: status.channel, available: status.available }); },
+      channel: () => updateChannel({}, appState) });
+    await switched.initialize();
+    await release("beta", "beta/v0.2.0-beta.1");
+    await switched.request("check");
+    expect(switched.status).toMatchObject({ channel: "beta", available: true });
+    writeFileSync(join(appState, UPDATE_CHANNEL_FILE), "stable\n");
+    published.length = 0;
+    await switched.request("check");
+    expect(published.filter((status) => status.channel === "stable" && status.available)).toEqual([]);
+    switched.stop();
+  });
+
   it("tells what an update brings from the release's own changelog, every release since the running one", async () => {
     const manifest = JSON.parse(readFileSync(join(upstream, "package.json"), "utf8")) as Record<string, unknown>;
     writeFileSync(join(upstream, "package.json"), JSON.stringify({ ...manifest, version: "0.1.0" }));
     await commit("versioned");
     await git(root, "pull", "--ff-only", "--quiet");
-    // the notes are there when the status that offers the update is published, not after it
     let offered: unknown = null;
     const versioned = new Updater({ ...updater.options, publish(status) { if (status.available) offered = versioned.notes; } });
     await versioned.initialize();
@@ -368,7 +425,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     await release("second", "v0.2.0");
     writeFileSync(join(upstream, "CHANGELOG.md"), `# Changelog\n\n${section("0.3.0")}\n${section("0.2.0")}`);
     const third = await release("third", "v0.3.0");
-    // main moves on after the release: an entry the install does not bring
     writeFileSync(join(upstream, "CHANGELOG.md"), `# Changelog\n\n## [Unreleased]\n- Later.\n\n${section("0.4.0")}\n${section("0.3.0")}\n${section("0.2.0")}`);
     await commit("unreleased work");
     await versioned.request("check");
@@ -376,12 +432,10 @@ describe("managed source updates with real Git repositories and builds", () => {
     expect(versioned.notes.releases.map((entry) => [entry.version, entry.notes])).toEqual([
       ["0.3.0", "### Added\n- Release 0.3.0."], ["0.2.0", "### Added\n- Release 0.2.0."],
     ]);
-    // the notes name the commit they were read from: the one the status offers
     expect(versioned.notes.revision).toBe(third);
     expect(versioned.status.latest_revision).toBe(third);
     expect(offered).toEqual(versioned.notes);
 
-    // a release that ships no changelog is offered all the same, without notes
     await release("fourth", "v0.5.0");
     await git(upstream, "rm", "-q", "CHANGELOG.md");
     const fifth = await release("fifth", "v0.6.0");
@@ -404,11 +458,9 @@ describe("managed source updates with real Git repositories and builds", () => {
     cut("0.1.0", ["0.1.0"], null);
     await commit("versioned");
     await git(root, "pull", "--ff-only", "--quiet");
-    // what the last update brought is there when the status that names the new revision is published
     let told: unknown = null;
     const versioned = new Updater({ ...updater.options, publish(status) { if (status.current_version === "0.2.0" && told === null) told = versioned.installed; } });
     await versioned.initialize();
-    // the source checkout: for its commit, the answer is that no update installed it
     const none = { revision: await git(root, "rev-parse", "HEAD"), version: null, previous_version: null, installed_at: null, releases: [], omitted: 0 };
     expect(versioned.installed).toEqual(none);
 
@@ -426,17 +478,13 @@ describe("managed source updates with real Git repositories and builds", () => {
     expect(versioned.installed).toMatchObject({ revision: second, version: "0.2.0", previous_version: "0.1.0", releases: brought, omitted: 0 });
     expect(Date.parse(versioned.installed.installed_at!)).toBeGreaterThanOrEqual(before);
     expect(told).toEqual(versioned.installed);
-    // the supervisor the release starts was not there for the install: it reads what that one wrote down
     const resumed = new Updater({ ...versioned.options, publish() {} });
     await resumed.initialize();
     expect(resumed.installed).toEqual(versioned.installed);
 
-    // a build left behind by an install that was cut short is a later version, and no release that ran
     const stray = join(stateDir, "release-stray");
     mkdirSync(stray);
     writeFileSync(join(stray, "package.json"), JSON.stringify({ version: "0.2.5" }));
-    // the next update replaces the release that runs, not that build and not the source checkout,
-    // and one that wrote no summary is told by its section
     cut("0.3.0", ["0.3.0", "0.2.0", "0.1.0"], null);
     const third = await release("third", "v0.3.0");
     await resumed.request("install");
@@ -447,8 +495,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     await later.initialize();
     expect(later.installed).toEqual(resumed.installed);
 
-    // a release installed by a supervisor older than that record: the version it replaced is the
-    // newest older build still here, and the time is the record's own
     const record = join(stateDir, "current.json");
     const { previous_version: _previous, installed_at: _at, ...legacy } = JSON.parse(readFileSync(record, "utf8")) as Record<string, unknown>;
     writeFileSync(record, JSON.stringify(legacy));
@@ -457,7 +503,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     expect(inferred.installed).toMatchObject({ revision: third, version: "0.3.0", previous_version: "0.2.0" });
     expect(Number.isFinite(Date.parse(inferred.installed.installed_at!))).toBe(true);
 
-    // a file too large to be notes is not read: summaries of that size leave the changelog, a changelog of that size leaves the update
     writeFileSync(join(inferred.release!.directory, "release-summaries.json"), JSON.stringify({ "0.3.0": { en: { new: ["x".repeat(2_100_000)] } } }));
     const unsummarized = new Updater({ ...versioned.options, publish() {} });
     await unsummarized.initialize();
@@ -489,7 +534,6 @@ describe("managed source updates with real Git repositories and builds", () => {
   });
 
   it("says to restart from the source checkout when the launcher runs from an installed release (#1373)", async () => {
-    // an installed release, where install puts it: a detached clone under the checkout's update state
     const installed = join(updateStateDir(root, 7317, join(directory, "app-state")), "release-AbC123");
     mkdirSync(installed, { recursive: true });
     await git(installed, "clone", "-q", root, ".");
@@ -497,7 +541,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     expect(isReleaseFolder(installed)).toBe(true);
     expect(isReleaseFolder(root)).toBe(false);
     expect(isReleaseFolder(join(directory, "updates", "not-a-hash", "release-AbC123"))).toBe(false);
-    // herdr's plugin root pointing at it does not make it a source checkout either
     for (const pluginCheckout of [false, true]) {
       const launched = new Updater({ root: installed, stateDir: join(directory, "release-state"), autoUpdate: false, pluginCheckout,
         publish() {}, activate: async (_next, persist) => persist() });
@@ -538,6 +581,20 @@ describe("managed source updates with real Git repositories and builds", () => {
     expect(await git(plugin, "rev-parse", "HEAD")).toBe(original);
     expect(await git(plugin, "status", "--porcelain")).toBe("");
     managed.stop();
+
+    const restarted = make(false);
+    expect((await restarted.initialize())?.revision).toBe(target);
+    expect(restarted.status.blocked_reason).toContain("main");
+    restarted.stop();
+    writeFileSync(join(plugin, "user-draft.txt"), "preserve");
+    const edited = make(false);
+    expect((await edited.initialize())?.directory).toBe(plugin);
+    edited.stop();
+    rmSync(join(plugin, "user-draft.txt"));
+    await git(plugin, "checkout", "-q", "-b", "feature");
+    const branched = make(false);
+    expect((await branched.initialize())?.directory).toBe(plugin);
+    branched.stop();
   });
 
   it("follows only plain vX.Y.Z tags: untagged commits, bundle tags and pre-releases stay put", async () => {
@@ -560,6 +617,46 @@ describe("managed source updates with real Git repositories and builds", () => {
     await updater.request("install");
     expect(updater.status.error).toBeNull();
     expect(updater.status.current_revision).toBe(target);
+  });
+
+  it("never offers a beta build on the stable channel", async () => {
+    await release("beta", "beta/v0.2.0-beta.3");
+    await git(upstream, "tag", "v0.3.0-beta.1");
+    await updater.request("check");
+    expect(updater.status.channel).toBe("stable");
+    expect(updater.status.available).toBe(false);
+    expect(updater.status.latest_version).toBeNull();
+    // a stable updater fetches refs/tags/v* alone, as every released one did (v0.4.18 to v0.4.22):
+    // the beta/* tags never reach its checkout
+    expect(await git(root, "for-each-ref", "refs/tags/beta/")).toBe("");
+    expect(await git(root, "tag", "--list", "v0.3.0-beta.1")).toBe("v0.3.0-beta.1");
+  });
+
+  it("on the beta channel, installs the newest beta build, and takes the release after it", async () => {
+    const appState = join(directory, "app-state");
+    mkdirSync(appState);
+    const beta = new Updater({ root, stateDir, autoUpdate: false, activate: async (_next, persist) => persist(), publish() {},
+      channel: () => updateChannel({}, appState) });
+    await beta.initialize();
+    await release("released", "v0.2.0");
+    await release("beta nine", "beta/v0.2.1-beta.9");
+    await release("rc", "v0.2.1-rc.1");
+    const newest = await release("beta ten", "beta/v0.2.1-beta.10");
+    await beta.request("check");
+    expect(beta.status.channel).toBe("stable");
+    expect(beta.status.latest_version).toBe("0.2.0");
+
+    writeFileSync(join(appState, UPDATE_CHANNEL_FILE), "beta\n");
+    await beta.request("install");
+    expect(beta.status.error).toBeNull();
+    expect(beta.status.channel).toBe("beta");
+    expect(beta.status.current_revision).toBe(newest);
+
+    const stable = await release("release", "v0.2.1");
+    await beta.request("check");
+    expect(beta.status.latest_version).toBe("0.2.1");
+    expect(beta.status.latest_revision).toBe(stable);
+    expect(beta.status.available).toBe(true);
   });
 
   it("treats a shallow plugin checkout ahead of the latest release as up to date", async () => {
@@ -596,7 +693,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     await managed.initialize();
     await managed.request("check");
     expect(managed.fetches).toBe(1);
-    // the check fails the way a failed fetch does, not with "not part of the release history"
     expect(managed.status.phase).toBe("error");
     expect(managed.status.blocked_reason).toBeNull();
     await managed.request("check");
@@ -613,23 +709,14 @@ describe("managed source updates with real Git repositories and builds", () => {
     await managed.initialize();
     await managed.request("check");
     expect(managed.fetches).toBe(1);
-    // the backoff holds the 5-minute cycle off, not a user's own request: asked for, the
-    // history fetch runs again at once, the way Update retries a revision automatic install
-    // gave up on. After a failed check the API refuses an install (nothing is available):
-    // the user's way out is Check, so it is a user's Check that must not be held off
     await managed.request("check", true);
     expect(managed.fetches).toBe(2);
-    // what it tells is the fetch's own failure, not the backoff's "next attempt is at …"
     expect(managed.status.error).toContain("unshallow fixture offline");
     managed.stop();
   });
 
   it("marks the bridge's update commands as the user's own, and hands an install its revision", async () => {
-    // The supervisor's IPC is the only road a browser's Check or Update travels to the updater,
-    // and runSupervisor builds that updater itself, in its own process: a stand-in child swaps a
-    // recording updater in and reports what the IPC handler handed it. Without the flag, a
-    // manual Check would wait a failed unshallow fetch's backoff out with the 5-minute timer
-    // (#1252). Without the revision, the install's own check would install whatever release it
+    // Without the revision, the install's own check would install whatever release it
     // finds, not the one the person was shown; and an older bridge's install, which names none,
     // must not reach the updater at all.
     const root = mkdtempSync(join(directory, "supervisor-root-"));
@@ -685,13 +772,12 @@ describe("managed source updates with real Git repositories and builds", () => {
     const child = Bun.spawn([process.execPath, script], { env: { ...process.env, PORT: "59999", HOST: "127.0.0.1",
       OVIS_STATE_DIR: stateDir, XDG_CONFIG_HOME: join(stateDir, "config"), OVIS_AUTO_UPDATE: "0" }, stdout: "pipe", stderr: "pipe" });
     const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    const timer = setTimeout(() => child.kill("SIGKILL"), 15_000); // a wedged stand-in must not hang the run
+    const timer = setTimeout(() => child.kill("SIGKILL"), 15_000);
     try {
       expect(await child.exited).toBe(0);
       if (!existsSync(record)) throw new Error(`no record was written; the stand-in printed:\n${(await output).join("\n")}`);
       const told = JSON.parse(readFileSync(record, "utf8")) as { calls: unknown[]; sent: Array<{ type?: string; status?: { revision_bound_install?: unknown } }> };
       expect(told.calls).toEqual([["check", true, null], ["install", true, offered]]);
-      // and it tells the bridge it installs only the revision named, so the bridge offers installs
       const statuses = told.sent.filter((message) => message.type === "update-status");
       expect(statuses.length).toBeGreaterThan(0);
       expect(statuses.every((message) => message.status?.revision_bound_install === true)).toBe(true);
@@ -700,9 +786,75 @@ describe("managed source updates with real Git repositories and builds", () => {
     }
   }, 20_000);
 
+  it("takes a bridge by its own answer, or by the whole one when it predates the bridge-scope boot id, and tells it", async () => {
+    const asked = async (older: boolean, herdrSocket?: string, runtime = "herdr") => {
+      const root = mkdtempSync(join(directory, "launch-root-"));
+      const stateDir = mkdtempSync(join(directory, "launch-state-"));
+      const record = join(stateDir, "launch-record.json");
+      const script = join(stateDir, "launch-stand-in.ts");
+      writeFileSync(script, `
+        import { mock } from "bun:test";
+        import { writeFileSync } from "node:fs";
+        const { Updater } = await import(${JSON.stringify(join(import.meta.dir, "updater.ts"))});
+        class Idle extends Updater {
+          override async initialize() { return { directory: ${JSON.stringify(root)}, revision: "0".repeat(40), source_revision: "0".repeat(40) }; }
+          override start() {}
+        }
+        mock.module(${JSON.stringify(join(import.meta.dir, "updater.ts"))}, () => ({ Updater: Idle }));
+        const urls: string[] = [];
+        const sent: unknown[] = [];
+        let bootId = "";
+        Bun.spawn = ((_argv: string[], options: { env: Record<string, string> }) => {
+          bootId = options.env["OVIS_BOOT_ID"]!;
+          return { exitCode: null, kill() {}, exited: new Promise(() => {}), send(message: unknown) { sent.push(message); } };
+        }) as unknown as typeof Bun.spawn;
+        globalThis.fetch = (async (url: string) => {
+          urls.push(new URL(url).search);
+          const bridge = new URL(url).search === "?scope=bridge";
+          return { ok: true, json: async () => bridge ? (${older} ? { ok: true } : { ok: true, web_ui: { boot_id: bootId }, runtime: ${JSON.stringify(runtime)} }) : { web_ui: { boot_id: bootId } } };
+        }) as unknown as typeof fetch;
+        await (await import(${JSON.stringify(join(import.meta.dir, "supervisor.ts"))})).runSupervisor(${JSON.stringify(root)});
+        writeFileSync(${JSON.stringify(record)}, JSON.stringify({ urls, sent }));
+        process.exit(0);
+      `);
+      const child = Bun.spawn([process.execPath, script], { env: { ...process.env, PORT: "59998", HOST: "127.0.0.1", OVIS_STATE_DIR: stateDir,
+        XDG_CONFIG_HOME: join(stateDir, "config"), HERDR_SOCKET: herdrSocket ?? join(stateDir, "no-herdr.sock"), OVIS_AUTO_UPDATE: "0" }, stdout: "pipe", stderr: "pipe" });
+      const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      const timer = setTimeout(() => child.kill("SIGKILL"), 15_000);
+      try {
+        expect(await child.exited).toBe(0);
+        if (!existsSync(record)) throw new Error(`no record was written; the stand-in printed:\n${(await output).join("\n")}`);
+        return JSON.parse(readFileSync(record, "utf8")) as { urls: string[]; sent: Array<{ type?: string }> };
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const current = await asked(false);
+    expect(current.urls).toEqual(["?scope=bridge"]);
+    expect(current.sent.filter((message) => message.type === "bridge-accepted")).toHaveLength(1);
+    const older = await asked(true);
+    expect(older.urls).toEqual(["?scope=bridge", ""]);
+    expect(older.sent.filter((message) => message.type === "bridge-accepted")).toHaveLength(1);
+    for (const runtime of ["herdr-core", "alt-runtime"]) expect((await asked(false, undefined, runtime)).urls).toEqual(["?scope=bridge", ""]);
+    if (process.platform === "win32") return; // herdr's socket is a named pipe there: no unix socket file is left behind
+    // a socket file a killed herdr left behind refuses the connect: herdr is stopped, as with no socket (#2670)
+    const stale = join(mkdtempSync(join(directory, "stale-")), "herdr.sock");
+    const holder = Bun.spawn([process.execPath, "-e", `Bun.listen({ unix: ${JSON.stringify(stale)}, socket: { data() {} } }); console.log("listening");`], { stdout: "pipe" });
+    await holder.stdout.getReader().read();
+    holder.kill("SIGKILL");
+    await holder.exited;
+    expect(existsSync(stale)).toBe(true);
+    expect((await asked(false, stale)).urls).toEqual(["?scope=bridge"]);
+    const live = join(mkdtempSync(join(directory, "live-")), "herdr.sock");
+    const listener = Bun.listen({ unix: live, socket: { data() {} } });
+    try {
+      expect((await asked(false, live)).urls).toEqual(["?scope=bridge", ""]);
+    } finally {
+      listener.stop(true);
+    }
+  }, 60_000);
+
   it("holds the timer off after a user's own failed unshallow fetch too", async () => {
-    // a user's Check skips the backoff, but its failure still starts one: the timer that comes
-    // next does not fetch the history again (#1252)
     await git(upstream, "tag", "v0.1.0", "HEAD");
     await commit("unreleased");
     const plugin = await shallowPlugin();
@@ -717,8 +869,6 @@ describe("managed source updates with real Git repositories and builds", () => {
   });
 
   it("runs the timer's checks as the timer's, never as a user's", () => {
-    // the backoff holds only the timer (#1252): a timer that marked its checks as a user's would
-    // fetch the missing history again every 5 minutes
     const flags: Array<boolean | undefined> = [];
     class Timed extends Updater {
       override async request(_command: UpdateCommand, byUser?: boolean) { flags.push(byUser); }
@@ -741,7 +891,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     await managed.initialize();
     await managed.request("check");
     expect(managed.fetches).toBe(1);
-    // six hours later (the backoff), the next check downloads the history again
     const start = Date.now();
     try {
       setSystemTime(start + 6 * 60 * 60_000 + 1_000);
@@ -761,8 +910,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     await managed.initialize();
     await managed.request("check");
     expect(managed.timeouts).toEqual([10 * 60_000]);
-    // and the real fetch method hands that timeout to its command runner, not only to the
-    // stand-in above: what it runs, and with which bound, is checked where it is given
     const runs: Array<{ argv: string[]; timeout?: number }> = [];
     await managed.realUnshallowFetch(10 * 60_000, (_cwd, argv, _signal, timeout) => {
       runs.push({ argv, timeout });
@@ -776,7 +923,7 @@ describe("managed source updates with real Git repositories and builds", () => {
     // The tag fetch of every check is the same leak the unshallow one was: a failed fetch
     // leaves its half-written tmp_pack_* behind however it ends — a timeout, a cancellation,
     // or git's own exit on a dropped connection (measured on git 2.54; #1252) — and every
-    // 5-minute check added another. Its own checkout, so a failure here colors no other test.
+    // 5-minute check added another.
     const own = join(directory, "tag-fetch-checkout");
     await git(directory, "clone", "-q", upstream, own);
     const managed = new CancelledTagFetch({ root: own, stateDir: join(directory, "tag-fetch-state"),
@@ -799,9 +946,6 @@ describe("managed source updates with real Git repositories and builds", () => {
   });
 
   it("removes the tmp_pack_* a failed unshallow fetch left behind", async () => {
-    // a failed fetch leaves its half-written pack behind however it ends, on any OS (measured on
-    // git 2.54: SIGTERM, SIGINT, SIGKILL, and git's own exit after the connection dropped): the
-    // failed fetch is cleaned up after (#1252).
     await git(upstream, "tag", "v0.1.0", "HEAD");
     await commit("unreleased");
     const plugin = await shallowPlugin();
@@ -880,12 +1024,11 @@ describe("managed source updates with real Git repositories and builds", () => {
     await commit("unreleased");
     const plugin = await shallowPlugin();
     const packDir = join(plugin, ".git", "objects", "pack");
-    const kept = readdirSync(packDir); // the fixture's pack-*.pack and pack-*.idx
+    const kept = readdirSync(packDir);
     const managed = offlineUpdater(plugin);
     managed.leaves = ["tmp_pack_new", "pack-while-fetching.pack"];
     await managed.initialize();
     await managed.request("check");
-    // a pack that arrived during the fetch, and every file older than it, stays
     expect(readdirSync(packDir)).toContain("pack-while-fetching.pack");
     for (const name of kept) expect(readdirSync(packDir)).toContain(name);
     expect(readdirSync(packDir)).not.toContain("tmp_pack_new");
@@ -912,7 +1055,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     await commit("unreleased");
     const plugin = await shallowPlugin();
     const managed = offlineUpdater(plugin);
-    // a directory cannot be removed as a file: the removal fails, the fetch's error is still the one told
     managed.leaves = ["tmp_pack_new/"];
     await managed.initialize();
     await managed.request("check");
@@ -927,7 +1069,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     await updater.request("install");
     expect(updater.status.phase).toBe("error");
     expect(updater.status.error).toContain("fixture build failure");
-    // the failed step is not left standing as if it still ran
     expect(steps).toEqual([null, "download", "dependencies", "typecheck", "build", null]);
     expect(updater.release).toBe(original);
     expect(readdirSync(stateDir).filter(name => name.startsWith("release-"))).toHaveLength(0);
@@ -965,7 +1106,6 @@ describe("managed source updates with real Git repositories and builds", () => {
   it("never stages a moved offer", async () => {
     const offered = await release("offered", "v0.2.0");
     let activations = 0;
-    // the check an install starts with waits at its tag fetch until the test lets it go
     const reached = Promise.withResolvers<void>(), go = Promise.withResolvers<void>();
     class PausedDiscover extends Updater {
       protected async git(...args: string[]): Promise<string> {
@@ -979,22 +1119,18 @@ describe("managed source updates with real Git repositories and builds", () => {
     await paused.initialize();
     const installing = paused.request("install", true, offered);
     await reached.promise;
-    // a release published between the person's yes and the install's check
     const newer = await release("newer", "v0.3.0");
     go.resolve();
     await installing;
     expect(paused.status).toMatchObject({ phase: "error", error_code: "update_offer_changed", latest_revision: newer, latest_version: "0.3.0", available: true });
-    // the new offer stays to be read; nothing was staged, built or activated
     expect(paused.notes.revision).toBe(newer);
     expect(published.some((status) => status.phase === "building" || status.step)).toBe(false);
     expect(activations).toBe(0);
     expect(paused.status.current_revision).toBe(await git(root, "rev-parse", "HEAD"));
     expect(readdirSync(join(directory, "paused-state")).filter((name) => name.startsWith("release-") || name === "failed.json")).toEqual([]);
-    // and nothing tries again by itself: the error stands until someone asks
     const after = published.length;
     await Promise.resolve();
     expect(published.length).toBe(after);
-    // the next check clears it, and the new offer is installed only by its own name
     await paused.request("check", true);
     expect(paused.status).toMatchObject({ phase: "idle", error: null, error_code: null, latest_revision: newer });
     paused.stop();
@@ -1024,13 +1160,11 @@ describe("managed source updates with real Git repositories and builds", () => {
     resumed.stop();
   });
 
-  // the supervisor's health check pings herdr, so this one needs a live herdr (CI has none)
   it.skipIf(!liveHerdr)("restarts the real bridge over IPC, rolls back a failed boot, and resumes the saved release", async () => {
     const { launch, readStatus, until, request, health, explain } = await managedFixture();
     let processHandle = launch();
     try {
       await until(async () => (await readStatus())?.managed === true);
-      // this supervisor says over IPC that it installs only the revision it is sent
       expect((await readStatus())?.revision_bound_install).toBe(true);
       const target = await release("managed second", "v0.2.0");
       await request("check");
@@ -1067,7 +1201,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     const handle = launch();
     try {
       await until(async () => (await readStatus())?.managed === true);
-      // the source checkout's supervisor starts first: nothing is installed yet
       expect(existsSync(marker)).toBe(false);
       const target = await release("handover", "v0.2.0");
       await request("check");
@@ -1105,10 +1238,8 @@ describe("managed source updates with real Git repositories and builds", () => {
       await request("check");
       await until(async () => (await readStatus())?.available === true);
       await request("install");
-      // "idle" with the new revision only comes from the supervisor that keeps running it: the release's own
       await until(async () => { const s = await readStatus(); return s?.current_revision === target && s.phase === "idle"; });
       expect((await health()).web_ui.revision).toBe(target);
-      // and the same update is not offered again
       const checked = (await readStatus())?.checked_at ?? null;
       await request("check");
       await until(async () => { const s = await readStatus(); return (s?.checked_at ?? null) !== checked && s?.phase === "idle"; });
@@ -1130,7 +1261,6 @@ describe("managed source updates with real Git repositories and builds", () => {
     const { launch, readStatus, until, request, health, explain } = await managedFixture(undefined, true);
     const handle = launch();
     try {
-      // the bridge reports "managed" as soon as it runs, seconds before the supervisor's start is over
       await until(async () => (await readStatus())?.managed === true);
       const target = await release("early", "v0.2.0");
       await request("check");
@@ -1158,7 +1288,6 @@ describe("managed source updates with real Git repositories and builds", () => {
       await until(async () => (await readStatus())?.available === true);
       await request("install");
       await until(async () => (await readStatus())?.error?.includes("previous one") === true);
-      // the bridge that passed its health check keeps serving under the old supervisor
       expect((await readStatus())?.current_revision).toBe(target);
       expect((await health()).web_ui.revision).toBe(target);
       expect(handle.exitCode).toBeNull();
@@ -1176,16 +1305,12 @@ describe("managed source updates with real Git repositories and builds", () => {
     try {
       await until(async () => /^[0-9a-f]{40}$/.test((await readStatus())?.current_revision ?? ""));
       const running = (await readStatus())?.current_revision;
-      // what `herdr plugin install` or `git pull` plus a build does to a checkout that is being served
       const replaced = await commit("replaced checkout");
       await git(root, "pull", "--ff-only", "--quiet");
-      // pulled, not built: the server serves the build it runs, which a reload does bring
       expect((await readStatus())?.served_revision ?? null).toBeNull();
       mkdirSync(join(root, "dist"), { recursive: true });
       writeFileSync(join(root, "dist", "build.json"), JSON.stringify({ revision: replaced }));
-      // no update check: the bridge reads the build it serves when asked, not every 5 minutes
       expect((await readStatus())?.served_revision).toBe(replaced);
-      // the server still runs what it started with: only a restart reports the new commit
       expect((await readStatus())?.current_revision).toBe(running!);
       expect((await health()).web_ui.revision).toBe(running!);
     } catch (error) {
@@ -1202,8 +1327,6 @@ describe("a command that times out or is cancelled", () => {
   // half-written tmp_pack_* files behind, and a SIGKILL leaves both (measured on git 2.54): asking
   // first is for the locks, and the updater sweeps the packs after a failed fetch (#1252)
 
-  /** A child script that handles (or ignores) SIGTERM; `started` is written once the handler is in
-   * place, so a signal sent after it appears cannot race the child's startup. */
   const signalChild = (name: string, handler: string, started: string, extra = "") => {
     const script = join(directory, name);
     writeFileSync(script, `import { writeFileSync } from "node:fs";
@@ -1243,26 +1366,20 @@ setInterval(() => {}, 1000);`);
     const script = signalChild("ignoring.ts", "", join(directory, "ignoring-started"),
       `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`);
     const running = runCommand(directory, [process.execPath, script], undefined, 1_000, 300);
-    running.catch(() => {}); // a leftover child must not turn its rejection into an unhandled one
+    running.catch(() => {});
     await awaitFile(join(directory, "ignoring-started"));
     try {
-      // only the SIGKILL that follows the grace period can end it, so the wait is bounded: a
-      // runCommand without that kill fails here instead of hanging the whole run on the child
       const ended = await Promise.race([running.then(() => "ended", (error) => error.message), Bun.sleep(3_000).then(() => null)]);
       expect(ended).toContain("timed out");
-      // dead by the SIGKILL that follows the grace period, not merely asked to die
       expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
     } finally {
-      // the child ignores SIGTERM: whatever happened above, it only ever ends by its own pid
       // a pid file caught half written reads 0, and kill(0) would end this run's whole process group
       const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0;
-      if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ } }
+      if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch { } }
     }
   });
 
   it("kills a group member that ignores SIGTERM and outlives the command", async () => {
-    // the command ends on SIGTERM, but a helper it started (same process group, none of our
-    // pipes) ignores it: closing must not leave the helper running once the grace timer is gone
     const helperPid = join(directory, "helper.pid");
     const helper = signalChild("helper.ts", "", join(directory, "helper-started"),
       `writeFileSync(${JSON.stringify(helperPid)}, String(process.pid));`);
@@ -1287,7 +1404,7 @@ setInterval(() => {}, 1000);`);
         await Bun.sleep(25);
       }
     } finally {
-      try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
+      try { process.kill(pid, "SIGKILL"); } catch { }
     }
   });
 
@@ -1321,4 +1438,73 @@ describe("a release's notes file", () => {
       expect(() => readNotesFile(join(dir, "missing.md"))).toThrow();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+});
+
+describe("update channels", () => {
+  it("orders releases after their betas and betas by number, and keeps betas off stable", () => {
+    const tags = ["v0.4.22", "beta/v0.4.23-beta.9", "beta/v0.4.23-beta.10", "v0.4.24-beta.1", "remote-v9", "v1.0.0-rc1", ""];
+    expect(latestTag(tags, "stable")).toBe("v0.4.22");
+    expect(latestTag(tags, "beta")).toBe("beta/v0.4.23-beta.10");
+    expect(latestTag([...tags, "v0.4.23"], "beta")).toBe("v0.4.23");
+    expect(latestTag(["beta/v0.4.23-beta.2"], "stable")).toBeUndefined();
+  });
+
+  it("reads the channel from OVIS_UPDATE_CHANNEL first, then the state dir's file, else stable", () => {
+    const appState = mkdtempSync(join(tmpdir(), "ovis-channel-"));
+    try {
+      expect(updateChannel({}, appState)).toBe("stable");
+      writeFileSync(join(appState, UPDATE_CHANNEL_FILE), " Beta\n");
+      expect(updateChannel({}, appState)).toBe("beta");
+      expect(updateChannel({ OVIS_UPDATE_CHANNEL: "stable" }, appState)).toBe("stable");
+      writeFileSync(join(appState, UPDATE_CHANNEL_FILE), "nightly");
+      expect(updateChannel({}, appState)).toBe("stable");
+      expect(updateChannel({ OVIS_UPDATE_CHANNEL: "beta" }, appState)).toBe("beta");
+    } finally { rmSync(appState, { recursive: true, force: true }); }
+  });
+});
+
+it("cancels an install while it builds: nothing is installed, its offer stays, and it is not taken for a failed release", async () => {
+  const running = updater.status.current_revision;
+  writeFileSync(join(upstream, "build-fixture.ts"), "await new Promise(() => {});");
+  await git(upstream, "add", ".");
+  await git(upstream, "commit", "-qm", "slow build");
+  await git(upstream, "tag", "v9.0.0");
+  const building = Promise.withResolvers<void>();
+  const watched = new Updater({ ...updater.options, publish(status) { if (status.step === "build") building.resolve(); } });
+  await watched.initialize();
+  try {
+    expect(watched.cancel("11111111-2222-4333-8444-555555555555")).toBe(false);
+    const install = watched.request("install", true, undefined, "11111111-2222-4333-8444-555555555555");
+    await building.promise;
+    // another's id (another device's install, or this PC's own Settings') never stops it
+    expect(watched.cancel("99999999-2222-4333-8444-555555555555")).toBe(false);
+    expect(watched.cancel("11111111-2222-4333-8444-555555555555")).toBe(true);
+    await install;
+    expect(watched.status).toMatchObject({ phase: "error", error_code: "update_cancelled", current_revision: running, available: true, install_cancellable: true });
+    expect(existsSync(join(stateDir, "failed.json"))).toBe(false);
+    (watched.options as { autoUpdate: boolean }).autoUpdate = true;
+    await watched.request("check");
+    expect(watched.status.phase).toBe("idle");
+    expect(watched.status.current_revision).toBe(running);
+  } finally { watched.stop(); }
+});
+
+it("stops an install cancelled while it still checks what is on offer, before anything is built", async () => {
+  writeFileSync(join(upstream, "build-fixture.ts"), "await new Promise(() => {});");
+  await git(upstream, "add", ".");
+  await git(upstream, "commit", "-qm", "slow build");
+  await git(upstream, "tag", "v9.0.1");
+  const seen: Array<string | null> = [];
+  const watched: Updater = new Updater({ ...updater.options, publish(status) {
+    seen.push(status.step ?? null);
+    if (status.phase === "checking" && !asked) asked = watched.cancel("11111111-2222-4333-8444-555555555555");
+  } });
+  let asked = false;
+  await watched.initialize();
+  try {
+    await watched.request("install", true, undefined, "11111111-2222-4333-8444-555555555555");
+    expect(asked).toBe(true);
+    expect(watched.status).toMatchObject({ phase: "error", error_code: "update_cancelled", available: true });
+    expect(seen).not.toContain("build");
+  } finally { watched.stop(); }
 });

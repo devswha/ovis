@@ -10,11 +10,15 @@ import { DEFAULT_ID } from "../../scripts/generate-themes.ts";
 import { FONT_FAMILY_MAX_CHARS } from "./fontFamily.ts";
 import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems } from "./keyBar.ts";
 import { SHARED_SETTING_KEYS } from "../../shared/preferences.ts";
-import { NOTICE_VERSION, TELEMETRY_SETTINGS_KEYS, TELEMETRY_THEME_SIDE_KEYS, telemetrySettings } from "../../shared/telemetry.ts";
-import { SETTING_SCOPE, telemetrySettingsSnapshot, alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, MARKDOWN_WIDTHS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, wantsVoiceInput } from "./settings.ts";
-import { applyToDocument, loadSettings, saveSettings } from "./settings.ts";
+import { TELEMETRY_SETTINGS_KEYS, TELEMETRY_THEME_SIDE_KEYS, telemetrySettings } from "../../shared/telemetry.ts";
+import { NOTICE_VERSION } from "../../shared/telemetry-notice.ts";
+import { SETTING_SCOPE, telemetrySettingsSnapshot, alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, wantsVoiceInput } from "./settings.ts";
+import { applyToDocument, loadSettings, pcLoadOn, PHONE_INBOX_STORAGE_KEY, phoneInboxOn, saveBootRows, saveSettings } from "./settings.ts";
+import { customRow, NO_CUSTOM_THEMES, readThemeFile, withTheme } from "./customThemes.ts";
+import { CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY } from "./themeBoot.ts";
 import { sanitizeSettings as oldSanitizeSettings, saveSettings as oldSaveSettings } from "./settings.legacy-fixture.ts";
 import { themeFor } from "./themeFor.ts";
+import { readStoredAppearance, storedAppearance } from "./themeBoot.ts";
 
 describe("saved theme migration", () => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
@@ -25,6 +29,7 @@ describe("saved theme migration", () => {
     Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: {
       getItem: (key: string) => records.get(key) ?? null,
       setItem: (key: string, value: string) => records.set(key, value),
+      removeItem: (key: string) => records.delete(key),
     } } });
   });
   afterEach(() => {
@@ -75,13 +80,11 @@ describe("saved theme migration", () => {
   });
 
   it("keeps Return's default unchosen, and a choice, through an old tab's whole-record save", () => {
-    // unchosen: the old tab reads the boolean it knows and writes it back, which is still no choice
     saveSettings(sanitizeSettings({}));
     expect(oldSanitizeSettings(readOld()).enterSends).toBe(true);
     oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
     expect(loadSettings().enterSends).toBeNull();
     expect(loadSettings().terminalFontSize).toBe(18);
-    // chosen either way: the old tab's unrelated save keeps it
     for (const enterSends of [true, false]) {
       saveSettings({ ...loadSettings(), enterSends });
       oldSaveSettings({ ...readOld(), terminalFontSize: 20 });
@@ -99,6 +102,20 @@ describe("saved theme migration", () => {
     expect(loadSettings().uiFontFamily).toBe("");
   });
 
+  it("keeps Tabs on a phone in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().phoneTabs).toBe("row");
+    saveSettings(sanitizeSettings({ phoneTabs: "header" }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("phoneTabs");
+    expect(records.get("ovis:phone-tabs")).toBe(JSON.stringify("header"));
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().phoneTabs).toBe("header");
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), phoneTabs: "row" });
+    expect(loadSettings().phoneTabs).toBe("row");
+    records.set("ovis:phone-tabs", "not json");
+    expect(loadSettings().phoneTabs).toBe("row");
+  });
+
   it("keeps Wrap to screen / Original width in its own key, out of an old tab's whole-record save", () => {
     saveSettings(sanitizeSettings({ terminalMirrorWrap: false }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalMirrorWrap");
@@ -112,31 +129,184 @@ describe("saved theme migration", () => {
     expect(sanitizeSettings({ terminalMirrorWrap: "yes" }).terminalMirrorWrap).toBeNull();
   });
 
-  it("shows the sidebar filter until it is turned off, kept in its own key, out of an old tab's whole-record save", () => {
-    expect(loadSettings().sidebarFilter).toBe(true);
-    saveSettings(sanitizeSettings({ sidebarFilter: false }));
+  it("leaves the sidebar filter out until it is turned on, kept in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().sidebarFilter).toBe(false);
+    saveSettings(sanitizeSettings({ sidebarFilter: true }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("sidebarFilter");
     oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
-    expect(loadSettings().sidebarFilter).toBe(false);
+    expect(loadSettings().sidebarFilter).toBe(true);
     expect(loadSettings().terminalFontSize).toBe(18);
-    saveSettings({ ...loadSettings(), sidebarFilter: true });
-    expect(loadSettings().sidebarFilter).toBe(true);
-    expect(sanitizeSettings({ sidebarFilter: "off" }).sidebarFilter).toBe(true);
-    records.set("ovis:sidebar-filter", "not json");
-    expect(loadSettings().sidebarFilter).toBe(true);
+    saveSettings({ ...loadSettings(), sidebarFilter: false });
+    expect(loadSettings().sidebarFilter).toBe(false);
+    expect(sanitizeSettings({ sidebarFilter: "on" }).sidebarFilter).toBe(false);
+    records.set("ovis:sidebar-filter-shown", "not json");
+    expect(loadSettings().sidebarFilter).toBe(false);
+    records.delete("ovis:sidebar-filter-shown");
+    records.set("ovis:sidebar-filter", "true");
+    expect(loadSettings().sidebarFilter).toBe(false);
   });
 
-  it("keeps the history page size in its own key, out of an old tab's whole-record save", () => {
-    expect(loadSettings().historyPrompts).toBe(10);
-    saveSettings(sanitizeSettings({ historyPrompts: 50 }));
-    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("historyPrompts");
+  it("keeps the PC load choice in its own key, out of an old tab's whole-record save, and unchosen until chosen", () => {
+    expect(loadSettings().pcLoad).toBeNull();
+    saveSettings(sanitizeSettings({ pcLoad: false }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("pcLoad");
     oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
-    expect(loadSettings().historyPrompts).toBe(50);
+    expect(loadSettings().pcLoad).toBe(false);
     expect(loadSettings().terminalFontSize).toBe(18);
-    records.set("ovis:history-prompts", "12");
-    expect(loadSettings().historyPrompts).toBe(10);
-    records.set("ovis:history-prompts", "not json");
-    expect(loadSettings().historyPrompts).toBe(10);
+    saveSettings({ ...loadSettings(), pcLoad: null });
+    expect(loadSettings().pcLoad).toBeNull();
+    records.set("ovis:pc-load", "not json");
+    expect(loadSettings().pcLoad).toBeNull();
+  });
+
+  it("keeps the phone's agent inbox choice in its own key, out of an old tab's whole-record save, and unchosen until chosen", () => {
+    expect(loadSettings().phoneInbox).toBeNull();
+    for (const phoneInbox of [true, false]) {
+      saveSettings(sanitizeSettings({ phoneInbox }));
+      expect(records.get(PHONE_INBOX_STORAGE_KEY)).toBe(JSON.stringify(phoneInbox));
+      expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("phoneInbox");
+      oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+      expect(loadSettings().phoneInbox).toBe(phoneInbox);
+      expect(loadSettings().terminalFontSize).toBe(18);
+    }
+    saveSettings({ ...loadSettings(), phoneInbox: null });
+    expect(records.get(PHONE_INBOX_STORAGE_KEY)).toBe("null");
+    expect(loadSettings().phoneInbox).toBeNull();
+    records.set(PHONE_INBOX_STORAGE_KEY, "\"true\"");
+    expect(loadSettings().phoneInbox).toBeNull();
+    records.delete(PHONE_INBOX_STORAGE_KEY);
+    putOld({ ...JSON.parse(records.get(main) ?? "{}"), phoneInbox: true });
+    expect(loadSettings().phoneInbox).toBeNull();
+  });
+
+  it("keeps the agent groups off until chosen, in keys of their own, out of an old tab's whole-record save", () => {
+    expect(loadSettings()).toMatchObject({ agentGroups: false, agentGroupSort: "wait" });
+    saveSettings(sanitizeSettings({ agentGroups: true, agentGroupSort: "name" }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("agentGroups");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings()).toMatchObject({ agentGroups: true, agentGroupSort: "name", terminalFontSize: 18 });
+    expect(SETTING_SCOPE.agentGroups).toBe("device");
+    expect(sanitizeSettings({ agentGroups: "on", agentGroupSort: "oldest" })).toMatchObject({ agentGroups: false, agentGroupSort: "wait" });
+  });
+
+  it("keeps the speech recognition in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().voiceEngine).toBe("auto");
+    saveSettings(sanitizeSettings({ voiceEngine: "browser" }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("voiceEngine");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().voiceEngine).toBe("browser");
+    expect(loadSettings().terminalFontSize).toBe(18);
+    records.set("ovis:voice-engine", "not json");
+    expect(loadSettings().voiceEngine).toBe("auto");
+  });
+
+  it("keeps the file text size in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().fileFontSize).toBeNull();
+    saveSettings(sanitizeSettings({ fileFontSize: 20 }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("fileFontSize");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().fileFontSize).toBe(20);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), fileFontSize: null });
+    expect(loadSettings().fileFontSize).toBeNull();
+    records.set("ovis:file-font-size", "\"20\"");
+    expect(loadSettings().fileFontSize).toBeNull();
+    records.set("ovis:file-font-size", "not json");
+    expect(loadSettings().fileFontSize).toBeNull();
+    const base = { size: 20, chat: 16, ui: 14 };
+    saveSettings(sanitizeSettings({ fileFontSize: 20, fileFontBase: base }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("fileFontBase");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings()).toMatchObject({ fileFontSize: 20, fileFontBase: base });
+    records.set("ovis:file-font-size", "22");
+    expect(loadSettings()).toMatchObject({ fileFontSize: 22, fileFontBase: null });
+    saveSettings({ ...loadSettings(), fileFontSize: null, fileFontBase: base });
+    expect(records.get("ovis:file-font-base")).toBe("null");
+  });
+
+  it("keeps Pictures in the terminal in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalImages).toBe(null);
+    saveSettings(sanitizeSettings({ terminalImages: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalImages");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalImages).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), terminalImages: false });
+    expect(loadSettings().terminalImages).toBe(false);
+    records.set("ovis:terminal-pictures", "\"true\"");
+    expect(loadSettings().terminalImages).toBe(null);
+  });
+
+  it("reads an earlier version's pictures key as a choice only when it says on", () => {
+    records.set("ovis:terminal-images", "false");
+    expect(loadSettings().terminalImages).toBe(null);
+    records.set("ovis:terminal-images", "true");
+    expect(loadSettings().terminalImages).toBe(true);
+    records.set("ovis:terminal-pictures", "false");
+    expect(loadSettings().terminalImages).toBe(false);
+  });
+
+  it("keeps a reset of pictures after an earlier version's on", () => {
+    records.set("ovis:terminal-images", "true");
+    expect(loadSettings().terminalImages).toBe(true);
+    saveSettings({ ...loadSettings(), terminalImages: null });
+    expect(loadSettings().terminalImages).toBe(null);
+  });
+
+  it("keeps the terminal's Attach files button in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalAttachButton).toBe(false);
+    saveSettings(sanitizeSettings({ terminalAttachButton: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalAttachButton");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalAttachButton).toBe(true);
+    saveSettings({ ...loadSettings(), terminalAttachButton: false });
+    expect(loadSettings().terminalAttachButton).toBe(false);
+    records.set("ovis:terminal-attach-button", "\"true\"");
+    expect(loadSettings().terminalAttachButton).toBe(false);
+  });
+
+  it("keeps Fold the key bar in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalFoldKeyBar).toBe(false);
+    saveSettings(sanitizeSettings({ terminalFoldKeyBar: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalFoldKeyBar");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalFoldKeyBar).toBe(true);
+    saveSettings({ ...loadSettings(), terminalFoldKeyBar: false });
+    expect(loadSettings().terminalFoldKeyBar).toBe(false);
+    records.set("ovis:terminal-fold-key-bar", "\"true\"");
+    expect(loadSettings().terminalFoldKeyBar).toBe(false);
+  });
+
+  it("keeps the imported themes in their own key, out of an old tab's whole-record save, and their rows for the first frame", () => {
+    const read = readThemeFile(JSON.stringify({ name: "Night", dark: { base00: "#101418", base05: "#d0d8e0" } }));
+    if (!("theme" in read)) throw new Error("the fixture is no theme");
+    const custom = withTheme(NO_CUSTOM_THEMES, read.theme, "dark")!;
+    expect(loadSettings().customThemes).toBe(NO_CUSTOM_THEMES);
+    saveSettings({ ...loadSettings(), customThemes: custom });
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("customThemes");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().customThemes).toEqual(custom);
+    records.set(CUSTOM_THEMES_STORAGE_KEY, "{not json");
+    expect(loadSettings().customThemes).toBe(NO_CUSTOM_THEMES);
+
+    saveBootRows(NO_CUSTOM_THEMES);
+    expect(records.has(CUSTOM_ROWS_STORAGE_KEY)).toBe(false);
+    saveBootRows(custom);
+    expect(JSON.parse(records.get(CUSTOM_ROWS_STORAGE_KEY) ?? "{}")).toEqual({ dark: customRow(read.theme, "dark") });
+    saveBootRows({ ...custom, dark: null });
+    expect(records.has(CUSTOM_ROWS_STORAGE_KEY)).toBe(false);
+  });
+
+  it("keeps Keyboard only from the key bar in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalKeyboardOnRequest).toBe(false);
+    saveSettings(sanitizeSettings({ terminalKeyboardOnRequest: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalKeyboardOnRequest");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalKeyboardOnRequest).toBe(true);
+    saveSettings({ ...loadSettings(), terminalKeyboardOnRequest: false });
+    expect(loadSettings().terminalKeyboardOnRequest).toBe(false);
+    records.set("ovis:terminal-keyboard-on-request", "\"true\"");
+    expect(loadSettings().terminalKeyboardOnRequest).toBe(false);
   });
 
   it("keeps the composer's Artifacts chip in its own key, out of an old tab's whole-record save", () => {
@@ -154,8 +324,17 @@ describe("saved theme migration", () => {
     expect(loadSettings().composerArtifacts).toBe(false);
   });
 
-  it("keeps Expand thinking and Collapse work in keys of their own, out of an old tab's whole-record save", () => {
-    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"]] as const) {
+  it("keeps the composer's Paste and send button in its own key, out of an old tab's whole-record save (#2493)", () => {
+    saveSettings(sanitizeSettings({ composerPasteSend: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("composerPasteSend");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().composerPasteSend).toBe(true);
+    records.set("ovis:composer-paste-send", "\"true\"");
+    expect(loadSettings().composerPasteSend).toBe(false);
+  });
+
+  it("keeps Expand thinking, Collapse work and Files beside the pane in keys of their own, out of an old tab's whole-record save", () => {
+    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"], ["filesPanel", "ovis:files-panel"]] as const) {
       expect(loadSettings()[key]).toBe(false);
       saveSettings(sanitizeSettings({ [key]: true }));
       expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty(key);
@@ -169,6 +348,19 @@ describe("saved theme migration", () => {
       records.set(stored, "not json");
       expect(loadSettings()[key]).toBe(false);
     }
+  });
+
+  it("keeps Reuse tab for external links in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().reuseExternalLinkTab).toBe(false);
+    saveSettings(sanitizeSettings({ reuseExternalLinkTab: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("reuseExternalLinkTab");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().reuseExternalLinkTab).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), reuseExternalLinkTab: false });
+    expect(loadSettings().reuseExternalLinkTab).toBe(false);
+    records.set("ovis:reuse-external-link-tab", "\"true\"");
+    expect(loadSettings().reuseExternalLinkTab).toBe(false);
   });
 
   it("survives repeated stale saves from an already-open old tab (f1)", () => {
@@ -216,6 +408,71 @@ describe("saved theme migration", () => {
     expect(terminalTheme(entry.mode, entry.id)).toEqual(entry.terminal);
   });
 
+  it("holds the page's surface under an imported row until the stylesheet is there, though the row sets --bg itself", () => {
+    const props = new Map<string, string>();
+    const root = { lang: "", dataset: {}, style: { colorScheme: "", backgroundColor: "", setProperty: (name: string, value: string) => { props.set(name, value); }, removeProperty: (name: string) => { if (name === "background-color") root.style.backgroundColor = ""; else props.delete(name); } } };
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: root, querySelector: () => null } });
+    const read = readThemeFile(JSON.stringify({ name: "Night", dark: { base00: "#101418", base05: "#d0d8e0" } }));
+    if (!("theme" in read)) throw new Error("the fixture is no theme");
+    const row = customRow(read.theme, "dark");
+    const settings = sanitizeSettings({ theme: "dark" });
+    const withSheet = (loaded: boolean, run: () => void): void => {
+      const saved = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+      Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: (name: string) => props.get(name) ?? (loaded && name === "--pdf-page" ? "#ffffff" : "") }) });
+      try { run(); } finally {
+        if (saved) Object.defineProperty(globalThis, "getComputedStyle", saved);
+        else Reflect.deleteProperty(globalThis, "getComputedStyle");
+      }
+    };
+    withSheet(false, () => applyToDocument(settings, row, "en"));
+    expect(props.get("--bg")).toBe("#101418");
+    expect(root.style.backgroundColor).toBe("#101418");
+    withSheet(true, () => applyToDocument(settings, row, "en"));
+    expect(root.style.backgroundColor).toBe("");
+  });
+
+  it("scales a file's text by the chat's size until it has its own, its source only once chosen", () => {
+    const props = new Map<string, string>();
+    const root = { lang: "", dataset: {}, style: { colorScheme: "", setProperty: (name: string, value: string) => { props.set(name, value); }, removeProperty: (name: string) => { props.delete(name); } } };
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: root, querySelector: () => null } });
+    const apply = (raw: Record<string, unknown>): void => {
+      const settings = sanitizeSettings(raw);
+      withComputedBg("#000", () => applyToDocument(settings, themeFor(settings, "dark"), "en"));
+    };
+    apply({ chatFontSize: 21 });
+    expect(props.get("--file-scale")).toBe(props.get("--chat-scale"));
+    expect(props.get("--file-scale")).toBe("1.5");
+    expect(props.has("--file-source-scale")).toBe(false);
+    apply({ chatFontSize: 21, fileFontSize: 28 });
+    expect(props.get("--chat-scale")).toBe("1.5");
+    expect(props.get("--file-scale")).toBe(String(24 / 14));
+    expect(props.get("--file-source-scale")).toBe(String(24 / 21));
+    apply({ chatFontSize: 21, fileFontSize: 21 });
+    expect(props.get("--file-source-scale")).toBe("1");
+    apply({ chatFontSize: 21, fileFontSize: 20 });
+    expect(Number(props.get("--file-source-scale"))).toBeLessThan(1);
+    apply({ chatFontSize: 11, fileFontSize: 12 });
+    expect(Number(props.get("--file-source-scale"))).toBeGreaterThan(1);
+    const base = { size: 24, chat: 21, ui: 14 };
+    apply({ chatFontSize: 21, fileFontSize: 24, fileFontBase: base });
+    const chosen = props.get("--file-source-scale");
+    apply({ chatFontSize: 11, fileFontSize: 24, fileFontBase: base });
+    expect(props.get("--file-source-scale")).toBe(chosen);
+    apply({ chatFontSize: 24, fileFontSize: 24, fileFontBase: base });
+    expect(props.get("--file-source-scale")).toBe(chosen);
+    const source = (): number => Number(props.get("--ui-scale")) * Number(props.get("--file-source-scale"));
+    apply({ uiFontSize: 14, chatFontSize: 21, fileFontSize: 24, fileFontBase: base });
+    const kept = source();
+    apply({ uiFontSize: 21, chatFontSize: 21, fileFontSize: 24, fileFontBase: base });
+    expect(source()).toBeCloseTo(kept, 12);
+    apply({ uiFontSize: 11, fileFontSize: 24, fileFontBase: base });
+    expect(source()).toBeCloseTo(kept, 12);
+    apply({ chatFontSize: 21, fileFontSize: 20, fileFontBase: base });
+    expect(props.get("--file-source-scale")).toBe(String(20 / 21));
+    apply({ chatFontSize: 21 });
+    expect(props.has("--file-source-scale")).toBe(false);
+  });
+
   it("keeps the row's surface on the root until a stylesheet owns it, following later themes", () => {
     const style = {
       colorScheme: "", backgroundColor: "#fffaf3", setProperty() {}, removeProperty(name: string) { if (name === "background-color") style.backgroundColor = ""; },
@@ -223,13 +480,11 @@ describe("saved theme migration", () => {
     const root = { lang: "", dataset: {}, style };
     Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: root, querySelector: () => null } });
     const light = sanitizeSettings({ theme: "light", lightTheme: "rose-pine-dawn", darkTheme: "kanagawa" });
-    // the stylesheet failed: nothing defines --bg, so the boot surface stays, on whichever row is drawn
     withComputedBg("", () => applyToDocument(light, themeFor(light, "light"), "en"));
     expect(style.backgroundColor).toBe(themeFor(light, "light").bg);
     const dark = { ...light, theme: "dark" as const };
     withComputedBg("", () => applyToDocument(dark, themeFor(dark, "dark"), "en"));
     expect(style.backgroundColor).toBe(themeFor(dark, "dark").bg);
-    // a stylesheet that owns the surface takes it back
     withComputedBg(" #1f1f28", () => applyToDocument(dark, themeFor(dark, "dark"), "en"));
     expect(style.backgroundColor).toBe("");
   });
@@ -262,11 +517,74 @@ it("leaves herdr's focus alone until this device asks to follow it, and keeps th
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("followHerdrFocus");
 });
 
-it("keeps the composer's New tab button off until this device turns it on, and keeps that choice its own", () => {
-  expect(sanitizeSettings({}).composerNewTabButton).toBe(false);
-  expect(sanitizeSettings({ composerNewTabButton: true }).composerNewTabButton).toBe(true);
-  expect(sanitizeSettings({ composerNewTabButton: "true" }).composerNewTabButton).toBe(false);
-  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("composerNewTabButton");
+it("drops the rows-and-columns choice an older version stored: the split view always takes rows and columns", () => {
+  expect(sanitizeSettings({ splitGrid: false })).not.toHaveProperty("splitGrid");
+});
+
+it("keeps a Codex pane's drag Ovis's until this device hands it to Codex, and keeps that choice its own", () => {
+  expect(DEFAULT_SETTINGS.codexDrag).toBe(false);
+  expect(sanitizeSettings({}).codexDrag).toBe(false);
+  expect(sanitizeSettings({ codexDrag: true }).codexDrag).toBe(true);
+  expect(sanitizeSettings({ codexDrag: "true" }).codexDrag).toBe(false);
+  expect(SETTING_SCOPE.codexDrag).toBe("device");
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("codexDrag");
+});
+
+it("keeps the sidebar's hover peek off until this device turns it on, and keeps that choice its own", () => {
+  expect(DEFAULT_SETTINGS.sidebarPeek).toBe(false);
+  expect(sanitizeSettings({}).sidebarPeek).toBe(false);
+  expect(sanitizeSettings({ sidebarPeek: true }).sidebarPeek).toBe(true);
+  expect(sanitizeSettings({ sidebarPeek: "true" }).sidebarPeek).toBe(false);
+  expect(SETTING_SCOPE.sidebarPeek).toBe("device");
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("sidebarPeek");
+});
+
+it("keeps the phone's agent inbox off until this device turns it on, and keeps that choice its own", () => {
+  expect(DEFAULT_SETTINGS.phoneInbox).toBeNull();
+  expect(sanitizeSettings({}).phoneInbox).toBeNull();
+  for (const phoneInbox of ["true", 1, null]) expect(sanitizeSettings({ phoneInbox }).phoneInbox).toBeNull();
+  expect(sanitizeSettings({ phoneInbox: true }).phoneInbox).toBe(true);
+  expect(sanitizeSettings({ phoneInbox: false }).phoneInbox).toBe(false);
+  expect(phoneInboxOn({ phoneInbox: null })).toBe(false);
+  expect(phoneInboxOn({ phoneInbox: false })).toBe(false);
+  expect(phoneInboxOn({ phoneInbox: true })).toBe(true);
+  expect(SETTING_SCOPE.phoneInbox).toBe("device");
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("phoneInbox");
+});
+
+it("keeps herdr's prefix keys off until this device turns them on, and keeps that choice its own", () => {
+  expect(sanitizeSettings({}).herdrPrefixKeys).toBe(false);
+  expect(sanitizeSettings({ herdrPrefixKeys: true }).herdrPrefixKeys).toBe(true);
+  expect(sanitizeSettings({ herdrPrefixKeys: "true" }).herdrPrefixKeys).toBe(false);
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("herdrPrefixKeys");
+});
+
+it("keeps background workspaces in place until this device turns their part on, and keeps that choice its own", () => {
+  expect(DEFAULT_SETTINGS.sidebarBackgroundWorkspaces).toBe(false);
+  expect(sanitizeSettings({}).sidebarBackgroundWorkspaces).toBe(false);
+  expect(sanitizeSettings({ sidebarBackgroundWorkspaces: true }).sidebarBackgroundWorkspaces).toBe(true);
+  expect(sanitizeSettings({ sidebarBackgroundWorkspaces: "true" }).sidebarBackgroundWorkspaces).toBe(false);
+  expect(SETTING_SCOPE.sidebarBackgroundWorkspaces).toBe("device");
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("sidebarBackgroundWorkspaces");
+});
+
+it("ignores what was saved for the rows Settings no longer has", () => {
+  const settings = sanitizeSettings({ historyPrompts: 50, composerNewTabButton: true, markdownWidth: "full", alertInApp: false });
+  for (const key of ["historyPrompts", "composerNewTabButton", "markdownWidth", "alertInApp"]) expect(settings).not.toHaveProperty(key);
+  expect(telemetrySettingsSnapshot(settings).markdownWidth).toBe("readable");
+  expect(telemetrySettingsSnapshot(settings).alertInApp).toBe(true);
+});
+
+it("shows the selected PC's load until this device turns it off, however many PCs are connected", () => {
+  const pc = (state: string) => ({ state });
+  expect(sanitizeSettings({}).pcLoad).toBeNull();
+  for (const pcLoad of ["true", 1, null]) expect(sanitizeSettings({ pcLoad }).pcLoad).toBeNull();
+  expect(sanitizeSettings({ pcLoad: false }).pcLoad).toBe(false);
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected")])).toBe(true);
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected"), pc("connected")])).toBe(true);
+  expect(pcLoadOn({ pcLoad: true }, [pc("connected")])).toBe(true);
+  expect(pcLoadOn({ pcLoad: false }, [pc("connected"), pc("connected")])).toBe(false);
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("pcLoad");
 });
 
 it("keeps the composer's Artifacts chip off until this device turns it on, and keeps that choice its own", () => {
@@ -274,6 +592,13 @@ it("keeps the composer's Artifacts chip off until this device turns it on, and k
   expect(sanitizeSettings({ composerArtifacts: true }).composerArtifacts).toBe(true);
   expect(sanitizeSettings({ composerArtifacts: "true" }).composerArtifacts).toBe(false);
   expect(SETTING_SCOPE.composerArtifacts).toBe("device");
+});
+
+it("keeps the composer's Paste and send button off until this device turns it on, and keeps that choice its own (#2493)", () => {
+  expect(sanitizeSettings({}).composerPasteSend).toBe(false);
+  expect(sanitizeSettings({ composerPasteSend: true }).composerPasteSend).toBe(true);
+  expect(sanitizeSettings({ composerPasteSend: "true" }).composerPasteSend).toBe(false);
+  expect(SETTING_SCOPE.composerPasteSend).toBe("device");
 });
 
 it("keeps the chat's folds as they always started until this device chooses Expand thinking or Collapse work, and keeps that choice its own", () => {
@@ -291,7 +616,6 @@ it("keeps the screen wake lock off until this device explicitly enables it", () 
   expect(sanitizeSettings({}).keepScreenOn).toBe(false);
   expect(sanitizeSettings({ keepScreenOn: true }).keepScreenOn).toBe(true);
   expect(sanitizeSettings({ keepScreenOn: "true" }).keepScreenOn).toBe(false);
-  // the terminal's wheel speed: one report per wheel event unless chosen, whole and bounded
   expect(sanitizeSettings({}).terminalWheelSpeed).toBe(1);
   expect(sanitizeSettings({ terminalWheelSpeed: 3 }).terminalWheelSpeed).toBe(3);
   expect(sanitizeSettings({ terminalWheelSpeed: 2.6 }).terminalWheelSpeed).toBe(3);
@@ -348,7 +672,6 @@ describe("telemetry settings snapshot", () => {
       voiceInput: "on",
       voiceLanguage: "ko-KR",
       wrapCode: true,
-      markdownWidth: "full",
       paletteLight: "catppuccin",
       paletteDark: "amber",
       darkTheme: "amber",
@@ -358,7 +681,7 @@ describe("telemetry settings snapshot", () => {
     });
     const snapshot = telemetrySettingsSnapshot(settings);
 
-    expect(NOTICE_VERSION).toBe(5);
+    expect(NOTICE_VERSION).toBe(6);
     expect(snapshot).toMatchObject({
       terminalInputMode: "direct",
       theme: "light",
@@ -381,7 +704,7 @@ describe("telemetry settings snapshot", () => {
       voiceInput: "on",
       voiceLanguage: "ko-KR",
       wrapCode: true,
-      markdownWidth: "full",
+      markdownWidth: "readable",
       paletteLight: "catppuccin",
       paletteDark: "amber",
       darkTheme: "amber",
@@ -434,6 +757,12 @@ describe("telemetry settings snapshot", () => {
     for (const raw of ["private-terminal-font", "private-chat-font", "private-ui-font", "private quick reply", "private-order-account-id", "private-hidden-account-id"]) {
       expect(serialized).not.toContain(raw);
     }
+  });
+
+  it("keeps a phone's tabs under the header unless In the header was chosen", () => {
+    expect(sanitizeSettings({}).phoneTabs).toBe("row");
+    expect(sanitizeSettings({ phoneTabs: "header" }).phoneTabs).toBe("header");
+    expect(sanitizeSettings({ phoneTabs: "sheet" }).phoneTabs).toBe("row");
   });
 
   it("reports every status indicator choice in a valid snapshot", () => {
@@ -511,6 +840,40 @@ describe("clipboard from a pane", () => {
   });
 });
 
+it("leaves terminal pictures to the server until this device chooses, and keeps either choice", () => {
+  expect(sanitizeSettings({}).terminalImages).toBe(null);
+  expect(sanitizeSettings({ terminalImages: "true" }).terminalImages).toBe(null);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalImages: true })))).terminalImages).toBe(true);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalImages: false })))).terminalImages).toBe(false);
+  expect(SETTING_SCOPE.terminalImages).toBe("device");
+});
+
+it("raises the terminal's keyboard on every tap until this device asks for it only from the key bar", () => {
+  expect(sanitizeSettings({}).terminalKeyboardOnRequest).toBe(false);
+  expect(sanitizeSettings({ terminalKeyboardOnRequest: "true" }).terminalKeyboardOnRequest).toBe(false);
+  expect(sanitizeSettings({ terminalKeyboardOnRequest: true }).terminalKeyboardOnRequest).toBe(true);
+  expect(SETTING_SCOPE.terminalKeyboardOnRequest).toBe("device");
+});
+
+it("drops a stored choice for the switches that are always on now: compaction details, Markdown outline, Files' Documents tab", () => {
+  const stored = sanitizeSettings({ chatRequestDetails: false, markdownOutline: false, filesDocuments: false });
+  for (const key of ["chatRequestDetails", "markdownOutline", "filesDocuments"]) expect(stored).not.toHaveProperty(key);
+});
+
+it("keeps the key bar under the input line until this device folds it", () => {
+  expect(sanitizeSettings({}).terminalFoldKeyBar).toBe(false);
+  expect(sanitizeSettings({ terminalFoldKeyBar: "true" }).terminalFoldKeyBar).toBe(false);
+  expect(sanitizeSettings({ terminalFoldKeyBar: true }).terminalFoldKeyBar).toBe(true);
+  expect(SETTING_SCOPE.terminalFoldKeyBar).toBe("device");
+});
+
+it("draws no Attach files control in the terminal until this device turns it on", () => {
+  expect(sanitizeSettings({}).terminalAttachButton).toBe(false);
+  expect(sanitizeSettings({ terminalAttachButton: "true" }).terminalAttachButton).toBe(false);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalAttachButton: true })))).terminalAttachButton).toBe(true);
+  expect(SETTING_SCOPE.terminalAttachButton).toBe("device");
+});
+
 it("drops the folder grouping an older version stored", () => {
   expect(sanitizeSettings({ sidebarGrouping: "directory" })).not.toHaveProperty("sidebarGrouping");
 });
@@ -529,6 +892,15 @@ describe("chat font size", () => {
 
 });
 
+describe("queued messages", () => {
+  it("sends queued messages by themselves unless that was turned off", () => {
+    expect(DEFAULT_SETTINGS.autoSendQueued).toBe(true);
+    expect(sanitizeSettings({}).autoSendQueued).toBe(true);
+    expect(sanitizeSettings({ autoSendQueued: false }).autoSendQueued).toBe(false);
+    expect(sanitizeSettings({ autoSendQueued: "yes" }).autoSendQueued).toBe(true);
+  });
+});
+
 describe("chat width", () => {
   it("is the default lane until one is chosen, and accepts only the four steps", () => {
     expect(DEFAULT_SETTINGS.chatWidth).toBe("default");
@@ -542,28 +914,21 @@ describe("chat width", () => {
     const css = (name: string): string => readFileSync(join(import.meta.dir, "..", name), "utf8");
     const tokens = css("styles.css");
     expect(tokens).toContain("--content-w: 820px;");
-    // unmeasured, the lane is the Default rule's floor; the measured one is chatLaneLength's
     expect(tokens).toContain("--chat-w: var(--content-w);");
     expect(tokens).toContain(`--content-w: ${CHAT_LANE_MIN}px;`);
     const step = (name: string): string | undefined => new RegExp(`\\[data-chat-width="${name}"\\] \\{\\s*--chat-w: ([^;]+);`).exec(tokens)?.[1];
     expect(step("narrow")).toBe("var(--content-w)");
     expect(step("wide")).toBe("72rem");
     expect(step("full")).toBe("100%");
-    // the default step has no rule here: PaneTerminal writes its pane's lane on .terminal-stack, and a
-    // file viewer, outside every pane, the lane of the pane that opened it on itself (lib/chatLane.ts)
     expect(step("default")).toBeUndefined();
     // a percentage in the token would resolve against each column's own box; Full is the one
     // step that means exactly that
     expect([...tokens.matchAll(/--chat-w: ([^;]+);/g)].map((match) => match[1]).filter((value) => value?.includes("%"))).toEqual(["100%"]);
-    // one rule for both, so a change to it cannot miss the viewer
     expect(css("lib/chatLane.ts")).toContain(`setProperty("--chat-w", chatLaneLength(`);
     expect(css("components/PaneTerminal.tsx")).toContain("usePaneLane(stackRef)");
     expect(css("components/FileViewer.tsx")).toContain("useOpeningPaneLane(");
     for (const name of ["components/PaneTerminal.tsx", "components/FileViewer.tsx"]) expect(css(name)).not.toContain("chatLaneLength(");
-    // the root font size is not read in JS: the ceiling is 60rem in the length itself
     expect(css("lib/chatLane.ts")).not.toContain("chatLaneWidth(");
-    // Settings and New workspace stay on --content-w. That the chat columns share the lane is
-    // measured in the browser (scripts/ui-regression.ts), not read from the stylesheets
     for (const file of ["components/SettingsDialog.css", "components/NewSessionDialog.css"]) {
       expect(css(file)).toContain("var(--content-w)");
       expect(css(file)).not.toContain("var(--chat-w)");
@@ -577,7 +942,6 @@ describe("the default chat lane", () => {
     expect(CHAT_LANE_MAX_REM).toBe(60);
     // the pane beside a 320px sidebar in a 1280, 1440, 1680 and 1920 window
     expect([960, 1120, 1360, 1600].map((pane) => chatLaneWidth(pane))).toEqual([820, 820, 960, 960]);
-    // between the two ends it follows the pane, in whole px
     expect(chatLaneWidth(1148)).toBe(820);
     expect(chatLaneWidth(1149)).toBe(821);
     expect(chatLaneWidth(1200)).toBe(857);
@@ -601,7 +965,6 @@ describe("the default chat lane", () => {
     expect([960, 1149, 1344, 1600, 4000].map((pane) => chatLaneWidth(pane, 13))).toEqual([820, 820, 820, 820, 820]);
     // the two ends meet at 820 / 60 = 13.67px; a root just over it has a ceiling just over the floor
     expect(chatLaneWidth(4000, 14)).toBe(840);
-    // a fractional root
     expect(chatLaneWidth(4000, 17.6)).toBe(1056);
     for (const root of [13, 14, 16, 17.6, 20, 24]) {
       for (const pane of [0, 960, 1344, 1920, 4000]) {
@@ -704,7 +1067,6 @@ describe("font families", () => {
     const kept = family(long);
     expect(kept.length).toBeLessThanOrEqual(FONT_FAMILY_MAX_CHARS);
     expect(kept.startsWith('"Font Name 0", "Font Name 1"')).toBe(true);
-    // every name that made it is whole: its quotes pair up
     expect(kept.split(", ").every((name) => /^"Font Name \d+"$/.test(name))).toBe(true);
     expect(family("x".repeat(FONT_FAMILY_MAX_CHARS + 1))).toBe("");
     expect(family("x".repeat(FONT_FAMILY_MAX_CHARS))).toBe("x".repeat(FONT_FAMILY_MAX_CHARS));
@@ -748,14 +1110,12 @@ describe("alert choices", () => {
 describe("quick replies", () => {
   it("keep replies as typed, bounded, and show only the ones with something to send", () => {
     expect(quickReplyButtons(DEFAULT_SETTINGS)).toEqual(["continue", "yes", "no", "commit and push", "retry"]);
-    // a trailing space is the next word being typed: it stays
     const typed = sanitizeSettings({ quickReplies: ["run the ", "", "  ", 7, "ship it"] });
     expect(typed.quickReplies).toEqual(["run the ", "", "  ", "ship it"]);
     expect(quickReplyButtons(typed)).toEqual(["run the ", "ship it"]);
     const many = sanitizeSettings({ quickReplies: Array.from({ length: 20 }, (_, index) => "x".repeat(300) + index) });
     expect(many.quickReplies).toHaveLength(QUICK_REPLIES_MAX);
     expect(many.quickReplies.every((reply) => reply.length === QUICK_REPLY_MAX_CHARS)).toBe(true);
-    // an emptied list is a choice, not a broken record
     expect(sanitizeSettings({ quickReplies: [] }).quickReplies).toEqual([]);
     expect(sanitizeSettings({}).quickReplies).toEqual(DEFAULT_SETTINGS.quickReplies);
   });
@@ -766,7 +1126,6 @@ describe("microphone button", () => {
     expect(DEFAULT_SETTINGS.voiceInput).toBe("auto");
     expect(sanitizeSettings({}).voiceInput).toBe("auto");
     for (const voiceInput of VOICE_BUTTONS) expect(sanitizeSettings({ voiceInput }).voiceInput).toBe(voiceInput);
-    // the old toggle: on was a choice, off was also what an untouched device stored
     expect(sanitizeSettings({ voiceInput: true }).voiceInput).toBe("on");
     expect(sanitizeSettings({ voiceInput: false }).voiceInput).toBe("auto");
     for (const voiceInput of [null, 1, "yes", "ON"]) expect(sanitizeSettings({ voiceInput }).voiceInput).toBe("auto");
@@ -777,6 +1136,13 @@ describe("microphone button", () => {
     expect(sanitizeSettings({}).voiceLanguage).toBe("auto");
     for (const voiceLanguage of DICTATION_LANGUAGES) expect(sanitizeSettings({ voiceLanguage }).voiceLanguage).toBe(voiceLanguage);
     for (const voiceLanguage of [null, 1, "", "hu", "hu-hu", "xx-XX", "auto "]) expect(sanitizeSettings({ voiceLanguage }).voiceLanguage).toBe("auto");
+  });
+
+  it("keeps the chosen speech recognition per device, auto until one is chosen", () => {
+    expect(DEFAULT_SETTINGS.voiceEngine).toBe("auto");
+    expect(SETTING_SCOPE.voiceEngine).toBe("device");
+    for (const voiceEngine of VOICE_ENGINES) expect(sanitizeSettings({ voiceEngine }).voiceEngine).toBe(voiceEngine);
+    for (const voiceEngine of [null, 1, "", "openai", "Browser"]) expect(sanitizeSettings({ voiceEngine }).voiceEngine).toBe("auto");
   });
 
   it("is asked for in the chat off a phone on auto, everywhere when on and nowhere when off", () => {
@@ -822,7 +1188,6 @@ describe("language", () => {
 describe("palette", () => {
   it("defaults to codex, and reads a record from before palettes as amber, the look it had", () => {
     expect(DEFAULT_SETTINGS.palette).toBe("codex");
-    // settings stored before palettes existed carry no palette key
     expect(sanitizeSettings({ theme: "light" }).palette).toBe("amber");
     expect(sanitizeSettings({ palette: "charcoal" }).palette).toBe("charcoal");
     expect(sanitizeSettings({ palette: "catppuccin" }).palette).toBe("catppuccin");
@@ -840,12 +1205,9 @@ describe("palette", () => {
     expect(sanitizeSettings({ ...reloaded, theme: "light" }).palette).toBe("catppuccin");
   });
 
-  // Every check below iterates the supported entries of src/lib/themes.generated.ts and reads each value from
-  // src/styles.css through the theme parser, never from generated data, so a new theme is checked with no edit here.
   const css = readFileSync(join(import.meta.dir, "..", "styles.css"), "utf8");
   const legacy = new Set([...Object.keys(baseline.combos), "catppuccin-latte/light"]);
   const entries = SUPPORTED_ENTRIES.map(({ id, mode }) => ({ id, mode, key: `${id}/${mode}` }));
-  /** Runs one entry's checks; an unreadable theme value becomes a failure naming entry and role, not a crash. */
   const checked = (failures: string[], check: () => void): void => {
     try {
       check();
@@ -867,10 +1229,8 @@ describe("palette", () => {
         const { declared, resolved } = resolveEntry(css, id, mode);
         for (const [role, kind] of Object.entries(ROLES)) {
           if (resolved[`--${role}`] === undefined) failures.push(`${key} ${role}: missing`);
-          // the legacy entries inherit from the amber blocks as they always did; a new theme falls through to nothing
           else if (!legacy.has(key) && own[`--${role}`] === undefined) failures.push(`${key} ${role}: not declared in its own block`);
           if (kind !== "shadow" || resolved[`--${role}`] === undefined) continue;
-          // a whole-value alias names another shadow; any other target is not one
           let value = declared[`--${role}`] ?? "";
           for (let alias = /^var\((--[\w-]+)\)$/.exec(value); alias?.[1]; alias = /^var\((--[\w-]+)\)$/.exec(value)) value = declared[alias[1]] ?? "";
           const shadow = parseThemeValue(key, role, value);
@@ -1002,7 +1362,6 @@ describe("palette", () => {
     for (const { id, mode, key } of entries) {
       checked(failures, () => {
         const { resolved } = resolveEntry(css, id, mode);
-        // the committed value through the theme value parser: an unexpected form is named, never a null match
         const rgba = (role: string): [Rgb, number] => {
           const raw = resolved[`--${role}`] ?? "(missing)";
           const parsed = parseThemeValue(key, role, raw);
@@ -1014,7 +1373,6 @@ describe("palette", () => {
           return [[Number(parts[1]), Number(parts[2]), Number(parts[3])], Number(parts[4])];
         };
         const color = (role: string, under: Rgb = [0, 0, 0]): Rgb => over(rgba(role), under);
-        // a field's placeholder is --text-dim on --bg-input (src/styles.css ::placeholder)
         const input = color("bg-input");
         if (ratio(color("text-dim", input), input) < 4.5) failures.push(`${key} placeholder (text-dim) on bg-input`);
         for (const surface of ["bg", "bg-panel", "bg-elevated", "bg-hover"]) {
@@ -1022,16 +1380,13 @@ describe("palette", () => {
           for (const text of ["text", "text-dim"]) {
             if (ratio(color(text, ground), ground) < 4.5) failures.push(`${key} ${text} on ${surface}`);
           }
-          // a status badge: its color on its tint, over a (hovered or selected) row
           for (const state of ["working", "blocked", "done"]) {
             const backdrop = over(rgba(`status-${state}-tint`), ground);
             if (ratio(color(`status-${state}`, backdrop), backdrop) < 4.5) failures.push(`${key} ${state} badge on ${surface}`);
           }
         }
-        // a primary control's label on its own fill (.btn-primary)
         const fill = color("primary");
         if (ratio(color("primary-text", fill), fill) < 4.5) failures.push(`${key} primary-text on primary`);
-        // highlighted code sits on the panel (a file preview) or an elevated card (a chat code block)
         for (const surface of ["bg-panel", "bg-elevated"]) {
           const ground = color(surface);
           for (const token of ["function", "keyword", "string", "number", "type", "variable", "meta"]) {
@@ -1064,6 +1419,11 @@ it("sanitizes input modes and shortcut overrides without accepting arbitrary com
   expect(sanitizeSettings({ terminalInputMode: "bad" }).terminalInputMode).toBe("auto");
   expect(sanitizeSettings({ terminalInputMode: "line" }).terminalInputMode).toBe("line");
   expect(sanitizeSettings({ shortcutOverrides: { palette: "p", settings: null, voice: "x", unknown: "x", "next-pane": "rm -rf" } }).shortcutOverrides).toEqual({ palette: "p", settings: null });
+});
+
+it("resets Theme to the theme a fresh device starts on, so Reset never shows on a fresh device or turns a light OS dark", () => {
+  const fresh = storedAppearance(readStoredAppearance(() => ({ getItem: () => null })));
+  expect(DEFAULT_SETTINGS.theme).toBe(fresh.theme);
 });
 
 describe("key bar settings", () => {
@@ -1110,19 +1470,19 @@ it("keeps the file viewer's wrap setting only when it is a boolean", () => {
   expect(sanitizeSettings({ wrapCode: "yes" }).wrapCode).toBe(false);
 });
 
-it("keeps the Markdown preview's width to readable or full, readable by default", () => {
-  expect(DEFAULT_SETTINGS.markdownWidth).toBe("readable");
-  for (const width of MARKDOWN_WIDTHS) expect(sanitizeSettings({ markdownWidth: width }).markdownWidth).toBe(width);
-  for (const bad of ["narrow", "medium", "wide", "", null, 80]) expect(sanitizeSettings({ markdownWidth: bad }).markdownWidth).toBe("readable");
-});
-
 it("keeps where web links open to a tab or the panel, a tab by default", () => {
   expect(DEFAULT_SETTINGS.webLinks).toBe("tab");
+  expect(DEFAULT_SETTINGS.reuseExternalLinkTab).toBe(false);
   expect(DEFAULT_SETTINGS.fileOpen).toBe("popup");
+  expect(DEFAULT_SETTINGS.filesPanel).toBe(false);
+  expect(sanitizeSettings({ filesPanel: true }).filesPanel).toBe(true);
+  for (const bad of ["true", 1, null]) expect(sanitizeSettings({ filesPanel: bad }).filesPanel).toBe(false);
   expect(sanitizeSettings({ fileOpen: "panel" }).fileOpen).toBe("panel");
   for (const bad of ["tab", "", null, true]) expect(sanitizeSettings({ fileOpen: bad }).fileOpen).toBe("popup");
   expect(sanitizeSettings({ webLinks: "panel" }).webLinks).toBe("panel");
   for (const bad of ["popup", "", null, true]) expect(sanitizeSettings({ webLinks: bad }).webLinks).toBe("tab");
+  expect(sanitizeSettings({ reuseExternalLinkTab: true }).reuseExternalLinkTab).toBe(true);
+  for (const bad of ["true", 1, null]) expect(sanitizeSettings({ reuseExternalLinkTab: bad }).reuseExternalLinkTab).toBe(false);
   // an agent's start mode never widens by accident: anything unknown starts it with no flag
   expect(DEFAULT_SETTINGS.claudeLaunchMode).toBe("default");
   expect(DEFAULT_SETTINGS.codexLaunchMode).toBe("default");
@@ -1131,6 +1491,15 @@ it("keeps where web links open to a tab or the panel, a tab by default", () => {
     expect(sanitizeSettings({ claudeLaunchMode: bad }).claudeLaunchMode).toBe("default");
     expect(sanitizeSettings({ codexLaunchMode: bad }).codexLaunchMode).toBe("default");
   }
+  expect(DEFAULT_SETTINGS).toMatchObject({ claudeLaunchModel: "", claudeLaunchEffort: "", codexLaunchModel: "", codexLaunchEffort: "" });
+  expect(sanitizeSettings({ claudeLaunchModel: "opus", claudeLaunchEffort: "max", codexLaunchModel: "gpt-5-codex", codexLaunchEffort: "ultra" }))
+    .toMatchObject({ claudeLaunchModel: "opus", claudeLaunchEffort: "max", codexLaunchModel: "gpt-5-codex", codexLaunchEffort: "ultra" });
+  for (const bad of ["opus --verbose", "-p", " ", 1, null, ["opus"]]) {
+    expect(sanitizeSettings({ claudeLaunchModel: bad }).claudeLaunchModel).toBe("");
+    expect(sanitizeSettings({ codexLaunchModel: bad }).codexLaunchModel).toBe("");
+  }
+  for (const bad of ["ultra", "ultracode", "High", "", null, 3]) expect(sanitizeSettings({ claudeLaunchEffort: bad }).claudeLaunchEffort).toBe("");
+  for (const bad of ["minimal", "High", null]) expect(sanitizeSettings({ codexLaunchEffort: bad }).codexLaunchEffort).toBe("");
 });
 
 describe("shared settings", () => {
@@ -1138,6 +1507,22 @@ describe("shared settings", () => {
     const shared = Object.entries(SETTING_SCOPE).filter(([, scope]) => scope === "shared").map(([key]) => key).sort();
     expect([...SHARED_SETTING_KEYS].sort() as string[]).toEqual(shared);
     expect(Object.keys(SETTING_SCOPE).sort()).toEqual(Object.keys(DEFAULT_SETTINGS).sort());
+  });
+
+  it("locks no agent until one is locked, and keeps only distinct pin keys (#2432)", () => {
+    expect(DEFAULT_SETTINGS.agentLocks).toBe(false);
+    expect(SETTING_SCOPE.agentLocks).toBe("shared");
+    expect(DEFAULT_SETTINGS.lockedAgents).toEqual([]);
+    expect(SETTING_SCOPE.lockedAgents).toBe("shared");
+    expect(sanitizeSettings({ lockedAgents: ["local:p1", 3, "", "local:p1", "pc:w1:p2"] }).lockedAgents).toEqual(["local:p1", "pc:w1:p2"]);
+    expect(sanitizeSettings({ lockedAgents: "local:p1" }).lockedAgents).toEqual([]);
+  });
+
+  it("draws no named agent group until one is turned on, shared by every browser (#2431)", () => {
+    expect(DEFAULT_SETTINGS.agentNamedGroups).toBe(false);
+    for (const key of ["agentNamedGroups", "agentGroupNames", "agentGroupOf"] as const) expect(SETTING_SCOPE[key]).toBe("shared");
+    const kept = sanitizeSettings({ agentNamedGroups: true, agentGroupNames: ["Tasks", "", "Tasks"], agentGroupOf: { "local:p1": "Tasks", "local:p2": 1 } });
+    expect([kept.agentNamedGroups, kept.agentGroupNames, kept.agentGroupOf]).toEqual([true, ["Tasks"], { "local:p1": "Tasks" }]);
   });
 });
 

@@ -13,8 +13,9 @@ import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
 import { inAndroidApp } from "../lib/nativeApp.ts";
+import { useSettings } from "../lib/settings.ts";
+import { openExternal } from "../lib/externalLink.ts";
 
-/** The rendered Markdown link a long press landed on; null for a mouse's menu or anything else. */
 export function pressedLink(event: MouseEvent): HTMLAnchorElement | null {
   // Android ends a dragged text selection with a contextmenu typed "mouse": that is the selection's, not the link's
   if ((event as Partial<PointerEvent>).pointerType === "mouse") return null;
@@ -32,6 +33,7 @@ function hostOf(href: string): string {
 
 export function MarkdownLinkMenu() {
   const t = useT();
+  const { settings } = useSettings();
   const [pressed, setPressed] = useState<{ link: HTMLAnchorElement; point: { x: number; y: number } } | null>(null);
   const close = useCallback(() => setPressed(null), []);
   useEffect(() => {
@@ -50,16 +52,13 @@ export function MarkdownLinkMenu() {
   const { link, point } = pressed;
   const href = link.href;
   const text = link.textContent?.trim() ?? "";
-  // a bare address would only be cut in the title: its host names it there, and it is whole under
-  // it. Markdown links any address it reads, one no URL parser takes (port 99999) included
+  // Markdown links any address it reads, one no URL parser takes (port 99999) included
   const title = text !== "" && text !== href ? text : hostOf(href) || href;
   const items: RowMenuItem[] = [
     { id: "copy", label: t("Copy link"), icon: Link2, run: () => { void copyText(href); } },
-    // a tap's own way (the pane's web panel, or the phone's browser); a link the chat has since
-    // taken off the page cannot be clicked, so its address opens as a new window would
     { id: "open", label: t("Open link"), icon: ExternalLink, run: () => {
       if (link.isConnected) link.click();
-      else window.open(href, "_blank", "noopener,noreferrer");
+      else openExternal(href, "link", settings.reuseExternalLinkTab);
     } },
     ...(typeof navigator.share === "function" ? [{ id: "share", label: t("Share link"), icon: Share2, run: () => {
       // the share sheet rejects when the user closes it: nothing to tell them

@@ -63,6 +63,9 @@
   --indicator-unknown: #6c7086;
   /* a note that the view is partial (a file cut short, code left plain): warning yellow */
   --notice: #e8c55c;
+  /* the quiet surface under a row or banner that needs the user: --notice mixed over --bg-panel, 12% in dark and
+     6% in light, rounded once to an opaque colour so --notice stays 4.5:1 text on it (DESIGN.md, Notice tint) */
+  --notice-tint: #312b1c;
 
   /* overlays */
   --scrim: rgba(8, 6, 4, 0.55);
@@ -108,7 +111,7 @@
   --font-mono: "Symbols Nerd Font Mono", "JetBrains Mono Web", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "D2Coding", monospace;
   /* Settings → Appearance → Interface font size: the chosen body size over the density's (lib/settings.ts
      writes it on <html>). Every size below is the scale at 1, except --fs-input: the floor under which
-     iOS Safari zooms a focused field stays a floor */
+     iOS Safari zooms a focused field stays a floor (.input and .select take it only while armed on iOS) */
   --ui-scale: 1;
   --fs-2xs: calc(11px * var(--ui-scale));
   --fs-xs: calc(12px * var(--ui-scale));
@@ -118,6 +121,7 @@
   --fs-lg: calc(16px * var(--ui-scale));
   --fs-xl: calc(18px * var(--ui-scale));
   --fs-display: calc(22px * var(--ui-scale));
+  --fs-title: calc(28px * var(--ui-scale)); /* a dialog's own title over the app: the setup guide's steps */
   /* the pairing code: a size of its own, still on the density scale (compact overrides it) */
   --fs-pairing: calc(32px * var(--ui-scale));
   --fs-input: 16px; /* the one size iOS Safari does not zoom on focus */
@@ -132,6 +136,8 @@
   --tracking-tight: -0.01em;
   --tracking-display: -0.02em;
   --tracking-caps: 0.06em;
+  /* a pairing code or a key id spelled out in the mono face (the relay shell's code fields) */
+  --tracking-code: 0.12em;
 
   /* space (4px base) */
   --space-1: 4px;
@@ -146,14 +152,19 @@
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  /* a full-width call to action on such a page */
+  --radius-cta: 10px;
   --radius-xl: 16px;
   --radius-2xl: 24px;
   --radius-pill: 999px;
 
   /* sizes */
   --header-h: 52px;
+  /* the lines that divide the shell's regions (header, sidebar, status bar, the open tab): a step above
+     --border, which stays for lines inside a region */
+  --divider: var(--border-strong);
   /* the header from 769px, in either density: one line beside the sidebar's own top row */
-  --header-h-wide: 46px;
+  --header-h-wide: 42px;
   --sidebar-w: 320px;
   --control-h: 34px;
   /* what the segmented track takes from --control-h above and below an option: its padding and
@@ -188,6 +199,25 @@
   --pending-max-h: min(20dvh, 12rem);
   --palette-w: 640px;
   --palette-top: 12vh;
+  /* the hosted relay app (RelayShell, RelayDashboard and the components under them). Its own
+     geometry, so it never shrinks with the terminal sidebar's density: rows that carry an action,
+     the bottom tab bar, the columns and the one size of a control's or a tab's glyph */
+  --table-row-h: 44px;
+  --tabbar-h: 56px;
+  --relay-sidebar-w: 240px;
+  --relay-content-w: 1280px;
+  --relay-signin-w: 368px;
+  --relay-step-w: 440px;
+  --relay-step-h: 720px;
+  --relay-step-bar: 3px;
+  --relay-step-icon: 48px;
+  --relay-sheet-w: 520px;
+  --relay-detail-w: 360px;
+  --relay-table-head-h: 36px;
+  --relay-control-icon-size: 16px;
+  /* floors under a compact or user-scaled size: max(floor, role) keeps a tab label and body text readable */
+  --relay-fs-min: 11px;
+  --relay-fs-body-min: 12px;
 
   /* focus */
   --ring: 2px solid var(--accent);
@@ -222,6 +252,12 @@
   --z-palette: 35;
   --z-droplet: 40;
 
+  /* the screen's safe-area insets, for script (lib/safeArea.ts): a custom property computes env() */
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+
   /* in-app alert (components/Droplet.css): island black in either theme, so one set */
   --droplet-bg: #000;
   --droplet-text: #f5f5f7;
@@ -231,6 +267,92 @@
   --droplet-mark-bg: rgba(255, 255, 255, 0.1);
   --droplet-ring: rgba(255, 255, 255, 0.1);
   --droplet-shadow: rgba(0, 0, 0, 0.35);
+
+  /* semantic surface & navigation hierarchy roles (G-152, G-162) */
+  --surface-canvas: var(--bg);
+  --surface-chrome: var(--bg-panel);
+  --surface-raised: var(--bg-elevated);
+  --surface-overlay: var(--bg-elevated);
+  --bg-nav: var(--bg);
+
+  /* control edge, status & marker contrast roles >= 3:1 (G-028, G-074, G-148, G-194) */
+  --border-input: color-mix(in srgb, var(--text-dim) 78%, var(--border-strong));
+  --border-contrast: var(--border-strong);
+  --status-reconnecting: var(--notice);
+  --status-marker-idle: var(--text-dim);
+  --status-ink: var(--bg-panel);
+  --minimap-tick: var(--text-dim);
+  --switch-thumb-on: var(--primary);
+  --switch-track-bg: color-mix(in srgb, var(--text) 9%, transparent);
+  --breathe-min-opacity: 0.68;
+
+  /* overlay & control shadows without double border ring (G-153, G-157) */
+  --shadow-menu: 0 8px 24px rgba(0, 0, 0, 0.28);
+  --shadow-thumb: 0 1px 2px rgba(0, 0, 0, 0.18), 0 0 0 var(--hairline) color-mix(in srgb, var(--text) 10%, transparent);
+
+  /* browser surface roles: selection, caret, scrollbar (G-156) */
+  --selection-bg: color-mix(in srgb, var(--accent) 28%, transparent);
+  --selection-text: var(--text-strong);
+  --caret-color: var(--accent);
+  --scrollbar-thumb: var(--border-strong);
+  --scrollbar-track: transparent;
+
+  /* type hierarchy, reading floor & numeric roles (G-035, G-039, G-053, G-155, G-163) */
+  --fs-meta: calc(12px * var(--ui-scale));
+  --fs-reading: var(--fs-chat);
+  --fs-dense-row: var(--fs-md);
+  --fs-section-title: calc(17px * var(--ui-scale));
+  /* a list row's second line under a --fs-lg name, one step smaller at every pointer (--fs-chat reaches the
+     name's own size under a finger): the inbox mode's row words on a phone (InboxList.css) */
+  --fs-row-sub: calc(15px * var(--ui-scale));
+  --fs-h3: calc(19px * var(--ui-scale));
+  --fs-h2: calc(24px * var(--ui-scale));
+  --fs-h1: calc(30px * var(--ui-scale));
+  --lh-heading: 1.25;
+  --fw-selected: var(--fw-semibold);
+  --font-numeric: tabular-nums;
+
+  /* sub-grid spacing, radius, component size & focus/motion roles (G-051, G-076, G-133, G-153) */
+  --space-half: 2px;
+  --space-px-3: 3px;
+  --space-1-5: 6px;
+  --space-2-5: 10px;
+  --radius-xs: 4px;
+  --bar-control-h: 28px;
+  --tab-h: calc(var(--control-h) - 5px);
+  --tab-min-w: 120px;
+  --tab-max-w: 220px;
+  --tab-more-w: 52px;
+  --status-bar-h: 28px;
+  --pane-bar-h: 30px;
+  --split-hit-w: 8px;
+  --menu-w-sm: 208px;
+  --menu-w: 280px;
+  --menu-w-wide: 420px;
+  --popover-w: 360px;
+  --sheet-row-h: 48px;
+  --sheet-grip-w: 36px;
+  --sheet-grip-h: 4px;
+  --icon-size-xs: 12px;
+  --icon-size-sm: 14px;
+  --icon-size-md: 16px;
+  --dot-size-sm: 6px;
+  --thumb-w: 40px;
+  --thumb-h: 24px;
+  --dialog-w-sm: 360px;
+  --dialog-w-md: 420px;
+  --dialog-w-form: 525px;
+  --dialog-w: 560px;
+  --dialog-w-lg: 1100px;
+  --dialog-w-xl: 1400px;
+  --dialog-max-h: 720px;
+  --outline-w: 240px;
+  --file-panel-min-w: 320px;
+  --qr-size: 132px;
+  --voice-wave-h: 20px;
+  --kbd-h: 18px;
+  --btn-submit-min-w: 88px;
+  --ring-inset-offset: -2px;
 }
 
 [data-theme="light"] {
@@ -267,6 +389,7 @@
   --indicator-unknown: #9ca0b0;
   --danger-text: #8f1d1d;
   --notice: #7a5a00;
+  --notice-tint: #f2efe4;
   --scrim: rgba(40, 32, 22, 0.35);
   --shadow-drawer: 0 0 40px rgba(40, 32, 22, 0.22);
   --shadow-pop: 0 16px 48px rgba(40, 32, 22, 0.16), 0 0 0 1px var(--border);
@@ -297,11 +420,19 @@
   --syntax-type: #155a72;
   --syntax-variable: #7a5418;
   --syntax-meta: #5d4791;
+  --surface-chrome: var(--bg-elevated);
+  --surface-raised: var(--bg-panel);
+  --surface-overlay: var(--bg-input);
+  --bg-nav: var(--bg-panel);
+  --switch-thumb-on: var(--accent);
+  --switch-track-bg: color-mix(in srgb, var(--text) 6%, transparent);
+  --shadow-menu: 0 8px 24px rgba(40, 32, 22, 0.08);
 }
 
 /* Charcoal in light: plain paper with ink for the accent and the cursor */
 [data-theme="light"][data-palette="charcoal"] {
   --notice: #8a5300;
+  --notice-tint: #f3f0ea;
   --bg: #f2f2f0;
   --bg-panel: #fafaf9;
   --bg-elevated: #efefed;
@@ -355,6 +486,7 @@
    states are muted as in the terminal palette. Light is the paper block above. */
 [data-theme="dark"][data-palette="charcoal"] {
   --notice: #d9b26a;
+  --notice-tint: #2e2a21;
   --bg: #0f0f0f;
   --bg-panel: #171717;
   --bg-elevated: #1f1f1f;
@@ -426,6 +558,7 @@
   --status-done-tint: rgba(0, 108, 43, 0.12);
   --danger-tint: rgba(177, 36, 33, 0.1);
   --notice: #8a5300;
+  --notice-tint: #f2efea;
   --danger-text: #b12421;
   --scrim: rgba(26, 28, 31, 0.35);
   --term-bg: #ffffff;
@@ -488,6 +621,7 @@
   --status-done-tint: rgba(64, 201, 119, 0.14);
   --danger-tint: rgba(250, 66, 62, 0.14);
   --notice: #d9b26a;
+  --notice-tint: #353128;
   --danger-text: #ffd0ce;
   --scrim: rgba(0, 0, 0, 0.6);
   --term-bg: #181818;
@@ -520,6 +654,7 @@
    darkened until it passes AA (Mauve 17%, Red 18%, Blue 22%, Green 37%). */
 [data-theme="dark"][data-palette="catppuccin"] {
   --notice: #f9e2af;
+  --notice-tint: #333036;
   /* overlay2: --text-dim (subtext1) is nearly --text here */
   --line-number: #9399b2;
   --bg: #1e1e2e;
@@ -567,6 +702,7 @@
 [data-theme="light"][data-palette="catppuccin"],
 [data-theme="light"][data-palette="catppuccin-latte"] {
   --notice: #8a5710;
+  --notice-tint: #e0e0e2;
   /* subtext0, darkened to 4.5:1 on --bg */
   --line-number: #64677d;
   --bg: #eff1f5;
@@ -654,6 +790,7 @@
   --status-done-tint: rgba(158, 206, 106, 0.14);
   --danger-tint: rgba(252, 122, 146, 0.12);
   --notice: #e0af68;
+  --notice-tint: #322d2e;
   --danger-text: #fc7a92;
   --scrim: rgba(26, 27, 38, 0.5);
   --term-bg: #1a1b26;
@@ -702,6 +839,7 @@
   --status-done-tint: rgba(158, 206, 106, 0.14);
   --danger-tint: rgba(252, 122, 146, 0.12);
   --notice: #e0af68;
+  --notice-tint: #1b150c;
   --danger-text: #fc7a92;
   --scrim: rgba(0, 0, 0, 0.5);
   --term-bg: #000000;
@@ -748,7 +886,8 @@
   --status-blocked-tint: rgba(144, 0, 27, 0.12);
   --status-done-tint: rgba(54, 80, 19, 0.12);
   --danger-tint: rgba(144, 0, 27, 0.1);
-  --notice: #8c6c3e;
+  --notice: #674f2e;
+  --notice-tint: #dad9dc;
   --danger-text: #90001b;
   --scrim: rgba(39, 77, 171, 0.35);
   --term-bg: #e1e2e7;
@@ -812,6 +951,7 @@
   --status-done-tint: rgba(191, 195, 50, 0.14);
   --danger-tint: rgba(255, 166, 138, 0.12);
   --notice: #fabd2f;
+  --notice-tint: #413a29;
   --danger-text: #ffa68a;
   --scrim: rgba(40, 40, 40, 0.5);
   --term-bg: #282828;
@@ -858,7 +998,8 @@
   --status-blocked-tint: rgba(157, 0, 6, 0.12);
   --status-done-tint: rgba(93, 87, 0, 0.12);
   --danger-tint: rgba(157, 0, 6, 0.1);
-  --notice: #b57614;
+  --notice: #84560f;
+  --notice-tint: #f4e8bc;
   --danger-text: #9d0006;
   --scrim: rgba(60, 56, 54, 0.35);
   --term-bg: #fbf1c7;
@@ -922,6 +1063,7 @@
   --status-done-tint: rgba(152, 195, 121, 0.14);
   --danger-tint: rgba(255, 154, 161, 0.12);
   --notice: #e5c07b;
+  --notice-tint: #3f3e3d;
   --danger-text: #ff9aa1;
   --scrim: rgba(40, 44, 52, 0.5);
   --term-bg: #282c34;
@@ -968,7 +1110,8 @@
   --status-blocked-tint: rgba(165, 17, 16, 0.12);
   --status-done-tint: rgba(1, 98, 11, 0.12);
   --danger-tint: rgba(165, 17, 16, 0.1);
-  --notice: #c18401;
+  --notice: #916301;
+  --notice-tint: #f4f1eb;
   --danger-text: #a51110;
   --scrim: rgba(56, 58, 66, 0.35);
   --term-bg: #fafafa;
@@ -1031,7 +1174,8 @@
   --status-blocked-tint: rgba(255, 188, 170, 0.14);
   --status-done-tint: rgba(194, 216, 93, 0.14);
   --danger-tint: rgba(255, 188, 170, 0.12);
-  --notice: #b58900;
+  --notice: #c29300;
+  --notice-tint: #173730;
   --danger-text: #ffbcaa;
   --scrim: rgba(0, 43, 54, 0.5);
   --term-bg: #002b36;
@@ -1078,7 +1222,8 @@
   --status-blocked-tint: rgba(182, 0, 6, 0.12);
   --status-done-tint: rgba(83, 99, 0, 0.12);
   --danger-tint: rgba(182, 0, 6, 0.1);
-  --notice: #b58900;
+  --notice: #826200;
+  --notice-tint: #f6edd5;
   --danger-text: #b60006;
   --scrim: rgba(85, 106, 114, 0.35);
   --term-bg: #fdf6e3;
@@ -1142,6 +1287,7 @@
   --status-done-tint: rgba(163, 195, 151, 0.14);
   --danger-tint: rgba(255, 160, 155, 0.12);
   --notice: #c0a36e;
+  --notice-tint: #322f30;
   --danger-text: #ffa09b;
   --scrim: rgba(31, 31, 40, 0.5);
   --term-bg: #1f1f28;
@@ -1188,7 +1334,8 @@
   --status-blocked-tint: rgba(149, 0, 43, 0.12);
   --status-done-tint: rgba(59, 82, 23, 0.12);
   --danger-tint: rgba(149, 0, 43, 0.1);
-  --notice: #77713f;
+  --notice: #605c33;
+  --notice-tint: #e9e3b4;
   --danger-text: #95002b;
   --scrim: rgba(84, 84, 100, 0.35);
   --term-bg: #f2ecbc;
@@ -1252,6 +1399,7 @@
   --status-done-tint: rgba(103, 169, 198, 0.14);
   --danger-tint: rgba(245, 119, 154, 0.12);
   --notice: #f6c177;
+  --notice-tint: #342b2e;
   --danger-text: #f5779a;
   --scrim: rgba(25, 23, 36, 0.5);
   --term-bg: #191724;
@@ -1298,7 +1446,8 @@
   --status-blocked-tint: rgba(135, 58, 82, 0.12);
   --status-done-tint: rgba(22, 90, 116, 0.12);
   --danger-tint: rgba(135, 58, 82, 0.1);
-  --notice: #ea9d34;
+  --notice: #945c0f;
+  --notice-tint: #f4ebe0;
   --danger-text: #873a52;
   --scrim: rgba(70, 66, 97, 0.35);
   --term-bg: #faf4ed;
@@ -1362,6 +1511,7 @@
   --status-done-tint: rgba(80, 250, 123, 0.14);
   --danger-tint: rgba(255, 200, 200, 0.12);
   --notice: #f1fa8c;
+  --notice-tint: #404340;
   --danger-text: #ffc8c8;
   --scrim: rgba(40, 42, 54, 0.5);
   --term-bg: #282a36;
@@ -1409,6 +1559,7 @@
   --status-done-tint: rgba(200, 229, 177, 0.14);
   --danger-tint: rgba(255, 208, 215, 0.12);
   --notice: #ebcb8b;
+  --notice-tint: #454649;
   --danger-text: #ffd0d7;
   --scrim: rgba(46, 52, 64, 0.5);
   --term-bg: #2e3440;
@@ -1456,6 +1607,7 @@
   --status-done-tint: rgba(153, 255, 228, 0.14);
   --danger-tint: rgba(255, 128, 128, 0.12);
   --notice: #ffc799;
+  --notice-tint: #352f29;
   --danger-text: #ff8080;
   --scrim: rgba(16, 16, 16, 0.5);
   --term-bg: #101010;
@@ -1484,7 +1636,6 @@
   --chat-w: 72rem;
 }
 
-/* the whole pane: each column keeps its own gutter */
 [data-chat-width="full"] {
   --chat-w: 100%;
 }
@@ -1492,20 +1643,34 @@
 [data-density="compact"] {
   --fs-2xs: calc(10px * var(--ui-scale));
   --fs-xs: calc(11px * var(--ui-scale));
+  --fs-meta: calc(12px * var(--ui-scale));
   --fs-sm: calc(12px * var(--ui-scale));
   --fs-md: calc(13px * var(--ui-scale));
   --fs-chat: calc(14px * var(--ui-scale));
   --fs-lg: calc(15px * var(--ui-scale));
+  --fs-section-title: calc(16px * var(--ui-scale));
+  --fs-row-sub: calc(14px * var(--ui-scale));
   --fs-xl: calc(17px * var(--ui-scale));
+  --fs-h3: calc(18px * var(--ui-scale));
   --fs-display: calc(21px * var(--ui-scale));
+  --fs-h2: calc(23px * var(--ui-scale));
   --fs-pairing: calc(26px * var(--ui-scale));
+  --fs-h1: calc(29px * var(--ui-scale));
   --lh-base: 1.45;
   --header-h: 46px;
   --sidebar-w: 300px;
   --control-h: 32px;
   --row-h: 44px;
+  --table-row-h: 40px;
   --chip-h: 18px;
   --avatar-size: 26px;
+}
+
+/* after the density block on purpose: same specificity, and a finger gets a full row in either density */
+@media (pointer: coarse) {
+  :root {
+    --table-row-h: var(--touch-target);
+  }
 }
 
 /* after the density block on purpose: same specificity, and from 769px both densities share one
@@ -1515,8 +1680,6 @@
     --header-h: var(--header-h-wide);
   }
 }
-
-/* ---------- reset + base ---------- */
 
 * {
   box-sizing: border-box;
@@ -1537,6 +1700,21 @@ body {
   overscroll-behavior-y: contain;
 }
 
+html {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+*::selection {
+  background: var(--selection-bg);
+  color: var(--selection-text);
+}
+
+input,
+textarea,
+[contenteditable] {
+  caret-color: var(--caret-color);
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -1547,17 +1725,44 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* index.html's loading status, drawn until React's first frame replaces it (#2329): on a slow
-   link the app's script takes seconds, and a page with nothing on it looks frozen. It shows only
-   after a moment, so a fast start does not flash it. Its hidden words take a generic family no
+/* Its words are drawn, not only read out, under the ring, in a generic family no
    @font-face backs: the app's faces would otherwise download beside the app's script, on the link
    the spinner is waiting for. */
 .boot {
+  position: relative;
   display: grid;
   place-items: center;
   height: 100%;
   font-family: sans-serif;
   animation: boot-show 0s 400ms both;
+}
+
+.boot > .visually-hidden {
+  position: absolute;
+  top: calc(50% + var(--space-6));
+  left: 50%;
+  width: auto;
+  height: auto;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-family: sans-serif;
+  font-size: var(--fs-sm);
+}
+
+/* the hosted relay app's start (lib/relay/boot.ts): the mascot in its badge and nothing else, its
+   words read out only */
+.boot.relay-start > .visually-hidden {
+  top: auto;
+  left: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  transform: none;
 }
 
 .boot-spinner {
@@ -1584,8 +1789,6 @@ body {
   }
 }
 
-/* ---------- line breaking ---------- */
-
 /* The UI language is <html lang> (lib/settings.ts applyToDocument). Set on body alone so that every
    text inherits it once and no descendant sets it again: Korean keeps each word whole (keep-all
    breaks at spaces and punctuation only, never "시도하 / 세요."), Japanese and Chinese take strict
@@ -1599,29 +1802,30 @@ html:is(:lang(ja), :lang(zh)) body {
 }
 
 /* Code, keys, the terminal and the two text boxes keep the browser's breaking, and their children
-   inherit this reset: a path or a command is not a word, and xterm lays out its own cells.
-   overflow-wrap is not part of this rule; the chat's and the composer's own rules keep it. */
+   inherit this reset: a path or a command is not a word, and xterm lays out its own cells. */
 :is(pre, code, kbd, samp, .xterm, .composer-text, .composer-measure, .terminal-input-text) {
   word-break: normal;
   line-break: auto;
 }
 
-/* The two boxes' placeholders are interface copy, not typed text: Korean keeps their words whole
-   too ("넣지 않습니다", never "넣지 않 / 습니다"). The pseudo-element alone takes keep-all, so the box
-   itself, what the user types in it, and the code and terminal subtrees keep the reset above. */
 html:lang(ko) :is(.composer-text, .composer-measure, .terminal-input-text)::placeholder {
   word-break: keep-all;
 }
 
-/* A failure's folded line quotes what the PC or the browser said (lib/userError.ts): a sentence,
-   often a translated one, so it takes the interface face. The mono stack has no Hangul: Korean set
+/* What is typed in the message box is a message: Korean keeps its words whole there too, as the
+   transcript and the inline suggestion over the box do (#3374). Its measuring copy breaks the same
+   way, so the box grows to the lines drawn; a path or a command still breaks through the box's own
+   overflow-wrap: anywhere. */
+html:lang(ko) :is(.composer-text, .composer-measure) {
+  word-break: keep-all;
+}
+
+/* The mono stack has no Hangul: Korean set
    in it gets a letter-wide space between words and a period set off from its word. */
 :is([role="alert"], .composer-note-text, .composer-note-details, .chat-failure-details) > code {
   font-family: var(--font-ui);
 }
 
-/* A title that wraps takes even lines, never a full line over a one-word stub: dialog titles, the
-   empty chat's greeting and a Settings group's caption. */
 .modal-title,
 .composer-greeting-title,
 .settings-section h3 {
@@ -1638,8 +1842,6 @@ button {
   outline-offset: var(--ring-offset);
 }
 
-/* only dots pulse (connection, RUN, "Working…"): state words stay at full contrast, so the
-   trough can go deep enough to read as motion */
 @keyframes pulse {
   0%,
   100% {
@@ -1650,7 +1852,6 @@ button {
   }
 }
 
-/* read by assistive tech, not drawn: a live status that would repeat what a dot shows */
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -1663,11 +1864,7 @@ button {
   border: 0;
 }
 
-/* ---------- shell ---------- */
-
 .app {
-  /* the sidebar column's width: the one the user dragged its edge to (--sidebar-user-w, written
-     by App), else the density's; never more than half the window */
   --sidebar-shown-w: min(var(--sidebar-user-w, var(--sidebar-w)), 50vw);
   /* the docked file panel's width (FileViewer.css): the one its edge was dragged to (--file-panel-user-w,
      written by App), else min(42vw, 560px). The panel yields first to leave 320px for the pane. */
@@ -1701,16 +1898,19 @@ button {
 }
 
 .sidebar {
-  /* positioned for its resize grip (SidebarResizer.css) */
   position: relative;
   display: flex;
   flex-direction: column;
   width: var(--sidebar-shown-w);
   flex: 0 0 var(--sidebar-shown-w);
   min-height: 0;
-  background: var(--bg-panel);
-  border-right: var(--hairline) solid var(--border);
+  background: var(--bg-nav);
+  border-right: var(--hairline) solid var(--divider);
   padding-left: env(safe-area-inset-left, 0px);
+}
+
+.sidebar > .sidebar-shell {
+  background: var(--bg-nav);
 }
 
 .app.sidebar-collapsed .sidebar {
@@ -1721,11 +1921,23 @@ button {
   --sidebar-shown-w: 0px;
 }
 
+/* Settings → Show the sidebar on hover (lib/sidebarPeek.ts): the collapsed sidebar over the pane, under the
+   header, at the width it has when open; the pane keeps its width, so no pty is resized */
+.app.sidebar-collapsed .sidebar.is-peek {
+  display: flex;
+  position: fixed;
+  top: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+  bottom: 0;
+  left: 0;
+  z-index: var(--z-drawer);
+  width: min(var(--sidebar-user-w, var(--sidebar-w)), 50vw);
+  box-shadow: var(--shadow-drawer);
+}
+
 .scrim {
   display: none;
 }
 
-/* the pane and, over it, its workspace's tab strip when there is more than one pane to pick */
 .pane-column {
   display: flex;
   flex: 1 1 auto;
@@ -1734,7 +1946,6 @@ button {
   min-height: 0;
 }
 
-/* a refusal of a palette layout call, over the pane for a moment: the tab strip's own line, with no strip to sit at the end of */
 .pane-notice {
   flex: 0 0 auto;
   margin: 0;
@@ -1750,15 +1961,10 @@ button {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  /* the terminal's own colour, not the panel's: a palette may set the two apart (catppuccin),
-     and the rows the grid leaves over must not show as a band of another colour */
   background: var(--term-bg);
   padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
 
-/* the pane area: one pane, or two side by side (lib/split.ts). Each half is a pane slot with its
-   own tab strip and terminal; slot b exists only while split, and the halves keep their slots
-   when they trade sides, drawn by order */
 .pane-split {
   position: relative;
   display: flex;
@@ -1775,24 +1981,54 @@ button {
   min-height: 0;
 }
 
-.pane-slot[data-side="left"] {
-  order: 0;
+.pane-split.is-split > .pane-slot {
+  position: absolute;
+}
+
+.pane-slot.joins-right {
   border-right: var(--hairline) solid var(--border-strong);
 }
 
-.pane-slot[data-side="right"] {
-  order: 1;
+.pane-slot.joins-below {
+  border-bottom: var(--hairline) solid var(--border-strong);
 }
 
-/* a half's close sits at the end of its tab strip (TabStrip.css); a half with no strip (its pane
-   gone, or crashed) keeps it in a bar of its own. The active half's row carries the accent, as
-   the pane the header, the palette and the shortcuts act on */
+.pane-split-divider {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+}
+
+.pane-split-divider[data-dir="row"] {
+  width: var(--split-hit-w);
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+
+.pane-split-divider[data-dir="column"] {
+  height: var(--split-hit-w);
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+@media (hover: hover) {
+  .pane-split-divider:hover {
+    background: var(--accent-tint);
+  }
+}
+
+.pane-split-divider:active,
+.pane-split-divider:focus-visible {
+  background: var(--accent-tint);
+  outline: none;
+}
+
 .pane-slot-bar {
   display: flex;
   flex: none;
   align-items: center;
   gap: var(--space-2);
-  height: 30px;
+  height: var(--pane-bar-h);
   padding: 0 var(--space-1) 0 var(--space-3);
   border-bottom: var(--hairline) solid var(--border);
   background: var(--bg-panel);
@@ -1801,23 +2037,16 @@ button {
 }
 
 .pane-slot.is-active .pane-slot-bar {
-  color: var(--text);
-  box-shadow: inset 0 2px 0 var(--accent);
+  color: var(--text-strong);
+  border-bottom-color: var(--border-strong);
 }
 
-/* over the strip's own surface, which would paint over an inset shadow on the row */
 .pane-slot .tab-strip-row {
   position: relative;
 }
 
-.pane-slot.is-active .tab-strip-row::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  z-index: 1;
-  height: 2px;
-  background: var(--accent);
-  pointer-events: none;
+.pane-slot.is-active .tab-strip-row {
+  border-bottom-color: var(--border-strong);
 }
 
 .pane-slot-title {
@@ -1828,7 +2057,6 @@ button {
   white-space: nowrap;
 }
 
-/* the half's grip: the free end of its row, which drags its pane to a half (App), with its close */
 .pane-slot-grip {
   display: flex;
   align-items: center;
@@ -1854,7 +2082,6 @@ button {
   height: 14px;
 }
 
-/* the inactive half is a step quieter, so the one keys go to reads at a glance */
 .pane-slot.is-inactive .terminal-host {
   opacity: 0.88;
 }
@@ -1865,12 +2092,9 @@ button {
   padding-bottom: 0;
 }
 
-/* the tab strip's panel inside .terminal-host: a role for screen readers, no box of its own */
 .terminal-tabpanel {
   display: contents;
 }
-
-/* ---------- header ---------- */
 
 .brand {
   display: inline-flex;
@@ -1892,10 +2116,6 @@ button {
   height: var(--mark-size);
 }
 
-/* The selected pane on one line: mark and title, then PC › workspace › folder. The title may
-   shorten; the crumb may not: when it does not fit whole beside a whole title it wraps to a second
-   line that the height clips, so it is all there or gone, and the title has the row. The full
-   location is in the tooltip and at the top of the More menu. */
 .context {
   --context-line: calc(var(--fs-lg) * var(--lh-base));
   display: flex;
@@ -1907,7 +2127,6 @@ button {
   flex: 1 1 auto;
   min-width: 0;
   max-height: var(--context-line);
-  /* the title never touches the lens switch */
   margin-right: var(--space-1);
   overflow: hidden;
   line-height: var(--lh-tight);
@@ -1920,8 +2139,6 @@ button {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
-  /* the first line is as tall as the box that clips the second: the title sits the same with
-     the crumb beside it or gone */
   min-height: var(--context-line);
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
@@ -1929,8 +2146,14 @@ button {
   letter-spacing: var(--tracking-tight);
 }
 
-/* the header note's sentence (.header-note-text, App.tsx) is cut like the title it stands in for; its
-   own class keeps .context-title-text on the pane title alone (the browser checks measure it) */
+/* the mark's own span is a box too, as in the tab strip, the sidebar and the composer: an inline
+   span sits its SVG on the text baseline of a line box taller than the mark, which lifts the logo
+   above the header's other icons */
+.context-title .agent-mark {
+  display: inline-flex;
+  flex: none;
+}
+
 .context-title-text,
 .header-note-text {
   min-width: 0;
@@ -1949,21 +2172,42 @@ button {
   white-space: nowrap;
 }
 
-/* the PC's name is whole in the crumb, like the rest of it: the crumb fits or is not drawn.
-   Its cap (Machines.css) is for the header with no pane, where it sits beside the brand. */
+.context-watch {
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+
+.context-session {
+  gap: var(--space-2);
+}
+
+.context-session-goal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.context-session-goal svg {
+  width: 1em;
+  height: 1em;
+}
+
+@media (max-width: 768px) {
+  .context-session {
+    display: none;
+  }
+}
+
 .context-sub .machine-context-name {
   max-width: none;
   overflow: visible;
 }
 
-/* the connection said in the crumb's place (App.tsx, lib/headerConnection.ts): it shares the title's
-   line instead of wrapping out of sight, the title giving it room, so a phone reads it too and the
-   header keeps its height. A word swapped in place, never animated. */
-.context.has-connection {
+.context.has-connection,
+.context:has(.context-watch) {
   flex-wrap: nowrap;
 }
 
-/* a larger text size or a narrow window may not fit the word: it shortens, it is never cut off unseen */
 .context-connection {
   flex-shrink: 1;
   min-width: 0;
@@ -1978,57 +2222,44 @@ button {
 }
 
 .context-connection.is-reconnecting {
-  color: var(--status-working);
+  color: var(--status-reconnecting);
 }
 
 .context-connection.is-connected {
   color: var(--status-done);
 }
 
-/* a phone has no room for both on one line: the word goes under the title, as a messenger's header
-   says it under a chat's name, both lines inside the header's height */
 @media (max-width: 768px) {
-  .context.has-connection {
+  .context.has-connection,
+  .context.has-connection.has-tabs,
+  .context:has(.context-watch),
+  .context:has(.context-watch).has-tabs {
     flex-direction: column;
     align-items: flex-start;
-    justify-content: center;
+    justify-content: flex-start;
     row-gap: 0;
-    max-height: none;
+    max-height: var(--touch-target);
+    margin-block: calc(-1 * var(--tabs-pad, 0px));
+    padding-top: var(--space-2-5);
+    padding-bottom: 0;
   }
 
-  .context.has-connection .context-title {
+  .context.has-connection .context-title,
+  .context:has(.context-watch) .context-title {
+    flex-shrink: 0;
     min-height: 0;
+    line-height: 1;
+  }
+
+  .context.has-connection .context-connection,
+  .context:has(.context-watch) .context-sub {
+    flex-shrink: 0;
+    min-height: 0;
+    margin-top: var(--space-px-3);
+    line-height: 1;
   }
 }
 
-/* the switch keeps its size; the pane title (.context) is the header's one flexible item */
-.view-switch {
-  flex: 0 0 auto;
-}
-
-/* From 769px the lens switch is its two words and nothing around them: no track, no glyphs, the
-   chosen lens on the hover fill. Files follows it as an action of its own, after a hairline. */
-@media (min-width: 769px) {
-  .app-header .view-switch {
-    padding: 0;
-    background: transparent;
-    border-color: transparent;
-  }
-
-  .app-header .view-switch > button svg {
-    display: none;
-  }
-}
-
-.header-divider {
-  flex: 0 0 auto;
-  width: var(--hairline);
-  height: var(--chip-h);
-  background: var(--border);
-}
-
-/* the workspace-list toggle and the palette: in the bar below 769px and beside a collapsed
-   sidebar, the sidebar's own top row otherwise (further down) */
 .header-side {
   display: contents;
 }
@@ -2042,8 +2273,551 @@ button {
   font-size: var(--fs-xs);
 }
 
-/* one chip for the connection, drawn only while the bridge is not live; the herdr version lives
-   in its tooltip and in Settings */
+.view-switch {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: var(--space-half);
+  flex: 0 0 auto;
+  height: var(--bar-control-h);
+  padding: var(--space-half);
+  background: var(--switch-track-bg);
+  border-radius: var(--radius-md);
+}
+
+.lens-thumb {
+  position: absolute;
+  top: var(--space-half);
+  bottom: var(--space-half);
+  left: var(--space-half);
+  width: calc(50% - var(--space-px-3));
+  background: var(--bg-panel);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-thumb);
+  transition: transform var(--dur-base) var(--ease-out);
+}
+
+.view-switch[data-view="terminal"] .lens-thumb {
+  transform: translateX(calc(100% + var(--space-half)));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lens-thumb {
+    transition: none;
+  }
+}
+
+.lens-option {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--space-1) + var(--hairline));
+  min-width: 0;
+  padding: 0 calc(var(--space-2-5) + var(--hairline));
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .lens-option:hover:not([aria-pressed="true"]) {
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 5%, transparent);
+  }
+}
+
+.lens-option:active:not([aria-pressed="true"]) {
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+.lens-option[aria-pressed="true"] {
+  color: var(--text-strong);
+  font-weight: var(--fw-selected);
+}
+
+.lens-option svg {
+  flex: 0 0 auto;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+.lens-option[aria-pressed="true"] svg {
+  color: var(--accent);
+}
+
+.lens-option.is-chat .lens-label,
+.lens-option.is-terminal .lens-label {
+  font-family: var(--font-ui);
+  font-weight: var(--fw-semibold);
+}
+
+/* a phone's lens button (components/LensToggle.tsx): its radius would cut a finger's target at its corners
+   (Chromium hit-tests the rounded box), so an empty, square layer over its border box keeps them, as the
+   switch's options do */
+.lens-toggle {
+  position: relative;
+}
+
+.lens-toggle::before {
+  content: "";
+  position: absolute;
+  inset: calc(-1 * var(--hairline));
+}
+
+.header-text-button.is-icon {
+  width: var(--bar-control-h);
+  padding: 0;
+  justify-content: center;
+}
+
+@media (max-width: 768px) {
+  .view-switch {
+    height: var(--control-h);
+    box-shadow: inset 0 0 0 var(--hairline) var(--divider);
+  }
+
+  .view-switch .lens-label {
+    display: none;
+  }
+
+  .lens-option {
+    --lens-h: calc(var(--control-h) - var(--space-1));
+    min-width: var(--touch-target-header);
+    height: var(--touch-target-header);
+    margin-block: calc((var(--lens-h) - var(--touch-target-header)) / 2);
+    padding: 0 var(--space-2);
+  }
+
+  /* the option's radius would cut a finger's target at its corners (Chromium hit-tests the rounded box): an
+     empty, square layer over the same box keeps the corners the option's */
+  .lens-option::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+  }
+}
+
+.sidebar-brand img {
+  display: block;
+  width: auto;
+  height: var(--space-5);
+}
+
+/* a button, so the installed app's title-bar drag region gives it the click */
+.sidebar-brand.is-entry {
+  padding: var(--space-half) var(--space-1);
+  margin-left: calc(-1 * var(--space-1));
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .sidebar-brand.is-entry:hover {
+    background: var(--bg-hover);
+  }
+}
+
+@media (pointer: coarse) {
+  .sidebar-brand.is-entry {
+    min-height: var(--touch-target);
+  }
+}
+
+.sidebar-brand.is-entry:active {
+  background: var(--bg-elevated);
+}
+
+.header-text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+  height: var(--bar-control-h);
+  padding: 0 var(--space-3);
+  background: var(--tool-pill-bg, transparent);
+  border: var(--hairline) solid var(--tool-pill-border, transparent);
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.header-text-button svg {
+  flex: 0 0 auto;
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+@media (hover: hover) {
+  .header-text-button:hover {
+    background: var(--bg-hover);
+    color: var(--text-strong);
+  }
+}
+
+.header-text-button:focus-visible,
+.header-text-button:active,
+.header-text-button[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--text-strong);
+}
+
+/* From 769px with one pane in view the workspace's tabs are the header's row (App.tsx), drawn as a
+   browser's tab strip (Chrome; sizes after the Herdr app's tab bar, herdr-app defaults/mods/tabs,
+   Apache-2.0, THIRD_PARTY_NOTICES.md): the row is tinted with the accent, each tab is its agent's
+   mark (a shell's glyph) and its name, tabs at rest are parted by short rules and share the width
+   evenly, and the open tab takes the pane's own surface with rounded top corners, so it runs on into
+   the pane under it. + follows the last tab; the tools sit at the far end as pills. */
+.app-header.is-zoned.has-tab-row {
+  /* the Herdr app's tab bar: the sidebar's own surface, a hairline under it, tabs as pills on it */
+  --strip-tint: var(--bg-panel);
+  --tab-open-bg: var(--bg-elevated);
+  --tool-pill-bg: var(--bg-panel);
+  --tool-pill-border: var(--divider);
+  background: var(--strip-tint);
+  border-bottom: var(--hairline) solid var(--divider);
+}
+
+.app-header.is-zoned.has-tab-row.is-chat {
+  background: var(--strip-tint);
+  border-bottom-color: var(--divider);
+}
+
+.app-header.has-tab-row .header-more-button {
+  width: var(--bar-control-h);
+  height: var(--bar-control-h);
+  background: var(--tool-pill-bg);
+  border-color: var(--tool-pill-border);
+  border-radius: var(--radius-pill);
+}
+
+.app-header.has-tab-row > .context,
+.app-header.has-phone-tabs > .context {
+  flex: 0 1 auto;
+}
+
+.header-tabs {
+  display: flex;
+  align-items: stretch;
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 0;
+  padding-right: var(--space-4);
+}
+
+.header-tabs .tab-strip {
+  --strip-bg: var(--strip-tint);
+  align-items: center;
+  gap: var(--space-px-3);
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border-bottom: 0;
+  background: var(--strip-bg);
+}
+
+.header-tabs .tab-strip-item {
+  position: relative;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: var(--tab-min-w);
+  max-width: var(--tab-max-w);
+  height: var(--tab-h);
+  margin-bottom: 0;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+@media (hover: hover) {
+  .header-tabs .tab-strip-item:hover {
+    background: var(--bg-hover);
+  }
+}
+
+.header-tabs .tab-strip-item.is-active {
+  background: var(--tab-open-bg);
+  border-color: var(--border);
+  box-shadow: none;
+}
+
+.header-tabs .tab-strip-tab {
+  flex: 1 1 auto;
+  gap: var(--space-1);
+  min-width: 0;
+  height: 100%;
+  /* the open tab's name is drawn semibold (--fw-selected): the strip's widest fixture name still fits
+     the tab's --tab-max-w beside its 24px menu and close */
+  padding: 0 var(--space-half) 0 var(--space-1-5);
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-regular);
+}
+
+.header-tabs .tab-strip-item.is-active .tab-strip-tab {
+  color: var(--text-strong);
+  font-weight: var(--fw-selected);
+}
+
+.tab-strip-tab:focus-visible,
+.tab-strip-rename:focus-visible {
+  outline-offset: var(--ring-inset-offset);
+}
+
+.pane-slot .tab-strip-tab {
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+}
+
+/* one pane of a split at a time: the open tab is named for its pane, whose name can be long; the
+   tab's place and its ⋯ stay in view before the row's + */
+@media (max-width: 768px) {
+  .pane-slot .tab-strip-label {
+    max-width: min(var(--tab-max-w), 40vw);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+.header-tabs .tab-strip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-tabs .tab-strip-agent.is-shell svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+  color: var(--text-dim);
+}
+
+.header-tabs .tab-strip-agent { order: 0; }
+.header-tabs .tab-strip-label { order: 1; }
+
+.header-tabs .tab-strip-tab > .tab-strip-dot {
+  order: 2;
+  margin-left: auto;
+}
+
+.header-tabs .tab-strip-tab > .tab-strip-dot:not(.tab-strip-glyph)[data-status="working"] {
+  width: calc(var(--dot-size) + var(--space-1));
+  height: calc(var(--dot-size) + var(--space-1));
+}
+
+.header-tabs .tab-strip-menu {
+  width: var(--pointer-target);
+  height: var(--pointer-target);
+  margin-inline: calc(-1 * var(--hairline));
+}
+
+.tab-strip-close {
+  display: none;
+}
+
+.header-tabs .tab-strip-item.is-active .tab-strip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--pointer-target);
+  height: var(--pointer-target);
+  margin-block: calc(-1 * var(--space-px-3));
+  margin-left: calc(-1 * var(--space-px-3));
+  margin-right: var(--hairline);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.header-tabs .tab-strip-close svg {
+  width: var(--icon-size-xs);
+  height: var(--icon-size-xs);
+}
+
+@media (hover: hover) {
+  .header-tabs .tab-strip-close:hover {
+    background: var(--bg-hover);
+    color: var(--text-strong);
+  }
+}
+
+.header-tabs .tab-strip-close:active {
+  background: var(--bg-hover);
+  color: var(--text-strong);
+}
+
+.header-tabs .tab-strip-add {
+  align-self: center;
+  width: calc(var(--control-h) - var(--space-2));
+  height: calc(var(--control-h) - var(--space-2));
+  margin-left: var(--space-1);
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+/* as wide as lib/tabOverflow.ts TAB_MORE_WIDTH reserves, with its gap */
+.header-tabs .tab-strip-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-half);
+  align-self: center;
+  flex: 0 0 auto;
+  width: var(--tab-more-w);
+  height: var(--bar-control-h);
+  margin-left: var(--space-1);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: var(--font-numeric);
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .header-tabs .tab-strip-more:hover {
+    background: var(--bg-hover);
+    color: var(--text-strong);
+  }
+}
+
+.header-tabs .tab-strip-more:focus-visible,
+.header-tabs .tab-strip-more:active,
+.header-tabs .tab-strip-more[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--text-strong);
+}
+
+.header-tabs .tab-strip-more svg {
+  width: 14px;
+  height: 14px;
+}
+
+@media (pointer: coarse) {
+  .header-tabs .tab-strip-item {
+    height: 44px;
+  }
+
+  .header-tabs .tab-strip-menu,
+  .header-tabs .tab-strip-item.is-active .tab-strip-close,
+  .header-tabs .tab-strip-add {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+
+  .header-tabs .tab-strip-item.is-active {
+    min-width: 160px;
+  }
+}
+
+.conn-route {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--chip-h);
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.conn-route svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+.context-position {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.context.has-tabs {
+  --tabs-pad: max(0px, calc((var(--touch-target) - var(--context-line)) / 2));
+  position: relative;
+  max-height: calc(var(--context-line) + 2 * var(--tabs-pad));
+  margin-block: calc(-1 * var(--tabs-pad));
+  padding-block: var(--tabs-pad);
+}
+
+.context-tabs {
+  --tabs-btn-size: var(--pointer-target);
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  width: var(--tabs-btn-size);
+  height: var(--tabs-btn-size);
+  margin-block: calc((var(--icon-size-md) - var(--tabs-btn-size)) / 2);
+  margin-left: calc(-1 * var(--space-1) + var(--icon-size-md) - var(--tabs-btn-size));
+  margin-right: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+@media (pointer: coarse), (max-width: 768px) {
+  .context-tabs {
+    --tabs-btn-size: var(--touch-target);
+  }
+}
+
+.context-tabs svg {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+}
+
+.context-tabs::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-sm);
+}
+
+.context-tabs:focus-visible {
+  outline: none;
+}
+
+.context-tabs:focus-visible::after {
+  outline: var(--ring);
+  outline-offset: calc(-1 * var(--ring-offset));
+}
+
+.context-tabs[aria-expanded="true"] {
+  color: var(--text-strong);
+}
+
+@media (max-width: 419px) {
+  .context-position {
+    display: none;
+  }
+}
+
 .conn {
   position: relative;
   display: inline-flex;
@@ -2078,37 +2852,42 @@ button {
 }
 
 .conn-reconnecting {
-  color: var(--status-working);
+  color: var(--status-reconnecting);
 }
 
 .conn-reconnecting .conn-dot {
-  background: var(--status-working);
+  background: var(--status-reconnecting);
   animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
 }
 
-/* The title area says the word (.context-connection): the chip keeps its pulsing dot, and the word
-   stays for a screen reader and in the chip's title, as on a narrow window below. */
-.conn-quiet {
-  gap: 0;
+.status-bar .status-bar-conn.is-lost {
+  color: var(--status-reconnecting);
 }
 
-.conn-quiet .conn-text {
+.status-bar .status-bar-conn.is-lost .status-bar-dot {
+  background: var(--status-reconnecting);
+}
+
+.conn.conn-quiet {
   position: absolute;
   width: 1px;
   height: 1px;
+  margin: -1px;
+  padding: 0;
   overflow: hidden;
   clip: rect(0 0 0 0);
-  white-space: nowrap;
 }
 
-/* A narrow window: the chip keeps its pulsing dot and gives its word's room to the pane title.
-   The word stays for a screen reader and in the chip's title. */
+.conn.conn-quiet .conn-dot {
+  animation: none;
+}
+
 @media (max-width: 900px) {
-  .conn-reconnecting {
+  .app-header:not(.has-tab-row) .conn-reconnecting {
     gap: 0;
   }
 
-  .conn-reconnecting .conn-text {
+  .app-header:not(.has-tab-row) .conn-reconnecting .conn-text {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -2118,14 +2897,15 @@ button {
   }
 }
 
-/* New tab, Browse files and Alerts are one menu's items (RowMenu, through its portal) */
 .header-more {
   position: relative;
   display: inline-flex;
 }
 
-/* alerts are off on this device: the one state of the menu worth a glance. The button's name
-   and the Alerts item say it in words. */
+.header-more-dot.is-waiting {
+  background: var(--status-blocked);
+}
+
 .header-more-dot {
   position: absolute;
   top: var(--space-1);
@@ -2137,9 +2917,25 @@ button {
   pointer-events: none;
 }
 
-/* the menu's first thing, two lines on purpose: "PC › workspace", then the whole path in the
-   mono face. It is where a touch screen reads the path. A path longer than six lines scrolls
-   here, so the items under it stay on the screen. */
+.header-more-dot.is-waiting[data-count]::after {
+  content: attr(data-count);
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  box-sizing: border-box;
+  min-width: calc(1em * var(--lh-tight));
+  padding: 0 var(--space-half);
+  border-radius: var(--radius-pill);
+  background: var(--status-blocked);
+  color: var(--status-ink);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  text-align: center;
+  font-variant-numeric: var(--font-numeric);
+}
+
 .header-more-crumb {
   display: flex;
   flex-direction: column;
@@ -2152,18 +2948,28 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* a phone's More leads with the pane's whole title and its agent (App.tsx, G-069): the header cuts the
+   title short and a touch has no tooltip, so the title leads the place and path lines here */
+.header-more-title {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
 .header-more-path {
   color: var(--text);
   font-family: var(--font-mono);
   white-space: pre-wrap;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
-/* From 769px the header is two zones. Over the sidebar, the sidebar's own top row (its toggle
-   and the palette) on the sidebar's surface, the seam between sidebar and pane running to the
-   top of the window. Over the pane, the pane's surface: under the chat lens no bar and no rule,
-   the transcript scrolls under a short fade (ChatView.css); under the terminal lens the
-   terminal's colour and the rule. A collapsed sidebar leaves one bar. A phone keeps the
-   --bg-panel bar and its rule: the installed app's theme-color matches it. */
+.header-more-session {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-1);
+}
+
+/* A phone keeps the --bg-panel bar and its rule: the installed app's theme-color matches it. */
 @media (min-width: 769px) {
   .app-header.is-zoned {
     background: var(--term-bg);
@@ -2178,8 +2984,6 @@ button {
     padding-left: 0;
   }
 
-  /* stretched over the header's top inset and its bottom rule, so the sidebar's surface is
-     one piece from the window's top down */
   .app:not(.sidebar-collapsed) .header-side {
     display: flex;
     flex: 0 0 var(--sidebar-shown-w);
@@ -2187,9 +2991,31 @@ button {
     align-self: stretch;
     justify-content: space-between;
     margin: calc(-1 * env(safe-area-inset-top, 0px)) var(--space-2) calc(-1 * var(--hairline)) 0;
-    padding: env(safe-area-inset-top, 0px) var(--space-3) 0 calc(var(--space-3) + env(safe-area-inset-left, 0px));
-    border-right: var(--hairline) solid var(--border);
-    background: var(--bg-panel);
+    padding: env(safe-area-inset-top, 0px) var(--space-3) var(--hairline) calc(var(--space-3) + env(safe-area-inset-left, 0px));
+    border-right: var(--hairline) solid var(--divider);
+    background: var(--bg-nav);
+  }
+
+  .app:not(.sidebar-collapsed) .header-side .brand {
+    margin-right: auto;
+  }
+
+  /* the logo row as the Herdr app's: the tab bar's height, its 26px buttons with their 15px glyphs */
+  .app:not(.sidebar-collapsed) .header-side {
+    gap: var(--space-1);
+    padding-left: calc(var(--space-3) + 2px + env(safe-area-inset-left, 0px));
+    padding-right: 10px;
+  }
+
+  .app:not(.sidebar-collapsed) .header-side .icon-button {
+    width: calc(var(--control-h) - 8px);
+    height: calc(var(--control-h) - 8px);
+    border-radius: var(--radius-sm);
+  }
+
+  .app:not(.sidebar-collapsed) .header-side .icon-button svg {
+    width: 15px;
+    height: 15px;
   }
 }
 
@@ -2234,7 +3060,18 @@ button {
   }
 }
 
-/* ---------- primitives ---------- */
+/* an iPad home-screen app in a window (iPadOS 26) has the window's controls over its top-left corner
+   (lib/viewport.ts marks it and sizes --window-controls-w from the page zoom), so the header's first
+   button moves clear of them */
+:root[data-window-controls] .app-header {
+  padding-left: calc(var(--window-controls-w, 72px) + env(safe-area-inset-left, 0px));
+}
+
+@media (min-width: 769px) {
+  :root[data-window-controls] .app:not(.sidebar-collapsed) .header-side {
+    padding-left: calc(var(--window-controls-w, 72px) + env(safe-area-inset-left, 0px));
+  }
+}
 
 .icon-button {
   display: inline-flex;
@@ -2289,7 +3126,22 @@ button {
   display: none;
 }
 
-/* text buttons: .btn (neutral), .btn-primary, .btn-danger, .btn-ghost */
+.drawer-close:focus-visible {
+  position: static;
+  display: flex;
+  align-items: center;
+  width: auto;
+  height: var(--control-h);
+  margin: var(--space-2) var(--space-3) 0;
+  padding: 0 var(--space-3);
+  overflow: visible;
+  clip: auto;
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-strong);
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -2304,7 +3156,7 @@ button {
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
   white-space: nowrap;
-  text-decoration: none; /* a link styled as a button (Reconnect, Star on GitHub) */
+  text-decoration: none;
   cursor: pointer;
   transition:
     background-color var(--dur-fast) var(--ease-out),
@@ -2348,8 +3200,6 @@ button {
   color: var(--danger-text);
 }
 
-/* hovered, a danger button keeps its tint and border: the neutral hover fill above would read as
-   the risk going away. Its border draws twice as thick instead, so the pointer still shows */
 @media (hover: hover) {
   .btn-danger:hover:not(:disabled) {
     background: var(--danger-tint);
@@ -2370,33 +3220,6 @@ button {
   }
 }
 
-/* fingers: the header controls grow to the touch target; the header still fits them */
-@media (pointer: coarse) {
-  .icon-button {
-    width: var(--touch-target);
-    height: var(--touch-target);
-  }
-
-  .btn,
-  .error-retry {
-    height: var(--touch-target);
-  }
-
-  /* the segmented track keeps its height; each option is a finger's width, so neighbours never
-     share a tap, and reaches the target's height through an invisible expander, as the palette's
-     filter chips do (CommandPalette.css) */
-  .segmented > button {
-    position: relative;
-    min-width: var(--touch-target);
-  }
-
-  .segmented > button::before {
-    content: "";
-    position: absolute;
-    inset: calc((var(--control-h) - var(--segmented-inset) - var(--touch-target)) / 2) 0;
-  }
-}
-
 .pill {
   display: inline-flex;
   align-items: center;
@@ -2405,7 +3228,8 @@ button {
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-pill);
   font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-meta);
+  font-variant-numeric: var(--font-numeric);
   color: var(--text-dim);
   white-space: nowrap;
 }
@@ -2416,13 +3240,10 @@ button {
   background: var(--danger-tint);
 }
 
-/* a pill that carries a sentence (the header's link and copy notes): the interface face, for the
-   same reason as a failure's detail line above */
 .header-note {
   font-family: var(--font-ui);
 }
 
-/* a lens that is on its way: inside a segmented button, so it stays small */
 .pill-soon {
   height: auto;
   padding: 0 var(--space-1);
@@ -2433,7 +3254,6 @@ button {
   text-transform: uppercase;
 }
 
-/* status badge: tinted background + text, the state readable as a word */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -2442,8 +3262,9 @@ button {
   padding: 0 var(--space-2);
   border: var(--hairline) solid transparent;
   border-radius: var(--radius-sm);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-meta);
   font-weight: var(--fw-semibold);
+  font-variant-numeric: var(--font-numeric);
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   white-space: nowrap;
@@ -2459,14 +3280,24 @@ button {
   background: var(--status-working-tint);
 }
 
-/* RUN is the one state that moves: a dot breathes before the word, the word holds still */
+/* RUN is the one state that moves: a dot breathes before the word, the word holds still. It breathes
+   as the sidebar's RUN dot does (Sidebar.css sidebar-breathe: the same cadence and steps), down to
+   the floor that keeps its darkest step at 3:1, so one state keeps one motion on every surface */
 .badge-working::before {
   content: "";
   width: 5px;
   height: 5px;
   border-radius: var(--radius-pill);
   background: currentColor;
-  animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
+  animation: badge-breathe var(--dur-breathe) steps(6) infinite;
+}
+
+@keyframes badge-breathe {
+  0%,
+  40% { opacity: 1; }
+  50%,
+  90% { opacity: var(--breathe-min-opacity); }
+  100% { opacity: 1; }
 }
 
 .badge-blocked {
@@ -2479,25 +3310,27 @@ button {
   background: var(--status-done-tint);
 }
 
-/* BG: the turn ended on work still running in the background. The working colours, holding still */
 .badge-waiting {
   color: var(--status-working);
   background: var(--status-working-tint);
 }
 
-/* unknown keeps the dim text color (contrast) and is told apart by the dashed edge */
 .badge-unknown {
   color: var(--text-dim);
   border-color: var(--border);
   border-style: dashed;
 }
 
-/* segmented control: one selected option, the rest quiet */
+/* segmented control: one selected option, the rest quiet. The chosen option's edge is --segmented-chosen-shadow,
+   which a variant sets here on the track: on a finger's device the option's own box is its hit box, taller than the
+   track, and its ::before draws the pill (below), so a shadow or a fill a variant writes on the option itself is
+   drawn around that hit box, outside the track */
 .segmented {
+  --segmented-chosen-shadow: inset 0 0 0 var(--hairline) var(--border-strong);
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px;
+  gap: var(--space-half);
+  padding: var(--space-half);
   background: var(--bg-elevated);
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-md);
@@ -2506,7 +3339,7 @@ button {
 .segmented > button {
   display: inline-flex;
   align-items: center;
-  justify-content: center; /* a min-width wider than the glyph keeps it in the middle */
+  justify-content: center;
   gap: var(--space-1);
   white-space: nowrap; /* Hangul/CJK may break between any two syllables: keep a label on one line */
   height: calc(var(--control-h) - var(--segmented-inset));
@@ -2524,37 +3357,39 @@ button {
 }
 
 .segmented > button svg {
-  width: 15px;
-  height: 15px;
+  width: var(--relay-control-icon-size);
+  height: var(--relay-control-icon-size);
 }
 
 .segmented > button[aria-pressed="true"] {
   background: var(--bg-hover);
   color: var(--text-strong);
+  font-weight: var(--fw-selected);
+  box-shadow: var(--segmented-chosen-shadow);
 }
 
-/* the chosen lens carries the selection color on its glyph, like the rail does in the list */
 .segmented > button[aria-pressed="true"] svg {
   color: var(--accent);
 }
 
-/* keyboard key hint */
 .kbd {
   display: inline-flex;
   align-items: center;
-  height: 18px;
-  padding: 0 5px;
+  height: var(--kbd-h);
+  padding: 0 var(--space-1);
   border: var(--hairline) solid var(--border-strong);
-  border-bottom-width: 2px;
+  border-bottom-width: var(--space-half);
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
   color: var(--text-dim);
   font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-meta);
   line-height: 1;
 }
 
-/* modal dialog: scrim + centered card; mobile: bottom sheet */
+/* The card keeps clear of the screen's
+   safe-area insets too: a landscape phone puts its notch on the left or right and its home
+   indicator below, where a card filling the scrim (Settings) would otherwise reach */
 .modal-scrim {
   position: fixed;
   inset: 0;
@@ -2562,18 +3397,20 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--space-4);
+  padding: max(var(--space-4), env(safe-area-inset-top, 0px)) max(var(--space-4), env(safe-area-inset-right, 0px))
+    max(var(--space-4), env(safe-area-inset-bottom, 0px)) max(var(--space-4), env(safe-area-inset-left, 0px));
   background: var(--scrim);
 }
 
 .modal {
   display: flex;
   flex-direction: column;
-  width: min(100%, 560px);
-  max-height: min(100%, 720px);
+  width: min(100%, var(--dialog-w));
+  max-height: min(100%, var(--dialog-max-h));
   background: var(--bg-panel);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-pop);
+  box-shadow: var(--shadow-menu);
   overflow: hidden;
 }
 
@@ -2600,6 +3437,12 @@ button {
   padding: var(--space-4) var(--space-5);
 }
 
+.modal-body:has(> .dir-browser) {
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+}
+
 .modal-footer {
   display: flex;
   justify-content: flex-end;
@@ -2608,24 +3451,25 @@ button {
   border-top: var(--hairline) solid var(--border);
 }
 
+.modal-footer .btn-primary {
+  min-width: var(--btn-submit-min-w);
+}
+
 @media (max-width: 640px) {
   .modal-scrim {
     align-items: flex-end;
     padding: 0;
   }
 
+  /* the sheet's top stays below the status bar or Dynamic Island, a short screen's (the keyboard up) too */
   .modal {
     width: 100%;
-    max-height: 92%;
+    max-height: min(92%, calc(100% - env(safe-area-inset-top, 0px) - var(--space-2)));
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
 
-/* A phone's sheet moves as an iPhone's does: it rises from the bottom edge over a scrim that
-   darkens with it, follows a finger dragged down, and drops back down however it was closed.
-   lib/sheets.ts drives the drag and puts a closed sheet's last frame back for .is-leaving.
-   Every surface on a .modal-scrim is a sheet here: the dialogs, the palette, the row sheet. */
 @media (max-width: 640px) {
   .modal-scrim {
     animation: scrim-in var(--dur-sheet) var(--ease-out);
@@ -2646,6 +3490,15 @@ button {
 
   .modal-scrim * {
     overscroll-behavior: contain;
+  }
+
+  /* A box that scrolls only sideways (a table, code, a formula, a row of cards or chips) is a
+     scroll container on both axes, always at its vertical ends: contained, it would swallow a
+     vertical stroke begun on it, so the list around it never scrolls. Its vertical overscroll
+     goes on (#3287), and so does a code block's clipping wrapper's, which is a scroll container
+     too (#3369). */
+  .modal-scrim :is(.markdown-table-wrap, .markdown-math-display, .markdown-code, .hl-code, .theme-cards, .new-session-folder-chips) {
+    overscroll-behavior-y: auto;
   }
 
   .modal-scrim.is-leaving {
@@ -2690,7 +3543,6 @@ button {
   }
 }
 
-/* form fields inside dialogs */
 .field {
   display: flex;
   flex-direction: column;
@@ -2702,8 +3554,6 @@ button {
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
   color: var(--text-dim);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
 }
 
 .field-hint {
@@ -2713,14 +3563,29 @@ button {
 
 .input,
 .select {
+  min-height: var(--pointer-target);
   height: var(--control-h);
   padding: 0 var(--space-3);
   background: var(--bg-input);
-  border: var(--hairline) solid var(--border);
+  border: var(--hairline) solid var(--border-input);
   border-radius: var(--radius-md);
   color: var(--text-strong);
   font: inherit;
-  font-size: var(--fs-input);
+  /* a field follows the interface size like the label beside it; on iOS, lib/viewport.ts arms it to
+     at least --fs-input for the focus (a text field from the press before it, a select as it takes
+     it), which is when Safari decides whether to zoom the page; a larger interface size stays as it is */
+  --field-fs: var(--fs-md);
+  font-size: var(--field-fs);
+}
+
+.input[data-armed],
+.select[data-armed] {
+  font-size: max(var(--fs-input), var(--field-fs));
+}
+
+.tab-strip .tab-strip-rename {
+  min-height: var(--pointer-target);
+  height: var(--pointer-target);
 }
 
 /* a field's placeholder: the browser's own grey reads 3.8:1 on a dark field, so every placeholder
@@ -2737,31 +3602,38 @@ button {
 .sidebar-filter-input::-webkit-calendar-picker-indicator { display: none !important; }
 .sidebar-filter-input::-webkit-list-button { display: none !important; }
 
-/* a bordered field shows focus on its own border; the offset ring is for controls without one */
-.input:focus,
-.select:focus,
-.input:focus-visible,
-.select:focus-visible {
+/* a focused field draws one line. :focus-visible draws the shared offset ring and leaves the field's
+   own border at rest (its resting, contrast or invalid colour): a second accent line inside the ring
+   reads as a drawing error. A text field is :focus-visible however it took the focus (a click, a tap,
+   a dialog's autofocus: the browser's rule for a control that takes typing), and in Chrome a select
+   is too, so the ring is what a field shows; the accent border is left for a focus the browser draws
+   no ring for */
+.input:focus:not(:focus-visible),
+.select:focus:not(:focus-visible) {
   border-color: var(--accent);
   outline: none;
+}
+
+:is(.input, .select):focus-visible {
+  outline: var(--ring);
+  outline-offset: var(--ring-offset);
 }
 
 @media (min-width: 641px) {
   .input,
   .select {
-    font-size: var(--fs-sm);
+    --field-fs: var(--fs-sm);
   }
 }
 
-/* popover menu (palette rows, slash/@ completions) */
 .menu {
   display: flex;
   flex-direction: column;
   padding: var(--space-1);
-  background: var(--bg-panel);
+  background: var(--surface-overlay);
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-pop);
+  box-shadow: var(--shadow-menu);
   overflow: hidden;
 }
 
@@ -2769,6 +3641,7 @@ button {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex: 0 0 auto;
   min-height: var(--control-h);
   padding: var(--space-1) var(--space-2);
   background: transparent;
@@ -2781,15 +3654,22 @@ button {
 }
 
 .menu-item svg {
-  width: 16px;
-  height: 16px;
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
   flex: 0 0 auto;
   color: var(--text-dim);
+}
+
+.menu-item .ovis-mark {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+  flex: 0 0 auto;
 }
 
 .menu-item[aria-selected="true"] {
   background: var(--bg-hover);
   color: var(--text-strong);
+  font-weight: var(--fw-selected);
 }
 
 @media (hover: hover) {
@@ -2797,6 +3677,11 @@ button {
     background: var(--bg-hover);
     color: var(--text-strong);
   }
+}
+
+.menu-item:active {
+  background: var(--bg-hover);
+  color: var(--text-strong);
 }
 
 .menu-item-main {
@@ -2810,19 +3695,19 @@ button {
 .menu-item-hint {
   flex: 0 0 auto;
   font-size: var(--fs-xs);
+  font-variant-numeric: var(--font-numeric);
   color: var(--text-dim);
 }
 
 .menu-heading {
   padding: var(--space-2) var(--space-2) var(--space-1);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-meta);
   font-weight: var(--fw-semibold);
+  line-height: 1.35;
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--text-dim);
 }
-
-/* ---------- sidebar error state (App-owned) ---------- */
 
 .error-state {
   margin: var(--space-2);
@@ -2858,14 +3743,64 @@ button {
   }
 }
 
-/* ---------- mobile: sidebar becomes a drawer ---------- */
+@media (pointer: coarse) {
+  .icon-button {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+
+  .btn,
+  .error-retry,
+  .input,
+  .select,
+  .find-bar .find-input,
+  .conversation-search .search-input,
+  .agent-picker .agent-picker-trigger {
+    min-height: var(--touch-target);
+    height: var(--touch-target);
+  }
+
+  .machine-dialog summary {
+    min-height: var(--touch-target);
+    align-content: center;
+  }
+
+  /* the segmented track keeps its height; each option is a finger's width and height while
+     its ::before draws the inner pill, so overflow:hidden on an option never clips the hit box */
+  .segmented > button {
+    position: relative;
+    z-index: 0;
+    min-width: var(--touch-target);
+    height: var(--touch-target);
+    margin-block: calc((var(--control-h) - var(--segmented-inset) - var(--touch-target)) / 2);
+  }
+
+  .segmented > button[aria-pressed="true"] {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .segmented > button::before {
+    content: "";
+    position: absolute;
+    inset: calc((var(--touch-target) - (var(--control-h) - var(--segmented-inset))) / 2) 0;
+    z-index: -1;
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+    transition: background-color var(--dur-fast) var(--ease-out);
+  }
+
+  .segmented > button[aria-pressed="true"]::before {
+    background: var(--bg-hover);
+    box-shadow: var(--segmented-chosen-shadow);
+  }
+}
 
 @media (max-width: 768px) {
   .drawer-toggle {
     display: inline-flex;
   }
 
-  /* drawer mode: the collapse toggle has nothing to collapse */
   .sidebar-toggle {
     display: none;
   }
@@ -2880,7 +3815,8 @@ button {
     bottom: 0;
     left: 0;
     z-index: var(--z-drawer);
-    width: min(88vw, var(--sidebar-w));
+    /* about four fifths of a phone, leaving the page beside it to tap the drawer closed (as herdr-app's) */
+    width: min(80vw, calc(var(--sidebar-w) - var(--space-5)));
     transform: translateX(-100%);
     visibility: hidden;
     touch-action: pan-y;
@@ -2888,6 +3824,10 @@ button {
     transition:
       transform var(--dur-base) var(--ease-out),
       visibility 0s linear var(--dur-base);
+  }
+
+  .sidebar[role="dialog"]:focus {
+    outline: none;
   }
 
   .sidebar.is-open {
@@ -2916,17 +3856,12 @@ button {
   }
 }
 
-/* the key bar (KeyBar.css) shows under the same query and carries env(safe-area-inset-bottom) itself,
-   the one bar that reaches the bottom of the screen (KeyBar.tsx) */
 @media (pointer: coarse), (max-width: 768px) {
   .terminal-host:has(.key-bar) {
-    padding-bottom: 0; /* no pane = no bar, and the host keeps the inset */
+    padding-bottom: 0;
   }
 }
 
-/* phones: the version pill is the least useful header item; below that, the brand word goes
-   too - the mark keeps the identity. The palette's button gives its room to the pane's title:
-   the palette is the More menu's first item there. */
 @media (max-width: 480px) {
   .conn {
     padding: 0 var(--space-1);
@@ -2943,46 +3878,19 @@ button {
   }
 }
 
-/* just above phone width the lens labels would squeeze the pane title to a glyph: icons only */
-@media (max-width: 560px) {
-  .view-switch .header-desktop-only { display: none; }
-}
-
-/* phones: every header control is a full thumb target. The lens track draws smaller than the bar,
-   so it never meets the header's rule, and its buttons reach the target's height through an
-   invisible expander */
 @media (max-width: 768px) {
   .app-header .icon-button {
     width: var(--touch-target-header);
     height: var(--touch-target-header);
   }
 
-  .app-header .view-switch > button {
-    position: relative;
-    /* the drawn height: the density's segmented option (--control-h less the track's inset), so
-       the track keeps clear of the bar in the compact density's 46px header as in the 52px one;
-       the expander below grows it to the tap height */
-    --lens-h: calc(var(--control-h) - var(--segmented-inset));
+  .app-header .header-text-button {
+    justify-content: center;
     min-width: var(--touch-target-header);
-    height: var(--lens-h);
-  }
-
-  .app-header .view-switch > button::before {
-    content: "";
-    position: absolute;
-    inset: calc((var(--lens-h) - var(--touch-target-header)) / 2) 0;
+    height: var(--touch-target-header);
   }
 }
 
-/* ---------- phone: an app, not a page ---------- */
-
-/* Over the chat on a phone the header is glass, as an iPhone's bar is: the transcript scrolls on
-   under it, blurred, instead of stopping at a ruled edge. Only when the transcript is right under
-   the header; a tab strip or a notice between them keeps the plain bar. The header pulls the body
-   up under itself by its own height (--header-over), and the stack gives that height back above
-   everything in it, so a prompt card, the held messages and the composer never go under the bar:
-   only the transcript reaches up into it (ChatView.css), its first line still below it, and the
-   banners start below it (PaneTerminal.css). The terminal lens keeps the bar in the flow as before. */
 @media (max-width: 768px) {
   .app:has(> .app-body > .pane-column.is-chat > .pane-split:first-child > .pane-slot > .terminal-host:first-child) {
     --header-over: calc(var(--header-h) + env(safe-area-inset-top, 0px));
@@ -3030,9 +3938,18 @@ button {
 
   input,
   textarea,
-  [contenteditable] {
+  [contenteditable],
+  .header-more-path,
+  .row-sheet-sub,
+  .new-session-cwd-text,
+  .worktree-path,
+  .machine-state-detail,
+  .machine-error,
+  .error-state,
+  .error-message {
     -webkit-user-select: text;
     user-select: text;
+    -webkit-touch-callout: default;
   }
 
   .icon-button:active,
@@ -3046,8 +3963,6 @@ button {
     border-color: var(--border);
   }
 
-  /* no weight of its own: a row that fills when pressed (an iPhone list row) says so in its own
-     stylesheet, with its opacity left whole */
   :where(button, [role="button"], a):where(:active:not(:disabled)) {
     opacity: 0.55;
   }
@@ -3058,7 +3973,91 @@ button {
   }
 }
 
+@media (pointer: coarse), (max-width: 768px) {
+  :root {
+    --fs-chat: calc(16px * var(--ui-scale));
+  }
+
+  .menu-item:not(.composer-menu *) {
+    font-size: var(--fs-md);
+  }
+}
+
+@media (max-width: 640px) {
+  .row-sheet .row-sheet-title,
+  .row-sheet .row-sheet-sub {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --bar-bg: var(--bg-panel);
+    --card-glass: var(--bg-elevated);
+    --glass-blur: none;
+    --border-contrast: var(--text);
+    --border: var(--border-strong);
+    --border-input: var(--border-contrast);
+  }
+}
+
+.tab-sheet-marks > .tab-strip-dot:not(.tab-strip-glyph):is([data-status="idle"], [data-status="unknown"]) {
+  box-shadow: inset 0 0 0 1.5px var(--status-marker-idle);
+}
+
+.chat-minimap .chat-minimap-tick:focus-visible {
+  outline-offset: var(--ring-offset);
+}
+
+.settings-switch input:checked + .settings-switch-track::after {
+  background: var(--switch-thumb-on);
+}
+
+.status-bar,
+.context-session,
+time {
+  font-variant-numeric: var(--font-numeric);
+}
+
+.sidebar .pane-select[aria-current="true"] .workspace-name,
+.sidebar .agent-row[aria-current="true"] .agent-row-title,
+.sidebar .machine-header.is-current .machine-name,
+.pane-slot.is-active .pane-slot-title,
+.command-palette .palette-filter[aria-checked="true"] {
+  font-weight: var(--fw-selected);
+}
+
+.chat-turn .chat-time,
+.chat-tool-empty,
+.command-palette .palette-group-heading,
+.command-palette .palette-item-sub,
+.md-docs .md-docs-meta,
+.runtime-move .runtime-move-tag,
+.runtime-move .runtime-move-cwd {
+  font-size: var(--fs-meta);
+}
+
+.settings-dialog .modal-title {
+  font-size: var(--fs-section-title);
+}
+
+.theme-strip .theme-card {
+  min-width: 124px;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0s;
+    --dur-base: 0s;
+    --dur-pulse: 0s;
+    --dur-spin: 0s;
+    --dur-breathe: 0s;
+    --dur-sheet: 0s;
+    --dur-sheet-out: 0s;
+  }
+
   .sidebar,
   .scrim,
   .icon-button,
@@ -3073,12 +4072,29 @@ button {
   }
 
   .badge-working::before,
-  .conn-reconnecting .conn-dot {
+  .conn-reconnecting .conn-dot,
+  .sidebar .sidebar-status[data-status="working"] :is(.sidebar-status-dot, .sidebar-status-glyph) {
     animation: none;
+  }
+
+  .header-tabs .tab-strip-tab > .tab-strip-dot:not(.tab-strip-glyph)[data-status="working"],
+  .tab-strip .tab-strip-dot:not(.tab-strip-glyph)[data-status="working"] {
+    width: calc(var(--dot-size) + 3px);
+    height: calc(var(--dot-size) + 3px);
+    background: transparent;
+    border: 1.5px solid var(--status-working);
+    border-top-color: transparent;
+    animation: none;
+  }
+
+  .header-tabs .tab-strip-tab > .tab-strip-dot:not(.tab-strip-glyph)[data-status="working"] {
+    width: calc(var(--dot-size) + var(--space-1));
+    height: calc(var(--dot-size) + var(--space-1));
   }
 }
 
 /* Keep native tap overlays from obscuring the app's own pressed/selected states. */
-button, a, [role="button"] {
+button, a, [role="button"], [role="tab"], [role="menuitem"], [role="option"], [role="switch"] {
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }

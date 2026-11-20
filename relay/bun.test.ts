@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startBunRelay, type BunRelay } from "./bun.ts";
-import { SERVER_PROOF_CLOSE } from "../shared/relay-server-proof.ts";
+import { passPolicy } from "./pass.ts";
+import { RELAY_PASS_HEADER, signRelayPass } from "../shared/relay-pass.ts";
+import { relayPassFromArgs } from "./bun-limits.ts";
+import { SERVER_PROOF_CLOSE, answerServerChallenge } from "../shared/relay-server-proof.ts";
 import { BUFFER_FRAMES, CLOSE, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_MESSAGE_BYTES, MAX_PENDING } from "./core.ts";
 import { Peer, answerChallenge, equalBytes, establish, newServer, openPair, openServer, randomServerId, relayUrls } from "./relay-test-client.ts";
 
@@ -8,7 +11,6 @@ let relay: BunRelay;
 let base: string;
 let http: string;
 beforeAll(() => {
-  // This suite deliberately opens more than a minute's default budget in one run.
   relay = startBunRelay({ port: 0, limits: { perAddressPerMinute: 10_000, globalPerMinute: 10_000 } });
   base = `ws://127.0.0.1:${relay.port}`;
   http = `http://127.0.0.1:${relay.port}`;
@@ -42,7 +44,6 @@ describe("relay over HTTP", () => {
       [`/v1/ws?server_id=${id}&v=1`, 400],
       [`/v1/ws?server_id=${id}&role=client&connection_id=${id}&v=1`, 400],
       [`/v1/ws?server_id=${id}&role=server&connection_id=xyz&v=1`, 400],
-      // a valid request that is not a WebSocket upgrade
       [`/v1/ws?server_id=${id}&role=server&v=1`, 426],
     ];
     for (const [path, status] of cases) expect([path, (await fetch(`${http}${path}`)).status]).toEqual([path, status]);
@@ -61,7 +62,7 @@ describe("relay over HTTP", () => {
       const server = newServer();
       const url = relayUrls(`ws://127.0.0.1:${limited.port}`, server).control;
       const ok = await openServer(url, server);
-      expect(await ok.json("sync")).toEqual({ type: "sync", connection_ids: [] });
+      expect(await ok.json("sync")).toEqual({ type: "sync", connection_ids: [], warm: expect.stringMatching(/^[0-9a-f]{32}$/) });
       ok.socket.close();
       expect(asked).toEqual(["address:127.0.0.1", "global:all"]);
 
@@ -116,7 +117,6 @@ describe("relay sockets", () => {
     expect(await control.next("pong")).toBe(KEEPALIVE_PONG);
     client.socket.send(KEEPALIVE_PING);
     expect(await client.next("pong")).toBe(KEEPALIVE_PONG);
-    // the next frame the data socket sees is the one after the ping
     client.socket.send("after");
     expect(await data.next()).toBe("after");
   });
@@ -131,7 +131,6 @@ describe("relay sockets", () => {
     await control.json("connected");
     const sent = Array.from({ length: BUFFER_FRAMES }, (_, index) => index % 2 ? randomBytes(1 + index) : `frame ${index}`);
     for (const frame of sent) client.socket.send(frame);
-    // a ping round trip after them: the relay has taken every frame before the data socket asks
     client.socket.send(KEEPALIVE_PING);
     expect(await client.next("pong")).toBe(KEEPALIVE_PONG);
     const data = await openServer(urls.data(connection_id), id, connection_id);
@@ -162,15 +161,14 @@ describe("relay sockets", () => {
     const id = newServer();
     const urls = relayUrls(base, id);
     const first = await openServer(urls.control, id);
-    expect(await first.json("sync")).toEqual({ type: "sync", connection_ids: [] });
+    expect(await first.json("sync")).toEqual({ type: "sync", connection_ids: [], warm: expect.stringMatching(/^[0-9a-f]{32}$/) });
     const paired = await openPair(base, id, first);
     const waiting = await Peer.open(urls.client);
     const { connection_id } = await waiting.json("assigned") as { connection_id: string };
     await first.json("connected");
     const second = await openServer(urls.control, id);
     expect(await first.closeCode("replaced control")).toBe(CLOSE.POLICY);
-    expect(await second.json("sync")).toEqual({ type: "sync", connection_ids: [connection_id] });
-    // the pair already attached keeps working without its control socket
+    expect(await second.json("sync")).toEqual({ type: "sync", connection_ids: [connection_id], warm: expect.stringMatching(/^[0-9a-f]{32}$/) });
     paired.client.socket.send("still");
     expect(await paired.data.next()).toBe("still");
   });
@@ -224,7 +222,6 @@ describe("relay sockets", () => {
     for (let index = 0; index < MAX_CLIENTS; index++) await establish(await openPair(base, id, control));
     const ninth = await Peer.open(urls.client);
     expect(await ninth.closeCode("9th client")).toBe(CLOSE.TRY_AGAIN);
-    // another server_id is not affected
     const other = await openPair(base, newServer());
     expect(other.connectionId).toMatch(/^[0-9a-f]{32}$/);
   });
@@ -244,7 +241,6 @@ describe("relay admission over real sockets", () => {
     const live = await openServer(urls.control, pc);
     await live.json("sync");
     const other = newServer();
-    // no proof; another key; the right public key with a wrong answer; a replayed answer; not JSON
     const bare = await Peer.open(`${base}/v1/ws?server_id=${pc.serverId}&role=server&v=1`);
     expect(await bare.closeCode("no proof")).toBe(SERVER_PROOF_CLOSE);
     const wrongKey = await Peer.open(urls.control.replace(pc.publicKey, other.publicKey));
@@ -256,7 +252,6 @@ describe("relay admission over real sockets", () => {
     await garbage.next("challenge");
     garbage.socket.send(new Uint8Array([0, 255]));
     expect(await garbage.closeCode("binary answer")).toBe(SERVER_PROOF_CLOSE);
-    // the live PC was never replaced and still hears its clients
     live.socket.send(KEEPALIVE_PING);
     expect(await live.next("pong")).toBe(KEEPALIVE_PONG);
     const pair = await openPair(base, pc, live);
@@ -293,8 +288,97 @@ describe("relay admission over real sockets", () => {
     expect(await pairs[0]!.data.closeCode("its data socket")).toBe(CLOSE.GOING_AWAY);
     expect(await control.json("disconnected")).toEqual({ type: "disconnected", connection_id: pairs[0]!.connectionId });
     expect(await control.json("connected")).toEqual({ type: "connected", connection_id });
-    // the newcomer is served
     const data = await openServer(urls.data(connection_id), pc, connection_id);
     await establish({ client: phone, data });
+  });
+});
+
+describe("relay pass on the Bun relay", () => {
+  test("enforced from flags: a PC socket without a pass closes 4402, one with its pass is let in and told so", async () => {
+    const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+    const keys = `0badc0de:${Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    const pass = await passPolicy(relayPassFromArgs(["--pass-mode", "enforce", "--pass-keys", keys], {}));
+    const enforced = startBunRelay({ port: 0, pass });
+    try {
+      const server = newServer();
+      const urls = relayUrls(`ws://127.0.0.1:${enforced.port}`, server);
+      const refused = await Peer.open(urls.control);
+      expect(await refused.closed).toEqual({ code: 4402, reason: "relay pass required" });
+      const token = await signRelayPass(pair.privateKey, "0badc0de", server.serverId, Math.floor(Date.now() / 1000));
+      const control = new Peer(new WebSocket(urls.control, { headers: { [RELAY_PASS_HEADER]: token } } as unknown as string[]));
+      await control.ready;
+      const answer = answerChallenge(await control.next("server_challenge"), server, null);
+      control.socket.send(answer!);
+      expect((await control.json("sync"))["relay_pass"]).toEqual({ state: "ok", enforce_at: null, mode: "enforce" });
+      control.socket.close();
+    } finally { await enforced.stop(); }
+  });
+
+  test("enforced: PCs behind one address whose passes hold each get in after the address spent its budget", async () => {
+    const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+    const pass = await passPolicy(relayPassFromArgs(["--pass-mode", "enforce", "--pass-keys", `0badc0de:${Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join("")}`], {}));
+    const limited = startBunRelay({ port: 0, pass, limits: { perAddressPerMinute: 2 } });
+    const opened: Peer[] = [];
+    try {
+      const base = `ws://127.0.0.1:${limited.port}`;
+      const phones = relayUrls(base, newServer());
+      for (let index = 0; index < 2; index++) opened.push(await Peer.open(phones.client));
+      const upgrade = { headers: { upgrade: "websocket", connection: "Upgrade", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" } };
+      expect((await fetch(phones.client.replace("ws://", "http://"), upgrade)).status).toBe(429);
+      for (let index = 0; index < 2; index++) {
+        const server = newServer();
+        const token = await signRelayPass(pair.privateKey, "0badc0de", server.serverId, Math.floor(Date.now() / 1000));
+        const control = new Peer(new WebSocket(relayUrls(base, server).control, { headers: { [RELAY_PASS_HEADER]: token } } as unknown as string[]));
+        opened.push(control);
+        await control.ready;
+        control.socket.send(answerChallenge(await control.next("server_challenge"), server, null)!);
+        expect((await control.json("sync"))["relay_pass"]).toEqual({ state: "ok", enforce_at: null, mode: "enforce" });
+      }
+    } finally {
+      for (const peer of opened) peer.socket.close();
+      await limited.stop();
+    }
+  });
+
+  test("enforced: a pairing host needs a pass for the PC key it proves; the device that joins needs none", async () => {
+    const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+    const pass = await passPolicy(relayPassFromArgs(["--pass-mode", "enforce", "--pass-keys", `0badc0de:${Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join("")}`], {}));
+    const enforced = startBunRelay({ port: 0, pass });
+    try {
+      const server = newServer();
+      const pairUrl = (key: string) => `ws://127.0.0.1:${enforced.port}/v1/pair?nameplate=AB1&v=1&${key}`;
+      const keyed = `role=host&server_id=${server.serverId}&public_key=${server.publicKey}`;
+      const token = await signRelayPass(pair.privateKey, "0badc0de", server.serverId, Math.floor(Date.now() / 1000));
+      const withPass = (key: string, header: string) => new Peer(new WebSocket(pairUrl(key), { headers: { [RELAY_PASS_HEADER]: header } } as unknown as string[]));
+      expect(await (await Peer.open(pairUrl("role=host"))).closed).toEqual({ code: 4402, reason: "relay pass required" });
+      expect(await (await Peer.open(pairUrl(keyed))).closed).toEqual({ code: 4402, reason: "relay pass required" });
+      // a pass alone, for a key the host does not offer, opens nothing
+      expect(await withPass("role=host", token).closed).toEqual({ code: 4402, reason: "relay pass required" });
+      const other = newServer();
+      expect(await withPass(`role=host&server_id=${other.serverId}&public_key=${other.publicKey}`, token).closed).toEqual({ code: 4402, reason: "relay pass invalid" });
+      const host = withPass(keyed, token);
+      await host.ready;
+      host.socket.send(answerServerChallenge(await host.next("server_challenge"), server.secretKey, { server_id: server.serverId, role: "pair-host", connection_id: "AB1" })!);
+      expect(await host.json("waiting")).toEqual({ type: "waiting" });
+      await Peer.open(pairUrl("role=guest"));
+      expect((await host.json("guest")).type).toBe("guest");
+      host.socket.close();
+    } finally { await enforced.stop(); }
+  });
+
+  test("an unknown mode is off; other pass settings that do not parse stop the Bun relay from starting", async () => {
+    expect((await passPolicy(relayPassFromArgs(["--pass-mode", "strict"], {}))).mode).toBe("off");
+    const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    const hex = Array.from(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    for (const at of ["04 Dec 2027 00:12:00 GMT", "2027-02-30T00:00:00Z", "2027-01-01", "2027-01-01T00:00:00+09:00"]) {
+      await expect(passPolicy({ RELAY_PASS_MODE: "grace", RELAY_PASS_KEYS: `0badc0de:${hex}`, RELAY_PASS_ENFORCE_AT: at })).rejects.toThrow();
+    }
+    expect((await passPolicy({ RELAY_PASS_MODE: "grace", RELAY_PASS_KEYS: `0badc0de:${hex}`, RELAY_PASS_ENFORCE_AT: "2027-01-01T00:00:00Z" })).enforceAt).toBe(Date.parse("2027-01-01T00:00:00Z"));
+    await expect(passPolicy(relayPassFromArgs(["--pass-mode", "enforce"], {}))).rejects.toThrow();
+    await expect(passPolicy(relayPassFromArgs([], { RELAY_PASS_MODE: "grace", RELAY_PASS_KEYS: "0badc0de:00", RELAY_PASS_ENFORCE_AT: "soon" }))).rejects.toThrow();
+    expect((await passPolicy(relayPassFromArgs([], {}))).mode).toBe("off");
   });
 });

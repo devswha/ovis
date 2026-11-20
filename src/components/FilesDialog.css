@@ -1,9 +1,69 @@
-/* Browse | Changes in the Files dialog's header, between the title and Close */
 .files-dialog-tabs {
   flex: none;
 }
 
-/* the dialog keeps one height across its two tabs: a short list of changes does not shrink it */
+.files-dialog-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .files-dialog .modal-body {
   min-height: calc(var(--control-h) * 8);
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+}
+
+.files-dialog-panel:not([hidden]) {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.files-panel[hidden] {
+  display: none;
+}
+
+.files-dialog-docked {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.files-dialog-docked .modal-header {
+  min-height: calc(var(--control-h) + var(--space-2));
+  padding: 0 var(--space-2) 0 var(--space-3);
+}
+
+.files-dialog-docked .modal-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.files-dialog-docked .modal-body {
+  min-height: 0;
+  padding: var(--space-3);
+}
+
+@media (max-width: 480px) {
+  .files-dialog .modal-header:has(.files-dialog-tabs > :nth-child(4)) { flex-wrap: wrap; }
+  .files-dialog .files-dialog-tabs:has(> :nth-child(4)) { order: 1; flex: 1 1 100%; display: flex; }
+  .files-dialog .files-dialog-tabs:has(> :nth-child(4)) > button { flex: 1 1 auto; min-width: 0; padding-inline: var(--space-1); }
+}
+
+@container file-panel (max-width: 480px) {
+  .files-dialog-docked .modal-header:has(.files-dialog-tabs > :nth-child(4)) { flex-wrap: wrap; padding-block: var(--space-1); }
+  .files-dialog-docked .files-dialog-tabs:has(> :nth-child(4)) { order: 1; flex: 1 1 100%; display: flex; }
+  .files-dialog-docked .files-dialog-tabs:has(> :nth-child(4)) > button { flex: 1 1 auto; min-width: 0; padding-inline: var(--space-1); }
+  .files-dialog-docked .modal-header:has(.files-dialog-tabs > :nth-child(4)) > .icon-button:last-child { margin-left: auto; }
+}
+
+@container file-panel (max-width: 360px) {
+  .files-dialog-docked .modal-title,
+  .files-dialog-docked .files-dialog-tabs + .icon-button:not(:last-child) { display: none; }
 }

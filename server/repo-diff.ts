@@ -1,9 +1,3 @@
-import { closeSync, lstatSync, openSync, readSync } from "node:fs";
-import { join } from "node:path";
-
-import type { RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, RepoDiffStatus } from "../shared/protocol.ts";
-import { errorResponse, jsonResponse } from "./http.ts";
-
 /**
  * What changed in the repository a pane (or a named folder) sits in, read with git and never
  * written: the list of changed files, and one file's patch at a time. The two are separate reads
@@ -26,31 +20,36 @@ import { errorResponse, jsonResponse } from "./http.ts";
  * terminal the same browser can already type `git diff` into.
  */
 
-/** A list holds at most this many files; `truncated` and `total` say when there were more. */
+import { closeSync, lstatSync, openSync, readSync } from "node:fs";
+import { join } from "node:path";
+
+import type { RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, RepoDiffStatus } from "../shared/protocol.ts";
+import { errorResponse, jsonResponse } from "./http.ts";
+
 export const REPO_DIFF_MAX_FILES = 2_000;
-/** What one listing command may print before it is stopped (names, statuses, line counts). */
 export const REPO_DIFF_MAX_LIST_BYTES = 2 * 1024 * 1024;
-/** One file's patch; a larger one is answered as `too_large` with no patch text. */
 export const REPO_DIFF_MAX_PATCH_BYTES = 1024 * 1024;
 /** Unchanged lines around each change, as `git diff` prints by default. */
 export const REPO_DIFF_CONTEXT_LINES = 3;
-/** How long one git process may run. */
 export const REPO_DIFF_DEADLINE_MS = 10_000;
-/** How many branches a base picker is offered at most; `truncated` says when there were more. */
 export const REPO_DIFF_MAX_REFS = 200;
 const MAX_PATH_BYTES = 4_096;
 const SNIFF_BYTES = 8_192;
-/** A pinned comparison on the query string: four hashes and a path, never more. */
 const MAX_COMPARISON_BYTES = 8_192;
 
 export interface RepoDiffOptions {
-  /** the git to run (a stand-in, in tests) */
   git?: string;
   deadlineMs?: number;
   maxFiles?: number;
   maxListBytes?: number;
   maxPatchBytes?: number;
   maxRefs?: number;
+  /**
+   * Never fetch an object a partial clone is missing (git 2.44+ honours this). The history routes
+   * set it: a commit or message is there or it is not. The diff routes leave it off, as a patch of
+   * an older commit in a blobless clone needs its contents fetched.
+   */
+  noLazyFetch?: boolean;
 }
 
 /** A refusal in the API's own words: it never carries git's stderr. */
@@ -58,18 +57,19 @@ export class RepoDiffError extends Error {
   constructor(readonly code: string, message: string, readonly status: number) { super(message); }
 }
 
-interface GitRun { code: number | null; stdout: string; overflow: boolean }
+export interface GitRun { code: number | null; stdout: string; overflow: boolean }
 
-interface Context {
+export interface Context {
   git: string;
   deadlineMs: number;
   maxFiles: number;
   maxListBytes: number;
   maxPatchBytes: number;
   maxRefs: number;
+  noLazyFetch: boolean;
 }
 
-function contextOf(options: RepoDiffOptions): Context {
+export function contextOf(options: RepoDiffOptions): Context {
   return {
     git: options.git ?? "git",
     deadlineMs: options.deadlineMs ?? REPO_DIFF_DEADLINE_MS,
@@ -77,26 +77,27 @@ function contextOf(options: RepoDiffOptions): Context {
     maxListBytes: options.maxListBytes ?? REPO_DIFF_MAX_LIST_BYTES,
     maxPatchBytes: options.maxPatchBytes ?? REPO_DIFF_MAX_PATCH_BYTES,
     maxRefs: options.maxRefs ?? REPO_DIFF_MAX_REFS,
+    noLazyFetch: options.noLazyFetch ?? false,
   };
 }
 
-function gitEnvironment(): Record<string, string> {
+function gitEnvironment(noLazyFetch: boolean): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
     // a repository the server itself was started inside (a hook, a test runner) is not the one asked about
     if (value === undefined || name === "GIT_DIR" || name === "GIT_WORK_TREE" || name === "GIT_INDEX_FILE" || name === "GIT_COMMON_DIR" || name === "GIT_EXTERNAL_DIFF" || name === "GIT_PAGER") continue;
     env[name] = value;
   }
-  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" };
+  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", ...(noLazyFetch ? { GIT_NO_LAZY_FETCH: "1" } : {}), LC_ALL: "C" };
 }
 
 /** One git process in `cwd`: stdout up to `maxBytes`, killed at the deadline or once it prints more. */
-async function runGit(context: Context, cwd: string, args: string[], maxBytes: number): Promise<GitRun> {
+export async function runGit(context: Context, cwd: string, args: string[], maxBytes: number): Promise<GitRun> {
   // an empty core.fsmonitor turns the hook off in every git: before 2.36, `false` names a program to run
   const argv = [context.git, "--no-pager", "--no-optional-locks", "--literal-pathspecs", "-c", "core.quotePath=false", "-c", "core.fsmonitor=", "-c", "color.ui=never", "-C", cwd, ...args];
   let proc: Bun.Subprocess<"ignore", "pipe", "ignore">;
   try {
-    proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: gitEnvironment() });
+    proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: gitEnvironment(context.noLazyFetch) });
   } catch {
     throw new RepoDiffError("git_unavailable", "git could not be started on this PC", 503);
   }
@@ -133,7 +134,7 @@ async function runGit(context: Context, cwd: string, args: string[], maxBytes: n
   }
 }
 
-async function repositoryOf(context: Context, cwd: string): Promise<RepoDiffRepository> {
+export async function repositoryOf(context: Context, cwd: string): Promise<RepoDiffRepository> {
   const top = await runGit(context, cwd, ["rev-parse", "--show-toplevel"], 16 * 1024);
   const root = top.stdout.replace(/\r?\n$/, "");
   if (top.code !== 0 || root === "") throw new RepoDiffError("not_a_repository", "that folder is not inside a git working tree", 409);
@@ -148,10 +149,15 @@ async function repositoryOf(context: Context, cwd: string): Promise<RepoDiffRepo
 
 const REVISION = /^[A-Za-z0-9][A-Za-z0-9._/~^@{}-]{0,199}$/;
 /** A full git object id: 40 hex digits (SHA-1) or 64 (SHA-256), nothing between. */
-const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+export const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/**
+ * The tree with nothing in it, in each object format git has (SHA-1, SHA-256): what a root commit's
+ * changes are read against. git knows it in every repository of its format without storing it.
+ */
+export const EMPTY_TREE_OIDS: readonly string[] = ["4b825dc642cb6eb9a060e54bf8d69288fbee4904", "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"];
 /** A branch as the picker offers it, by its full name: one that `git check-ref-format` accepts names that ref and nothing else. */
 const FULL_REFNAME = /^refs\/(?:heads|remotes)\/[^\0-\x1f\x7f]+$/;
-const MAX_REFNAME_BYTES = 1_024;
+export const MAX_REFNAME_BYTES = 1_024;
 
 /**
  * A revision that names one commit and is no option, range or path: a short expression such as
@@ -159,18 +165,26 @@ const MAX_REFNAME_BYTES = 1_024;
  * any length up to the cap) a short expression does not allow; git's own refname rules hold it to
  * a name, so `..`, `@{`, `~`, `^`, `:` and spaces stay refused.
  */
-async function checkRevision(context: Context, root: string, name: string, value: string): Promise<void> {
+export async function checkRevision(context: Context, root: string, name: string, value: string): Promise<void> {
   if (REVISION.test(value) && !value.includes("..")) return;
   if (FULL_REFNAME.test(value) && Buffer.byteLength(value) <= MAX_REFNAME_BYTES && (await runGit(context, root, ["check-ref-format", value], 1024)).code === 0) return;
   throw new RepoDiffError("invalid_revision", `${name} must name one commit: a hash, a branch, a tag or an expression such as HEAD~1`, 400);
 }
 
-async function resolveRevision(context: Context, root: string, name: string, value: string): Promise<string> {
+export async function resolveRevision(context: Context, root: string, name: string, value: string): Promise<string> {
   await checkRevision(context, root, name, value);
   const parsed = await runGit(context, root, ["rev-parse", "--quiet", "--verify", "--end-of-options", `${value}^{commit}`], 1024);
   const oid = parsed.stdout.trim();
   if (parsed.code !== 0 || !OID.test(oid)) throw new RepoDiffError("revision_not_found", `${name} names no commit in this repository`, 404);
   return oid;
+}
+
+/** A commit scope's base: one commit, or the empty tree of this repository's format, which a root commit is read against. */
+async function resolveBase(context: Context, root: string, value: string): Promise<string> {
+  if (!EMPTY_TREE_OIDS.includes(value)) return resolveRevision(context, root, "base", value);
+  const tree = await runGit(context, root, ["rev-parse", "--quiet", "--verify", "--end-of-options", `${value}^{tree}`], 1024);
+  if (tree.code !== 0 || tree.stdout.trim() !== value) throw new RepoDiffError("revision_not_found", "base names no commit in this repository", 404);
+  return value;
 }
 
 /** The one merge base of two commits; none when their histories are unrelated. */
@@ -218,11 +232,6 @@ function repositoryPath(name: string, value: string): string {
 
 interface Comparison { scope: RepoDiffScope; base: string | null; head: string | null; comparison: RepoBranchComparison | null; args: string[] }
 
-/**
- * Which two states the request names. A branch list resolves the chosen base against HEAD now;
- * a branch patch takes the list's pinned identity instead, and compares from its merge base only
- * once the repository and HEAD are still the ones it names.
- */
 async function comparisonOf(context: Context, repository: RepoDiffRepository, params: URLSearchParams, kind: "files" | "file"): Promise<Comparison> {
   const scope = scopeOf(params.get("scope"));
   const base = params.get("base");
@@ -236,12 +245,11 @@ async function comparisonOf(context: Context, repository: RepoDiffRepository, pa
   const root = repository.root;
   if (scope === "commit") {
     if (base === null) throw new RepoDiffError("invalid_revision", "scope=commit needs a base revision", 400);
-    const [from, to] = await Promise.all([resolveRevision(context, root, "base", base), resolveRevision(context, root, "head", head ?? "HEAD")]);
+    const [from, to] = await Promise.all([resolveBase(context, root, base), resolveRevision(context, root, "head", head ?? "HEAD")]);
     return { scope, base: from, head: to, comparison: null, args: [from, to] };
   }
   if (head !== null) throw new RepoDiffError("invalid_revision", "scope=branch compares the working tree; head applies to scope=commit only", 400);
   if (kind === "file") {
-    // a patch is read from the identity its list answered with, never from the base's name again
     if (pinned === null) throw new RepoDiffError("invalid_comparison", "a branch patch needs the comparison its list answered with", 400);
     const identity = parseComparison(pinned);
     if (identity.repository_root !== root || identity.head_oid !== repository.head) {
@@ -256,9 +264,7 @@ async function comparisonOf(context: Context, repository: RepoDiffRepository, pa
   }
   if (pinned !== null) throw new RepoDiffError("invalid_comparison", "comparison applies to a patch read; a list names its base", 400);
   if (base === null) throw new RepoDiffError("invalid_revision", "scope=branch needs a base branch or commit", 400);
-  // a malformed base is refused before the repository's state is looked at
   await checkRevision(context, root, "base", base);
-  // a detached HEAD on a commit compares as a branch does; one with no commit yet has nothing to compare from
   if (repository.head === null) throw new RepoDiffError("unborn_head", "the repository has no commit yet, so there is no branch to compare", 409);
   const from = await resolveRevision(context, root, "base", base);
   const mergeBase = await mergeBaseOf(context, root, from, repository.head);
@@ -284,7 +290,6 @@ async function changedFiles(context: Context, root: string, comparison: Comparis
   const [names, counts, others] = await Promise.all([
     runGit(context, root, ["diff", ...DIFF_FLAGS, "--name-status", "-z", ...tail], context.maxListBytes),
     runGit(context, root, ["diff", ...DIFF_FLAGS, "--numstat", "-z", ...tail], context.maxListBytes),
-    // the working tree is one side of these two comparisons, so what it holds untracked is listed too
     comparison.scope === "workspace" || comparison.scope === "branch"
       ? runGit(context, root, ["ls-files", "-z", "--others", "--exclude-standard", "--", ...pathspec], context.maxListBytes)
       : Promise.resolve<GitRun>({ code: 0, stdout: "", overflow: false }),
@@ -326,7 +331,6 @@ async function changedFiles(context: Context, root: string, comparison: Comparis
   return { files, complete: !names.overflow && !others.overflow };
 }
 
-/** GET /api/workspace/diff/files */
 export async function repoDiffFiles(cwd: string, params: URLSearchParams, options: RepoDiffOptions = {}): Promise<RepoDiffFileList> {
   const context = contextOf(options);
   const repository = await repositoryOf(context, cwd);
@@ -345,7 +349,10 @@ export async function repoDiffFiles(cwd: string, params: URLSearchParams, option
   };
 }
 
-/** What an untracked path is on disk, without following a link out of the repository. */
+/**
+ * What an untracked path is on disk. Only its last component is checked for a link (lstat, before
+ * the open): a directory above it that is a link is followed, out of the repository too.
+ */
 function untrackedKind(path: string, maxBytes: number): "text" | "binary" | "too_large" | "unsupported" {
   let fd: number | null = null;
   try {
@@ -362,7 +369,6 @@ function untrackedKind(path: string, maxBytes: number): "text" | "binary" | "too
   }
 }
 
-/** GET /api/workspace/diff/file */
 export async function repoDiffFile(cwd: string, params: URLSearchParams, options: RepoDiffOptions = {}): Promise<RepoDiffFilePatch> {
   const context = contextOf(options);
   const path = repositoryPath("path", params.get("path") ?? "");
@@ -398,7 +404,6 @@ export async function repoDiffFile(cwd: string, params: URLSearchParams, options
       const kind = untrackedKind(join(repository.root, path), context.maxPatchBytes);
       if (kind === "binary") return answer(null, "binary", { ...file, binary: true });
       if (kind !== "text") return answer(null, kind, file);
-      // an untracked file has no index entry to compare with: it is shown as a new file, whole
       run = await runGit(context, repository.root, ["diff", "--no-index", ...DIFF_FLAGS, `-U${REPO_DIFF_CONTEXT_LINES}`, "--", "/dev/null", path], context.maxPatchBytes);
       if (!run.overflow && run.code !== 1 && run.code !== 0) throw new RepoDiffError("git_failed", "git could not read that file", 500);
     } else {
@@ -406,7 +411,6 @@ export async function repoDiffFile(cwd: string, params: URLSearchParams, options
       if (!run.overflow && run.code !== 0) throw new RepoDiffError("git_failed", "git could not compare that file", 500);
     }
     if (run.overflow) return answer(null, "too_large", file);
-    // the file changed between the listing and this read, or git printed a form no patch reader takes
     if (run.stdout === "") throw new RepoDiffError("not_found", "nothing changed at that path in this comparison", 404);
     if (!run.stdout.startsWith("diff --git ")) return answer(null, "unsupported", file);
     return answer(run.stdout, null, file.status === "untracked" ? { ...file, binary: false } : file);
@@ -447,7 +451,6 @@ export async function repoDiffRefs(cwd: string, options: RepoDiffOptions = {}): 
   // one ref per line, its fields NUL-separated; what follows the last newline was cut short
   for (const line of run.stdout.split("\n").slice(0, -1)) {
     const [name, oid, symref] = line.split("\0");
-    // a name past the cap a base may have is not offered, so every row on the list can be compared
     if (name === undefined || oid === undefined || symref === undefined || symref !== "" || !OID.test(oid) || Buffer.byteLength(name) > MAX_REFNAME_BYTES) continue;
     refs.push({ name, oid });
   }

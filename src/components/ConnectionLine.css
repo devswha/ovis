@@ -1,0 +1,24 @@
+.connection-line {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.connection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.connection-slow {
+  color: var(--notice);
+  font-weight: var(--fw-semibold);
+}
+
+.connection-reason {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}

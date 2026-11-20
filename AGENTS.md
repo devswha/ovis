@@ -21,14 +21,16 @@ to change. Also read [server/AGENTS.md](server/AGENTS.md) and [src/AGENTS.md](sr
 - `pane.process_info` takes `pane_id`, not `target` (with `target` herdr answers for the focused
   pane).
 - Keep xterm `scrollback: 0` and never rebuild an attached terminal from `pane.read`: the attach
-  stream is the truth. Only a mirrored pane (Windows, or no PTY host: neither the Rust host nor Node) is drawn from
-  `pane.read`, so never assume a pty exists.
+  stream is the truth. Except on a herdr-core server (`terminal-history`): nothing there scrolls,
+  so xterm keeps the history its attach replays. Only a mirrored pane (Windows, or no PTY host:
+  neither the Rust host nor Node) is drawn from `pane.read`, so never assume a pty exists.
 - Nothing the user typed is sent automatically after a disconnect: it waits in a draft until the
   user sends or discards it.
 - Prompt answers go through `POST /api/pane/prompt/answer`, never guessed digit keys.
 - Selecting a pane or tab in the browser never moves herdr's own focus; only an explicit action
   that needs it calls `pane.focus`.
-- Never edit `shared/herdr-api.generated.ts`; run `bun run generate:types`.
+- Never edit `shared/herdr-api.generated.ts` or `server/herdr-core/hc-api.generated.ts`; run
+  `bun run generate:types`.
 - Theme colors are edited only in the theme blocks of `src/styles.css`. Never edit
   `src/lib/themes.generated.ts` or the generated copies in DESIGN.md, index.html and
   `public/manifest.webmanifest`; run `bun run generate:themes`.
@@ -60,52 +62,75 @@ to change. Also read [server/AGENTS.md](server/AGENTS.md) and [src/AGENTS.md](sr
   fresh `%TEMP%` clone that it deletes afterwards (one such run at a time):
   `ssh winvm "pwsh -File C:\ProgramData\winvm\Invoke-InSession.ps1 -Command '& C:\ProgramData\winvm\pr-check.ps1 -Pr <N>'"`.
   When a run leaves state behind, `winvm reset`, then `winvm start`.
+- On this PC `/tmp` is a small tmpfs that runs out of inodes: run `bun run check fast`, tests
+  and review checkouts with `TMPDIR=$HOME/.cache/ovis-tmp/<name>` (create it first, delete it
+  when done).
+- A UI change touching a shared component (FilesDialog, RepoChanges, the sidebar, selection or
+  focus, the terminal view) runs the browser regressions that cover it (the
+  `scripts/*-regression.ts` and `scripts/*-qa.ts` that name it) in the CI runner image before it
+  is ready for review, even when the new behaviour is opt-in.
 
 ## Maintainer workflow
-- A session that changes code, in any harness, stops at an open PR: only the maintainer's merge
-  pass merges, unless the maintainer asks that session to merge. One session that edits files per
-  worktree; read-only sessions may share it.
+- A session that changes code, in any harness, opens a PR and merges it once it is ready, with
+  `pr-merge <PR>`: the gate script beside the gh merge guard on this PC, and the only way a merge
+  goes through here (`pr-merge --help`; `--check` prints the gates and merges nothing). It reads
+  the head it merges: GitHub's required checks, no unresolved thread, no conflict, no `hold`
+  label, a CodeRabbit review of that head, `main` not red and no release in progress. It never
+  passes `--admin`, so GitHub's protection of `main` stays the authority. One session that edits
+  files per worktree; read-only sessions may share it.
+- A change that needs the maintainer's word stays an open PR until he gives it: a release, the
+  README, a UI change he has not seen (before and after screenshots first, one such change at a
+  time), an HTTP/WS contract, a workflow change that removes or weakens a check or touches
+  secrets, permissions, triggers or fork handling, and an outside contributor's feature or docs
+  PR. A PR he tests himself waits for his word too.
+- A PR that must not merge yet gets the `hold` label and a comment that says why. `pr-merge`
+  refuses it until the label is gone.
 - A worktree an agent adds with `git worktree add` that outlives its session (an open PR) goes
   under `~/.herdr/worktrees/herdr-web-ui-wt/`, named after its branch with `/` as `-`
   (`fix/pin-order` in `herdr-web-ui-wt/fix-pin-order`); a short-lived one may stay in the run's
   temp root, and skills that name their own path keep it. Once its PR merges, remove the
   worktree and its branch.
-- After a merge, the merge pass also closes the herdr worktree workspace the PR came from (the
-  one checked out on the PR's branch, under `~/.herdr/worktrees/herdr-web-ui/`), only when all
-  hold: no pane in it has an agent `working`, `git status` there is clean, and the branch's tip
-  is the PR's head commit (`gh pr view --json headRefOid`), so nothing was added after it. Close
-  it with `herdr worktree remove --workspace <id>`, never `git worktree remove`, so the
-  workspace leaves with its checkout. herdr keeps the branch: then `git branch -D` it (a squash
-  merge leaves it unmerged to git; GitHub already deletes the remote one). A workspace that
-  fails a check stays, and the merge report names it and why. A session never removes the
-  worktree it runs in.
+- After a merge, the session that merged also closes the herdr worktree workspace the PR came
+  from (the one checked out on the PR's branch, under `~/.herdr/worktrees/herdr-web-ui/`), only
+  when all hold: no pane in it has an agent `working`, `git status` there is clean, and the
+  branch's tip is the PR's head commit (`gh pr view --json headRefOid`), so nothing was added
+  after it. Close it with `herdr worktree remove --workspace <id>`, never `git worktree remove`,
+  so the workspace leaves with its checkout. herdr keeps the branch: then `git branch -D` it (a
+  squash merge leaves it unmerged to git; GitHub already deletes the remote one). A workspace
+  that fails a check stays, and the merge report names it and why. A session never removes the
+  worktree it runs in: one that merged from the PR's own workspace leaves it, names it in its
+  report, and the maintainer or another session closes it under the same checks.
 - Everything written to git and GitHub (commits, branches, PRs, reviews, issues, changelog
   fragments) is in English.
 - Never push a `v*` tag by hand: installed updaters act on tags alone.
-- The merge pass cuts releases ([steps](docs/development.md#releasing)); any other session may
-  prepare the release PR but stops at it. When that PR raises `REMOTE_BUNDLE_VERSION`, the merge
-  pass merges nothing touching `server/`, `shared/`, `bun.lock` or `patches/` from its merge until
-  the Release run is done.
-- Required checks: Fast checks, Integration and browser, Native Windows install. Resolve review
-  threads before merging (branch protection does not enforce it).
+- A release is cut only on the maintainer's word ([steps](docs/development.md#releasing)); a
+  session may prepare the release PR but stops at it. When that PR raises
+  `REMOTE_BUNDLE_VERSION`, nothing touching `server/`, `shared/`, `bun.lock` or `patches/` merges
+  from its merge until the Release run is done (`pr-merge` merges nothing while that run is in
+  progress).
+- Required checks: Fast checks, Integration and browser, Native Windows install,
+  Hook kill tests (container). Resolve review threads before merging: branch protection refuses a
+  merge with an unresolved thread.
 - Run `bun run check fast` before every push, and push a PR's commits together: each push to a
   PR cancels its CI run in progress and starts every job again.
 - A handoff or a PR's Validation says which checks ran (`bun run check fast`, `full`, or which
   single commands and files) and which were skipped. No pre-push hook stands in for this line.
 - CodeRabbit's reviews are rationed per PR author, and agents open their PRs as one account:
   opening a PR, a push and each `@coderabbitai review` spend one, and past about 80 in a week
-  one comes back per hour. Open verified work ready for review, not as a draft: the merge pass
-  reviews every PR itself and stops at a draft. A draft is only for work still unfinished; push
-  it once when it is ready. Do not open a stack of PRs at once, and ask for another review
-  only after a commit that changes behaviour in `server/`, `src/` or `shared/`, an HTTP/WS
-  contract or a workflow. A rebase, changelog fragment, docs, comment or test-only commit gets
-  none.
+  one comes back per hour. Open verified work ready for review, not as a draft: `pr-merge`
+  refuses a draft. A draft is only for work still unfinished; push it once when it is ready. Do
+  not open a stack of PRs at once, and ask for another review only after a commit that changes
+  behaviour in `server/`, `src/` or `shared/`, an HTTP/WS contract or a workflow. A rebase,
+  changelog fragment, docs, comment or test-only commit gets none.
 - A rate-limited or skipped review still shows a passing CodeRabbit check; its "Review limit
   reached" or "Review skipped" comment means no review ran. CodeRabbit skips a PR of more than
   150 files, so a PR that needs a review stays under that.
 - A PR touching `--takeover`, observe permissions, queued input, authentication, an HTTP/WS
   contract or a workflow waits for a real review. When CodeRabbit skips it, a code-review agent's
   review stands in: its findings and how each was resolved go in a PR comment before the merge.
+  `pr-merge` asks for `--note "<which reviews ran, on whose word>"` when a PR touches such an
+  area, when CodeRabbit did not review its head, and for an outside contributor's PR, and posts
+  the note on the PR.
 - A move-only PR (files moved or split, imports updated, no behaviour change) does not wait for
   CodeRabbit: it merges on its checks once its diff shows only moved code and import paths
   (`git diff --color-moved origin/main...HEAD`). Every PR merged without a CodeRabbit review

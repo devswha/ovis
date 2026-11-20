@@ -1,4 +1,3 @@
-/** Actual PTY screenshots of the same Safari event replay against two built clients. */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +8,7 @@ import { preview } from "vite";
 import { createServer } from "../server/index.ts";
 import { paneRead, paneSendText, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
+import { shownRow } from "./shown-rows.ts";
 
 assert(process.env.HERDR_TEST_LIVE !== "1" && process.env.HERDR_TEST_MODE !== "unit");
 process.env.HERDR_TEST_SESSION ||= "ovis-test-ime-evidence";
@@ -35,8 +35,6 @@ try {
     const results = join(root, "results.json");
     const readyFile = join(root, "ready");
     const capture = join(root, "capture.cjs");
-    // The fixture renders only bytes actually received through the attach stream.
-    // BEL separates cases and is not part of the input under test.
     writeFileSync(capture, String.raw`const fs = require('node:fs');
 const cases = ${JSON.stringify(cases)};
 const results = []; let pending = [];
@@ -128,8 +126,7 @@ process.stdin.on('data', bytes => {
         assert(actual.every(test => test.pass === false), "baseline must fail all five recorded cases");
       }
       await until(async () => (await paneRead({ paneId: pane, source: "visible" })).text.includes("Completed:"), "rendered PTY report must complete");
-      // The visible screen arrives over the attach stream; wait for its xterm render callback.
-      await page.waitForFunction(() => Array.from(document.querySelectorAll(".xterm-rows > div")).some(row => row.textContent?.includes("Completed:")));
+      await page.waitForFunction(rows => Array.from(document.querySelectorAll(rows)).some(row => row.textContent?.includes("Completed:")), shownRow());
       await page.locator(".xterm").screenshot({ path: join(output, `safari-ime-${label}.png`) });
       writeFileSync(join(output, `safari-ime-${label}.json`), JSON.stringify({ label, dist: resolve(dist!), cases: actual, wsInput: sent }, null, 2) + "\n");
       console.log(`PASS ${label}: recorded ${actual.filter(test => test.pass).length}/${cases.length} matches; ${output}`);

@@ -5,7 +5,9 @@
 <h1 align="center">Ovis</h1>
 
 <p align="center">
-  <strong>所有编程智能体，在每块屏幕上。</strong>
+  <strong>你的编程智能体，在桌面、手机和浏览器上。</strong>
+  <br>
+  与在你电脑上运行的 Claude Code、Codex 等智能体聊天，轻点一下即可回答。
 </p>
 
 <p align="center">
@@ -20,91 +22,79 @@
   <br>
   <a href="https://ovis.sh/">官网</a> ·
   <a href="#install">安装</a> ·
-  <a href="https://ovis.sh/demo/">体验演示</a> ·
-  <a href="docs/guide.md#quick-start">快速入门</a> ·
-  <a href="docs/guide.md#faq">常见问题</a> ·
-  <a href="#docs">文档</a>
+  <a href="https://ovis.sh/demo/">演示</a> ·
+  <a href="docs/guide.md">文档</a> ·
+  <a href="https://ovis.sh/discord">Discord</a>
 </p>
-
-Ovis 把你电脑上的编程智能体显示成聊天，在任意浏览器、Mac 应用或手机上点击或轻点即可回答。它是 [herdr](https://github.com/herdrdev/herdr) 的客户端，原名 herdr web UI。
 
 <p align="center">
-  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/hero.webp" alt="在演示中录制的 Ovis 画面：在桌面浏览器中向 Claude Code 发送后续消息后，它的这一轮逐步展开；接着桌面和手机并排出现，Codex 通过 Allow command? 卡片询问是否运行 git push origin feat/export-guard，在手机上点按 Yes 后两个屏幕上的卡片同时关闭；最后点击 release 标签页，一个 shell 窗格作为运行 git log 和 bun test 的真正终端打开。"></a>
-  <br>
-  <sub>录制自可在浏览器中运行的<a href="https://ovis.sh/demo/">演示</a>。</sub>
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-and-phone.webp" width="830" alt="桌面浏览器和手机上的 Ovis。桌面上，工作区和智能体列表旁边是以聊天形式显示的 Claude Code 对话。手机上，Codex 通过 Allow command? 卡片询问是否运行 git push origin feat/export-guard，选项为 Yes、Yes and don't ask again for git push 和 No。"></a>
 </p>
+
+Ovis 运行在智能体所在的那台电脑上，手机或任意浏览器都可以连接到它。它基于 [herdr](https://github.com/herdrdev/herdr) 构建，能显示你在 herdr 或 [Herdr 应用](https://herdr.dev/download/)里看到的同一批实时终端，所以两者可以同时使用。[它们之间的关系 →](docs/guide.md#how-ovis-fits-with-herdr)
 
 <a id="install"></a>
 
 ## 安装
 
-**在电脑上**
+**桌面应用：** [Mac](https://ovis.sh/Ovis-mac-arm64.dmg)（[Intel](https://ovis.sh/Ovis-mac-x64.dmg)）· [Windows](https://ovis.sh/Ovis-win-x64.exe) · [Linux](https://ovis.sh/Ovis-linux-x64.deb)（[全部版本](docs/guide.md#the-desktop-app)）。无需安装其他东西。它只显示自己启动的终端；想看到 herdr 或 Herdr 应用里已有的终端，请改用下面的命令安装。
 
-- **Mac：** 下载 [Ovis.dmg](https://ovis.sh/Ovis.dmg)，打开后点击 **Install**。
-- **Windows：** 下载 [Ovis.exe](https://ovis.sh/Ovis.exe)，运行后点击 **Install**。
-- **Linux：** 在终端中运行：
-  ```bash
-  curl -fsSL https://ovis.sh/install.sh | sh
-  ```
+**已经在用 herdr 或 Herdr 应用：** 一条命令即可把 Ovis 装在它旁边。在 Linux 或 macOS 上运行：
 
-三种方式都会在缺少时一并安装 herdr 和 Bun，无需 Node。其他安装方式和分步说明：见 [INSTALL.md](INSTALL.md)。
+```bash
+curl -fsSL https://ovis.sh/install.sh | sh
+```
 
-**在手机上**
+在 Windows 上，用 PowerShell 运行：
 
-- **iPhone：** TestFlight 公测版，见 [ovis.sh/zh/beta](https://ovis.sh/zh/beta/)。
-- **Android：** Google Play 公测版，见 [ovis.sh/zh/beta](https://ovis.sh/zh/beta/)。
-- **浏览器：** 无需应用，把页面添加到主屏幕即可。
+```powershell
+irm https://ovis.sh/install.ps1 | iex
+```
 
-在电脑和手机上都开启 Tailscale，然后扫描电脑上显示的二维码即可连接。
+**在手机上：** 在电脑上打开 **设置 → 设备和电脑 → 添加连接 → Ovis 中继**，开启开关，再用手机扫描显示的二维码。如果这里提示先登录，就登录并把这台电脑添加到你的账户，然后点击 **显示这个二维码**，再用已登录同一账户的手机扫描。这样扫描后电脑就在这个账户中了，之后要添加其他手机时，这里会改为提示在手机上登录该账户。iPhone 应用已在 [App Store](https://apps.apple.com/app/id6824664162) 上架，Android 应用已在 [Google Play](https://play.google.com/store/apps/details?id=sh.ovis.app) 上架。[手机设置 →](docs/guide.md#on-your-phone)
 
-## 能做什么
+<a href="https://apps.apple.com/app/id6824664162"><img src="ovis-site/assets/app-store/badge-zh.svg" alt="在 App Store 下载" height="48"></a> <a href="https://play.google.com/store/apps/details?id=sh.ovis.app"><img src="ovis-site/assets/google-play/badge-zh.svg" alt="去 Google Play 商店下载" height="48"></a>
 
-- **herdr 跑的智能体都能用。** Claude Code、Codex、OpenCode、pi、omp、Gajae Code、Hermes、Grok 等，大多以聊天形式显示。[支持的智能体 →](docs/guide.md#supported-agents)
-- **请求变成卡片。** 发送回答前，会先确认请求仍然有效。
-- **真正的终端，一键即达。** 就是 herdr 显示的那个窗格，手机上还有按键栏。
-- **所有工作区，一个列表。** 标签页、分屏和通过 SSH 添加的其他电脑，等你处理的会做标记。
-- **推送通知。** 智能体提问或完成任务时提醒你，即使应用已关闭。
-- **免费，MIT 许可。** 运行在你自己的电脑上，无需注册账号。
+## 功能
+
+- **以聊天方式使用智能体。** Claude Code、Codex [等](docs/guide.md#supported-agents)。每一轮的命令和修改会折叠成一行。
+- **审批和提问以卡片呈现。** 轻点即可回答。
+- **推送通知。** 应用关闭时也能收到。
+- **真正的终端，一键即达。** 手机上还有按键栏。
+- **随时随地启动新智能体。** 在桌面或手机上选好文件夹即可。
+- **所有工作区，一个列表。** 也包括通过 SSH 连接的其他电脑。
 
 [全部功能 →](docs/guide.md#features)
 
-**限制：** Ovis 需要 [herdr](https://github.com/herdrdev/herdr) 和你自己开着的电脑，手机也要能访问这台电脑（Tailscale、VPN、SSH 隧道或 Ovis 中继）。
+<details>
+<summary>看看实际操作（25 秒的录屏）</summary>
+<p align="center">
+  <a href="https://ovis.sh/demo/"><img src="docs/media/readme/hero.webp" alt="在演示中录制的 Ovis 画面：在桌面浏览器中向 Claude Code 发送后续消息后，它的这一轮逐步展开；接着桌面和手机并排出现，Codex 通过 Allow command? 卡片询问是否运行 git push origin feat/export-guard，在手机上点按 Yes 后两个屏幕上的卡片同时关闭；最后点击 release 标签页，一个 shell 窗格作为运行 git log 和 bun test 的真正终端打开。"></a>
+  <br>
+  <sub>录制自可在浏览器中运行的<a href="https://ovis.sh/demo/">演示</a>。</sub>
+</p>
+</details>
 
-**隐私：** 会话保留在运行各个智能体的电脑上，Ovis 没有账号。可选的 Ovis 中继默认关闭；开启后，它能看到哪部手机从哪个地址连接哪台电脑、何时传输、传了多少，但无法读取内容（[信任模型](docs/relay.md#trust-model)）。匿名使用计数默认启用，可在 **Settings → About → Anonymous usage counts** 中查看发送内容并关闭，也可设置 `OVIS_TELEMETRY=0` 关闭。[发送哪些内容 →](docs/guide.md#anonymous-usage-counts)
+**限制：** 你的电脑需要开着并且能被访问（Ovis 中继、Tailscale、VPN 或 SSH 隧道）。聊天功能在 Claude Code 上是完整的，在其他智能体上要少一些；真正的终端始终可用。在 Windows 上，一行安装命令会先使用 herdr，可以在 **设置 → 关于 → 终端** 中切换到 Herdr 应用的终端。
 
-<a id="docs"></a>
+**隐私：** 会话留在你的电脑上，不需要账户。中继采用端到端加密（[信任模型](docs/relay.md#trust-model)）。匿名使用计数默认启用，可在 **设置 → 关于** 中关闭，或设置 `OVIS_TELEMETRY=0`（[发送哪些内容](docs/guide.md#anonymous-usage-counts)）。
 
 ## 文档
 
-- **[用户指南](docs/guide.md)：** [快速入门](docs/guide.md#quick-start) · [支持的智能体](docs/guide.md#supported-agents) · [功能](docs/guide.md#features) · [手机](docs/guide.md#on-your-phone) · [远程电脑](docs/remote-pcs.md) · [访问与安全](docs/guide.md#access-and-safety) · [配置](docs/guide.md#configuration) · [键盘快捷键](docs/guide.md#keyboard-shortcuts)
-- **[常见问题](docs/guide.md#faq)：** herdr 自带的 TUI、Tailscale、哪些内容会离开你的电脑，以及与 collie、Happy、Paseo 等的区别。
-- **[INSTALL.md](INSTALL.md)：** 所有安装方式的分步说明，以及某一步失败时怎么办。
-- **[演示](https://ovis.sh/demo/)：** 在浏览器中用虚构会话运行的真实应用。
-- **[更新日志](CHANGELOG.md)**
+- **[用户指南](docs/guide.md)：** [快速入门](docs/guide.md#quick-start) · [支持的智能体](docs/guide.md#supported-agents) · [手机](docs/guide.md#on-your-phone) · [远程电脑](docs/remote-pcs.md) · [配置](docs/guide.md#configuration) · [常见问题](docs/guide.md#faq)
+- **[INSTALL.md](INSTALL.md)：** 所有安装方式的分步说明。
+- **[演示](https://ovis.sh/demo/)** · **[更新日志](CHANGELOG.md)**
+
+文档以英文撰写。
+
+## 参与贡献
+
+环境准备和检查步骤见 [CONTRIBUTING.md](CONTRIBUTING.md)，另可参考[开发文档](docs/development.md)、[DESIGN.md](DESIGN.md) 和 [SECURITY.md](SECURITY.md)。编程智能体在帮人安装时遵循 [INSTALL.md](INSTALL.md)，修改仓库时遵循 [AGENTS.md](AGENTS.md) 和[评审规则](.github/REVIEW.md)。
 
 ## 致谢
 
-本项目基于 [herdr](https://github.com/herdrdev/herdr) 构建，灵感来自 [chatmux](https://github.com/devswha/chatmux)，并使用了 [xterm.js](https://xtermjs.org)、[React](https://react.dev)、[Bun](https://bun.sh) 和 [Lucide](https://lucide.dev)。
-
-感谢所有贡献者，包括 [@Yoonwoo-Ha](https://github.com/Yoonwoo-Ha)，也感谢帮助设计图标和网站的 [@sanguneo](https://github.com/sanguneo)。
-
-## 智能体操作指南
-
-正在协助他人安装应用？请遵循 [INSTALL.md](INSTALL.md)。修改仓库时，请遵循 [CONTRIBUTING.md](CONTRIBUTING.md)、[审查规则](.github/REVIEW.md)和 [AGENTS.md](AGENTS.md)。
-
-## 开发
-
-```bash
-git clone https://github.com/devswha/ovis.git
-cd ovis
-bun install
-
-bun run server      # API + WebSocket on :7317
-bun run dev         # Vite on :5173; run in a second terminal
-```
-
-提交改动请参阅 [CONTRIBUTING.md](CONTRIBUTING.md)，测试、媒体素材和发布流程请参阅[开发文档](docs/development.md)，界面规范请参阅 [DESIGN.md](DESIGN.md)。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
+本项目基于 [herdr](https://github.com/herdrdev/herdr) 构建，灵感来自 [chatmux](https://github.com/devswha/chatmux)，并使用了 [xterm.js](https://xtermjs.org)、[React](https://react.dev)、[Bun](https://bun.sh) 和 [Lucide](https://lucide.dev)。感谢所有贡献者，包括 [@Yoonwoo-Ha](https://github.com/Yoonwoo-Ha)，也感谢帮助设计图标和网站的 [@sanguneo](https://github.com/sanguneo)。
 
 ## 许可证
 
-[MIT](LICENSE)。Copyright © 2026 devswha.
+[MIT](LICENSE). Copyright © 2026 devswha.

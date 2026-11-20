@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { SetupJob, SetupRequest } from "../shared/machines.ts";
+import { sheetEntryLeft } from "./sheets-settled.ts";
 
-// Render the real dialog against synthetic setup responses. No SSH host or herdr is used.
 const repo = join(import.meta.dir, "..");
 const root = mkdtempSync(join(tmpdir(), "herdr-machine-dialog-"));
 try {
@@ -64,6 +64,9 @@ try {
           });
           await page.goto(`http://127.0.0.1:${server.port}/`);
           const dialog = page.getByRole("dialog", { name: "Add PC", exact: true });
+          // a phone's dialog holds a history entry and steps off it a moment after it closes: a reload asked
+          // for before that step lands is dropped by it (net::ERR_ABORTED)
+          const reload = async (): Promise<void> => { if (await dialog.count() === 0) await sheetEntryLeft(page); await page.reload(); };
           const destination = dialog.getByRole("textbox", { name: "SSH alias or user@address", exact: true });
           await destination.fill("fixture-only");
           await destination.press("Enter");
@@ -99,6 +102,158 @@ try {
           console.log(`PASS ${width}px: version failure → validated update by Enter → separate approval → Open PC`);
 
           await page.unroute("**/api/machines/setup**");
+          for (const choice of ["Use work", "Start a new herdr here", "Use Ovis on this PC (herdr-core)"] as const) {
+            const selected: SetupRequest[] = [];
+            const socket = "/home/fixture/desktop/herdr/sessions/work/herdr.sock";
+            await page.route("**/api/machines/setup**", async (route) => {
+              if (route.request().method() === "POST") {
+                selected.push(route.request().postDataJSON());
+                job = { id: "found", machine_id: "fixture", target: { destination: "fixture-only" },
+                  phase: selected.length === 1 ? "failed" : "connected", step: selected.length === 1 ? "Connection failed" : "Connected",
+                  action_required: selected.length === 1 ? "choose_herdr" : null,
+                  found_herdr_sessions: [{ socket_path: socket, session: "work", label: "work" }, { socket_path: "/home/fixture/.config/herdr/herdr.sock", label: "Default session" }],
+                  found_ovis: [{ socket_path: "/home/fixture/.config/ovis/hc-adapter.sock", runtime: "herdr-core" }],
+                  installations: [], challenge: null, error: selected.length === 1 ? "Choose this PC's Ovis server or a running herdr session." : null, ssh_output: null };
+              }
+              await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
+            });
+            await reload();
+            await destination.fill("fixture-only");
+            await destination.press("Enter");
+            await dialog.getByRole("button", { name: choice, exact: true }).waitFor();
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+            const shots = join(process.env.UI_EVIDENCE_DIR || join(repo, "evidence"), "found-herdr"); mkdirSync(shots, { recursive: true });
+            for (const theme of ["light", "dark"]) {
+              await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+              await page.waitForFunction(() => document.getAnimations().every((animation) => !(animation instanceof CSSTransition) || animation.playState !== "running"));
+              await page.screenshot({ path: join(shots, `choice-${width}-${theme}.png`) });
+            }
+            assert.equal(await dialog.getByText("Connection failed").count(), 0, "a needed choice does not read as a failed connection");
+            await dialog.getByText("Choose this PC's Ovis server or a running herdr session.", { exact: true }).waitFor();
+            const answers = dialog.locator(".machine-action button");
+            assert.deepEqual(await answers.allTextContents(), ["Use Ovis on this PC (herdr-core)", "Use work", "Use Default session", "Start a new herdr here"]);
+            assert.equal(await answers.first().evaluate((button) => button.classList.contains("btn-primary")), true);
+            await dialog.getByRole("button", { name: choice, exact: true }).click();
+            await dialog.getByRole("button", { name: "Open PC", exact: true }).waitFor();
+            assert.deepEqual(selected, [{ destination: "fixture-only" }, choice === "Use work"
+              ? { destination: "fixture-only", session: "work", herdr_socket: socket }
+              : choice === "Use Ovis on this PC (herdr-core)" ? { destination: "fixture-only", own_ovis: "/home/fixture/.config/ovis/hc-adapter.sock" }
+              : { destination: "fixture-only", start_new_herdr: true }]);
+            await page.unroute("**/api/machines/setup**");
+          }
+          console.log(`PASS ${width}px: found session offers reuse or explicit new start and sends the chosen identity`);
+          for (const choice of ["Start a new herdr here", "Use work", "Use Ovis on this PC (herdr-core)"] as const) for (const changed of ["address", "port", "session"] as const) {
+            const selected: SetupRequest[] = [];
+            await page.route("**/api/machines/setup**", async (route) => {
+              if (route.request().method() === "POST") {
+                const target = route.request().postDataJSON() as SetupRequest;
+                selected.push(target);
+                job = { id: "bound", machine_id: "fixture", target, phase: "failed", step: selected.length === 1 ? "Choose a session" : "Attempt failed",
+                  action_required: selected.length === 1 ? "choose_herdr" : null,
+                  found_herdr_sessions: [{ socket_path: "/home/fixture/desktop/herdr/sessions/work/herdr.sock", session: "work", label: "work" }],
+                  found_ovis: [{ socket_path: "/home/fixture/.config/ovis/hc-adapter.sock", runtime: "herdr-core" }],
+                  installations: [], challenge: null, error: null, ssh_output: null };
+              }
+              await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
+            });
+            await reload(); await destination.fill("fixture-only"); await destination.press("Enter");
+            await dialog.getByRole("button", { name: choice, exact: true }).click();
+            await dialog.getByText("Attempt failed", { exact: true }).waitFor();
+            assert.equal(selected.length, 2);
+            if (changed === "address") await destination.fill("another-pc");
+            else {
+              await dialog.locator("summary").click();
+              if (changed === "port") await dialog.getByRole("spinbutton", { name: "SSH port", exact: true }).fill("2222");
+              else await dialog.getByRole("textbox", { name: "herdr session name", exact: true }).fill("different");
+            }
+            await Promise.all([
+              page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/machines/setup"),
+              dialog.getByRole("button", { name: "Retry connection", exact: true }).click(),
+            ]);
+            assert.equal(selected[2]?.start_new_herdr, undefined, `${choice}: ${changed} edit clears new-start consent`);
+            assert.equal(selected[2]?.herdr_socket, undefined, `${choice}: ${changed} edit clears chosen socket`);
+            assert.equal(selected[2]?.own_ovis, undefined, `${choice}: ${changed} edit clears chosen Ovis`);
+            await page.unroute("**/api/machines/setup**");
+          }
+          console.log(`PASS ${width}px: failed choices lose consent and socket on address, port or session edits`);
+          {
+            const selected: SetupRequest[] = [];
+            await page.route("**/api/machines/setup**", async (route) => {
+              if (route.request().method() === "POST") {
+                const target = route.request().postDataJSON() as SetupRequest;
+                selected.push(target);
+                job = { id: "core-stopped", machine_id: "fixture", target, phase: selected.length === 3 ? "connected" : "failed", step: "Choose a runtime",
+                  action_required: selected.length === 3 ? null : "choose_herdr",
+                  found_herdr_sessions: [], found_ovis: selected.length === 1 ? [{ socket_path: "/home/fixture/.config/ovis/hc-adapter.sock", runtime: "herdr-core" }] : [],
+                  installations: [], challenge: null, error: selected.length === 2 ? "Start Ovis on that PC, or start a new herdr here" : null, ssh_output: null };
+              }
+              await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
+            });
+            await reload(); await destination.fill("fixture-only"); await destination.press("Enter");
+            await dialog.getByRole("button", { name: "Use Ovis on this PC (herdr-core)", exact: true }).click();
+            await dialog.locator(".machine-action strong").filter({ hasText: "Start Ovis on that PC, or start a new herdr here" }).waitFor();
+            const shots = join(process.env.UI_EVIDENCE_DIR || join(repo, "evidence"), "found-herdr"); mkdirSync(shots, { recursive: true });
+            for (const theme of ["light", "dark"]) {
+              await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+              await page.screenshot({ path: join(shots, `core-stopped-${width}-${theme}.png`) });
+            }
+            await dialog.getByRole("button", { name: "Start a new herdr here", exact: true }).click();
+            await dialog.getByRole("button", { name: "Open PC", exact: true }).waitFor();
+            assert.deepEqual(selected[2], { destination: "fixture-only", start_new_herdr: true });
+            await page.unroute("**/api/machines/setup**");
+            console.log(`PASS ${width}px: stopped core offers explicit new herdr and clears its chosen Ovis`);
+          }
+          {
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            const sent: SetupRequest[] = [];
+            await page.route("**/api/machines/setup**", async (route) => {
+              if (route.request().method() === "POST") {
+                const target = route.request().postDataJSON() as SetupRequest;
+                sent.push(target);
+                if (sent.length === 1) await held;
+                job = { id: "inflight", machine_id: "fixture", target, phase: "failed", step: sent.length === 1 ? "Choose a session" : "Attempt failed",
+                  action_required: sent.length === 1 ? "choose_herdr" : null,
+                  found_herdr_sessions: [{ socket_path: "/home/fixture/desktop/herdr/sessions/work/herdr.sock", session: "work", label: "work" }],
+                  installations: [], challenge: null, error: null, ssh_output: null };
+              }
+              await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
+            });
+            await reload(); await destination.fill("fixture-only");
+            const requested = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === "/api/machines/setup");
+            const answered = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/machines/setup");
+            await destination.press("Enter");
+            await requested;
+            await destination.fill("another-pc");
+            release();
+            await answered;
+            await dialog.getByText("Choose a session", { exact: true }).waitFor();
+            assert.equal(await dialog.getByRole("button", { name: "Use work", exact: true }).count(), 0, "in-flight edit: no sessions of the PC it was sent for");
+            assert.equal(await dialog.getByRole("button", { name: "Start a new herdr here", exact: true }).count(), 0, "in-flight edit: no new-start choice for the edited PC");
+            await page.unroute("**/api/machines/setup**");
+          }
+          console.log(`PASS ${width}px: an address edited in flight never receives the choices of the PC it was sent for`);
+          {
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            await page.route("**/api/machines/setup**", async (route) => {
+              if (route.request().method() === "POST") {
+                const target = route.request().postDataJSON() as SetupRequest;
+                await held;
+                job = { id: "polled", machine_id: "fixture", target, phase: "checking", step: "Checking the old PC", action_required: null, installations: [], challenge: null, error: null, ssh_output: null };
+              } else job = { ...job!, phase: "failed", step: "Polled session choices", action_required: "choose_herdr", found_herdr_sessions: [{ socket_path: "/home/fixture/.config/herdr/herdr.sock", label: "Default session" }] };
+              await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
+            });
+            await reload(); await destination.fill("fixture-only");
+            const requested = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === "/api/machines/setup");
+            await destination.press("Enter"); await requested;
+            await destination.fill("another-pc"); release();
+            await dialog.getByText("Polled session choices", { exact: true }).waitFor();
+            assert.equal(await dialog.getByRole("button", { name: "Use Default session", exact: true }).count(), 0, "poll: old PC sessions never appear for the edited identity");
+            assert.equal(await dialog.getByRole("button", { name: "Start a new herdr here", exact: true }).count(), 0, "poll: old PC never grants new-start consent");
+            await page.unroute("**/api/machines/setup**");
+          }
+          console.log(`PASS ${width}px: polling never restores session choices for a different form identity`);
           for (const decision of ["early_close", "cancel", "close", "start_headless"] as const) {
             const actions: unknown[] = [];
             await page.route("**/api/machines/setup**", async (route) => {
@@ -112,7 +267,7 @@ try {
               }
               await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
             });
-            await page.reload();
+            await reload();
             await destination.fill("fixture-only");
             await destination.press("Enter");
             if (decision === "early_close") await dialog.getByText("Keep this dialog open until the PC connects.", { exact: true }).waitFor();

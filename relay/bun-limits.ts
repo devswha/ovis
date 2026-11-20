@@ -1,10 +1,13 @@
 import type { Limiters, RateLimiter } from "./core.ts";
+import type { PassSettings } from "./pass.ts";
 
 export const DEFAULT_RELAY_LIMITS = {
   perAddressPerMinute: 120,
   globalPerMinute: 600,
   maxSockets: 1024,
   maxRooms: 256,
+  /** pairing rooms (pair-room.ts), counted apart so typed codes never take a PC's place */
+  maxPairRooms: 256,
   maxAddresses: 4096,
   /** open sockets (waiting, connected or still upgrading) one address may hold at once */
   maxSocketsPerAddress: 64,
@@ -33,9 +36,25 @@ export function relayLimitsFromArgs(args: readonly string[], env: Readonly<Recor
     globalPerMinute: value("global-per-minute", "RELAY_GLOBAL_PER_MINUTE", DEFAULT_RELAY_LIMITS.globalPerMinute),
     maxSockets: value("max-sockets", "RELAY_MAX_SOCKETS", DEFAULT_RELAY_LIMITS.maxSockets),
     maxRooms: value("max-rooms", "RELAY_MAX_ROOMS", DEFAULT_RELAY_LIMITS.maxRooms),
+    maxPairRooms: value("max-pair-rooms", "RELAY_MAX_PAIR_ROOMS", DEFAULT_RELAY_LIMITS.maxPairRooms),
     maxAddresses: value("max-addresses", "RELAY_MAX_ADDRESSES", DEFAULT_RELAY_LIMITS.maxAddresses),
     maxSocketsPerAddress: value("max-sockets-per-address", "RELAY_MAX_SOCKETS_PER_ADDRESS", DEFAULT_RELAY_LIMITS.maxSocketsPerAddress),
   });
+}
+
+/** The relay pass settings (pass.ts) from `--pass-mode`, `--pass-enforce-at`, `--pass-keys` and `--pass-revoked`, else the environment. */
+export function relayPassFromArgs(args: readonly string[], env: Readonly<Record<string, string | undefined>>): PassSettings {
+  const value = (flag: string, variable: keyof PassSettings) => {
+    const index = args.indexOf(`--${flag}`);
+    if (index >= 0 && args[index + 1] === undefined) throw new Error(`--${flag} needs a value`);
+    return index >= 0 ? args[index + 1] : env[variable];
+  };
+  return {
+    RELAY_PASS_MODE: value("pass-mode", "RELAY_PASS_MODE"),
+    RELAY_PASS_ENFORCE_AT: value("pass-enforce-at", "RELAY_PASS_ENFORCE_AT"),
+    RELAY_PASS_KEYS: value("pass-keys", "RELAY_PASS_KEYS"),
+    RELAY_PASS_REVOKED: value("pass-revoked", "RELAY_PASS_REVOKED"),
+  };
 }
 
 /** Token buckets refill continuously; full idle buckets are forgotten, active ones never evicted. */
@@ -60,5 +79,8 @@ export function memoryLimiters(limits: BunRelayLimits, now: () => number = Date.
   return {
     perAddress: bucket(limits.perAddressPerMinute, limits.maxAddresses),
     global: bucket(limits.globalPerMinute, 1),
+    // once its address's budget is spent, a PC whose relay pass holds gets one of its own (core.ts Limiters.perPc)
+    perPc: bucket(limits.perAddressPerMinute, limits.maxAddresses),
+    passChecks: bucket(limits.perAddressPerMinute, limits.maxAddresses),
   };
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ConversationTurn } from "../../shared/protocol.ts";
-import { minimapCurrent, minimapFits, minimapSlots, minimapSlotTarget, minimapSlotTurn, minimapStep, minimapTop, minimapTurns, minimapTurnSlot } from "./chatMinimap.ts";
+import { MINIMAP_TICK_MIN_PX, minimapCurrent, minimapFits, minimapSlots, minimapSlotTarget, minimapSlotTurn, minimapStep, minimapTop, minimapTurns, minimapTurnSlot } from "./chatMinimap.ts";
 
 const user = (text: string): ConversationTurn => ({ role: "user", ts: null, parts: [{ kind: "text", text }] });
 const agent: ConversationTurn = { role: "assistant", ts: null, parts: [{ kind: "text", text: "ok" }] };
@@ -21,8 +21,14 @@ describe("chatMinimap", () => {
     expect(minimapSlots(10, 72)).toBe(10);
     expect(minimapSlots(2000, 600)).toBe(151);
     expect(minimapSlots(10, 0)).toBe(10);
-    expect(minimapSlots(10, 4)).toBe(4);
-    expect(minimapSlots(3, 4)).toBe(3);
+    expect(minimapSlots(10, 4)).toBe(2);
+    expect(minimapSlots(3, 4)).toBe(2);
+    for (let rail = 1; rail <= 40; rail++) {
+      for (const count of [4, 5, 10, 200]) {
+        const slots = minimapSlots(count, rail);
+        if (slots > 1) expect(rail * (minimapTop(1, slots) - minimapTop(0, slots)) / 100).toBeGreaterThanOrEqual(MINIMAP_TICK_MIN_PX - 1e-9);
+      }
+    }
     for (const [count, slots] of [[10, 3], [2000, 151], [151, 150], [7, 7]] as const) {
       expect(minimapSlotTurn(0, slots, count)).toBe(0);
       for (let turn = 0; turn < count; turn++) {
@@ -32,7 +38,6 @@ describe("chatMinimap", () => {
       }
     }
     expect(minimapTurnSlot(1999, 151, 2000)).toBe(150);
-    // the bottom tick (and End) reaches the newest turn on a capped rail, as on a full one
     for (const [count, slots] of [[2000, 151], [200, 50], [80, 20], [7, 7]] as const) {
       expect(minimapSlotTarget(slots - 1, slots, count)).toBe(count - 1);
       expect(minimapSlotTarget(0, slots, count)).toBe(0);

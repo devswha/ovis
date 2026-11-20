@@ -2,26 +2,20 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, ty
 
 import { minimapCurrent, minimapFits, minimapSlots, minimapSlotTarget, minimapStep, minimapTop, minimapTurnSlot, MINIMAP_MIN_TURNS, type MinimapTurn } from "../lib/chatMinimap.ts";
 import { useT } from "../lib/i18n.ts";
+import { requestShownFrame } from "../lib/shownFrame.ts";
 import "./ChatMinimap.css";
 
 export interface ChatMinimapProps {
   turns: readonly MinimapTurn[];
-  /** the timeline's row keys in order, to tell which rows are on screen */
   rowKeys: readonly string[];
   scroller: RefObject<HTMLDivElement | null>;
   onJump: (row: number) => void;
-  /** a wheel over the rail, which scrolls the chat from outside it: the chat counts it as the reader's input */
   onWheel?: (deltaY: number) => void;
 }
 
 const SPACING_PX = 8;
-/** the room the rail leaves above and below it, as in its height below */
 const MARGIN_REM = 12;
 
-/**
- * A tick per turn the user sent, beside the chat column; the turn in view is marked. A rail too
- * short for every turn gives a tick to each run of turns, so loading older history adds no buttons.
- */
 export function ChatMinimap({ turns, rowKeys, scroller, onJump, onWheel }: ChatMinimapProps) {
   const t = useT();
   const [current, setCurrent] = useState<number | null>(null);
@@ -35,9 +29,9 @@ export function ChatMinimap({ turns, rowKeys, scroller, onJump, onWheel }: ChatM
     if (node === null) return;
     const positions = new Map(rowKeys.map((key, index) => [key, index]));
     const turnRows = turns.map((turn) => turn.row);
-    let frame = 0;
+    let cancel: (() => void) | null = null;
     const measure = (): void => {
-      frame = 0;
+      cancel = null;
       const view = node.getBoundingClientRect();
       let first = Infinity, last = -1;
       for (const row of node.querySelectorAll<HTMLElement>("[data-chat-row]")) {
@@ -55,22 +49,22 @@ export function ChatMinimap({ turns, rowKeys, scroller, onJump, onWheel }: ChatM
       const nextRail = Math.max(0, Math.min((turns.length - 1) * SPACING_PX, view.height - MARGIN_REM * rem));
       setRailPx((previous) => previous === nextRail ? previous : nextRail);
     };
-    const schedule = (): void => { if (frame === 0) frame = requestAnimationFrame(measure); };
+    const schedule = (): void => { cancel ??= requestShownFrame(measure); };
     schedule();
     node.addEventListener("scroll", schedule, { passive: true });
     const observer = new ResizeObserver(schedule);
     observer.observe(node);
     return () => {
-      cancelAnimationFrame(frame);
+      cancel?.();
       node.removeEventListener("scroll", schedule);
       observer.disconnect();
     };
   }, [scroller, rowKeys, turns]);
 
-  // a rail with no height to stand on draws nothing, rather than a button per turn
   if (turns.length < MINIMAP_MIN_TURNS || !fits || railPx <= 0) return null;
   const count = turns.length;
   const slots = minimapSlots(count, railPx);
+  if (slots < MINIMAP_MIN_TURNS) return null;
   const currentSlot = current === null ? null : minimapTurnSlot(current, slots, count);
   const stop = Math.min(focusIndex ?? currentSlot ?? slots - 1, slots - 1);
   const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {

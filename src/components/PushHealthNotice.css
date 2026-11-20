@@ -1,9 +1,56 @@
-/* the alerts line shares .update-notice's layout with the update, telemetry, machine-action and
-   exposure notices (src/components/UpdateControls.css); the needs-attention tint and the glyph
-   that says so without the colour are its own */
 .update-notice.is-alerts {
   background: var(--status-blocked-tint);
   color: var(--text-strong);
+}
+
+.update-notice.is-alerts:not(.is-failure) > span {
+  flex-basis: 0;
+}
+
+.update-notice.is-alerts:not(.is-failure) > .btn {
+  flex-shrink: 1;
+  height: auto;
+  min-height: var(--control-h);
+  white-space: normal;
+  text-wrap: balance;
+  word-break: auto-phrase;
+}
+
+@media (pointer: coarse) {
+  .update-notice.is-alerts:not(.is-failure) > .btn {
+    min-height: var(--touch-target);
+  }
+}
+
+.update-notice.is-alerts.is-failure > span {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .update-notice.is-alerts.is-failure {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "icon text close"
+      ". action action";
+    align-items: start;
+    max-height: calc(var(--app-height, 100dvh) / 2);
+    overflow-y: auto;
+  }
+
+  .update-notice.is-alerts.is-failure > svg { grid-area: icon; }
+  .update-notice.is-alerts.is-failure > .update-notice-dismiss { grid-area: close; }
+  .update-notice.is-alerts.is-failure > span { grid-area: text; }
+
+  .update-notice.is-alerts.is-failure > .btn {
+    grid-area: action;
+    justify-self: start;
+    max-width: 100%;
+    white-space: normal;
+  }
 }
 
 .update-notice.is-alerts > svg {

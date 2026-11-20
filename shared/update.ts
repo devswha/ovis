@@ -1,4 +1,3 @@
-/** App updates are independent of the herdr daemon and its terminal sessions. */
 export interface UpdateStatus {
   managed: boolean;
   auto_update: boolean;
@@ -39,6 +38,12 @@ export interface UpdateStatus {
    */
   revision_bound_install?: boolean;
   /**
+   * The supervisor stops an install while it builds when asked (POST /api/updates/cancel): it then
+   * ends `error` with `error_code: "update_cancelled"`, nothing installed and its offer kept. Once it
+   * restarts onto the new release, it is too late. Absent from an older supervisor, which cannot.
+   */
+  install_cancellable?: boolean;
+  /**
    * Where this server answers, told only to the connection server that reaches it as its PC (its
    * bridge token), which cannot read GET /api/access (#2191): the port it listens on, and the HTTPS
    * address Tailscale already serves it at (RemoteAccess.port, TailscaleAccess.serving_url). Absent
@@ -46,17 +51,43 @@ export interface UpdateStatus {
    */
   port?: number;
   serving_url?: string | null;
+  /**
+   * Which builds this PC updates to: `stable` releases only, or also the `beta` builds CI publishes
+   * from green main. Absent from a supervisor older than the field, which offers releases only.
+   */
+  channel?: UpdateChannel;
 }
 
-export type UpdateErrorCode = "update_offer_changed";
-/** A full commit id, as `latest_revision` names it. */
+/**
+ * `stable` takes `vX.Y.Z` releases only; `beta` also takes the `vX.Y.Z-beta.N` builds CI tags on
+ * main once its checks pass. Off (`stable`) unless the PC opts in.
+ */
+export type UpdateChannel = "stable" | "beta";
+
+export function readUpdateChannel(value: string | null | undefined): UpdateChannel | null {
+  const name = value?.trim().toLowerCase();
+  return name === "beta" || name === "stable" ? name : null;
+}
+
+export type UpdateErrorCode = "update_offer_changed" | "update_cancelled";
 export const REVISION = /^[0-9a-f]{40,64}$/;
 
 /**
  * What the bridge asks of the update service: a check, or the install of the exact revision the
  * person saw offered. A manual install never goes without its revision.
  */
-export type UpdateRequest = { command: "check" } | { command: "install"; expected_revision: string };
+export type UpdateRequest = { command: "check" } | { command: "install"; expected_revision: string; install_id?: string } | { command: "cancel"; install_id: string };
+/**
+ * An install's own id, given in its 202 (POST /api/updates/install) to whoever asked for it: a cancel names it, so only the one
+ * that asked for an install can stop it, never another device's or the PC's own Settings'.
+ */
+export const INSTALL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function updateIpcMessage(request: UpdateRequest): Record<string, string> {
+  // an install goes as a message an older supervisor does not know, never as its unbound `install`
+  if (request.command === "install") return { type: "update-install-revision", expected_revision: request.expected_revision, ...(request.install_id ? { install_id: request.install_id } : {}) };
+  return request.command === "cancel" ? { type: "update-cancel-v2", install_id: request.install_id } : { type: "update-command", command: "check" };
+}
 
 /**
  * The supervisor's reading of a bridge's IPC message. `update-command` carries only a check: an
@@ -65,38 +96,34 @@ export type UpdateRequest = { command: "check" } | { command: "install"; expecte
  * running it as an install of whatever its own check finds.
  */
 export function readUpdateIpcRequest(message: unknown): UpdateRequest | null {
-  const value = message as { type?: unknown; command?: unknown; expected_revision?: unknown } | null | undefined;
+  const value = message as { type?: unknown; command?: unknown; expected_revision?: unknown; install_id?: unknown } | null | undefined;
   if (typeof value !== "object" || value === null) return null;
   if (value.type === "update-command" && value.command === "check") return { command: "check" };
+  // a cancel travels as a type no older supervisor knows (one that cancelled without an id knew "update-cancel"), and so ignores
+  if (value.type === "update-cancel-v2") return typeof value.install_id === "string" && INSTALL_ID.test(value.install_id) ? { command: "cancel", install_id: value.install_id } : null;
   if (value.type === "update-install-revision" && typeof value.expected_revision === "string" && REVISION.test(value.expected_revision)) {
-    return { command: "install", expected_revision: value.expected_revision };
+    return { command: "install", expected_revision: value.expected_revision, ...(typeof value.install_id === "string" && INSTALL_ID.test(value.install_id) ? { install_id: value.install_id } : {}) };
   }
   return null;
 }
 
-/** The update check's reason for a source checkout that moved since the server started. */
 export const CHECKOUT_CHANGED_REASON = "The source checkout changed. Restart the app before updating.";
 
-/** An install's steps, in the order it takes them. */
 export const UPDATE_STEPS = ["download", "dependencies", "typecheck", "build", "restart"] as const;
 export type UpdateStep = typeof UPDATE_STEPS[number];
 
 export type UpdateCommand = "check" | "install";
 
-/** The languages a release's summary is written in: the app's own (src/lib/i18n.ts). */
 export const SUMMARY_LANGUAGES = ["en", "ko", "ja", "zh"] as const;
 export type SummaryLanguage = typeof SUMMARY_LANGUAGES[number];
-/** The lists a summary is told in, in the order they are read. */
 export const SUMMARY_GROUPS = ["new", "improved", "fixed"] as const;
 export type SummaryGroup = typeof SUMMARY_GROUPS[number];
 /** A release as patch notes: short lines of plain text under what is new, improved and fixed. A list with no line is absent. */
 export type ReleaseHighlights = Partial<Record<SummaryGroup, string[]>>;
 /** A release's highlights per language; a language the release did not write is absent. */
 export type ReleaseSummary = Partial<Record<SummaryLanguage, ReleaseHighlights>>;
-/** A highlight is one line, and a list a handful of them: what is longer is cut where it is read. */
 export const HIGHLIGHT_LIMIT = 160;
 export const HIGHLIGHTS_PER_GROUP = 8;
-/** An answer names this many releases at most: a jump over more is counted, not listed, wherever an answer is read. */
 export const RELEASES_LIMIT = 50;
 
 /** One release's section of CHANGELOG.md, and its summary from release-summaries.json. */
@@ -150,11 +177,6 @@ export function noInstalledNotes(): InstalledNotes {
   return { revision: null, version: null, previous_version: null, installed_at: null, releases: [], omitted: 0 };
 }
 
-/**
- * A summary as it was written or sent (release-summaries.json from a Git remote, the supervisor
- * over IPC, the server over HTTP): the lines that are text, under the lists and languages the
- * app has, each cut to a line and each list to a handful. Nothing when no line is left.
- */
 export function readSummary(value: unknown): ReleaseSummary | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const summary: ReleaseSummary = {};
@@ -176,11 +198,9 @@ export function readSummary(value: unknown): ReleaseSummary | undefined {
   return Object.keys(summary).length > 0 ? summary : undefined;
 }
 
-/** The releases of an answer, or null when one of them is not in shape; `dropped` counts those past the cap. */
 function readReleases(value: unknown): { releases: ReleaseNote[]; dropped: number } | null {
   if (!Array.isArray(value)) return null;
   const releases: ReleaseNote[] = [];
-  // what is past the cap is not read, and counted as omitted: an answer is bounded here, whatever sent it
   const dropped = Math.max(0, value.length - RELEASES_LIMIT);
   for (const entry of (value as Array<Partial<Record<keyof ReleaseNote, unknown>> | null>).slice(0, RELEASES_LIMIT)) {
     if (typeof entry?.version !== "string" || typeof entry.notes !== "string") return null;
@@ -193,10 +213,6 @@ function readReleases(value: unknown): { releases: ReleaseNote[]; dropped: numbe
 
 const readOmitted = (value: unknown): number => typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
 
-/**
- * Notes as another process or another version sent them (the supervisor over IPC, the server
- * over HTTP). Anything that is not in shape is no notes: they are drawn as they are.
- */
 export function readUpdateNotes(value: unknown): UpdateNotes {
   const notes = value as Partial<Record<keyof UpdateNotes, unknown>> | null | undefined;
   const read = typeof notes === "object" && notes !== null ? readReleases(notes.releases) : null;
@@ -204,10 +220,6 @@ export function readUpdateNotes(value: unknown): UpdateNotes {
   return { revision: typeof notes.revision === "string" ? notes.revision : null, releases: read.releases, omitted: readOmitted(notes.omitted) + read.dropped };
 }
 
-/**
- * The last update's notes, read as `readUpdateNotes` reads an offer's. An update is told only
- * with both of its versions: an answer without them says, for its commit, that there is none.
- */
 export function readInstalledNotes(value: unknown): InstalledNotes {
   const notes = value as Partial<Record<keyof InstalledNotes, unknown>> | null | undefined;
   const read = typeof notes === "object" && notes !== null ? readReleases(notes.releases) : null;
@@ -220,11 +232,13 @@ export function readInstalledNotes(value: unknown): InstalledNotes {
   };
 }
 
-export function unmanagedUpdateStatus(): UpdateStatus {
+export const DESKTOP_APP_UPDATES = "This server is part of the Ovis app, which updates them together: updates come with the app, not from here.";
+
+export function unmanagedUpdateStatus(desktopApp = false): UpdateStatus {
   return {
     managed: false, auto_update: false, phase: "idle", current_revision: null,
     latest_revision: null, current_version: null, latest_version: null, available: false, checked_at: null, error: null,
-    blocked_reason: "Start with bun run start or the herdr plugin to enable updates.",
+    blocked_reason: desktopApp ? DESKTOP_APP_UPDATES : "Start with bun run start or the herdr plugin to enable updates.",
   };
 }
 
