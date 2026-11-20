@@ -161,6 +161,26 @@ it("S32-1: while the service hides the route (step 2 off for this account), the 
   expect((await unsentBlocks(store, signedIn)).flatMap((kept) => kept.records)).toEqual([record]);
 });
 
+it("S32-1: a token refresh that answers for another account is refused: nothing is posted under it and the record stays", async () => {
+  const store = memoryAccountStore();
+  const expired = { ...session, expires_at: Date.now() };
+  await store.set("session", expired);
+  const record = await block();
+  await keepUnsent(store, expired, [record]);
+  const asked: string[] = [];
+  const service = new AccountService({ store, fetch: async (input) => {
+    const path = new URL(String(input)).pathname;
+    asked.push(path);
+    return path === "/v1/token"
+      ? Response.json({ access_token: "b-access", refresh_token: "b-refresh", expires_in: 3600, account: "another-account", provider: "github" })
+      : Response.json({ id: record.id });
+  } });
+  await expect(postKept(store, expired, [record], (kept) => service.postSafetyRecord(kept))).rejects.toThrow();
+  expect(asked).toEqual(["/v1/token"]);
+  expect((await store.get("session"))?.account).toBe(session.account);
+  expect((await unsentBlocks(store, expired)).flatMap((kept) => kept.records)).toEqual([record]);
+});
+
 it("S32-1: of a partly accepted set, only the records still unconfirmed stay", async () => {
   const store = memoryAccountStore();
   await store.set("session", session);

@@ -262,6 +262,10 @@ describe("deleting the account from Settings", () => {
     expect(shown()).toContain("The block was refused. Block it again from this device.");
     expect(buttons()).toContain("Sign out anyway");
     expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
+    // the refusal stays queued until its owner presses OK
+    expect(Object.keys(await indexedAccountStore.get("unsent_blocks") ?? {})).toEqual(["refused-1"]);
+    await press("OK");
+    await until(() => !shown().includes("The block was refused. Block it again from this device."));
     expect(await indexedAccountStore.get("unsent_blocks")).toBeUndefined();
   });
 

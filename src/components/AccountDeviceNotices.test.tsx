@@ -646,7 +646,7 @@ it("S32-1: signing out takes the unsent line and its Try again away", async () =
   } finally { await page.restore(); }
 });
 
-it("S32-1: a final refusal from the service shows the line once, with no Try again, and leaves the queue", async () => {
+it("S32-1: a final refusal from the service shows the line with no Try again, and leaves the queue only when its owner presses OK", async () => {
   const page = await notMePage({ service: () => Response.json({ error: { code: "signer_not_older", message: "x" } }, { status: 403 }) });
   try {
     await page.mount();
@@ -654,6 +654,9 @@ it("S32-1: a final refusal from the service shows the line once, with no Try aga
     await act(async () => { await page.button("Not me")!.props.onClick(); });
     expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
     expect(page.button("Try again")).toBeUndefined();
+    expect(Object.values(await page.store.get("unsent_blocks") ?? {}).map((entry) => entry.refused)).toEqual([true]);
+    await act(async () => { await page.button("OK")!.props.onClick(); });
+    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
   } finally { await page.restore(); }
 });
@@ -671,7 +674,7 @@ it("S32-1: a refused token refresh is no refusal of the block: it stays stored a
   } finally { await page.restore(); }
 });
 
-it("S32-1: a final refusal answered after a sign-out is shown at the next sign-in to that account, and only then leaves", async () => {
+it("S32-1: a final refusal answered after a sign-out is shown at the next sign-in to that account, and leaves only on its OK", async () => {
   let first = true;
   const held = Promise.withResolvers<Response>();
   const page = await notMePage({ service: () => { if (first) { first = false; return new Response(null, { status: 503 }); } return held.promise; } });
@@ -695,6 +698,8 @@ it("S32-1: a final refusal answered after a sign-out is shown at the next sign-i
     await act(async () => {});
     expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
     expect(page.button("Try again")).toBeUndefined();
+    expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
+    await act(async () => { await page.button("OK")!.props.onClick(); });
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
   } finally { await page.restore(); }
 });
@@ -709,17 +714,17 @@ it("S32-1: a final refusal the page never draws (the App behind its access gate)
   } finally { await page.restore(); }
 });
 
-it("S32-1: a final refusal drawn in a hidden tab leaves the store only once the tab is seen", async () => {
+it("S32-1: a final refusal drawn on a seen page stays queued until its owner presses OK", async () => {
   const page = await notMePage({ service: () => Response.json({ error: { code: "signer_not_older", message: "x" } }, { status: 403 }) });
   try {
-    page.page.visibilityState = "hidden";
     await page.store.set("unsent_blocks", { r1: { account: page.session.account, sign_in_id: page.session.sign_in_id, records: [{ id: "r1" } as unknown as BlockRecord], refused: true } });
     await page.mount();
     await act(async () => {});
     expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
+    await act(async () => { page.page.dispatchEvent(new Event("visibilitychange")); });
     expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toEqual(["r1"]);
-    await act(async () => { page.page.visibilityState = "visible"; page.page.dispatchEvent(new Event("visibilitychange")); });
-    await act(async () => {});
+    await act(async () => { await page.button("OK")!.props.onClick(); });
+    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
   } finally { await page.restore(); }
 });
@@ -825,7 +830,26 @@ it("S32-1: a final refusal met on an in-session Try again keeps the line once, w
     await act(async () => { await retry.props.onClick(); });
     expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
     expect(page.button("Try again")).toBeUndefined();
+    expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
+    await act(async () => { await page.button("OK")!.props.onClick(); });
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
+  } finally { await page.restore(); }
+});
+
+it("S32-1: once the PC withdrew the account release, Try again sends nothing, also after the PC disconnects", async () => {
+  const page = await notMePage({ service: () => new Response(null, { status: 503 }) });
+  try {
+    await page.mount();
+    await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
+    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    const retry = page.button("Try again");
+    if (retry === undefined) throw new TypeError("Missing account retry");
+    const posts = page.order.filter((step) => step.startsWith("service ")).length;
+    await act(async () => { page.wire.snapshot([]); });
+    await act(async () => { page.wire.close(); });
+    await act(async () => { await retry.props.onClick(); });
+    expect(page.order.filter((step) => step.startsWith("service "))).toHaveLength(posts);
+    expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
   } finally { await page.restore(); }
 });
 
