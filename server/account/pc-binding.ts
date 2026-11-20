@@ -248,13 +248,6 @@ export class PcAccountState {
   /** The first-device fact (T67): the key that bound the PC, and its proved sign-in key or null. */
   first(): { readonly key: string; readonly list_key: string | null } | null { return this.doc.first; }
 
-  /** The first device's list key, from a sign-in that proved it (T59): set once, and only while the first is known. */
-  proveListKey(key: string): void {
-    const first = this.doc.first;
-    if (first === null || first.list_key !== null || this.problem !== null) return;
-    this.write({ ...this.doc, first: { ...first, list_key: key } });
-  }
-
   othersEver(): boolean { return this.doc.others_ever; }
 
   /** The first admission of another account row sets it; nothing unsets it (H2). */

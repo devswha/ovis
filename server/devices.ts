@@ -2668,9 +2668,6 @@ export class DeviceStore {
     return { id: updated.id, label: updated.label, role: updated.role };
   }
 
-  /** A sign-in proved by `key` (T59): the first device's list key, set once and from nothing else. */
-  provedListKey(key: string): void { this.pc?.proveListKey(key); }
-
   /** A pairing of a key on this PC names the account removals it knew (`paired_over`), and stands over them (P13, T23). */
   private knowingRemovals(device: StoredDevice): StoredDevice {
     if (this.evidence === null || device.relay_public_key === undefined || !pairedHere(device)) return device;

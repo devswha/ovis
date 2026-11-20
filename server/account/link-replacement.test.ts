@@ -113,15 +113,17 @@ describe("a key approved on this PC's screen is replaced only by a confirm of it
     expect(row(dir, id)).toMatchObject({ relay_public_key: next, origin: { from: "remote", how: "link", admit_no: 2 } });
   });
 
-  test("T59: the first device's list key is set only from a sign-in that proved it, once", async () => {
+  test("T59: no link sets the first device's list key: it stays empty this release, so T67 never applies", async () => {
     const { devices, pc: state } = pc();
     const k = await key();
     const id = devices.pairRelay(devices.startPairing().code, "Phone", k)!.device.id;
     devices.linkAccountKey(id, k, k, ACCOUNT);
     expect(state.first()).toEqual({ key: k, list_key: null });
-    devices.provedListKey(k);
-    expect(state.first()).toEqual({ key: k, list_key: k });
-    devices.provedListKey(await key());
-    expect(state.first()).toEqual({ key: k, list_key: k });
+    const approved = await screenApproved(devices);
+    const next = await key();
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT, "", false, true);
+    devices.replaceConfirmed({ row: approved.id, key: next, source: "screen" });
+    expect(state.first()).toEqual({ key: k, list_key: null });
   });
+
 });
