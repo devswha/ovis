@@ -63,13 +63,15 @@ describe("a key approved on this PC's screen is replaced only by a confirm of it
     expect(devices.replaceConfirmed({ row: approved.id, key: next, source: "screen" })).toBeNull();
   });
 
-  test("T72: a second link while one waits replaces it, and only the newest key can be confirmed", async () => {
+  test("T72: a second link while one waits replaces it with a new challenge, and only the newest key can be confirmed", async () => {
     const { devices } = pc();
     const approved = await screenApproved(devices);
     const [first, second] = [await key(), await key()];
     devices.linkAccountKey(approved.id, approved.key, first, ACCOUNT);
+    const firstChallenge = devices.pendingReplacement(approved.id)!.challenge;
     devices.linkAccountKey(approved.id, approved.key, second, ACCOUNT);
-    expect(devices.pendingReplacement(approved.id)).toMatchObject({ key: second });
+    expect(devices.pendingReplacement(approved.id)).toMatchObject({ key: second, challenge: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) });
+    expect(devices.pendingReplacement(approved.id)!.challenge).not.toBe(firstChallenge);
     expect(devices.replaceConfirmed({ row: approved.id, key: first, source: "screen" })).toBeNull();
   });
 
