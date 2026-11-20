@@ -86,6 +86,33 @@ describe("this sign-in's own key", () => {
     expect(routes.registered).toHaveLength(1);
   });
 
+  it("P18: when the service took the key but its answer was lost, the retry registers that same key, never a second one", async () => {
+    const fake = new FakeAccountService();
+    const routes = withDeviceRoutes(fake, { opensAll: true });
+    let lose = true;
+    const lossy = async (input: Request | string | URL, init?: RequestInit) => {
+      const answer = await routes.fetch(input, init);
+      if (lose && new URL(String(input instanceof Request ? input.url : input)).pathname === "/v1/devices") { lose = false; throw new TypeError("connection lost"); }
+      return answer;
+    };
+    const store = memoryAccountStore();
+    const service = await signedIn(lossy, fake, store);
+    await expect(signInKey(store, service)).rejects.toThrow();
+    const kept = await signInKey(store, service);
+    expect(kept?.no).toBe(3);
+    expect(new Set(routes.registered.map((entry) => entry.key))).toEqual(new Set([kept!.key.public_spki]));
+  });
+
+  it("P18: two calls at once for one sign-in register one key", async () => {
+    const fake = new FakeAccountService();
+    const routes = withDeviceRoutes(fake, { opensAll: true });
+    const store = memoryAccountStore();
+    const service = await signedIn(routes.fetch, fake, store);
+    const [one, two] = await Promise.all([signInKey(store, service), signInKey(store, service)]);
+    expect(one!.key.public_spki).toBe(two!.key.public_spki);
+    expect(new Set(routes.registered.map((entry) => entry.key)).size).toBe(1);
+  });
+
   it("P21: a new sign-in gets a new key, since a key registers once per account", async () => {
     const fake = new FakeAccountService();
     const store = memoryAccountStore();
