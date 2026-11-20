@@ -67,7 +67,9 @@ describe("the device journal (P10, P15)", () => {
     });
     const [device] = page.devices;
     if (!device) throw new Error("The snapshot lost its listed device");
-    journal.recordAccountRow({ ...device, kind: "admit", row: "aaaaaaaaaaaaaaaa", account: page.account }, evidence);
+    const row = "aaaaaaaaaaaaaaaa";
+    journal.recordAccountRow({ ...device, kind: "admit", row, account: page.account }, evidence);
+    journal.openListedRows([row]);
 
     const replay = DeviceJournal.open(dir).replay("bbbbbbbbbbbbbbbb", () => true);
     expect(replay.notices).toMatchObject([{ kind: "admit", how: "list", key: phone, method, two_step }]);
