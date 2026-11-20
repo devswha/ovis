@@ -474,7 +474,8 @@ export class AccountService {
   }
 
   async postSafetyRecord(record: DeviceSafetyRecord): Promise<void> {
-    await this.call("POST", "/v1/safety-records", { record }, AbortSignal.timeout(5_000));
+    const body = await this.call("POST", "/v1/safety-records", { record }, AbortSignal.timeout(5_000));
+    if (!isRecord(body) || body.id !== record.id) throw new AccountServiceError(502, "invalid_answer", "The account service did not confirm this record");
   }
 
   /**
