@@ -121,6 +121,33 @@ describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
     });
   }
 
+  test.each(["enrollment", "held key", "waiting removal"] as const)("T34, G8/G9: a whole read commits without admitting a key blocked by %s", async (gate) => {
+    const { fixture, service, serverId, member } = await listedPc();
+    const { accountMailbox, accountHolds, devices } = fixture.app.context.services;
+    const key = keyOf("k-waiting");
+    service.registerDevice(ACCOUNT, key, "Waiting phone");
+    switch (gate) {
+      case "enrollment": accountHolds.startEnrolling(member.id); break;
+      case "held key": accountHolds.hold([key]); break;
+      case "waiting removal":
+        expect(accountMailbox.wait(await signAccountRecord({ v: 1, kind: "remove", key, account: ACCOUNT,
+          signer: member.publicKey, id: newRecordId(), issued_at: new Date().toISOString() }, member.keys.privateKey))).toBe(true);
+        break;
+    }
+    // A barred candidate must not even need a writable admission journal for the read to commit.
+    const append = DeviceJournal.prototype.append;
+    const fence = spyOn(DeviceJournal.prototype, "append").mockImplementation(function (this: DeviceJournal, entry) {
+      if (entry.kind === "admit" && entry.key === key) throw new Error("unexpected join notice for blocked key");
+      return append.call(this, entry);
+    });
+    try {
+      const outcome = await accountMailbox.readSnapshot();
+      expect(accountMailbox.error).toBeNull();
+      expect(outcome).toMatchObject({ committed: true });
+      expect(devices.has(accountDeviceId(serverId, key))).toBe(false);
+    } finally { fence.mockRestore(); }
+  });
+
   test("T34, G15: a list stops at 64 unanswered notices and resumes when one is answered", async () => {
     const { fixture, device, service, serverId } = await listedPc();
     const { accountMailbox, devices } = fixture.app.context.services;
