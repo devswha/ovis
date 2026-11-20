@@ -6,37 +6,16 @@ import { privateStateFs } from "../private-state.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { keyOf } from "./account-devices.test-helpers.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
-import { bytesToHex } from "@noble/hashes/utils.js";
-import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
+import { accountDeviceId, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
 import { applyAccountRecords } from "./records.ts";
-import { FakeAccountService } from "../../shared/account-service-fake.ts";
-import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { FrameType, type MuxFrame, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
-import { rotateRelayIdentity } from "../relay/identity.ts";
-import { bounded, relayAccountFixture, relayConnection, relayFixture } from "../relay/test-helpers.ts";
+import { bounded, relayConnection, relayFixture } from "../relay/test-helpers.ts";
 
-const ACCOUNT = "acct_1";
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 
-/** A PC in ACCOUNT with the release flag on, whose whole read has listed one more device of the account. */
-async function listedPc() {
-  const service = new FakeAccountService();
-  service.opensAll = true;
-  const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
-  closes.push(() => fixture.close());
-  rotateRelayIdentity(fixture.stateDir);
-  const { services } = fixture.app.context;
-  const identity = services.relay.currentIdentity()!;
-  await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${service.issueToken(ACCOUNT)}` },
-    body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
-  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-  const spki = await exportAccountKey(keys.publicKey);
-  service.registerDevice(ACCOUNT, spki, "Laptop");
-  expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
-  const device = { keys, publicKey: spki, id: accountDeviceId(identity.server_id, spki) };
-  return { fixture, member, device, service, serverId: identity.server_id };
-}
+const listedPc = () => createListedPc(close => closes.push(close));
 
 async function refusal(pc: Awaited<ReturnType<typeof listedPc>>, features: readonly string[]) {
   const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
