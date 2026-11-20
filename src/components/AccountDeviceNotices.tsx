@@ -100,10 +100,11 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, onResult 
         routes.pcs.delete(ownId);
       }
       const service = indexedAccountService.forSignIn(session);
-      const skipped = new Map<string, Machine>();
+      // Every route to a skipped PC: one that is open and reports no capability decides its line, whatever the order.
+      const skipped = new Map<string, Machine[]>();
       for (const machine of fleet.machines) {
         const serverId = serverIdOf(machine);
-        if (serverId !== undefined && !rows.has(serverId)) skipped.set(serverId, machine);
+        if (serverId !== undefined && !rows.has(serverId)) skipped.set(serverId, [...skipped.get(serverId) ?? [], machine]);
       }
       // Directory lookup supplies display rows only; never put it in front of block delivery.
       const directory = skipped.size === 0 ? [] : service.listPcs(AbortSignal.timeout(ANSWER_TIMEOUT_MS)).catch((error: unknown) => {
@@ -118,12 +119,14 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, onResult 
       const outcomes = new Map<string, PcBlockOutcome>(sent.outcomes);
       const names = new Map([...rows].map(([id, machine]) => [id, machine.name]));
       for (const { server_id } of roster) {
-        const machine = skipped.get(server_id);
-        if (machine === undefined) continue;
-        const remote = fleet.machineSessions.peek(machine.id)?.socket;
-        const state = remote?.connected && remote.featuresListed() && !remote.accountOpensAll() ? "unsupported" : "unreachable";
-        outcomes.set(server_id, { server_id, state });
-        names.set(server_id, machine.name);
+        const routes = skipped.get(server_id);
+        if (routes === undefined || routes[0] === undefined) continue;
+        const unsupported = routes.some((machine) => {
+          const remote = fleet.machineSessions.peek(machine.id)?.socket;
+          return remote?.connected && remote.featuresListed() && !remote.accountOpensAll();
+        });
+        outcomes.set(server_id, { server_id, state: unsupported ? "unsupported" : "unreachable" });
+        names.set(server_id, routes[0].name);
       }
       onResult({ pc: pc.id, notice, signer: current.public_spki, fleet: { ...sent, outcomes }, names });
     } catch (error) {
