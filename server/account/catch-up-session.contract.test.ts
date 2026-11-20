@@ -90,4 +90,16 @@ describe("S2-27 a devices.json row not paired at this PC waits for the first who
     expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     expect(authority()).toEqual([pc.member.id, pc.member.id, true]);
   });
+
+  test("S22/P7: a waiting cookie credential has no principal until the whole read", async () => {
+    const pc = await startedPc();
+    const { devices, accountMailbox } = pc.fixture.app.context.services;
+    const cookie = devices.pair(devices.startPairing().code, "Browser", "watch");
+    if (!cookie) throw new Error("No paired browser");
+    expect(devices.catchingUp(cookie.device.id)).toBe(true);
+    expect(devices.match(cookie.token)).toBeNull();
+    pc.service.opensAll = true;
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(devices.match(cookie.token)).toEqual(cookie.device);
+  });
 });
