@@ -74,10 +74,9 @@ export async function sendBlocks(blocks: readonly BlockRecord[], options: {
       replied = true;
       let matched = false;
       for (const answer of receipts) {
-        const receipt = matchingReceipt(fleet.ids, answer);
-        if (receipt === undefined) continue;
+        if (matchingReceipt(fleet.ids, answer) === undefined) continue;
         matched = true;
-        if (counted) fleet = { ...fleet, outcomes: new Map(fleet.outcomes).set(serverId, blockOutcome(serverId, receipt)) };
+        if (counted) fleet = withBlockReceipt(fleet, serverId, answer);
       }
       if (matched) return;
     }
