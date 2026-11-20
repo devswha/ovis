@@ -42,8 +42,9 @@ export type BrowserDecision = Allowed | Refused;
  * an Ovis server: a host by any of its names (`canonicalHost`) and the port it listens on. `ovisAt`
  * on a resolved address finds a server only by an address listed here, so the caller lists the
  * addresses a server is reached at as well as its names (this PC's own: loopback and each address of
- * its interfaces). A server listed by name alone (a PC added by its https address) is found only by
- * that name; reached under another, it treats the tab as a stranger and asks it to pair.
+ * its interfaces). A server listed by name alone (a PC added by its https address) is protected only
+ * under that name: reached at an address not listed, what the tab may do there is that server's own
+ * access policy (server/access.ts), which lets in any client of a LAN-bound server nobody paired.
  */
 export interface OvisEndpoint {
   host: string;
