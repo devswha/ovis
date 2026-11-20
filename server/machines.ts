@@ -1392,7 +1392,11 @@ export class MachineManager {
           // the default session's socket is saved as herdr to start (job.defaultSocket), so the named one's row would save
           // the PC with that socket, and after that PC restarts its bridge would say the session no longer runs instead of
           // starting it by its name
-          if (!session && answered && !listedHere && !throwawayPath(expectedSocket, inspection.home)) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
+          if (!session && answered && !listedHere) {
+            // the default session is asked about too, though a throwaway one is not listed
+            if (!throwawayPath(expectedSocket, inspection.home)) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
+            throw await offer(choice);
+          }
         }
         if (sessions.has(expectedSocket)) throw await offer(choice);
       }
