@@ -80,8 +80,10 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     const log = f.app.context.services.safetyLog!;
     expect(log.receipts(target.spki).map((receipt) => receipt.outcome)).toEqual(["applied"]);
     expect(log.blockIds()).toHaveLength(1);
-    expect(log.receiptsBySigner(signer.spki).map((receipt) => receipt.outcome)).toEqual(["applied"]);
-    expect(log.receiptsBySigner(target.spki)).toEqual([]);
+    expect(log.receiptsBySigner(signer.spki, ACCOUNT).map((receipt) => receipt.outcome)).toEqual(["applied"]);
+    expect(log.receiptsBySigner(target.spki, ACCOUNT)).toEqual([]);
+    // a block signed under another binding of this PC is no receipt of the account it is in now
+    expect(log.receiptsBySigner(signer.spki, "acct_other")).toEqual([]);
     // the registry on disk says so too, before any listener answered
     expect(rowIds(dir)).not.toContain(target.id);
     expect(rowIds(dir)).not.toContain(revoked.id);
