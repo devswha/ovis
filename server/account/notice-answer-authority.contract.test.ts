@@ -3,6 +3,7 @@ import { accountDeviceId, newRecordId, signSafetyRecord } from "../../shared/acc
 import { ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import * as herdr from "../herdr/client.ts";
 import { relayConnection, relayDevice } from "../relay/test-helpers.ts";
+import { DeviceJournal } from "./device-journal.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { phone } from "./pairing.test-helpers.ts";
@@ -10,7 +11,7 @@ import { phone } from "./pairing.test-helpers.ts";
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 
-test("S2P-10: Not me's listed row drop replays the close to a separate observer that already acknowledged it", async () => {
+test.each(["listed", "transferred"] as const)("S2P-10: Not me on a %s admission replays its close to an offline observer", async (kind) => {
   const { fixture, member, serverId, service } = await createListedPc(close => closes.push(close));
   const { devices, core, accountMailbox } = fixture.app.context.services;
   const observer = await relayDevice(fixture);
@@ -34,6 +35,17 @@ test("S2P-10: Not me's listed row drop replays the close to a separate observer 
   before.stop();
   await before.closed;
 
+  if (kind === "transferred") {
+    expect(devices.pairRelayApproved("New phone", target.spki, { path: "account", addedBy: member.id, id: targetId })?.device.id).toBe(targetId);
+    expect(devices.openNotices().find(entry => entry.id === notice.id)).toEqual(notice);
+  }
+  let atRemoval: ReturnType<DeviceJournal["replay"]> | undefined;
+  const off = devices.onNotice(entry => {
+    if (entry.row === targetId && (entry.kind === "remove" || entry.kind === "drop")) {
+      atRemoval = DeviceJournal.open(fixture.stateDir).replay(observer.id, n => n.id === notice.id);
+    }
+  });
+  closes.push(off);
   const block = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: target.spki,
     target_no: 3, signer: member.publicKey, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, member.keys.privateKey);
   const answering = (await connect(member)).openSocket();
@@ -49,6 +61,7 @@ test("S2P-10: Not me's listed row drop replays the close to a separate observer 
   if (replay.type !== "device-notice-replay") throw new Error("Missing reconnect replay");
   expect(replay.replay.cut).toBe(0);
   expect(replay.replay.notices.filter(entry => entry.id === notice.id)).toMatchObject([{ id: notice.id, kind: "admit", open: false }]);
+  expect(atRemoval?.notices).toMatchObject([{ id: notice.id, kind: "admit", open: false }]);
 });
 
 test("a same-account watch member cannot block a listed device or decide its notice", async () => {

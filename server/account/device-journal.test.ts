@@ -163,6 +163,22 @@ describe("the device journal (P10, P15)", () => {
     expect(reopened.replay(device, tells).notices).toEqual([]);
   });
 
+  test("S2P-10: owner reconciliation records a close for the orphan but keeps an owned admission open", () => {
+    const dir = stateDir();
+    const journal = DeviceJournal.open(dir);
+    const lost = admit(journal, "aaaaaaaaaaaaaaaa", 5);
+    const kept = admit(journal, "bbbbbbbbbbbbbbbb", 6);
+    const observer = "cccccccccccccccc";
+    journal.ack(observer, kept.seq);
+    journal.settleList(entry => entry.id === kept.id);
+
+    const reopened = DeviceJournal.open(dir);
+    expect(reopened.openNotices().map(entry => entry.id)).toEqual([kept.id]);
+    expect(reopened.replay(observer, () => true)).toMatchObject({ cut: 0, notices: [
+      { id: kept.id, open: true }, { id: lost.id, open: false },
+    ] });
+  });
+
   test("G14: failed journal write admits nobody and a throwing listener skips nobody else", async () => {
     const dir = stateDir();
     const devices = store(dir);
