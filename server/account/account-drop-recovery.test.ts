@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountDeviceId, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
@@ -10,6 +10,7 @@ import { keyOf } from "./account-devices.test-helpers.ts";
 import { DeviceJournal, JOURNAL_FILE, JOURNAL_MAX } from "./device-journal.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { applyAccountRecords } from "./records.ts";
+import { REMOVAL_FILE, RemovalEvidence } from "./removal-evidence.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
@@ -18,10 +19,10 @@ const rows = (dir: string) => parseAccountDevicesFile(JSON.parse(readFileSync(jo
 const drops = (dir: string) => DeviceJournal.open(dir).entries().filter(entry => entry.kind === "drop")
   .map(({ kind, how, key, row, account }) => ({ kind, how, key, row, account }));
 
-function failReplacement(path: string) {
+function failReplacement(path: string, containing?: string) {
   const rename = privateStateFs.renameSync;
   return spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
-    if (to === path) throw new Error("replacement failed");
+    if (to === path && (containing === undefined || readFileSync(from, "utf8").includes(containing))) throw new Error("replacement failed");
     rename(from, to);
   });
 }
@@ -36,6 +37,28 @@ function restartOffline(dir: string) {
   const restarted = relayFixture(false, { stateDir: dir, accountOpensAll: true, accountService: { url: "off" } });
   restarted.app.stop();
 }
+
+test.each(["identity reset", "local Revoke"] as const)("P8/T41/P10: pending Revoke-all owns the listed row before %s", async action => {
+  const { fixture, device } = await listedPc();
+  const dir = fixture.stateDir;
+  const { devices, relay } = fixture.app.context.services;
+  const fault = failReplacement(join(dir, REMOVAL_FILE), device.id);
+  try { expect(() => devices.revokeAll()).toThrow("replacement failed"); } finally { fault.mockRestore(); }
+  expect(existsSync(join(dir, "revoke-all.json"))).toBe(true);
+  expect(rows(dir).map(row => row.id)).toEqual([device.id]);
+  expect(RemovalEvidence.open(dir, null).standingRevokes(device.publicKey)).toEqual([]);
+  if (action === "identity reset") await relay.resetIdentity();
+  else devices.revoke(device.id);
+  fixture.app.stop();
+  restartOffline(dir);
+  restartOffline(dir);
+  expect(drops(dir).filter(entry => entry.row === device.id)).toEqual([
+    { kind: "drop", how: "revoke_all", key: device.publicKey, row: device.id, account: ACCOUNT },
+  ]);
+  expect(RemovalEvidence.open(dir, null).standingRevokes(device.publicKey)).toHaveLength(1);
+  expect(rows(dir)).toEqual([]);
+  expect(existsSync(join(dir, "revoke-all.json"))).toBe(false);
+});
 
 test("P8/T41/P10/T44: identity reset preserves a signed leave's pending drop", async () => {
   const pc = await listedPc();
