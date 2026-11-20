@@ -29,6 +29,16 @@ describe("S2-24 the account's order as this PC's whole reads saw it (P21)", () =
     expect(order.late("k3")).toBe(false);
   });
 
+  test("P21: a watermark below a persisted pin makes the table unusable", async () => {
+    const at = dir();
+    AccountOrder.open(at).record(read("acct_1", ["k5", 5]), "binding");
+    const file = Bun.file(join(at, ACCOUNT_ORDER_FILE));
+    await Bun.write(file, JSON.stringify({ ...await file.json(), max_no: 4 }));
+    const reopened = AccountOrder.open(at);
+    expect(reopened.late("k5")).toBe(true);
+    expect(() => reopened.record(read("acct_1", ["k3", 3]), "binding")).toThrow();
+  });
+
   test("P21: a legacy first admission stays joined at zero across re-admission and restart", async () => {
     const at = dir();
     const order = AccountOrder.open(at);
