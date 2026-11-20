@@ -18,6 +18,7 @@ import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { applyAccountRecords, applyEnrollment } from "./records.ts";
 import { createServer } from "../index.ts";
 import { pullForRefusedSignIn } from "../relay/refused-signin.ts";
+import { privateStateFs } from "../private-state.ts";
 
 type Fixture = ReturnType<typeof relayFixture>;
 type Link = Awaited<ReturnType<typeof relayConnection>>;
@@ -941,6 +942,26 @@ async function signInAs(f: Fixture, serverId: string, key: AccountKey): Promise<
 }
 
 const pulls = (service: FakeAccountService) => service.requests.filter((request) => request === "POST /v1/pc/mailbox").length;
+
+test("flag off: a failed mailbox batch is not counted or acknowledged", async () => {
+  const { f, identity, service, leave, signer } = await accountPc();
+  const { devices, accountMailbox } = f.app.context.services;
+  const first = (await accountKey()).spki;
+  const second = (await accountKey()).spki;
+  await leave(await add(signer, first));
+  await leave(await add(signer, second));
+  const rename = privateStateFs.renameSync;
+  privateStateFs.renameSync = (from, to) => {
+    if (to === join(f.stateDir, "devices.json") && devices.hasKey(first)) throw new Error("second registry write failed");
+    rename(from, to);
+  };
+  try {
+    const count = await accountMailbox.pull();
+    expect(accountMailbox.error).toBe("second registry write failed");
+    expect(service.mailbox(identity.server_id, ACCOUNT)).toHaveLength(2);
+    expect(count).toBe(0);
+  } finally { privateStateFs.renameSync = rename; }
+});
 
 test("flag off: disconnect during sign-in does not cancel a mailbox removal", async () => {
   const { f, identity, leave, signer } = await accountPc();

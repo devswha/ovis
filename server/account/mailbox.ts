@@ -562,8 +562,12 @@ export class AccountMailbox {
         for (const admission of waiting) admissions.set(scope(account, identity.server_id, admission.key), Date.parse(admission.at));
         if (entries.length === 0) { complete = true; break; }
         if (page === MAX_PAGES) break;
-        for (const { record } of entries) {
-          if (this.options.devices.opensAll() && typeof record === "object" && record !== null && "kind" in record && record.kind === "block") {
+        const opensAll = this.options.devices.opensAll();
+        const batchSize = opensAll ? 1 : ACCOUNT_RECORDS_MAX;
+        for (let start = 0; start < entries.length; start += batchSize) {
+          const batch = entries.slice(start, start + batchSize).map(({ record }) => record);
+          const record = batch[0];
+          if (opensAll && typeof record === "object" && record !== null && "kind" in record && record.kind === "block") {
             // applyBlock owns parseSafetyRecord and signature verification. Never ack an unwritten deny.
             const receipt = await this.options.devices.applyBlock(record, "mailbox");
             if (receipt.outcome === "refused") {
@@ -584,9 +588,10 @@ export class AccountMailbox {
             if (!early.some((kept) => JSON.stringify(kept) === text)) early.push(record);
             return true;
           };
-          const [outcome] = await applyAccountRecords(this.options.devices, [record], identity.server_id, Date.now(), { ...this.gates(), deferAdd: this.options.devices.opensAll() ? () => true : undefined }, keep);
-          if (outcome?.outcome === "applied") applied++;
-          if (waits(outcome)) keep(record);
+          const gates = this.gates();
+          const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id, Date.now(), opensAll ? { ...gates, deferAdd: () => true } : gates, keep);
+          applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
+          outcomes.forEach((outcome, index) => { if (waits(outcome)) keep(batch[index]); });
         }
         await retry();
         save();
