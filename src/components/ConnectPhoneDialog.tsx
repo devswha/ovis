@@ -631,6 +631,14 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
   const [late, setLate] = useState(accountQrPending);
   /** the PC is in an account whose first member has not finished enrolling it: it does not read as done */
   const [enrolling, setEnrolling] = useState(false);
+  useEffect(() => {
+    if (!enrolling) return;
+    let live = true;
+    const timer = setInterval(() => {
+      pcAccountStatus(apiFetch).then((status) => { if (live) setEnrolling(status.account !== null && status.enrolling === true); }, () => undefined);
+    }, ACCOUNT_QR_POLL_MS);
+    return () => { live = false; clearInterval(timer); };
+  }, [enrolling]);
   const before = useRef<AccountQrBaseline | null>(null);
   const run = useRef(0);
   /** the account this tab showed when Show the QR code was pressed: its codes' PC is listed there or nowhere */

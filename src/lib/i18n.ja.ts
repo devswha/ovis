@@ -52,6 +52,7 @@ const BASE: Record<string, string> = {
   "{name} is no longer waiting.": "{name} はもう待っていません。",
   "Adding it to your account. Keep this open until it is done.": "アカウントに追加しています。終わるまで開いたままにしてください。",
   "Signed in. Close this tab and go back to Ovis.": "サインインしました。このタブを閉じて Ovis に戻ってください。",
+  "Nothing to finish here. Close this tab and go back to Ovis.": "ここで仕上げるサインインはありません。このタブを閉じて Ovis に戻ってください。",
   "Finishing the sign-in in the Ovis tab that started it…": "サインインを始めた Ovis のタブで仕上げています…",
   "Signing in adds this PC to your account.": "サインインすると、この PC がアカウントに追加されます。",
   "Signed in with {provider}": "{provider} でサインイン中",

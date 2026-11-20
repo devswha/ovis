@@ -23,7 +23,7 @@ export function OwnJoins() {
     const read = (): void => {
       if (refused || document.hidden) return;
       fetchOwnJoins().then((next) => { if (live) setJoins(next); }, (error: unknown) => {
-        if (error instanceof ApiError && error.status === 403) refused = true;
+        if (error instanceof ApiError && (error.status === 403 || error.status === 404 || error.status === 405)) refused = true;
         else console.warn("Ovis: the account joins could not be read", error instanceof Error ? error.name : error);
       });
     };

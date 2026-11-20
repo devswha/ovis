@@ -265,8 +265,10 @@ describe("the relay tab's Sign in on the PC's own window", () => {
   let tab: { opener: unknown; closed: boolean; location: { href: string }; close(): void } | null;
   let sent: ReturnType<typeof Promise.withResolvers<string>>;
   let popupBlocked: boolean;
+  let exchange: { asked: ReturnType<typeof Promise.withResolvers<void>>; release: ReturnType<typeof Promise.withResolvers<void>> } | null;
 
   const setUp = (userAgent: string) => {
+    exchange = null;
     fake = new FakeAccountService();
     fake.offerLinkPage(["google"]);
     tab = null;
@@ -298,6 +300,7 @@ describe("the relay tab's Sign in on the PC's own window", () => {
       if (String(input).startsWith("/api/health")) return Response.json({ ok: true, auth: { required: false, authenticated: true }, bridge_protocol: 1, own_window: { port: 7317 } });
       const url = new URL(String(input instanceof Request ? input.url : input));
       if (url.origin !== SERVICE) return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
+      if (url.pathname === "/v1/token" && exchange !== null) { exchange.asked.resolve(); await exchange.release.promise; }
       return fake.fetch(input, init);
     };
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
@@ -344,18 +347,40 @@ describe("the relay tab's Sign in on the PC's own window", () => {
     expect((await indexedAccountStore.get("session"))?.provider).toBe("google");
   });
 
-  it("offers the provider's page as a link when the tab was blocked, and Cancel keeps no sign-in", async () => {
+  it("offers the provider's page as a link when the tab was blocked, and keeps no sign-in cancelled while its code was exchanged", async () => {
     setUp("Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0");
+    exchange = { asked: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
     await mount();
     popupBlocked = true;
     await press("Continue with Google");
     const link = renderer!.root.findAll((node) => node.type === "a" && text(node) === "Open the sign-in page")[0]!;
     const back = new URL((await fake.fetch(String(link.props.href))).headers.get("location") ?? "");
-    await press("Cancel");
     const stop = handOverReturn(back.search, () => undefined);
-    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await exchange!.asked.promise; });
+    await press("Cancel");
+    await act(async () => { exchange!.release.resolve(); for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
     stop();
     expect(await indexedAccountStore.get("session")).toBeUndefined();
+    expect(buttons()).toContain("Continue with Google");
+  });
+
+  it("shows the failure, not a stuck page, when the sign-in could not be kept", async () => {
+    setUp("Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0");
+    const update = indexedAccountStore.update.bind(indexedAccountStore);
+    spyOn(indexedAccountStore, "update").mockImplementation(((name: string, change: never) => name === "session" ? Promise.reject(new Error("disk full")) : update(name as never, change)) as never);
+    spyOn(console, "warn").mockImplementation(() => {});
+    await mount();
+    await press("Continue with Google");
+    const start = await sent.promise;
+    const stop = handOverReturn(new URL((await fake.fetch(start)).headers.get("location") ?? "").search, () => undefined);
+    const deadline = Date.now() + 5_000;
+    while (renderer!.root.findAll((node) => node.props.role === "alert").length === 0) {
+      if (Date.now() > deadline) throw new Error("no failure was shown");
+      await Bun.sleep(5);
+      await act(async () => {});
+    }
+    stop();
+    expect(renderer!.root.findAll((node) => node.props.role === "alert")).toHaveLength(1);
     expect(buttons()).toContain("Continue with Google");
   });
 

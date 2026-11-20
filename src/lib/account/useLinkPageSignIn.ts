@@ -78,13 +78,14 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
         : ownRedirect ? ownWindowSignIn(provider, { service, redirect: ownRedirect, store, signal: controller.signal, blocked })
         : Promise.reject(new Error("no own sign-in here"));
       signing.then(async (session) => {
-        if (controller.signal.aborted) return;
-        await indexedAccountStore.set("session", session);
-        if (controller.signal.aborted) return;
-        running.current = null;
+        // kept only if not cancelled, decided inside the write itself: a Cancel after it is too late and shows the sign-in
+        let kept = false;
+        await indexedAccountStore.update("session", (current) => { if (controller.signal.aborted) return current; kept = true; return session; });
+        if (!kept) return;
+        if (running.current === controller) running.current = null;
         setState({ kind: "signed-in", session });
         signedIn.current(session);
-      }, (error: unknown) => {
+      }).catch((error: unknown) => {
         if (controller.signal.aborted) return;
         if (running.current === controller) running.current = null;
         console.warn("Ovis: the sign-in did not finish", error instanceof Error ? error.name : error);

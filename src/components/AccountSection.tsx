@@ -926,7 +926,14 @@ export function AccountSection({ onAccount, recheck = 0 }: {
       const controller = new AbortController();
       deviceSignIn.current = controller;
       setView({ kind: "signing-in" });
-      return ownWindowSignIn(provider, { service: pcService, redirect: ownRedirect, store, signal: controller.signal, blocked: (link) => setView({ kind: "signing-in", link }) })
+      // held back until it is known not to be cancelled: a sign-in finished after Cancel is never kept
+      return ownWindowSignIn(provider, { service: pcService, redirect: ownRedirect, store: holdingSessionStore(store), signal: controller.signal, blocked: (link) => setView({ kind: "signing-in", link }) })
+        .then(async (session) => {
+          let kept = false;
+          await store.update("session", (current) => { if (controller.signal.aborted) return current; kept = true; return session; });
+          if (!kept) throw new DOMException("The sign-in was cancelled", "AbortError");
+          return session;
+        })
         .finally(() => { if (deviceSignIn.current === controller) deviceSignIn.current = null; });
     }
     if (viaLinkPage) return signInWithCode(pcService, "ovis", store);
