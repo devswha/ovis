@@ -1,16 +1,17 @@
 import { expect, it, spyOn } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { parseNoticeAnswer } from "../shared/account-devices-api.ts";
+import { parseNoticeAnswer, type DeviceNotice } from "../shared/account-devices-api.ts";
 import { parseSafetyRecord, verifySafetyRecord, type BlockRecord } from "../shared/account-records.ts";
 import { App } from "./App.tsx";
 import { indexedAccountStore, memoryAccountStore, newKey } from "./lib/account/store.ts";
 import { DeviceNoticeWire, deviceNotice, NOTICE_SNAPSHOT } from "./lib/deviceNoticeWire.fixture.ts";
+import { translate } from "./lib/i18n.ts";
 import { MachineSessionRegistry } from "./lib/machineSession.ts";
 import { SettingsProvider } from "./lib/settings.ts";
 import { storeSelection } from "./lib/useSplitView.ts";
 
 async function withDeviceNotices(
-  options: { readonly no?: number | null; readonly laptopId?: string },
+  options: { readonly no?: number | null; readonly laptopId?: string; readonly admission?: Pick<DeviceNotice, "method" | "two_step"> },
   check: (fixture: { readonly tree: ReactTestRenderer; readonly laptop: DeviceNoticeWire; readonly desk: DeviceNoticeWire; readonly delivered: readonly BlockRecord[] }) => void | Promise<void>,
 ) {
   const keys = memoryAccountStore();
@@ -109,7 +110,7 @@ async function withDeviceNotices(
       desk.open();
       laptop.snapshot();
       desk.snapshot();
-      laptop.read({ type: "device-notice", notice: deviceNotice({ label: "Laptop phone", key: target.public_spki }) });
+      laptop.read({ type: "device-notice", notice: deviceNotice({ label: "Laptop phone", key: target.public_spki, ...options.admission }) });
       desk.read({ type: "device-notice", notice: deviceNotice({ label: "Desk phone", key: "d".repeat(43) }) });
     });
     await check({ tree, laptop, desk, delivered });
@@ -172,5 +173,13 @@ it.each([
       [state, line],
       ["waiting", "Desk: waiting for its answer"],
     ]);
+  });
+});
+
+it("an admission with two-step unknown keeps the one-tap Not me (T51, T60)", async () => {
+  await withDeviceNotices({ no: 3, admission: { method: "google", two_step: "unknown" } }, ({ tree }) => {
+    const card = tree.root.findByProps({ "data-testid": "device-notice" });
+    const buttons = card.findAllByType("button").filter((button) => button.children.includes(translate("en", "Not me")));
+    expect(buttons.map((button) => button.props.disabled)).toEqual([false]);
   });
 });
