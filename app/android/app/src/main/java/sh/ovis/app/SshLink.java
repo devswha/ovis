@@ -12,6 +12,11 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.util.Locale;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import org.json.JSONObject;
@@ -86,7 +91,48 @@ final class SshLink {
         return new SshFailure("unreachable", SshFailure.rootMessage(failed));
     }
 
+    /** How long signing in may take once the key exchange is done: sshlib's own waits there have no limit. */
+    static final long SIGN_IN_MS = 30_000;
+
+    private static final ScheduledExecutorService DEADLINES = Executors.newSingleThreadScheduledExecutor(task -> {
+        Thread thread = new Thread(task, "ovis-ssh-deadline");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    interface Step<T> {
+        T run() throws SshFailure;
+    }
+
+    /**
+     * `step` on `connection`, which is closed if it takes longer than `limitMs` (sshlib's waits for a session,
+     * a forwarded stream or an answer to authentication have no limit of their own): a step cut that way fails
+     * with `timeout`.
+     */
+    static <T> T within(Connection connection, long limitMs, Step<T> step) throws SshFailure {
+        AtomicBoolean expired = new AtomicBoolean();
+        ScheduledFuture<?> alarm = DEADLINES.schedule(() -> {
+            expired.set(true);
+            connection.close();
+        }, limitMs, TimeUnit.MILLISECONDS);
+        try {
+            return step.run();
+        } catch (SshFailure | RuntimeException failed) {
+            if (expired.get()) throw new SshFailure("timeout", "The machine did not answer in time");
+            throw failed;
+        } finally {
+            alarm.cancel(false);
+        }
+    }
+
     static void signIn(Connection connection, String user, KeyPair pair) throws SshFailure {
+        within(connection, SIGN_IN_MS, () -> {
+            signInNow(connection, user, pair);
+            return null;
+        });
+    }
+
+    private static void signInNow(Connection connection, String user, KeyPair pair) throws SshFailure {
         try {
             if (!connection.authenticateWithPublicKey(user, pair)) throw new SshFailure("auth", "The machine refused the key");
         } catch (IOException failed) {
@@ -95,6 +141,13 @@ final class SshLink {
     }
 
     static void signInWithPassword(Connection connection, String user, String password) throws SshFailure {
+        within(connection, SIGN_IN_MS, () -> {
+            signInWithPasswordNow(connection, user, password);
+            return null;
+        });
+    }
+
+    private static void signInWithPasswordNow(Connection connection, String user, String password) throws SshFailure {
         try {
             if (connection.isAuthMethodAvailable(user, "password") && connection.authenticateWithPassword(user, password)) return;
             if (connection.isAuthMethodAvailable(user, "keyboard-interactive")) {
@@ -124,6 +177,11 @@ final class SshLink {
     }
 
     private static String run(Connection connection, String command, long timeoutMs, Consumer<String> lines, boolean mustSucceed) throws SshFailure {
+        // the loop below keeps its own time once the command runs; opening the session and starting it have none
+        return within(connection, timeoutMs + 10_000, () -> runNow(connection, command, timeoutMs, lines, mustSucceed));
+    }
+
+    private static String runNow(Connection connection, String command, long timeoutMs, Consumer<String> lines, boolean mustSucceed) throws SshFailure {
         Session session = null;
         try {
             session = connection.openSession();
@@ -350,6 +408,11 @@ final class SshLink {
      * true when it answers as Ovis.
      */
     static boolean answersAsOvis(Connection connection, int port) throws SshFailure {
+        // a port that takes the request and never answers would hold the read below for good
+        return within(connection, 20_000, () -> answersAsOvisNow(connection, port));
+    }
+
+    private static boolean answersAsOvisNow(Connection connection, int port) throws SshFailure {
         try {
             LocalStreamForwarder stream = connection.createLocalStreamForwarder("127.0.0.1", port);
             try {
@@ -479,15 +542,18 @@ final class SshLink {
         SshFailure cannot = cannotInstall(run(connection, PROBE, 20_000));
         if (cannot != null) throw cannot;
         StringBuilder tail = new StringBuilder();
+        // the status line comes last, past the 512 KiB run keeps of a long install's output: it is kept on its own
+        String[] status = { "" };
         String output = run(connection, INSTALLER_RUN, 10 * 60_000, raw -> {
             // the installer colours its lines for a terminal; the phone shows them as text
             String line = raw.replaceAll("\u001B\\[[0-9;?]*[A-Za-z]", "").trim();
+            if (line.startsWith("ovis-install-exit=")) status[0] = line;
             if (line.isEmpty() || line.startsWith("ovis-install-exit=")) return;
             tail.append(line).append('\n');
             if (tail.length() > 4000) tail.delete(0, tail.length() - 4000);
             progress.accept(line);
         });
-        int exit = installerExit(output);
+        int exit = installerExit(status[0].isEmpty() ? output : status[0]);
         if (exit != 0) {
             String last = tail.toString().trim();
             int cut = last.lastIndexOf('\n', Math.max(0, last.length() - 600));

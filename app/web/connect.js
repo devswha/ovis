@@ -67,14 +67,15 @@ async function open(text) {
   // the bundled demo (build-web.ts), for a store review without a PC: the address "demo" opens it, with no button for it
   if (String(text).trim().toLowerCase() === "demo") { location.href = "demo/index.html"; return; }
   // an SSH PC whose host key was forgotten on purpose opens only through the setup screen, which shows the key to confirm
-  const sshPc = sshPcs[text];
+  const url = parseAddress(text);
+  // looked up by origin, as each is saved, so the address typed with a path or a trailing slash finds it too
+  const sshPc = url === null ? undefined : sshPcs[url.origin];
   if (sshPc && !sshDetails(sshPc).confirmed) {
     error.textContent = "";
-    try { await ssh("setUp", { origin: text }); }
+    try { await ssh("setUp", { origin: sshPc.origin }); }
     catch (err) { error.textContent = String(err?.message ?? err); }
     return;
   }
-  const url = parseAddress(text);
   if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); if (!addressScreen.hidden) input.focus(); return; }
   // the hosted app itself, saved once it loaded (a sign-in opens it): picked from this list, it opens on its list of PCs
   // (#pcs), not straight into the PC it opened last as a launch does (src/lib/relay/shell.tsx, launchPc): a new web view
@@ -149,6 +150,8 @@ document.getElementById("address-way").addEventListener("click", () => go("addre
 const sshWay = document.getElementById("ssh-way");
 // the plugins the app announces to the page before its first script runs (src/lib/nativeApp.ts, hasNativePlugin)
 if ((window.Capacitor?.PluginHeaders ?? []).some((header) => header.name === "OvisSsh")) sshWay.addEventListener("click", async () => {
+  // an open still being checked must not take over while the setup screen is up
+  stopPending();
   error.textContent = "";
   try { await ssh("add"); }
   catch (err) { error.textContent = String(err?.message ?? err); }
@@ -264,6 +267,7 @@ function managePanel(origin, label) {
     } catch (err) { fail(err); }
   });
   const setUp = button(t("Set up again", "다시 설정"), async () => {
+    stopPending();
     try { await ssh("setUp", { origin }); }
     catch (err) { fail(err); }
   });
@@ -292,7 +296,7 @@ function managePanel(origin, label) {
       try {
         const { remote, reason } = await ssh("remove", { origin, cleanRemote: box.checked });
         await load();
-        if (remote === "failed") error.textContent = t(`${label} was removed from this phone, but its key could not be taken out of the PC (${reason}). Remove the line ending in ovis-phone there yourself.`, `${label}을(를) 이 휴대폰에서 지웠지만 PC에서 키를 빼지 못했습니다(${reason}). 그쪽에서 ovis-phone으로 끝나는 줄을 직접 지우세요.`);
+        if (remote === "failed") error.textContent = t(`${label} was removed from this phone, but its key could not be taken out of the PC (${reason}). Remove the line whose comment starts with ovis-phone: from ~/.ssh/authorized_keys there yourself.`, `${label}을(를) 이 휴대폰에서 지웠지만 PC에서 키를 빼지 못했습니다(${reason}). 그쪽 ~/.ssh/authorized_keys에서 주석이 ovis-phone:으로 시작하는 줄을 직접 지우세요.`);
       } catch (err) { fail(err); }
     }, "primary");
     extra.replaceChildren(paragraph(t(`Remove ${label} from this phone? Its host key and the key saved for it go too.`, `이 휴대폰에서 ${label}을(를) 지울까요? 호스트 키와 이 PC용으로 저장한 키도 함께 지워집니다.`)), boxLabel, yes);

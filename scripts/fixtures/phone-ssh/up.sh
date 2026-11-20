@@ -31,7 +31,8 @@ rsync -a --delete \
   "$repo/" "$ctx/ovis/"
 
 cpuset=()
-docker build --help 2>/dev/null | grep -q -- --cpuset-cpus && cpuset=(--cpuset-cpus "${OVIS_HEAVY_CPUS:-80-95}")
+# the build is kept to the CPUs a heavy slot gives (OVIS_HEAVY_CPUS) only when one is given
+[ -n "${OVIS_HEAVY_CPUS:-}" ] && docker build --help 2>/dev/null | grep -q -- --cpuset-cpus && cpuset=(--cpuset-cpus "$OVIS_HEAVY_CPUS")
 docker build "${cpuset[@]}" -t "$image" "$ctx"
 
 docker rm -f "$name" >/dev/null 2>&1 || true
@@ -39,7 +40,8 @@ docker run -d --init --name "$name" -p 127.0.0.1:2290:22 "$image" >/dev/null
 
 for _ in $(seq 600); do
   logs=$(docker logs "$name" 2>&1 || true)
-  if grep -q "start-fixture: herdr, stand-in claude" <<<"$logs"; then
+  # ready once the stand-in is up and sshd answers (start-fixture.sh runs before entrypoint.sh starts sshd)
+  if grep -q "start-fixture: herdr, stand-in claude" <<<"$logs" && docker exec "$name" sh -c 'ssh-keyscan -T 1 -t ed25519 127.0.0.1 2>/dev/null' | grep -q ssh-ed25519; then
     echo "$logs" | grep "start-fixture:"
     docker ps --filter "name=^${name}$" --format '{{.Names}}  {{.Status}}  {{.Ports}}'
     exit 0

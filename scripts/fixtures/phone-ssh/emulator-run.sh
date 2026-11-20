@@ -54,8 +54,8 @@ if ! "$adb" devices | grep -q '^emulator-'; then
   emulator=$!
   started=1
 fi
-# one that is still starting is waited for too
-"$adb" wait-for-device
+# one that is still starting is waited for too, for as long as the boot below gets
+timeout 300 "$adb" wait-for-device || { echo "emulator-run: no emulator came up in 5 minutes; see $work/emulator.log" >&2; exit 1; }
 for _ in $(seq 300); do
   [ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break
   sleep 1

@@ -23,7 +23,7 @@ no account and no port open but SSH. Linux and macOS computers; Android for now 
 4. The app shows the computer's host key fingerprint. Check it on the computer:
 
    ```bash
-   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+   cat /etc/ssh/ssh_host_*_key.pub | ssh-keygen -lf -
    ```
 
    and tap **Trust and connect** only if it is the same.

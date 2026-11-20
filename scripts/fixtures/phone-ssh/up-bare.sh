@@ -15,7 +15,8 @@ install -m 644 "$here/Dockerfile.bare" "$ctx/Dockerfile"
 install -m 644 "$here/sshd_config" "$ctx/"
 
 cpuset=()
-docker build --help 2>/dev/null | grep -q -- --cpuset-cpus && cpuset=(--cpuset-cpus "${OVIS_HEAVY_CPUS:-80-95}")
+# the build is kept to the CPUs a heavy slot gives (OVIS_HEAVY_CPUS) only when one is given
+[ -n "${OVIS_HEAVY_CPUS:-}" ] && docker build --help 2>/dev/null | grep -q -- --cpuset-cpus && cpuset=(--cpuset-cpus "$OVIS_HEAVY_CPUS")
 docker build "${cpuset[@]}" -t "$image" "$ctx"
 docker rm -f "$name" >/dev/null 2>&1 || true
 docker run -d --init --name "$name" -p 127.0.0.1:2291:22 "$image" >/dev/null

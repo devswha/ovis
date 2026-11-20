@@ -64,6 +64,9 @@ final class SshVault {
             return generator.generateKey();
         } catch (java.io.IOException storeUnreadable) {
             throw new GeneralSecurityException(storeUnreadable);
+        } catch (java.security.ProviderException keystoreFailed) {
+            // a Keystore that cannot make or give the key throws this unchecked: it is the vault's failure all the same
+            throw new GeneralSecurityException(keystoreFailed);
         }
     }
 }
