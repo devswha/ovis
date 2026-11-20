@@ -25,6 +25,18 @@ async function atCapacity() {
   return { ...pc, devices, time, row: held.row, notice: held.id };
 }
 
+test("G15/T57/P8: 64 open admissions stop the next phone; ending all 64 admits it", async () => {
+  const { fixture, devices, service, serverId } = await atCapacity();
+  const next = accountDeviceId(serverId, keyOf("k-63"));
+  for (const notice of devices.openNotices()) {
+    if (!notice.key) throw new Error("Expected a listed key");
+    service.removeDevice(ACCOUNT, notice.key);
+  }
+  expect(await fixture.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(devices.has(next)).toBe(true);
+  expect(devices.openNotices().map(n => n.row)).toEqual([next]);
+});
+
 test("P15/T57, P17/T53, G15: at capacity the timer releases the row and an elder can still answer its notice", async () => {
   const { devices, time, row, notice, member } = await atCapacity();
   time.now += 9_999;
