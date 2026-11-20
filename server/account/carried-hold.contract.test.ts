@@ -1,10 +1,26 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { relayDevice } from "../relay/test-helpers.ts";
+import { relayConnection, relayDevice } from "../relay/test-helpers.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
-import { phone } from "./pairing.test-helpers.ts";
+import { linkRecord, phone, sendLink } from "./pairing.test-helpers.ts";
+import { JOIN_HOLD_MS } from "./join-hold.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
+
+test("T38: a signed member link transfers an already-live listing to its existing member row", async () => {
+  const { fixture, device, member } = await createListedPc(close => closes.push(close));
+  const { accountRows, devices } = fixture.app.context.services;
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
+  try {
+    expect(accountRows?.access(device.id)).toEqual({ ok: true });
+    const link = await relayConnection(fixture);
+    await link.auth(member);
+    const signed = await linkRecord(member.id, ACCOUNT, { spki: member.publicKey, keys: member.keys }, { spki: device.publicKey, keys: device.keys });
+    expect((await sendLink(link, signed)).status).toBe(200);
+    expect(accountRows?.row(device.id)).toBeNull();
+    expect(devices.list(null, true).filter(row => row.account_key === device.publicKey).map(row => row.id)).toEqual([member.id]);
+  } finally { clock.mockRestore(); }
+});
 
 test.each([false, true])("S25/P17/T38: a member link retires the listing; established approver = %s", async established => {
   const { fixture, service } = await createListedPc(close => closes.push(close));
