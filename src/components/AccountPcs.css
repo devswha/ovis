@@ -180,7 +180,9 @@
   min-width: 0;
 }
 
+/* a line of its own under the sign-in, so the plan never reads as the provider's */
 .account-plan {
+  flex-basis: 100%;
   color: var(--text-dim);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;

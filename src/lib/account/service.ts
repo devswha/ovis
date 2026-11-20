@@ -4,7 +4,6 @@
  * edge; a token is never logged or put in an error's text.
  */
 import { accountLabel, accountOsOf, type AccountAsker, type AccountOs } from "../../../shared/account-asker.ts";
-import type { AccountLimits } from "../../../shared/protocol.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { newRecordId, registerSigningBytes, type AccountRecord, type DeviceSafetyRecord } from "../../../shared/account-records.ts";
@@ -203,24 +202,36 @@ function retryAfterMs(header: string | null): number | null {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
 }
 
-export function parseAccountLimits(value: unknown): AccountLimits | null {
-  if (!isRecord(value)) return null;
-  const { plan, pcs_max, pcs_used, data_cap_bytes, data_used_bytes, data_metering, until } = value;
-  if (typeof plan !== "string" || plan.trim() === "") return null;
-  if (typeof pcs_max !== "number" || !Number.isSafeInteger(pcs_max) || pcs_max < 0) return null;
-  if (pcs_used !== undefined && pcs_used !== null && (typeof pcs_used !== "number" || !Number.isSafeInteger(pcs_used) || pcs_used < 0)) return null;
-  if (data_cap_bytes !== undefined && data_cap_bytes !== null && (typeof data_cap_bytes !== "number" || !Number.isSafeInteger(data_cap_bytes) || data_cap_bytes < 0)) return null;
-  if (data_used_bytes !== undefined && data_used_bytes !== null && (typeof data_used_bytes !== "number" || !Number.isSafeInteger(data_used_bytes) || data_used_bytes < 0)) return null;
-  if (until !== undefined && until !== null && (typeof until !== "number" || !Number.isFinite(until))) return null;
-  const metered = data_metering === undefined || data_metering === "on";
-  return {
-    plan: plan.trim().length > 32 ? `${plan.trim().slice(0, 31)}…` : plan.trim(),
-    pcs_max,
-    ...(typeof pcs_used === "number" ? { pcs_used } : {}),
-    ...(typeof data_cap_bytes === "number" ? { data_cap_bytes } : {}),
-    ...(metered && typeof data_used_bytes === "number" ? { data_used_bytes } : {}),
-    ...(until !== undefined ? { until: until ?? null } : {}),
-  };
+/**
+ * The account's plan from GET /v1/account/limits, as Settings → Account shows it while plans are on. The app knows
+ * two plans: `free`, and any other the service names reads as `pro`, which always says where it comes from; a free
+ * period (`launch`) always ends. `ends_at` is ms since the epoch, null for no end.
+ */
+export type AccountPlan =
+  | { readonly plan: "free" }
+  | { readonly plan: "pro"; readonly source: "launch"; readonly ends_at: number }
+  | { readonly plan: "pro"; readonly source: "paid" | "grant"; readonly ends_at: number | null };
+
+/** ms since the epoch that name a date: a whole number inside Date's range. */
+const isInstant = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && !Number.isNaN(new Date(value).getTime());
+
+/**
+ * The plan to show, or null for none: plans off, or an answer this client cannot read, a blank plan, an end that
+ * names no date, or fields that contradict each other (Free with a source or an end, Pro without a source, a free
+ * period without its end).
+ */
+export function parseAccountPlan(value: unknown): AccountPlan | null {
+  if (!isRecord(value) || value.plans !== "on" || typeof value.plan !== "string") return null;
+  const plan = value.plan.trim();
+  const { source, ends_at } = value;
+  if (plan === "" || (ends_at !== null && !isInstant(ends_at))) return null;
+  if (plan === "free") return source === null && ends_at === null ? { plan: "free" } : null;
+  switch (source) {
+    case "launch": return ends_at === null ? null : { plan: "pro", source, ends_at };
+    case "paid":
+    case "grant": return { plan: "pro", source, ends_at };
+    default: return null;
+  }
 }
 
 function parsePc(value: unknown): DirectoryPc | null {
@@ -408,9 +419,8 @@ export class AccountService {
     return { no: body.no as number, key: key.public_spki };
   }
 
-  async limits(): Promise<AccountLimits | null> {
-    const body = await this.call("GET", "/v1/account/limits");
-    return parseAccountLimits(body);
+  async plan(): Promise<AccountPlan | null> {
+    return parseAccountPlan(await this.call("GET", "/v1/account/limits"));
   }
 
   async identities(): Promise<AccountIdentity[]> {

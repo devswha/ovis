@@ -26,7 +26,7 @@ export function relayNoticeText(t: Translate, notice: RelayNoticeInfo, locale?: 
       };
     case "pc-limit":
       return {
-        text: t("This account has reached its PC limit on the Ovis relay. Remove a PC you no longer use, or connect over the same Wi-Fi or Tailscale."),
+        text: t("This account has reached its PC limit on the Ovis relay. Remove a PC the account no longer uses in Settings → Devices and PCs, or wait: a PC that stays offline gives its place back within 7 days. PCs already connected keep working."),
         actionLabel: t("Devices and PCs"),
       };
     case "data-limit":

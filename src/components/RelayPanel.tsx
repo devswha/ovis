@@ -29,7 +29,7 @@ export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): str
   if (pass?.refused && status.phase === "error" && pass.state !== "ok") return pass.state === "not_listed"
     ? t("Add this PC to your Ovis account to use the Ovis relay, or connect over the same Wi-Fi or Tailscale.")
     : pass.state === "limit"
-    ? t("This account has as many PCs on the Ovis relay as it may. Remove one from your account to add this one.")
+    ? t("This account has as many PCs on the Ovis relay as it may. To use this one, remove a PC the account no longer uses in Settings → Devices and PCs, or wait: a PC that stays offline gives its place back within 7 days. PCs already connected keep working.")
     : pass.state === "unavailable"
       ? t("Cannot reach the Ovis account service for a relay pass. Retrying.")
       : t("The Ovis relay needs an Ovis account. Sign in, or connect over the same Wi-Fi or Tailscale.");

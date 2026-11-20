@@ -3,7 +3,7 @@ import { expect, it } from "bun:test";
 import { AccountService } from "../lib/account/service.ts";
 import { memoryAccountStore, memoryLock, type AccountSession } from "../lib/account/store.ts";
 import { translate } from "../lib/i18n.ts";
-import { accountListsOf, accountLimitsOf, formatAccountLimits, formatRelayBytes, probeUntilReachable, reachabilityProbe, REPROBE_MS } from "./AccountSection.tsx";
+import { accountListsOf, accountPlanOf, planText, probeUntilReachable, reachabilityProbe, REPROBE_MS } from "./AccountSection.tsx";
 
 it("counts an answer the service could give as reachable, and a server error or no answer as not", async () => {
   const seen: boolean[] = [];
@@ -38,23 +38,26 @@ it("asks an account service that did not answer again, sooner first, until it an
   expect(asked).toBe(1);
 });
 
-it("reads the limits for the sign-in the section shows, and none once another account signed in", async () => {
+it("reads the plan for the sign-in the section shows, none while plans are off, and none once another account signed in", async () => {
   const session = (account: string): AccountSession => ({ service: "https://account.test", account, provider: "github", access_token: `at_${account}`, refresh_token: `rt_${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: account });
   const store = memoryAccountStore();
   // the service answers for whichever account the token belongs to
   const fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
     const account = new Headers(init?.headers).get("authorization")?.replace("Bearer at_", "") ?? "";
-    return Response.json({ plan: `plan of ${account}`, pcs_max: 3 });
+    return Response.json({ plans: account === "acct_off" ? "off" : "on", ...account === "acct_a" ? { plan: "pro", source: "paid" } : { plan: "free", source: null }, ends_at: null });
   };
   const service = new AccountService({ store, fetch: fetch as typeof globalThis.fetch, lock: memoryLock() });
   const shown = session("acct_a");
   await store.set("session", shown);
-  expect(await accountLimitsOf(service, shown)).toEqual({ plan: "plan of acct_a", pcs_max: 3 });
+  expect(await accountPlanOf(service, shown)).toEqual({ plan: "pro", source: "paid", ends_at: null });
+  const off = session("acct_off");
+  await store.set("session", off);
+  expect(await accountPlanOf(service, off)).toBeNull();
   await store.set("session", session("acct_b"));
-  expect(await accountLimitsOf(service, shown)).toBeNull();
+  expect(await accountPlanOf(service, shown)).toBeNull();
 });
 
-it("drops a limits answer that arrives after the sign-in it was asked for ended in another tab", async () => {
+it("drops a plan answer that arrives after the sign-in it was asked for ended in another tab", async () => {
   const session = (account: string): AccountSession => ({ service: "https://account.test", account, provider: "github", access_token: `at_${account}`, refresh_token: `rt_${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: account });
   for (const meanwhile of [session("acct_b"), undefined]) {
     const store = memoryAccountStore();
@@ -62,10 +65,10 @@ it("drops a limits answer that arrives after the sign-in it was asked for ended 
     await store.set("session", shown);
     const fetch = async (_input: RequestInfo | URL, _init?: RequestInit) => {
       await store.set("session", meanwhile);
-      return Response.json({ plan: "plan of acct_a", pcs_max: 3 });
+      return Response.json({ plans: "on", plan: "pro", source: "paid", ends_at: null });
     };
     const service = new AccountService({ store, fetch: fetch as typeof globalThis.fetch, lock: memoryLock() });
-    expect(await accountLimitsOf(service, shown)).toBeNull();
+    expect(await accountPlanOf(service, shown)).toBeNull();
   }
 });
 
@@ -100,13 +103,13 @@ it("reads the PCs and sign-in methods for the sign-in the section shows, and non
   }
 });
 
-it("formats account limits with server-provided plan name, PCs used/max, and optional relay data", () => {
+it("names the plan Free or Pro, with the date a free period or a grant ends", () => {
   const t = (key: string, vars?: Record<string, string | number>) => translate("en", key, vars);
-  expect(formatRelayBytes(500)).toBe("500 B");
-  expect(formatRelayBytes(2048)).toBe("2 KB");
-  expect(formatRelayBytes(5 * 1024 * 1024)).toBe("5 MB");
-  expect(formatRelayBytes(5 * 1024 * 1024 * 1024)).toBe("5 GB");
-
-  expect(formatAccountLimits(t, { plan: "personal", pcs_max: 3 }, 1)).toBe("Personal · 1/3 PCs");
-  expect(formatAccountLimits(t, { plan: "personal", pcs_max: 7, pcs_used: 3, data_cap_bytes: 50 * 1024 * 1024 * 1024, data_used_bytes: Math.round(4.2 * 1024 * 1024 * 1024) }, 1)).toBe("Personal · 3/7 PCs · 4.2 GB / 50 GB relay data");
+  // noon of that day where the test runs: the row shows the local date
+  const ends_at = new Date(2027, 0, 15, 12).getTime();
+  expect(planText(t, { plan: "free" }, "en-US")).toBe("Plan: Free");
+  expect(planText(t, { plan: "pro", source: "paid", ends_at }, "en-US")).toBe("Plan: Pro");
+  expect(planText(t, { plan: "pro", source: "launch", ends_at }, "en-US")).toBe("Plan: Pro, free until Jan 15, 2027");
+  expect(planText(t, { plan: "pro", source: "grant", ends_at }, "en-US")).toBe("Plan: Pro until Jan 15, 2027");
+  expect(planText(t, { plan: "pro", source: "grant", ends_at: null }, "en-US")).toBe("Plan: Pro");
 });

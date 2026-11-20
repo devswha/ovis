@@ -8,7 +8,6 @@ import { useCallback, useContext, useEffect, useEffectEvent, useRef, useState } 
 import { createPortal } from "react-dom";
 import { Check, Plus, X } from "lucide-react";
 
-import type { AccountLimits } from "../../shared/protocol.ts";
 import { AddPcWaitOver, addInOnePress, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
@@ -17,10 +16,10 @@ import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } fro
 import { AccountPcError, within } from "../lib/account/join.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { ownWindowSignIn, useOwnWindowRedirect } from "../lib/account/ownWindow.ts";
-import { AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, pcAccountServiceOf, sameSignIn, SignedOutError, type AccountIdentity, type AccountService, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
+import { AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, pcAccountServiceOf, sameSignIn, SignedOutError, type AccountIdentity, type AccountPlan, type AccountService, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
-import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
+import { currentLocale, useLocale, useT, type Translate } from "../lib/i18n.ts";
 import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { deviceLabel, deviceOs } from "../lib/phone.ts";
@@ -39,38 +38,28 @@ type View =
   /** `link`: the sign-in page the browser would not open in a tab of its own, offered to open by hand */
   | { kind: "signing-in"; link?: string }
   | { kind: "device-code"; provider: DeviceSignInProvider; userCode: string | null; verificationUri: string; verificationUriComplete: string | null }
-  | { kind: "signed-in"; provider: AccountProvider; account: string; pcs: MyPc[] | null; methods: AccountIdentity[] | null; limits: AccountLimits | null; error: string | null };
+  | { kind: "signed-in"; provider: AccountProvider; account: string; pcs: MyPc[] | null; methods: AccountIdentity[] | null; plan: AccountPlan | null; error: string | null };
 
-export function formatRelayBytes(bytes: number): string {
-  const safe = Math.max(0, bytes);
-  if (safe < 1024) return `${Math.round(safe)} B`;
-  if (safe < 1024 * 1024) return `${Math.max(1, Math.round(safe / 1024))} KB`;
-  if (safe < 1024 * 1024 * 1024) {
-    const mb = safe / (1024 * 1024);
-    return `${mb < 10 ? Math.round(mb * 10) / 10 : Math.round(mb)} MB`;
+/**
+ * The account's plan, labelled as Ovis's own under the sign-in (not the provider's): "Plan: Free", "Plan: Pro", or Pro
+ * with the date a free period or a grant ends. It is text only: nothing here offers a purchase.
+ */
+export function planText(t: Translate, plan: AccountPlan, locale: string): string {
+  if (plan.plan === "free") return t("Plan: Free");
+  const date = (at: number) => new Date(at).toLocaleDateString(locale, { dateStyle: "medium" });
+  switch (plan.source) {
+    case "launch": return t("Plan: Pro, free until {date}", { date: date(plan.ends_at) });
+    case "grant": return plan.ends_at === null ? t("Plan: Pro") : t("Plan: Pro until {date}", { date: date(plan.ends_at) });
+    case "paid": return t("Plan: Pro");
   }
-  const gb = safe / (1024 * 1024 * 1024);
-  const rounded = gb < 10 ? Math.round(gb * 10) / 10 : Math.round(gb);
-  return `${rounded} GB`;
 }
 
-/** The plan and its use on one line: "Free · 2/20 PCs", with the relay data when the plan caps it. */
-export function formatAccountLimits(t: Translate, limits: AccountLimits, listedPcs: number): string {
-  const plan = limits.plan.length > 0 ? limits.plan[0]!.toUpperCase() + limits.plan.slice(1) : limits.plan;
-  const usedPcs = limits.pcs_used ?? listedPcs;
-  const pcsPart = t("{used}/{max} PCs", { used: usedPcs, max: limits.pcs_max });
-  const dataPart = typeof limits.data_cap_bytes === "number" && limits.data_cap_bytes > 0 && typeof limits.data_used_bytes === "number"
-    ? t("{used} / {cap} relay data", { used: formatRelayBytes(limits.data_used_bytes), cap: formatRelayBytes(limits.data_cap_bytes) })
-    : null;
-  return [plan, pcsPart, ...(dataPart !== null ? [dataPart] : [])].join(" · ");
-}
-
-/** The account's limits as `session` reads them; null when the service reports none, or once another sign-in (or none) is stored. */
-export async function accountLimitsOf(service: AccountService, session: AccountSession): Promise<AccountLimits | null> {
-  const limits = await service.forSignIn(session).limits().catch(() => null);
+/** The account's plan as `session` reads it; null when there is none to show (plans off, no answer), or once another sign-in (or none) is stored. */
+export async function accountPlanOf(service: AccountService, session: AccountSession): Promise<AccountPlan | null> {
+  const plan = await service.forSignIn(session).plan().catch(() => null);
   // another tab may have signed out or in while the answer was on its way: then it is no longer this section's to show
   const current = await service.session();
-  return current !== undefined && sameSignIn(current, session) ? limits : null;
+  return current !== undefined && sameSignIn(current, session) ? plan : null;
 }
 
 /**
@@ -766,6 +755,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
   deleteSlot?: HTMLElement | null;
 } = {}) {
   const t = useT();
+  const locale = useLocale();
   // a search finds settings rows only: while one runs, Delete account is the group's row again
   const searching = useContext(SettingsQuery).length > 0;
   const foot = searching ? null : deleteSlot;
@@ -836,24 +826,24 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
     const session = await service.session();
     if (session === undefined) { signedInHere.current = null; show({ kind: "signed-out", error: null }); return; }
     const signedIn = { kind: "signed-in", provider: session.provider, account: session.account } as const;
-    show({ ...signedIn, pcs: null, methods: null, limits: null, error: null });
-    void accountLimitsOf(service, session).then((limits) => {
-      if (loads.current !== generation || limits === null) return;
-      setView((current) => current.kind === "signed-in" && current.account === session.account ? { ...current, limits } : current);
+    show({ ...signedIn, pcs: null, methods: null, plan: null, error: null });
+    void accountPlanOf(service, session).then((plan) => {
+      if (loads.current !== generation || plan === null) return;
+      setView((current) => current.kind === "signed-in" && current.account === session.account ? { ...current, plan } : current);
     });
     try {
       const lists = await accountListsOf(service, session);
       if (loads.current !== generation) return;
       if (lists === null) { void read(); return; }
       const { pcs, methods } = lists;
-      setView((current) => ({ ...signedIn, pcs: myPcs(pcs, [], { now: Date.now() }), methods, limits: current.kind === "signed-in" && current.account === session.account ? current.limits : null, error: null }));
+      setView((current) => ({ ...signedIn, pcs: myPcs(pcs, [], { now: Date.now() }), methods, plan: current.kind === "signed-in" && current.account === session.account ? current.plan : null, error: null }));
     } catch (error) {
       // a sign-in that ended is none that just finished: one stored again later (another tab) adds nothing by itself
       if (error instanceof SignedOutError) {
         if (loads.current === generation) signedInHere.current = null;
         show({ kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") });
       }
-      else if (loads.current === generation) setView((current) => ({ ...signedIn, pcs: [], methods: null, limits: current.kind === "signed-in" && current.account === session.account ? current.limits : null, error: t("The account service could not be reached. The PCs this device is paired with still work.") }));
+      else if (loads.current === generation) setView((current) => ({ ...signedIn, pcs: [], methods: null, plan: current.kind === "signed-in" && current.account === session.account ? current.plan : null, error: t("The account service could not be reached. The PCs this device is paired with still work.") }));
     }
   }, [t]);
 
@@ -1224,7 +1214,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, deleteSlot = 
       {asked !== null && <button type="button" className="btn btn-ghost" onClick={() => setDeleteAsked(null)}>{t("Cancel")}</button>}
     </>
   );
-  const plan = view.kind === "signed-in" && view.limits !== null ? formatAccountLimits(t, view.limits, view.pcs?.filter((pc) => pc.listed).length ?? 0) : null;
+  const plan = view.kind === "signed-in" && view.plan !== null ? planText(t, view.plan, locale) : null;
   const deleteRefused = view.kind === "signed-in" && deleteFailed?.account === view.account ? deleteFailed.message : null;
   const deleteParts = view.kind === "signed-in" && (
     <>

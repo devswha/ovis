@@ -1218,6 +1218,29 @@ same account; a browser on the hosted shell is told to sign out and in again. A 
 stored only in the place of the sign-in being deleted, while that delete is still on: a sign-out or
 another sign-in made meanwhile ends it.
 
+#### The account's plan
+
+| request | body | answer |
+|---|---|---|
+| `GET /v1/account/limits` | | `{ "plans", "plan", "source", "ends_at", "pcs_max", … }`: the account's plan and how many of its PCs may be on the Ovis relay at once |
+
+- `plans`: `"off"` or `"on"`. While plans are off the apps show no plan.
+- `plan`: `"free"` shows as Free; any other plan shows as Pro.
+- `source`: where a Pro plan comes from, `"launch"`, `"paid"` or `"grant"`; null on Free.
+- `ends_at`: when the plan ends, in ms since the epoch; null for no end. A `launch` plan always
+  ends.
+- `pcs_max`: how many of the account's PCs may be on the Ovis relay at once. A PC that stays
+  offline gives its place back within 7 days, and a PC already connected keeps its place.
+
+The client reads `plans`, `plan`, `source` and `ends_at` (`parseAccountPlan` in
+[`src/lib/account/service.ts`](../src/lib/account/service.ts)). While plans are on, **Settings →
+Devices and PCs → Account** names the plan on its own line under the sign-in: "Plan: Free",
+"Plan: Pro", "Plan: Pro, free until" the date for `launch`, "Plan: Pro until" the date for a
+`grant` with an end. Plans off, a failed call, and an answer the client cannot read show no plan:
+a blank `plan`, an `ends_at` that is not a whole number of ms inside the range of a date, Free with
+a `source` or an `ends_at`, Pro with no `source`, or `launch` with no `ends_at`. The apps offer no
+purchase.
+
 The client makes `state` (at least 128 bits) and `code_verifier` (32 random bytes, base64url) fresh
 for each sign-in, keeps them with that sign-in only, and drops a callback whose `state` is missing or
 not the one it sent.
