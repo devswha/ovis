@@ -95,6 +95,8 @@ export class DeviceReadOnlyError extends Error {
 export interface ConfirmProof { readonly codeId: string; readonly key: string; readonly source: "screen" | "recover" }
 /** The proofs admitConfirmed made from a live reservation; admits() honours no other. */
 const MINTED_PROOFS = new WeakSet<ConfirmProof>();
+/** How long a key waiting to replace a screen-approved key waits for its confirm (P22). */
+const REPLACEMENT_TTL_MS = 5 * 60_000;
 
 export type KeyRemovedCause = "revoke" | "remove" | "block" | "revoke_all";
 
@@ -490,6 +492,8 @@ export class DeviceStore {
   private readonly path: string;
   private readonly revocations = new Map<string, Set<(waiting?: true) => void>>();
   private readonly relinks = new Map<string, Set<(sessionId: string) => void>>();
+  /** keys waiting to replace a screen-approved key, by row (T72): in memory only, so a restart drops them (P22) */
+  private readonly replacements = new Map<string, { key: string; account: string; at: number; sessionId: string; vouched: boolean; ownWord: boolean }>();
   private readonly revokeAllListeners = new Set<() => void>();
   private readonly gateListeners = new Set<() => void>();
   private readonly pairings = new Set<(event: DevicePairedEvent, origin: readonly string[]) => void>();
@@ -2596,6 +2600,12 @@ export class DeviceStore {
     // account approved its pairing: a code started by a device outside the account names its starter in `added_by` and
     // approves nothing, and an approval for another account does not carry over
     const ownWord = device.account === undefined && device.member_approved_in !== account;
+    // a key approved on this PC's screen is never replaced by a link alone: the new key waits for a confirm of its own
+    // there, and nothing changes until then (P22, T7, T72)
+    if (this.pc !== null && key !== oldKey && device.origin?.from === "pc") {
+      this.replacements.set(deviceId, { key, account, at: Date.now(), sessionId, vouched, ownWord });
+      return this.list(null).find((d) => d.id === deviceId) ?? null;
+    }
     const linked: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved, ...(ownWord ? { joined_by: vouched ? "service" as const : "word" as const } : {}) };
     // Linking widens membership even if it keeps the key (G3); flag-off links retain the moved-key-only check.
     if ((this.safety !== null || key !== oldKey) && !this.admits(key)) return null;
@@ -2613,6 +2623,43 @@ export class DeviceStore {
     for (const listener of [...this.relinks.get(deviceId) ?? []]) listener(sessionId);
     return this.list(null).find((d) => d.id === deviceId) ?? null;
   }
+
+  /** The key waiting to replace the screen-approved key of row `id` (T72), or null: dropped after five minutes. */
+  pendingReplacement(id: string, now = Date.now()): { readonly key: string; readonly account: string; readonly at: number } | null {
+    const waiting = this.replacements.get(id);
+    if (waiting === undefined) return null;
+    if (now - waiting.at > REPLACEMENT_TTL_MS) { this.replacements.delete(id); return null; }
+    return { key: waiting.key, account: waiting.account, at: waiting.at };
+  }
+
+  /** The replacement of row `id` was declined on this PC's screen: the approved key stays. */
+  declineReplacement(id: string): void { this.replacements.delete(id); }
+
+  /**
+   * The replacement of row `id` confirmed on this PC's screen (T72): only the very key waiting, within five minutes, and
+   * only when G3 admits it in this turn. The row takes the key and its account and keeps `pc`, with how `link` and a
+   * new number; the confirm is spent.
+   */
+  replaceConfirmed(confirm: { row: string; key: string; source: "screen" }, now = Date.now()): DeviceMatch | null {
+    const waiting = this.pendingReplacement(confirm.row, now);
+    const device = this.devices.find((d) => d.id === confirm.row);
+    if (waiting === null || waiting.key !== confirm.key || device === undefined || this.pc === null) return null;
+    const { sessionId, vouched, ownWord } = this.replacements.get(confirm.row)!;
+    this.replacements.delete(confirm.row);
+    const proof: ConfirmProof = { codeId: `replace:${confirm.row}`, key: confirm.key, source: confirm.source };
+    MINTED_PROOFS.add(Object.freeze(proof));
+    if (!this.admits(confirm.key, proof)) return null;
+    const updated: StoredDevice = { ...device, relay_public_key: confirm.key, account: waiting.account, linked_at: new Date(now).toISOString(), link_moved_key: true, ...(ownWord ? { joined_by: vouched ? "service" as const : "word" as const } : {}), origin: this.pc.admit("pc", "link", null, now) };
+    const next = this.devices.map((d) => d === device ? updated : d);
+    this.bindingWith(waiting.account, confirm.key, () => this.save(next));
+    this.devices = next;
+    this.endNoAccountCode();
+    for (const listener of [...this.relinks.get(confirm.row) ?? []]) listener(sessionId);
+    return { id: updated.id, label: updated.label, role: updated.role };
+  }
+
+  /** A sign-in proved by `key` (T59): the first device's list key, set once and from nothing else. */
+  provedListKey(key: string): void { this.pc?.proveListKey(key); }
 
   /** A pairing of a key on this PC names the account removals it knew (`paired_over`), and stands over them (P13, T23). */
   private knowingRemovals(device: StoredDevice): StoredDevice {
