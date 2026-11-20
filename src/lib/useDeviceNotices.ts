@@ -59,5 +59,5 @@ export function useDeviceNotices(sockets: readonly { id: string; socket: NoticeS
       return new Map(current).set(id, withNoticeDecided(notices, notice.id));
     });
   }, []);
-  return { byPc, dismiss };
+  return { byPc, dismiss, cut: shown?.cut ?? 0 };
 }
