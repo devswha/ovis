@@ -157,7 +157,7 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       const features: ServerFeature[] = watchable() ? [...SERVER_FEATURES] : SERVER_FEATURES.filter((feature) => feature !== "watch");
       if (terminalHistory()) features.push("terminal-history");
       if (terminalModes()) features.push("terminal-modes");
-      if (client.data.machineEvents) features.push("machine-events");
+      if (client.data.machineEvents || client.data.localRoster) features.push("machine-events");
       if (accountEnabled) features.push(ACCOUNT_OPENS_ALL_CAPABILITY);
       // a folder OVIS_PASTE_DIR names lets the page read an upload's path whole through it (#2771); a
       // watch-only connection, which may list no folder, is not told where it is
