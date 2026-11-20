@@ -1,13 +1,15 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { ACCOUNT_OPENS_ALL_FEATURE, FrameType } from "../../shared/relay-mux.ts";
 import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
-import { createListedPc } from "./listed-pc.test-helpers.ts";
+import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { STALE_READ_MS } from "./account-devices.ts";
-import { ask } from "./pairing.test-helpers.ts";
+import { ask, phone } from "./pairing.test-helpers.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { parseSnapshotPage } from "../../shared/account-snapshot.ts";
 import type { WsStream } from "../../shared/relay-mux-engine.ts";
+import { newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
+import { privateStateFs } from "../private-state.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
@@ -103,6 +105,32 @@ test("T56: a failed method journal leaves the previous read deadline in force", 
   expect(fault.mock.calls[0]?.[0].kind).toBe("method");
   clock.advance(1);
   expect(closedAt).toEqual([STALE_READ_MS]);
+});
+
+test("a waiting block that fails closed during list admission cannot renew whole-read freshness", async () => {
+  const pc = await createListedPc(close => closes.push(close));
+  const { devices, accountMailbox } = pc.fixture.app.context.services;
+  const clock = new TestClock();
+  devices.useClock(clock);
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  clock.advance(1);
+  const { spki } = await phone();
+  const record = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: spki, target_no: 3,
+    signer: pc.member.publicKey, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, pc.member.keys.privateKey);
+  expect(await devices.applyBlock(record, "mailbox")).toMatchObject({ reason: "unknown_target" });
+  pc.service.registerDevice(ACCOUNT, spki, "Phone");
+  const rename = privateStateFs.renameSync;
+  const fault = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+    if (String(to).endsWith("/account-log.json")) throw new Error("unwritable safety log");
+    rename(from, to);
+  });
+  try {
+    const outcome = await accountMailbox.readSnapshot();
+    expect(devices.failsClosed).toBe(true);
+    expect(devices.openNotices().some(entry => entry.key === spki)).toBe(false);
+    expect(outcome?.committed ?? false).toBe(false);
+    expect([...clock.tasks.values()].map(task => task.at)).not.toContain(1 + STALE_READ_MS);
+  } finally { fault.mockRestore(); }
 });
 
 test("T56: a page delivered after server shutdown starts no new deadline", async () => {
