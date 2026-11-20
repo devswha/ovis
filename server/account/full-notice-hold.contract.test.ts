@@ -1,5 +1,9 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { accountDeviceId } from "../../shared/account-records.ts";
+import { relayFixture } from "../relay/test-helpers.ts";
+import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
+import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
+import { join } from "node:path";
 import { keyOf } from "./account-devices.test-helpers.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
 
@@ -34,4 +38,18 @@ test("P17/T53, G15: an eligible It's me settles its notice at capacity", async (
   expect(devices.itsMe(member.id, notice, member.publicKey)).toBe(true);
   expect(devices.openNotices().some(n => n.id === notice)).toBe(false);
   expect(devices.sessionRow(row)).toMatchObject({ role: "drive" });
+});
+
+test("H1/T42, G15: a fresh whole read restarts the hold at capacity", async () => {
+  const { fixture, service, time, row } = await atCapacity();
+  fixture.app.stop();
+  time.now += 30_000;
+  const reopened = relayFixture(false, { stateDir: fixture.stateDir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
+  closes.unshift(() => reopened.app.stop());
+  const { devices, accountMailbox } = reopened.app.context.services;
+  expect(devices.sessionRow(row)).toBeNull();
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(devices.openNotices()).toHaveLength(64);
+  const file = parseAccountDevicesFile(await Bun.file(join(fixture.stateDir, ACCOUNT_DEVICES_FILE)).json());
+  expect(file.devices.find(r => r.id === row)?.hold_until).toBe(new Date(time.now + 10_000).toISOString());
 });
