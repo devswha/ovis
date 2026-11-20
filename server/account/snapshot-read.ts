@@ -5,7 +5,6 @@
  * happens to the read. Everything that widens (lifts, the list itself) is staged and committed only when the whole read
  * validated, in one turn with no wait inside, and only while `gen` moved by nothing but this read's own denials.
  */
-import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import { OrderConflict } from "./account-order.ts";
 import type { BlockRecord, DeviceLiftRecord } from "../../shared/account-records.ts";
 import { AccountSnapshotError, assembleSnapshot, parseSnapshotPage, SNAPSHOT_GONE, type AccountSnapshot, type AccountSnapshotPage } from "../../shared/account-snapshot.ts";
@@ -119,14 +118,4 @@ export async function readSnapshot(
   }
   if (ports.methodsVersion() !== snapshot.methods_version) ports.journalMethod(snapshot.methods_version);
   return { committed: true, snapshot: snapshot.snapshot, denials, liftsRefused: snapshot.lifts.length - authorized.length };
-}
-
-/**
- * What a sign-in this PC refused carries back (T60). Every refusal asks for the catch-up read. Receipts go only to a
- * session that proved a key this PC's order table holds, and come from this PC's own log, never from the mailbox.
- */
-export function refusalReceipts(key: string, proved: boolean, ports: { requestRead(): void; ordered(key: string): boolean; receipts(key: string): readonly BlockReceipt[] }): readonly BlockReceipt[] {
-  ports.requestRead();
-  if (!proved || !ports.ordered(key)) return [];
-  return ports.receipts(key);
 }

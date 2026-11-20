@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { exportAccountKey, newRecordId, signSafetyRecord, type DeviceLiftRecord } from "../../shared/account-records.ts";
 import type { AccountSnapshotPage } from "../../shared/account-snapshot.ts";
-import { readSnapshot, refusalReceipts, type PageAnswer, type ReadScope, type SnapshotPorts, type StagedRead } from "./snapshot-read.ts";
+import { readSnapshot, type PageAnswer, type ReadScope, type SnapshotPorts, type StagedRead } from "./snapshot-read.ts";
 
 async function key() {
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
@@ -178,21 +178,5 @@ describe("S2-24 whole account reads (G1, T15, T52, T58, T60)", () => {
     await readSnapshot(serve([new Error("service down")]).fetchPage, rung.ports);
     expect(rung.journaled).toEqual([]);
     expect(rung.committed).toEqual([]);
-  });
-
-  test("T60: a refused sign-in triggers catch-up and only a known proved key gets a PC-authenticated receipt backed by its log", () => {
-    const log = new Map([["key-known", [{ id: "b1", outcome: "applied" as const, n: 4 }]]]);
-    const asked: string[] = [];
-    const receipts = (candidate: string, proved: boolean) => refusalReceipts(candidate, proved, {
-      requestRead: () => { asked.push(candidate); },
-      ordered: (k) => k === "key-known" || k === "key-empty",
-      receipts: (k) => log.get(k) ?? [],
-    });
-    expect(receipts("key-known", true)).toEqual([{ id: "b1", outcome: "applied", n: 4 }]);
-    expect(receipts("key-known", false)).toEqual([]);
-    expect(receipts("key-stranger", true)).toEqual([]);
-    expect(receipts("key-empty", true)).toEqual([]);
-    // every refused sign-in asks for the catch-up, whether or not it gets receipts
-    expect(asked).toEqual(["key-known", "key-known", "key-stranger", "key-empty"]);
   });
 });
