@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord, type DeviceLiftRecord } from "../../shared/account-records.ts";
@@ -7,7 +7,7 @@ import type { AccountSnapshotPage } from "../../shared/account-snapshot.ts";
 import { DeviceStore } from "../devices.ts";
 import { privateStateFs } from "../private-state.ts";
 import { ACCOUNT_ORDER_FILE, AccountOrder } from "./account-order.ts";
-import { DeviceJournal, JOURNAL_MAX } from "./device-journal.ts";
+import { DeviceJournal, JOURNAL_FILE, JOURNAL_MAX } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
 import { SafetyLog } from "./safety-log.ts";
@@ -171,17 +171,20 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     const first = pc();
     await member(first.devices);
     expect(await read(first.ports, page({ methods_version: 5 }))).toMatchObject({ committed: true });
-    for (let i = 0; i < JOURNAL_MAX; i++) {
-      first.journal.append({ kind: "merge", how: "merge", key: null, no: null, row: null, label: "Merge", by: null, account: ACCOUNT });
-    }
+    // fill the journal to its limit in one write (as JOURNAL_MAX appends would leave it), then one real append trims
+    // the method entry, as retention does
+    const path = join(first.dir, JOURNAL_FILE);
+    const doc = JSON.parse(readFileSync(path, "utf8")) as { next_seq: number; entries: unknown[] };
+    const fillers = Array.from({ length: JOURNAL_MAX }, (_, i) => ({ kind: "merge", how: "merge", key: null, no: null, row: null, label: "Merge", by: null, account: ACCOUNT, seq: doc.next_seq + i, id: i.toString(16).padStart(32, "0"), at: new Date().toISOString() }));
+    writeFileSync(path, JSON.stringify({ ...doc, entries: [...doc.entries, ...fillers].slice(-JOURNAL_MAX), next_seq: doc.next_seq + JOURNAL_MAX }));
+    pc(first.dir).journal.append({ kind: "merge", how: "merge", key: null, no: null, row: null, label: "Merge", by: null, account: ACCOUNT });
     const again = pc(first.dir);
     expect(again.journal.entries().some((entry) => entry.kind === "method")).toBe(false);
     expect(await read(again.ports, page({ methods_version: 5 }))).toMatchObject({ committed: true });
     expect(again.journal.entries().filter((entry) => entry.kind === "method")).toHaveLength(0);
     expect(await read(again.ports, page({ methods_version: 6 }))).toMatchObject({ committed: true });
     expect(again.journal.entries().filter((entry) => entry.kind === "method")).toHaveLength(1);
-  // JOURNAL_MAX durable appends: allow for a loaded runner
-  }, 60_000);
+  });
 
   test("T58: a committed methods version change is journalled once", async () => {
     const { devices, journal, ports } = pc();
