@@ -27,10 +27,20 @@ export function DeviceNotices({ pc, notices, cut = 0, onDismiss, onShown, action
     const headline = notice.kind === "method" ? t("A sign-in method was added to your account at {time}.", { time })
       : method === null ? t("{time}: a new device was added on {pc}: {name}", { time, pc, name: notice.label })
       : t("{time}: a new device joined {pc}: {name}", { time, pc, name: notice.label });
-    const how = method === null ? null
-      : notice.two_step === "verified" ? t("{method} sign-in, two-step sign-in verified", { method })
-      : notice.two_step === "set" ? t("{method} sign-in, two-step sign-in set on the account", { method })
-      : t("{method} sign-in, two-step sign-in not confirmed", { method });
+    let how: string | null;
+    switch (notice.two_step) {
+      case "verified":
+        how = method === null ? null : t("{method} sign-in, two-step sign-in verified", { method });
+        break;
+      case "set":
+        how = method === null ? null : t("{method} sign-in, two-step sign-in set on the account", { method });
+        break;
+      default:
+        // Older or newer PC notices may omit the field or send an unrecognised wire value.
+        how = method !== null ? t("{method} sign-in, two-step sign-in not confirmed", { method })
+          : notice.two_step === null || (notice.two_step === undefined && notice.how !== "list") ? null
+          : t("Two-step sign-in not confirmed");
+    }
     return (
       <div key={notice.id} className="update-notice is-paired device-notice" role="status" data-testid="device-notice">
         <Smartphone aria-hidden="true" />
