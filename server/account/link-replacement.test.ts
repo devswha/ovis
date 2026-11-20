@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey } from "../../shared/account-records.ts";
-import { DeviceStore, readDeviceRegistry } from "../devices.ts";
+import { DeviceStore, readDeviceRegistry, ReplacementNeedsAppError } from "../devices.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
@@ -45,7 +45,7 @@ describe("a key approved on this PC's screen is replaced only by a confirm of it
     const approved = await screenApproved(devices);
     const before = row(dir, approved.id)!;
     const next = await key();
-    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT);
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT, "", false, true);
     expect(row(dir, approved.id)).toEqual(before);
     expect(devices.pendingReplacement(approved.id)).toMatchObject({ key: next, account: ACCOUNT });
   });
@@ -54,7 +54,7 @@ describe("a key approved on this PC's screen is replaced only by a confirm of it
     const { dir, devices, pc: state } = pc();
     const approved = await screenApproved(devices);
     const next = await key();
-    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT);
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT, "", false, true);
     expect(devices.replaceConfirmed({ row: approved.id, key: await key(), source: "screen" })).toBeNull();
     expect(devices.replaceConfirmed({ row: approved.id, key: next, source: "screen" })).toMatchObject({ id: approved.id });
     expect(row(dir, approved.id)).toMatchObject({ relay_public_key: next, account: ACCOUNT, origin: { from: "pc", how: "link", admit_no: 2 } });
@@ -67,9 +67,9 @@ describe("a key approved on this PC's screen is replaced only by a confirm of it
     const { devices } = pc();
     const approved = await screenApproved(devices);
     const [first, second] = [await key(), await key()];
-    devices.linkAccountKey(approved.id, approved.key, first, ACCOUNT);
+    devices.linkAccountKey(approved.id, approved.key, first, ACCOUNT, "", false, true);
     const firstChallenge = devices.pendingReplacement(approved.id)!.challenge;
-    devices.linkAccountKey(approved.id, approved.key, second, ACCOUNT);
+    devices.linkAccountKey(approved.id, approved.key, second, ACCOUNT, "", false, true);
     expect(devices.pendingReplacement(approved.id)).toMatchObject({ key: second, challenge: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) });
     expect(devices.pendingReplacement(approved.id)!.challenge).not.toBe(firstChallenge);
     expect(devices.replaceConfirmed({ row: approved.id, key: first, source: "screen" })).toBeNull();
@@ -79,19 +79,28 @@ describe("a key approved on this PC's screen is replaced only by a confirm of it
     const { dir, devices } = pc();
     const approved = await screenApproved(devices);
     const next = await key();
-    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT);
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT, "", false, true);
     devices.declineReplacement(approved.id);
     expect(devices.pendingReplacement(approved.id)).toBeNull();
 
     const now = Date.now();
-    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT);
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT, "", false, true);
     expect(devices.replaceConfirmed({ row: approved.id, key: next, source: "screen" }, now + FIVE_MINUTES + 1)).toBeNull();
     expect(devices.pendingReplacement(approved.id)).toBeNull();
 
-    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT);
+    devices.linkAccountKey(approved.id, approved.key, next, ACCOUNT, "", false, true);
     const restarted = open(dir).devices;
     expect(restarted.pendingReplacement(approved.id)).toBeNull();
     expect(row(dir, approved.id)).toMatchObject({ relay_public_key: approved.key, origin: { from: "pc" } });
+  });
+
+  test("T7: an app that cannot compare a replacement is refused and nothing changes: no replacement waits, the old key stays", async () => {
+    const { dir, devices } = pc();
+    const approved = await screenApproved(devices);
+    const before = row(dir, approved.id)!;
+    expect(() => devices.linkAccountKey(approved.id, approved.key, "MFkw" + "A".repeat(87), ACCOUNT)).toThrow(ReplacementNeedsAppError);
+    expect(devices.pendingReplacement(approved.id)).toBeNull();
+    expect(row(dir, approved.id)).toEqual(before);
   });
 
   test("T11: a link that moves a key of a row not approved on the screen admits the new key with a number of its own", async () => {
