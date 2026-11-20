@@ -31,17 +31,23 @@ test("T42/S23: a frozen account row is dropped at catch-up and returns after a l
   await accountMailbox.pull();
   const target = await phone();
   const newer = await phone();
+  const elder = await phone();
   const signerNo = service.registerDevice(ACCOUNT, member.publicKey, "Owner");
+  service.registerDevice(ACCOUNT, elder.spki, "Older listed row");
   const targetNo = service.registerDevice(ACCOUNT, target.spki, "Target");
   service.registerDevice(ACCOUNT, newer.spki, "Newer");
   service.opensAll = true;
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   const id = accountDeviceId(serverId, newer.spki);
-  const row = () => parseAccountDevicesFile(JSON.parse(readFileSync(join(fixture.stateDir, ACCOUNT_DEVICES_FILE), "utf8")))
-    .devices.find(candidate => candidate.id === id);
+  const row = (rowId = id) => parseAccountDevicesFile(JSON.parse(readFileSync(join(fixture.stateDir, ACCOUNT_DEVICES_FILE), "utf8")))
+    .devices.find(candidate => candidate.id === rowId);
+  const elderId = accountDeviceId(serverId, elder.spki);
+  const before = row(elderId);
+  if (!before) throw new Error("Missing older listed row");
   const original = row();
   if (!original) throw new Error("Missing initial admission");
   clock.advance(JOIN_HOLD_MS);
+  expect(devices.sessionRow(elderId)).toMatchObject({ role: "drive", key: elder.spki });
   const owner = await relayConnection(fixture, { serverId, websocket: fixture.app.context.services.core.socketHandlers });
   await owner.auth(member, [ACCOUNT_OPENS_ALL_FEATURE]);
   const originalSession = await relayConnection(fixture, { serverId });
@@ -58,6 +64,9 @@ test("T42/S23: a frozen account row is dropped at catch-up and returns after a l
   clock.advance(STALE_READ_MS);
   // The service has not received this block: its list still names the newer key as eligible.
   expect((await ask(owner, "/api/account/status?fresh=1")).status).toBe(200);
+  expect(row(elderId)?.origin).toEqual(before.origin);
+  expect(devices.sessionRow(elderId)).toMatchObject({ role: "drive", key: elder.spki });
+  expect(DeviceJournal.open(fixture.stateDir).entries().filter(entry => entry.row === elderId).map(entry => entry.kind)).toEqual(["admit"]);
   expect(row()).toBeUndefined();
   expect(DeviceJournal.open(fixture.stateDir).entries().filter(entry => entry.row === id).map(entry => entry.kind))
     .toEqual(["admit", "drop"]);
