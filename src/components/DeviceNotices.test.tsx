@@ -78,6 +78,13 @@ describe("device notices", () => {
     await mount([], [], 0);
     expect(text(renderer!.root)).toBe("");
   });
+
+  it("P15: one trimmed notice reads in the singular", async () => {
+    await mount([], [], 1);
+    const shown = text(renderer!.root);
+    expect(shown).toContain("An older notice from Desk");
+    expect(shown).not.toContain("1 older notices");
+  });
 });
 
 describe("keyFingerprint", () => {
