@@ -1885,7 +1885,7 @@ export class DeviceStore {
     const notice = this.journal?.openNotices().find((entry) => entry.id === noticeId);
     const sayer = this.provedSayer(sayerId, provedKey);
     if (!notice?.row || !notice.key || !sayer) return false;
-    const member = this.devices.find((d) => d.id === notice.row);
+    const member = this.devices.find((d) => d.held === notice.id || d.id === notice.row);
     if (member) {
       if (!this.promotedHolds.mayConfirm(member, notice, { sayer, accountNo: this.accountOrder?.no(notice.key) ?? null, now: Date.now() })) return false;
       const decision = this.journal?.append({ ...notice, kind: "confirm", how: "its_me", by: provedKey }, notice.id);
@@ -2108,15 +2108,22 @@ export class DeviceStore {
   }
 
   /** One authorization write precedes every state change and enrollment announcement. */
-  private enroll(admitting: StoredDevice, now: number, origin: readonly string[], codeSpent = true, path: { startedBy?: string | null; digits?: boolean; confirm?: ConfirmProof; by?: string; pairingHere?: boolean } = {}): boolean {
+  private enroll(admitting: StoredDevice, now: number, origin: readonly string[], codeSpent = true, path: { startedBy?: string | null; digits?: boolean; confirm?: ConfirmProof; by?: string; pairingHere?: boolean } = {}, signerKey?: string): boolean {
     // the final guard, in the commit turn: nothing waits between it and the write
     if (!this.admits(admitting.relay_public_key, path.confirm, path)) throw new AdmissionRefusedError();
-    const admitted = this.knowingRemovals(this.admitted(admitting, now, path));
-    // with the flag on a row is stamped after everything this store ordered before it (T26, P13)
-    const device = this.evidence === null ? admitted : { ...admitted, created_at: this.nextStamp(Date.parse(admitted.created_at)) };
+    const initial = this.knowingRemovals(this.admitted(admitting, now, path));
+    const admitted = this.evidence === null ? initial : { ...initial, created_at: this.nextStamp(Date.parse(initial.created_at)) };
+    const rows = admitted.relay_public_key ? this.joinedRows?.rowsByKey(admitted.relay_public_key) ?? [] : [];
+    // The list ID is derived from the key and unique on this PC; a pairing may choose a different member ID.
+    const joined = rows[0];
+    const notice = joined && this.listNotice(joined);
+    const held = joined && this.carriesJoinHold(admitted, joined, now, signerKey);
+    if (held && !notice) throw new Error("The held admission has no durable notice");
+    const device = held && notice ? { ...admitted, held: notice.id }
+      : notice && !path.confirm && admitted.origin?.from === "remote" ? { ...admitted, carried_notice: notice.id } : admitted;
     // A waiting first link enrolls its own binding row. Every other member enrollment consumes T67.
     if (device.account !== undefined && device.linked_at === undefined) this.pc?.setOthersEver();
-    this.journalAdmission(device, path.by);
+    this.journalAdmission(device, joined, notice, path.by);
     const next = [...this.devices, device];
     const gate = this.gateClosedAt ?? device.created_at;
     this.save(next, gate);
@@ -2129,6 +2136,10 @@ export class DeviceStore {
       return false;
     }
     if (this.safety !== null && this.failsClosed) return false;
+    if (device.held && joined) this.promotedHolds.carry(device.held, joined.hold_until);
+    // Save the replacement before retiring the list row (restart finishes an interrupted transfer).
+    // removeRows detaches the old authority and closes its sessions before persisting the removal.
+    if (rows.length) this.joinedRows?.removeRows(rows.map(row => row.id), "promoted", id => this.closeAccountSessions(id));
     this.accountOrder?.recordJoins([device]);
     if (codeSpent) this.voidPending();
     if (device.account !== undefined) this.endNoAccountCode();
@@ -2441,12 +2452,11 @@ export class DeviceStore {
    * An admission's journal entry, on disk before its row (G14): a journal that cannot be written throws, and nobody
    * is admitted. Then every listener hears it, each on its own.
    */
-  /** `by`: the OS user of an `ovis recover` admission (P24, T70). */
-  private journalAdmission(device: StoredDevice, by?: string): void {
+  private journalAdmission(device: StoredDevice, joined?: AccountRow, notice?: JournalEntry, by?: string): void {
     if (this.journal === null) return;
     const recovered = device.origin?.from === "recover";
-    const promotion = device.origin?.how === "promoted";
-    this.publish(this.journal.append({ kind: promotion ? "promote" : "admit", how: recovered ? "recover" : device.origin?.how ?? "code", key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: recovered ? by ?? null : promotion ? device.origin?.by ?? null : device.added_by ?? null, account: device.account ?? null }));
+    const promotion = joined !== undefined;
+    this.publish(this.journal.append({ kind: promotion ? "promote" : "admit", how: recovered ? "recover" : device.origin?.how ?? "code", key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: recovered ? by ?? null : promotion ? device.origin?.by ?? null : device.added_by ?? null, account: device.account ?? notice?.account ?? null }));
   }
 
   /** A removal's journal entry, after its deny (P8 step 4). A journal that cannot be written stops no removal. */
@@ -2976,9 +2986,15 @@ export class DeviceStore {
     return !this.devices.some((row) => row.id === id) && (!joined || joined.key === key);
   }
 
-  private listNotice(id: string): JournalEntry | undefined {
-    const row = this.joinedRows?.row(id);
-    return row ? this.journal?.openNotices().find((notice) => notice.row === id && notice.key === row.key && notice.no === row.origin.admit_no) : undefined;
+  private listNotice(row: AccountRow): JournalEntry | undefined {
+    return this.journal?.openNotices().find((notice) => notice.row === row.id && notice.key === row.key && notice.no === row.origin.admit_no);
+  }
+
+  private carriesJoinHold(device: StoredDevice, joined: AccountRow, now: number, signerKey: string | undefined): boolean {
+    if (joined.state !== "hold" || (device.origin?.from === "pc" && ["code", "digits", "qr", "confirmed"].includes(device.origin.how))) return false;
+    if (joined.hold_until !== null && Date.parse(joined.hold_until) <= now) return false;
+    const signer = signerKey && device.added_by && this.provedSayer(device.added_by, signerKey);
+    return !signer || !mayEndHold(signer, { key: joined.key, no: joined.no, admitNo: joined.origin.admit_no }, now);
   }
 
   /** An `add` that verified: a new member row, announced like any other enrollment. Never for a tombstoned key. */
@@ -3001,22 +3017,9 @@ export class DeviceStore {
 
   /** Signed add and member digits have different membership metadata, but transfer the same listing and hold. */
   private enrollApproved(device: StoredDevice, signerKey: string | undefined, now: number): boolean {
-    const joined = this.joinedRows?.row(device.id);
-    if (!joined) return this.enroll(device, now, [], false);
-    const signer = signerKey && device.added_by && this.provedSayer(device.added_by, signerKey);
-    const approved = signer && mayEndHold(signer, { key: joined.key, no: joined.no, admitNo: joined.origin.admit_no }, now);
-    const carry = joined.state === "hold" && (joined.hold_until === null || (!approved && Date.parse(joined.hold_until) > now));
-    const notice = this.listNotice(device.id)?.id;
-    const held = carry ? notice : undefined;
-    if (carry && !held) throw new Error("The held admission has no durable notice");
-    if (!this.enroll({ ...device,
-      ...(this.pc ? { origin: this.pc.admit("remote", "promoted", signerKey ?? null, now) } : {}),
-      ...(held ? { held } : notice ? { carried_notice: notice } : {}),
-    }, now, [], false)) return false;
-    if (held) this.promotedHolds.carry(held, joined.hold_until);
-    this.joinedRows?.promoted(joined.id);
-    this.closeAccountSessions(joined.id);
-    return true;
+    const listed = device.relay_public_key && this.joinedRows?.rowsByKey(device.relay_public_key).length;
+    const approved = listed && this.pc ? { ...device, origin: this.pc.admit("remote", "promoted", signerKey ?? null, now) } : device;
+    return this.enroll(approved, now, [], false, undefined, device.account_add === undefined ? undefined : signerKey);
   }
 
   /**

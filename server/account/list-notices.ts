@@ -12,6 +12,8 @@ export function listNotices(journal: DeviceJournal, evidence: RemovalEvidence, s
   return {
     hasNoticeSlot: () => journal.admitsFromList(),
     journal(entry) {
+      // Enrollment already journalled the replacement as a promotion, not a second removal.
+      if (entry.kind === "drop" && entry.reason === "promoted") return;
       if (entry.kind === "its_me") {
         const notice = current(entry);
         send(journal.append({ ...notice, kind: "confirm", how: "its_me", by: entry.by ?? null }, notice.id));

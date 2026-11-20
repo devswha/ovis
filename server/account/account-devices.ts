@@ -99,10 +99,6 @@ export class AccountDeviceStore implements AccountRowSource {
     this.drop(this.file.devices.filter(row => ids.includes(row.id)), reason, close);
   }
 
-  promoted(id: string): void {
-    this.write({ ...this.file, devices: this.file.devices.filter((row) => row.id !== id) });
-  }
-
   live(id: string): boolean {
     return this.rows().some((row) => row.id === id && row.state === "live");
   }

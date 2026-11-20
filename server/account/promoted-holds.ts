@@ -21,8 +21,8 @@ export class PromotedHolds {
 
   /** Compare standing against the original admission, not the newer promotion. */
   mayConfirm(row: StoredDevice, notice: JournalEntry, approval: { readonly sayer: Sayer; readonly accountNo: number | null; readonly now: number }): boolean {
-    if (notice.how !== "list" || !notice.key || row.id !== notice.row || row.relay_public_key !== notice.key) return false;
-    if (row.held ? row.held !== notice.id || !this.deadlines.has(row.held) : row.origin?.how !== "promoted") return false;
+    if (notice.how !== "list" || !notice.key || row.relay_public_key !== notice.key) return false;
+    if (row.held ? row.held !== notice.id || !this.deadlines.has(row.held) : row.id !== notice.row || row.origin?.how !== "promoted") return false;
     return this.admits(notice.key) && mayEndHold(approval.sayer, { key: notice.key, no: approval.accountNo, admitNo: notice.no }, approval.now);
   }
 

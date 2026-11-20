@@ -5,7 +5,7 @@ import type { RowDrop } from "./row-drop-evidence.ts";
 import type { Sayer } from "./join-hold.ts";
 import type { Readmission } from "./readmission.ts";
 
-export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke" | "expired" | "catching_up";
+export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke" | "expired" | "catching_up" | "promoted";
 
 /**
  * What Track A's deny path (DeviceStore.attachAccountRows, set only with OVIS_ACCOUNT_OPENS_ALL=1) asks of the
@@ -19,7 +19,6 @@ export interface AccountRowSource {
   missing(): boolean;
   rows(): readonly AccountRow[];
   row(id: string): AccountRow | null;
-  promoted(id: string): void;
   rowsByKey(key: string): readonly AccountRow[];
   access(id: string): AccessAnswer;
   pruneDenied(evidence: RemovalEvidence, legacyRevoke?: "revoke_all"): void;
