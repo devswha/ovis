@@ -95,7 +95,7 @@ test("T41/S19/P8/P10: a missing listed registry during Revoke-all recovery: the 
   const path = join(dir, ACCOUNT_DEVICES_FILE);
   fixture.app.stop();
   const file = parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8")));
-  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const })) });
+  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const, hold_until: null })) });
   const live = startOffline(dir).app;
   const fault = failReplacement(join(dir, REMOVAL_FILE), device.id);
   try { expect(() => live.context.services.devices.revokeAll()).toThrow("replacement failed"); } finally { fault.mockRestore(); live.stop(); }
@@ -117,7 +117,7 @@ test("T41/S19/P8/P10: a new Revoke-all while the listed registry will not parse 
   const intent = join(dir, "revoke-all.json");
   fixture.app.stop();
   const file = parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8")));
-  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const })) });
+  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const, hold_until: null })) });
   const original = readFileSync(path, "utf8");
   expect(existsSync(intent)).toBe(false);
   writeFileSync(path, "{");
@@ -145,7 +145,7 @@ test("T41/S19/P8/P10: a new Revoke-all on a bound PC whose listed registry is mi
   const intent = join(dir, "revoke-all.json");
   fixture.app.stop();
   const file = parseAccountDevicesFile(JSON.parse(readFileSync(path, "utf8")));
-  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const })) });
+  writePrivateState(path, { ...file, devices: file.devices.map(row => ({ ...row, state: "live" as const, hold_until: null })) });
   const saved = readFileSync(path, "utf8");
   rmSync(path);
   const missing = startOffline(dir).app;
