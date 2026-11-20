@@ -146,9 +146,12 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     const f = relayFixture(false, { stateDir: active, siblingStateDir: sibling, accountOpensAll: true });
     fixtures.push(f);
     dirs.splice(dirs.indexOf(active), 1);
-    // a row whose key differs between the copies is dropped: neither key gets it
+    // a row whose key differs between the copies is dropped: neither key gets it, in either folder, and it is journalled
     expect(f.app.context.services.devices.has(row.id)).toBe(false);
     expect(rowIds(active)).not.toContain(row.id);
+    expect(rowIds(sibling)).not.toContain(row.id);
+    const journal = JSON.parse(readFileSync(join(active, "device-journal.json"), "utf8")) as { entries: { kind: string; how: string; row: string | null }[] };
+    expect(journal.entries.filter((entry) => entry.kind === "drop" && entry.how === "merge_conflict").map((entry) => entry.row)).toEqual([row.id]);
   });
 
   test("T14: only authorized hand-over ends enrollment and the decision is journaled", async () => {
