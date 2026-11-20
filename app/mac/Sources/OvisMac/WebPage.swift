@@ -349,6 +349,8 @@ extension WebPageController: WKNavigationDelegate {
                 model.draftsCarried(Set(keys))
                 let controller = self.webView.configuration.userContentController
                 controller.removeAllUserScripts()
+                // the carry's script is the one replaced; Browser for links' bridge stays for every later load
+                controller.addUserScript(LinkBrowsers.script)
                 if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token, loaded: true, before: before) {
                     controller.addUserScript(script)
                 } else {

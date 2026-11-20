@@ -289,7 +289,7 @@ async function openWebLink(url: string): Promise<void> {
     openInstead(browser, address);
   };
   try {
-    const child = spawn(program!, args, { detached: true, stdio: "ignore" });
+    const child = spawn(program!, args, { detached: true, stdio: "ignore", windowsHide: true });
     child.once("error", fail);
     // a launcher that hands the link to a running browser exits at once with 0; one that cannot start fails (or crashes) within a moment
     child.once("exit", (code, signal) => { if ((code !== 0 || signal !== null) && Date.now() - started < 2_000) fail(); });

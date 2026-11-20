@@ -132,7 +132,8 @@ export function runsInterpreter(program: string): boolean {
  */
 export function desktopCommand(entry: Pick<DesktopEntry, "exec" | "name" | "icon"> & { location?: string | null }, url: string): string[] | null {
   const words = execWords(entry.exec);
-  if (words === null || words.length === 0 || runsInterpreter(words[0]!.text)) return null;
+  // the program is a fixed path: no field code fills it in
+  if (words === null || words.length === 0 || words[0]!.text.includes("%") || runsInterpreter(words[0]!.text)) return null;
   const command: string[] = [];
   let given = false;
   for (const { text, quoted } of words) {
@@ -243,9 +244,15 @@ export function windowsCommandWords(line: string): string[] {
       } else word += "\\".repeat(count);
       started = true;
     } else if (char === "\"") {
-      quoted = !quoted;
+      // inside quotes, "" is a quote of its own and the quotes go on
+      if (quoted && line[i + 1] === "\"") {
+        word += "\"";
+        i += 2;
+      } else {
+        quoted = !quoted;
+        i++;
+      }
       started = true;
-      i++;
     } else if (!quoted && (char === " " || char === "\t")) {
       if (started) words.push(word);
       word = "";
@@ -267,7 +274,7 @@ export function windowsCommandWords(line: string): string[] {
  * end. Refused (null): the placeholder inside a larger word, and a program that is an interpreter.
  */
 export function windowsCommand(words: string[], url: string): string[] | null {
-  if (words.length === 0 || runsInterpreter(words[0]!)) return null;
+  if (words.length === 0 || words[0]!.includes("%") || runsInterpreter(words[0]!)) return null;
   const command: string[] = [];
   let given = false;
   for (const word of words) {

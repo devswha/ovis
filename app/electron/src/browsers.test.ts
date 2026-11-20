@@ -48,7 +48,7 @@ describe("desktopCommand", () => {
   });
 
   it("refuses an Exec line where the address would not be an argument of its own, or a program would read it as code", () => {
-    for (const exec of ["sh -c \"browser %u\"", "/bin/bash -c \"exec firefox '%U'\"", "web \"--url=%f\"", "browser --url=%u", "sh -c browser%u", "/usr/bin/env browser %u", "python3 open.py %u", "web %u %U", "web --desktop-entry %k %u"]) {
+    for (const exec of ["sh -c \"browser %u\"", "/bin/bash -c \"exec firefox '%U'\"", "web \"--url=%f\"", "browser --url=%u", "sh -c browser%u", "/usr/bin/env browser %u", "python3 open.py %u", "web %u %U", "web --desktop-entry %k %u", "%u", "%c --flag %u", "/usr/bin/%i %u"]) {
       expect(desktopCommand({ exec, name: "Web", icon: null }, webAddress("https://a.example/x$(id)?q=$(id)")!)).toBeNull();
     }
     expect(desktopCommand({ exec: "\"/opt/My Browser/run\" --class \"%c\" %u", name: "Web", icon: null }, ADDRESS)).toEqual(["/opt/My Browser/run", "--class", "Web", ADDRESS]);
@@ -142,12 +142,13 @@ describe("Windows browsers", () => {
   it("splits a command line as Windows does, a quote inside a word kept to that word", () => {
     expect(windowsCommandWords("\"C:\\a b\\x.exe\" -osint -url \"%1\"")).toEqual(["C:\\a b\\x.exe", "-osint", "-url", "%1"]);
     expect(windowsCommandWords("x.exe --name=\"a \\\"b\\\" c\" C:\\dir\\ end")).toEqual(["x.exe", "--name=a \"b\" c", "C:\\dir\\", "end"]);
+    expect(windowsCommandWords("firefox.exe -P \"\"\"Work\"\"\" -osint -url \"%1\"")).toEqual(["firefox.exe", "-P", "\"Work\"", "-osint", "-url", "%1"]);
   });
 
   it("puts the address where %1 stands, at the end without one, and refuses what would not keep it an argument", () => {
     expect(windowsCommand(["x.exe", "-url", "%1", "--flag"], ADDRESS)).toEqual(["x.exe", "-url", ADDRESS, "--flag"]);
     expect(windowsCommand(["x.exe", "%*"], ADDRESS)).toEqual(["x.exe", ADDRESS]);
-    for (const words of [["x.exe", "-url=%1"], ["C:\\Windows\\System32\\cmd.exe", "/c", "start", "%1"], ["powershell.exe", "-c", "%1"], ["C:\\tools\\open.bat", "%1"], []]) {
+    for (const words of [["x.exe", "-url=%1"], ["C:\\Windows\\System32\\cmd.exe", "/c", "start", "%1"], ["powershell.exe", "-c", "%1"], ["C:\\tools\\open.bat", "%1"], ["%1"], ["%1", "--flag"], []]) {
       expect(windowsCommand(words, ADDRESS)).toBeNull();
     }
   });
