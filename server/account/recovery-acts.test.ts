@@ -9,7 +9,7 @@ import { recoveryActs } from "./recovery-acts.ts";
 
 const row = (id: string, extra: Partial<RecoveryCandidate> = {}): RecoveryCandidate => ({
   id, key: `key-${id}`, label: `Row ${id}`, origin: { from: "remote", how: "list" }, waiting: "catching_up",
-  joinHold: false, held: false, openNotice: false, expired: false, covered: false, frozen: false, ...extra,
+  joinHold: false, held: false, openNotice: false, expired: false, covered: false, frozen: false, lastSeenAt: null, ...extra,
 });
 
 function setup(options: { logReadable?: boolean; failJournal?: boolean } = {}) {
@@ -56,4 +56,23 @@ test("T70: undo ends releases, and an act the contract does not parse is refused
   expect(releases.releaseOf("0123456789abcdef")).toBeNull();
   expect(await acts({ act: "release", rows: ["not-a-row-id"] })).toEqual({ error: "Invalid recovery action" });
   expect(await acts({ act: "remove", targets: ["0123456789abcdef"] })).toEqual({ error: "remove is not available on this PC yet" });
+});
+
+test("T70/E46: a row already released is not released again, so an undo still ends every session the first release let in", async () => {
+  const { acts, releases } = setup();
+  expect(await acts({ act: "release", rows: ["0123456789abcdef"] })).toEqual({ released: ["0123456789abcdef"] });
+  const closed: string[] = [];
+  releases.watch(releases.releaseOf("0123456789abcdef")!, () => { closed.push("first"); });
+  expect(await acts({ act: "release", rows: ["0123456789abcdef"] })).toEqual({ error: "0123456789abcdef is released already" });
+  await acts({ act: "undo", rows: null });
+  expect(closed).toEqual(["first"]);
+});
+
+test("T70: list says when this PC last saw each waiting row", async () => {
+  const journal: RecoveryJournalEntry[] = [];
+  const releases = new RecoveryReleases({ journal: (entry) => { journal.push(entry); } });
+  releases.registerRecoverySource(() => [row("0123456789abcdef", { lastSeenAt: "2026-11-19T10:00:00.000Z" })]);
+  const acts = recoveryActs({ releases, logReadable: () => true, user: "owner" });
+  const answer = await acts({ act: "list" }) as { rows: { last_seen_at: string | null }[] };
+  expect(answer.rows[0]!.last_seen_at).toBe("2026-11-19T10:00:00.000Z");
 });

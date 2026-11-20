@@ -10,7 +10,7 @@ const rows = [
   { id: "b2", label: "Old laptop", origin: { from: "legacy", how: "legacy" }, waiting: "catching_up", last_seen_at: null, refusal: "frozen" },
 ];
 
-function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean } = {}) {
+function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string } = {}) {
   const sent: unknown[] = [];
   const out: string[] = [];
   const answers = [...(options.answers ?? [])];
@@ -24,7 +24,7 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
       sent.push(request);
       if (request.act === "list") return { rows };
       if (request.act === "release") return { released: request.rows };
-      return { releases: ["r1"] };
+      return { releases: ["r1"], ...(options.undoWarning ? { warning: options.undoWarning } : {}) };
     },
   };
   return { value, sent, text: () => out.join("") };
@@ -82,4 +82,10 @@ test("R11: a server that does not answer on its recovery socket is said to", asy
   const run = io({ unreachable: true });
   expect(await runRecover([], run.value)).toBe(1);
   expect(run.text()).toContain("recovery socket");
+});
+
+test("T70: an undo whose journal entry could not be written says so, and fails", async () => {
+  const run = io({ undoWarning: "The undo was not journalled: disk full" });
+  expect(await runRecover(["--undo"], run.value)).toBe(1);
+  expect(run.text()).toContain("The undo was not journalled: disk full");
 });

@@ -916,7 +916,7 @@ describe("add and login", () => {
   }, 30_000);
 
   it("are in the usage an unknown command gets, with what they do", async () => {
-    const result = await run("constructor", { HERDR_PLUGIN_CONFIG_DIR: configDir });
+    const result = await run("constructor", { HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_ACCOUNT_OPENS_ALL: "1" });
     expect(result.exitCode).toBe(2);
     expect(result.err).toBe([
       "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|recover|phone|phone-setup|tui>",
@@ -926,6 +926,12 @@ describe("add and login", () => {
       "recover: list the devices that wait for this PC's account to be read; --release <id>... lets them in until then, --undo ends that.",
       "",
     ].join("\n"));
+  });
+
+  it("with the release flag off, recover is not a command and the usage does not offer it (T70, flag off)", async () => {
+    const result = await run("recover", { HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_ACCOUNT_OPENS_ALL: "0" });
+    expect(result.exitCode).toBe(2);
+    expect(result.err).not.toContain("recover");
   });
 });
 
