@@ -44,6 +44,7 @@ function pc(dir = mkdtempSync(join(tmpdir(), "s2-25-signin-"))) {
     admits: (key, account) => devices.admitsFromList(key, account),
     now: () => clock.now,
     admitOrigin: (at) => binding.admit("remote", "list", null, at),
+    admitListedRows: write => devices.admitListedRows(write),
   });
   devices.attachAccountRows(rows);
   return { devices, rows, clock, dir, evidence };

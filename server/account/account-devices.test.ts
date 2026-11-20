@@ -32,6 +32,7 @@ function ports(dir: string, over: Partial<AccountRowPorts> = {}) {
     admits: () => true,
     now: () => clock.now,
     admitOrigin: listOrigins(),
+    admitListedRows: write => [...write()],
   };
   return { events, ports: { ...base, ...over } };
 }

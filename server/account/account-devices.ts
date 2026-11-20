@@ -2,7 +2,7 @@
  * Account-joined rows (Step 2, rows P1, S21, S23, T34, T35, T44, T49): devices the account's list admits, kept in
  * `account-devices.json` and never in devices.json, so an older Ovis that reads only devices.json never lets one in.
  * The list only admits what the guards admit and only drops what it no longer names; it writes no tombstone and no
- * marker. Order: an admission is journalled before its row is written and the row waits in `hold` until the join
+ * marker. A row write is checked against waiting blocks before its admission is journalled; it waits in `hold` until the join
  * hold is satisfied; a drop closes sessions first, then journals, then writes.
  */
 import { existsSync, readFileSync } from "node:fs";
@@ -65,6 +65,7 @@ export interface AccountRowPorts {
   heldByDevicesJson(key: string): boolean;
   /** Every admission guard of the commit turn (G2 to G15) for this key, now. */
   admits(key: string, account: string): boolean;
+  admitListedRows(write: () => readonly string[]): string[];
   now(): number;
   /**
    * Numbers one admission on this PC and returns its origin (PcAccountState.admit in pc-binding.ts, P12, P22): its
@@ -193,8 +194,7 @@ export class AccountDeviceStore implements AccountRowSource {
       if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) break;
       if (this.file.devices.some((row) => row.key === entry.key)) continue;
       if (this.ports.heldByDevicesJson(entry.key) || !this.ports.admits(entry.key, list.account)) continue;
-      this.admit(entry);
-      admitted.push(entry.key);
+      if (this.admit(entry)) admitted.push(entry.key);
     }
     return { admitted, dropped };
   }
@@ -206,16 +206,21 @@ export class AccountDeviceStore implements AccountRowSource {
     this.write({ ...this.file, account: null, snapshot: null });
   }
 
-  private admit(entry: SnapshotDevice): void {
+  private admit(entry: SnapshotDevice): boolean {
     const now = this.ports.now();
     const row: AccountRow = {
       id: accountDeviceId(this.serverId, entry.key), key: entry.key, no: entry.no, label: entry.label,
       origin: this.ports.admitOrigin(now),
       confirmed_at: iso(now), last_signin_day: null, state: "hold", hold_until: null,
     };
+    const standing = this.ports.admitListedRows(() => {
+      this.write({ ...this.file, devices: [...this.file.devices, row] });
+      return [row.id];
+    });
+    if (!standing.includes(row.id)) return false;
     this.ports.journal({ kind: "admit", key: row.key, row: row.id, account: this.file.account, no: row.no, label: row.label,
       two_step: entry.two_step ?? "unknown", ...(entry.provider === undefined ? {} : { provider: entry.provider }) });
-    this.write({ ...this.file, devices: [...this.file.devices, row] });
+    return true;
   }
 
   private drop(rows: readonly AccountRow[], reason: DropReason, close?: AccountRowPorts["closeSessions"]): string[] {
