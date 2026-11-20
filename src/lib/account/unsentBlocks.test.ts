@@ -106,6 +106,19 @@ it("S32-1: only a 200 with the record's id confirms it: a 202 pending or another
   expect(await unsentBlocks(store, session)).toEqual([]);
 });
 
+it("S32-1: a redirect is no answer: a 303 the browser would follow to a 200 naming the id keeps the record", async () => {
+  const store = memoryAccountStore();
+  await store.set("session", session);
+  const record = await block();
+  await keepUnsent(store, session, [record]);
+  const service = new AccountService({ store, fetch: async (_input, init) => {
+    if (init?.redirect === "error") throw new TypeError("redirected");
+    return Response.json({ id: record.id });
+  } });
+  await expect(postKept(store, session, [record], (kept) => service.postSafetyRecord(kept))).rejects.toThrow();
+  expect((await unsentBlocks(store, session)).flatMap((kept) => kept.records)).toEqual([record]);
+});
+
 it("S32-1: a record still waiting is never removed as a shown refusal", async () => {
   const store = memoryAccountStore();
   await store.set("session", session);
