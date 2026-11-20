@@ -2,7 +2,7 @@ import { expect, it, spyOn } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import { LOCAL_MACHINE, type Machine } from "../../shared/machines.ts";
-import { parseSafetyRecord, type DeviceSafetyRecord } from "../../shared/account-records.ts";
+import { parseSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
 import { indexedAccountStore, memoryAccountStore, newKey } from "../lib/account/store.ts";
 import { DeviceNoticeWire, deviceNotice } from "../lib/deviceNoticeWire.fixture.ts";
 import { MachineSession, MachineSessionRegistry } from "../lib/machineSession.ts";
@@ -14,7 +14,7 @@ it("T51, T60: a failed account delivery can retry the exact signed block without
   const notice = deviceNotice({ key: (await newKey()).public_spki });
   const wire = new DeviceNoticeWire("ws://localhost/ws");
   const events = new EventTarget();
-  const posted: DeviceSafetyRecord[] = [];
+  const posted: BlockRecord[] = [];
   const onPc: string[] = [];
   const serverId = "a".repeat(32);
   const machines: readonly Machine[] = [{ id: LOCAL_MACHINE, name: "Desk", kind: "local", enabled: true, state: "connected", error: null, snapshot: null }];
@@ -36,12 +36,15 @@ it("T51, T60: a failed account delivery can retry the exact signed block without
   }
   const get = spyOn(indexedAccountStore, "get").mockImplementation(store.get);
   const update = spyOn(indexedAccountStore, "update").mockImplementation(store.update);
-  const post = spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+  const postBlock: typeof fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     expect(String(input)).toBe(`${session.service}/v1/safety-records`);
-    posted.push(parseSafetyRecord(JSON.parse(String(init?.body)).record));
+    const record = parseSafetyRecord(JSON.parse(String(init?.body)).record);
+    if (record.kind !== "block") throw new TypeError("Expected a block");
+    posted.push(record);
     if (posted.length === 1) throw new TypeError("The account response was lost");
     return Response.json({});
-  });
+  }, { preconnect: fetch.preconnect });
+  const post = spyOn(globalThis, "fetch").mockImplementation(postBlock);
   const send = spyOn(wire, "send").mockImplementation((message) => {
     DeviceNoticeWire.prototype.send.call(wire, message);
     const outgoing = JSON.parse(message);
@@ -78,7 +81,9 @@ it("T51, T60: a failed account delivery can retry the exact signed block without
     if (retry === undefined) throw new TypeError("Missing account retry");
     await act(async () => { await retry.props.onClick(); });
 
-    expect(posted.map((record) => record.id)).toEqual([onPc[0], onPc[0]]);
+    const [pcRecordId] = onPc;
+    if (pcRecordId === undefined) throw new TypeError("The PC did not receive a block");
+    expect(posted.map((record) => record.id)).toEqual([pcRecordId, pcRecordId]);
     expect(posted[0]).toEqual(posted[1]);
     expect(onPc).toHaveLength(1);
     expect(root.findAllByProps({ "data-state": "applied" })).toHaveLength(1);

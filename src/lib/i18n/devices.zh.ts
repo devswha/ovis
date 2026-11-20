@@ -290,6 +290,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "{pc}: waiting for its answer": "{pc}：等待回应",
   "{pc}: not reached; it applies the block at its next check": "{pc}：未连接，下次检查时会阻止",
   "{pc}: needs an Ovis update to block": "{pc}：需要更新 Ovis 才能阻止",
+  "Account service: block not confirmed.": "账户服务：未确认阻止请求。",
   "{pc} opens in {seconds} s": "{seconds} 秒后打开 {pc}",
   "{pc} holds this device after a Not me from another device": "{pc}：另一台设备点了“不是我”，已暂停",
   "{pc} is checking your account first": "{pc}：正在先检查你的账户",

@@ -290,6 +290,7 @@ export const DEVICES_KO: Record<string, string> = {
   "{pc}: waiting for its answer": "{pc}: 응답 기다리는 중",
   "{pc}: not reached; it applies the block at its next check": "{pc}: 연결 안 됨, 다음 확인 때 차단돼요",
   "{pc}: needs an Ovis update to block": "{pc}: 차단하려면 Ovis 업데이트가 필요해요",
+  "Account service: block not confirmed.": "계정 서비스: 차단이 확인되지 않았어요.",
   "{pc} opens in {seconds} s": "{seconds}초 후 {pc} 열림",
   "{pc} holds this device after a Not me from another device": "{pc}: 다른 기기에서 '내가 아니에요'를 눌러 멈췄어요",
   "{pc} is checking your account first": "{pc}: 계정을 먼저 확인하는 중",

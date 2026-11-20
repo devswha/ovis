@@ -27,21 +27,31 @@ type NoticeFleet = {
   readonly pageServerId: string | undefined;
 };
 
-function BlockNoticeAction({ notice, pc, socket, fleet, own }: {
+type BlockResult = {
+  readonly pc: string;
+  readonly notice: DeviceNotice;
+  readonly signer: string;
+  readonly fleet: FleetBlock;
+  readonly names: ReadonlyMap<string, string>;
+  readonly hidden?: true;
+};
+
+function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, onResult }: {
   readonly notice: DeviceNotice;
   readonly pc: Machine;
   readonly socket: NoticeSocket;
   readonly fleet: NoticeFleet;
   readonly own: Awaited<ReturnType<typeof registeredKey>>;
+  readonly inFlight: Set<string>;
+  readonly onResult: (result: BlockResult) => void;
 }) {
-  const inFlight = useRef(false);
   const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<{ readonly fleet: FleetBlock; readonly names: ReadonlyMap<string, string> } | null>(null);
   const canAnswer = own !== null && notice.account === own.account && canBlockAdmission(notice, own) && socket.accountOpensAll();
 
   const press = async () => {
-    if (!canAnswer || inFlight.current || result !== null) return;
-    inFlight.current = true;
+    const id = `${pc.id}:${notice.id}`;
+    if (!canAnswer || inFlight.has(id)) return;
+    inFlight.add(id);
     setSending(true);
     try {
       const session = await indexedAccountService.session();
@@ -91,18 +101,17 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own }: {
         ...routes,
         service: async (records) => { await Promise.all(records.map((record) => service.postSafetyRecord(record))); },
       });
-      setResult({ fleet: sent, names: new Map([...rows].map(([id, machine]) => [id, machine.name])) });
+      onResult({ pc: pc.id, notice, signer: current.public_spki, fleet: sent, names: new Map([...rows].map(([id, machine]) => [id, machine.name])) });
     } catch (error) {
       if (!(error instanceof DOMException)) throw error;
       console.warn("Ovis: could not sign a device block", error.name);
     } finally {
-      inFlight.current = false;
+      inFlight.delete(id);
       setSending(false);
     }
   };
 
-  if (result !== null) return <BlockOutcomes outcomes={[...result.fleet.outcomes.values()]} names={result.names} />;
-  return canAnswer ? <NotMeButton sending={sending} onPress={press} /> : null;
+  return canAnswer ? <NotMeButton sending={sending || inFlight.has(`${pc.id}:${notice.id}`)} onPress={press} /> : null;
 }
 
 /** Subscribe alongside the App's roster hooks so opening the pane does not miss a notice replay. */
@@ -116,9 +125,13 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   });
   const feed = useDeviceNotices(sockets, selectedMachineId);
   const shown = feed.byPc.get(selectedMachineId);
+  // A block can close its notice or the socket before the account replies. Keep the result at App scope.
+  const [results, setResults] = useState<ReadonlyMap<string, BlockResult>>(new Map());
+  const sending = useRef(new Set<string>());
   const [own, setOwn] = useState<Awaited<ReturnType<typeof registeredKey>>>(null);
+  const readKey = results.size > 0 || shown?.notices.some((notice) => notice.kind === "admit" && notice.open) === true;
   useEffect(() => {
-    if (!shown?.notices.some((notice) => notice.kind === "admit" && notice.open)) return;
+    if (!readKey) return;
     let live = true;
     let readVersion = 0;
     const read = () => {
@@ -136,15 +149,46 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
       window.removeEventListener("focus", read);
       window.removeEventListener(ACCOUNT_SIGN_OUT_EVENT, read);
     };
-  }, [shown?.notices]);
+  }, [readKey, shown?.notices]);
 
   const pc = machines.find((machine) => machine.id === selectedMachineId);
   const socket = sockets.find(({ id }) => id === selectedMachineId)?.socket;
-  if (pc === undefined || shown === undefined) return null;
+  if (pc === undefined) return null;
+  const notices = new Map(shown?.notices.map((notice) => [notice.id, notice]));
+  for (const result of results.values()) {
+    if (result.pc !== pc.id || result.signer !== own?.public_spki) continue;
+    if (result.hidden) notices.delete(result.notice.id);
+    else if (!notices.has(result.notice.id)) notices.set(result.notice.id, result.notice);
+  }
+  if (notices.size === 0 && feed.cut === 0) return null;
   return (
-    <DeviceNotices key={pc.id} pc={pc.name} notices={shown.notices} cut={feed.cut}
-      onDismiss={(notice) => feed.dismiss(pc.id, notice)} onShown={feed.acknowledgeShown}
-      actions={(notice) => socket === undefined ? null : <BlockNoticeAction notice={notice} pc={pc} socket={socket} fleet={{ machines, pageServerId }} own={own} />}
+    <DeviceNotices key={pc.id} pc={pc.name} notices={[...notices.values()]} cut={feed.cut}
+      onDismiss={(notice) => {
+        feed.dismiss(pc.id, notice);
+        const id = `${pc.id}:${notice.id}`;
+        setResults((current) => {
+          const result = current.get(id);
+          return result === undefined ? current : new Map(current).set(id, { ...result, hidden: true });
+        });
+      }} onShown={feed.acknowledgeShown}
+      actions={(notice) => {
+        const id = `${pc.id}:${notice.id}`;
+        const result = results.get(id);
+        if (result !== undefined && result.signer === own?.public_spki) {
+          const { retryService, ...delivered } = result.fleet;
+          return <BlockOutcomes outcomes={[...result.fleet.outcomes.values()]} names={result.names} {...(retryService === undefined ? {} : {
+            accountRetry: async () => {
+              if (!await retryService()) return;
+              setResults((current) => {
+                const latest = current.get(id);
+                return latest?.fleet.retryService !== retryService ? current : new Map(current).set(id, { ...latest, fleet: delivered });
+              });
+            },
+          })} />;
+        }
+        return socket === undefined ? null : <BlockNoticeAction notice={notice} pc={pc} socket={socket} fleet={{ machines, pageServerId }} own={own} inFlight={sending.current}
+          onResult={(result) => setResults((current) => new Map(current).set(id, result))} />;
+      }}
     />
   );
 }

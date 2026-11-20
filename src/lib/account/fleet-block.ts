@@ -29,6 +29,8 @@ export async function notMeBlocks(notice: DeviceNotice, own: OwnKey, options: { 
 export interface FleetBlock {
   readonly ids: readonly string[];
   readonly outcomes: ReadonlyMap<string, PcBlockOutcome>;
+  /** Present only while account delivery is unconfirmed; retries the original signed records, not the PCs. */
+  readonly retryService?: () => Promise<boolean>;
 }
 
 /** `answer` is what PC `serverId` said over its own channel; anything else, or a receipt for a block not sent, changes nothing. */
@@ -84,8 +86,15 @@ export async function sendBlocks(blocks: readonly BlockRecord[], options: {
       fleet = { ...fleet, outcomes: new Map(fleet.outcomes).set(serverId, { server_id: serverId, state: "unreachable" }) };
     }
   };
-  const service = options.service(blocks).catch((error: unknown) => { console.warn("Ovis: the account service did not take the block", error instanceof Error ? error.name : error); });
+  let posting: Promise<boolean> | undefined;
+  const postToService = () => posting ??= options.service(blocks).then(() => true, (error: unknown) => {
+    console.warn("Ovis: the account service did not confirm the block", error instanceof Error ? error.name : error);
+    return false;
+  }).finally(() => {
+    posting = undefined;
+  });
+  const service = postToService();
   const deliver = [...relayed].map(([serverId, send]) => toPc(serverId, send, false));
   await Promise.all([...[...options.pcs].map(([serverId, send]) => toPc(serverId, send, true)), ...deliver, service]);
-  return fleet;
+  return await service ? fleet : { ...fleet, retryService: postToService };
 }
