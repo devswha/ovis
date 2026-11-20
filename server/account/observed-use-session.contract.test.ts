@@ -1,9 +1,9 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseAccountDevicesFile } from "../../shared/account-snapshot.ts";
 import { ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
-import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
+import { bounded, deferred, relayConnection, TestClock } from "../relay/test-helpers.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { createListedPc } from "./listed-pc.test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
@@ -129,6 +129,43 @@ test.each(["wrong proof", "failed read"] as const)("T55/S27: %s cannot authorize
   machine.service.opensAll = true;
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   expect(machine.row()).toMatchObject({ state: "expired", origin: { admit_no: previous } });
+});
+
+test("T55/S27: a proved sign-in's snapshot can commit after its five-second reply", async () => {
+  const machine = await pc();
+  const { accountMailbox, devices } = machine.fixture.app.context.services;
+  const previous = machine.row().origin.admit_no;
+  machine.clock.advance(60 * 86_400_000);
+  const returning = await relayConnection(machine.fixture, { serverId: machine.serverId });
+  const started = deferred<void>();
+  const release = deferred<void>();
+  const page = accountMailbox.snapshotPage.bind(accountMailbox);
+  const gate = spyOn(accountMailbox, "snapshotPage").mockImplementation(async (...args) => {
+    const answer = await page(...args);
+    started.resolve();
+    await release.promise;
+    return answer;
+  });
+  jest.useFakeTimers();
+  jest.setSystemTime(machine.clock.now());
+  try {
+    const reply = returning.auth(machine.device, [ACCOUNT_OPENS_ALL_FEATURE]).then(() => "authenticated", () => returning.serverError);
+    await started.promise;
+    const read = accountMailbox.pull(); // join the blocked pull, not another read
+    machine.clock.advance(5_001);
+    jest.advanceTimersByTime(5_001);
+    expect(await reply).toBe("not_listed");
+    expect(machine.row().state).toBe("expired");
+    release.resolve();
+    await read;
+    expect(machine.row()).toMatchObject({ state: "hold", origin: { admit_no: previous + 1 },
+      hold_until: new Date(Date.now() + 10_000).toISOString() });
+    expect(devices.openNotices()).toContainEqual(expect.objectContaining({ row: machine.device.id, kind: "admit", no: previous + 1 }));
+  } finally {
+    release.resolve();
+    gate.mockRestore();
+    jest.useRealTimers();
+  }
 });
 
 test("T55/S27: a failed readmission journal keeps the expired row barred from background reads", async () => {
