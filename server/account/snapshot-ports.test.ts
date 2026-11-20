@@ -128,7 +128,10 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     for (const record of blocks) expect((await first.devices.applyBlock(record, "handed")).outcome).toBe("applied");
     const lifts = await Promise.all(blocks.map((record) => lift(record.id, signer)));
     const stage = { snapshot: page({ lifts }).page, lifts };
+    const heard: string[][] = [];
+    first.devices.onLifted((key, cause) => heard.push([key, cause]));
     first.ports.commit(stage);
+    expect(heard).toEqual(targets.map(({ spki }) => [spki, "snapshot"]));
     expect(first.safetyLog.state().blocks).toEqual([]);
     const again = pc(first.dir);
     const notices = () => DeviceJournal.open(first.dir).entries().filter(({ kind }) => kind === "lift").map(({ key }) => key);
@@ -231,7 +234,7 @@ describe("S2-24 a whole read applied to this PC's real state (G1, T15, T52, T58)
     const a = await lift("a".repeat(64), signer);
     const b = await lift("b".repeat(64), signer);
     // The log already has different bytes for b's id. This is a refusal at append, not a page parse failure.
-    expect(first.safetyLog.append({ got: "snapshot", record: { ...b, signature: a.signature } }).outcome).toBe("applied");
+    expect(first.safetyLog.append({ got: "snapshot", cause: "snapshot", record: { ...b, signature: a.signature } }).outcome).toBe("applied");
     const snapshot = page({ version: 2, lifts: [a, b] }).page;
     expect(() => first.ports.commit({ snapshot, lifts: snapshot.lifts })).toThrow("conflict");
     const reopened = pc(first.dir);

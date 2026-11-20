@@ -158,7 +158,7 @@ describe("S2-24 the server wires the whole read only under the release flag (G1,
         signer: member.publicKey, signer_no: 1, signed_at: "2026-10-01T00:00:00.000Z", nonce: newRecordId() }, member.keys.privateKey);
       expect(services.safetyLog?.append({ record: prior, got: "handed",
         asof: { signer_no: 1, target_no: 2, after: 0, joined: 0, signer_removed: false } }).outcome).toBe("applied");
-      expect(services.safetyLog?.appendLift(prior.id, { account: prior.account }).outcome).toBe("applied");
+      expect(services.safetyLog?.appendLift(prior.id, { account: prior.account }, { cause: "screen" }).outcome).toBe("applied");
     }
     service.registerDevice(ACCOUNT, member.publicKey, "Signer");
     expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
