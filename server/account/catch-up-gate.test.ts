@@ -49,7 +49,7 @@ describe("S2-27 devices.json rows wait for the first whole read (T41, T42, T65, 
 
   test("T42: a whole read ends the wait only for the rows its guard passes", () => {
     const gate = new CatchUpGate(() => "bind-1");
-    gate.wholeRead((row) => row.id !== rows.linked!.id);
+    gate.wholeRead([rows.linked!.id]);
     expect(waiting(gate)).toEqual(["linked"]);
   });
 });

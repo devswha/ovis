@@ -19,8 +19,8 @@ const pairedAtPc = (origin: AdmissionOrigin | undefined): boolean => origin?.fro
 export class CatchUpGate {
   /** The binding the last whole read was for: a new binding waits for a read of its own (T59). */
   private caughtUpFor: string | null = null;
-  /** After a whole read, the admission guard (G3) that read asked: a row it refuses keeps waiting. */
-  private guard: ((row: GatedRow) => boolean) | null = null;
+  /** A lift changes the next read's decision, never the result of the previous one. */
+  private waiting: ReadonlySet<string> = new Set();
 
   /** `binding`: this PC's binding id now, null in no account, where nobody waits (no block can name it). */
   constructor(private readonly binding: () => string | null, private readonly released: (id: string) => boolean = () => false) {}
@@ -29,12 +29,12 @@ export class CatchUpGate {
     const binding = this.binding();
     if (binding === null || pairedAtPc(row.origin) || this.released(row.id)) return false;
     if (this.caughtUpFor !== binding) return true;
-    return this.guard !== null && !this.guard(row);
+    return this.waiting.has(row.id);
   }
 
-  /** T42: a whole read was applied; it ends the wait of every row `guard` admits (the server ends every release with it). */
-  wholeRead(guard?: (row: GatedRow) => boolean): void {
+  /** T42: record the rows that the whole read's admission check refused. */
+  wholeRead(refused: readonly string[] = []): void {
     this.caughtUpFor = this.binding();
-    this.guard = guard ?? null;
+    this.waiting = new Set(refused);
   }
 }
