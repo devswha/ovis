@@ -105,6 +105,10 @@ void app.whenReady().then(async () => {
   for (let n = 0; n < MAX_BROWSER_TABS + 1; n++) ids.push(tabs.open(`${A}/many`, "mine"));
   result["overLimit"] = ids.at(-1);
   result["atLimit"] = ids.slice(0, MAX_BROWSER_TABS).every((id) => id !== null);
+  // the agents' tabs have a limit of their own, which the person's full one leaves untouched
+  const agentIds: (number | null)[] = [];
+  for (let n = 0; n < MAX_BROWSER_TABS + 1; n++) agentIds.push(tabs.open(`${A}/many`, "agent"));
+  result["agentLimit"] = { atLimit: agentIds.slice(0, MAX_BROWSER_TABS).every((id) => id !== null), over: agentIds.at(-1) };
   result["tabs"] = tabs.list().length;
   tabs.closeAll();
   result["afterClose"] = tabs.list().length;

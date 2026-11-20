@@ -108,6 +108,7 @@ describe.skipIf(!linux)("the built-in browser in Electron", () => {
     expect(result.afterBlock).toEqual({ listed: 0, destroyed: true });
     expect(result.atLimit).toBe(true);
     expect(result.overLimit).toBeNull();
+    expect(result.agentLimit).toEqual({ atLimit: true, over: null });
     expect(seen.filter(({ host }) => host.startsWith("b.localhost") || host.startsWith("c.localhost"))).toEqual([]);
     expect(ovisSeen).toEqual([]);
     expect(seen.map(({ path }) => path)).toEqual(expect.arrayContaining(["/", "/own-fetch", "/redirect", "/own-popup", "/after", "/kept"]));

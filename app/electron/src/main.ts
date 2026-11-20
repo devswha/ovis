@@ -90,6 +90,14 @@ function ours(url: string): boolean {
   try { return new URL(url).origin === serverOrigin(); } catch { return false; }
 }
 
+/**
+ * The server's own page, by its frame's real origin, not its address: the server also shows a file's HTML at its
+ * own address, in an opaque origin.
+ */
+function serverPage(frame: Electron.WebFrameMain | null | undefined): boolean {
+  return frame != null && frame.parent === null && frame.origin === serverOrigin() && ours(frame.url);
+}
+
 function setStatus(next: Partial<Status>): void {
   status = { ...status, ...next };
   window?.webContents.send("ovis:status", status);
@@ -137,7 +145,7 @@ function browserView(): { tabs: ReturnType<BrowserTabs["list"]> } | null {
 /** to the server's own page alone */
 function tellBrowser(): void {
   const contents = window?.webContents;
-  if (contents && ours(contents.getURL())) contents.send("ovis:tabs", browserView());
+  if (contents && serverPage(contents.mainFrame)) contents.send("ovis:tabs", browserView());
 }
 
 function showWindow(): void {
@@ -686,8 +694,6 @@ if (!app.requestSingleInstanceLock()) {
     try { return await waiting.returned; } finally { if (signIn === waiting) signIn = null; }
   });
   // Settings → Browser for links: the server's own page lists the browsers, chooses one by its id and opens its web links in it.
-  // By the frame's real origin, not its address: the server also shows a file's HTML at its own address, in an opaque origin
-  const serverPage = (frame: Electron.WebFrameMain | null | undefined) => frame != null && frame.parent === null && frame.origin === serverOrigin() && ours(frame.url);
   ipcMain.handle("ovis:browsers", async (event) => {
     if (!serverPage(event.senderFrame)) return null;
     const found = await browsers(true);
