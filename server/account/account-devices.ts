@@ -6,6 +6,7 @@ import type { SnapshotDevice, UsedReport } from "../../shared/account-snapshot.t
 import { writePrivateState } from "../private-state.ts";
 import type { RemovalEvidence } from "./removal-evidence.ts";
 import { rowDrop } from "./row-drop-evidence.ts";
+import { expiresAt } from "./row-expiry.ts";
 import { AccountReadmissions, type Readmission } from "./readmission.ts";
 import { firstDevice, holdSecondsLeft, JOIN_HOLD_MS, mayEndHold, type Sayer } from "./join-hold.ts";
 import { CLEARED, loadAccountDevices, type DevicesFile, type AccountRow, type AccountRowPorts, type AccountRowSource, type AccessAnswer, type DropReason, type JournalEntry, type ListCommit } from "./account-device-state.ts";
@@ -15,8 +16,7 @@ export { accountRowsFor } from "./account-row-source.ts";
 export const ACCOUNT_DEVICES_FILE = "account-devices.json";
 export const ACCOUNT_DEVICES_MAX = 100;
 /** Section 5: a row this PC saw no sign-in of for this many days expires here, whatever the service says. */
-export const EXPIRY_DAYS = 60;
-const DAY_MS = 24 * 60 * 60_000;
+export { EXPIRY_DAYS } from "./row-expiry.ts";
 
 const iso = (at: number): string => new Date(at).toISOString();
 const dayOf = (at: number): string => iso(at).slice(0, 10);
@@ -28,7 +28,8 @@ export class AccountDeviceStore implements AccountRowSource {
   private readonly pendingDrops: JournalEntry[] = [];
   private readonly readmissions = new AccountReadmissions();
 
-  constructor(stateDir: string, private readonly serverId: string, private readonly ports: AccountRowPorts) {
+  constructor(stateDir: string, private readonly serverId: string, private readonly ports: AccountRowPorts,
+    private readonly rowsChanged?: (rows: readonly AccountRow[]) => void) {
     this.path = join(stateDir, ACCOUNT_DEVICES_FILE);
     const { file, error, foreign } = loadAccountDevices(this.path, serverId);
     // restart: a promoted key's list row is finished (an interrupted promotion), and every hold waits for a fresh read (T42)
@@ -144,10 +145,8 @@ export class AccountDeviceStore implements AccountRowSource {
   /** T54: rows this PC saw no use of for EXPIRY_DAYS close and stay in the file as `expired`, so a list alone cannot bring them back. */
   expire(): string[] {
     this.usable();
-    const today = Date.parse(dayOf(this.ports.now()));
-    const idle = this.file.devices.filter((row) => row.state !== "expired"
-      // until this PC sees it used, a row's last day is the day it was admitted here
-      && today - Date.parse(row.last_signin_day ?? row.origin.at.slice(0, 10)) >= EXPIRY_DAYS * DAY_MS);
+    const now = this.ports.now();
+    const idle = this.file.devices.filter(row => expiresAt(row) <= now);
     for (const row of idle) {
       this.ports.closeSessions(row.id, "expired");
       this.ports.journal({ kind: "drop", key: row.key, row: row.id, account: this.file.account, reason: "expired" });
@@ -295,6 +294,7 @@ export class AccountDeviceStore implements AccountRowSource {
     try {
       writePrivateState(this.path, { v: 1, server_id: this.serverId, ...next });
       this.file = next;
+      this.rowsChanged?.(next.devices);
     } finally {
       // A failed admission save leaves the previous rows in memory, not the journalled candidate.
       this.ports.settleNotices?.(this.file.devices);

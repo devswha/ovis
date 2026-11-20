@@ -328,6 +328,7 @@ export function createServer(
     heldByDevicesJson: (key) => devices.hasKey(key),
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
     now: () => Date.now(),
+    setTimeout: (run, ms) => devices.waitClock().setTimeout(run, ms),
     admitOrigin: (at) => pcAccount.admit("remote", "list", null, at),
     firstDevice: {
       othersEver: () => pcAccount.othersEver(),
@@ -709,6 +710,7 @@ export function createServer(
     stop: () => {
       services.runtimeMove?.stop();
       accountMailbox.stop();
+      accountRows?.stop();
       void ovisRelay.shutdown();
       settlePortalStartup({ ok: false, error: new Error("Server stopped before Portal startup cleanup completed") });
       core.stop(() => {
