@@ -83,10 +83,11 @@ afterEach(async () => {
   globals.clear();
 });
 
-async function mount(ownWindowOf: string | undefined = OTHER, onRemoved?: () => void) {
+/** `null`: a window that is no PC's own (a phone, the relay page); the default is another PC's own window */
+async function mount(ownWindowOf: string | null = OTHER, onRemoved?: () => void) {
   await act(async () => {
     renderer?.unmount();
-    renderer = create(<SettingsProvider><NewPcNotices ownWindowOf={ownWindowOf} onRemoved={onRemoved} /></SettingsProvider>);
+    renderer = create(<SettingsProvider><NewPcNotices ownWindowOf={ownWindowOf ?? undefined} onRemoved={onRemoved} /></SettingsProvider>);
   });
   if (renderer === undefined) throw new TypeError("Notice did not mount");
   return renderer.root;
@@ -97,7 +98,7 @@ it("A2: a new PC is announced in every window but the PC's own local window, a w
   expect(other.findByProps({ role: "status" }).findAllByType("span").some(({ children }) => children.includes("New PC added to your account: Desk"))).toBe(true);
   // a phone that opened the new PC through the relay is another device: it is told
   Object.defineProperty(globalThis, "location", { value: new URL(`https://app.ovis.sh/s/${PC}/`), configurable: true });
-  expect((await mount(undefined)).findAllByProps({ role: "status" })).toHaveLength(1);
+  expect((await mount(null)).findAllByProps({ role: "status" })).toHaveLength(1);
   // the PC's own local window added it
   expect((await mount(PC)).findAllByProps({ role: "status" })).toHaveLength(0);
 });
@@ -198,4 +199,14 @@ it("C3 (first PC): the fake marks a first-PC admit for a device whose key came l
   const later = other.issueToken("acct_twostep", { twoStep: null });
   other.registerSessionKey(later, spki, "Phone");
   expect(((await (await other.fetch(`${ORIGIN}/v1/pcs`, { headers: { authorization: `Bearer ${later}` } })).json()) as { pcs: { admitted_before_you: boolean }[] }).pcs[0]?.admitted_before_you).toBe(false);
+});
+
+it("A2: with no PC to tell of, the account's list is not read every minute", async () => {
+  listed = [{ server_id: PC, label: "Desk", added_at: new Date(0).toISOString(), last_seen_at: null, new_until: null, admitted_at: null, admitted_before_you: false }];
+  jest.useFakeTimers();
+  await mount();
+  const reads = () => (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit?][] } }).mock.calls.filter(([, init]) => init?.method === "GET").length;
+  const before = reads();
+  await act(async () => { jest.advanceTimersByTime(180_000); });
+  expect(reads()).toBe(before);
 });

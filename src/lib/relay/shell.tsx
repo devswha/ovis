@@ -261,29 +261,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       ...(account.enabled ? { onSignIn: signInFirst ? signInToPair : account.signIn, accountProviders: offered ?? account.providers, onJoin: joinPc, onSignOut: account.signOut, onLeave: account.leave, onDeleteAccount: account.deleteAccount, ...(account.signedInAs?.sign_in_id === undefined ? {} : { accountSignIn: account.signedInAs.sign_in_id }), onRefreshAccount: () => account.refreshNow() } : {}),
     })))); account.armRefresh();
   };
-  /** a launch reading the account's list before it opens a PC: the front page drawn by that read waits for it */
-  let checkingLaunch = false;
   const showFront = async (): Promise<void> => {
-    if (checkingLaunch) return;
     const before = shown;
     const devices = await store.list();
     if (shown !== before) return;
     // the app opens on a PC: the first front page of a launch goes straight into the PC this device opened last, by its
     // saved pairing (a page scoped to it connects with the key it holds; nothing is paired here)
     // nothing moved since the entry was read (a link, Back, a sheet's route): the page stays where it was taken
-    let pc = left || navigatedSinceEntry() || entries !== 0 ? null : launchPc(devices, launching, signedInNow);
-    // a PC added in one press is new to the account for 24 hours: a launch never opens it by itself (security-triage,
-    // condition 3), and opens nothing while the account's list cannot say
-    if (pc !== null && account.enabled) {
-      if (account.state?.kind !== "signed-in" || account.state.pcs === null) {
-        checkingLaunch = true;
-        try { await account.load(null); } finally { checkingLaunch = false; }
-      }
-      if (shown !== before || left || navigatedSinceEntry() || entries !== 0) return;
-      const view = account.state;
-      const opens = view?.kind !== "signed-in" || (view.pcs !== null && !isNewAccountPc(view.pcs.find((row) => row.server_id === pc) ?? {}, Date.now()));
-      if (!opens) pc = null;
-    }
+    const pc = left || navigatedSinceEntry() || entries !== 0 ? null : launchPc(devices, launching, signedInNow);
     if (pc !== null) { left = true; navigate(serverScopePath(pc)); }
     if (left) return;
     show(devices.length ? { kind: "list", devices, account: account.state } : { kind: "empty", account: account.state });
@@ -775,7 +760,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const joinable = await accountPcToJoin(entry.serverId);
       if (entries !== loaded) return;
       const openKey = account.openKey;
-      // a PC added in one press is new to the account for 24 hours: it opens only on a press (security-triage, condition 3)
+      // a PC added in one press is new to the account for 24 hours: a PC this device never paired with by hand opens
+      // only on a press meanwhile (security-triage, condition 3). A launch reopens only a pairing made here by hand.
       if (joinable?.join && joinable.accountOpen && openKey !== null && !isNewAccountPc(joinable, Date.now())) {
         await connect({ offer: { v: 1, server_id: joinable.server_id, ...joinable.join, name: joinable.name }, code: false, paired: true, accountOpen: openKey });
       } else if (joinable !== undefined) joinPc(joinable, { sheet: "join", alone: true });

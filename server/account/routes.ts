@@ -90,6 +90,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (devices.account() !== null) return fail("in_account", "This PC is already in an account", 409);
       devices.bindByService(account);
       await context.services.accountMailbox.readSnapshot();
+      // the account may have stopped listing this PC during that first read: then it is in no account, and says so
+      if (devices.account() !== account) return fail("not_listed", "The account removed this PC while it was being added", 409);
       return reply({ account });
     }
     case "/api/account/introduce": {

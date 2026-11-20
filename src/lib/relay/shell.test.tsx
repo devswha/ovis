@@ -1008,33 +1008,28 @@ describe("the hosted shell's front page", () => {
 
     const directoryRow = (server_id: string, newFor: number | null) => ({ server_id, label: "Desk PC", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: AP,
       new_until: newFor === null ? null : new Date(Date.now() + newFor).toISOString() });
-
-    it("A3: a sign-in's return does not open a saved PC the account marks new, and still opens an older one", async () => {
-      browser.setVisibility("hidden");
+    const signedInLaunch = async (store: ShellDeviceStore, last: string, accountFetch: NonNullable<RelayShellMount["accountFetch"]>): Promise<string[]> => {
+      launch();
+      localStorage.setItem("ovis-last-pc", last);
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000, sign_in_id: "launch-test" });
       const went: string[] = [];
-      const store = deviceStore(await pcs("a".repeat(32)));
-      await returned(store, went, [directoryRow("a".repeat(32), 3_600_000)]);
-      expect(went).toEqual([]);
-      const older: string[] = [];
-      await returned(store, older, [directoryRow("a".repeat(32), null)]);
-      expect(older).toEqual([`/s/${"a".repeat(32)}/`]);
+      await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); }, accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch }));
+      return went;
+    };
+
+    // security-triage ruling (a): a launch reopens only a pairing this device made by hand, whatever the account service says
+    it("C3: a launch whose account list read fails still reopens the PC this device paired with by hand", async () => {
+      const went = await signedInLaunch(deviceStore(await pcs("a".repeat(32))), "a".repeat(32), async () => new Response(null, { status: 503 }));
+      expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
     });
 
-    it("A3: a signed-in launch does not open the saved PC the account marks new, and opens it once the mark has passed", async () => {
-      const signedIn = async (newFor: number | null): Promise<string[]> => {
-        launch();
-        localStorage.setItem("ovis-last-pc", "a".repeat(32));
-        const accountStore = memoryAccountStore();
-        await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000, sign_in_id: "launch-test" });
-        const went: string[] = [];
-        await mountRelayShell(mountFor({
-          store: deviceStore(await pcs("a".repeat(32))), navigate: (path) => { went.push(path); }, accountStore, accountService: SERVICE, accountProviders: ["github"],
-          accountFetch: async (input) => new URL(String(input)).pathname === "/v1/pcs" ? Response.json({ pcs: [directoryRow("a".repeat(32), newFor)] }) : new Response(null, { status: 404 }),
-        }));
-        return went;
-      };
-      expect(await signedIn(3_600_000)).toEqual([]);
-      expect(await signedIn(null)).toEqual([`/s/${"a".repeat(32)}/`]);
+    it("C3: a launch never opens a PC this device reaches only through the account, new or not, the list read failing or not", async () => {
+      // after a one-press add of PC X elsewhere, this device has no saved pairing for X: nothing makes one without a hand action here
+      const account = "b".repeat(32);
+      expect(await signedInLaunch(deviceStore([]), account, async (input) => new URL(String(input)).pathname === "/v1/pcs" ? Response.json({ pcs: [directoryRow(account, 3_600_000)] }) : new Response(null, { status: 404 }))).toEqual([]);
+      expect(await signedInLaunch(deviceStore([]), account, async () => new Response(null, { status: 503 }))).toEqual([]);
+      expect(last().state.kind).toBe("empty");
     });
 
     it("opens nothing after a refused or cancelled sign-in, whose reason the sign-in screen says", async () => {

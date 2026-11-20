@@ -13,6 +13,15 @@ import { pcAccountStatus, within } from "./join.ts";
 import { NEW_PC_MS } from "./myPcs.ts";
 import type { AccountService } from "./service.ts";
 
+/**
+ * Whether this window is this PC's own window, as the server's ownWindow judges it (server/dispatch.ts): its owner
+ * socket, or the access token on a loopback address. The server still decides; this only keeps a press it would refuse
+ * from costing the account a daily add (one-press PC add, docs/account.md).
+ */
+export function ownWindowHere(auth: { readonly via?: string } | null | undefined, hostname: string = typeof location === "undefined" ? "" : location.hostname): boolean {
+  return auth?.via === "local" || (auth?.via === "token" && ["127.0.0.1", "[::1]", "::1"].includes(hostname));
+}
+
 export async function thisPcAccount(): Promise<string | null> {
   return (await pcAccountStatus(apiFetch)).account;
 }
@@ -223,10 +232,16 @@ export async function addInOnePress(service: AccountService, serverId: string, a
     return false;
   }
   const post = (path: string) => apiFetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account }) });
-  if (!running() || !(await post("/api/account/relay-account")).ok || !running()) return false;
-  const pressed = await post("/api/account/one-press");
-  if (!pressed.ok) console.warn("Ovis: this PC did not join in one press", pressed.status);
-  return pressed.ok;
+  try {
+    if (!running() || !(await post("/api/account/relay-account")).ok || !running()) return false;
+    const pressed = await post("/api/account/one-press");
+    if (!pressed.ok) console.warn("Ovis: this PC did not join in one press", pressed.status);
+    return pressed.ok;
+  } catch (error) {
+    // the PC did not answer (it restarted, the connection dropped): the digit wait is still the way in
+    console.warn("Ovis: this PC could not be asked to join in one press", error instanceof Error ? error.name : error);
+    return false;
+  }
 }
 
 /**

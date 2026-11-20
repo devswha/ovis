@@ -256,3 +256,21 @@ test("first-PC exemption: a device key the admitting sign-in registered itself d
   expect((await call(`/v1/pcs/${identity.server_id}/admit`, "POST", {})).status).toBe(200);
   expect((await press(f, "acct_own")).status).toBe(200);
 });
+
+test("a press whose PC the account removes during its first read answers no success, and the PC is in no account", async () => {
+  let remove = false;
+  const f = await pc({ accountFetch: async (request, service) => {
+    if (remove && new URL(request.url).pathname === "/v1/pc/snapshot") {
+      remove = false;
+      const serverId = f.app.context.services.relay.currentIdentity()!.server_id;
+      await service.fetch(new Request(`https://account.test/v1/pcs/${serverId}`, { method: "DELETE", headers: { authorization: `Bearer ${service.issueToken("acct_1")}` } }));
+    }
+    return await service.fetch(request);
+  } });
+  await setUpFor(f, "acct_1");
+  await admitAt(f, "acct_1");
+  remove = true;
+  const pressed = await press(f, "acct_1");
+  expect([pressed.status, pressed.body.error?.code]).toEqual([409, "not_listed"]);
+  expect(f.devices.account()).toBeNull();
+});

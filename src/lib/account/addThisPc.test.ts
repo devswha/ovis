@@ -4,7 +4,7 @@ import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
-import { AddPcWaitOver, addInOnePress, keepAddPcWaiting, listOfferedPc, listThisPc, onAddPcWaiting, pagePc, pcAnswers, reopenAddWindow } from "./addThisPc.ts";
+import { AddPcWaitOver, addInOnePress, ownWindowHere, keepAddPcWaiting, listOfferedPc, listThisPc, onAddPcWaiting, pagePc, pcAnswers, reopenAddWindow } from "./addThisPc.ts";
 import { AccountServiceError, type AccountService } from "./service.ts";
 
 afterEach(() => setTransport(nativeTransport));
@@ -275,5 +275,21 @@ test("one press asks the account service nothing for a PC whose step-2 switch is
   try {
     expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, false)).toBe(false);
     expect(f.calls).toEqual([]);
+  } finally { f.restore(); }
+});
+
+test("the PC's own window, as the server judges it: its owner socket, or the access token on a loopback address", () => {
+  expect(ownWindowHere({ via: "local" }, "example.ts.net")).toBe(true);
+  expect(ownWindowHere({ via: "token" }, "127.0.0.1")).toBe(true);
+  expect(ownWindowHere({ via: "token" }, "[::1]")).toBe(true);
+  expect(ownWindowHere({ via: "token" }, "192.168.1.10")).toBe(false);
+  for (const via of ["device", "relay", "open", "portal"]) expect(ownWindowHere({ via }, "127.0.0.1")).toBe(false);
+  expect(ownWindowHere(null, "127.0.0.1")).toBe(false);
+});
+
+test("a PC that cannot be reached after the account service admitted it is no one press: the digit wait comes, nothing is thrown", async () => {
+  const f = onePress({ pc: () => { throw new TypeError("Disconnected"); } });
+  try {
+    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe(false);
   } finally { f.restore(); }
 });

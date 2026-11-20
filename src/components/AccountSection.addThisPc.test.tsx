@@ -51,7 +51,7 @@ describe("AddThisPc", () => {
   let tab: Map<string, string>;
   let restore: (() => void)[];
   let puts: string[];
-  let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null; close: Promise<void> | null };
+  let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null; close: Promise<void> | null; press: Promise<void> | null };
   /** the account service; `bound` is the account of the one sign-in it acts for (forSignIn), which refuses once another is stored */
   const service = (bound?: string): AccountService => {
     const mine = (): void => { if (bound !== undefined && signedIn !== bound) throw new SignedOutError(); };
@@ -64,7 +64,7 @@ describe("AddThisPc", () => {
       forSignIn: (session: { account: string }) => service(session.account),
     } as unknown as AccountService;
   };
-  const hold = (what: "listPcs" | "putPc" | "session" | "link" | "start" | "close"): (() => void) => {
+  const hold = (what: "listPcs" | "putPc" | "session" | "link" | "start" | "close" | "press"): (() => void) => {
     let release!: () => void;
     held[what] = new Promise<void>((done) => { release = done; });
     return () => { held[what] = null; release(); };
@@ -79,7 +79,7 @@ describe("AddThisPc", () => {
     asked = [];
     directory = [];
     puts = [];
-    held = { listPcs: null, putPc: null, session: null, link: null, start: null, close: null };
+    held = { listPcs: null, putPc: null, session: null, link: null, start: null, close: null, press: null };
     tab = new Map();
     page = { hidden: false, events: new EventTarget() };
     for (const name of globals) saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -118,6 +118,7 @@ describe("AddThisPc", () => {
       if (path === "/api/relay/link/close" && !pc.closeMissing) return Response.json({ ok: true });
       if (path === "/api/account/relay-account" && onePress.admits) return new Response(null, { status: 204 });
       if (path === "/api/account/one-press") {
+        await held.press;
         if (onePress.pcStatus !== 200) return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: onePress.pcStatus });
         pc.account = ACCOUNT;
         return Response.json({ account: ACCOUNT });
@@ -205,6 +206,25 @@ describe("AddThisPc", () => {
     expect(tab.has(MARKER)).toBe(false);
     await advance(REOPEN_MS);
     expect(links()).toBe(1);
+  });
+
+  test("a one press that answers after its attempt was given up clears no wait and closes no window a newer attempt owns", async () => {
+    onePress.admits = true;
+    const release = hold("press");
+    const renderer = await mount(ACCOUNT);
+    await advance(ADDING_MS);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    // a newer press waits with digits: its wait is kept, its window open
+    onePress.admits = false;
+    await press(renderer, "Add this PC to my account");
+    expect(tab.has(MARKER)).toBe(true);
+    const closes = asked.filter((request) => request.path === "/api/relay/link/close").length;
+    onePress.pcStatus = 200;
+    release();
+    await settle();
+    expect(tab.has(MARKER)).toBe(true);
+    expect(asked.filter((request) => request.path === "/api/relay/link/close").length).toBe(closes);
+    expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
   });
 
   test("one press refused by the account service (no two-step sign-in, a stale sign-in, the daily cap) keeps today's digit wait, and the PC is never asked", async () => {

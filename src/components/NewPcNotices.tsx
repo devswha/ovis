@@ -25,6 +25,8 @@ export function NewPcNotices({ ownWindowOf, signIn, onRemoved }: {
   useEffect(() => {
     let version = 0;
     let pending: AbortController | undefined;
+    /** the last read listed a PC to tell of: only then is the list read every minute (a new one rings this device anyway) */
+    let telling = false;
     const read = async () => {
       const mine = ++version;
       pending?.abort();
@@ -40,9 +42,9 @@ export function NewPcNotices({ ownWindowOf, signIn, onRemoved }: {
         const current = await indexedAccountService.session();
         if (mine !== version) return;
         const now = Date.now();
-        setListing(current !== undefined && sameSignIn(current, session)
-          ? { session, pcs: pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now)) }
-          : null);
+        const told = pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now));
+        telling = told.length > 0;
+        setListing(current !== undefined && sameSignIn(current, session) ? { session, pcs: told } : null);
       } catch (error) {
         if (mine !== version) return;
         if (error instanceof SignedOutError) setListing(null);
@@ -53,7 +55,7 @@ export function NewPcNotices({ ownWindowOf, signIn, onRemoved }: {
     const visibleRead = () => { if (document.visibilityState === "visible") void read(); };
     const signInChanged = () => { setListing(null); void read(); };
     signInChanged();
-    const timer = setInterval(visibleRead, REFRESH_MS);
+    const timer = setInterval(() => { if (telling) visibleRead(); }, REFRESH_MS);
     document.addEventListener("visibilitychange", visibleRead);
     window.addEventListener("focus", visibleRead);
     window.addEventListener(ACCOUNT_SIGN_OUT_EVENT, signInChanged);
