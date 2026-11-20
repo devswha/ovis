@@ -252,9 +252,15 @@ test("T41/S19/P8/P10: an unwritable drop receipt starts strict and retries the o
     } finally { app.stop(); }
     expect(rows(dir).map(row => row.id)).toEqual([device.id]);
     fault.mockRestore();
-    const repaired = restartOffline(dir);
-    expect(repaired.accountError).toBeNull();
-    expect(repaired.sessionRow(member.id)?.key).toBe(member.publicKey);
+    const { app: repairedApp } = startOffline(dir);
+    try {
+      const repaired = repairedApp.context.services.devices;
+      expect(repaired.accountError).toBeNull();
+      // after a start the member waits only for the first whole read (S2-27, P7), then signs in
+      expect(repaired.catchingUp(member.id)).toBe(true);
+      repairedApp.context.services.catchUp?.wholeRead();
+      expect(repaired.sessionRow(member.id)?.key).toBe(member.publicKey);
+    } finally { repairedApp.stop(); }
     expect(rows(dir)).toEqual([]);
     expect(JSON.parse(readFileSync(join(dir, REMOVAL_FILE), "utf8")).row_drops).toMatchObject([{ row: device.id, journalled: written?.seq }]);
     expect(readFileSync(journalPath, "utf8")).toBe(before);
