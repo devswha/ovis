@@ -6,6 +6,7 @@ import type { SnapshotDevice, UsedReport } from "../../shared/account-snapshot.t
 import { writePrivateState } from "../private-state.ts";
 import type { RemovalEvidence } from "./removal-evidence.ts";
 import { rowDrop } from "./row-drop-evidence.ts";
+import { AccountReadmissions, type Readmission } from "./readmission.ts";
 import { firstDevice, holdSecondsLeft, JOIN_HOLD_MS, mayEndHold, type Sayer } from "./join-hold.ts";
 import { CLEARED, loadAccountDevices, type DevicesFile, type AccountRow, type AccountRowPorts, type AccountRowSource, type AccessAnswer, type DropReason, type JournalEntry, type ListCommit } from "./account-device-state.ts";
 export type { AccountRow, AccountRowPorts, AccountRowSource, AccessAnswer, DropReason, JournalEntry, ListCommit } from "./account-device-state.ts";
@@ -25,6 +26,7 @@ export class AccountDeviceStore implements AccountRowSource {
   private readonly path: string;
   private file: DevicesFile;
   private readonly pendingDrops: JournalEntry[] = [];
+  private readonly readmissions = new AccountReadmissions();
 
   constructor(stateDir: string, private readonly serverId: string, private readonly ports: AccountRowPorts) {
     this.path = join(stateDir, ACCOUNT_DEVICES_FILE);
@@ -164,10 +166,14 @@ export class AccountDeviceStore implements AccountRowSource {
     const expired = this.file.devices.find((row) => row.key === key && row.state === "expired");
     const entry = list.devices.find((candidate) => candidate.key === key && candidate.eligible);
     if (!expired || !entry || list.removed.some((gone) => gone.key === key) || list.account !== this.file.account) return false;
-    if (this.ports.heldByDevicesJson(key) || !this.ports.admits(key, list.account)) return false;
+    if (!this.ports.hasNoticeSlot() || this.ports.heldByDevicesJson(key) || !this.ports.admits(key, list.account)) return false;
     this.file = { ...this.file, devices: this.file.devices.filter((row) => row !== expired) };
     this.admit(entry, false);
     return true;
+  }
+
+  readmission(id: string): Readmission | undefined {
+    return this.readmissions.retry(this.row(id), this.file.account);
   }
 
   /** Publishes again every notice that could not be published: until it is, its row stays held. */
@@ -197,8 +203,13 @@ export class AccountDeviceStore implements AccountRowSource {
     this.republish();
     const listKeys = list.devices.map((entry) => entry.key);
     for (const entry of eligible.values()) {
-      if (this.file.devices.length >= ACCOUNT_DEVICES_MAX || !this.ports.hasNoticeSlot()) break;
-      if (this.file.devices.some((row) => row.key === entry.key)) continue;
+      if (!this.ports.hasNoticeSlot()) break;
+      const existing = this.file.devices.find((row) => row.key === entry.key);
+      if (existing) {
+        if (sameAccount && this.readmissions.permits(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
+        continue;
+      }
+      if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) break;
       if (this.ports.heldByDevicesJson(entry.key) || !this.ports.admits(entry.key, list.account)) continue;
       const first = this.ports.firstDevice;
       const bypass = firstDevice({

@@ -3,6 +3,7 @@ import { AccountSnapshotError, parseAccountDevicesFile, type AccountJoinedRow, t
 import type { RemovalEvidence } from "./removal-evidence.ts";
 import type { RowDrop } from "./row-drop-evidence.ts";
 import type { Sayer } from "./join-hold.ts";
+import type { Readmission } from "./readmission.ts";
 
 export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke" | "expired";
 
@@ -27,6 +28,8 @@ export interface AccountRowSource {
   itsMe(id: string, sayer: Sayer): boolean;
   /** Authenticated use of the row on this PC (P9): a proved sign-in, or a request of its session. */
   seen(id: string): void;
+  /** Called only after relay proof: scopes readmission to the refused sign-in's read. */
+  readmission(id: string): Readmission | undefined;
 }
 
 export type AccountRow = AccountJoinedRow;

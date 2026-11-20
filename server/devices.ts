@@ -1825,7 +1825,7 @@ export class DeviceStore {
    * A relay AUTH for an account-joined row: null when no such row stands here or the signature is not its key's, so a
    * caller without the key learns nothing; else the row's own verdict, read after the proof (T66).
    */
-  async matchAccountRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string): Promise<{ match: DeviceMatch } | { refused: Exclude<AccessAnswer, { ok: true }>; holdUntil: string | null } | null> {
+  async matchAccountRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string): Promise<{ match: DeviceMatch } | { refused: Exclude<AccessAnswer, { ok: true }>; holdUntil: string | null; readmission?: ReturnType<AccountRowSource["readmission"]> } | null> {
     if (this.joinedRows === null || this.failsClosed || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
     const member = this.devices.find((d) => d.id === deviceId);
     const row = this.joinedRows.row(deviceId);
@@ -1845,7 +1845,7 @@ export class DeviceStore {
       this.joinedRows.seen(deviceId);
       return { match: { id: current.id, label: current.label, role: "drive" } };
     }
-    return { refused: answer, holdUntil: this.joinedRows.row(deviceId)?.hold_until ?? null };
+    return { refused: answer, holdUntil: this.joinedRows.row(deviceId)?.hold_until ?? null, readmission: this.joinedRows.readmission(deviceId) };
   }
 
 

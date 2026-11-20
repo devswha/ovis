@@ -9,9 +9,9 @@ import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import { PairingRateLimitedError, type DeviceMatch, type PairingPath } from "../devices.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
-import { SIGN_IN_WAIT_MS } from "../account/mailbox.ts";
 import type { KeyProofPairings } from "../account/key-proof.ts";
 import { PENDING_MS } from "../account/pending.ts";
+import { pullForRefusedSignIn } from "./refused-signin.ts";
 import { accountSignInRefusal } from "../account/account-signin.ts";
 import { handleRequest } from "../dispatch.ts";
 import type { RequestServices, ServerContext } from "../dispatch.ts";
@@ -543,12 +543,7 @@ export class RelaySession {
    * ended meanwhile.
    */
   private async pullForRefusedSignIn(deviceId: string, signature: string): Promise<boolean> {
-    const { devices, accountMailbox } = this.options.services;
-    if (devices.account() === null) return true;
-    if (await devices.matchRelay(deviceId, this.nonce, signature, this.options.serverId) !== null) return this.mux.active;
-    this.mux.extendSetup(SIGN_IN_WAIT_MS + 10_000);
-    await accountMailbox.pullForRefusedSignIn();
-    return this.mux.active;
+    return pullForRefusedSignIn(this.options, { deviceId, signature, nonce: this.nonce }, this.mux);
   }
 
   private get path(): PairingPath { return this.intent === "account" ? "account" : this.intent === "vouched" ? "vouched" : "code"; }

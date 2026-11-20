@@ -32,5 +32,6 @@ export function accountRowsFor(stateDir: string, serverId: () => string | null, 
     removeRows: (ids, reason, close) => { store()?.removeRows(ids, reason, close); },
     itsMe: (id, sayer) => store()?.itsMe(id, sayer) ?? false,
     seen: (id) => { store()?.seen(id); },
+    readmission: (id) => store()?.readmission(id),
   };
 }
