@@ -1681,12 +1681,12 @@ export class DeviceStore {
     if (this.journal === null) return;
     try {
       this.publish(this.journal.append({ kind: "remove", how: typeof by === "object" ? "member" : "pc", key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: typeof by === "object" ? by.device_id : null, account: device.account ?? null }));
-    } catch (error) { console.error(`[devices] the removal of ${device.id} could not be journalled: ${error instanceof Error ? error.message : String(error)}`); }
+    } catch (error) { console.error(`[devices] the removal of ${device.id} could not be journalled: ${describe(error)}`); }
   }
 
   private publish(entry: JournalEntry): void {
     for (const listener of [...this.noticeListeners]) {
-      try { listener(entry); } catch (error) { console.warn(`[devices] a notice listener failed: ${error instanceof Error ? error.message : String(error)}`); }
+      try { listener(entry); } catch (error) { console.warn(`[devices] a notice listener failed: ${describe(error)}`); }
     }
   }
 

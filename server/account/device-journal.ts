@@ -45,6 +45,28 @@ interface Doc {
   trimmed: number;
 }
 
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+const isTextOrNull = (value: unknown) => value === null || typeof value === "string";
+
+function isEntry(value: unknown): value is JournalEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const e = value as Record<string, unknown>;
+  return isCount(e.seq) && (e.seq as number) >= 1 && typeof e.id === "string" && typeof e.at === "string" && typeof e.kind === "string"
+    && typeof e.how === "string" && isTextOrNull(e.key) && (e.no === null || isCount(e.no)) && isTextOrNull(e.row)
+    && typeof e.label === "string" && isTextOrNull(e.by) && isTextOrNull(e.account) && (e.undo === undefined || typeof e.undo === "string");
+}
+
+/** The journal as this PC writes it, whole: every entry, open notice and seen value, below the next number (S19). */
+function isDoc(value: unknown): value is Doc {
+  if (typeof value !== "object" || value === null) return false;
+  const doc = value as Partial<Doc>;
+  if (doc.v !== 1 || !isCount(doc.next_seq) || doc.next_seq < 1 || !isCount(doc.trimmed) || doc.trimmed >= doc.next_seq) return false;
+  if (!Array.isArray(doc.entries) || !Array.isArray(doc.open) || typeof doc.seen !== "object" || doc.seen === null || Array.isArray(doc.seen)) return false;
+  const below = (entry: JournalEntry) => entry.seq < doc.next_seq!;
+  if (!doc.entries.every((entry) => isEntry(entry) && below(entry)) || !doc.open.every((entry) => isEntry(entry) && below(entry))) return false;
+  return Object.values(doc.seen).every((seq) => isCount(seq) && seq < doc.next_seq!);
+}
+
 export class DeviceJournal {
   private doc: Doc = { v: 1, next_seq: 1, entries: [], seen: {}, open: [], trimmed: 0 };
   private problem: string | null = null;
@@ -62,9 +84,8 @@ export class DeviceJournal {
     }
     try {
       const doc = JSON.parse(text) as Partial<Doc>;
-      if (doc.v !== 1 || !Number.isSafeInteger(doc.next_seq) || !Array.isArray(doc.entries) || !Array.isArray(doc.open) || typeof doc.seen !== "object" || doc.seen === null || !Number.isSafeInteger(doc.trimmed)) {
-        journal.problem = `${journal.path} is not this PC's device journal`;
-      } else { journal.doc = doc as Doc; journal.exists = true; }
+      if (!isDoc(doc)) journal.problem = `${journal.path} is not this PC's device journal`;
+      else { journal.doc = doc; journal.exists = true; }
     } catch { journal.problem = `${journal.path} is not JSON`; }
     return journal;
   }
