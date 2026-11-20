@@ -22,12 +22,22 @@ export class AccountRowImmutableError extends Error {
   }
 }
 
-/** `store`, with `device` answered for its PC: every other PC's saved pairing stays as it is. */
+/**
+ * `store`, with `device` answered for its PC: every other PC's saved pairing stays as it is. The channel's admission
+ * update (relay hints, direct carriers) is kept; a change to the row's key or id is refused (T40).
+ */
 export function withAccountDevice(store: RelayDeviceStore, device: RelayDevice): RelayDeviceStore {
+  let current = device;
   return {
-    get: async (serverId) => serverId === device.server_id ? device : store.get(serverId),
-    list: async () => [...(await store.list()).filter((saved) => saved.server_id !== device.server_id), device],
+    get: async (serverId) => serverId === device.server_id ? current : store.get(serverId),
+    list: async () => [...(await store.list()).filter((saved) => saved.server_id !== device.server_id), current],
     remove: (serverId) => serverId === device.server_id ? Promise.resolve() : store.remove(serverId),
-    update: (serverId, change, source) => serverId === device.server_id ? Promise.reject(new AccountRowImmutableError()) : store.update(serverId, change, source),
+    update: async (serverId, change, source) => {
+      if (serverId !== device.server_id) return store.update(serverId, change, source);
+      const next = change(current);
+      if (next.public_spki !== device.public_spki || next.private_key !== device.private_key || next.device_id !== device.device_id || next.server_public_key !== device.server_public_key) throw new AccountRowImmutableError();
+      current = next;
+      return next;
+    },
   };
 }
