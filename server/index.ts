@@ -299,8 +299,6 @@ export function createServer(
   // a sibling dir's account state is merged too; one that cannot be fails this PC closed like a damaged log (S19)
   const accountMerge = opensAll && sibling && !untouched ? mergeAccountState(stateDir, sibling) : null;
   const safetyLog = opensAll ? SafetyLog.open(stateDir, logMerge ?? accountMerge) : null;
-  // what nothing rests on any more is folded once replayed; a fold that cannot be written leaves the log whole
-  if (!untouched) try { safetyLog?.fold(); } catch (error) { console.error(`[account] the safety log could not be folded: ${error instanceof Error ? error.message : String(error)}`); }
   // then its rows: none is imported while the merged log holds a lock, a block or a freeze in force, and a row whose
   // key differs between the two copies is dropped (T48, T27)
   const conflicts: StoredDevice[] = [];
@@ -327,6 +325,11 @@ export function createServer(
   });
   // a row dropped because its copies held different keys is gone from both folders; the journal says so (T27, T48)
   if (merge?.devicesBlocked === null) for (const device of conflicts) devices.journalEvent({ kind: "drop", how: "merge_conflict", key: device.relay_public_key ?? null, no: null, row: device.id, label: device.label, by: null, account: device.account ?? null });
+  // Device migration creates the journal's companions. Recover interrupted notices before their whole records fold.
+  if (devices.error === null && devices.accountError === null && safetyLog && journal) {
+    journal.recordSnapshotLifts(safetyLog);
+    try { safetyLog.fold(); } catch (error) { console.error(`[account] the safety log could not be folded: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   for (const strict of [safetyLog?.strict, pcAccount?.strict, removals?.strict, journal?.strict]) if (strict) console.error(strict);
   // the machine profile has no open install: from its first answer only the caller on its owner's socket and a device through the relay with its proof get in
   if (options.profile === "machine") devices.closeGate();

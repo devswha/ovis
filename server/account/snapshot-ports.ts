@@ -91,6 +91,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
         throw new SnapshotWriteRefused(refused.code);
       }
       if (added > 0) pc.raiseGen();
+      journal.recordSnapshotLifts(safetyLog);
       devices.handedLifts.decide(stage.snapshot.lifts);
     },
     methodsVersion: () => deps.order.methodsVersion(),

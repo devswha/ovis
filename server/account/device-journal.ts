@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DeviceNotice, NoticeKind, NoticeReplay } from "../../shared/account-devices-api.ts";
 import { writePrivateState } from "../private-state.ts";
-import { DEVICE_JOURNAL_FILE } from "./safety-log.ts";
+import { DEVICE_JOURNAL_FILE, type SafetyLog } from "./safety-log.ts";
 
 export const JOURNAL_FILE = DEVICE_JOURNAL_FILE;
 export const JOURNAL_MAX = 1_000;
@@ -43,6 +43,8 @@ interface Doc {
   open: JournalEntry[];
   /** the highest seq trimmed so far: a row that had not seen up to it is told how many it missed */
   trimmed: number;
+  /** Safety-log number of the last snapshot lift journalled, even after its notice is trimmed. */
+  snapshot_lift_n?: number;
 }
 
 const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
@@ -85,7 +87,9 @@ export class DeviceJournal {
     try {
       const doc = JSON.parse(text) as Partial<Doc>;
       if (!isDoc(doc)) journal.problem = `${journal.path} is not this PC's device journal`;
-      else { journal.doc = doc; journal.exists = true; }
+      else if (doc.snapshot_lift_n !== undefined && (!Number.isSafeInteger(doc.snapshot_lift_n) || doc.snapshot_lift_n < 1)) {
+        journal.problem = `${journal.path} has an invalid snapshot lift number`;
+      } else { journal.doc = doc; journal.exists = true; }
     } catch { journal.problem = `${journal.path} is not JSON`; }
     return journal;
   }
@@ -103,6 +107,23 @@ export class DeviceJournal {
 
   /** Appends one entry, on disk when this returns; throws when it cannot be written, so what it records does not happen. */
   append(input: JournalInput): JournalEntry {
+    return this.appendEntry(input);
+  }
+
+  /** Catch up after a committed batch or interrupted journal write. Each notice and its cursor share one write. */
+  recordSnapshotLifts(log: SafetyLog): void {
+    const after = this.doc.snapshot_lift_n ?? 0;
+    const lifts = log.entries().flatMap(({ n, got, record }) => n > after && got === "snapshot" && record.kind === "lift" ? [{ n, record }] : []);
+    if (lifts.length === 0) return;
+    const entries = new Map(log.entries().map((entry) => [entry.record.id, entry]));
+    for (const { n, record } of lifts.sort((a, b) => a.n - b.n)) {
+      const ended = entries.get(record.target) ?? entries.get(`f:${record.target}`);
+      this.appendEntry({ kind: "lift", how: "snapshot", key: ended?.record.target ?? null, no: ended?.asof?.joined ?? null,
+        row: null, label: "Account block lifted", by: record.signer, account: record.account }, n);
+    }
+  }
+
+  private appendEntry(input: JournalInput, liftNumber?: number): JournalEntry {
     if (this.problem !== null) throw new Error(this.strict!);
     const entry: JournalEntry = { ...input, seq: this.doc.next_seq, id: randomBytes(16).toString("hex"), at: new Date().toISOString() };
     let entries = [...this.doc.entries, entry];
@@ -114,7 +135,7 @@ export class DeviceJournal {
     }
     const open = entry.kind === "admit" ? [...this.doc.open, entry] : this.doc.open;
     if (!this.exists) this.companions();
-    this.write({ ...this.doc, next_seq: entry.seq + 1, entries, open, trimmed });
+    this.write({ ...this.doc, next_seq: entry.seq + 1, entries, open, trimmed, ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) });
     this.exists = true;
     return entry;
   }
