@@ -8,7 +8,7 @@ import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { WORKSPACE_NAME_LABEL } from "../server/herdr-core/snapshot.ts";
 import { REATTACH_DEADLINE } from "./core/pane.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
-import { FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
+import { FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS, RESIZE_SETTLE_MS } from "./model/deadlines.ts";
 import { demo } from "./testing/fixtures/demo.ts";
 import { place } from "./testing/fixtures/fixture.ts";
 import { SCALE_LARGEST_TAB, SCALE_TERMINALS, SCALE_WORKSPACES, scale } from "./testing/fixtures/scale.ts";
@@ -1117,7 +1117,8 @@ describe("the screen's own layout, as herdr's", () => {
     await run.live();
     expect(run.loop.panes.view("t1")?.wanted.cols).toBe(44);
     run.core.program("t1").output("\x1b[?1049h");
-    await run.advance(50);
+    // read inside the pane's resize wait, as before its attach again (on the fake core that attach's replay is not on the alternate screen)
+    await run.advance(RESIZE_SETTLE_MS - 10);
     expect(run.loop.panes.view("t1")?.wanted.cols).toBe(45);
     run.core.program("t1").output("\x1b[?1049l");
     await run.advance(50);
