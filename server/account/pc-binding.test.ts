@@ -50,6 +50,22 @@ function memberRow(account: string): StoredDevice {
 }
 
 describe("the PC's account binding (account-pc.json)", () => {
+  test.each(["active", "sibling"] as const)("T48: a service opt-out in the %s folder persists in both folders of the same binding", side => {
+    const active = stateDir();
+    const sibling = stateDir();
+    const source = PcAccountState.open(active);
+    source.migrate(ACCOUNT, true);
+    const other = PcAccountState.open(sibling);
+    other.takeSibling(active);
+    other.migrate(ACCOUNT, true);
+    expect(other.binding()).toEqual(source.binding());
+    expect((side === "active" ? source : other).setServiceStep2Off(true)).toBe(true);
+
+    PcAccountState.open(active).takeSibling(sibling);
+
+    expect([PcAccountState.open(active).serviceStep2Off(), PcAccountState.open(sibling).serviceStep2Off()]).toEqual([true, true]);
+  });
+
   test("T59/T67: neither a current nor stale relay challenge binds a first-device list key", async () => {
     for (const fresh of [true, false]) {
       const f = relayFixture(false, { accountOpensAll: true });

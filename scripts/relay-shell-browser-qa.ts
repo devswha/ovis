@@ -55,9 +55,45 @@ import { openSettingsPage } from "./settings-page.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { answerServerChallenge, deriveServerId } from "../shared/relay-server-proof.ts";
 
+export async function defaultStep2BrowserQa({ createServer }: RelayServerTree): Promise<void> {
+  const prior = process.env["OVIS_ACCOUNT_OPENS_ALL"];
+  delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-default-step2-qa-"));
+  try {
+    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null,
+      sidecar: false, accountService: { url: "off" } });
+    try {
+      const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+      try {
+        const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+        await page.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+        await page.goto(`http://127.0.0.1:${app.port}`);
+        await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
+        await openSettingsPage(page, "Devices");
+        await page.getByText("Strict mode needs this PC signed in to an Ovis account.", { exact: true }).waitFor();
+        console.log("default Step 2: the PC's Devices settings show its strict-mode account requirement");
+      } finally { await closeMarked(browser); }
+    } finally { await app.stop(); }
+  } finally {
+    if (prior === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+    else process.env["OVIS_ACCOUNT_OPENS_ALL"] = prior;
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+}
+
 export async function relayShellQa(tree: RelayServerTree): Promise<void> {
-  // This cross-version suite explicitly requires pairing straight into the app, with no PC fingerprint confirmation.
+  if (resolve(tree.dir) === resolve(import.meta.dir, "..")) await defaultStep2BrowserQa(tree);
+  // The remaining cross-version paths require direct pairing, without PC fingerprint confirmation.
+  const prior = process.env["OVIS_ACCOUNT_OPENS_ALL"];
   process.env["OVIS_ACCOUNT_OPENS_ALL"] = "0";
+  try { await legacyRelayShellQa(tree); }
+  finally {
+    if (prior === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+    else process.env["OVIS_ACCOUNT_OPENS_ALL"] = prior;
+  }
+}
+
+async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
   const { createServer, RelayService } = tree;
   const repo = join(import.meta.dir, "..");
   const evidence = process.env["UI_EVIDENCE_DIR"] || null;

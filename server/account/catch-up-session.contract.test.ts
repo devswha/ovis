@@ -6,6 +6,7 @@ import { FrameType, type MuxFrame, ACCOUNT_OPENS_ALL_FEATURE } from "../../share
 import { rotateRelayIdentity } from "../relay/identity.ts";
 import { bounded, relayAccountFixture, relayConnection } from "../relay/test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
+import { legacyOrigin } from "./admission-order.ts";
 import { PcAccountState } from "./pc-binding.ts";
 
 const ACCOUNT = "acct_1";
@@ -19,6 +20,7 @@ async function startedPc() {
   const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, {
     accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch },
     prepare: stateDir => PcAccountState.open(stateDir).migrate(ACCOUNT, true),
+    origin: legacyOrigin,
   });
   closes.push(() => fixture.close());
   rotateRelayIdentity(fixture.stateDir);
@@ -55,6 +57,7 @@ describe("S2-27 a devices.json row not paired at this PC waits for the first who
 
   test("T41: a legacy row's proved sign-in is refused catching_up until a whole read; an old app gets today's code", async () => {
     const pc = await startedPc();
+    expect(pc.fixture.app.context.services.devices.originOf(pc.member.id)?.from).toBe("legacy");
     expect(await signIn(pc, [ACCOUNT_OPENS_ALL_FEATURE])).toEqual({ code: "held", message: "This PC waits for the account's list before letting this device in", hold: { reason: "catching_up" } });
     expect(await signIn(pc, [])).toEqual({ code: "auth_failed", message: "auth_failed" });
     expect(pc.fixture.app.context.services.devices.sessionRow(pc.member.id)).toBeNull();
