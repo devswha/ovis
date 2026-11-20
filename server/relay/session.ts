@@ -649,7 +649,9 @@ export class RelaySession {
       }
       const handlers = this.options.websocket;
       if (exchange.upgrade && handlers) {
-        const socket = new VirtualSocket(exchange.upgrade.data, stream, handlers);
+        const id = exchange.upgrade.data.deviceId;
+        const listed = id !== undefined && this.options.services.accountRows?.row(id) != null;
+        const socket = new VirtualSocket(exchange.upgrade.data, stream, handlers, listed);
         this.sockets.set(stream, socket);
         socket.open();
         return;
