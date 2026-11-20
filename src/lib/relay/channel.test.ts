@@ -59,7 +59,7 @@ class FakeSocket implements RelaySocket {
 }
 
 async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account" | "key-proof" | "key-proof-twice", onClose?: (error: Error) => void,
-  pc: { relay?: string; hints?: readonly string[]; features?: readonly string[]; provisional?: boolean; wrap?: (store: MemoryDeviceStore, device: RelayDevice) => RelayDeviceStore } = {}, channel: Partial<RelayChannelOptions> = {}) {
+  pc: { relay?: string; hints?: readonly string[]; features?: readonly string[]; provisional?: boolean; omitKeyPending?: boolean; wrap?: (store: MemoryDeviceStore, device: RelayDevice) => RelayDeviceStore } = {}, channel: Partial<RelayChannelOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const registry = new DeviceStore(dir);
@@ -151,7 +151,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
         return;
       }
       // a waiting frame that tries to name a fingerprint: the device must never show it
-      await secure.send(raw(FrameType.KEY_PENDING, { fingerprint: "ZZZZ-ZZZZ" }).slice().buffer);
+      if (!pc.omitKeyPending) await secure.send(raw(FrameType.KEY_PENDING, { fingerprint: "ZZZZ-ZZZZ" }).slice().buffer);
       return;
     }
     if (frame.type === FrameType.HELLO) {
@@ -725,9 +725,9 @@ it("T34, T40: a sign-in through the account row's store completes, and the row k
   expect(channel).toBeDefined();
 });
 
-it("T71, T72: proves its own key over the PC's challenge and shows only the fingerprint it computed itself", async () => {
+it.each([true, false])("T71, P11: only KEY_PENDING (%s) shows the fingerprint computed by the device", async (pending) => {
   const shown: string[] = [];
-  const f = await fixture(true, "key-proof", undefined, {}, { keyProof: (fingerprint) => { shown.push(fingerprint); } });
+  const f = await fixture(true, "key-proof", undefined, { omitKeyPending: !pending }, { keyProof: (fingerprint) => { shown.push(fingerprint); } });
   const signature = await f.keyProof.proved.promise;
   await f.authSeen.promise;
   f.allowAuth.resolve();
@@ -735,7 +735,7 @@ it("T71, T72: proves its own key over the PC's challenge and shows only the fing
   expect(f.offered).toContain("key-proof-1");
   const key = (await f.store.get(f.offer.server_id))!.public_spki;
   expect(await verifyPairProof(f.offer.server_id, f.keyProof.challenge, key, signature)).toBe(true);
-  expect(shown).toEqual([await pairFingerprint(f.offer.server_id, f.keyProof.challenge, key)]);
+  expect(shown).toEqual(pending ? [await pairFingerprint(f.offer.server_id, f.keyProof.challenge, key)] : []);
 });
 
 it("G5: without asking for key proof, HELLO does not offer it", async () => {
