@@ -119,11 +119,19 @@ test.if(unix)("R11: a recovery folder whose mode was widened after the socket wa
   await expect(bounded(askRecovery(dir, { act: "list" }))).rejects.toThrow("The server answered nothing on its recovery socket");
 });
 
-test.skipIf(!unix || process.getuid?.() !== 0)("R11: another user cannot connect (needs root to switch user; skipped otherwise)", async () => {
+test.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)("R11: another user cannot connect (needs Linux root to switch user)", async () => {
   const dir = stateDir();
   const socket = opened(dir);
-  const run = Bun.spawn(["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", "nc", "-U", socket.path], { stdout: "pipe", stderr: "pipe" });
-  expect(await bounded(run.exited)).not.toBe(0);
+  const run = Bun.spawn(["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", process.execPath, "-e", `
+    import { createConnection } from "node:net";
+    const socket = createConnection(process.argv[1]);
+    socket.on("connect", () => { console.log("connected"); socket.destroy(); });
+    socket.on("error", (error) => { console.log(JSON.stringify({ uid: process.getuid(), code: error.code })); });
+  `, socket.path], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: process.env });
+  ends.push(() => { if (run.exitCode === null) run.kill(); });
+  const [exit, stdout, stderr] = await bounded(Promise.all([run.exited, run.stdout.text(), run.stderr.text()]));
+  expect(exit, stderr).toBe(0);
+  expect(JSON.parse(stdout)).toEqual({ uid: 65534, code: "EACCES" });
 });
 
 test.if(unix)("R11: an HTTP request on the socket gets no HTTP answer", async () => {
