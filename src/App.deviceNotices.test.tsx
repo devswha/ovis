@@ -190,11 +190,11 @@ it.each([
     for (const block of answer.blocks) expect(await verifySafetyRecord(block)).toBe(true);
     expect(desk.sent.filter((frame) => frame.type === "notice-answer")).toEqual([]);
     expect(servicePosts).toEqual([{ body: { record: answer.blocks[0] }, status: 200 }]);
-    expect(delivered).toEqual(identity.deskFeatures === undefined ? answer.blocks : []);
+    expect(delivered).toEqual("deskFeatures" in identity ? [] : answer.blocks);
 
     const card = tree.root.findByProps({ "data-testid": "device-notice" });
     expect(card.findAllByType("li").map((row) => [row.props["data-state"], row.children.join("")])).toEqual(
-      identity.deskFeatures === undefined ? [[state, line], ["waiting", "Desk: waiting for its answer"]] : [[state, line]],
+      "deskFeatures" in identity ? [[state, line]] : [[state, line], ["waiting", "Desk: waiting for its answer"]],
     );
   });
 });
