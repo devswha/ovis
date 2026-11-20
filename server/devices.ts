@@ -601,6 +601,7 @@ export class DeviceStore {
     }
     if (this.error === null && this.accountProblem === null && this.pc?.strict == null) {
       if (this.evidence !== null) {
+        this.finishJournalledRemovals();
         this.takeInEvidence([...tombstones ?? [], ...pending]);
         // the log is the truth (P24): a block in force whose marker never reached the disk gets it before anything is served
         this.markBlockTargets();
@@ -624,6 +625,23 @@ export class DeviceStore {
    * anything is coalesced; the tombstone file is written again from the evidence; the pending file goes; and every row
    * the evidence covers goes. Nothing of it is told to anyone: no session is open yet.
    */
+  /**
+   * The journal is the truth (P24): a removal is journalled before devices.json is written, so a stop between the two
+   * leaves a row whose last journal entry ends it. Every such row ends here, at open and before anything is served,
+   * whatever kind of removal it was; nothing is journalled again. The one finisher of journalled removals.
+   */
+  private finishJournalledRemovals(): void {
+    if (this.journal === null || this.journal.strict !== null) return;
+    const last = new Map<string, string>();
+    for (const entry of this.journal.entries()) if (entry.row !== null) last.set(entry.row, entry.kind);
+    const kept = this.devices.filter((d) => last.get(d.id) !== "drop" && last.get(d.id) !== "remove");
+    if (kept.length === this.devices.length) return;
+    const gate = this.gateClosedAt ?? this.devices[0]?.created_at ?? new Date().toISOString();
+    this.save(kept, gate);
+    this.devices = kept;
+    this.gateClosedAt = gate;
+  }
+
   private takeInEvidence(found: readonly AccountTombstone[]): void {
     // evidence that cannot be trusted is never written over, and nothing is taken in while the safety log cannot be
     // read: a removal would record no forgettings it outranks, and an old forget redelivered later would end it (S19, T61)

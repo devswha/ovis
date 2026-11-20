@@ -232,6 +232,6 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     expect(rowIds(dir)).not.toContain(row.id);
     // nothing written by the finisher is journalled twice
     const journal = JSON.parse(readFileSync(join(dir, "device-journal.json"), "utf8")) as { entries: { kind: string; row: string | null }[] };
-    expect(journal.entries.filter((entry) => entry.kind === "drop" && entry.row === row.id)).toHaveLength(1);
+    expect(journal.entries.filter((entry) => entry.kind === "remove" && entry.row === row.id)).toHaveLength(1);
   });
 });
