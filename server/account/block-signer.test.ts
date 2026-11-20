@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord, type BlockRecord, type SafetyRecord } from "../../shared/account-records.ts";
@@ -16,7 +16,7 @@ import { AccountMailbox } from "./mailbox.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { applyAccountRecords } from "./records.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
-import { pcRecordId, SAFETY_LOG_FILE, SafetyLog, WAITING_MAX } from "./safety-log.ts";
+import { pcRecordId, SAFETY_LOG_FILE, SAFETY_OVERFLOW_FILE, SafetyLog, WAITING_MAX } from "./safety-log.ts";
 
 const ACCOUNT = "acct_1";
 const SERVER = "0123456789abcdef0123456789abcdef";
@@ -460,6 +460,28 @@ describe("a block holds only while its signer is a member here (P16, P19, T73)",
     expect(devices.has(ids[0]!)).toBe(false);
     // a write that throws publishes nothing
     expect(() => devices.admitListedRows(() => { throw new Error("list write failed"); })).toThrow("list write failed");
+  });
+
+  test("S10-2: a queue at capacity with no mark (both writes failed, or a crash between the drop and the mark) fails closed at the next open", async () => {
+    const { dir, devices, log } = pc();
+    const signer = await member(devices);
+    const absent = await key();
+    for (let i = 0; i < WAITING_MAX; i += 1) log.wait({ record: await block(absent.spki, signer), got: "mailbox", signer_removed: false });
+    expect(devices.failsClosed).toBe(false);
+    log.close();
+    const reopened = open(dir);
+    try { expect(reopened.devices.failsClosed).toBe(true); } finally { reopened.log.close(); }
+  });
+
+  test("S10-2: a marker that is a dangling link, or a log missing beside a marker, fails closed", async () => {
+    for (const shape of ["dangling", "missing log"] as const) {
+      const { dir, log } = pc();
+      log.close();
+      if (shape === "dangling") symlinkSync(join(dir, "nowhere"), join(dir, SAFETY_OVERFLOW_FILE));
+      else { writeFileSync(join(dir, SAFETY_OVERFLOW_FILE), "{}", { mode: 0o600 }); rmSync(join(dir, SAFETY_LOG_FILE), { force: true }); }
+      const reopened = open(dir);
+      try { expect({ shape, strict: reopened.devices.failsClosed }).toEqual({ shape, strict: true }); } finally { reopened.log.close(); }
+    }
   });
 
   test("S10-2, P19, S19: a full queue whose overflow mark cannot be written in the log still fails closed after a restart", async () => {
