@@ -28,14 +28,32 @@ export interface SnapshotDeps {
 }
 
 
+// A read gets fresh ports, but every read of this log must see the same fence.
+// On reopen we conservatively fence any standing service lines again.
+const fencedThrough = new WeakMap<SafetyLog, number>();
+
 export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
   const { devices, safetyLog, pc, journal } = deps;
   const orders = new WeakMap<StagedRead["snapshot"], LiftOrder>();
+  const fenceFreezes = () => {
+    const fenced = fencedThrough.get(safetyLog) ?? 0;
+    const newest = safetyLog.inForce.freezes.reduce((n, entry) => entry.record.kind === "freeze" ? Math.max(n, entry.n) : n, fenced);
+    if (newest === fenced) return;
+    try { pc.raiseGen(); } catch (error) {
+      pc.unwritten(error, "The service freeze generation could not be persisted");
+      throw new SnapshotWriteRefused("Service freeze generation unavailable", { cause: error });
+    }
+    fencedThrough.set(safetyLog, newest);
+  };
   return {
     scope() {
       const account = devices.account();
       const serverId = deps.serverId();
-      if (account === null || serverId === null || deps.order.problem !== null) return null;
+      if (account === null || serverId === null || deps.order.problem !== null || pc.strict !== null) return null;
+      try { fenceFreezes(); } catch (error) {
+        if (error instanceof SnapshotWriteRefused) return null;
+        throw error;
+      }
       const state = safetyLog.state();
       return { account, serverId, gen: devices.gen(), lock: state.locked ? state.locks.map((entry) => entry.record.id).join(",") : null };
     },
@@ -72,6 +90,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
         throw error;
       }
       const blocks = new Map(stage.snapshot.blocks.map((block) => [block.id, block]));
+      fenceFreezes();
       for (const line of stage.snapshot.freezes) {
         const block = blocks.get(line.block);
         if (!block || safetyLog.receipt(line.block) || devices.isTombstoned(block.signer)) continue;
@@ -81,7 +100,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
           target: line.target, after: line.after, signer: "service", signed_at: block.signed_at, signature: "" } });
         if (receipt.outcome !== "applied") throw new Error("Cannot record the snapshot freeze line");
         devices.recheckListedSessions();
-        pc.raiseGen();
+        fenceFreezes();
       }
       let restoreOrder: () => void;
       try { restoreOrder = recordOrder(); } catch (error) {
