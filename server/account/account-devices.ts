@@ -189,8 +189,8 @@ export class AccountDeviceStore implements AccountRowSource {
   }
 
   /** T56: the last whole read is STALE_READ_MS old: every row waits for the next one, its sessions closed. */
-  waitForRead(): void {
-    for (const row of this.rows()) this.wait(row);
+  waitForRead(ids?: ReadonlySet<string>): void {
+    for (const row of this.rows()) if (!ids || ids.has(row.id)) this.wait(row);
   }
 
   /**

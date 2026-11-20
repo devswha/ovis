@@ -1071,7 +1071,9 @@ export class DeviceStore {
     this.keepOut(affected, false);
     // the account rows it freezes end their sessions in this turn too; its account-row targets end and leave their store
     const joinedIds = new Set(joinedTargets.map((d) => d.id));
-    for (const row of this.joinedRows?.rows() ?? []) if (!joinedIds.has(row.id) && this.frozen(this.joinedAsStored(row))) this.closeAccountSessions(row.id);
+    const frozenListed = (this.joinedRows?.rows() ?? []).filter(row => !joinedIds.has(row.id) && this.newerThanFreeze(this.joinedAsStored(row), asof));
+    this.catchUp?.noteFreeze(record.target, [...affected, ...frozenListed].map(row => row.id));
+    for (const row of frozenListed) this.closeAccountSessions(row.id);
     if (joinedIds.size > 0) {
       try { this.joinedRows?.removeRows([...joinedIds], "block", id => this.closeAccountSessions(id)); }
       catch (error) { console.error(`[devices] the account rows of a blocked key could not be written after its deny; they stay denied by its marker: ${error instanceof Error ? error.message : String(error)}`); }

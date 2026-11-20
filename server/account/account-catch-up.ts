@@ -11,6 +11,7 @@ export class AccountCatchUp {
   private cancelStaleness: (() => void) | undefined;
   private remaining: (() => number) | undefined;
   private onStale: (() => void) | undefined;
+  private readonly stopLifts?: () => void;
 
   constructor(
     private readonly devices: DeviceStore,
@@ -19,6 +20,23 @@ export class AccountCatchUp {
   ) {
     this.gate = rows === null ? null : new CatchUpGate(() => pc?.binding()?.bind_id ?? null);
     devices.attachCatchUp(this.gate);
+    const gate = this.gate;
+    if (gate && rows) this.stopLifts = devices.onLifted((target, cause) => {
+      switch (cause) {
+        case "snapshot":
+        case "screen": return;
+        case "orphan":
+        case "recover":
+        case "record": {
+          const members = devices.list(null).filter(row => devices.relayKeyOf(row.id) === target);
+          const ids = gate.waitAfterLift(target, [...members, ...rows.rowsByKey(target)].map(row => row.id));
+          for (const row of devices.list(null)) if (ids.has(row.id)) devices.closeAccountSessions(row.id);
+          rows.store()?.waitForRead(ids);
+          return;
+        }
+        default: return cause satisfies never;
+      }
+    });
   }
 
   /** `readmission`: the proved returning device a sign-in's own pull may readmit (S2-28, T55). */
@@ -65,5 +83,5 @@ export class AccountCatchUp {
     this.cancelStaleness = undefined;
   }
 
-  stop(): void { this.clearDeadline(); }
+  stop(): void { this.stopLifts?.(); this.clearDeadline(); }
 }
