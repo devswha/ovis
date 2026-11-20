@@ -224,7 +224,7 @@ export class AccountDeviceStore implements AccountRowSource {
     // T42: every row the read still names is judged again; ending a wait is an admission and asks the guard
     for (const row of this.file.devices) {
       if (row.state === "expired") continue;
-      if (!this.ports.admits(row.key, list.account)) { this.wait(row); continue; }
+      if (!this.admits(row.key)) { this.wait(row); continue; }
       if (!this.waiting.delete(row.id) || row.state !== "hold") continue;
       const until = iso(this.ports.now() + JOIN_HOLD_MS);
       this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate.id === row.id ? { ...candidate, hold_until: candidate.hold_until === null ? null : until } : candidate) });

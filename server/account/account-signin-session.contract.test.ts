@@ -43,6 +43,8 @@ describe("S2-25 an account-joined sign-in over the relay (S25)", () => {
     const record = await signAccountRecord({ v: 1, kind: "link", account: ACCOUNT, key: member.spki, server_id: serverId, device_id: paired.id,
       old_key: paired.publicKey, issued_at: new Date().toISOString(), id: newRecordId(), signer: member.spki }, member.keys.privateKey);
     expect((await ask(link, "/api/account/link", { method: "POST", body: { record } })).status).toBe(200);
+    // binding the PC starts the wait after a start (S2-27, T59): the moved key signs in after the binding's first whole read
+    expect(await fixture.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     const enrolled = await relayConnection(fixture, { serverId });
     await enrolled.auth({ id: paired.id, keys: member.keys, publicKey: member.spki });
     expect((await ask(enrolled, "/api/account/enroll", { method: "POST", body: { account: ACCOUNT, records: [], last: true } })).status).toBe(200);
