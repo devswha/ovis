@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { reserveTab } from "../externalLink.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
+import { holdingSessionStore } from "./deleteAccount.ts";
 import { desktopAccount, desktopSignIn } from "./desktop.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignIn } from "./deviceSignIn.ts";
 import { ownWindowSignIn, useOwnWindowRedirect } from "./ownWindow.ts";
@@ -70,12 +71,15 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       const controller = new AbortController();
       running.current = controller;
       setState({ kind: "redirecting", link: null });
-      const store = indexedAccountStore;
+      // held back until it is known not to be cancelled: a sign-in finished after Cancel is never kept
+      const store = holdingSessionStore(indexedAccountStore);
       const blocked = (link: string): void => setState({ kind: "redirecting", link });
       const signing = bridge !== null ? desktopSignIn(provider, bridge, store)
         : ownRedirect ? ownWindowSignIn(provider, { service, redirect: ownRedirect, store, signal: controller.signal, blocked })
         : Promise.reject(new Error("no own sign-in here"));
-      signing.then((session) => {
+      signing.then(async (session) => {
+        if (controller.signal.aborted) return;
+        await indexedAccountStore.set("session", session);
         if (controller.signal.aborted) return;
         running.current = null;
         setState({ kind: "signed-in", session });

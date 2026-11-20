@@ -26,6 +26,7 @@ it("serves the sign-in return as the app's page and never logs or keeps its code
   const { base, stateDir } = server();
   const answer = await fetch(`${base}/callback?code=secret-code-123&state=secret-state-456`);
   expect(answer.status).toBe(200);
+  expect(answer.headers.get("cache-control")).toBe("no-store");
   await answer.arrayBuffer();
   const log = readFileSync(join(stateDir, "http-requests.jsonl"), "utf8");
   expect(log).toContain('"route":"static"');

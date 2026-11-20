@@ -5,6 +5,7 @@ import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
 import { useLinkPageSignIn } from "../lib/account/useLinkPageSignIn.ts";
+import { handOverReturn } from "../lib/account/ownWindow.ts";
 import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { RelayState } from "../lib/useRelay.ts";
@@ -34,6 +35,8 @@ describe("the relay tab's Sign in", () => {
   let startGate: Promise<void>;
   let failStart: boolean;
   let linkPageAvailable: boolean;
+  /** the port the PC reports for its own window, null for any other window */
+  let ownPort: number | null;
 
   beforeEach(() => {
     fake = new FakeAccountService();
@@ -49,6 +52,7 @@ describe("the relay tab's Sign in", () => {
     startGate = Promise.resolve();
     failStart = false;
     linkPageAvailable = true;
+    ownPort = null;
     const sent = Promise.withResolvers<string>();
     navigated = sent.promise;
     const polled = Promise.withResolvers<void>();
@@ -82,6 +86,7 @@ describe("the relay tab's Sign in", () => {
       querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => SERVICE } : null,
     } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).startsWith("/api/health")) return Response.json({ ok: true, auth: { required: false, authenticated: true }, bridge_protocol: 1, ...(ownPort === null ? {} : { own_window: { port: ownPort } }) });
       const url = new URL(String(input instanceof Request ? input.url : input));
       if (url.origin !== SERVICE) return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
       if (url.pathname === "/v1/signin/ovis/device" && !linkPageAvailable) return Response.json({ error: { code: "not_found", message: "no link page" } }, { status: 404 });
@@ -250,5 +255,114 @@ describe("the relay tab's Sign in", () => {
     expect(polls.every((signal) => signal.aborted)).toBe(true);
     fake.approveOnLinkPage(userCode!, "acct_one", "github");
     expect(await indexedAccountStore.get("session")).toBeUndefined();
+  });
+});
+
+describe("the relay tab's Sign in on the PC's own window", () => {
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  let renderer: ReactTestRenderer | undefined;
+  let fake: FakeAccountService;
+  let tab: { opener: unknown; closed: boolean; location: { href: string }; close(): void } | null;
+  let sent: ReturnType<typeof Promise.withResolvers<string>>;
+  let popupBlocked: boolean;
+
+  const setUp = (userAgent: string) => {
+    fake = new FakeAccountService();
+    fake.offerLinkPage(["google"]);
+    tab = null;
+    popupBlocked = false;
+    sent = Promise.withResolvers<string>();
+    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent, maxTouchPoints: 0 } });
+    const events = new EventTarget();
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      isSecureContext: true,
+      location: { href: "http://127.0.0.1:7317/", protocol: "http:", hostname: "127.0.0.1", port: "7317" },
+      open: () => {
+        if (popupBlocked) return null;
+        let href = "about:blank";
+        tab = { opener: "ovis", closed: false, close() { this.closed = true; }, location: { get href() { return href; }, set href(next: string) { href = next; sent.resolve(next); } } };
+        return tab;
+      },
+      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
+      setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+    } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
+      querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => SERVICE } : null,
+    } });
+    const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).startsWith("/api/health")) return Response.json({ ok: true, auth: { required: false, authenticated: true }, bridge_protocol: 1, own_window: { port: 7317 } });
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if (url.origin !== SERVICE) return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
+      return fake.fetch(input, init);
+    };
+    spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
+  };
+
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    mock.restore();
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    descriptors.clear();
+  });
+
+  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
+  const buttons = () => renderer!.root.findAll((node) => node.type === "button").map((node) => text(node).trim());
+  const mount = async (onSignedIn: () => void = () => undefined) => {
+    const account = { service: SERVICE, onOpen: () => undefined, onSignedIn };
+    await act(async () => {
+      renderer = create(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>,
+        { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) });
+    });
+  };
+  const press = async (label: string) => {
+    const button = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === label)[0]!;
+    await act(async () => { button.props.onClick(); });
+  };
+
+  it("signs in at the provider and back, with the return handed over by the callback tab", async () => {
+    setUp("Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0");
+    const signedIn = Promise.withResolvers<void>();
+    await mount(() => signedIn.resolve());
+    expect(buttons()).toContain("Continue with Google");
+    expect(buttons()).not.toContain("Sign in to Ovis");
+    await press("Continue with Google");
+    const start = await sent.promise;
+    const back = new URL((await fake.fetch(start)).headers.get("location") ?? "");
+    expect(back.origin + back.pathname).toBe("http://127.0.0.1:7317/callback");
+    const stop = handOverReturn(back.search, () => undefined);
+    await act(async () => { await signedIn.promise; });
+    stop();
+    expect((await indexedAccountStore.get("session"))?.provider).toBe("google");
+  });
+
+  it("offers the provider's page as a link when the tab was blocked, and Cancel keeps no sign-in", async () => {
+    setUp("Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0");
+    await mount();
+    popupBlocked = true;
+    await press("Continue with Google");
+    const link = renderer!.root.findAll((node) => node.type === "a" && text(node) === "Open the sign-in page")[0]!;
+    const back = new URL((await fake.fetch(String(link.props.href))).headers.get("location") ?? "");
+    await press("Cancel");
+    const stop = handOverReturn(back.search, () => undefined);
+    await act(async () => { await Promise.resolve(); });
+    stop();
+    expect(await indexedAccountStore.get("session")).toBeUndefined();
+    expect(buttons()).toContain("Continue with Google");
+  });
+
+  it("keeps the code in the Mac app, whose sign-in page opens in the system browser", async () => {
+    setUp("Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 OvisMac/0.5.7");
+    await mount();
+    expect(buttons()).toContain("Sign in to Ovis");
+    expect(buttons()).not.toContain("Continue with Google");
   });
 });

@@ -36,6 +36,9 @@ interface Waiting {
   finish: (decision: PairingDecision) => void;
 }
 
+/** An account device's join no pairing window invited: what this PC's own window may list and decide, never a vouched PC. */
+const ownJoin = (entry: Waiting): boolean => entry.membersOnly && entry.request.intent === "account" && !entry.vouched;
+
 function decoys(digits: string): [string, string, string] {
   const picked = new Set([digits]);
   while (picked.size < 3) picked.add(String(randomInt(0, 1_000_000)).padStart(6, "0"));
@@ -245,7 +248,7 @@ export class RelayPairingApprovals {
    * not start can be waved through with a tap.
    */
   ownJoins(now = this.now()): OwnJoinRequest[] {
-    return [...this.waiting.values()].filter(({ membersOnly }) => membersOnly).map(({ request, askedAt, expiresAt }) => ({
+    return [...this.waiting.values()].filter(ownJoin).map(({ request, askedAt, expiresAt }) => ({
       id: request.id, label: request.label, asked_at: new Date(askedAt).toISOString(), left_ms: Math.max(0, expiresAt - now),
     }));
   }
@@ -253,7 +256,7 @@ export class RelayPairingApprovals {
   /** On this PC's own window: the digits the new device shows, typed by the owner. One wrong entry ends that join. */
   decideTyped(id: string, digits: string): TypedDecision {
     const entry = this.waiting.get(id);
-    if (!entry || !entry.membersOnly) return "gone";
+    if (!entry || !ownJoin(entry)) return "gone";
     const typed = Buffer.from(digits), shown = Buffer.from(entry.request.digits);
     if (typed.length !== shown.length || !timingSafeEqual(typed, shown)) { entry.finish({ approved: false }); return "wrong_digits"; }
     entry.finish({ approved: true });

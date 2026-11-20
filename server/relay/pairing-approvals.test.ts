@@ -418,3 +418,14 @@ describe("an account join on this PC's own window", () => {
     expect(approvals.list()).toHaveLength(1);
   });
 });
+
+describe("what this PC's own window may decide", () => {
+  it("is never a vouched PC or a plain pairing, even one taken outside the window", () => {
+    const f = fixture();
+    const approvals = f.open();
+    approvals.ask("Other PC", "111111", f.clock.at + 90_000, { intent: "pc", key: "k1", deviceId: "d1", membersOnly: true, vouched: true });
+    approvals.ask("Plain", "222222", f.clock.at + 90_000, { intent: "pc", key: "k2", deviceId: "d2", membersOnly: true });
+    expect(approvals.ownJoins()).toEqual([]);
+    for (const { id } of approvals.remoteList()) expect(approvals.decideTyped(id, "111111")).toBe("gone");
+  });
+});

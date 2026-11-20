@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 import type { BridgeHealth } from "../../../shared/machines.ts";
 import { fetchBridgeHealth } from "../api.ts";
 import { reserveTab } from "../externalLink.ts";
+import { inMacApp, inNativeApp } from "../nativeApp.ts";
 import { desktopSignIn, type DesktopAccountBridge } from "./desktop.ts";
 import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
 
@@ -67,7 +68,9 @@ export function ownWindowBridge(service: string, redirect: string, tab: Window |
  * The loopback redirect of this window, once the PC has answered: null where the link page signs in (also when the
  * PC could not be asked), undefined while it is asked. `asked`: false where this page signs in another way.
  */
-export function useOwnWindowRedirect(asked: boolean): string | null | undefined {
+export function useOwnWindowRedirect(wanted: boolean): string | null | undefined {
+  // the Mac and phone apps hand a sign-in page to the system browser, whose return never reaches their own window
+  const asked = wanted && !inMacApp() && !inNativeApp();
   const [redirect, setRedirect] = useState<string | null | undefined>(asked ? undefined : null);
   useEffect(() => {
     if (!asked) { setRedirect(null); return; }
