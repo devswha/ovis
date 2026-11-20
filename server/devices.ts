@@ -2078,10 +2078,10 @@ export class DeviceStore {
   }
 
   /** A removal's journal entry, after its deny (P8 step 4). A journal that cannot be written stops no removal. */
-  private journalRemoval(device: StoredDevice, by: DeviceRemovedEvent["by"], why?: string): void {
+  private journalRemoval(device: StoredDevice, by: DeviceRemovedEvent["by"], why?: string, user?: string): void {
     if (this.journal === null) return;
     try {
-      this.publish(this.journal.append({ kind: "remove", how: why ?? (typeof by === "object" ? "member" : "pc"), key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: typeof by === "object" ? by.device_id : null, account: device.account ?? null }));
+      this.publish(this.journal.append({ kind: "remove", how: why ?? (typeof by === "object" ? "member" : "pc"), key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: user ?? (typeof by === "object" ? by.device_id : null), account: device.account ?? null }));
     } catch (error) { console.error(`[devices] the removal of ${device.id} could not be journalled: ${describe(error)}`); }
   }
 
@@ -2156,9 +2156,10 @@ export class DeviceStore {
   /**
    * `ovis recover --remove` (T70, T73): a removal at this PC of a row, by its id, or of a key, with or without a row
    * here. Its Revoke stands and is journalled before the rows go; the blocks that key signed here are lifted by the
-   * PC (liftOrphanedBlocks). Only with the release flag on, and refused while this PC's account state is unreadable.
+   * PC (liftOrphanedBlocks). `user` is the OS user who ran it, on each journal line (P24). Only with the release flag on,
+   * and refused while this PC's account state is unreadable.
    */
-  removeKey(input: { target: string; by: "local" }): { removed: string[] } | { refused: "log_unreadable" | "unknown" } {
+  removeKey(input: { target: string; by: "local"; user?: string }): { removed: string[] } | { refused: "log_unreadable" | "unknown" } {
     if (this.evidence === null || this.failsClosed) return { refused: "log_unreadable" };
     const named = this.devices.find((d) => d.id === input.target);
     const key = named !== undefined ? named.relay_public_key : isRelayPublicKey(input.target) ? input.target : undefined;
@@ -2170,9 +2171,9 @@ export class DeviceStore {
       if (gone.length > 0) this.tombstone(gone, now);
       else { evidence.addRevoke(key!, null, now); this.refreshTombstones(); this.dropWaiting([key!], "revoke"); }
     });
-    if (gone.length > 0) this.drop(gone, "pc", "recover");
+    if (gone.length > 0) this.drop(gone, "pc", "recover", input.user);
     else {
-      this.journalEvent({ kind: "remove", how: "recover", key: key!, no: null, row: null, label: "", by: null, account: null });
+      this.journalEvent({ kind: "remove", how: "recover", key: key!, no: null, row: null, label: "", by: input.user ?? null, account: null });
       this.liftOrphanedBlocks();
     }
     if (denied !== null) throw denied;
@@ -2180,8 +2181,8 @@ export class DeviceStore {
   }
 
   /** The rows `gone` lose their access in one write; their sessions close and each removal is announced. */
-  private drop(gone: readonly StoredDevice[], by: DeviceRemovedEvent["by"], why?: string): void {
-    if (this.evidence !== null) { this.dropBeforeWrite(gone, by, why); return; }
+  private drop(gone: readonly StoredDevice[], by: DeviceRemovedEvent["by"], why?: string, user?: string): void {
+    if (this.evidence !== null) { this.dropBeforeWrite(gone, by, why, user); return; }
     const next = this.devices.filter((d) => !gone.includes(d));
     // A valid older/manual registry can have devices without a gate timestamp. Removing its
     // last device must still leave durable evidence that this store was once gated.
@@ -2219,9 +2220,9 @@ export class DeviceStore {
    * The gate stays closed, with a timestamp even when nothing was ever confirmed (only first-pair
    * candidates existed): revoking must never reopen the LAN, not even after a restart.
    */
-  revokeAll(): string[] {
+  revokeAll(user?: string): string[] {
     this.assertWritable();
-    if (this.evidence !== null) return this.revokeAllInOrder();
+    if (this.evidence !== null) return this.revokeAllInOrder(user);
     this.tombstone(this.devices, Date.now());
     const gate = this.gateClosedAt ?? this.devices[0]?.created_at ?? new Date().toISOString();
     this.save([], gate);
@@ -2320,7 +2321,7 @@ export class DeviceStore {
       this.revocations.delete(device.id);
       for (const close of listeners ?? []) close();
     }
-    for (const device of gone) this.journalRemoval(device, by, why);
+    for (const device of gone) this.journalRemoval(device, by, why, user);
     if (removedSigner !== undefined) this.liftOrphanedBlocks(removedSigner.key, removedSigner.account);
     // the registry write is these rows' own deny when they hold no key (cookie rows): one that fails keeps them out for
     // this run and the PC closed until a write lands (P8, S19); a removal is told once the write is tried (P8 step 5)
@@ -2338,9 +2339,10 @@ export class DeviceStore {
   /**
    * Revoke all in P8's order: `revoke-all.json` first, then the gate, the codes, the candidates and every row out of
    * memory with its sessions, then the evidence, the empty registry and the PC's account. A write that fails is thrown
-   * after the closing; the file stays, and the next start finishes the work before serving (T20).
+   * after the closing; the file stays, and the next start finishes the work before serving (T20). `user`: the OS user
+   * of `ovis recover --revoke-all`, journalled beside each removal (P24).
    */
-  private revokeAllInOrder(): string[] {
+  private revokeAllInOrder(user?: string): string[] {
     const now = new Date().toISOString();
     // the file names every row it covers, a pending one's too, so it is finished from itself and never from less (T20)
     const gone = this.revokeAllRows();
@@ -2369,7 +2371,7 @@ export class DeviceStore {
     if (gateWasOpen) this.tellGateClosed();
     if (denied !== null) throw denied;
     for (const device of gone) this.announceRemoval(device, "pc");
-    for (const device of gone) this.journalRemoval(device, "pc");
+    for (const device of gone) this.journalRemoval(device, "pc", user === undefined ? undefined : "recover", user);
     // its intent is on disk: any write after it that fails leaves the PC closed until a start finishes it (P8, T20)
     try { this.finishRevokeAll(gone, gate); } catch (error) {
       this.denyProblem = `Revoke all could not be finished (${error instanceof Error ? error.message : String(error)}): only this PC itself gets in until it is.`;
