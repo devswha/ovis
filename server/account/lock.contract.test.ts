@@ -184,3 +184,18 @@ test("P11/T47: an unlock the screen approves ends the lock it names, under the a
   expect(await bounded(answered)).toBe("approved");
   expect(log.state().locked).toBe(false);
 });
+
+test("T47/N4: on a PC with an access token, the owner's own window (loopback, the token) may read the lock and ask for an unlock, which only the screen grants", async () => {
+  const member = await memberRow("acct_1");
+  const made = await pairingPc({ rows: [member.row], startRelay: false, server: { accountOpensAll: true, token: "owner-token" } });
+  pcs.push(made);
+  const lock = made.app.context.services.safetyLog!.appendLock({ account: "acct_1" });
+  const auth = { authorization: "Bearer owner-token" };
+  const read = await made.local("/api/account/lock", { headers: auth });
+  expect([read.status, read.body.locked]).toEqual([200, lock.id]);
+  const asked = await made.local("/api/account/unlock", { method: "POST", headers: { ...auth, "x-herdr-machine": "1" }, body: { lock: lock.id } });
+  expect(asked.status).toBe(202);
+  expect((await made.local("/api/devices", { headers: auth })).body.error?.code).toBe("locked");
+  const forwarded = await made.local("/api/account/lock", { headers: { ...auth, "x-forwarded-for": "100.64.0.9" } });
+  expect(forwarded.status).toBeGreaterThanOrEqual(400);
+});

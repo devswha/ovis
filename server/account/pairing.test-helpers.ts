@@ -76,7 +76,7 @@ export async function pairingPc(options: { rows?: readonly { created_at: string 
   const account = new FakeAccountService();
   const accountFetch = options.accountFetch;
   const service = new RelayService({ stateDir, relay: "wss://relay.test", connect: () => idleSocket() });
-  const app = createServer({ ...options.server, port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service,
+  const app = createServer({ ...options.server, port: 0, hostname: "127.0.0.1", stateDir, token: options.server?.token ?? "", tailscaleOwner: null, sidecar: false, relay: service,
     accountService: { url: options.accountService ?? "https://account.test", fetch: accountFetch ? (request) => accountFetch(request, account) : account.fetch } });
   const base = `http://127.0.0.1:${app.port}`;
   const closes: (() => void)[] = [];
