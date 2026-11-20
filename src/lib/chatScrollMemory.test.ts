@@ -36,16 +36,21 @@ describe("chatScrollMemory", () => {
   test("a save that comes due after the window is gone writes nothing and does not throw", () => {
     let due: (() => void) | undefined;
     const written: string[] = [];
+    const handle = setTimeout(() => {}, 2 ** 31 - 1);
     const storage = { getItem: () => null, setItem: (_key: string, value: string) => { written.push(value); }, removeItem() {} };
-    Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: { setTimeout: (run: () => void) => { due = run; return 1; }, clearTimeout() {}, sessionStorage: storage } });
+    const original = Object.getOwnPropertyDescriptor(globalThis, "window");
     try {
+      Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: { setTimeout: (run: () => void) => { due = run; return handle; }, clearTimeout() {}, sessionStorage: storage } });
       rememberChatPosition("p1", { historyId: "h", turn: "a", offset: 0, atEnd: true });
-    } finally {
       Reflect.deleteProperty(globalThis, "window");
+      expect(due).toBeDefined();
+      expect(() => due?.()).not.toThrow();
+      expect(written).toEqual([]);
+    } finally {
+      clearTimeout(handle);
+      if (original) Object.defineProperty(globalThis, "window", original);
+      else Reflect.deleteProperty(globalThis, "window");
     }
-    expect(due).toBeDefined();
-    expect(() => due?.()).not.toThrow();
-    expect(written).toEqual([]);
   });
 
   test("restores the saved row, else the end", () => {
