@@ -84,7 +84,8 @@ export class VirtualSocket implements SocketLike {
     if (this.closing || this.ended || this.detached || !this.stream.live) return;
     this.closing = true;
     if (code === 1006 || code === 1012 && this.data.relay) this.stream.reset("upstream_lost");
-    else this.stream.close(code, reason, code === OUTPUT_STALLED_CLOSE_CODE);
+    // A policy close must not drain queued event data after the principal has lost access.
+    else this.stream.close(code, reason, code === 1008 || code === OUTPUT_STALLED_CLOSE_CODE);
     this.detach(code, reason);
   }
 
