@@ -11,7 +11,7 @@ const rows = [
   { id: "b2", label: "Old laptop", origin: { from: "legacy", how: "legacy" }, waiting: "catching_up", last_seen_at: null, refusal: "frozen" },
 ];
 
-function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string; releaseRows?: typeof rows; admitError?: string; pendingLabel?: string; standing?: readonly { kind: "block" | "freeze"; id: string; target: string; account: string; signer: string }[] } = {}) {
+function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS.Platform; unreachable?: boolean; undoWarning?: string; writeError?: string; liftedBeforeError?: readonly string[]; releaseRows?: typeof rows; admitError?: string; pendingLabel?: string; standing?: readonly { kind: "block" | "freeze"; id: string; target: string; account: string; signer: string }[] } = {}) {
   const sent: RecoveryAction[] = [];
   const prompts: string[] = [];
   const out: string[] = [];
@@ -30,7 +30,7 @@ function io(options: { terminal?: boolean; answers?: string[]; platform?: NodeJS
         case "undo": return { releases: ["r1"], ...(options.undoWarning ? { warning: options.undoWarning } : {}) };
         case "admit": return options.admitError ? { error: options.admitError } : { admitted: "fedcba9876543210" };
         case "remove": return options.writeError ? { error: options.writeError } : { removed: ["a1"] };
-        case "lift": return options.writeError ? { error: options.writeError } : { lifted: request.blocks };
+        case "lift": return options.writeError ? { error: options.writeError, lifted: options.liftedBeforeError } : { lifted: request.blocks };
         case "revoke_all": return options.writeError ? { error: options.writeError } : { revoked: 2 };
       }
     },
@@ -174,6 +174,13 @@ test("P23/T70: a standing safety refusal prints the lift command and exits witho
   expect(await runRecover(["--admit", "0123456789abcdef0123456789abcdef"], run.value)).toBe(1);
   expect(run.text()).toContain(`${refusal}\n`);
   expect(run.text()).not.toContain("Admitted New phone.");
+});
+
+test("T69: recover reports the blocks lifted before a refusal, and still fails", async () => {
+  const run = io({ answers: ["y", "y"], liftedBeforeError: ["block-a"], writeError: "block-b was not lifted" });
+  expect(await runRecover(["--lift", "block-a", "block-b"], run.value)).toBe(1);
+  expect(run.text()).toContain("Lifted: block-a\n");
+  expect(run.text()).toContain("block-b was not lifted\n");
 });
 
 for (const { args, exit } of [{ args: [], exit: 0 }, { args: ["--admit"], exit: 2 }]) {

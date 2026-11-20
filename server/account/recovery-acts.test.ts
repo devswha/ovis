@@ -124,6 +124,16 @@ test("T37/T69/T70: remove, lift and revoke-all go through this PC's own seams", 
   expect(calls).toEqual(["remove 0123456789abcdef owner", `lift ${"a".repeat(64)} false owner`, "revoke_all owner"]);
 });
 
+test("T69: lift reports earlier successes when a later ID is refused", async () => {
+  const { acts, made } = withSeams();
+  const first = "a".repeat(64);
+  const unknown = `f:${"b".repeat(64)}`;
+  made.appendLift = (id) => ({ outcome: id === first ? "applied" : "refused" });
+  expect(await acts({ act: "lift", blocks: [first, unknown] })).toEqual({
+    lifted: [first], error: `${unknown} was not lifted: refused`,
+  });
+});
+
 test("P23: while the log cannot be read, every act that writes refuses, and list still answers", async () => {
   const { acts, calls, pending } = withSeams({ logReadable: false });
   for (const act of [{ act: "remove", targets: ["0123456789abcdef"] }, { act: "lift", blocks: ["a".repeat(64)] }, { act: "revoke_all" }, { act: "admit", pending: pending.id, fingerprint: "AB12-CD34" }]) {
