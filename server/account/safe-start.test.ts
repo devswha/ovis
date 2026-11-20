@@ -53,6 +53,7 @@ async function signIn(devices: DeviceStore, row: Key & { id: string }) {
   return devices.matchRelay(row.id, nonce, signature, SERVER_ID);
 }
 
+const rowOrigin = (dir: string, id: string) => (JSON.parse(readFileSync(join(dir, "devices.json"), "utf8")) as { devices: { id: string; origin?: { admit_no: number } }[] }).devices.find((d) => d.id === id)?.origin;
 const rowIds = (dir: string) => {
   const registry = readDeviceRegistry(join(dir, "devices.json"));
   return registry.kind === "ok" ? registry.devices.map((row) => row.id).sort() : [];
@@ -132,6 +133,38 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     expect(served.devices.has(onlyThere.id)).toBe(false);
     expect(rowIds(sibling)).toContain(onlyThere.id);
     expect(existsSync(join(active, "account-log.json"))).toBe(true);
+  });
+
+  test("P12, T48: a clear the sibling holds ends this folder's binding for good: the store reads the merged file, and a later write keeps it", async () => {
+    const [active, sibling] = [stateDir(), stateDir()];
+    const own = store(active);
+    await member(own);
+    const bound = (JSON.parse(readFileSync(join(active, "account-pc.json"), "utf8")) as { binding: { bind_id: string } }).binding;
+    // the sibling holds the same binding, cleared there
+    writeFileSync(join(sibling, "account-pc.json"), JSON.stringify({ v: 1, next_admit: 1, binding: null, clears: [{ bind_id: bound.bind_id, reason: "left_on_pc", by: "pc" }], first: null, others_ever: true, gen: 1 }), { mode: 0o600 });
+    const f = relayFixture(false, { stateDir: active, siblingStateDir: sibling, accountOpensAll: true });
+    fixtures.push(f);
+    dirs.splice(dirs.indexOf(active), 1);
+    const devices = f.app.context.services.devices;
+    expect(devices.account()).toBeNull();
+    // a write after the start (an admission takes a number) does not bring the cleared binding back
+    devices.pairRelay(devices.startPairing().code, "Next", (await key()).spki);
+    const pcFile = JSON.parse(readFileSync(join(active, "account-pc.json"), "utf8")) as { binding: unknown; clears: unknown[] };
+    expect(pcFile.binding).toBeNull();
+    expect(pcFile.clears).toHaveLength(1);
+  });
+
+  test("P12, T48: a folder with no account file keeps the sibling's clears and its own count", async () => {
+    const [active, sibling] = [stateDir(), stateDir()];
+    writeFileSync(join(sibling, "account-pc.json"), JSON.stringify({ v: 1, next_admit: 7, binding: null, clears: [{ bind_id: "c".repeat(32), reason: "left_on_pc", by: "pc" }], first: null, others_ever: true, gen: 1 }), { mode: 0o600 });
+    const f = relayFixture(false, { stateDir: active, siblingStateDir: sibling, accountOpensAll: true });
+    fixtures.push(f);
+    dirs.splice(dirs.indexOf(active), 1);
+    const devices = f.app.context.services.devices;
+    const id = devices.pairRelay(devices.startPairing().code, "First", (await key()).spki)!.device.id;
+    const pcFile = JSON.parse(readFileSync(join(active, "account-pc.json"), "utf8")) as { clears: unknown[]; next_admit: number };
+    expect(pcFile.clears).toHaveLength(1);
+    expect(rowOrigin(active, id)?.admit_no).toBe(1);
   });
 
   test("T27: conflicting keys or origins cannot gain authority from a sibling", async () => {
