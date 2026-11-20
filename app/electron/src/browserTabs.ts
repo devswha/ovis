@@ -44,6 +44,23 @@ export interface BrowserTab {
   owner: string | null;
 }
 
+/** a file the built-in browser kept (a download), as the page's right panel lists it (src/lib/desktopBrowser.ts) */
+export interface BrowserResult {
+  id: string;
+  kind: "download";
+  name: string;
+  /** ms since the epoch */
+  at: number;
+  bytes: number | null;
+  done: boolean;
+  tab: number | null;
+  profile: BrowserProfile;
+}
+
+export const MAX_RESULTS = 50;
+/** the downloads of this run of the app, newest first, and where each was kept */
+const results: { result: BrowserResult; path: string }[] = [];
+
 export interface BrowserBounds {
   x: number;
   y: number;
@@ -100,6 +117,23 @@ export class BrowserTabs {
       const url = tab.view.webContents.getURL();
       if (url !== "" && !this.decide(url, null).allowed) this.close(tab.id);
     }
+  }
+
+  /** the tab whose page `contents` is, null for another */
+  tabOf(contents: WebContents): number | null {
+    for (const tab of this.tabs.values()) if (tab.view.webContents === contents) return tab.id;
+    return null;
+  }
+
+  /** the downloads of this run of the app, newest first */
+  results(): BrowserResult[] {
+    return results.map(({ result }) => result);
+  }
+
+  /** where a finished download was kept, for the person to see in its folder (main never opens it) */
+  resultPath(id: string): string | null {
+    const kept = results.find(({ result }) => result.id === id);
+    return kept?.result.done ? kept.path : null;
   }
 
   list(): BrowserTab[] {
@@ -278,7 +312,7 @@ export class BrowserTabs {
     }
   }
 
-  private tell(): void {
+  tell(): void {
     this.changed(this.list());
   }
 
@@ -306,7 +340,7 @@ export class BrowserTabs {
     // a download is kept in the app's folder for it and never opened; no site fills the disk: a size and a count cap
     if (downloadsWatched.has(partition)) return;
     downloadsWatched.add(partition);
-    partition.on("will-download", (_event, item) => {
+    partition.on("will-download", (_event, item, from) => {
       const tabs = owners.get(partition);
       const count = (downloads.get(partition) ?? 0) + 1;
       downloads.set(partition, count);
@@ -314,7 +348,18 @@ export class BrowserTabs {
       item.on("updated", () => { if (item.getReceivedBytes() > tabs.maxDownloadBytes) item.cancel(); });
       const folder = join(tabs.downloads, profile);
       mkdirSync(folder, { recursive: true });
-      item.setSavePath(join(folder, `${Date.now()}-${basename(item.getFilename()).replace(/[^\w.-]+/g, "_").slice(-120) || "download"}`));
+      const path = join(folder, `${Date.now()}-${basename(item.getFilename()).replace(/[^\w.-]+/g, "_").slice(-120) || "download"}`);
+      item.setSavePath(path);
+      const tab = tabs.tabOf(from);
+      const kept = { result: { id: `d${count}-${profile}`, kind: "download" as const, name: item.getFilename().slice(0, 200), at: Date.now(), bytes: item.getTotalBytes() || null, done: false, tab, profile }, path };
+      results.unshift(kept);
+      results.splice(MAX_RESULTS);
+      tabs.tell();
+      item.once("done", (_done, state) => {
+        if (state === "completed") kept.result = { ...kept.result, done: true, bytes: item.getReceivedBytes() };
+        else results.splice(results.indexOf(kept), 1);
+        owners.get(partition)?.tell();
+      });
     });
   }
 
