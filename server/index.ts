@@ -338,11 +338,7 @@ export function createServer(
         return devices.list(null).length > (bound !== undefined && devices.hasKey(bound) ? 1 : 0);
       },
     },
-    admitListedRows: write => {
-      const ids = devices.admitListedRows(write);
-      journal.openListedRows(ids);
-      return ids;
-    },
+    admitListedRows: write => devices.admitListedRows(write),
   }) : null;
   const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
     safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: rowsForDevices, held: (key) => accountMailbox.gates().held(key),

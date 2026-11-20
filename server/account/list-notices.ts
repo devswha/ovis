@@ -21,6 +21,7 @@ export function listNotices(journal: DeviceJournal, evidence: RemovalEvidence, s
       if (notice && entry.kind === "drop") send(notice);
     },
     publish(entry) {
+      journal.openListedRows([entry.row]);
       const open = journal.openNotices().filter((n) => n.row === entry.row && n.key === entry.key && n.account === entry.account && n.how === "list").at(-1);
       if (open && open.no === entry.no) { send(open); return; }
       // Old builds used the account number. Never give an old notice ID authority over the repaired admission.
