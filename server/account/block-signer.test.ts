@@ -7,6 +7,7 @@ import { signPairProof } from "../../shared/pair-fingerprint.ts";
 import { FrameType, KEY_PROOF_FEATURE } from "../../shared/relay-mux.ts";
 import { DeviceStore } from "../devices.ts";
 import { privateStateFs } from "../private-state.ts";
+import { loadRelayIdentity } from "../relay/identity.ts";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { AccountHolds } from "./holds.ts";
@@ -53,6 +54,9 @@ const block = (target: string, by: Key): Promise<BlockRecord> =>
 const lift = (blockId: string, by: Key): Promise<SafetyRecord> =>
   signSafetyRecord({ v: 1, kind: "lift", account: ACCOUNT, target: blockId, signer: by.spki, signer_no: 1, signed_at: new Date().toISOString() }, by.keys.privateKey);
 
+const remove = (target: string, by: Key) =>
+  signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: target, issued_at: new Date().toISOString(), id: newRecordId(), signer: by.spki }, by.keys.privateKey);
+
 const blocksInForce = (log: SafetyLog) => log.state().blocks.map((entry) => entry.record.id);
 
 describe("a block holds only while its signer is a member here (P16, P19, T73)", () => {
@@ -60,9 +64,8 @@ describe("a block holds only while its signer is a member here (P16, P19, T73)",
     const { dir, devices } = pc();
     await member(devices);
     const [k, own, stranger] = [await key(), await key(), await key()];
-    const removal = (target: string, signer: Key) => signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: target, issued_at: new Date().toISOString(), id: newRecordId(), signer: signer.spki }, signer.keys.privateKey);
     // a remove of another key from a signer that is no member here, and one a key signed of itself, both waiting
-    writeFileSync(join(dir, "account-pending.json"), JSON.stringify([await removal(k.spki, stranger), await removal(own.spki, own)]), { mode: 0o600 });
+    writeFileSync(join(dir, "account-pending.json"), JSON.stringify([await remove(k.spki, stranger), await remove(own.spki, own)]), { mode: 0o600 });
     const holds = new AccountHolds({ heldPath: join(dir, "account-held.json") });
     const mailbox = new AccountMailbox({ devices, identity: () => undefined, service: "https://account.test", pendingPath: join(dir, "account-pending.json"), holds });
     expect(mailbox.gates().held(k.spki)).toBe(false);
@@ -74,17 +77,56 @@ describe("a block holds only while its signer is a member here (P16, P19, T73)",
     expect(mailbox.listHeld(own.spki)).toBe(true);
   });
 
-  test("T18: loss of signer authority discards its waiting removes", async () => {
+  test("P19, T36: a waiting removal survives an unrelated Revoke and applies when its signer joins", async () => {
+    const { dir, devices } = pc();
+    const target = await member(devices);
+    const unrelated = await member(devices);
+    const signer = await key();
+    const identity = loadRelayIdentity(dir);
+    const mailbox = new AccountMailbox({ devices, identity: () => identity, service: "https://account.test", pendingPath: join(dir, "account-pending.json") });
+    const removal = await remove(target.spki, signer);
+    expect(await applyAccountRecords(devices, [removal], identity.server_id, Date.now(), mailbox.gates(), (record) => mailbox.wait(record)))
+      .toEqual([{ id: removal.id, outcome: "refused", code: "signer_not_member" }]);
+    expect(devices.revoke(unrelated.id)).toBe(true);
+
+    const add = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key: signer.spki, label: "Signer", role: "drive", issued_at: new Date().toISOString(), id: newRecordId(), signer: target.spki }, target.keys.privateKey);
+    expect(await applyAccountRecords(devices, [add], identity.server_id, Date.now(), mailbox.gates()))
+      .toEqual([{ id: add.id, outcome: "applied" }]);
+    await mailbox.settle();
+    expect(devices.has(target.id)).toBe(false);
+  });
+
+  test("P19, T36: revoking the signer discards its pending removal (T18)", async () => {
     const { dir, devices } = pc();
     const signer = await member(devices);
     const k = await key();
-    const removal = await signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: k.spki, issued_at: new Date().toISOString(), id: newRecordId(), signer: signer.spki }, signer.keys.privateKey);
-    writeFileSync(join(dir, "account-pending.json"), JSON.stringify([removal]), { mode: 0o600 });
-    const mailbox = new AccountMailbox({ devices, identity: () => undefined, service: "https://account.test", pendingPath: join(dir, "account-pending.json") });
+    const pendingPath = join(dir, "account-pending.json");
+    const mailbox = new AccountMailbox({ devices, identity: () => undefined, service: "https://account.test", pendingPath });
+    expect(mailbox.wait(await remove(k.spki, signer))).toBe(true);
     expect(mailbox.listHeld(k.spki)).toBe(true);
-    devices.revoke(signer.id);
+    expect(devices.revoke(signer.id)).toBe(true);
     expect(mailbox.listHeld(k.spki)).toBe(false);
     expect(mailbox.waitingRemoveKeys()).toEqual([]);
+    expect(JSON.parse(readFileSync(pendingPath, "utf8"))).toEqual([]);
+  });
+
+  test("P19, T36: removing the signer during retry discards its draining removal only", async () => {
+    const { dir, devices } = pc();
+    const target = await member(devices);
+    const signer = await member(devices);
+    const absent = await key();
+    const identity = loadRelayIdentity(dir);
+    const pendingPath = join(dir, "account-pending.json");
+    const mailbox = new AccountMailbox({ devices, identity: () => identity, service: "https://account.test", pendingPath });
+    const unrelated = await remove(target.spki, absent);
+    expect(mailbox.wait(await remove(signer.spki, target))).toBe(true);
+    expect(mailbox.wait(await remove(target.spki, signer))).toBe(true);
+    expect(mailbox.wait(unrelated)).toBe(true);
+
+    expect(await mailbox.settle()).toBe(1);
+    expect(devices.has(signer.id)).toBe(false);
+    expect(devices.has(target.id)).toBe(true);
+    expect(JSON.parse(readFileSync(pendingPath, "utf8"))).toEqual([unrelated]);
   });
 
   test("P19: a waiting block write failure makes the safety log strict", async () => {
