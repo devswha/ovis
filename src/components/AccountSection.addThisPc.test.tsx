@@ -6,7 +6,7 @@ import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/
 import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { CLOSE_ANSWER_MS } from "../lib/account/addThisPc.ts";
-import { SignedOutError, type AccountService } from "../lib/account/service.ts";
+import { AccountServiceError, SignedOutError, type AccountService } from "../lib/account/service.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
 import { ADDED_POLL_MS, ADDING_MS, AddThisPc, ANSWER_MS, REOPEN_MS, SIGNED_IN_RETRY_MS, WAITING_MS } from "./AccountSection.tsx";
@@ -42,6 +42,9 @@ describe("AddThisPc", () => {
     healthId?: string | null;
   };
   let signedIn: string | null;
+  /** whether the account service admits this PC in one press (a fresh two-step sign-in), and what the PC answers the press with */
+  let onePress: { admits: boolean; pcStatus: number };
+  let admitted: string[];
   let asked: { path: string; localOnly: boolean }[];
   let directory: string[];
   let page: { hidden: boolean; events: EventTarget };
@@ -56,6 +59,7 @@ describe("AddThisPc", () => {
       listPcs: async () => { mine(); await held.listPcs; return []; },
       putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); await held.putPc; },
       deletePc: async () => { mine(); directory.push("deletePc"); },
+      admitPc: async () => { mine(); admitted.push(signedIn ?? ""); if (!onePress.admits) throw new AccountServiceError(403, "two_step_required", "Set up two-step sign-in first"); return { account: signedIn, new_until: new Date(at + 86_400_000).toISOString() }; },
       session: async () => { await held.session; return signedIn === null ? undefined : { account: signedIn }; },
       forSignIn: (session: { account: string }) => service(session.account),
     } as unknown as AccountService;
@@ -70,6 +74,8 @@ describe("AddThisPc", () => {
     renderers = [];
     pc = { account: null, enrolling: false, linkError: null, statusDown: false, offer: offerOf(publicKey, "desk"), hang: null, relay: "on", blocked: null, start: "ok", closeMissing: false, gate: "closed", via: "loopback", paired: false, cookieSticks: true, healthDown: false, role: "drive" };
     signedIn = ACCOUNT;
+    onePress = { admits: false, pcStatus: 200 };
+    admitted = [];
     asked = [];
     directory = [];
     puts = [];
@@ -110,6 +116,12 @@ describe("AddThisPc", () => {
         return Response.json({ phase: pc.relay === "on" ? "connecting" : "off", relay: "wss://relay.ovis.sh", app: "https://app.ovis.sh", sessions: 0, blocked: pc.blocked, error: null }, { status: pc.blocked === null ? 200 : 409 });
       }
       if (path === "/api/relay/link/close" && !pc.closeMissing) return Response.json({ ok: true });
+      if (path === "/api/account/relay-account" && onePress.admits) return new Response(null, { status: 204 });
+      if (path === "/api/account/one-press") {
+        if (onePress.pcStatus !== 200) return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: onePress.pcStatus });
+        pc.account = ACCOUNT;
+        return Response.json({ account: ACCOUNT });
+      }
       if (path === "/api/health" && pc.healthDown) return Response.json({ error: { code: "internal", message: "restarting" } }, { status: 503 });
       if (path === "/api/health") {
         const id = pc.healthId === undefined ? decodeOffer(pc.offer)!.server_id : pc.healthId;
@@ -179,6 +191,35 @@ describe("AddThisPc", () => {
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
     expect(directory).toEqual(["putPc"]);
     expect(JSON.parse(tab.get(MARKER)!)).toEqual({ name: "desk", until: at + WAITING_MS, serverId: SERVER, account: ACCOUNT, listedAt: at });
+  });
+
+  test("one press: when the account service admits this PC, the press adds it with no digits and no wait", async () => {
+    onePress.admits = true;
+    const renderer = await waitingFrom();
+    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
+    expect(words(renderer)).not.toContain("Waiting. The window reopens by itself if Ovis restarts.");
+    expect([directory, admitted]).toEqual([["putPc"], [ACCOUNT]]);
+    expect(asked.map((request) => request.path)).toContain("/api/account/one-press");
+    // the window the listing opened is closed again, and no wait is kept for a reload
+    expect(asked.map((request) => request.path)).toContain("/api/relay/link/close");
+    expect(tab.has(MARKER)).toBe(false);
+    await advance(REOPEN_MS);
+    expect(links()).toBe(1);
+  });
+
+  test("one press refused by the account service (no two-step sign-in, a stale sign-in, the daily cap) keeps today's digit wait, and the PC is never asked", async () => {
+    const renderer = await waitingFrom();
+    expect([directory, admitted]).toEqual([["putPc"], [ACCOUNT]]);
+    expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
+    expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
+  });
+
+  test("a PC without the one-press route (an older Ovis, or the step-2 switch off) keeps today's digit wait", async () => {
+    onePress.admits = true;
+    onePress.pcStatus = 404;
+    const renderer = await waitingFrom();
+    expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
   });
 
   test("tells its owner once when the press listed the PC, so the account's list is read again", async () => {
