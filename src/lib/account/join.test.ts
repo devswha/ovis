@@ -587,7 +587,7 @@ describe("approving a device that asks to join the account", () => {
     await service.putPc(X, { label: "p620", public_key: Array.from(pcKey, (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
     const mac = await accountKey();
     await service.postAdmission(X, "Mac app", mac.public_spki);
-    return { fake, service, mac, X };
+    return { fake, store, service, mac, X };
   }
 
   it("reads who is asking from the account service: the system the device sent and the place it rang from", async () => {
@@ -723,8 +723,8 @@ describe("approving a device that asks to join the account", () => {
     expect(admitted).toBe(false);
   });
 
-  it.each(["listed", "different ID", "unlisted", "unconfirmed", "incomplete pairing", "new", "introduction", "directory unavailable"] as const)("vouched tap checks the member's own completed PC: %s", async scenario => {
-    const { service, X, mac } = await setUp();
+  it.each(["listed", "different ID", "unlisted", "unconfirmed", "incomplete pairing", "new", "unreadable new window", "introduction", "directory unavailable"] as const)("vouched tap checks the member's own completed PC: %s", async scenario => {
+    const { fake, store, service, X, mac } = await setUp();
     const a = pc();
     const paired = new MemoryDeviceStore();
     const key = await accountKey();
@@ -735,7 +735,15 @@ describe("approving a device that asks to join the account", () => {
     if (scenario !== "unlisted") await service.putPc(saved.server_id, { label: "Directory PC", relay: saved.relay, public_key: Buffer.from(importPublicKey(saved.server_public_key)).toString("hex") });
     const listed = await service.listPcs();
     const directory = spyOn(service, "listPcs");
+    // the directory as the service sends it, a new window that is no time included: the PC stays listed, the tap refuses it
+    const unreadable = new AccountService({ store, fetch: async (input, init) => {
+      const answer = await fake.fetch(input, init);
+      if (new URL(String(input instanceof Request ? input.url : input)).pathname !== "/v1/pcs" || (init?.method ?? "GET") !== "GET") return answer;
+      const { pcs } = await answer.json() as { pcs: Record<string, unknown>[] };
+      return Response.json({ pcs: pcs.map(pc => ({ ...pc, last_seen_at: new Date().toISOString(), new_until: "soon" })) });
+    } });
     if (scenario === "directory unavailable") directory.mockRejectedValue(new Error("offline"));
+    else if (scenario === "unreadable new window") directory.mockImplementation(() => unreadable.listPcs());
     else directory.mockResolvedValue(listed.map(pc => ({ ...pc, last_seen_at: scenario === "unconfirmed" ? null : new Date().toISOString(),
       new_until: scenario === "new" ? new Date(Date.now() + 60_000).toISOString() : null })));
     const decisions: string[] = [];
