@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join, posix, win32 } from "node:path";
 
 /**
@@ -127,10 +127,14 @@ export const linkPath = (home: string): string => posix.join(home, ".local", "bi
 /** the line a Mac's shell profile gets when ~/.local/bin is not on its PATH; its mark keeps it from being added twice */
 export const PROFILE_LINE = 'export PATH="$HOME/.local/bin:$PATH" # added by Ovis';
 
-/** the profile a login shell reads: zsh's ~/.zprofile (a Mac's default), bash's ~/.bash_profile, else ~/.profile */
+/**
+ * the profile a login shell reads: zsh's ~/.zprofile (a Mac's default), else ~/.profile; bash reads the first of
+ * ~/.bash_profile, ~/.bash_login and ~/.profile that exists, and creating an earlier one would make it skip that file
+ */
 export function profileOf(home: string, shell: string): string {
   const name = posix.basename(shell);
-  return posix.join(home, name === "zsh" ? ".zprofile" : name === "bash" ? ".bash_profile" : ".profile");
+  if (name === "bash") return [".bash_profile", ".bash_login", ".profile"].map((file) => posix.join(home, file)).find((file) => existsSync(file)) ?? posix.join(home, ".bash_profile");
+  return posix.join(home, name === "zsh" ? ".zprofile" : ".profile");
 }
 
 function addToProfile(file: string): void {
