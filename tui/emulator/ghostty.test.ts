@@ -126,6 +126,18 @@ describe("emulator per pane", () => {
     expect(replies.map(kind)).toEqual(["refusal", "attributes"]);
   });
 
+  it("writes the bytes after a refused query when the refusal's handler throws, and fails that write alone", async () => {
+    const { loader } = countingLoader();
+    const emulator = made(await loader.create({ cols: 40, rows: 4, events: { onReply: (bytes) => {
+      if (text(bytes).includes("ENOTSUP")) throw new Error("the handler failed");
+    } } }));
+    const result = emulator.write(bytesOf("\x1b_Ga=q,i=1;AAAA\x1b\\TAIL-TEXT"));
+    expect(result.ok ? "ok" : `${result.error.kind}: ${result.error.message}`).toBe("failed: the handler failed");
+    expect(rowText(emulator, 0)).toBe("TAIL-TEXT");
+    expect(emulator.write(bytesOf("!")).ok).toBe(true);
+    expect(rowText(emulator, 0)).toBe("TAIL-TEXT!");
+  });
+
   it("shares no state between two emulators", async () => {
     const { loader } = countingLoader();
     const a = await pane(loader);

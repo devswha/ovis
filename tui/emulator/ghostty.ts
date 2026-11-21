@@ -180,17 +180,29 @@ class GhosttyEmulator implements Emulator {
   /**
    * The engine reads the bytes up to a refused graphics query's terminator, then the refusal is sent, then the engine reads on, so
    * the refusal comes before what the engine answers to bytes written after the query (a program that asks for graphics and then
-   * for its terminal's attributes reads the refusal first).
+   * for its terminal's attributes reads the refusal first). Every byte reaches the engine as when no query splits the write: an
+   * error the refusal's handler or a piece throws is thrown once the rest is written, the first of them, and a trap ends it at once.
    */
   write: Emulator["write"] = (bytes) => this.call((engine) => {
+    const errors: unknown[] = [];
+    const step = (run: () => void): void => {
+      try {
+        run();
+      } catch (error) {
+        if (error instanceof WebAssembly.RuntimeError || this.module?.trap) throw error;
+        errors.push(error);
+      }
+    };
     let from = 0;
     for (const { end, reply } of this.graphics.feed(bytes)) {
-      engine.write(bytes.subarray(from, end));
+      step(() => engine.write(bytes.subarray(from, end)));
       from = end;
-      if (this.disposed) return;
-      this.events.onReply?.(reply);
+      step(() => {
+        if (!this.disposed) this.events.onReply?.(reply);
+      });
     }
-    if (from < bytes.length) engine.write(bytes.subarray(from));
+    if (from < bytes.length) step(() => engine.write(bytes.subarray(from)));
+    if (errors.length > 0) throw errors[0];
   });
 
   resize: Emulator["resize"] = (cols, rows, cellW, cellH) =>
