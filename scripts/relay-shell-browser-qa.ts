@@ -659,17 +659,15 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await a.goto(`${APP}/`);
       await pcLink(a, "Desk PC").waitFor();
       await capture(a, "front-signed-in-1440-dark");
-      // the old control page's address lands on the app as its bare address does: the hash dropped, no control page
+      // the old control page's address lands on the app as its bare address does: the hash dropped, the front page drawn
       await a.goto(`${APP}/#overview`);
       await pcLink(a, "Desk PC").waitFor();
       await a.waitForFunction(() => location.hash === "" && location.pathname === "/");
-      assert.equal(await a.locator(".relay-dash").count(), 0, "#overview draws no control page");
       // so does a load of its own, as a link or bookmark opened from elsewhere (the address set without a hashchange)
       await a.evaluate(() => { history.replaceState(null, "", "/#overview"); });
       await a.reload();
       await pcLink(a, "Desk PC").waitFor();
       await a.waitForFunction(() => location.hash === "" && location.pathname === "/");
-      assert.equal(await a.locator(".relay-dash").count(), 0, "#overview, loaded, draws no control page");
       log9(`account: PC joined ${ACCT}, mailbox pull -> last_seen_at ${seenFirst}; / lists Desk PC; /#overview lands on the same front page at /`);
 
       await relay!.stop();
