@@ -992,7 +992,9 @@ decides which account B may join.
   installed or started in its place.
 - **Inspect.** B's registration names its recovery socket (`recover_socket`). It is forwarded over
   the job's connection into the connection's private folder, and `account_add_inspect` returns B's
-  ID, public key, advertised relay, label and account. The ID must derive from the key.
+  ID, public key, advertised relay, label and account. The ID must derive from the key. That socket answers every
+  recovery act of B's owner, so the adding PC only ever sends `account_add_inspect` and `account_add_take` on it
+  (`server/account-add-channel.ts`), and closes the forward once take answers, on any error, and after ten minutes.
 - **List and admit.** The window lists B (`PUT /v1/pcs/:id`) unless already listed, then admits it
   (`POST /v1/pcs/:id/admit`) with the same stored sign-in. The service applies its usual rules:
   fresh own sign-in, and two-step unless the account was never used. On `two_step_required` the
@@ -1003,6 +1005,10 @@ decides which account B may join.
   admission on its own proof (`POST /v1/pc/admission`), as one press does. B already in that
   account answers as added; B in another account binds nothing. A listing or an admission alone
   never shows as added.
+- **Complete.** B asks its admission `with_listing_id` and, once bound, records its add complete
+  (`POST /v1/pc/complete` with a proof scoped to that account and listing). The receipt is kept on disk
+  and sent again after each pull until the service has it, so the directory's `completed_at` shows B
+  added rather than only listed. The own-window one press does the same.
 
 ### Introductions
 
