@@ -38,6 +38,7 @@ const BASE: Record<string, string> = {
   "Open app.ovis.sh": "app.ovis.sh を開く",
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "キーがターミナルに届いていない可能性があります: 確認される前に接続が切れました。",
   "Open PC": "PC を開く",
+  "Open {name}": "{name} を開く",
   "View only": "表示のみ",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "貼り付けていません: ファイルのパスに改行があり、ターミナルが Enter として受け取ります。",
   "Attach files": "ファイルを添付",
@@ -656,7 +657,6 @@ const BASE: Record<string, string> = {
   "Type an address to open it in a tab of your own. Its cookies stay apart from the agents' tabs.": "アドレスを入力すると自分のタブで開きます。Cookie はエージェントのタブとは別に保存されます。",
   "Browser": "ブラウザー",
   "Reload page": "ページを再読み込み",
-  "Close page": "ページを閉じる",
   "Stop": "停止",
 };
 

@@ -67,6 +67,34 @@
   list-style: none;
 }
 
+.browser-tab-row {
+  position: relative;
+}
+
+.browser-tab-close {
+  position: absolute;
+  top: 50%;
+  right: var(--space-1);
+  width: var(--pointer-target);
+  height: var(--pointer-target);
+  transform: translateY(-50%);
+  opacity: 0;
+}
+
+.browser-tab-close svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+.browser-tab-row:hover .browser-tab {
+  padding-inline-end: calc(var(--pointer-target) + var(--space-1));
+}
+
+.browser-tab-row:hover .browser-tab-close,
+.browser-tab-close:focus-visible {
+  opacity: 1;
+}
+
 .browser-tab {
   display: flex;
   align-items: center;

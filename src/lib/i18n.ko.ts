@@ -36,6 +36,7 @@ const BASE: Record<string, string> = {
   "Open app.ovis.sh": "app.ovis.sh 열기",
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "키가 터미널에 닿지 않았을 수 있습니다: 확인되기 전에 연결이 끊겼습니다.",
   "Open PC": "PC 열기",
+  "Open {name}": "{name} 열기",
   "View only": "보기 전용",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "붙여넣지 않았습니다: 파일 경로에 줄바꿈이 있어 터미널이 Enter로 받아들입니다.",
   "Attach files": "파일 첨부",
@@ -654,7 +655,6 @@ const BASE: Record<string, string> = {
   "Type an address to open it in a tab of your own. Its cookies stay apart from the agents' tabs.": "주소를 입력하면 내 탭으로 열립니다. 쿠키는 에이전트 탭과 따로 보관됩니다.",
   "Browser": "브라우저",
   "Reload page": "페이지 새로고침",
-  "Close page": "페이지 닫기",
   "Stop": "중지",
 };
 

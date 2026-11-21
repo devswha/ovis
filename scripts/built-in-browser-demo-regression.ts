@@ -100,7 +100,7 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   const page = await open(browser, origin, 1280, theme, true);
   const group = page.getByRole("region", { name: "브라우저", exact: true });
   await group.waitFor();
-  assert.deepEqual(await group.getByRole("button").allInnerTexts(), ["", "Notion 로그인", "localhost:5173"], `${tag}: the group lists the tabs after its New tab button`);
+  assert.deepEqual(await group.locator(".browser-tab").allInnerTexts(), ["Notion 로그인", "localhost:5173"], `${tag}: the group lists the tabs`);
 
   await group.getByRole("button", { name: /Notion 로그인/ }).click();
   const holder = page.locator(".browser-panel-holder");
@@ -124,6 +124,16 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   await holder.getByRole("button", { name: "중지", exact: true }).click();
   await holder.getByText("에이전트가 쓰는 중", { exact: true }).waitFor();
 
+  // the tab view's x goes back to the right panel and keeps the tab; a card there opens it again
+  await page.locator(".browser-panel").getByRole("button", { name: "닫기", exact: true }).click();
+  const side = page.getByRole("complementary", { name: "브라우저 패널", exact: true });
+  await side.waitFor();
+  assert.equal((await calls(page)).filter(([name]) => name === "close").length, 0, `${tag}: going back to the panel closes no tab`);
+  assert.equal(await group.locator(".browser-tab").count(), 2, `${tag}: the tab stays in the sidebar`);
+  await side.getByRole("button", { name: "Notion 로그인 열기", exact: true }).click();
+  await holder.getByText("에이전트가 쓰는 중", { exact: true }).waitFor();
+  assert.equal(await side.count(), 0, `${tag}: the open tab takes the panel's place`);
+
   await group.getByRole("button", { name: "새 탭", exact: true }).click();
   const typed = page.getByRole("textbox", { name: "주소", exact: true });
   await page.getByText("주소를 입력하면 내 탭으로 열립니다.", { exact: false }).waitFor();
@@ -132,6 +142,11 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   await group.getByRole("button", { name: /localhost:3000/ }).waitFor();
   assert.deepEqual((await calls(page)).filter(([name]) => name === "open"), [["open", "http://localhost:3000/docs"]], `${tag}: a typed address opens a tab of one's own`);
   assert.equal(await group.getByRole("button", { name: /localhost:3000/ }).getAttribute("aria-current"), "true", `${tag}: the new tab is the one shown`);
+
+  // a row's x closes that tab
+  await group.locator(".browser-tab-row", { hasText: "localhost:5173" }).hover();
+  await group.locator(".browser-tab-row", { hasText: "localhost:5173" }).getByRole("button", { name: "탭 닫기", exact: true }).click();
+  assert.equal((await calls(page)).filter(([name]) => name === "close").length, 1, `${tag}: the row's x closes its tab`);
 
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   const settings = page.getByRole("dialog").first();

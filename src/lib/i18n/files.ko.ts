@@ -235,6 +235,7 @@ export const FILES_KO: Record<string, string> = {
   "Screenshot": "스크린샷",
   "Downloading…": "받는 중…",
   "Show in folder": "폴더에서 보기",
+  "Close page": "페이지 닫기",
   "You have control": "내가 제어 중",
   "{agent} is using it": "{agent} · 쓰는 중",
   "An agent is using it": "에이전트가 쓰는 중",

@@ -235,6 +235,7 @@ export const FILES_ZH: Record<string, string> = {
   "Screenshot": "截图",
   "Downloading…": "下载中…",
   "Show in folder": "在文件夹中显示",
+  "Close page": "关闭页面",
   "You have control": "由你控制",
   "{agent} is using it": "{agent} · 使用中",
   "An agent is using it": "Agent 使用中",

@@ -1338,7 +1338,8 @@ export function App() {
         {/* a tab open beside the pane takes the right panel's place: both would squeeze the conversation */}
         {desktopBrowser !== null && wideScreen && !inMode && !browserShown && <MachineContext.Provider value={selectedMachineId}>
           <BrowserSidePanel browser={desktopBrowser} pane={selectedPane ? { id: selectedPane.pane_id, agent: selectedAgent, status: selectedPane.agent_status } : null}
-            agentOf={(paneId) => machines.find((machine) => machine.id === "local")?.snapshot?.panes.find((pane) => pane.pane_id === paneId)?.agent ?? null} />
+            agentOf={(paneId) => machines.find((machine) => machine.id === "local")?.snapshot?.panes.find((pane) => pane.pane_id === paneId)?.agent ?? null}
+            onOpen={(tab) => { if (webPage !== null) closeWebPage(true); setBrowserTab(tab); }} />
         </MachineContext.Provider>}
         {browserShown && <BrowserPanel tab={shownBrowserTab} covered={dialogCover || webDialogCover} onOpened={setOpeningTab} onClose={() => setBrowserTab(null)}
           panelStart={<FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} />} />}

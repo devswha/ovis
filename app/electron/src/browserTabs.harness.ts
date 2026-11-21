@@ -22,7 +22,8 @@ void app.whenReady().then(async () => {
   const tabs = new BrowserTabs(() => window, { blocked: ["b.localhost"], ovis: [{ host: "localhost", port: ovisPort }] }, join(app.getPath("userData"), "downloads"), () => {}, () => ["127.0.0.2"], (url) => { for (const listener of heard) listener(url); }, 1024);
   const reached = (url: string) => new Promise<void>((done) => heard.push((seen) => { if (seen === url) done(); }));
   const opened: WebContents[] = [];
-  app.on("web-contents-created", (_event, contents) => opened.push(contents));
+  // a tab's page only: windows (the stage that draws a tab nobody looks at among them) use the default session
+  app.on("web-contents-created", (_event, contents) => { if (contents.session !== session.defaultSession) opened.push(contents); });
   const tab = async (url: string, profile: BrowserProfile) => {
     const before = opened.length;
     const id = tabs.open(url, profile);
@@ -84,6 +85,10 @@ void app.whenReady().then(async () => {
   const waitingTab = await tab(`${A}/blank`, "mine");
   result["bigDownload"] = await downloadState(`${A}/big`);
   result["smallDownload"] = await downloadState(`${A}/small`);
+  // a tab nobody has shown still has a picture for the right panel, under a newer one too
+  const cover = await tab(`${A}/blank`, "mine");
+  result["hiddenThumbnail"] = (await tabs.thumbnail(waitingTab.id))?.startsWith("data:image/png") ?? false;
+  tabs.close(cover.id);
   result["results"] = tabs.results().map(({ kind, name, done, tab: from, profile }) => ({ kind, name, done, fromTab: from === waitingTab.id, profile }));
   result["resultPath"] = tabs.results().every(({ id, done }) => (tabs.resultPath(id) !== null) === done);
   // a site blocked while a request's name resolves: the request is decided again by the policy as it is then

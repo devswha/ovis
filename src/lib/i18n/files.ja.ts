@@ -235,6 +235,7 @@ export const FILES_JA: Record<string, string> = {
   "Screenshot": "スクリーンショット",
   "Downloading…": "ダウンロード中…",
   "Show in folder": "フォルダで表示",
+  "Close page": "ページを閉じる",
   "You have control": "自分が操作中",
   "{agent} is using it": "{agent} · 使用中",
   "An agent is using it": "エージェントが使用中",

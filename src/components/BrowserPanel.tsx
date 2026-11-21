@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Bot, Globe, RotateCw, X } from "lucide-react";
 import { useT } from "../lib/i18n.ts";
-import { goBrowserTab, hideBrowserTab, holdBrowserTab, navigateBrowserTab, openBrowserTab, showBrowserTab, closeBrowserTab, typedAddress, type DesktopBrowserTab } from "../lib/desktopBrowser.ts";
+import { goBrowserTab, hideBrowserTab, holdBrowserTab, navigateBrowserTab, openBrowserTab, showBrowserTab, typedAddress, type DesktopBrowserTab } from "../lib/desktopBrowser.ts";
 import "./FileViewer.css";
 import "./BrowserPanel.css";
 
@@ -75,8 +75,8 @@ export function BrowserPanel({ tab, onOpened, onClose, panelStart, covered = fal
             <input key={`${id}:${tab?.address ?? ""}`} name="address" className="input" defaultValue={tab?.address ?? ""} readOnly={tab !== null && !steered} aria-label={t("Address")} placeholder={t("Type an address")}
               aria-invalid={refused || undefined} autoFocus={tab === null} autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="go" onChange={() => setRefused(false)} />
           </form>
-          <button type="button" className="icon-button file-viewer-action file-viewer-close" aria-label={tab === null ? t("Close page") : t("Close tab")} title={tab === null ? t("Close page") : t("Close tab")}
-            onClick={() => { if (tab) closeBrowserTab(tab.id); onClose(); }}><X aria-hidden="true" /></button>
+          {/* back to the panel: the tab stays open (the sidebar's row and the card close it) */}
+          <button type="button" className="icon-button file-viewer-action file-viewer-close" aria-label={t("Close")} title={t("Close")} onClick={onClose}><X aria-hidden="true" /></button>
         </header>
         {tab?.profile === "agent" && <div className={`browser-panel-holder${tab.held ? " is-held" : ""}`}>
           <span>{tab.held ? t("You have control · the agent waits") : t("An agent is using this tab")}</span>

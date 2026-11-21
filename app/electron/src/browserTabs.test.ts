@@ -105,6 +105,7 @@ describe.skipIf(!linux)("the built-in browser in Electron", () => {
     expect(result.late).toBe("ERR_BLOCKED_BY_CLIENT");
     expect(result.bigDownload).toBe("cancelled");
     expect(result.smallDownload).toBe("completed");
+    expect(result.hiddenThumbnail).toBe(true);
     // the kept download is listed for the page's right panel, the cancelled one is not
     expect(result.results).toEqual([{ kind: "download", name: "small.bin", done: true, fromTab: true, profile: "mine" }]);
     expect(result.resultPath).toBe(true);

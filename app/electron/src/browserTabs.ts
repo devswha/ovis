@@ -18,6 +18,9 @@ import { hostForm } from "./browserState.ts";
 export const BROWSER_PROFILES = ["mine", "agent"] as const;
 export type BrowserProfile = (typeof BROWSER_PROFILES)[number];
 export const MAX_BROWSER_TABS = 8;
+/** how many frames, this far apart, a tab brought to the top of the stage gets to paint before its picture is given up */
+const STAGE_FRAMES = 8;
+const STAGE_FRAME_MS = 50;
 const AGENT_OPEN_MS = 30_000;
 /** a download larger than this is cancelled, and a profile keeps at most MAX_DOWNLOADS from one start of the app */
 export const MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024;
@@ -82,6 +85,12 @@ export class BrowserTabs {
   private tabs = new Map<number, Tab>();
   private nextId = 1;
   private shown: number | null = null;
+  /**
+   * Where a tab nobody looks at is drawn: a window of its own, off the screen, see-through and closed to the
+   * pointer, so its page keeps painting and the right panel can show it (thumbnail). None on a Wayland desktop,
+   * which neither places a window off the screen nor makes it see-through: there a tab paints only while shown.
+   */
+  private stage: BrowserWindow | null = null;
   /** the sessions this BrowserTabs has guarded: webRequest and permission handlers replace the previous ones */
   private guarded = new Set<Session>();
 
@@ -148,6 +157,7 @@ export class BrowserTabs {
     view.setBounds({ x: 0, y: 0, width: 1280, height: 800 });
     const tab: Tab = { id: this.nextId++, profile, owner: profile === "agent" ? owner : null, view, allowed: null, title: "", held: false };
     this.tabs.set(tab.id, tab);
+    this.backstage(tab);
     this.watch(tab);
     void view.webContents.loadURL(url).catch(() => {});
     return tab.id;
@@ -158,12 +168,15 @@ export class BrowserTabs {
     if (!tab) return;
     this.tabs.delete(id);
     if (this.shown === id) this.hide();
+    if (this.stage && !this.stage.isDestroyed()) this.stage.contentView.removeChildView(tab.view);
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     this.tell();
   }
 
   closeAll(): void {
     for (const id of [...this.tabs.keys()]) this.close(id);
+    if (this.stage && !this.stage.isDestroyed()) this.stage.destroy();
+    this.stage = null;
   }
 
   /** Draws the tab in `bounds` of the window (in the page's CSS pixels), over the place the page keeps for it. */
@@ -176,6 +189,7 @@ export class BrowserTabs {
     const [width = 0, height = 0] = window.getContentSize();
     const x = Math.max(0, Math.round(bounds.x * zoom)), y = Math.max(0, Math.round(bounds.y * zoom));
     tab.view.setBounds({ x, y, width: Math.max(0, Math.min(Math.round(bounds.width * zoom), width - x)), height: Math.max(0, Math.min(Math.round(bounds.height * zoom), height - y)) });
+    if (this.stage && !this.stage.isDestroyed()) this.stage.contentView.removeChildView(tab.view);
     // a window made anew (the old one closed) holds no view yet
     if (!window.contentView.children.includes(tab.view)) window.contentView.addChildView(tab.view);
     this.shown = id;
@@ -186,14 +200,50 @@ export class BrowserTabs {
     this.shown = null;
     const window = this.window();
     if (tab && window && !window.isDestroyed()) window.contentView.removeChildView(tab.view);
+    if (tab) this.backstage(tab);
   }
 
-  /** a picture of the tab as PNG data, or null while it is not drawn (a tab nobody looks at paints nothing) */
+  /** a picture of the tab as PNG data, or null while it is not drawn (not shown, and no stage to draw it on) */
   async thumbnail(id: number): Promise<string | null> {
     const tab = this.tabs.get(id);
-    if (!tab || tab.allowed === null || this.shown !== id) return null;
-    const image = await tab.view.webContents.capturePage().catch(() => null);
-    return image === null || image.isEmpty() ? null : image.resize({ width: 320 }).toDataURL();
+    if (!tab || tab.allowed === null) return null;
+    // On the stage the tabs lie on one another: the one asked for goes on top. A view that has not been resized
+    // since it was put there has no surface to draw on yet, so it is resized by a pixel and back once, then taken
+    // as soon as its compositor has a frame of it (a few frames at most).
+    const stage = this.stage;
+    const staged = stage !== null && !stage.isDestroyed() && stage.contentView.children.includes(tab.view);
+    if (staged) stage.contentView.addChildView(tab.view);
+    for (let attempt = 0; attempt < (staged ? STAGE_FRAMES : 1); attempt++) {
+      if (tab.view.webContents.isDestroyed()) return null;
+      const image = await tab.view.webContents.capturePage(undefined, { stayHidden: true }).catch(() => null);
+      if (image !== null && !image.isEmpty()) return image.resize({ width: 320 }).toDataURL();
+      const bounds = tab.view.getBounds();
+      if (attempt === 0 && staged) tab.view.setBounds({ ...bounds, height: bounds.height - 1 });
+      await new Promise((next) => setTimeout(next, STAGE_FRAME_MS));
+      if (attempt === 0 && staged) tab.view.setBounds(bounds);
+    }
+    return null;
+  }
+
+  /** puts a tab nobody looks at on the stage, at the size it was last drawn */
+  private backstage(tab: Tab): void {
+    const stage = this.stageWindow();
+    if (stage === null || stage.contentView.children.includes(tab.view)) return;
+    const { width, height } = tab.view.getBounds();
+    tab.view.setBounds({ x: 0, y: 0, width: Math.max(width, 320), height: Math.max(height, 240) });
+    stage.contentView.addChildView(tab.view);
+  }
+
+  private stageWindow(): BrowserWindow | null {
+    if (this.stage && !this.stage.isDestroyed()) return this.stage;
+    if (process.platform === "linux" && (process.env["XDG_SESSION_TYPE"] === "wayland" || process.env["WAYLAND_DISPLAY"])) return null;
+    const stage = new BrowserWindow({ show: false, x: -20000, y: -20000, width: 1280, height: 800, frame: false, focusable: false, skipTaskbar: true, opacity: 0, hasShadow: false, title: "Ovis browser stage" });
+    stage.setIgnoreMouseEvents(true);
+    stage.showInactive();
+    stage.setPosition(-20000, -20000);
+    stage.on("closed", () => { if (this.stage === stage) this.stage = null; });
+    this.stage = stage;
+    return stage;
   }
 
   navigate(id: number, url: string): boolean {
