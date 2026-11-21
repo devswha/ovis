@@ -1,6 +1,6 @@
 # Self-hosted CI runner
 
-An ephemeral Docker GitHub Actions runner for this repository's Linux CI/CD jobs. Each container registers, runs exactly one job and exits; the launcher then starts a fresh one. The image includes Bun, Node 22, checksum-pinned herdr, Playwright Chromium and its system libraries, ffmpeg, git, `gh`, curl, jq, unzip, xz-utils, OpenSSH (client and server), iproute2 (`ss`), tmux and procps (`ps`), with no sudo. Jobs detect it with `RUNNER_ENVIRONMENT=self-hosted`.
+An ephemeral Docker GitHub Actions runner for this repository's Linux CI/CD jobs. Each container registers, runs exactly one job and exits; the launcher then starts a fresh one. The image includes Bun, Node 22, checksum-pinned herdr, a pinned Rust toolchain (rustup's minimal profile, with gcc to link), Playwright Chromium and its system libraries, ffmpeg, git, `gh`, curl, jq, unzip, xz-utils, OpenSSH (client and server), iproute2 (`ss`), tmux and procps (`ps`), with no sudo. Jobs detect it with `RUNNER_ENVIRONMENT=self-hosted`.
 
 ## Prerequisites
 
@@ -152,8 +152,12 @@ Self-hosted jobs verify the image's Bun version, requested Node major and herdr 
 of downloading tools. Both browser lanes use the installed project's Playwright revision to find
 Chromium under `/opt/playwright-browsers`; a missing browser fails with rebuild guidance, not a
 download fallback. Rebuild with `--build` after changing the tool pins or Playwright in `bun.lock`.
-The image's `BUN_VERSION` must match the default in `.github/actions/setup-ci/action.yml`, and
-`PLAYWRIGHT_VERSION` must match the lockfile.
+The image's `BUN_VERSION` must match the default in `.github/actions/setup-ci/action.yml`,
+`RUST_VERSION` must match `EXPECTED_RUST_VERSION` in `scripts/ci-preinstalled-tools.sh` (the Rust PTY
+host job checks it), and `PLAYWRIGHT_VERSION` must match the lockfile. The toolchain is root's under
+`/opt/rustup` and `/opt/cargo`; a job's crate downloads go to its own `~/.cargo` and end with its
+container. No host cache holds them: measured on hosthatch in the image, the whole crate graph's
+download, release build and tests take about 7 s from nothing (GitHub's image: 18-22 s).
 
 ### Runner version
 
@@ -353,6 +357,31 @@ way keeps the script it started with, as does the running `run.sh`. Jobs run the
 repository's `scripts/build-cache.ts` against the installed `build-cache-promote.sh`: after a change
 to where the build cache's entries are filed, no job restores a build until the copy is the new one
 ([Build cache](#build-cache)).
+
+### The Rust PTY host job
+
+`ci.yml`'s Rust PTY host job asks for `["self-hosted","self-hosted-ovis-rust"]`. Only a slot that a
+launcher registers with that label takes it, so a host whose image predates the Rust toolchain never
+does: a host serves it with one slot of its own, the launcher's reserved slot, on top of its others:
+
+```sh
+run.sh ... --count 3 --reserved 1 --reserved-labels self-hosted-ovis-rust   # was --count 2: slot 1 takes the Rust job alone
+```
+
+The job takes about a minute, and in GitHub's hosted queue it waited two seconds in most runs (49 pull
+request runs to 2026-11-21: median 2 s, two waits of 14 and 23 minutes), so a slot of its own is what makes
+it as quick here: in the shared pool the same runs' jobs waited 8 to 55 s at the median per host and 3 to 6
+minutes at the 90th percentile, behind Integration tests and the browser parts. HostHatch and old-desktop
+run one each. Rebuild the
+image with the toolchain (`--build`) before you add the label. `scripts/ci-runner-route.sh` keeps forks,
+`hosted_only` and manual runs on `ubuntu-24.04`, and sends the job there too once a job of these slots has
+waited more than a minute (both busy, or both hosts gone), and while `CI_SELF_HOSTED_LABELS` names the
+hosted image. The repository variable `CI_RUST_LABELS` overrides it:
+
+```sh
+gh variable set CI_RUST_LABELS --body '"ubuntu-24.04"'   # the Rust slots are gone: the job hosted
+gh variable delete CI_RUST_LABELS   # back to the Rust slots
+```
 
 ## Per-host limits
 
@@ -567,7 +596,7 @@ the rules.
 | ci.yml | changes | HO ubuntu-24.04, else LIGHT | yes under hosted_only; else no: self-hosted unless a fork PR | - | none |
 | ci.yml | windows-install | `windows-latest` | yes | - | setup-ci save, none under hosted_only |
 | ci.yml | macos-session | HO macos-15, else MAC | yes under hosted_only; else yes unless CI_MAC_LABELS is set | - | setup-ci save, none under hosted_only |
-| ci.yml | rust-pty-host | `ubuntu-24.04` | yes | - | setup-ci save, none under hosted_only |
+| ci.yml | rust-pty-host | HO ubuntu-24.04, else ROUTE rust | yes under hosted_only; else as routed: the Rust slots or hosted | - | setup-ci save, none under hosted_only |
 | ci.yml | herdr-core-live | HO ubuntu-24.04, else LIGHT | yes under hosted_only; else no: self-hosted unless a fork PR | - | setup-ci restore, none under hosted_only; actions/cache (Cache hc, off under hosted_only) |
 | ci.yml | fast | HO ubuntu-24.04, else ROUTE fast | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only |
 | ci.yml | integration | HO ubuntu-24.04, else ROUTE linux | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only |

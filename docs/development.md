@@ -881,7 +881,8 @@ A release validated by main's run (`main-run-<id>`) is made of these checks of i
 | Rust PTY host build, with the crate's tests and the PtySession checks on the built Linux binaries | the Release run | GitHub's runners |
 | Integration tests, both Browser regression jobs | main's run | the self-hosted PC, unless the runner variables keep `main` on GitHub's ([Self-hosted runner](#self-hosted-runner)) |
 | herdr-core live contract | main's run | the self-hosted PC, unless the runner variables keep the light jobs on GitHub's |
-| Native Windows install, Native macOS session identity, Rust PTY host | main's run | GitHub's runners |
+| Native Windows install, Native macOS session identity | main's run | GitHub's runners |
+| Rust PTY host | main's run | the self-hosted runners with the Rust toolchain, or GitHub's when those are busy or gone |
 
 Main's Integration tests and Browser regression jobs did not each build the client they tested:
 on the self-hosted PC they restore `dist/` from the runners' build cache, from the entry of that
@@ -1426,7 +1427,12 @@ as the Linux runners, which finds the job's worker through `/proc` on Linux and 
 ([Mac runner](../scripts/self-hosted-runner/README.md#mac-runner)); the repository's approval policy for
 fork pull request workflows (every outside contributor's run waits for a maintainer) stays on as well.
 
-The other Windows and macOS jobs, the Rust PTY host job (the runner image has no Rust toolchain),
+The Rust PTY host job asks for `["self-hosted","self-hosted-ovis-rust"]`, a label only the hosts' Rust
+slots carry ([Routing jobs to it](../scripts/self-hosted-runner/README.md#routing-jobs-to-it)); the route
+sends it to `ubuntu-24.04` for a fork, under `hosted_only`, when `CI_SELF_HOSTED_LABELS` or `CI_RUST_LABELS`
+names that image, and once one of its jobs has waited a minute for those runners.
+
+The other Windows and macOS jobs,
 `remote-bundles.yml`'s other jobs (Rust builds, and the SSH job's `sudo apt-get` and Docker),
 `desktop.yml`, `windows-install.yml` and `windows-terminal-qa.yml` stay off the self-hosted Linux
 runners (the Mac takes the `macos-15` jobs above).
