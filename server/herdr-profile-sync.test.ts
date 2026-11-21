@@ -29,18 +29,20 @@ async function until(check: () => boolean) {
 }
 
 describe("automatic herdr machine inheritance", () => {
-  it("discovers profiles, keeps stable identities and named sessions, and waits for consent before connecting", () => {
+  it("discovers profiles, attempts SSH once on first sight, and waits when the binding changes", () => {
     const { manager, reconnect } = fixture();
     manager.syncHerdrProfiles([profile]);
     const first = manager.list()[1]!;
     expect(first).toMatchObject({ herdr_profile_id: "source-a", name: "Build machine", target: profile.target, enabled: true });
-    expect(reconnect).toHaveBeenCalledTimes(0);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(reconnect).toHaveBeenCalledWith(expect.anything(), { firstSight: true });
     manager.syncHerdrProfiles([profile]);
     manager.syncHerdrProfiles([{ ...profile, label: "Renamed" }]);
-    expect(reconnect).toHaveBeenCalledTimes(0);
+    expect(reconnect).toHaveBeenCalledTimes(1);
     expect(manager.list()[1]).toMatchObject({ id: first.id, name: "Renamed" });
     manager.syncHerdrProfiles([{ ...profile, target: { destination: "BuildBox", session: "other" } }]);
-    expect(reconnect).toHaveBeenCalledTimes(0);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(manager.list()[1]?.action_required).toBe("connect");
     const next = fixture(); next.manager.syncHerdrProfiles([profile]);
     expect(next.manager.list()[1]?.id).toBe(first.id);
   });
@@ -200,7 +202,7 @@ describe("automatic herdr machine inheritance", () => {
       for (let attempt = 0; attempt < 2; attempt++) {
         expect(() => manager.syncHerdrProfiles(next)).toThrow();
         expect(manager.list().map((m) => m.id)).toEqual(["local"]);
-        expect(reconnect).not.toHaveBeenCalled();
+        expect(reconnect).toHaveBeenCalledTimes(1);
         expect(job.phase).toBe("cancelled");
         expect(runtime.machine.enabled).toBe(false);
         expect(existsSync(key)).toBe(false);
@@ -236,9 +238,8 @@ describe("automatic herdr machine inheritance", () => {
     const observe = spyOn(internals, "observe").mockResolvedValue();
     cleanups.push(() => { start.mockRestore(); prepare.mockRestore(); observe.mockRestore(); });
     manager.syncHerdrProfiles([profile]);
-    expect(start).not.toHaveBeenCalled();
+    expect(reconnect).toHaveBeenCalledTimes(1);
     const machine = manager.list()[1]!;
-    expect(machine.action_required).toBe("connect");
     const job = manager.setup({ ...profile.target!, machine_id: machine.id });
     await until(() => job.phase === "connected");
     expect(start).toHaveBeenCalledTimes(1);
@@ -254,7 +255,7 @@ describe("automatic herdr machine inheritance", () => {
     restored.syncHerdrProfiles([{ ...profile, target: { ...profile.target!, port: 2223 } }]);
     expect(resumed).toHaveBeenCalledTimes(1);
     expect(restored.list()[1]?.action_required).toBe("connect");
-    expect(reconnect).not.toHaveBeenCalled();
+    expect(reconnect).toHaveBeenCalledTimes(1);
   });
   for (const change of ["disable", "retarget", "remove"] as const) {
     it(`a failed cleanup for A does not block ${change} of B, even across restart`, () => {
@@ -423,5 +424,61 @@ describe("automatic herdr machine inheritance", () => {
       throw new Error("Unexpected remote mutation: " + script);
     } } as unknown as SshConnection;
     await expect(internals.prepare({ machine: { herdr_profile_id: profile.id, target: profile.target }, ssh, generation: 0 })).rejects.toMatchObject({ action: "setup" });
+  });
+
+  it("records connection consent after first-sight SSH succeeds and does not grant installation permission", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-profile-first-"));
+    const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("offline"); });
+    const internals = manager as unknown as Internals;
+    const start = spyOn(SshConnection.prototype, "start").mockResolvedValue();
+    const prepare = spyOn(internals, "prepare").mockResolvedValue();
+    const observe = spyOn(internals, "observe").mockResolvedValue();
+    cleanups.push(() => { manager.stop(); start.mockRestore(); prepare.mockRestore(); observe.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
+    manager.syncHerdrProfiles([profile]);
+    await until(() => new HerdrProfileState(dir).connectionApproved(profile.id, profile.target!));
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(new HerdrProfileState(dir).approved(profile.id, profile.target!)).toBe(false);
+    manager.syncHerdrProfiles([profile]);
+    // fixed wait: a repeated sync of the same profile must not start another SSH
+    await Bun.sleep(20);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks for connect after one failed first-sight SSH and does not schedule another", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-profile-fail-"));
+    const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("offline"); });
+    const internals = manager as unknown as Internals;
+    const start = spyOn(SshConnection.prototype, "start").mockRejectedValue(new Error("ssh down"));
+    cleanups.push(() => { manager.stop(); start.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
+    manager.syncHerdrProfiles([profile]);
+    const id = manager.list()[1]!.id;
+    await until(() => manager.list()[1]?.action_required === "connect");
+    const row = internals.machines.get(id) as { retry?: ReturnType<typeof setTimeout>; machine: Machine };
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(row.retry).toBeUndefined();
+    expect(row.machine.state).toBe("error");
+    expect(new HerdrProfileState(dir).connectionApproved(profile.id, profile.target!)).toBe(false);
+  });
+
+  it("does not record connection consent when the first session read fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-profile-observe-"));
+    const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("offline"); });
+    const internals = manager as unknown as Internals;
+    const start = spyOn(SshConnection.prototype, "start").mockResolvedValue();
+    const prepare = spyOn(internals, "prepare").mockResolvedValue();
+    const observe = spyOn(internals, "observe").mockRejectedValue(new Error("session unread"));
+    cleanups.push(() => { manager.stop(); start.mockRestore(); prepare.mockRestore(); observe.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
+    manager.syncHerdrProfiles([profile]);
+    const id = manager.list()[1]!.id;
+    await until(() => manager.list()[1]?.action_required === "connect");
+    const row = internals.machines.get(id) as { retry?: ReturnType<typeof setTimeout>; machine: Machine };
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(row.retry).toBeUndefined();
+    expect(row.machine.state).toBe("error");
+    expect(new HerdrProfileState(dir).connectionApproved(profile.id, profile.target!)).toBe(false);
+    manager.syncHerdrProfiles([profile]);
+    expect(start).toHaveBeenCalledTimes(1);
   });
 });

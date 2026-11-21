@@ -350,6 +350,8 @@ it("tells the server's built version to a signed-in client only", async () => {
     const owner = await health({ authorization: "Bearer owner-token" });
     expect(owner.auth).toMatchObject({ authenticated: true, role: "drive" });
     expect(owner.version).toBe(built);
+    expect(owner).not.toHaveProperty("ssh_total");
+    expect(owner).not.toHaveProperty("ssh_connected");
     const store = app.context.services.devices;
     const watching = store.pair(store.startPairing().code, "Watcher", "watch");
     if (!watching) throw new Error("Fixture pairing failed");

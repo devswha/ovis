@@ -122,8 +122,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *   client's coalescing or the 15 s deadline, is what bounds the load on a remote PC. The browser asks
  *   only after a workspace move's receipt when a roster names another epoch (src/lib/workspaceOrder.ts).
  *   An older server ignores the query and sends no verified_source_boot, which proves nothing.
- * Machine action_required=connect: a saved herdr PC awaits explicit POST /api/machines/setup before SSH.
- * Connection permission survives successful setup; installation/startup approval remains separate.
+ * Machine action_required=connect: the first time this server sees an enabled herdr profile it attempts SSH.
+ * A binding change still waits for POST /api/machines/setup. Connection permission is recorded only after the first session read succeeds. Installation approval stays separate.
  * SetupJob/Machine action_required=bridge_conflict: align app versions, then retry setup without update_remote.
  * POST /api/machines/setup -> SetupJob; GET/POST/DELETE /api/machines/setup/:job_id
  * PATCH /api/machines/:id { name?, enabled? }; DELETE /api/machines/:id
@@ -143,7 +143,7 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *                                          security?: SecuritySummary (authenticated only, no-store),
  *                                          herdr_core?: HerdrCoreFacts (shared/machines.ts; authenticated only, absent until
  *                                          the server's first look for hc has ended), herdr_runtime?: HerdrRuntimeFacts (a driving owner
- *                                          only: which runtime this server serves and what Settings may switch it to),
+ *                                          only: which runtime this server serves and what Settings may switch it to), ssh_total?: number, ssh_connected?: number (that same owner: enabled SSH machines, and how many are connected with an empty error and no action_required; ok stays true either way),
  *                                          account_devices?: { unlinked: { id, label }[], own_word: { id, label }[] } (a driving
  *                                          owner only: docs/account.md, "How a device joined") } (boot_id: this server
  *                                          lifetime's id, the supervisor's when managed; older servers sent null unmanaged)

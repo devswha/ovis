@@ -20,7 +20,7 @@ it("publishes inherited rows on the existing authenticated roster and refuses co
     const { machines } = await response.json() as { machines: Machine[] };
     expect(machines).toHaveLength(2);
     const machine = machines[1]!;
-    expect(machine).toMatchObject({ herdr_profile_id: profile.id, name: profile.label, target: profile.target, enabled: true, state: "disconnected", action_required: "connect" });
+    expect(machine).toMatchObject({ herdr_profile_id: profile.id, name: profile.label, target: profile.target, enabled: true });
     for (const method of ["PATCH", "DELETE"]) {
       const result = await fetch(`${base}/api/machines/${machine.id}`, { method, headers, ...(method === "PATCH" ? { body: JSON.stringify({ enabled: true }) } : {}) });
       expect(result.status).toBe(400);

@@ -67,6 +67,8 @@ export class HerdrProfileState {
     const entry = this.entries.get(id);
     return entry?.binding === binding(target) && entry.connectionApproved;
   }
+  /** True once reconcile has recorded this profile, including a first sight that is not yet approved. */
+  has(id: string): boolean { return this.entries.has(id); }
   allowConnection(id: string, target: SshTarget): void {
     this.reconcile(id, target);
     const entry = this.entries.get(id)!;

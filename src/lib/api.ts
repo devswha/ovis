@@ -830,8 +830,8 @@ export interface HealthInfo {
   security?: SecuritySummary;
   /** authenticated only; absent from an older server and until the server's first look for hc has ended */
   herdr_core?: HerdrCoreFacts;
-  /** a driving owner only; absent from an older server */
-  herdr_runtime?: HerdrRuntimeFacts;
+  /** a driving owner only; absent from an older server. ssh_total/ssh_connected are that same view. */
+  herdr_runtime?: HerdrRuntimeFacts; ssh_total?: number; ssh_connected?: number;
 }
 
 export async function fetchHealth(): Promise<HealthInfo> {

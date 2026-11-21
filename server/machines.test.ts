@@ -527,7 +527,8 @@ describe("setup job labels", () => {
   }
 
   for (const phase of ["approval", "starting"] as const) it(`resumes a saved Windows retry when startup review is cancelled during ${phase}`, async () => {
-    const f = windowsSetup();
+    // A ready bundle and herdr skip review. This case still has a bundle to approve.
+    const f = windowsSetup(false);
     try {
       const job = f.manager.setup({ destination: "pc", machine_id: "windows" });
       await within(f.approval.promise);
@@ -560,8 +561,11 @@ describe("setup job labels", () => {
     const cleared = spyOn(globalThis, "clearTimeout").mockImplementation((handle) => { deadlines.delete(Number(handle)); clear(Number(handle)); });
     try {
       const job = f.manager.setup({ destination: "pc", machine_id: "windows" });
-      await within(f.approval.promise);
-      f.manager.action(job.id, { action: "approve" });
+      // Review only when the bundle is missing. A present bundle and herdr start without it.
+      if (!bundleReady) {
+        await within(f.approval.promise);
+        f.manager.action(job.id, { action: "approve" });
+      }
       await within(f.waiting.promise);
       const state = f.manager["jobs"].get(job.id);
       if (!state) throw new Error("Setup job missing");
@@ -613,7 +617,6 @@ describe("setup job labels", () => {
     const notice = spyOn(windowsHost, "startupNotice").mockImplementation(async () => elapsed >= 30_000 ? result : null);
     try {
       const job = automatic ? f.manager.updateBridge("windows", true) : f.manager.setup({ destination: "pc" });
-      if (!automatic) { await within(f.approval.promise); f.manager.action(job.id, { action: "approve" }); }
       const state = f.manager["jobs"].get(job.id);
       if (!state) throw new Error("Setup job missing");
       await within(Promise.race([f.waiting.promise, state.finished]));
@@ -633,8 +636,6 @@ describe("setup job labels", () => {
     const failure = headless ? "Headless launch failed" : "SSH connection ended";
     try {
       const job = f.manager.setup({ destination: "pc", machine_id: "windows" });
-      await within(f.approval.promise);
-      f.manager.action(job.id, { action: "approve" });
       await within(f.waiting.promise);
       const failed = headless
         ? spyOn(windowsHost, "start").mockRejectedValue(new Error(failure))
@@ -681,8 +682,6 @@ describe("setup job labels", () => {
     });
     try {
       const job = f.manager.setup({ destination: "pc", machine_id: "windows" });
-      await within(f.approval.promise);
-      f.manager.action(job.id, { action: "approve" });
       await within(f.waiting.promise, "scheduler failure did not offer startup choices");
       expect(job.step).toBe(schedulerError);
       expect(job.action_required).toBe("windows_start_failed");
