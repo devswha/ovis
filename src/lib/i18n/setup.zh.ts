@@ -87,4 +87,6 @@ export const SETUP_ZH: Record<string, string> = {
   "Install another agent ({count})": "安装其他代理（{count}）",
   "None": "无",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "代理可以操作的浏览器：Ovis 启动该代理时会加上固定版本的 MCP 服务器。该浏览器使用单独的配置文件，不会用到你的登录信息，Ovis 也不会查看或限制它。从下次启动起生效；从终端直接启动的代理不受影响。",
+  "Ovis built-in browser": "Ovis 内置浏览器",
+  "The agent uses tabs of its own in this app's built-in browser, through a few tools Ovis defines: open, read, click, type, take a picture, list and close. Your blocked sites apply, and its tabs keep cookies apart from yours. Applies from the next start; an agent started from a terminal is not changed.": "Agent 在此应用的内置浏览器中使用自己的标签页，只通过 Ovis 定义的少数工具：打开、读取、点击、输入、截图、列出和关闭。你屏蔽的网站同样适用，Agent 标签页的 Cookie 与你的分开保存。从下次启动起生效；从终端直接启动的 Agent 不受影响。",
 };

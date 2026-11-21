@@ -227,7 +227,7 @@ async function launch(): Promise<void> {
     if (quitting) return;
     try {
       // recorded as soon as it runs, so a crash of the app before it listens still leaves its pid behind
-      const running = await startServer(programs, serverEnv(process.env, { hc, stateDir, port }), log, 60_000, (child) => {
+      const running = await startServer(programs, serverEnv(process.env, { hc, stateDir, port, ...(brokerSocket === null ? {} : { browserSocket: brokerSocket }) }), log, 60_000, (child) => {
         spawning = child;
         writeSaved(savedPath, { port, server: { pid: child.pid!, bun: programs.serverBinary, started: processStartSync(child.pid!) } });
       });

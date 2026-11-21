@@ -103,6 +103,7 @@ run_script scripts/settings-segmented-demo-regression.ts
 run_script scripts/ideal-state-idle-regression.ts
 run_script scripts/agent-entry-points-demo-regression.ts
 run_script scripts/agents-sign-in-demo-regression.ts
+run_script scripts/agent-built-in-browser-tool-demo-regression.ts
 run_script scripts/setup-dialog-demo-regression.ts
 run_script scripts/setup-row-demo-regression.ts
 run_script scripts/interface-font-demo-regression.ts

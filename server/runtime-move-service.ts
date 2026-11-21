@@ -163,7 +163,7 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
       for (const deadline = Date.now() + 10_000; ;) {
         const names = (await sessionSnapshot(socket)).agents.map((agent) => agent.name);
         try {
-          const args = withBrowserTool(argv[0]!, argv.slice(1), process.platform);
+          const args = withBrowserTool(argv[0]!, argv.slice(1), process.platform, paneId);
           await agentStart({ name: freeAgentName(argv[0]!, names), kind: argv[0]!, paneId, args: args ?? [], timeoutMs: 60_000 }, socket);
           return;
         } catch (error) {

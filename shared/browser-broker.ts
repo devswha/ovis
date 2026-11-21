@@ -10,6 +10,8 @@
 export const BROWSER_TOKENS_DIR = "browser-tokens";
 /** a pane's token file name, without the folder: letters, digits, `-` and `_` */
 export const BROWSER_TOKEN_FILE = /^([A-Za-z0-9_-]{1,120})\.token$/;
+/** beside a token, the pane that owns it (a launch's key names both; a pane moved keeps its token and changes this) */
+export const BROWSER_OWNER_FILE = /^([A-Za-z0-9_-]{1,120})\.pane$/;
 export const MAX_BROWSER_LINE = 64 * 1024;
 
 export interface BrowserToolDef {

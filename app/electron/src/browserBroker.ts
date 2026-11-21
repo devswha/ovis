@@ -9,9 +9,9 @@ import { createServer, type Server, type Socket } from "node:net";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
-import { BROWSER_TOKEN_FILE, MAX_BROWSER_LINE, type BrowserAnswer, type BrowserContent, type BrowserRequest } from "../../../shared/browser-broker.ts";
+import { BROWSER_OWNER_FILE, BROWSER_TOKEN_FILE, MAX_BROWSER_LINE, type BrowserAnswer, type BrowserContent, type BrowserRequest } from "../../../shared/browser-broker.ts";
 import { clickRef, snapshot, typeRef } from "./browserAgent.ts";
-import type { BrowserTabs } from "./browserTabs.ts";
+import type { AgentGrant, BrowserTabs } from "./browserTabs.ts";
 
 /**
  * Where the socket is: a unix socket in a folder only the user can open. None on Windows: a named pipe Node
@@ -21,8 +21,8 @@ export function brokerPath(userData: string, platform: string): string | null {
   return platform === "win32" ? null : join(userData, "browser", "broker.sock");
 }
 
-/** the pane whose token file holds `token`, read now */
-export function tokenOwner(tokensDir: string, token: string): string | null {
+/** the launch whose token file holds `token` and the pane beside it, read now */
+export function tokenOwner(tokensDir: string, token: string): AgentGrant | null {
   if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) return null;
   const given = Buffer.from(token);
   let names: string[];
@@ -32,15 +32,22 @@ export function tokenOwner(tokensDir: string, token: string): string | null {
     return null;
   }
   for (const name of names) {
-    const pane = BROWSER_TOKEN_FILE.exec(name)?.[1];
-    if (pane === undefined) continue;
+    const key = BROWSER_TOKEN_FILE.exec(name)?.[1];
+    if (key === undefined) continue;
     let held: Buffer;
     try {
       held = Buffer.from(readFileSync(join(tokensDir, name), "utf8").trim());
     } catch {
       continue;
     }
-    if (held.length === given.length && timingSafeEqual(held, given)) return pane;
+    if (held.length !== given.length || !timingSafeEqual(held, given)) continue;
+    // its pane is beside it; a token without one is no launch's
+    try {
+      const pane = readFileSync(join(tokensDir, `${key}.pane`), "utf8").trim();
+      return /^[A-Za-z0-9_-]{1,120}$/.test(pane) ? { grant: key, pane } : null;
+    } catch {
+      return null;
+    }
   }
   return null;
 }
@@ -83,7 +90,7 @@ export class BrowserBroker {
     rmSync(this.path, { force: true });
     if (keepTokens) return;
     try {
-      for (const name of readdirSync(this.tokensDir)) if (BROWSER_TOKEN_FILE.test(name)) rmSync(join(this.tokensDir, name), { force: true });
+      for (const name of readdirSync(this.tokensDir)) if (BROWSER_TOKEN_FILE.test(name) || BROWSER_OWNER_FILE.test(name)) rmSync(join(this.tokensDir, name), { force: true });
     } catch {}
   }
 
@@ -116,6 +123,7 @@ export class BrowserBroker {
     const owner = typeof request.token === "string" ? tokenOwner(this.tokensDir, request.token) : null;
     const tabs = this.tabs();
     if (owner === null || tabs === null) return { id: request.id, content: text("The Ovis built-in browser is not open to this agent."), isError: true };
+    tabs.reown(owner);
     try {
       const args = typeof request.args === "object" && request.args !== null ? request.args : {};
       const content = await this.run(tabs, owner, String(request.tool), args);
@@ -126,10 +134,11 @@ export class BrowserBroker {
   }
 
   /** a tool's answer, or the words of why it did nothing */
-  private async run(tabs: BrowserTabs, owner: string, tool: string, args: Record<string, unknown>): Promise<BrowserContent[] | string> {
+  private async run(tabs: BrowserTabs, agent: AgentGrant, tool: string, args: Record<string, unknown>): Promise<BrowserContent[] | string> {
+    const owner = agent.grant;
     if (tool === "browser_open") {
       if (typeof args["url"] !== "string") return "browser_open needs a url.";
-      const id = await tabs.openFor(owner, args["url"]);
+      const id = await tabs.openFor(agent, args["url"]);
       if (id === null) return "That address was not opened: it is blocked, not a web address, failed to load, or you have the most tabs there may be.";
       return text(JSON.stringify(tabs.ownTabs(owner).find((tab) => tab.id === id)));
     }
