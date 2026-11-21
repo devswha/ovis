@@ -1934,7 +1934,7 @@ export class MachineManager {
     await this.refresh(runtime);
     if (generation !== runtime.generation || this.stopped) throw new Error("Connection cancelled");
     runtime.machine.state = "connected"; runtime.machine.action_required = null; runtime.machine.found_herdr_sessions = undefined; runtime.machine.found_ovis = undefined; runtime.machine.remote_ovis = null; runtime.remoteRevision = undefined; runtime.installFix = undefined; runtime.attempts = 0; runtime.updateCancelled = false;
-    if (runtime.tunnel) runtime.machine.route = runtime.tunnel.route;
+    if (runtime.tunnel) { runtime.machine.route = runtime.tunnel.route; viewOnlyFrom(runtime.machine, runtime.tunnel); }
     this.openObserver(runtime, generation);
     this.watchOwnOffer(runtime, generation);
     if (runtime.ssh) runtime.ssh.onExit = () => this.lost(runtime, generation, new Error("SSH connection ended"));
@@ -2541,6 +2541,11 @@ function snapshotAfterStatus(snapshot: SessionSnapshot, message: Extract<ServerM
     const { finish_id: _finish, ...rest } = pane;
     return rest;
   }) };
+}
+
+/** A PC that admitted this one only to watch says so, so no device here is offered writes that PC refuses. */
+function viewOnlyFrom(machine: Machine, tunnel: RelayPcTunnel): void {
+  if (tunnel.role === "watch") machine.view_only = true; else delete machine.view_only;
 }
 
 function pcServerId(machine: Machine): string | undefined {

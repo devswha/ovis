@@ -166,6 +166,8 @@ export function removeRelayPcKey(path: string): void {
 export interface RelayPcTunnel {
   readonly endpoint: { url: string; token: string };
   readonly route: "relay" | "direct";
+  /** what that PC admitted this one as: `watch` for a PC of the account joined through it (a vouched join) */
+  readonly role: "drive" | "watch";
   close(): void;
 }
 
@@ -548,6 +550,7 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   return {
     endpoint: { url: `http://127.0.0.1:${server.port}`, token },
     get route() { return current?.direct === undefined ? "relay" : "direct"; },
+    get role() { return current?.role ?? "drive"; },
     close,
   };
 }

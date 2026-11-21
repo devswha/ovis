@@ -43,6 +43,8 @@ export interface Machine {
    * through the relay. Absent while it is not connected, and for other kinds of PC.
    */
   route?: "relay" | "direct";
+  /** a relay PC that admitted this server only to watch (another PC of the account joined through it): reads pass, writes are refused there */
+  view_only?: true;
   /**
    * The PC's relay ID (server/relay/identity.ts) as its own server has it: the local PC's own, an SSH PC's
    * from its /api/health. Absent where that server has none, or is older. What a device turns its alerts off by.

@@ -38,8 +38,9 @@ export function shellPcRows<T extends { readonly server_id: string; readonly dev
  * The rows left once the PCs this page's PC already lists (the account's, added through the relay) are its groups
  * above, and the account's PCs it is adding (`accountRows`, SidebarAccountPcs.tsx) are rows of their own there.
  */
-export function unlistedShellPcs<T extends { readonly server_id: string }>(pcs: readonly T[], listed: readonly Pick<Machine, "server_id" | "relay">[], accountRows: readonly string[] = []): readonly T[] {
-  const ids = new Set([...listed.flatMap((machine) => [machine.relay?.server_id, machine.server_id]), ...accountRows]);
+export function unlistedShellPcs<T extends { readonly server_id: string }>(pcs: readonly T[], listed: readonly Pick<Machine, "server_id" | "relay" | "view_only">[], accountRows: readonly string[] = []): readonly T[] {
+  // a PC the page's PC only watches keeps this device's own link: on its own page this device may drive it
+  const ids = new Set([...listed.filter((machine) => machine.view_only !== true).flatMap((machine) => [machine.relay?.server_id, machine.server_id]), ...accountRows]);
   return pcs.some((pc) => ids.has(pc.server_id)) ? pcs.filter((pc) => !ids.has(pc.server_id)) : pcs;
 }
 

@@ -245,6 +245,8 @@ export function App() {
   const [updateRemote, setUpdateRemote] = useState(false);
   const { machineDialog, setMachineDialog, addPcPreset, setAddPcPreset, addPcFocusReturn, closeMachineDialog } = useMachineDialog();
   const { newSessionMachineId, setNewSessionMachineId } = useNewSessionMachine();
+  // a PC this one only watches there (Machine.view_only) is drawn as a watching device draws every PC
+  const viewOnly = (machineId: string): boolean => auth?.role === "watch" || machines.find((machine) => machine.id === machineId)?.view_only === true;
   const { health, localFreshness, shownHealth, readLocalHealth } = useLocalHealth();
   const exposure = health?.lan_exposure ?? health?.direct_exposure;
   const exposureDirect = !health?.lan_exposure || health.lan_exposure.direct === true;
@@ -1018,7 +1020,7 @@ export function App() {
             </button>}
           </div>
         ) : note !== null ? null : inbox.shown ? <Brand /> : inMode && selectedPane ? (
-          <ThreadTitle machines={machines} activity={activity} machineId={selectedMachineId} pane={selectedPane} connection={headerConnection} watching={auth?.role === "watch"} severalPcs={sidebarMachines.length > 1} />
+          <ThreadTitle machines={machines} activity={activity} machineId={selectedMachineId} pane={selectedPane} connection={headerConnection} watching={viewOnly(selectedMachineId)} severalPcs={sidebarMachines.length > 1} />
         ) : selectedPane && crumb ? (
           <div className={`context${headerConnection === null ? "" : " has-connection"}${tabsInHeader && selectedWorkspace && !guideShown ? " has-tabs" : ""}`} title={crumb.tooltip}>
             <div className="context-title">
@@ -1267,7 +1269,7 @@ export function App() {
                 )}
                 <main className="terminal-host">
                   <div id={slotPanelId} className="terminal-tabpanel" role={slotPanelLabel === null ? undefined : "tabpanel"} aria-label={slotPanelLabel ?? undefined}>
-                  <PaneCanvas key={machineId} snapshot={slotSnapshot} pane={pane} selectedPaneId={paneId} onSelect={onSelect} onChanged={actions.refresh} actionsRef={active ? paneActionsRef : undefined} watching={auth?.role === "watch"}
+                  <PaneCanvas key={machineId} snapshot={slotSnapshot} pane={pane} selectedPaneId={paneId} onSelect={onSelect} onChanged={actions.refresh} actionsRef={active ? paneActionsRef : undefined} watching={viewOnly(machineId)}
                     mirrored={herdr?.terminal_attach === false || herdr?.terminal_mirror === true}
                     onOpenInHalf={wideScreen && !threadDrawn ? (id, side) => dockSide({ machineId, paneId: id }, side) : undefined}
                     onRecoverUnsent={(target) => openUnsent({ machineId, pane: target })}
@@ -1338,7 +1340,7 @@ export function App() {
           machine={crumb.machine} place={crumb.folder === null ? crumb.workspace : `${crumb.workspace} › ${crumb.folder}`} path={crumb.path}
           session={sessionShort.length > 0 ? sessionShort.join(" · ") : null}
           pcLoad={pcLoadOn(settings, machines) ? <PcLoadStatus key={selectedMachine?.id ?? ""} machine={selectedMachine ?? null} /> : null}
-          watching={auth?.role === "watch"}
+          watching={viewOnly(selectedMachineId)}
           waiting={sessionTally.waiting} onNextWaiting={nextWaiting === null ? null : openNextWaiting}
           connection={headerConnection ?? (connected ? "live" : "lost")}
           connectionWord={headerConnection === "reconnecting" ? t("Reconnecting…") : connected ? t("Connected") : connWord} />}
@@ -1374,7 +1376,7 @@ export function App() {
         onClose={closeNewSession}
         onPending={(pending) => { newSessionPending.current = pending; }}
         onOpenPane={(paneId) => { closeNewSession(); selectTarget(newSessionMachineId, paneId, "terminal"); void load(); }}
-        watching={auth?.role === "watch"}
+        watching={viewOnly(newSessionMachineId)}
         groupKept={(groupOf) => liveGroupKeys(groupOf, machines, hiddenMachines)}
         onCreated={(paneId, agentStarted, messageWaits = false) => {
           closeNewSession();
@@ -1445,7 +1447,7 @@ export function App() {
       }} />}
       {unsentFor && <UnsentTextDialog machines={machines} target={unsentFor} canRecover={unsentFor.pane.agent != null} onClose={closeUnsent} onRecover={recover} />}
       <CommandPalette key={selectedMachineId} machines={sidebarMachines} onSelect={selectTarget} open={paletteOpen} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} snapshot={snapshot} online={selectedMachine?.state === "connected"} selectedPaneId={selectedPaneId}
-        view={terminalPeek !== null ? "terminal" : view} actions={actions} watching={auth?.role === "watch"} inboxMode={inMode} />
+        view={terminalPeek !== null ? "terminal" : view} actions={actions} watching={viewOnly(selectedMachineId)} inboxMode={inMode} />
       <MarkdownLinkMenu />
     </div></AppLayoutContext.Provider></MachineContext.Provider></MachineSessionsProvider>
   );

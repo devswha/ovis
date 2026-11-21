@@ -231,8 +231,10 @@ it("admits the PC's server there as a device that only watches: reads pass throu
   // one row there for every device of A: a Revoke or block of one of them on B could not reach it through A
   const registry = readDeviceRegistry(join(bState, "devices.json"));
   expect(registry.kind === "ok" ? registry.devices.find((device) => device.relay_public_key === started.body.key)?.role : registry.kind).toBe("watch");
-  // A reads B as any PC it lists, connected
+  // A reads B as any PC it lists, connected, and says it only watches there, so a device on A is not offered writes B refuses
   expect(machine).toMatchObject({ kind: "relay", state: "connected", error: null });
+  const roster = await (await fetch(`${aBase}/api/machines`, { headers: { origin: aBase } })).json() as { machines: Machine[] };
+  expect(roster.machines.find((m) => m.id === machine!.id)?.view_only).toBe(true);
   const onB = (method: string, path: string, body?: unknown) => fetch(`${aBase}/api/machines/${machine!.id}/${path}`,
     { method, headers: machineHeaders(aBase), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   expect((await onB("GET", "session")).status).toBe(200);

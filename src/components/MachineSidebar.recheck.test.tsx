@@ -156,3 +156,11 @@ it("offers no Check again for a connected PC or an off PC of the relay, and to a
   expect(recheckButtons()).toHaveLength(0);
   expect(textOf(renderer!.root.find((element) => element.props.className === "machine-off"))).toContain("refused the SSH connection");
 });
+
+it("draws a PC this one only watches there as view only: it says so and offers no new workspace", async () => {
+  await mount([local, relayPc({ state: "connected", error: null, view_only: true })]);
+  const group = renderer!.root.find((element) => element.type === "section" && element.props["aria-label"] === "PC HostHatch");
+  expect(textOf(group)).toContain("View only");
+  const create = group.find((element) => element.type === "button" && typeof element.props.className === "string" && element.props.className.includes("machine-new"));
+  expect(create.props.disabled).toBe(true);
+});

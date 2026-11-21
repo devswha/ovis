@@ -154,5 +154,8 @@ describe("the hosted app's other PCs beside the PCs its PC lists", () => {
     expect(unlistedShellPcs(none, listed)).toBe(none);
     // one of the account's PCs the sidebar is adding (or that is off) is that row, not a link too
     expect(unlistedShellPcs([work, nas, lab], listed, [nas.server_id])).toEqual([]);
+    // a PC the page's PC only watches (a vouched join, view_only): this device keeps its own link, where it drives
+    const watched: Pick<Machine, "server_id" | "relay" | "view_only">[] = [{ relay: { server_id: work.server_id, relay: "wss://relay.ovis.sh" }, view_only: true }];
+    expect(unlistedShellPcs([work, nas], watched)).toEqual([work, nas]);
   });
 });

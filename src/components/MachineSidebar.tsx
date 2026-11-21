@@ -262,7 +262,7 @@ export function MachineSidebar(props: Props) {
     <section className="pcs-sidebar" aria-label={t("PCs")}>
       <div ref={machineList} className="machine-list" id={listId} aria-label={t("PCs and workspaces")}>
         <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
-        {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={headerless && machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
+        {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} watching={props.watching || machine.view_only === true} machine={machine} headerless={headerless && machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
         {/* a driving window on any PC, the phone app and the hosted shell too: the account's PCs this PC does not list yet, added to it one by one */}
         {!props.watching && <SidebarAccountPcs machines={roster} hidden={filter.active} onAdded={props.actions.connectPc} onListed={setAccountRows} />}
         <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>
@@ -463,6 +463,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
           }}
     /> : <span className="machine-name" title={machine.name}>{machine.name}</span>}
     {machine.kind === "local" && <span className="machine-kind" title={t("The computer this app runs on")}>{t("Host")}</span>}
+    {machine.view_only === true && <span className="machine-kind">{t("View only")}</span>}
     {/* where a PC is, beside its name: nothing once it is connected */}
     {!online && <span className={`machine-dot is-${machine.action_required === "setup" || asksWhatToConnect(machine) ? "setup" : away !== null ? "disconnected" : machine.state}`} title={quiet ? dotWords : stateWords} aria-hidden="true" />}
   </>;
