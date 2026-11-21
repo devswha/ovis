@@ -446,6 +446,11 @@ export interface RelayPairingRequest {
    * from when it heard, since its own clock need not match the PC's `expires_at`. Absent from an older server.
    */
   left_ms?: number;
+  /**
+   * A phone on this PC's own network asked over a direct carrier (docs/relay.md, "Joining on the same Wi-Fi"): its
+   * address there. Told to this PC's own window alone, which alone may decide it. Absent otherwise.
+   */
+  lan_address?: string;
 }
 /**
  * The same request as an account member connected through the relay sees it: three candidates

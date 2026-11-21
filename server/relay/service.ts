@@ -21,6 +21,9 @@ import type { DirectCarrierOptions } from "./direct.ts";
 import { RelayLink, relayEnforcesPasses } from "./link.ts";
 import type { RelayLinkOptions } from "./link.ts";
 import { RelayPairingApprovals } from "./pairing-approvals.ts";
+import { LanJoinWindow } from "./lan-join.ts";
+import { advertiseLan } from "./lan-advertise.ts";
+import type { LanService } from "./lan-advertise.ts";
 import { RelayPairCodes } from "./pair-code.ts";
 import { RelayPassKeeper, type RelayPassClock } from "./pass.ts";
 import type { RelayPassNotice } from "./link.ts";
@@ -78,7 +81,7 @@ export interface RelayServiceOptions {
    * Direct connections on this PC's networks while the relay is on (server/relay/direct.ts), unless
    * turned off: the real entrypoint passes `{}`; without it (tests) nothing listens on the network.
    */
-  readonly direct?: Pick<DirectCarrierOptions, "addresses" | "peerAllowed" | "preferredPort" | "refreshMs" | "advertise" | "tailnetIp" | "tailnetAddresses">;
+  readonly direct?: Pick<DirectCarrierOptions, "addresses" | "peerAllowed" | "preferredPort" | "refreshMs" | "advertise" | "tailnetIp" | "tailnetAddresses" | "lanJoinPeer">;
   /** The account service a relay pass comes from (server/relay/pass.ts), or why none can be used; none is asked without it. */
   readonly accountService?: string | Error;
   readonly accountFetch?: (request: Request) => Promise<Response>;
@@ -88,6 +91,8 @@ export interface RelayServiceOptions {
    * staging copy OVIS_RELAY_URL names with OVIS_RELAY_STAGING=1) unless tests name theirs.
    */
   readonly ovisRelays?: readonly string[];
+  /** How this PC is told to phones on its network while a LAN join window is open: multicast DNS unless tests name theirs. */
+  readonly advertiseLan?: (service: LanService) => () => void;
 }
 
 /** Ovis's staging account service (ovis-sh/account `[env.staging]`): the only one whose passes go to a staging relay. */
@@ -164,6 +169,9 @@ export class RelayService {
   readonly relay: string;
   readonly app: string;
   readonly approvals: RelayPairingApprovals;
+  /** a phone on this PC's own network asking to join, while this PC's own window shows the connect-a-phone block */
+  readonly lanJoin = new LanJoinWindow();
+  private stopAdvertising: (() => void) | undefined;
   private stopRevokeAll: (() => void) | undefined;
   private pairCodes: RelayPairCodes | undefined;
   /** This PC's relay pass, kept while the relay is on and is one of Ovis's. */
@@ -181,6 +189,14 @@ export class RelayService {
     this.readSavedIdentity = savedIdentityReader(options.stateDir);
     // the pairing window outlives a restart (pairing-approvals.ts), so it is read from this PC's state
     this.approvals = new RelayPairingApprovals({ path: join(options.stateDir, "relay", "pairing-window.json") });
+    // phones on this network hear of this PC only while its own window lets one join, never otherwise
+    this.lanJoin.subscribe((open) => {
+      this.stopAdvertising?.();
+      this.stopAdvertising = undefined;
+      const carriers = open ? this.directCarrier?.advertised(false).map((carrier) => new URL(carrier)) ?? [] : [];
+      if (carriers[0] === undefined) return;
+      this.stopAdvertising = (options.advertiseLan ?? advertiseLan)({ name: hostname().slice(0, 63), port: Number(carriers[0].port), addresses: carriers.map((url) => url.hostname) });
+    });
     const named = options.relay ?? process.env["OVIS_RELAY_URL"];
     const origin = named === undefined ? undefined : relayEndpoint(named, "wss:");
     // A test PC on a staging copy of Ovis's relay (relay/README.md, "Staging"), and only with Ovis's staging account
@@ -401,7 +417,7 @@ export class RelayService {
 
   private startDirect(services: RequestServices, identity: RelayIdentity): void {
     if (!this.options.direct || !this.directAvailable || this.directCarrier || !this.directEnabled()) return;
-    this.directCarrier = new DirectCarrier({ ...this.options.direct, identity, services, port: this.port, sessions: this.signedIn,
+    this.directCarrier = new DirectCarrier({ ...this.options.direct, identity, services, port: this.port, sessions: this.signedIn, relay: () => this.advertised,
       ...(this.options.clock ? { clock: this.options.clock } : {}), ...(this.options.serverVersion ? { serverVersion: this.options.serverVersion } : {}) });
     this.directStarting = this.directCarrier.start();
   }
@@ -409,10 +425,21 @@ export class RelayService {
   private stopDirect(): Promise<void> {
     const direct = this.directCarrier;
     this.directCarrier = undefined;
+    // nothing listens for a phone on this network any more
+    this.lanJoin.close();
     return direct?.stop() ?? Promise.resolve();
   }
 
   private directCarriers(tailnet: boolean): readonly string[] { return this.directCarrier?.advertised(tailnet) ?? []; }
+
+  /**
+   * Where a phone on this PC's own network asks to join (`<address>:<port>`): the first LAN direct carrier, the one the
+   * default route leaves from. Null while the relay or direct connections are off, or this PC listens on no LAN address.
+   */
+  lanJoinAddress(): string | null {
+    const carrier = this.directCarrier?.advertised(false)[0];
+    return carrier === undefined ? null : new URL(carrier).host;
+  }
 
   private regionPath(): string { return join(this.options.stateDir, "relay", "region.json"); }
 
@@ -459,7 +486,7 @@ export class RelayService {
     this.port = port;
     // "revoke all" ends what the owner had invited too, not only the devices already let in
     this.stopRevokeAll?.();
-    this.stopRevokeAll = services.devices.onRevokeAll(() => this.approvals.closeWindow());
+    this.stopRevokeAll = services.devices.onRevokeAll(() => { this.approvals.closeWindow(); this.lanJoin.close(); });
     this.blocked = services.serveOnly ? "serve_only" : null;
     try {
       let saved: unknown;
@@ -538,6 +565,7 @@ export class RelayService {
     this.enabled = false;
     // turned off by the owner, unlike shutdown(): the window does not wait for the relay to come back
     this.approvals.closeWindow();
+    this.lanJoin.close();
     await this.disconnect();
     return this.status();
   }
@@ -644,6 +672,7 @@ export class RelayService {
     try {
       // a window opened for the old key's link does not carry over to the new key
       this.approvals.closeWindow();
+      this.lanJoin.close();
       // nor does a code its offers carried: it ends, and the rows that wait to link under it, so an approval asked
       // under the old identity writes no member after the new one
       services.devices.endPairing();

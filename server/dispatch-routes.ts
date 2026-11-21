@@ -9,6 +9,7 @@ export const RELAY_CONTROLS = {
   link: "/api/relay/link", close: "/api/relay/link/close",
   start: "/api/relay/start", stop: "/api/relay/stop", reset: "/api/relay/reset-identity",
   direct: "/api/relay/direct", pairing: "/api/relay/pairing", join: "/api/relay/join",
+  lanJoin: "/api/relay/lan-join", lanJoinClose: "/api/relay/lan-join/close",
 } as const;
 
 /** The Tailscale changes this PC's own window alone may ask for (dispatch.ts ownWindow): serve Ovis on the tailnet, open the app. */

@@ -2497,7 +2497,7 @@ export class DeviceStore {
    * account member `addedBy` through the relay. No code is spent. `admit` as in pairRelay: asked last and only for
    * a key new to this PC, false makes no device and counts no failure.
    */
-  pairRelayApproved(label: string, publicKey: string, approval: { path: PairingPath; addedBy?: string; id?: string }, now = Date.now(), admit?: () => boolean): { device: DeviceMatch } | null {
+  pairRelayApproved(label: string, publicKey: string, approval: { path: PairingPath; addedBy?: string; id?: string; onScreen?: true }, now = Date.now(), admit?: () => boolean): { device: DeviceMatch } | null {
     const pairingHere = approval.addedBy === undefined;
     if (!this.admits(publicKey, undefined, { pairingHere })) return null;
     this.assertRelayPairing(approval.path, now);
@@ -2528,7 +2528,7 @@ export class DeviceStore {
     // another PC of the account's server only watches here (docs/account.md, "Adding a PC of your account"): it is one row for
     // every device of that PC, and a Revoke or block of one of them here cannot reach it through that PC
     const role = approval.path === "vouched" ? "watch" : "drive";
-    const paired = this.enrollRelay(label, publicKey, now, false, { addedBy: approval.addedBy, approvedIn: approval.addedBy === undefined ? undefined : this.approverAccount(approval.addedBy) ?? undefined, digits: true, pairingHere, role }, id);
+    const paired = this.enrollRelay(label, publicKey, now, false, { addedBy: approval.addedBy, approvedIn: approval.addedBy === undefined ? undefined : this.approverAccount(approval.addedBy) ?? undefined, digits: true, pairingHere, role, onScreen: approval.onScreen === true && approval.addedBy === undefined }, id);
     if (paired === null) return null;
     // written after the row, so a stop between the two leaves a row newer than its tombstone: the next start ends that
     // Revoke (finishInterruptedWrites, or with the flag on RemovalEvidence.takeIn)
@@ -2578,7 +2578,7 @@ export class DeviceStore {
     return this.isAccountApprover(id) ? this.devices.find((d) => d.id === id)?.account ?? null : null;
   }
 
-  private enrollRelay(label: string, publicKey: string, now: number, codeSpent: boolean, { addedBy, approvedIn, digits, pairingHere, role = "drive" }: { addedBy?: string | undefined; approvedIn?: string | undefined; digits?: boolean; pairingHere: boolean; role?: DeviceRole }, id = randomBytes(8).toString("hex")): { device: DeviceMatch } | null {
+  private enrollRelay(label: string, publicKey: string, now: number, codeSpent: boolean, { addedBy, approvedIn, digits, pairingHere, role = "drive", onScreen = false }: { addedBy?: string | undefined; approvedIn?: string | undefined; digits?: boolean; pairingHere: boolean; role?: DeviceRole; onScreen?: boolean }, id = randomBytes(8).toString("hex")): { device: DeviceMatch } | null {
     const device: StoredDevice = {
       id, label: normalizeLabel(label, "Device"), role,
       token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: publicKey,
@@ -2587,6 +2587,8 @@ export class DeviceStore {
       ...(addedBy === undefined ? {} : { added_by: addedBy }),
       // what a later link reads to tell a member's approval from a code a device outside the account started
       ...(addedBy !== undefined && approvedIn !== undefined ? { member_approved_in: approvedIn } : {}),
+      // a LAN join whose digits the owner compared and allowed on this PC's own window is paired at this PC
+      ...(onScreen && this.pc !== null ? { origin: this.pc.admit("pc", "digits", null, now) } : {}),
     };
     const enrolled = !codeSpent && addedBy !== undefined && approvedIn !== undefined
       ? this.enrollApproved(device, this.relayKeyOf(addedBy), now)

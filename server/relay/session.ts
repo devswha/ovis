@@ -98,6 +98,12 @@ export interface RelaySessionOptions {
    */
   readonly signInOnly?: boolean;
   /**
+   * On a direct carrier, the peer's address when it is on this PC's own network (lan-join.ts lanJoinPeer): such a
+   * peer may pair by comparing digits while this PC's own window holds the LAN join window open. Never set for the
+   * relay or a tailnet peer.
+   */
+  readonly lanPeer?: string;
+  /**
    * Asked once a pairing on this carrier would make a device new to this PC (a code that holds, or a comparison both
    * people confirmed), before the device is made: true when its relay refuses new client sessions to this PC now
    * (server/relay/link.ts). The session then makes no device and says nothing more: the relay closes the client.
@@ -128,7 +134,7 @@ export class RelaySession {
   private welcomed = false;
   private sas: {
     label: string; publicKey: string; commitment: Uint8Array; pcNonce: Uint8Array; expiresAt: number;
-    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; ended: boolean; membersOnly: boolean; localOnly: boolean; firstJoin: boolean; closes: number; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
+    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; ended: boolean; membersOnly: boolean; localOnly: boolean; firstJoin: boolean; closes: number; lan: boolean; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
   } | undefined;
   private device: DeviceMatch | undefined;
   /** The key this session's device signed in or paired with: a `link` must start from it (docs/account.md). */
@@ -343,7 +349,7 @@ export class RelaySession {
         if (this.state !== "hello") { this.close("protocol_error"); return; }
         if (!frame.payload.versions.includes(1)) { this.close("unsupported_version"); return; }
         // selected only where it can finish: a protected channel to bind the digits to
-        if (frame.payload.features.includes(PAIR_SAS_FEATURE) && !this.options.signInOnly) this.sasBinding = channelBinding(this.options.channel);
+        if (frame.payload.features.includes(PAIR_SAS_FEATURE) && (!this.options.signInOnly || this.lanJoinOffered())) this.sasBinding = channelBinding(this.options.channel);
         this.hinting = this.options.relayHints !== undefined && frame.payload.features.includes(RELAY_HINTS);
         this.directing = this.options.directCarriers !== undefined && frame.payload.features.includes(DIRECT_CARRIER);
         this.tailnet = this.directing && frame.payload.features.includes(DIRECT_TAILNET);
@@ -430,10 +436,14 @@ export class RelaySession {
         return;
       }
       case FrameType.PAIR_REQUEST: {
-        // a direct carrier pairs nothing, whatever was offered: refused as a sign-in failure, before the binding is looked at
-        if (this.options.signInOnly) { this.close("auth_failed"); return; }
+        // a direct carrier pairs nothing, whatever was offered, but a phone on this PC's own network while the owner
+        // holds the LAN join window open: refused as a sign-in failure, before the binding is looked at
+        const lan = this.options.signInOnly === true;
+        if (lan && !this.lanJoinAllowed()) { this.close("auth_failed"); return; }
         if (this.state !== "auth" || !this.sasBinding) { this.close("protocol_error"); return; }
         if (this.options.services.serveOnly) { this.close("auth_failed"); return; }
+        // the window's one comparison: a second phone, or one after the first ended, is refused before any prompt
+        if (lan && !this.options.services.relay.lanJoin.claim(this.sessionId, () => { if (this.pairing) this.close("auth_failed"); })) { this.close("auth_failed"); return; }
         // nobody asked for a link lately: refused before any prompt, and not counted, since no person was asked,
         // unless it is an account join the account service has seen (accountJoin, docs/account.md design 5.3).
         // Another PC of the account's server is taken only that way, window or not: its admission is its whole invitation
@@ -446,8 +456,9 @@ export class RelaySession {
         let membersOnly = false;
         let firstJoin = false;
         // taken under the PC's own add-me screen: this comparison stays the PC's to decide, whenever its digits show
-        const localOnly = this.options.services.relay.approvals.localOnlyOpen();
-        if (this.intent === "vouched" || !this.options.services.relay.approvals.windowOpen()) {
+        // a LAN join is this PC's own to decide, on its own window, whatever an account's members could approve
+        const localOnly = lan || this.options.services.relay.approvals.localOnlyOpen();
+        if (!lan && (this.intent === "vouched" || !this.options.services.relay.approvals.windowOpen())) {
           this.state = "verifying";
           const joined = await this.accountJoin(frame.payload.public_key);
           if (joined === null) { this.close("auth_failed"); return; }
@@ -462,7 +473,7 @@ export class RelaySession {
         this.state = "pair-commit";
         this.sas = {
           label: frame.payload.label, publicKey: frame.payload.public_key, commitment: fromBase64Url(frame.payload.commitment),
-          pcNonce: randomPairNonce(), expiresAt: Date.now() + PAIR_APPROVAL_MS, phoneConfirmed: false, approved: false, ended: false, membersOnly, localOnly, firstJoin, closes: this.options.services.relay.approvals.closes,
+          pcNonce: randomPairNonce(), expiresAt: Date.now() + PAIR_APPROVAL_MS, phoneConfirmed: false, approved: false, ended: false, membersOnly, localOnly, firstJoin, closes: this.options.services.relay.approvals.closes, lan,
         };
         this.sas.cancelDeadline = this.clock.setTimeout(() => { if (this.pairing) this.close("timeout"); }, PAIR_APPROVAL_MS);
         // revoking every device also ends a comparison under way, even one the owner already approved
@@ -483,7 +494,7 @@ export class RelaySession {
         if (!commitmentHolds(sas.commitment, this.sasBinding, sas.publicKey, phoneNonce)) { this.close("auth_failed"); return; }
         // the window it was taken under was closed while this phone held its reveal: no prompt after a close
         // (a join shown to account members only never depended on the window)
-        if (!sas.membersOnly && this.options.services.relay.approvals.closes !== sas.closes) { this.close("auth_failed"); return; }
+        if (!this.windowStillHolds(sas)) { this.close("auth_failed"); return; }
         // a pause that began while this phone held its reveal still keeps its prompt off the owner's screen
         this.options.services.devices.assertRelayPairing(this.path);
         if (proof && (!this.vouchedEligible(sas.publicKey) || !this.options.services.relay.approvals.takeAccountJoin())) { this.close("auth_failed"); return; }
@@ -491,7 +502,8 @@ export class RelaySession {
           pairDigits(this.sasBinding, sas.publicKey, phoneNonce, sas.pcNonce), sas.expiresAt,
           // a PC vouched for is asked as "pair this PC": it joins this PC alone, and the approver's app signs nothing for it;
           // marked vouched, so that app shows who is asking and checks the admission, as for an account join
-          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", ...(proof ? { provenServerId: proof.id } : {}), firstJoin: sas.firstJoin });
+          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", ...(proof ? { provenServerId: proof.id } : {}), firstJoin: sas.firstJoin,
+            ...(sas.lan && this.options.lanPeer !== undefined ? { lan: this.options.lanPeer } : {}) });
         if (!asked) { this.close("auth_failed"); return; }
         this.state = "pair-wait";
         sas.withdraw = asked.withdraw;
@@ -532,7 +544,9 @@ export class RelaySession {
     // an answer that lands after the deadline, before its timer ran, makes no device either
     if (Date.now() > sas.expiresAt) { this.close("timeout"); return; }
     // approved on this PC, then the window it was taken under was closed before the phone confirmed: no device after a close
-    if (!sas.membersOnly && this.options.services.relay.approvals.closes !== sas.closes) { this.close("auth_failed"); return; }
+    if (!this.windowStillHolds(sas)) { this.close("auth_failed"); return; }
+    // a lock or a log that fails closed since the owner approved lets no LAN join in
+    if (sas.lan && this.lanJoinBarred()) { this.close("auth_failed"); return; }
     this.state = "verifying";
     // a member's remote approval never lets in a key this PC holds back (removed elsewhere, or a remove for it waits here);
     // only a pairing approved on this PC itself does
@@ -548,7 +562,7 @@ export class RelaySession {
       }
     }
     let device: DeviceMatch | undefined;
-    try { device = devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id, ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }) }, undefined, this.admitNewDevice)?.device; }
+    try { device = devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id, ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }), ...(sas.lan ? { onScreen: true as const } : {}) }, undefined, this.admitNewDevice)?.device; }
     catch (error) {
       if (error instanceof PairingRateLimitedError) { this.close("auth_failed"); return; }
       throw error;
@@ -570,7 +584,30 @@ export class RelaySession {
     sas.stopRevokeAll?.();
     sas.stopApprover?.();
     sas.withdraw?.();
+    // however a LAN join ended, its window ends with it: nobody tries again in it
+    if (sas.lan) this.options.services.relay.lanJoin.finish(this.sessionId);
     if (!counted && (this.intent !== "vouched" || sas.withdraw)) this.options.services.devices.noteRelayFailure(this.path);
+  }
+
+  /** Whether the window a comparison was taken under still stands: the LAN join's own, or the relay's pairing window. */
+  private windowStillHolds(sas: NonNullable<RelaySession["sas"]>): boolean {
+    if (sas.lan) return this.options.services.relay.lanJoin.holds(this.sessionId);
+    return sas.membersOnly || this.options.services.relay.approvals.closes === sas.closes;
+  }
+
+  /** A lock, or a store that fails closed (strict): no LAN join is taken, shown or let in. */
+  private lanJoinBarred(): boolean {
+    return this.options.services.safetyLog?.state().locked === true || this.options.services.devices.failsClosed;
+  }
+
+  /** Selected in HELLO: pair-sas on a direct carrier, for a peer on this PC's network while a LAN join may be asked. */
+  private lanJoinOffered(): boolean {
+    return this.options.lanPeer !== undefined && this.options.services.relay.lanJoin.available() && !this.lanJoinBarred();
+  }
+
+  /** PAIR_REQUEST on a direct carrier: a LAN peer, asking for this PC only, while the window is open and nothing bars it. */
+  private lanJoinAllowed(): boolean {
+    return this.lanJoinOffered() && this.intent === "pc" && this.sasBinding !== undefined;
   }
 
   /** A plain tap never promotes an existing row, bypasses a denial, or outlives its exact admission. */

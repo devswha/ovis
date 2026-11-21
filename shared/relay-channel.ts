@@ -147,6 +147,11 @@ export interface RelayChannelOptions {
    */
   readonly direct?: string;
   /**
+   * With `direct`: a phone on the PC's own Wi-Fi asking to join it there (docs/relay.md, "Joining on the same Wi-Fi"),
+   * by comparing digits, which a direct carrier takes only while the PC's own window lets one join.
+   */
+  readonly lanJoin?: boolean;
+  /**
    * Offer ACCOUNT_OPENS_ALL_FEATURE in HELLO (device table T34, G5): a client signing in with its registered sign-in
    * key, so a PC with the release on may answer held, not_listed or admission instead of a bare auth failure.
    */
@@ -209,7 +214,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
   options.signal?.throwIfAborted();
   const store = options.store;
   const device = await getDevice(offer, store, options.label, options.accountKey);
-  if (direct !== undefined && device.device_id === null) throw new DirectCarrierUnusableError();
+  if (direct !== undefined && device.device_id === null && options.lanJoin !== true) throw new DirectCarrierUnusableError();
   options.signal?.throwIfAborted();
   const socket = (options.socket ?? ((address) => new WebSocket(address)))(url.href);
   socket.binaryType = "arraybuffer";

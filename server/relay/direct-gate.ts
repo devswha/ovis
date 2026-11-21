@@ -20,6 +20,8 @@ const LOW_BYTES = 256 * 1024;
 /** The header the gate names the peer in, and the one that proves the gate added it. */
 export const PEER_HEADER = "x-ovis-direct-peer";
 export const GATE_HEADER = "x-ovis-direct-gate";
+/** The address of the gate a request came in on, so the carrier tells a LAN listener's peers from the tailnet one's. */
+export const LISTEN_HEADER = "x-ovis-direct-listen";
 
 export interface GateOptions {
   readonly hostname: string;
@@ -31,6 +33,11 @@ export interface GateOptions {
   /** shared by every gate of one carrier: connections per address and in all */
   readonly counts: Map<string, number>;
   readonly connect?: typeof Bun.connect;
+  /**
+   * `GET /v1/offer`: what a phone on this network reads before it asks to join (lan-join.ts), answered here by the gate
+   * itself, or null for a 404. Never to a browser page (an `Origin`).
+   */
+  readonly offer?: (source: string) => string | null;
 }
 
 interface Side {
@@ -196,15 +203,24 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
         const answer = (status: string): void => { socket.write(refusal(status)); end(socket); };
         if (!head) { answer("400 Bad Request"); return; }
         const path = head.line.split(" ")[1] ?? "";
+        if (/^\/v1\/offer(\?|$)/.test(path) && head.line.startsWith("GET ")) {
+          const offer = head.headers.has("origin") ? null : options.offer?.(conn.source) ?? null;
+          if (offer === null) { answer("404 Not Found"); return; }
+          const body = new TextEncoder().encode(offer);
+          socket.write(new TextEncoder().encode(`HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncache-control: no-store\r\nconnection: close\r\ncontent-length: ${body.byteLength}\r\n\r\n`));
+          socket.write(body);
+          end(socket);
+          return;
+        }
         if (!/^\/v1\/ws(\?|$)/.test(path)) { answer("404 Not Found"); return; }
         // a browser page always names its origin; the apps' sockets name none
         if (head.headers.has("origin")) { answer("403 Forbidden"); return; }
         if (head.headers.get("upgrade")?.toLowerCase() !== "websocket" || !head.headers.has("sec-websocket-key")) { answer("426 Upgrade Required"); return; }
         const kept = head.raw.filter((header) => {
           const name = header.slice(0, header.indexOf(":")).trim().toLowerCase();
-          return name !== PEER_HEADER && name !== GATE_HEADER;
+          return name !== PEER_HEADER && name !== GATE_HEADER && name !== LISTEN_HEADER;
         });
-        const rebuilt = [head.line, ...kept, `${PEER_HEADER}: ${conn.source}`, `${GATE_HEADER}: ${options.secret}`, "", ""].join("\r\n");
+        const rebuilt = [head.line, ...kept, `${PEER_HEADER}: ${conn.source}`, `${LISTEN_HEADER}: ${options.hostname}`, `${GATE_HEADER}: ${options.secret}`, "", ""].join("\r\n");
         const after = Buffer.concat(conn.head).subarray(stop + 4);
         conn.head = [];
         if (after.byteLength > 0) { end(socket); return; }

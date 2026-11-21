@@ -11,6 +11,11 @@ import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetRegistryU
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
  * the request came from, null for this PC itself: it holds the pairing code an offer or a typed code gives it.
  */
+/** A lock, or a store that fails closed (strict): no phone on this PC's network may join (lan-join.ts). */
+function lanJoinBarred(context: ServerContext): boolean {
+  return context.services.safetyLog?.state().locked === true || context.services.devices.failsClosed;
+}
+
 export async function handleRelayRequest(request: Request, pathname: string, context: ServerContext, caller: string | null = null, local = false, own = false): Promise<Response> {
   const service = context.services.relay;
   const reply = (body: unknown, status = 200) => jsonResponse(body, status, { "cache-control": "no-store" });
@@ -25,7 +30,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
   if (pathname === "/api/relay/pairings" && request.method === "GET") {
     setRequestRoute("/api/relay/pairings");
     if (peer.kind === "relay") return remoteApprover ? reply({ pairings: service.approvals.remoteList() }) : fail("account_required", "Approve pairings on this PC, or from a device linked to your account.", 403);
-    return reply({ pairings: service.approvals.list() });
+    return reply({ pairings: service.approvals.list(undefined, own) });
   }
   // an account join taken outside the pairing window, listed for this PC's own window alone and never with its digits
   if (pathname === "/api/relay/joins" && request.method === "GET") {
@@ -130,6 +135,19 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         // a query string is refused for every relay control (updateRequestAllowed), so the flag travels as a header,
         // which another site cannot set without a preflight the PC never answers
         return reply(service.pairingLink({ localOnly: request.headers.get("x-ovis-local-only") === "1" }));
+      case RELAY_CONTROLS.lanJoin: {
+        setRequestRoute("/api/relay/lan-join");
+        // only the connect-a-phone block in this PC's own window opens it, never while locked or strict
+        if (!own) return fail("own_window_required", "Let a phone on this Wi-Fi join from this PC's own window.", 403);
+        if (lanJoinBarred(context)) return fail("lan_join_locked", "This PC is locked; it lets no phone join until it is unlocked.", 403);
+        const address = service.lanJoinAddress();
+        if (address === null) return reply({ address: null });
+        return reply({ address, window_id: service.lanJoin.open() });
+      }
+      case RELAY_CONTROLS.lanJoinClose:
+        setRequestRoute("/api/relay/lan-join/close");
+        service.lanJoin.close(request.headers.get("x-ovis-window") ?? undefined);
+        return reply({ ok: true });
       case RELAY_CONTROLS.close:
         setRequestRoute("/api/relay/link/close");
         // Automatic cleanup may name its own window. A stale close has no effect.
@@ -141,6 +159,11 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (body instanceof Response) return body;
         if (typeof body.id !== "string" || (body.decision !== "approve" && body.decision !== "decline")) {
           return fail("invalid_relay_pairing", "Send the pairing's id and a decision of approve or decline.", 400);
+        }
+        // a phone on this PC's network is let in from this PC's own window alone, and never while locked or strict
+        if (service.approvals.isLan(body.id)) {
+          if (!own) return fail("own_window_required", "Allow a phone on this Wi-Fi in this PC's own window.", 403);
+          if (lanJoinBarred(context)) return fail("lan_join_locked", "This PC is locked; it lets no phone join until it is unlocked.", 403);
         }
         if (!service.approvals.decide(body.id, body.decision === "approve")) {
           return fail("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);

@@ -5,7 +5,7 @@ import type { MachineEventDocument } from "./machine-events.ts";
 import type { DevicePairedEvent } from "../shared/protocol.ts";
 
 /** Pairing events visible to this browser's authorized machine-event document. */
-export function machinePairingEvents({ services, peer }: ServerContext, access: Access, keys: readonly string[]): NonNullable<MachineEventDocument["pairings"]> {
+export function machinePairingEvents({ services, peer }: ServerContext, access: Access, keys: readonly string[], own = false): NonNullable<MachineEventDocument["pairings"]> {
   const { devices, joins, pendingRedemptions, relay } = services;
   const deviceId = access.level === "full" ? access.device?.id : undefined;
   const openAccess = access.level === "full" && access.via === "open";
@@ -24,7 +24,7 @@ export function machinePairingEvents({ services, peer }: ServerContext, access: 
     // Direct approvers see the digits; drive account members on the relay get three candidates instead.
     const approver = driving && access.via !== "relay" && access.via !== "portal";
     const remoteApprover = peer.kind === "relay" && devices.isAccountApproverSession(peer.device.id, peer.key);
-    const stopRelay = approver ? relay.approvals.subscribe((list) => listener({ type: "relay-pairings", pairings: list }))
+    const stopRelay = approver ? relay.approvals.subscribe((list) => listener({ type: "relay-pairings", pairings: list }), own)
       : remoteApprover ? relay.approvals.subscribeRemote((list) => listener({ type: "remote-pairings", pairings: list })) : undefined;
     // A window that lost the right to approve needs to clear its prompts.
     if (!approver) listener({ type: "relay-pairings", pairings: [] });

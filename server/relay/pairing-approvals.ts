@@ -41,6 +41,8 @@ interface Waiting {
    * this PC's own window alone lists it with its digits and decides it by a tap (`decideOwn`), never a member
    */
   firstJoin: boolean;
+  /** a phone on this PC's own network asked over a direct carrier (lan-join.ts): this PC's own window alone sees and decides it */
+  lan: boolean;
   choices: [string, string, string];
   finish: (decision: PairingDecision) => void;
 }
@@ -236,9 +238,12 @@ export class RelayPairingApprovals {
    */
   windowOpen(now = this.now()): boolean { return now < this.windowUntil; }
 
-  /** `left_ms` is counted on each telling, so a window whose clock differs from this PC's still counts down right. */
-  list(now = this.now()): RelayPairingRequest[] {
-    return [...this.waiting.values()].filter(({ membersOnly }) => !membersOnly)
+  /**
+   * `left_ms` is counted on each telling, so a window whose clock differs from this PC's still counts down right.
+   * `own`: told to this PC's own window, the only one shown a LAN join.
+   */
+  list(now = this.now(), own = true): RelayPairingRequest[] {
+    return [...this.waiting.values()].filter(({ membersOnly, lan }) => !membersOnly && (own || !lan))
       .map(({ request, expiresAt }) => ({ ...request, left_ms: Math.max(0, expiresAt - now) }));
   }
 
@@ -304,11 +309,15 @@ export class RelayPairingApprovals {
   }
 
   /** Told the whole list at once, so a window that reconnects drops what was decided meanwhile, then on every change. */
-  subscribe(listener: (pairings: RelayPairingRequest[]) => void): () => void {
-    this.listeners.add(listener);
-    listener(this.list());
-    return () => { this.listeners.delete(listener); };
+  subscribe(listener: (pairings: RelayPairingRequest[]) => void, own = true): () => void {
+    const told = own ? listener : (pairings: RelayPairingRequest[]) => listener(pairings.filter((pairing) => pairing.lan_address === undefined));
+    this.listeners.add(told);
+    told(this.list());
+    return () => { this.listeners.delete(told); };
   }
+
+  /** Whether `id` waits as a LAN join: decided on this PC's own window alone (routes.ts). */
+  isLan(id: string): boolean { return this.waiting.get(id)?.lan === true; }
 
   subscribeRemote(listener: (pairings: RemotePairingRequest[]) => void): () => void {
     this.remoteListeners.add(listener);
@@ -317,7 +326,7 @@ export class RelayPairingApprovals {
   }
 
   /** Null when MAX_PENDING_APPROVALS are already waiting. `withdraw` ends it unapproved (the phone left, or time ran out). */
-  ask(label: string, digits: string, expiresAt: number, device: { intent: PairingIntent; key: string; deviceId: string; membersOnly?: boolean; localOnly?: boolean; vouched?: boolean; provenServerId?: string; firstJoin?: boolean } = { intent: "pc", key: "", deviceId: "" }): { decision: Promise<PairingDecision>; withdraw: () => void } | null {
+  ask(label: string, digits: string, expiresAt: number, device: { intent: PairingIntent; key: string; deviceId: string; membersOnly?: boolean; localOnly?: boolean; vouched?: boolean; provenServerId?: string; firstJoin?: boolean; lan?: string } = { intent: "pc", key: "", deviceId: "" }): { decision: Promise<PairingDecision>; withdraw: () => void } | null {
     if (this.waiting.size >= MAX_PENDING_APPROVALS) return null;
     const id = randomBytes(8).toString("hex");
     const decided = Promise.withResolvers<PairingDecision>();
@@ -329,8 +338,9 @@ export class RelayPairingApprovals {
     // fixed when the phone asked (session.ts), so a window that closes before its digits are shown changes nothing
     // a first join is this PC's own as well: no member that joins meanwhile may decide it
     const firstJoin = device.firstJoin ?? false;
-    const localOnly = firstJoin || (!(device.membersOnly ?? false) && (device.localOnly ?? this.localOnlyOpen()));
-    this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent, ...(localOnly ? { local_only: true as const } : {}) },
+    const lan = device.lan !== undefined;
+    const localOnly = firstJoin || lan || (!(device.membersOnly ?? false) && (device.localOnly ?? this.localOnlyOpen()));
+    this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent, ...(localOnly && !lan ? { local_only: true as const } : {}), ...(lan ? { lan_address: device.lan } : {}) }, lan,
       askedAt: this.now(), expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, vouched: device.vouched ?? false, ...(device.provenServerId ? { provenServerId: device.provenServerId } : {}), firstJoin, choices: decoys(digits), finish });
     this.changed();
     return { decision: decided.promise, withdraw: () => finish({ approved: false }) };

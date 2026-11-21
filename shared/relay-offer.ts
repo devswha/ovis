@@ -6,6 +6,7 @@
  */
 import { importPublicKey } from "./relay-e2ee.ts";
 import { SERVER_ID_PATTERN } from "./relay-id.ts";
+import { isDirectCarrier, isTailnetCarrier } from "./relay-mux.ts";
 
 export { SERVER_ID_PATTERN };
 
@@ -19,6 +20,11 @@ export interface RelayOffer {
   name?: string;
   /** 1: the PC lets a device that pairs with this code link only once the account service holds its admission */
   admission?: 1;
+  /**
+   * A PC found on the phone's own Wi-Fi (docs/relay.md, "Joining on the same Wi-Fi"): its direct carrier
+   * (`ws://<private IPv4>:<port>`), the only way the first pairing of this offer goes, by comparing digits. Never with a code.
+   */
+  lan?: string;
 }
 
 const MAX_PAYLOAD_CHARS = 2048;
@@ -57,10 +63,12 @@ export function validateOffer(value: unknown): RelayOffer {
   if (o.code !== undefined && (typeof o.code !== "string" || !/^\d{6}$/.test(o.code))) throw new Error("Invalid offer code");
   if (o.name !== undefined && (typeof o.name !== "string" || o.name.length > MAX_NAME_CHARS)) throw new Error("Invalid offer name");
   if (o.admission !== undefined && o.admission !== 1) throw new Error("Invalid offer admission");
+  if (o.lan !== undefined && (typeof o.lan !== "string" || !isDirectCarrier(o.lan) || isTailnetCarrier(o.lan) || o.code !== undefined)) throw new Error("Invalid offer lan");
   const offer: RelayOffer = { v: 1, server_id: o.server_id, server_public_key: o.server_public_key, relay: o.relay };
   if (o.code !== undefined) offer.code = o.code as string;
   if (o.name !== undefined) offer.name = o.name as string;
   if (o.admission === 1) offer.admission = 1;
+  if (o.lan !== undefined) offer.lan = o.lan as string;
   return offer;
 }
 

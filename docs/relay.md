@@ -1121,7 +1121,9 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   the handshake, so an address is only a hint where to try. There is no TLS: Noise already proves
   the PC and protects the records. Someone on the network sees the records' sizes and timing.
 - **Signing in only.** Nothing pairs there: a code or a comparison of digits sent on a direct
-  carrier is refused with `auth_failed`, and the code stays unspent. Pairing stays on the relay.
+  carrier is refused with `auth_failed`, and the code stays unspent. Pairing stays on the relay,
+  but for one comparison while this PC's own window lets a phone on its Wi-Fi join
+  ([Joining on the same Wi-Fi](#joining-on-the-same-wi-fi)).
 - **Told inside the channel.** A phone that offers `direct-carrier` in `HELLO` is told in
   `AUTH_OK` `direct`: up to four `ws://<private IPv4>:<port>` addresses, checked on both ends. It
   comes from the PC the phone authenticated, so the relay cannot add an address. An older phone or
@@ -1183,6 +1185,47 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   bind of a network address shows Windows' own firewall prompt; declining it leaves the relay as
   the only way in.
 
+## Joining on the same Wi-Fi
+
+A phone on the PC's own Wi-Fi can join it without a QR code or a pairing code. In the PC's own window,
+**Add a connection → Direct** shows one line: the address phones on this Wi-Fi reach the PC at (its first
+LAN direct carrier, `<IPv4>:<port>`), or **This PC's same Wi-Fi connection is off** where the PC listens on
+no LAN address (the relay or direct connections off, no private interface). That block is the invitation:
+
+1. **A window while the block shows.** Showing it opens a ten-minute window (`POST /api/relay/lan-join`, this
+   PC's own window only, else 403 `own_window_required`; 403 `lan_join_locked` while the PC is locked or its
+   store fails closed). Leaving the block ends it (`POST /api/relay/lan-join/close`), and so does the first
+   decision. Outside it a comparison on a direct carrier is refused with `auth_failed` before any prompt, as
+   ever, so nobody can raise one the owner did not invite. It is held in memory: a restart ends it.
+2. **Listed while it is open.** Meanwhile the PC advertises `_ovis._tcp` over multicast DNS
+   ([`server/relay/lan-advertise.ts`](../server/relay/lan-advertise.ts)), with its name, the carrier's port
+   and the addresses it is on, nothing else, and takes it back (TTL 0) when the window ends. It answers
+   `GET /v1/offer` on the carrier with what a link without a code holds (`server_id`, public key, relay,
+   name), only then and only to a peer on its network, never to a page that names an `Origin`.
+3. **The phone finds it.** The Android app's connect screen, on Direct, lists the PCs it finds
+   (NsdManager, `HerdrShell findLanPcs`) at private IPv4 addresses only; a tap reads that PC's offer
+   (`lanOffer`) and opens it with `lan: ws://<address>:<port>`, which the hosted shell pairs over that
+   carrier alone. A typed address still works without the list.
+4. **Digits from this key exchange.** The phone runs Noise against the key the offer named and compares
+   digits exactly as for a link without a code ([Pairing by comparing digits](#who-gets-in)): commitment,
+   challenge, reveal, digits from the channel binding. Someone on the network who hands the phone its
+   own key runs two handshakes, so a comparison it passes on is refused at the reveal, and one it runs
+   with each end shows different digits on the two screens.
+5. **Who may ask.** Only a peer on the PC's own network, as the carrier's socket sees it: RFC 1918,
+   IPv4 link-local, IPv6 unique local or link-local, never a tailnet address (Tailscale's IPv4 range
+   or its `fd7a:115c:a1e0::/48`), a public one or the relay. One comparison per window: a second phone
+   is refused while one waits, and the window ends however that one ends (allowed, declined, expired,
+   or the phone left), so nobody tries again in it.
+6. **The approval.** Only this PC's own window is told of it and may decide it (`POST /api/relay/pairing`
+   answers any other window 403 `own_window_required`, and 403 `lan_join_locked` while locked or
+   strict): **{name} on this Wi-Fi ({address}) wants to connect 123 456 · Allow only if your phone shows
+   this number**, with Allow and Decline. Account members connected through the relay never see it.
+7. **The device.** Once both said the digits match, the phone is a drive device paired at this PC:
+   origin `pc`, how `digits`, journalled and announced as any join, with the account's new-device
+   notice and its 24 hours.
+
+A PC without a screen keeps `ovis add`.
+
 ## Code
 
 | Path | What it does |
@@ -1193,6 +1236,7 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
 | [`shared/relay-mux.ts`](../shared/relay-mux.ts), [`shared/relay-mux-engine.ts`](../shared/relay-mux-engine.ts) | Ovis Mux v1 |
 | [`shared/relay-offer.ts`](../shared/relay-offer.ts) | the pairing link |
 | [`shared/relay-pair-sas.ts`](../shared/relay-pair-sas.ts), [`server/relay/pairing-approvals.ts`](../server/relay/pairing-approvals.ts) | pairing by comparing digits: the commitment and digits, and the prompts waiting on the PC |
+| [`server/relay/lan-join.ts`](../server/relay/lan-join.ts), [`server/relay/lan-advertise.ts`](../server/relay/lan-advertise.ts) | joining on the same Wi-Fi: the window, who may ask, and the multicast DNS listing |
 | [`src/lib/relay/`](../src/lib/relay) | the hosted app: channel, device key, transport, file loading and screens |
 | [`public/sw.js`](../public/sw.js) | the service worker; in the hosted app it also answers file addresses through the relay |
 | [`scripts/shell-build.ts`](../scripts/shell-build.ts) | the hosted app's build (`bun run build:shell`, into `dist-shell/`) |

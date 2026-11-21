@@ -13,7 +13,7 @@
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { TCPSocketListener } from "bun";
-import { GATE_HEADER, openGate, PEER_HEADER } from "./direct-gate.ts";
+import { GATE_HEADER, LISTEN_HEADER, openGate, PEER_HEADER } from "./direct-gate.ts";
 import { createSocket } from "node:dgram";
 import { networkInterfaces } from "node:os";
 import type { NetworkInterfaceInfo } from "node:os";
@@ -24,6 +24,9 @@ import { isDirectCarrier, isTailnetCarrier, MAX_DIRECT_CARRIERS } from "../../sh
 import { inTailnet } from "../access.ts";
 import type { RequestServices } from "../dispatch.ts";
 import { privateLanPeer } from "../lan-https.ts";
+import { PAIR_APPROVAL_MS } from "../../shared/relay-pair-sas.ts";
+import { hostname } from "node:os";
+import { lanJoinPeer } from "./lan-join.ts";
 import { SignedInSessions } from "./admissions.ts";
 import type { RelayIdentity } from "./identity.ts";
 import { RelaySession, relayClock } from "./session.ts";
@@ -120,11 +123,17 @@ export interface DirectCarrierOptions {
   /** This PC's Tailscale address as `tailscale status` says it (tailnetAddresses), or null when unknown. */
   readonly tailnetIp?: () => string | null;
   readonly tailnetAddresses?: () => readonly string[];
+  /** Whether a peer is on this PC's own network, so it may ask to join while the window is open (lan-join.ts); tests on loopback widen it. */
+  readonly lanJoinPeer?: (address: string) => boolean;
+  /** The relay the offer read on this network names (`GET /v1/offer`), the one this PC's pairing links name. */
+  readonly relay?: () => string;
 }
 
 interface SocketData {
   readonly source: string;
   readonly id: string;
+  /** a peer on this PC's own network, reaching it on a LAN listener: it may ask to join (lan-join.ts) */
+  readonly lan: boolean;
 }
 
 interface Carrier {
@@ -256,8 +265,25 @@ export class DirectCarrier {
   /** A gate on `address` in front of the loopback server (made at the first one). */
   private listen(address: string, port: number): TCPSocketListener<unknown> {
     this.upstream ??= this.serveUpstream();
-    return openGate({ hostname: address, port, upstreamPort: this.upstream.port!, secret: this.secret,
+    return openGate({ hostname: address, port, upstreamPort: this.upstream.port!, secret: this.secret, offer: (source) => this.offer(address, source),
       allowed: (source) => this.options.peerAllowed ? this.options.peerAllowed(source) : directPeerAllowed(address, source), counts: this.connections }) as TCPSocketListener<unknown>;
+  }
+
+  /** May `source`, reaching this PC on `listening`, ask to join: a LAN peer on a LAN listener, never one on the tailnet's. */
+  private lanJoinSource(listening: string, source: string): boolean {
+    return !tailnetPeer(listening) && !tailnetPeer(source) && (this.options.lanJoinPeer ?? lanJoinPeer)(source);
+  }
+
+  /**
+   * What a phone on this network reads before it asks to join: this PC's id, key, relay and name, as a pairing link
+   * without a code holds (nothing secret), and only while the LAN join window takes a phone. Null otherwise (404).
+   */
+  private offer(listening: string, source: string): string | null {
+    const { identity, services } = this.options;
+    if (!this.lanJoinSource(listening, source) || !services.relay.lanJoin.available()) return null;
+    const name = hostname().slice(0, 64);
+    return JSON.stringify({ v: 1, server_id: identity.server_id, server_public_key: identity.public_key,
+      relay: this.options.relay?.() ?? "wss://relay.ovis.sh", ...(name ? { name } : {}) });
   }
 
   /** The carrier's HTTP server: on loopback, answering only what a gate of this carrier forwarded. */
@@ -281,7 +307,8 @@ export class DirectCarrier {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket" || !request.headers.has("sec-websocket-key")) return new Response(null, { status: 426 });
         // asked only: nobody gives way until the upgrade has happened (open)
         if (!this.makeRoom(source, false)) return new Response(null, { status: 503 });
-        return server.upgrade(request, { data: { source, id: randomBytes(16).toString("hex") } })
+        const listening = request.headers.get(LISTEN_HEADER) ?? "";
+        return server.upgrade(request, { data: { source, id: randomBytes(16).toString("hex"), lan: this.lanJoinSource(listening, source) } })
           ? undefined : new Response(null, { status: 426 });
       },
       websocket: {
@@ -336,7 +363,9 @@ export class DirectCarrier {
       if (this.stopped || this.carriers.get(id) !== carrier || !channel.isOpen()) { channel.close(); return; }
       carrier.cancelTimeout();
       carrier.cancelTimeout = this.clock.setTimeout(() => {
-        if (carrier.session?.verifying) carrier.cancelTimeout = this.clock.setTimeout(() => socket.close(), 5_000);
+        // a LAN join waits for two people to compare digits, as long as a comparison through the relay may
+        if (carrier.session?.pairing) carrier.cancelTimeout = this.clock.setTimeout(() => socket.close(), PAIR_APPROVAL_MS + 1_000);
+        else if (carrier.session?.verifying) carrier.cancelTimeout = this.clock.setTimeout(() => socket.close(), 5_000);
         else socket.close();
       }, SIGN_IN_MS);
       const handlers = services.core.socketHandlers;
@@ -344,6 +373,7 @@ export class DirectCarrier {
         channel, services, port: this.options.port, serverId: identity.server_id,
         serverVersion: this.options.serverVersion ?? version, minSupportedClient: "0.4.20",
         routingOverhead: 0, maxWireMessageBytes: 64 * 1024, signInOnly: true,
+        ...(socket.data.lan ? { lanPeer: source } : {}),
         directCarriers: (tailnet) => this.advertised(tailnet),
         onAuthenticated: (deviceId) => this.authenticated(id, carrier, deviceId),
         onChosen: () => carrier.chosen?.(),
