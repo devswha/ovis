@@ -33,6 +33,8 @@ rust_label=self-hosted-ovis-rust
 rust_labels="[\"self-hosted\",\"$rust_label\"]"
 rust_queue_limit=60
 rust_seen_limit=300
+# a heartbeat this far ahead of the route's clock is not believed (the two clocks differ by seconds)
+rust_seen_ahead=120
 
 # Prints "<output>=<labels>"; the output is linux unless a third argument names another.
 choose_labels() {
@@ -182,7 +184,7 @@ route_rust() {
     echo "Rust PTY host: ubuntu-24.04 ($event)" >&2
     echo "rust=$hosted"
   elif [[ -n "${configured_rust//[[:space:]]/}" ]]; then
-    if [[ "${configured_rust//[[:space:]]/}" != "$hosted" ]]; then
+    if [[ "$(jq -c . <<<"$configured_rust" 2>/dev/null)" != "$hosted" ]]; then
       echo "::error::repository variable CI_RUST_LABELS may only be \"ubuntu-24.04\" (or unset), got: $configured_rust" >&2
       exit 1
     fi
@@ -193,6 +195,9 @@ route_rust() {
     echo "rust=$hosted"
   elif (( now - 10#$seen > rust_seen_limit )); then
     echo "Rust PTY host: ubuntu-24.04 (no Rust runner seen online for $(( now - 10#$seen ))s)" >&2
+    echo "rust=$hosted"
+  elif (( 10#$seen - now > rust_seen_ahead )); then
+    echo "Rust PTY host: ubuntu-24.04 (the Rust runners' heartbeat is $(( 10#$seen - now ))s ahead of this clock)" >&2
     echo "rust=$hosted"
   elif ! counts=$(pool_counts); then
     echo "::warning::could not read the self-hosted runners' jobs; the Rust PTY host uses ubuntu-24.04" >&2

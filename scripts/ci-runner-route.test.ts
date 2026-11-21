@@ -418,6 +418,8 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
         [{ ROUTE_NOW: String(now), RUST_SEEN: "soon" }, /unset or not a number/],
         [seen(301), /no Rust runner seen online for 301s/],
         [seen(86_400), /no Rust runner seen online for 86400s/],
+        [seen(-121), /heartbeat is 121s ahead of this clock/],
+        [{ ROUTE_NOW: String(now), RUST_SEEN: "999999999999" }, /ahead of this clock/],
       ] as const) {
         for (const base of [{ EVENT_NAME: "pull_request", HEAD_REPO: repo }, { EVENT_NAME: "push", REF: "refs/heads/main" }]) {
           const state = actions({});
@@ -429,7 +431,8 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
         }
       }
       expect(rust({ ...pr, ...seen(300), FAKE_GH: actions({}) })).toEqual(ours);
-      expect(rust({ ...pr, ...seen(-5), FAKE_GH: actions({}) })).toEqual(ours);
+      expect(rust({ ...pr, ...seen(-120), FAKE_GH: actions({}) })).toEqual(ours);
+      expect(rust({ ...pr, ROUTE_NOW: String(now), RUST_SEEN: `00${now - 30}`, FAKE_GH: actions({}) })).toEqual(ours);
     });
 
     it("reads the Actions API once for both routes", () => {
@@ -468,7 +471,8 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       for (const env of [{ ...push, CONFIGURED_LABELS: '"ubuntu-24.04"' }, { EVENT_NAME: "workflow_dispatch" }, { ...pr, HOSTED_ONLY: "true" }]) {
         expect(rust({ ...env, RUST_LABELS: '["self-hosted","self-hosted-ovis-rust"]' })).toBe("ubuntu-24.04");
       }
-      for (const value of ['["self-hosted","self-hosted-ovis-rust"]', '["self-hosted","other"]', '["other"]', "[]", '["self-hosted",']) {
+      expect(rust({ ...pr, RUST_LABELS: ' "ubuntu-24.04"\n' })).toBe("ubuntu-24.04");
+      for (const value of ['["self-hosted","self-hosted-ovis-rust"]', '["self-hosted","other"]', '["other"]', "[]", '["self-hosted",', '"ubuntu -24.04"', '"ubuntu-24.04 "', "ubuntu-24.04"]) {
         const result = route({ ...pr, RUST_LABELS: value, FAKE_GH: actions({}) });
         expect(result.status).toBe(1);
         expect(result.stdout).toBe("");
