@@ -668,7 +668,7 @@ describe("Connect a phone on a phone", () => {
   });
 
   describe("Direct in 0.5.10: this PC's same-Wi-Fi address as a line and the pairing code under it, never a QR code", () => {
-    const mountDirect = async (lanUrl: string | null) => {
+    const mountDirect = async (lanUrl: string | null, desktopApp?: boolean) => {
       Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
       const pageEvents = new EventTarget();
       Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
@@ -678,7 +678,7 @@ describe("Connect a phone on a phone", () => {
       const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
       // this PC's own window on loopback: its page is no address a phone opens
       await act(async () => {
-        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} lanUrl={lanUrl} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
+        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} lanUrl={lanUrl} desktopApp={desktopApp} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
           signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
       });
       await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
@@ -707,6 +707,21 @@ describe("Connect a phone on a phone", () => {
       expect(text(lanLine(panel()))).toBe("Same Wi-Fi connections are off on this PC.");
       expect(panel().findAllByType(QrCode)).toEqual([]);
       expect(text(scan(panel()))).toContain("Pairing code");
+    });
+
+    it("in the desktop app with no same-Wi-Fi address, shows only adding another PC from this one: no Wi-Fi line and no code for a phone", async () => {
+      const panel = await mountDirect(null, true);
+      expect(panel().findAll((node) => node.type === "label").map(text)[0]).toBe("Add another PC from this one");
+      // counted, not compared: a failing diff of test instances never finishes printing
+      expect(panel().findAllByProps({ "data-testid": "direct-lan" }).length).toBe(0);
+      expect(panel().findAllByProps({ "data-testid": "connect-phone-scan" }).length).toBe(0);
+      expect(text(panel())).not.toContain("Pairing code");
+    });
+
+    it("in the desktop app with a same-Wi-Fi address, still names it with the code under it", async () => {
+      const panel = await mountDirect("http://192.168.0.12:7317", true);
+      await until(() => text(panel()).includes("482 913"), "Direct's code");
+      expect(text(lanLine(panel()))).toBe("Same Wi-Fi address: http://192.168.0.12:7317");
     });
   });
 

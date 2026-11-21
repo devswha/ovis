@@ -193,6 +193,8 @@ export interface RemoteAccess {
   readonly platform?: string;
   /** the address a phone on this PC's own network opens (server/lan-https.ts lanUrl), null where it answers on none; older servers omit it */
   readonly lan_url?: string | null;
+  /** true where this server is the desktop app's (loopback only, no same-Wi-Fi listener); older servers and others omit it */
+  readonly desktop_app?: boolean;
   readonly tailscale: TailscaleAccess;
 }
 

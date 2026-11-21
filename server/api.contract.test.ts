@@ -1126,6 +1126,18 @@ describe("phone access", () => {
     }
   });
 
+  it("says it is the desktop app's server only there, where no same-Wi-Fi listener exists to turn on", async () => {
+    expect(((await (await fetch(`${base()}/api/access`)).json()) as RemoteAccess).desktop_app).toBeUndefined();
+    const before = process.env["OVIS_DESKTOP_APP"];
+    process.env["OVIS_DESKTOP_APP"] = "1";
+    try {
+      expect(((await (await fetch(`${base()}/api/access`)).json()) as RemoteAccess).desktop_app).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env["OVIS_DESKTOP_APP"];
+      else process.env["OVIS_DESKTOP_APP"] = before;
+    }
+  });
+
   it("stays behind the token gate", async () => {
     const protectedState = mkdtempSync(join(tmpdir(), "herdr-access-auth-"));
     const protectedServer = createServer({ port: 0, stateDir: protectedState, token: "test-access-token" });

@@ -127,6 +127,8 @@ export interface ConnectPhoneDialogProps {
   platform?: string | undefined;
   /** the address this PC answers at on its own network (RemoteAccess.lan_url): Direct names it as text, with no QR code (0.5.10) */
   lanUrl?: string | null | undefined;
+  /** this PC's server is the desktop app's (RemoteAccess.desktop_app): loopback only, with no same-Wi-Fi listener to turn on */
+  desktopApp?: boolean | undefined;
   pairUrl: string | null;
   relay: RelayState;
   /** a watching device or a Portal visitor: it reads, and starts nothing */
@@ -159,7 +161,7 @@ export interface ConnectPhoneDialogProps {
   onClose: () => void;
 }
 
-export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, lanUrl: givenLanUrl = null, pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, lanUrl: givenLanUrl = null, desktopApp: givenDesktopApp = false, pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -185,6 +187,8 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   const tailscale = fresh !== null && tailscaleStepKind(givenTailscale) ? tailscalePlan(fresh) : givenTailscale;
   const platform = fresh?.platform ?? givenPlatform;
   const lanUrl = fresh?.lan_url !== undefined ? fresh.lan_url : givenLanUrl;
+  // the desktop app's PC with no same-Wi-Fi address: no phone reaches it directly, so Direct shows neither the line nor a code
+  const phoneUnreachable = (fresh?.desktop_app ?? givenDesktopApp) && lanUrl === null;
   const tabs = connectTabs({ sshOffered: onAddPc !== null && !readOnly && !inRelayShell(), relay, readOnly });
   const hasAccount = account !== null;
   // until a tab is picked, the opening one follows the tabs as they arrive (the relay's state comes a moment later)
@@ -241,7 +245,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
               <DirectTab found={found} machines={machines} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} />
               {/* 0.5.10: this PC's same-Wi-Fi address as text and the pairing code under it, no QR code (joining by the
                   address, with the PC's approval, comes in 0.5.11) */}
-              {local.code && (
+              {local.code && !phoneUnreachable && (
                 <PhoneScan codeOnly>
                   <p className="settings-description" data-testid="direct-lan" data-lan={lanUrl === null ? "off" : "on"}>
                     {lanUrl === null ? t("Same Wi-Fi connections are off on this PC.") : t("Same Wi-Fi address: {address}", { address: lanUrl })}
