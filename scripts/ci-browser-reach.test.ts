@@ -16,32 +16,33 @@ function reach(...paths: string[]): string {
 }
 
 describe("a pull request's reach into the browser jobs", () => {
-  it.each([
-    ["the client", ["src/App.tsx"]],
-    ["the server", ["server/index.ts"]],
-    ["the wire contract", ["shared/protocol.ts"]],
-    ["a browser script", ["scripts/sidebar-filter-demo-regression.ts"]],
-    ["a helper of tests, which a browser script may load", ["server/relay/test-helpers.ts"]],
-    ["the demo", ["site/demo/transport.ts"]],
-    ["the relay", ["relay/src/worker.ts"]],
-    ["the desktop app", ["app/electron/src/browserTabs.ts"]],
-    ["the PTY host", ["crates/pty-sidecar/src/main.rs"]],
-    ["a dependency", ["bun.lock"]],
-    ["ci.yml itself", [".github/workflows/ci.yml"]],
-    ["the action its jobs set up with", [".github/actions/setup-ci/action.yml"]],
-    ["this script", ["scripts/ci-browser-reach.sh"]],
-    ["a server fixture, a test file among them", ["server/fixtures/prompt.txt"], ["server/fixtures/case.test.ts"]],
-    ["the release summaries the server reads for its update notes", ["release-summaries.json"]],
-    ["a docs page a browser script reads its example from, beside a unit test", ["docs/themes.md", "server/access.test.ts"]],
-    ["the notices the client build bundles", ["THIRD_PARTY_NOTICES.md", "server/access.test.ts"]],
-    ["the worker folder a browser script copies", ["telemetry/src/worker.ts"]],
-    ["the attributes that decide how every script is checked out", [".gitattributes"]],
-    ["a folder the list does not name", ["plugins/new/index.ts"]],
-    ["a folder's own name, which is no path inside it", ["tui"]],
-    ["a name git quotes", ["\"docs/\\303\\251.md\""]],
-    ["one reaching path among others that do not", ["tui/src/main.zig", "changelog.d/fix.md", "src/lib/api.ts"]],
-    ["no path at all", []],
-  ])("keeps them for %s", (_, ...lists) => {
+  const KEPT: [string, string[][]][] = [
+    ["the client", [["src/App.tsx"]]],
+    ["the server", [["server/index.ts"]]],
+    ["the wire contract", [["shared/protocol.ts"]]],
+    ["a browser script", [["scripts/sidebar-filter-demo-regression.ts"]]],
+    ["a helper of tests, which a browser script may load", [["server/relay/test-helpers.ts"]]],
+    ["the demo", [["site/demo/transport.ts"]]],
+    ["the relay", [["relay/src/worker.ts"]]],
+    ["the desktop app", [["app/electron/src/browserTabs.ts"]]],
+    ["the PTY host", [["crates/pty-sidecar/src/main.rs"]]],
+    ["a dependency", [["bun.lock"]]],
+    ["ci.yml itself", [[".github/workflows/ci.yml"]]],
+    ["the action its jobs set up with", [[".github/actions/setup-ci/action.yml"]]],
+    ["this script", [["scripts/ci-browser-reach.sh"]]],
+    ["a server fixture, a test file among them", [["server/fixtures/prompt.txt"], ["server/fixtures/case.test.ts"]]],
+    ["the release summaries the server reads for its update notes", [["release-summaries.json"]]],
+    ["a docs page a browser script reads its example from, beside a unit test", [["docs/themes.md", "server/access.test.ts"]]],
+    ["the notices the client build bundles", [["THIRD_PARTY_NOTICES.md", "server/access.test.ts"]]],
+    ["the worker folder a browser script copies", [["telemetry/src/worker.ts"]]],
+    ["the attributes that decide how every script is checked out", [[".gitattributes"]]],
+    ["a folder the list does not name", [["plugins/new/index.ts"]]],
+    ["a folder's own name, which is no path inside it", [["tui"]]],
+    ["a name git quotes", [["\"docs/\\303\\251.md\""]]],
+    ["one reaching path among others that do not", [["tui/src/main.zig", "changelog.d/fix.md", "src/lib/api.ts"]]],
+    ["no path at all", [[]]],
+  ];
+  it.each(KEPT)("keeps them for %s", (_, lists) => {
     for (const paths of lists) expect(reach(...paths)).toBe("browser=true\n");
   });
 
