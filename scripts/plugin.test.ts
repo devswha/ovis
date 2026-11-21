@@ -916,24 +916,37 @@ describe("add and login", () => {
     expect([result, calls.filter((call) => call === "POST /api/relay/offer").length], await new Response(child.stderr).text()).toEqual(["taken back", 2]);
   }, 30_000);
 
-  it("are in the usage an unknown command gets, with what they do", async () => {
+  it("are in the help, and an unknown command names itself and the help on stderr", async () => {
     const result = await run("constructor", { HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_ACCOUNT_OPENS_ALL: "1" });
-    expect(result.exitCode).toBe(2);
-    expect(result.err).toBe([
-      "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|recover|confirm|phone|phone-setup|tui>",
-      "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
-      "link --code: show a code and a QR code to pair one device instead.",
-      "tui: herdr-core's terminals in this terminal, as herdr shows them.",
-      "recover: list the devices that wait for this PC's account to be read; --release <id>... lets them in until then, --undo ends that.",
-      "confirm: open this PC's confirm page, where turning strict mode on or off waits for your approval.",
-      "",
-    ].join("\n"));
+    expect([result.exitCode, result.out, result.err]).toEqual([2, "", "ovis: unknown command constructor\nRun ovis --help for the commands.\n"]);
+    const help = await run("--help", { HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_ACCOUNT_OPENS_ALL: "1" });
+    expect([help.exitCode, help.err]).toEqual([0, ""]);
+    for (const line of ["  login      Add this PC to your Ovis account (also: add)", "  logout     ", "  recover    ", "  confirm    "]) expect(help.out).toContain(line);
+  });
+
+  it("--help and an unknown flag come before a command runs: stop --help stops nothing", async () => {
+    const env = { HERDR_PLUGIN_CONFIG_DIR: configDir };
+    const help = await run("stop", env, { args: ["--help"] });
+    expect([help.exitCode, help.out]).toEqual([0, "Usage: ovis stop\n\nStop Ovis on this PC\n"]);
+    const typo = await run("login", env, { args: ["--aprove"] });
+    expect([typo.exitCode, typo.out, typo.err]).toEqual([2, "", "ovis login: unknown flag --aprove\nRun ovis login --help for what it takes.\n"]);
+  });
+
+  it("--version is the version on stdout", async () => {
+    const result = await run("--version", { HERDR_PLUGIN_CONFIG_DIR: configDir });
+    expect([result.exitCode, result.out]).toEqual([0, `${JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version}\n`]);
+  });
+
+  it("plain ovis in a script is status, as before", async () => {
+    const child = Bun.spawn(["bun", "scripts/plugin.ts"], { cwd: ROOT, env: launchEnv({ HERDR_PLUGIN_CONFIG_DIR: configDir, PORT: String(quietPort()) }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    expect([code, out.split(" ")[0]]).toEqual([0, "down"]);
   });
 
   it("with the release flag off, recover is not a command and the usage does not offer it (T70, flag off)", async () => {
     const result = await run("recover", { HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_ACCOUNT_OPENS_ALL: "0" });
-    expect(result.exitCode).toBe(2);
-    expect(result.err).not.toContain("recover");
+    expect([result.exitCode, result.err]).toEqual([2, "ovis: unknown command recover\nRun ovis --help for the commands.\n"]);
+    expect((await run("--help", { HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_ACCOUNT_OPENS_ALL: "0" })).out).not.toContain("recover");
   });
 
   it.each([undefined, "1", "", "false"])("with Step 2 flag %j, confirm prints this PC's confirm page without a desktop", async (flag) => {
@@ -965,8 +978,8 @@ describe("add and login", () => {
 
   it("with the release flag off, confirm is not a command and the usage does not offer it (flag off)", async () => {
     const result = await run("confirm", { HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_ACCOUNT_OPENS_ALL: "0" });
-    expect(result.exitCode).toBe(2);
-    expect(result.err).not.toContain("confirm");
+    expect([result.exitCode, result.err]).toEqual([2, "ovis: unknown command confirm\nRun ovis --help for the commands.\n"]);
+    expect((await run("--help", { HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_ACCOUNT_OPENS_ALL: "0" })).out).not.toContain("confirm");
   });
 
   it("T70: recover uses the release flag from the same config as the server", async () => {

@@ -61,6 +61,8 @@ export interface LinkOptions {
    */
   readonly isTty?: boolean;
   readonly size?: () => { readonly rows: number; readonly columns: number } | null;
+  /** opens the sign-in page in this desktop's browser and says whether it could; unset where there is none (`--no-browser`, SSH) */
+  readonly openBrowser?: (url: string) => boolean;
   readonly signal: AbortSignal;
   readonly fetch?: Fetch;
   readonly serviceFetch?: Fetch;
@@ -1494,6 +1496,10 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       "Waiting for the sign-in…",
       "",
     ]).join("\n"));
+  // codex login's way: on a desktop the page opens by itself, with the code filled in where the service gives one; the
+  // lines above stay for a sign-in on another device
+  const page = signIn.verificationUriComplete ?? signIn.verificationUri;
+  if (options.openBrowser?.(page) === true) out(`Opened ${page} in your browser. Check that it shows the code ${signIn.userCode}.\n\n`);
   await signIn.finish(signal);
   const service = new AccountService({ store, lock, fetch: serviceFetch, now });
   const session = await service.session();

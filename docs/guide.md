@@ -155,10 +155,19 @@ Its terminals are its own. The app starts a herdr-core of its own (the session `
 **The `ovis` command:** the installer puts it in `~/.local/bin`. It runs the installed Ovis's own command line (`scripts/plugin.ts`), which it finds each time it runs, so it keeps working after an update or a reinstall:
 
 ```bash
-ovis add       # add this PC to your Ovis account
-ovis pair      # a pairing code
-ovis status    # whether the app runs, and where
+ovis           # at a terminal: the terminal screen (ovis tui) where it can run, else the help
+ovis login     # add this PC to your Ovis account (also: ovis add)
+ovis logout    # take this PC out of its account (Revoke all, after a typed yes)
+ovis pair      # a pairing code (--relay: the relay's code, renewed until Ctrl+C)
+ovis approve   # approve or decline the devices that wait to pair
+ovis status    # whether the app runs, where, its account and its version
+ovis --help    # every command; ovis <command> --help for one
 ```
+
+`ovis --help` and `ovis <command> --help` only print, and a flag a command does not take is refused (exit 2) before
+anything runs. The older names keep working without a word: `add` and `link` are `login`, `link --code` is
+`pair --relay`, and `pair --approve` is `approve`. On Windows, `install.ps1` puts `ovis` (`ovis.cmd`, beside the
+compiled server) on your PATH for new terminals; plain `ovis` there prints the help.
 
 An `ovis` of your own that is already in `~/.local/bin` is left as it is, and the installer says so. So is another `ovis` elsewhere on your PATH: where `~/.local/bin` comes before it, the installer writes no command, since that would take its name; where it comes first, the installer writes the command and says to call it by its path. That other `ovis` keeps the name only until `~/.local/bin` comes before it on your PATH (a shell profile that puts `~/.local/bin` first does that at the next login), and from then on `ovis` is the installer's command. Without the command (an install from before it, until the installer is run again; Windows; a checkout), run the script itself, `bun scripts/plugin.ts <command>`, in the folder that holds Ovis: a checkout, or the plugin's own folder:
 
@@ -178,12 +187,12 @@ ovis pair
 **Adding the PC to your account, from its terminal:**
 
 ```bash
-ovis add
+ovis login
 ```
 
 To install and add in one line, give the installer `--add`: `curl -fsSL https://ovis.sh/install.sh | sh -s -- --add` (or set `OVIS_ADD=1`). It ends the install with `ovis add`, at a terminal you can answer at and while the app runs; anywhere else (a script, a background job, a PC whose herdr is not started yet) it prints the command to run. So it does on a release up to 0.5.2, whose add step would take a line typed ahead as its answer: update in **Settings → Updates** first. On a PC other people log in to, set `OVIS_TOKEN` first ([Who counts as this PC](relay.md#a-pc-with-no-screen)).
 
-`add` (also `login` and `link`: one command) signs the PC in to your Ovis account with a code you enter on any device, lists it there, and shows one QR code: scan it with a device signed in to the same account and the PC joins the account, with nothing to approve. The QR code is a key to the PC, so it is drawn only on a terminal and cleared when it ends. It ends once the PC is in the account you signed in to, naming the device that added it, and stops by itself after 30 minutes. A device that got in with the code without being in that account is removed unless you type `keep` when asked. `add --approve` asks in the terminal about the device of your account that adds it instead: it shows that device's six digits, and typing them (or their last three) approves it, Enter by itself declines, and any other line (a `y`, a mistyped digit) answers nothing and is asked again. `link --code` shows a code to type and the relay QR code instead, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). In-app updates do not replace the plugin's checkout, so `ovis add` runs the release that runs: with a checkout from before `link`, it works once **Settings → Updates** has installed a release that has it. Without the `ovis` command, such a checkout needs a plugin reinstall first; one from before `add` and `login` still has `link`.
+`login` (also `add` and `link`: one command) signs the PC in to your Ovis account with a code you enter on any device, lists it there, and shows one QR code: scan it with a device signed in to the same account and the PC joins the account, with nothing to approve. The QR code is a key to the PC, so it is drawn only on a terminal and cleared when it ends. It ends once the PC is in the account you signed in to, naming the device that added it, and stops by itself after 30 minutes. A device that got in with the code without being in that account is removed unless you type `keep` when asked. `add --approve` asks in the terminal about the device of your account that adds it instead: it shows that device's six digits, and typing them (or their last three) approves it, Enter by itself declines, and any other line (a `y`, a mistyped digit) answers nothing and is asked again. `link --code` shows a code to type and the relay QR code instead, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). In-app updates do not replace the plugin's checkout, so `ovis add` runs the release that runs: with a checkout from before `link`, it works once **Settings → Updates** has installed a release that has it. Without the `ovis` command, such a checkout needs a plugin reinstall first; one from before `add` and `login` still has `link`.
 
 The actions start, stop and report on the server:
 

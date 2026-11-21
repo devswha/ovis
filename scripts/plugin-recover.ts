@@ -137,6 +137,59 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
   }
 }
 
+export interface LogoutIo extends RecoverIo {
+  /** this PC's name, as `ovis login` lists it */
+  label: string;
+  /** the PC's account and its member count (`GET /api/account/status`); null when Ovis does not answer */
+  account(): Promise<{ readonly account: string | null; readonly members: number } | null>;
+}
+
+/**
+ * `ovis logout`: this PC leaves its Ovis account. The PC's account is cleared only with every row (docs/account.md,
+ * "Revoke all"; server/account/pc-binding.ts), so this is Revoke all, said as leaving the account and asked for with a
+ * typed yes at a terminal. The account service still lists the PC until it is removed in the app.
+ */
+export async function runLogout(io: LogoutIo): Promise<number> {
+  if (io.platform === "win32") {
+    io.out("On Windows, leave the account in Ovis on this PC: Settings → Devices and PCs → Revoke all.\n");
+    return 1;
+  }
+  const state = await io.account();
+  if (state === null) {
+    io.out("Could not read this PC's account: is Ovis running? Run ovis status.\n");
+    return 1;
+  }
+  if (state.account === null) {
+    io.out("This PC is in no Ovis account.\n");
+    return 0;
+  }
+  if (!io.terminal) {
+    io.out("ovis logout asks you to type yes, so it runs only in a terminal on this PC (over ssh, run ssh -t).\n");
+    return 1;
+  }
+  io.out(`This PC (${terminalText(io.label)}) is in Ovis account ${terminalText(state.account)}, with ${state.members} device${state.members === 1 ? "" : "s"} of it.\n`
+    + "Leaving revokes every device paired with this PC, as Revoke all does, those paired with a code too.\n");
+  if ((await io.ask("Leave the account? Type yes: ")).trim() !== "yes") {
+    io.out("Nothing was changed.\n");
+    return 1;
+  }
+  let reply: unknown;
+  try { reply = await io.send({ act: "revoke_all" }); } catch {
+    io.out("Ovis did not answer on its recovery socket. Is it running on this PC, as this user, with recovery turned on?\n");
+    return 1;
+  }
+  const answer = reply as { revoked?: unknown; error?: unknown } | null;
+  if (typeof answer?.error === "string") { io.out(`Could not leave the account: ${terminalText(answer.error)}\n`); return 1; }
+  if (typeof answer?.revoked !== "number") { io.out("Ovis did not return a recovery result.\n"); return 1; }
+  io.out([
+    `Left. This PC is in no account; ${answer.revoked} device${answer.revoked === 1 ? " was" : "s were"} revoked.`,
+    "Your account may still list this PC: remove it in the Ovis app (Settings → Devices and PCs → Manage account).",
+    "To join again: ovis login",
+    "",
+  ].join("\n"));
+  return 0;
+}
+
 function describe(row: WaitingRow): string {
   const origin = row.origin === null ? "unknown origin" : `${row.origin.from}/${row.origin.how}`;
   const seen = row.last_seen_at ?? "never";

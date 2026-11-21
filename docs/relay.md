@@ -313,10 +313,11 @@ terminal, with the same two ways its Settings page offers and the same rules. Th
 `bun scripts/plugin.ts` takes its place:
 
 ```bash
-ovis add             # sign in to your account, then scan this PC's QR code with a device of the account
-ovis add --approve   # the same sign-in, then approve here the device that adds this PC
-ovis add --google    # either, at Google's own device page (--github: GitHub's)
-ovis link --code     # a code to type and the relay QR code, renewed until Ctrl+C
+ovis login              # sign in to your account, then scan this PC's QR code with a device of the account
+ovis login --approve    # the same sign-in, then approve here the device that adds this PC
+ovis login --google     # either, at Google's own device page (--github: GitHub's)
+ovis login --no-browser # show the address and code only (the default over SSH or without a desktop)
+ovis pair --relay       # a code to type and the relay QR code, renewed until Ctrl+C (was: ovis link --code)
 ```
 
 The installer runs `ovis add` as its last step when it is given `--add`
@@ -326,7 +327,8 @@ the step starts, so it answers nothing the step asks; where the installer cannot
 prints the command instead. On a PC where it has just installed herdr the app is not up yet: start
 herdr, then run `ovis add`, as its last lines say.
 
-`add`, `login` and `link` are one command under three names. Both ways turn the relay on first when
+`login`, `add` and `link` are one command under three names. On a desktop, `login` opens the sign-in
+page in the browser itself, as `codex login` does; the address and code stay on screen for another device. Both ways turn the relay on first when
 it is off, and wait until it is online.
 
 - **`add`** signs in the way a PC's own page does: it prints the Ovis sign-in page

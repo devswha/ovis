@@ -424,6 +424,21 @@ command = ["herdr", "plugin", "pane", "open", "--plugin", "$pluginId", "--entryp
     Move-Item -Force -LiteralPath (Join-Path $dir 'herdr-plugin.toml.new') -Destination (Join-Path $dir 'herdr-plugin.toml')
 }
 
+# `ovis` in any new terminal, as install.sh's launcher gives Linux and macOS: cmd\ovis.cmd runs the release's server as
+# `ovis-server plugin <command>`. It is kept beside bin\, not in it, since an update replaces bin\ whole; its folder is
+# put on the user's PATH once.
+function Write-OvisCommand {
+    $dir = Join-Path $ovisHome 'cmd'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $exe = Join-Path $ovisHome 'bin\ovis-server.exe'
+    Set-Content -LiteralPath (Join-Path $dir 'ovis.cmd') -Value "@echo off`r`n`"$exe`" plugin %*" -Encoding ASCII
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not (($userPath -split ';') -contains $dir)) {
+        [Environment]::SetEnvironmentVariable('Path', ((@($userPath -split ';' | Where-Object { $_ }) + $dir) -join ';'), 'User')
+        Write-Host "Ovis: added $dir to your PATH: open a new terminal to run ovis"
+    }
+}
+
 $newInstall = $false
 $binaryDone = $false
 $ovisPlugin = Join-Path $ovisHome 'plugin'
@@ -460,6 +475,7 @@ if (-not $fromSource) {
         if ($shipped) {
             $changed = Install-OvisBinary $version
             Write-OvisPlugin $version
+            Write-OvisCommand
             if (-not (Find-Plugin)) {
                 Run-Tool herdr @('plugin', 'link', $ovisPlugin) | Out-Null
                 $newInstall = $true
