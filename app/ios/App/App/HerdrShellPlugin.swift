@@ -78,8 +78,8 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func openSshSetup(_ call: CAPPluginCall) {
         // only the connect screen and the hosted app (Add a PC's SSH): a PC's own page may not drop the person off it
         // to stage a login of its choosing
-        let shown = PCStore.shown.flatMap { PCStore.origin(ofKey: $0) }
-        guard bridge?.webView?.url?.scheme == "capacitor" || shown == "https://" + DirectCallGate.appHost else {
+        // the page loaded now, not the one the app last chose: the web view may have gone elsewhere since
+        guard SshPcs.setupOpener(bridge?.webView?.url) else {
             call.reject("Only the app's own pages open the SSH setup.")
             return
         }

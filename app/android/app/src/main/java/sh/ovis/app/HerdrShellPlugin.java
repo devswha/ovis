@@ -168,7 +168,16 @@ public class HerdrShellPlugin extends Plugin {
     public void openSshSetup(PluginCall call) {
         // only the connect screen and the hosted app (Add a PC's SSH): a PC's own page may not drop the person off it
         // to stage a login of its choosing
-        if (!showingConnectScreen() && !PCStore.showsHostedShell(PCStore.current(getContext()))) {
+        // the page loaded now, not the one the app last chose: the WebView may have gone elsewhere since
+        java.util.concurrent.CompletableFuture<String> loaded = new java.util.concurrent.CompletableFuture<>();
+        getActivity().runOnUiThread(() -> loaded.complete(getBridge().getWebView().getUrl()));
+        String url;
+        try {
+            url = loaded.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception unanswered) {
+            url = null;
+        }
+        if (!SshPcs.setupOpener(url, showingConnectScreen())) {
             call.reject("Only the app's own pages open the SSH setup.");
             return;
         }

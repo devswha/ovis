@@ -194,6 +194,14 @@ public final class SshPcs {
         return (address << (8 * left)) + last
     }
 
+    /// Whether the page loaded at `url` may open the SSH setup (HerdrShell openSshSetup): the app's own bundled pages
+    /// (`capacitor://localhost`) or the hosted app (`https://app.ovis.sh`), never a PC's page.
+    public static func setupOpener(_ url: URL?) -> Bool {
+        guard let url, let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return false }
+        if scheme == "capacitor" { return host == "localhost" }
+        return scheme == "https" && host == "app.ovis.sh" && (url.port == nil || url.port == 443)
+    }
+
     /// 256 random bits in hex: a tunnel's gate.
     public static func newGate() -> String {
         SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }.map { String(format: "%02x", $0) }.joined()

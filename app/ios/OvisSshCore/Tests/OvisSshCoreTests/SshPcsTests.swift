@@ -130,6 +130,15 @@ final class SshPcsTests: XCTestCase {
         XCTAssertEqual(store.list().count, 1)
     }
 
+    func testOnlyTheAppsOwnPagesAndTheHostedAppOpenTheSshSetup() {
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://localhost/index.html")))
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "https://app.ovis.sh/#pcs")))
+        for page in ["https://app.ovis.sh.evil.example/", "http://app.ovis.sh/", "https://app.ovis.sh:8443/", "http://127.0.0.1:47320/", "https://desk.tail1e211e.ts.net/", "capacitor://other/"] {
+            XCTAssertFalse(SshPcs.setupOpener(URL(string: page)), page)
+        }
+        XCTAssertFalse(SshPcs.setupOpener(nil))
+    }
+
     func testGatesAreLongAndUnguessable() {
         let gates = Set((0..<50).map { _ in SshPcs.newGate() })
         XCTAssertEqual(gates.count, 50)
