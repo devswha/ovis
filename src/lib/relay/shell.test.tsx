@@ -1138,6 +1138,15 @@ describe("the hosted shell's front page", () => {
       expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
     });
 
+    it("drops an old control page address typed into an open front page from the address", async () => {
+      const replaced: string[] = [];
+      (window.history as unknown as { replaceState: (state: unknown, title: string, url: string) => void }).replaceState = (_state, _title, url) => { replaced.push(url); };
+      await mountRelayShell(mountFor({ store: deviceStore([]), navigate: () => {} }));
+      Object.assign(window.location, { href: "https://app.ovis.sh/#overview", hash: "#overview" });
+      window.dispatchEvent(new Event("hashchange"));
+      expect(replaced).toEqual(["/"]);
+    });
+
     it("takes the phone app's #pcs as its way to the front page and opens no PC from it", async () => {
       const replaced: string[] = [];
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true } });

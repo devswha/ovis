@@ -1024,6 +1024,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // loads nothing: it is taken off the address and asked about like one the page loaded with
   window.addEventListener("hashchange", () => {
     if (app !== null || window.location.hash === "") return;
+    // an old control page address typed into an open tab lands on the app, as one the page loaded with does
+    if (!scoped && oldDashboardHash(window.location.hash)) { window.history.replaceState(null, "", "/"); return; }
     const next = shellEntry(takeEntryUrl(window));
     if (next.offer === null && !next.damaged) return;
     cancelAttempt();
