@@ -266,7 +266,7 @@ try {
             assert.equal(await page.locator(ROW).count(), 3, "the demo lists its three devices");
             assert.equal(await row.locator(".settings-label").innerText(), label("Revoke every device"));
             const words = await row.locator(".settings-description").innerText();
-            assert.equal(words, label("Every paired device, this one included, loses its pairing access at once. The access token, this PC and its Tailscale login are not affected."), "the row warns the caller that their own pairing goes, and names what stays");
+            assert.equal(words, label("Every paired device, this one included, loses its pairing access at once, and every Tailscale device this PC has seen is kept out until you allow it here. The access token and this PC are not affected."), "the row warns the caller that their own pairing goes, and names what stays");
             assert.equal(await rowButton.isEnabled(), true);
             // three places on one short page, each its own frame: the row at rest just come into view at the bottom
             // edge, the long label at that edge, and the true end (a target past the end would clamp them all into one)
@@ -352,7 +352,7 @@ try {
             }
             const dialog = page.getByRole("alertdialog", { name: label("Revoke every paired device?"), exact: true });
             await dialog.waitFor();
-            assert.equal(await dialog.locator(".confirm-body").innerText(), label("Every paired device loses its pairing access, this one included, and needs a new code to get back in. The access token, this PC and its Tailscale login still get in."));
+            assert.equal(await dialog.locator(".confirm-body").innerText(), label("Every paired device loses its pairing access, this one included, and needs a new code to get back in. Every Tailscale device this PC has seen is kept out too, until you allow it on this PC. The access token and this PC still get in."));
             assert.equal(await page.evaluate(() => document.activeElement?.textContent), label("Cancel"), "Cancel takes the focus, so Enter answers no");
             await capture(page, `${prefix}-confirm`, about("confirm"));
             measurements[prefix]!.confirmBody = await contrast(page, ".confirm-dialog .confirm-body");
@@ -375,7 +375,7 @@ try {
             await dialog.waitFor();
             await press(dialog.getByRole("button", { name: label("Revoke all"), exact: true }));
             await dialog.waitFor({ state: "detached" });
-            const revoked = page.getByText(label("Every paired device was revoked. The access token, this PC and its Tailscale login get in as before."), { exact: true });
+            const revoked = page.getByText(label("Every paired device was revoked, and the Tailscale devices this PC has seen are kept out. The access token and this PC get in as before."), { exact: true });
             await revoked.waitFor();
             assert.equal(await page.locator(ROW).count(), 0, "every device went");
             assert.equal(await row.count(), 0, "with nothing paired there is nothing to revoke");
