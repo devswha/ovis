@@ -26,10 +26,11 @@ async function settledWithin<T>(work: Promise<T>): Promise<T | null> {
   return Promise.race([work.catch(() => null), late]).finally(() => clearTimeout(timer));
 }
 
-/** a 320 px wide picture of a page as it is drawn, or null when it has none or does not answer in time */
-async function capture(contents: WebContents): Promise<string | null> {
+/** a picture of a page as it is drawn (`width` px wide, or its own size), or null when it has none or does not answer in time */
+async function capture(contents: WebContents, width: number | null): Promise<string | null> {
   const image = await settledWithin(contents.capturePage(undefined, { stayHidden: true }));
-  return image === null || image.isEmpty() ? null : image.resize({ width: 320 }).toDataURL();
+  if (image === null || image.isEmpty()) return null;
+  return (width === null ? image : image.resize({ width })).toDataURL();
 }
 
 /** whether `bounds` overlap any screen */
@@ -41,6 +42,8 @@ function onScreen(bounds: { x: number; y: number; width: number; height: number 
 const STAGE_FRAMES = 8;
 /** how long one capture may take before it is given up (one that never answers would hold every later picture) */
 const PICTURE_MS = 1000;
+/** how wide a card's picture is (the right panel) */
+const CARD_WIDTH = 320;
 /** the isolated world a picture waits for the page's frames in (none of the page's own scripts run there) */
 const PICTURE_WORLD = 1_017;
 /** a tab smaller than this on a side has no room to draw a picture in, and is laid out as a desktop window first */
@@ -108,7 +111,6 @@ export interface AgentTab {
   id: number;
   contents: WebContents;
   address: string;
-  shown: boolean;
 }
 
 const PARTITION: Record<BrowserProfile, string> = { mine: "persist:ovis-browser-mine", agent: "persist:ovis-browser-agent" };
@@ -129,7 +131,7 @@ export class BrowserTabs {
   private noStage = false;
   /** the picture being taken, which the next one waits for, and each tab's picture asked for and not yet taken */
   private pictures: Promise<void> = Promise.resolve();
-  private waitingPictures = new Map<number, Promise<string | null>>();
+  private waitingPictures = new Map<string, Promise<string | null>>();
   /** the sessions this BrowserTabs has guarded: webRequest and permission handlers replace the previous ones */
   private guarded = new Set<Session>();
 
@@ -249,21 +251,31 @@ export class BrowserTabs {
    * so with many agent tabs the right panel's cards refresh more slowly than every 4 s: correct pictures over cadence.
    */
   thumbnail(id: number): Promise<string | null> {
+    return this.picture(id, CARD_WIDTH);
+  }
+
+  /** The tab at its own size, as PNG data, for an agent's screenshot tool: shown or not, taken the same way as a card's. */
+  screenshot(id: number): Promise<string | null> {
+    return this.picture(id, null);
+  }
+
+  private picture(id: number, width: number | null): Promise<string | null> {
     // one picture of a tab asked for while another is waiting is that one
-    const waiting = this.waitingPictures.get(id);
+    const key = `${id}:${width ?? "full"}`;
+    const waiting = this.waitingPictures.get(key);
     if (waiting) return waiting;
     // one picture at a time: two tabs on the stage at once would cover each other
-    const taken = this.pictures.then(() => this.takePicture(id));
-    this.waitingPictures.set(id, taken);
+    const taken = this.pictures.then(() => this.takePicture(id, width));
+    this.waitingPictures.set(key, taken);
     this.pictures = taken.then(() => undefined, () => undefined);
-    void taken.finally(() => this.waitingPictures.delete(id));
+    void taken.finally(() => this.waitingPictures.delete(key));
     return taken;
   }
 
-  private async takePicture(id: number): Promise<string | null> {
+  private async takePicture(id: number, width: number | null): Promise<string | null> {
     const tab = this.tabs.get(id);
     if (!tab || tab.allowed === null) return null;
-    if (this.shown === id) return capture(tab.view.webContents);
+    if (this.shown === id) return capture(tab.view.webContents, width);
     // only an agent's tab is pictured while nobody looks at it (the right panel's cards); a person's own tab only shown
     if (tab.profile !== "agent") return null;
     const stage = this.stageWindow();
@@ -283,7 +295,7 @@ export class BrowserTabs {
         await new Promise((next) => setTimeout(next, STAGE_FRAME_MS));
         // shown or closed meanwhile: show() has placed it, or it is gone
         if (!this.onStage(tab) || tab.view.webContents.isDestroyed()) return null;
-        const picture = await capture(tab.view.webContents);
+        const picture = await capture(tab.view.webContents, width);
         if (picture !== null && primed) return picture;
         primed ||= picture !== null;
       }
@@ -398,7 +410,7 @@ export class BrowserTabs {
     const tab = this.tabs.get(id);
     if (!tab || tab.grant !== grant || tab.allowed === null) return "No such tab of yours: list them with browser_tabs.";
     if (tab.held) return "The user has taken control of this tab: wait until they hand it back.";
-    return { id, contents: tab.view.webContents, address: shownAddress(tab.allowed), shown: this.shown === id };
+    return { id, contents: tab.view.webContents, address: shownAddress(tab.allowed) };
   }
 
   private decide(url: string, frameOrigin: string | null) {

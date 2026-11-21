@@ -30,7 +30,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDef[] = [
   { name: "browser_snapshot", description: "Read a tab from its accessibility tree: title, address, landmarks, headings, text and the elements you can act on, each with a ref (@e1, @e2, ...). No field's value is ever shown, a password's included.", inputSchema: { type: "object", properties: { tab: TAB }, required: ["tab"] } },
   { name: "browser_click", description: "Click an element of a tab by its ref.", inputSchema: { type: "object", properties: { tab: TAB, ref: REF }, required: ["tab", "ref"] } },
   { name: "browser_type", description: "Type text into an element of a tab by its ref, replacing what it holds; submit presses Enter after.", inputSchema: { type: "object", properties: { tab: TAB, ref: REF, text: { type: "string", description: "The text to type." }, submit: { type: "boolean", description: "Press Enter after typing." } }, required: ["tab", "ref", "text"] } },
-  { name: "browser_screenshot", description: "A picture of a tab as it is drawn (PNG). Works while the tab is on the user's screen.", inputSchema: { type: "object", properties: { tab: TAB }, required: ["tab"] } },
+  { name: "browser_screenshot", description: "A picture of a tab as it is drawn (PNG), on the user's screen or not; a desktop that cannot draw it off screen answers with why.", inputSchema: { type: "object", properties: { tab: TAB }, required: ["tab"] } },
   { name: "browser_close", description: "Close one of your tabs.", inputSchema: { type: "object", properties: { tab: TAB }, required: ["tab"] } },
 ];
 

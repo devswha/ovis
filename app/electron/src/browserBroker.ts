@@ -169,9 +169,9 @@ export class BrowserBroker {
         return typeof now === "string" ? now : "No such element to type in: take a new browser_snapshot.";
       }
       case "browser_screenshot": {
-        if (!tab.shown) return "The tab is not on the user's screen, so it has no picture: use browser_snapshot to read it.";
-        const image = await tab.contents.capturePage();
-        return [{ type: "image", data: image.toPNG().toString("base64"), mimeType: "image/png" }];
+        const picture = await tabs.screenshot(id);
+        if (picture === null) return "This tab could not be pictured now (it is not on the user's screen, and this desktop cannot draw it off screen): use browser_snapshot to read it.";
+        return [{ type: "image", data: picture.slice(picture.indexOf(",") + 1), mimeType: "image/png" }];
       }
       case "browser_close":
         tabs.close(id);

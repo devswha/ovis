@@ -73,7 +73,8 @@ beforeAll(async () => {
   if (!built.success) throw new Error(built.logs.join("\n"));
   const electron = resolve(import.meta.dir, "..", "node_modules", "electron", "dist", "electron");
   run = Bun.spawn([electron, "--no-sandbox", "--ozone-platform=headless", "--disable-gpu", join(root, "build", "browserBroker.harness.js")], {
-    env: { ...process.env, OVIS_TEST_ROOT: root, OVIS_TEST_PORT: String(site.port), ELECTRON_ENABLE_LOGGING: "" },
+    // the stage that pictures a tab nobody shows is made on Linux under X11 only (browserState.ts)
+    env: { ...process.env, XDG_SESSION_TYPE: "x11", WAYLAND_DISPLAY: "", OVIS_TEST_ROOT: root, OVIS_TEST_PORT: String(site.port), ELECTRON_ENABLE_LOGGING: "" },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "ignore",
@@ -128,7 +129,12 @@ describe.skipIf(!linux)("the built-in browser's agent socket in Electron", () =>
     const both = await Promise.all([call("a", "browser_click", { tab: tab.id, ref: ref("Press me") }), call("a", "browser_click", { tab: tab.id, ref: ref("Press me") })]);
     expect(both.map((answer) => words(answer.content))).toEqual(["Clicked.", "Clicked."]);
     expect(words((await call("a", "browser_snapshot", { tab: tab.id })).content)).toContain("Title: clicked 2");
-    expect(words((await call("a", "browser_screenshot", { tab: tab.id })).content)).toContain("not on the user's screen");
+    // a tab nobody shows is pictured too, at its own size (off screen, on Linux under X11)
+    const shot = (await call("a", "browser_screenshot", { tab: tab.id })).content;
+    expect(shot).toEqual([expect.objectContaining({ type: "image", mimeType: "image/png" })]);
+    const png = Buffer.from((shot[0] as { data: string }).data, "base64");
+    expect(png.subarray(1, 4).toString()).toBe("PNG");
+    expect(png.readUInt32BE(16)).toBeGreaterThan(320);
 
     const arrived = new Promise<void>((done, failed) => {
       const timer = setTimeout(() => failed(new Error("the form was never submitted")), 10_000);
