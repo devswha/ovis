@@ -6409,6 +6409,15 @@ and pages the panel refuses get no row. Nothing is proxied: the browser reaches 
 app's hostname, as for a clicked link. This follows VS Code's Simple Browser, which a palette
 command opens on a typed address; no code is copied.
 
+## Workspace labels in touch agent rows
+
+Touch agent rows show the workspace label below the tab title, including in One line mode.
+This keeps equally named tabs such as Main distinguishable without opening a row's menu.
+The full workspace label remains in the tooltip; long labels truncate within the row.
+Helpers keep their parent row's context. Desktop rows keep their existing place text.
+This adapts the visible location context in [Warp's vertical tabs](https://docs.warp.dev/terminal/windows/vertical-tabs)
+to Ovis's workspace model and its narrower touch drawer. No code or visual assets are copied.
+
 ## Touch prompt suggestions
 
 The empty composer follows Claude Code's [prompt suggestion model](https://code.claude.com/docs/en/interactive-mode): accept into an editable draft, then send separately. A phone has no Tab key: Settings → Chat → Composer buttons → Suggestion (off by default) adds a chip above the box that takes it. The grey words themselves never take a tap, with the chip on or off: that tap is how the box is focused to type one's own reply, and a suggestion of normal length covers most of the first line, so taking it there filled the box on most taps meant to start typing (#3807). An explicit action takes the suggestion, as Tab does in Claude Code's own input; focusing the box does not. Tab and the chip share the same acceptance function. A suggestion that exceeds the message limit leaves the draft unchanged and shows the limit in the existing alert. gjc's `promptSuggestions` and omp's `composer.predictions` draw their suggestion the same way, as ghost text in the theme's dim color in their empty box, and the composer offers it as it offers Claude's; one they cut short at the box's edge (ending in `…`) is not offered, since only part of it would go into the draft. Typed text there must never read as a suggestion, so omp's is offered only in the `dim` of one of its built-in themes and in no color any of them types in; the dim `Queueing` header of a queue draft is not offered either. The theme on screen is not known, so a custom omp theme whose text color is exactly one of those dim colors is a known limit: its typed text reads as a suggestion. No code or visual assets are copied.

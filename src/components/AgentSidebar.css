@@ -351,6 +351,8 @@
   font-size: var(--fs-xs);
 }
 
+.agent-workspace { display: none; }
+
 /* What herdr plugins report on the pane (its `$name` tokens: usage left, a task's progress): a
    line of its own under the place, in either row height, only where the pane has one. */
 .agent-tokens {
@@ -390,7 +392,26 @@
   min-width: 4.5em;
 }
 
+/* Touch rows keep the workspace below the title so equally named tabs can be told apart. */
 @media (pointer: coarse) {
+  .agents-sidebar.is-one-line .agent-main:has(.agent-workspace) {
+    flex-direction: column;
+    align-items: stretch;
+    flex-wrap: nowrap;
+    gap: var(--space-1);
+    height: auto;
+  }
+
+  .agents-sidebar.is-one-line .agent-workspace {
+    display: block;
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+    line-height: var(--lh-tight);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .agents-sidebar.is-one-line .agent-context {
     position: absolute;
     width: var(--hairline);

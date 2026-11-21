@@ -163,6 +163,15 @@ describe("AgentSidebar one-line row titles", () => {
   const at = (workspace: number, extra: Partial<HerdrPane>): HerdrPane =>
     pane(`w${workspace}:p1`, { workspace_id: `w${workspace}`, tab_id: `w${workspace}:t1`, agent_status: "working", ...extra });
 
+  test("equally named tabs retain their own workspace labels for touch rows", () => {
+    const base = inWorkspaces(["General", "i_hate_beauty"], [at(1, {}), at(2, {})]);
+    for (const tab of base.snapshot!.tabs) tab.label = "Main";
+    const html = render([base]);
+    expect(texts(html, "agent-title")).toEqual(["Main", "Main"]);
+    const labels = [...html.matchAll(/<span class="agent-workspace" aria-hidden="true" title="([^"]*)">([^<]*)<\/span>/g)];
+    expect(labels.map((match) => [match[1], match[2]])).toEqual([["General", "General"], ["i_hate_beauty", "i_hate_beauty"]]);
+  });
+
   test("Within a state: Name orders the rows by the title each draws, not by the agent's name it gave way from", () => {
     const grouped = { "ovis:agent-groups": "true", "ovis:agent-group-sort": JSON.stringify("name") };
     const rows = inWorkspaces(["zulu", "bravo", "alpha"], [at(1, { title: "Claude Code" }), at(2, { title: "Beta task" }), at(3, { title: "Claude Code" })]);

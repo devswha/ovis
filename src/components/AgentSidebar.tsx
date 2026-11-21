@@ -40,6 +40,7 @@ interface AgentRowBodyProps {
   title: string;
   name: string | null;
   context: string;
+  workspaceLabel: string;
   /** what herdr plugins report on the pane (`$name` tokens), in the order herdr's rows draw them */
   tokens: readonly string[];
   backgroundTasks?: number;
@@ -81,7 +82,7 @@ export function blockedLabel(pane: Pick<HerdrPane, "agent_kind" | "agent_message
   return pane.agent_message?.trim() || null;
 }
 
-function AgentRowBody({ mark, markKind, title, name, context, tokens, backgroundTasks, plan, paneContext, status, note = null, muted, locked = false, blockedNote: blocked = null, blockedLabel: blockedShort = null, progress, helper = false, since = null }: AgentRowBodyProps) {
+function AgentRowBody({ mark, markKind, title, name, context, workspaceLabel, tokens, backgroundTasks, plan, paneContext, status, note = null, muted, locked = false, blockedNote: blocked = null, blockedLabel: blockedShort = null, progress, helper = false, since = null }: AgentRowBodyProps) {
   const t = useT();
   const showProgress = progress !== undefined && (status === "working" || status === "blocked");
   return <>
@@ -100,6 +101,7 @@ function AgentRowBody({ mark, markKind, title, name, context, tokens, background
             <span className="visually-hidden">{t("Progress {percent}%", { percent: progress })}</span>
           </>}
         </span>
+        {!helper && <span className="agent-workspace" aria-hidden="true" title={workspaceLabel}>{workspaceLabel}</span>}
         {!helper && (name || context) && <span className="agent-context">
           {name && <span className="agent-name">{name}</span>}
           {name && context && " · "}
@@ -558,7 +560,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
           event.dataTransfer.setData(PANE_DRAG_TYPE, paneDragData({ machineId: machine.id, paneId: pane.pane_id }));
         }}>
         {missingContext && <span className="visually-hidden">{missingContext} · </span>}
-        <AgentRowBody mark={mark} markKind={markKind} title={title} name={name} context={context} tokens={tokens} backgroundTasks={online ? pane.background_tasks : 0} plan={online ? pane.plan : undefined} paneContext={online && settings.sidebarContext ? pane.context : undefined} status={status} note={filterContext && selected ? t("Selected") : null} muted={muted?.includes(paneMuteKey(machine.id, pane.pane_id)) === true} locked={locked.has(pinKey)} blockedNote={blocked} blockedLabel={blockedShort} progress={online ? pane.agent_progress : undefined} helper={depth > 0} since={since} />
+        <AgentRowBody mark={mark} markKind={markKind} title={title} name={name} context={context} workspaceLabel={entry.workspace.label} tokens={tokens} backgroundTasks={online ? pane.background_tasks : 0} plan={online ? pane.plan : undefined} paneContext={online && settings.sidebarContext ? pane.context : undefined} status={status} note={filterContext && selected ? t("Selected") : null} muted={muted?.includes(paneMuteKey(machine.id, pane.pane_id)) === true} locked={locked.has(pinKey)} blockedNote={blocked} blockedLabel={blockedShort} progress={online ? pane.agent_progress : undefined} helper={depth > 0} since={since} />
       </button>
       <div className="agent-actions">
         <button type="button" className="sidebar-row-action row-menu-toggle" aria-label={t("More for {title}", { title })} aria-haspopup={sheet ? "dialog" : "menu"} aria-expanded={menuOpen} onClick={(event) => toggleMenu(event.currentTarget)}>
