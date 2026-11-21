@@ -775,18 +775,23 @@ interface Listing { readonly serverId: string; readonly entry: { label: string; 
  * over a PUT, so only a DELETE then a PUT shows the card again. The entry is `unlisted.listing` from
  * before that DELETE (whose answer can be lost after the service applied it) until the PUT lands: the
  * caller lists it again until it is back, so a renewal never leaves the PC unlisted.
+ * A device code's sign-in may end only a pending listing it wrote itself (account#63), and a refresh takes only a
+ * confirmed PC: a listing an earlier run wrote is kept as it is, by a PUT, and `unlisted.kept` says so from then on.
  */
-async function listThisPc(api: Api, service: AccountService, now: () => number, unlisted: { listing: Listing | null }): Promise<Listing> {
+async function listThisPc(api: Api, service: AccountService, now: () => number, unlisted: { listing: Listing | null; kept: boolean }): Promise<Listing> {
   const listing = await openedListing(api);
   const listed = (await service.listPcs()).find((pc) => pc.server_id === listing.serverId);
-  if (listed === undefined || now() - Date.parse(listed.added_at) < NEW_PC_MS - RELIST_MS) {
+  if (listed === undefined || unlisted.kept || now() - Date.parse(listed.added_at) < NEW_PC_MS - RELIST_MS) {
     await service.putPc(listing.serverId, { ...listing.entry, ...await ownPcProof(listing.serverId, (path) => api("POST", path)) });
     unlisted.listing = null;
     await nameRelayAccount(api, service);
     return listing;
   }
   unlisted.listing = listing;
-  await service.deletePc(listing.serverId);
+  try { await service.deletePc(listing.serverId); } catch (error) {
+    if (!(error instanceof AccountServiceError && error.status === 403 && error.code === "own_sign_in_required")) throw error;
+    unlisted.kept = true;
+  }
   if (await putListing(api, service, listing)) unlisted.listing = null;
   await nameRelayAccount(api, service);
   return listing;
@@ -1486,8 +1491,9 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   const service = new AccountService({ store, lock, fetch: serviceFetch, now });
   const session = await service.session();
   const signedIn = session?.account ?? null;
-  const pending: { listing: Listing | null } = { listing: null };
+  const pending: { listing: Listing | null; kept: boolean } = { listing: null, kept: false };
   const unlisted = "This PC could not be listed in your account again just now; it is tried again until it is.\n";
+  const kept = "This PC stays listed, but an earlier run listed it, so your other devices may no longer show it as new.\n";
   try {
     if (session === undefined || signedIn === null) throw new LocalError("The sign-in did not last. Run this again.");
     if (preview && !mode.approve) {
@@ -1501,6 +1507,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       }
     }
     const first = await listThisPc(api, service, now, pending);
+    if (pending.kept) out(kept);
     if (pending.listing !== null) out(unlisted);
     // a renewal's listing not put back yet goes back first: an account that does not list the PC gives it no pass
     if (pending.listing !== null && await putListing(api, service, pending.listing)) { pending.listing = null; await nameRelayAccount(api, service); }
@@ -1623,9 +1630,11 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           if ((now() - listedAt >= RELIST_MS || (last && !lastListed)) && mayOpen()) {
             // a renewal that failed after its DELETE went out keeps waiting: the listing is put back above, as after a failed PUT.
             // None in the last ten minutes: it would show the PC as new for ten more, past the window's end
+            const keptBefore = pending.kept;
             try { await listThisPc(api, service, now, pending); } catch (error) {
               if (pending.listing === null) throw error;
             }
+            if (pending.kept && !keptBefore) say(kept);
             if (pending.listing !== null) say(unlisted);
             listedAt = now();
             openedAt = listedAt;

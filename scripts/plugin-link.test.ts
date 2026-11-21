@@ -393,6 +393,41 @@ describe("ovis link, on the PC itself", () => {
     expect(polls()).toBe(901);
   });
 
+  it("keeps waiting when run again after it stopped, though the earlier run's listing is not this sign-in's to renew", async () => {
+    const pc = identity();
+    const time = clock();
+    const service = new FakeAccountService(time.now);
+    let account: string | null = null;
+    let polls = 0;
+    // the look from which this PC is in the account: none in the first run
+    let joinsAt = Number.POSITIVE_INFINITY;
+    const local = localPc(async (request, path) => {
+      if (path === "/api/account/status") return Response.json({ account, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
+      if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
+      if (path === "/api/relay/pairings") { if (++polls >= joinsAt) account = "acct_1"; return Response.json({ pairings: [] }); }
+      return undefined;
+    });
+    const run = async () => {
+      const out: string[] = [];
+      const code = await link(["--approve"], {
+        origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal, lines: silent(), terminal: true, accountService: SERVICE,
+        serviceFetch: (input, init) => service.fetch(new Request(input, init)),
+        out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); },
+      });
+      return { code, text: out.join("") };
+    };
+    const first = await run();
+    expect([first.code, first.text.endsWith("Stopped waiting after 30 minutes. Run this again to keep waiting.\n")]).toEqual([1, true]);
+    // the listing the first run renewed last is more than nine minutes old: due for renewal, by another sign-in
+    joinsAt = polls + 3;
+    const { code, text } = await run();
+    expect(text).not.toContain("Could not link this PC");
+    expect(text).toContain("This PC stays listed, but an earlier run listed it, so your other devices may no longer show it as new.\n");
+    expect(code).toBe(0);
+    expect(service.pcs("acct_1").map((entry) => entry.server_id)).toEqual([pc.server_id]);
+  });
+
   it("never asks for a window that would outlive its 30 minutes, nor shows this PC as new past it: neither in the last ten", async () => {
     const { code, linkAt, writes, pc } = await waiting(() => ({ account: null }));
     expect(code).toBe(1);
