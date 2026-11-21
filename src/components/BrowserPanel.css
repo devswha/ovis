@@ -49,6 +49,8 @@
 }
 
 .browser-tabs {
+  /* a grid item of the PC section: no wider than it, so a long title ends in an ellipsis */
+  min-width: 0;
   padding: var(--space-2) var(--side-gutter) 0;
 }
 
