@@ -219,12 +219,15 @@ export function tailnetPcs(saved, names) {
 
 const OFFER = "#offer=";
 const SCOPE = /^\/s\/([0-9a-f]{32})\/?$/;
+/** a PC's page that asks for that provider's sign-in first (the QR code a PC in an account shows): no key, code or token */
+const SIGN_IN = /^#sign-in=[a-z]{1,32}$/;
 
 /**
  * What `url` (from parseAddress) opens through the Ovis relay, or null for a PC's own address.
  * A PC's page on the app's origin, `/s/<server_id>/`, with its pairing offer (`#offer=`, the QR code
- * the PC shows for the relay) or without (a PC saved before), is `{ url, scope, name }`: the address
- * to open, the fragment kept, the scope the app saves the PC under, and its label from the offer.
+ * the PC shows for the relay), with a provider's sign-in (`#sign-in=`, the QR code a PC in an account
+ * shows) or with neither (a PC saved before), is `{ url, scope, name }`: the address to open, the
+ * fragment kept, the scope the app saves the PC under, and its label from the offer.
  * Anything else is `{ error }`: "foreign-offer" for an offer on another origin, which only the app's
  * origin may take, "bad-offer" for an offer that does not name this scope's PC, and "not-a-pc" for
  * another page of the app's origin. The hosted shell checks the offer in full before it pairs.
@@ -235,6 +238,7 @@ export function relayLink(url, appOrigin = APP_ORIGIN) {
   if (serverId === undefined) return { error: "not-a-pc" };
   const scope = `${url.origin}/s/${serverId}/`;
   if (url.hash === "") return { url: scope, scope, name: undefined };
+  if (SIGN_IN.test(url.hash)) return { url: scope + url.hash, scope, name: undefined };
   if (!url.hash.startsWith(OFFER)) return { error: "not-a-pc" };
   const offer = offerOf(url.hash.slice(OFFER.length));
   if (offer === null || offer.server_id !== serverId) return { error: "bad-offer" };
