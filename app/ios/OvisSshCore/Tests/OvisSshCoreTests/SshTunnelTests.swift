@@ -356,6 +356,14 @@ final class SshTunnelTests: XCTestCase {
         }
     }
 
+    func testAClosedTunnelsPortIsFreeForTheNextAtOnce() async throws {
+        await tunnel.close()
+        tunnel = makeTunnel()
+        try await tunnel.listen()
+        let answer = try await send()
+        XCTAssertTrue(answer.hasPrefix("HTTP/1.1 200"))
+    }
+
     func testTwoListensAtOnceShareOneBind() async throws {
         await tunnel.close()
         port = try await Self.freePort()

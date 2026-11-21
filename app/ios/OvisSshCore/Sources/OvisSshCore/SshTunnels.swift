@@ -22,10 +22,11 @@ public final class SshTunnels: @unchecked Sendable {
         guard let gate = store.gate(pc) else { throw SshFailure("key-unreadable", "This phone can no longer open the gate saved for this PC") }
         let store = self.store
         // the entry is in place before anything waits, so a second open for the same PC finds it and shares its bind
+        var replaced: SshTunnel?
         let tunnel: SshTunnel = lock.locked {
             if let entry = tunnels[pc.origin] {
                 if Self.same(entry.pc, pc) { return entry.tunnel }
-                Task { await entry.tunnel.close() }
+                replaced = entry.tunnel
             }
             let made = SshTunnel(gate: gate, port: pc.localPort, dialer: { try await Self.dial(store, pc) },
                                  sshPorts: { [weak self] in self?.ports() ?? [] },
@@ -33,6 +34,8 @@ public final class SshTunnels: @unchecked Sendable {
             tunnels[pc.origin] = (pc, made)
             return made
         }
+        // the tunnel it replaces lets go of the port first: Darwin allows one listener per address
+        await replaced?.close()
         do {
             try await tunnel.listen()
         } catch {
@@ -91,9 +94,10 @@ public final class SshTunnels: @unchecked Sendable {
         await tunnel.resume()
     }
 
-    public func closeFor(_ origin: String) {
+    /// Closes the PC's tunnel; returns once its port is free.
+    public func closeFor(_ origin: String) async {
         let entry = lock.locked { tunnels.removeValue(forKey: origin) }
-        if let entry { Task { await entry.tunnel.close() } }
+        await entry?.tunnel.close()
     }
 
     private func all() -> [SshTunnel] { lock.locked { tunnels.values.map(\.tunnel) } }

@@ -282,7 +282,7 @@ final class SshSetupModel: ObservableObject {
             // a new gate each time the PC is set up: the tunnel starts again with what was saved here
             pc = try store.withNewGate(pc)
             try store.put(pc)
-            OvisSsh.tunnels.closeFor(pc.origin)
+            await OvisSsh.tunnels.closeFor(pc.origin)
             if before == nil { PCStore.names[pc.origin] = place + " (SSH)" }
             PCStore.openSsh(pc.origin)
             say(SshWords.text("ssh_connected"), working: true)

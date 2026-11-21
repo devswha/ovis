@@ -17,6 +17,42 @@ enum OvisSsh {
     }()
     private static var networkWatch: NWPathMonitor?
 
+    /// SSH needs WebKit's Sec-Fetch-Site (iOS 16.4), which the tunnel reads to refuse another page's requests.
+    static var supported: Bool {
+        if #available(iOS 16.4, *) { return true }
+        return false
+    }
+
+    /// The web view's rule that no page loads anything from this phone's 127.0.0.1 but the saved SSH PCs' ports: cookies
+    /// do not separate ports, so a request there would carry every SSH PC's gate to whatever else listens on it (a
+    /// picture a PC's page shows included, which no navigation rule sees). Made again as SSH PCs come and go.
+    private static var rules: (ports: Set<Int>, list: WKContentRuleList)?
+
+    @MainActor
+    static func loopbackRules() async -> WKContentRuleList? {
+        let ports = tunnels.ports()
+        if ports.isEmpty { return nil }
+        if let rules, rules.ports == ports { return rules.list }
+        // WebKit's rule patterns have no alternation: each case is a rule of its own, and a URL always has "/" after its host
+        var json: [[String: Any]] = ["127\\.0\\.0\\.1", "localhost"].map { host in ["trigger": ["url-filter": "^[a-z]+://\(host)[:/]"], "action": ["type": "block"]] }
+        for port in ports.sorted() {
+            for scheme in ["http", "ws"] {
+                json.append(["trigger": ["url-filter": "^\(scheme)://127\\.0\\.0\\.1:\(port)/"], "action": ["type": "ignore-previous-rules"]])
+            }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: json), let text = String(data: data, encoding: .utf8) else { return nil }
+        let list: WKContentRuleList?
+        do {
+            list = try await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "ovis-ssh-loopback", encodedContentRuleList: text)
+        } catch {
+            NSLog("Ovis: the loopback rule did not compile: %@ %@", String(describing: error), text)
+            return nil
+        }
+        guard let list else { return nil }
+        rules = (ports, list)
+        return list
+    }
+
     /// The SSH PC saved under `key`, or nil for any other PC.
     static func pc(_ key: String?) -> SshPcs.Pc? { store.get(key.flatMap { PCStore.origin(ofKey: $0) }) }
 
@@ -264,10 +300,12 @@ public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
         let origin = call.getString("origin") ?? ""
         do {
             try OvisSsh.store.forgetHostKey(origin)
-            OvisSsh.tunnels.closeFor(origin)
-            call.resolve()
         } catch {
-            call.reject(String(describing: error), "internal")
+            return call.reject(String(describing: error), "internal")
+        }
+        Task {
+            await OvisSsh.tunnels.closeFor(origin)
+            call.resolve()
         }
     }
 
@@ -294,7 +332,7 @@ public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
                     answer["reason"] = "\(failure.kind): \(failure.message)"
                 }
             }
-            OvisSsh.tunnels.closeFor(pc.origin)
+            await OvisSsh.tunnels.closeFor(pc.origin)
             try? OvisSsh.store.remove(pc.origin)
             PCStore.forget(pc.origin)
             await OvisSsh.dropGate(origin: pc.origin, name: SshTunnel.cookieName(port: pc.localPort))
@@ -306,8 +344,8 @@ public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
     private func forgetRemoved() {
         let kept = Set(PCStore.saved + [PCStore.current, PCStore.last].compactMap { $0 })
         for pc in OvisSsh.store.list() where !kept.contains(pc.origin) {
-            OvisSsh.tunnels.closeFor(pc.origin)
             try? OvisSsh.store.remove(pc.origin)
+            Task { await OvisSsh.tunnels.closeFor(pc.origin) }
         }
     }
 }

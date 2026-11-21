@@ -458,7 +458,10 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(OvisPushPlugin())
         bridge?.registerPluginInstance(OvisAuthPlugin())
         bridge?.registerPluginInstance(OvisDirectPlugin())
-        bridge?.registerPluginInstance(OvisSshPlugin())
+        if OvisSsh.supported { bridge?.registerPluginInstance(OvisSshPlugin()) }
+        // on the web view's own content controller (Capacitor puts its own in the configuration it is given), before
+        // the first page loads
+        if let rules = Self.loopbackRules { webView?.configuration.userContentController.add(rules) }
         if let handler = (bridge as? CapacitorBridge)?.webViewDelegationHandler { DirectCallGate.install(on: handler) }
     }
 
@@ -685,17 +688,18 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// another app holds is not opened, and the connect screen says why.
     static func reopen() {
         guard let window else { return }
-        guard let pc = OvisSsh.pc(PCStore.shown) else {
-            window.rootViewController = HerdrBridgeViewController()
-            return
-        }
-        open(pc, in: window)
+        open(OvisSsh.pc(PCStore.shown), in: window)
     }
+
+    /// The rule list in force for the next web view (OvisSsh.loopbackRules), made before it is built.
+    private static var loopbackRules: WKContentRuleList?
 
     /// The app's first view controller: the PC or the connect screen at once, or, for an SSH PC, a blank one of the
     /// app's colour until its tunnel listens (reopen).
     static func first() -> UIViewController {
-        guard let pc = OvisSsh.pc(PCStore.shown) else { return HerdrBridgeViewController() }
+        // with no SSH PC there is no gate to keep from other ports, nor a tunnel to start: the page opens at once
+        guard OvisSsh.supported, !OvisSsh.store.list().isEmpty else { return HerdrBridgeViewController() }
+        let pc = OvisSsh.pc(PCStore.shown)
         let waiting = UIViewController()
         waiting.view.backgroundColor = UIColor(red: 0x12 / 255, green: 0x10 / 255, blue: 0x0e / 255, alpha: 1)
         DispatchQueue.main.async {
@@ -705,9 +709,17 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         return waiting
     }
 
-    private static func open(_ pc: SshPcs.Pc, in window: UIWindow) {
+    /// Builds the next web view once the loopback rule for the saved SSH PCs is made and, for an SSH PC, once its
+    /// tunnel listens with its gate in the cookie store.
+    private static func open(_ pc: SshPcs.Pc?, in window: UIWindow) {
+        guard OvisSsh.supported, !OvisSsh.store.list().isEmpty else {
+            loopbackRules = nil
+            window.rootViewController = HerdrBridgeViewController()
+            return
+        }
         Task { @MainActor in
-            if !(await OvisSsh.prepare(pc)) { PCStore.current = nil }
+            loopbackRules = await OvisSsh.loopbackRules()
+            if let pc, !(await OvisSsh.prepare(pc)) { PCStore.current = nil }
             window.rootViewController = HerdrBridgeViewController()
         }
     }

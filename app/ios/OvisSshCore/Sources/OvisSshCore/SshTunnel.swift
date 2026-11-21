@@ -111,11 +111,14 @@ public actor SshTunnel {
     /// Whether the listener is up.
     public var listening: Bool { server?.isActive ?? false }
 
-    public func close() {
+    /// Stops listening and ends the SSH connection; returns once the listener has let go of its port, so another
+    /// tunnel may bind it at once.
+    public func close() async {
         closed = true
-        server?.close(promise: nil)
+        let listener = server
         server = nil
         drop()
+        try? await listener?.close()
     }
 
     /// Try again on the error page: a Tailscale check the person has now approved is tried again; every other stop stays.

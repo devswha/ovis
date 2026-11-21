@@ -709,7 +709,8 @@ than the bare status, and a stop while the page is up takes the page to `error.h
 The iOS app does the same with the same screens, words, kinds and commands, in Swift
 (`app/ios/OvisSshCore`, a local Swift package over [SwiftNIO SSH](https://github.com/apple/swift-nio-ssh),
 Apache-2.0, whose cryptography is CryptoKit; `app/ios/App/App/OvisSshPlugin.swift`, `SshSetupView.swift`,
-`SshWords.swift`). `swift test` in `app/ios/OvisSshCore` on a Mac runs its tests (no CI job runs them), over
+`SshWords.swift`). `swift test` in `app/ios/OvisSshCore` on a Mac runs its tests (no CI job runs them yet: a macOS job for them is a
+follow-up), over
 the Android app's `ssh-test-keys`; `SshFixtureTests` also runs against a real sshd when `OVIS_SSH_FIXTURE`
 names one (a throwaway `sshd -D -f <config>` run as yourself is enough). Where it differs:
 
@@ -718,8 +719,11 @@ names one (a throwaway `sshd -D -f <config>` run as yourself is enough). Where i
   handed out). Cookies do not separate ports, so the gate cookie is named for the port
   (`ovis_ssh_gate_<port>`), and the tunnel also refuses a request another origin's page makes (an `Origin`
   that is not its own, or `Sec-Fetch-Site` other than `same-origin` or `none`): another SSH PC's page, on
-  its own port, is same-site and would carry the cookie. The app never opens or loads 127.0.0.1 at a port no
-  SSH PC listens on, and the tunnel refuses a redirect there.
+  its own port, is same-site and would carry the cookie. The app never opens or navigates to 127.0.0.1 at a port
+  no SSH PC listens on, the tunnel refuses a redirect there, and a WebKit content rule list
+  (`OvisSsh.loopbackRules`, made again as SSH PCs come and go, before each web view) blocks every other load from
+  127.0.0.1 there, a picture or a script a page asks for included. `Sec-Fetch-Site` comes with iOS 16.4, so SSH is
+  offered from iOS 16.4 on (`OvisSsh.supported`; the plugin is not registered before it).
 - The gate is 256 random bits made when the PC is set up and kept sealed with it, as WKWebView's cookie store
   is set asynchronously: it is put there (HttpOnly, SameSite=Strict, on that origin only) before the PC's
   page loads (`HerdrBridgeViewController.reopen` → `OvisSsh.prepare`).
