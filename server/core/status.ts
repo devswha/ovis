@@ -51,7 +51,7 @@ import type { Telemetry } from "../telemetry.ts";
 import type { UsageLoginService } from "../usage-login.ts";
 import type { UsageService } from "../usage.ts";
 import { type Client, send } from "./connections.ts";
-import { paneLastWords, watchInbox } from "../fork/inbox-widget.ts";
+import { paneLastWords, stopInbox, watchInbox } from "../fork/inbox-widget.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 const VISIT_READ_MS = 10 * 60_000;
@@ -783,7 +783,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   plans.start();
 
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId), () => collector.refresh());
-  const tracked = { ...collector, stop() { untrackOpenCode(); stopMutes(); stopSubmitted(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
+  const tracked = { ...collector, stop() { untrackOpenCode(); stopMutes(); stopSubmitted(); stopInbox(push); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
 
   /**
    * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an answer up

@@ -109,19 +109,82 @@ describe("inbox widget", () => {
     expect(widget.rows()).toEqual([]);
   });
 
-  test("each row carries its last words as the inbox shows them, read again only for a row that moved or works", async () => {
-    const asked: string[][] = [];
-    const words: LastWords = async (_machine, paneIds) => { asked.push([...paneIds]); return Object.fromEntries(paneIds.map((id) => [id, id === "p2" ? null : `said by ${id}`])); };
-    const { sent, widget, tick } = setup(words);
+  test("each row carries its last words as the inbox shows them", async () => {
+    const words: LastWords = async (_machine, paneIds) => Object.fromEntries(paneIds.map((id) => [id, id === "p2" ? null : `said by ${id}`]));
+    const { sent, widget } = setup(words);
     widget.panes([pane("p1", "blocked"), pane("p2", "done"), pane("p3", "working")]);
     widget.place("https://relay.example/v1/push/a", true);
     await flush(); await flush();
     expect(sent[0]!.message.inbox!.rows.map((row) => row.d)).toEqual(["said by p1", undefined, "said by p3"]);
-    tick(60_000);
     widget.place("https://relay.example/v1/push/a", true);
-    await flush(); await flush();
-    expect(asked[1]).toEqual(["p3"]);
-    expect(sent[1]!.message.inbox!.rows[0]!.d).toBe("said by p1");
+    await flush();
+    expect(sent).toHaveLength(1);
+  });
+
+  test("refreshes working words at the push interval, without sending unchanged rows", async () => {
+    const asked: string[][] = [];
+    let workingWords = "first words";
+    jest.useFakeTimers();
+    const { sent, widget, tick } = setup(async (_machine, paneIds) => {
+      asked.push([...paneIds]);
+      return Object.fromEntries(paneIds.map((id) => [id, id === "work" ? workingWords : "done"]));
+    });
+    const advance = async (ms: number) => {
+      tick(ms);
+      jest.advanceTimersByTime(ms);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    const endpoint = "https://relay.example/v1/push/a";
+    try {
+      widget.panes([pane("work", "working"), pane("done", "done")]);
+      await advance(30_000);
+      expect(asked).toEqual([]);
+      widget.place(endpoint, true);
+      await advance(0);
+      workingWords = "new words without a status change";
+      await advance(29_999);
+      expect(sent).toHaveLength(1);
+      await advance(1);
+      expect(sent[1]?.message.inbox?.rows.find((row) => row.p === "work")?.d).toBe(workingWords);
+      await advance(30_000);
+      expect(sent).toHaveLength(2);
+      expect(asked).toEqual([["done", "work"], ["work"], ["work"]]);
+      widget.place(endpoint, false);
+      await advance(30_000);
+      expect(asked).toHaveLength(3);
+    } finally {
+      widget.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  test("placing a second widget does not consume the first widget's pending update", async () => {
+    const { sent, widget, tick } = setup();
+    const a = "https://relay.example/v1/push/a";
+    const b = "https://relay.example/v1/push/b";
+    const states = () => sent.map(({ endpoint, message }) => [endpoint, message.inbox!.rows[0]!.s]);
+    jest.useFakeTimers();
+    const advance = async (ms: number) => {
+      tick(ms);
+      jest.advanceTimersByTime(ms);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    try {
+      widget.panes([pane("p1", "working")]);
+      widget.place(a, true);
+      await advance(0);
+      await advance(10_000);
+      widget.status("p1", "blocked");
+      widget.place(b, true);
+      await advance(0);
+      await advance(19_999);
+      expect(states()).toEqual([[a, "w"], [b, "b"]]);
+      await advance(1);
+      expect(states()).toEqual([[a, "w"], [b, "b"], [a, "b"]]);
+    } finally {
+      widget.stop();
+      jest.useRealTimers();
+    }
   });
 
   test("a delayed words read cannot send a working row after its blocked update", async () => {
@@ -132,16 +195,22 @@ describe("inbox widget", () => {
     try {
       widget.panes([pane("p1", "working")]);
       widget.place("https://relay.example/v1/push/a", true);
-      tick(2_000);
       widget.status("p1", "blocked");
+      tick(2_000);
       jest.advanceTimersByTime(2_000);
+      first.resolve({ p1: "still working" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      tick(29_999);
+      jest.advanceTimersByTime(29_999);
+      expect(sent.map(({ message }) => message.inbox!.rows[0]!.s)).toEqual(["w"]);
+      tick(1);
+      jest.advanceTimersByTime(1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(sent.map(({ message }) => message.inbox!.rows[0]!.s)).toEqual(["w", "b"]);
     } finally {
+      widget.stop();
       jest.useRealTimers();
     }
-    await flush();
-    first.resolve({ p1: "still working" });
-    await flush();
-    expect(sent.map(({ message }) => message.inbox!.rows[0]!.s)).toEqual(["w", "b"]);
   });
 
   test("words are one plain line, the user's marked, cut short", () => {
