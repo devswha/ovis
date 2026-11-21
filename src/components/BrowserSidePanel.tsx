@@ -87,7 +87,8 @@ function TabCard({ tab, agent, onOpen }: { tab: DesktopBrowserTab; agent: string
   useEffect(() => {
     if (tab.loading) return;
     let alive = true;
-    const take = () => void browserTabThumbnail(tab.id).then((next) => { if (alive && next !== null) setPicture(next); });
+    // nothing to look at while the app is hidden or minimised
+    const take = () => { if (document.visibilityState !== "hidden") void browserTabThumbnail(tab.id).then((next) => { if (alive && next !== null) setPicture(next); }); };
     take();
     const timer = setInterval(take, CARD_PICTURE_MS);
     return () => { alive = false; clearInterval(timer); };

@@ -160,6 +160,17 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   await page.context().close();
 }
 
+async function middle(browser: Browser, origin: string): Promise<void> {
+  // too narrow for a panel beside the pane: no cards that could not open their tab, and no Browser group
+  const page = await open(browser, origin, 1280, "light", true);
+  const side = page.getByRole("complementary", { name: "브라우저 패널", exact: true });
+  await side.waitFor();
+  await page.setViewportSize({ width: 900, height: 820 });
+  await side.waitFor({ state: "detached" });
+  await page.getByRole("region", { name: "브라우저", exact: true }).waitFor({ state: "detached" });
+  await page.context().close();
+}
+
 async function phone(browser: Browser, origin: string): Promise<void> {
   const page = await open(browser, origin, 390, "light", true);
   assert.equal(await page.getByRole("region", { name: "브라우저", exact: true }).count(), 0, "390: a narrow window has no place beside the pane, so no Browser group");
@@ -179,6 +190,7 @@ async function main(): Promise<void> {
       try {
         const origin = `http://127.0.0.1:${server.port}/`;
         for (const theme of ["light", "dark"] as const) await wide(browser, origin, theme);
+        await middle(browser, origin);
         await phone(browser, origin);
       } finally { await browser.close(); }
     } finally {

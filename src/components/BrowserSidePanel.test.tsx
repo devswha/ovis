@@ -128,6 +128,15 @@ test("takes a card's picture again every few seconds while it is shown, and stop
   expect(pictures).toBe(first + 2);
 });
 
+test("takes no card picture while the app is hidden", async () => {
+  pictures = 0;
+  install(stub(async () => view));
+  (globalThis.document as unknown as { visibilityState: string }).visibilityState = "hidden";
+  await render();
+  await act(async () => { jest.advanceTimersByTime(8_000); });
+  expect(pictures).toBe(0);
+});
+
 test("asks a Claude pane for its pages once per status, never again while the answer is empty", async () => {
   const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ artifacts: [] }), globalThis.fetch));
   install(stub(async () => view));

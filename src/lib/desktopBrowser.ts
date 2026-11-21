@@ -4,7 +4,7 @@
  * kept (downloads, an agent's screenshots). Null without the desktop app or while its setting is
  * off, where main answers null. Main is the authority on every field; this only reads them.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 
 export type DesktopBrowserProfile = "mine" | "agent";
 
@@ -210,13 +210,15 @@ export function typedAddress(text: string): string | null {
  * away, or the whole browser turned off, shows nothing.
  */
 export function useShownBrowserTab(tabs: DesktopBrowserTab[] | null) {
-  const [selected, select] = useState<number | "new" | null>(null);
+  const [selected, setSelected] = useState<number | "new" | null>(null);
   const [opening, setOpening] = useState<number | null>(null);
+  // a choice made while a typed tab is still on its way to the list wins over it
+  const select = useCallback((next: number | "new" | null) => { setOpening(null); setSelected(next); }, []);
   const shown = tabs === null || selected === null || selected === "new" ? null : tabs.find((tab) => tab.id === selected) ?? null;
   useEffect(() => {
-    if (tabs === null || (typeof selected === "number" && shown === null)) select(null);
+    if (tabs === null || (typeof selected === "number" && shown === null)) setSelected(null);
     if (opening !== null && tabs?.some((tab) => tab.id === opening)) {
-      select(opening);
+      setSelected(opening);
       setOpening(null);
     }
   }, [tabs, selected, shown, opening]);

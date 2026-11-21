@@ -7,7 +7,7 @@
  * tab is listed only once an address it committed was allowed, with that address shown without
  * its query.
  */
-import { BrowserWindow, session as sessions, WebContentsView, type Session, type WebContents } from "electron";
+import { BrowserWindow, screen, session as sessions, WebContentsView, type Session, type WebContents } from "electron";
 import { mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { BrowserResults, type BrowserResult } from "./browserResults.ts";
@@ -18,6 +18,11 @@ import { hostForm } from "./browserState.ts";
 export const BROWSER_PROFILES = ["mine", "agent"] as const;
 export type BrowserProfile = (typeof BROWSER_PROFILES)[number];
 export const MAX_BROWSER_TABS = 8;
+/** whether `bounds` overlap any screen */
+function onScreen(bounds: { x: number; y: number; width: number; height: number }): boolean {
+  return screen.getAllDisplays().some(({ bounds: area }) => bounds.x < area.x + area.width && bounds.x + bounds.width > area.x && bounds.y < area.y + area.height && bounds.y + bounds.height > area.y);
+}
+
 /** how many frames, this far apart, a tab brought to the top of the stage gets to paint before its picture is given up */
 const STAGE_FRAMES = 8;
 const STAGE_FRAME_MS = 50;
@@ -91,6 +96,8 @@ export class BrowserTabs {
    * which neither places a window off the screen nor makes it see-through: there a tab paints only while shown.
    */
   private stage: BrowserWindow | null = null;
+  /** the stage turned out visible here (the window manager placed it on a screen): it is not made again */
+  private noStage = false;
   /** the sessions this BrowserTabs has guarded: webRequest and permission handlers replace the previous ones */
   private guarded = new Set<Session>();
 
@@ -220,7 +227,9 @@ export class BrowserTabs {
       const bounds = tab.view.getBounds();
       if (attempt === 0 && staged) tab.view.setBounds({ ...bounds, height: bounds.height - 1 });
       await new Promise((next) => setTimeout(next, STAGE_FRAME_MS));
-      if (attempt === 0 && staged) tab.view.setBounds(bounds);
+      // shown in the meantime, show() has placed it: only a view still on the stage gets its size back
+      if (attempt === 0 && staged && this.onStage(tab)) tab.view.setBounds(bounds);
+      if (!this.onStage(tab) && this.shown !== id) return null;
     }
     return null;
   }
@@ -234,16 +243,37 @@ export class BrowserTabs {
     stage.contentView.addChildView(tab.view);
   }
 
+  private onStage(tab: Tab): boolean {
+    const stage = this.stage;
+    return stage !== null && !stage.isDestroyed() && stage.contentView.children.includes(tab.view);
+  }
+
   private stageWindow(): BrowserWindow | null {
     if (this.stage && !this.stage.isDestroyed()) return this.stage;
-    if (process.platform === "linux" && (process.env["XDG_SESSION_TYPE"] === "wayland" || process.env["WAYLAND_DISPLAY"])) return null;
+    if (this.noStage || (process.platform === "linux" && (process.env["XDG_SESSION_TYPE"] === "wayland" || process.env["WAYLAND_DISPLAY"]))) return null;
     const stage = new BrowserWindow({ show: false, x: -20000, y: -20000, width: 1280, height: 800, frame: false, focusable: false, skipTaskbar: true, opacity: 0, hasShadow: false, title: "Ovis browser stage" });
+    // nor in macOS's Window menu
+    stage.excludedFromShownWindowsMenu = true;
     stage.setIgnoreMouseEvents(true);
     stage.showInactive();
     stage.setPosition(-20000, -20000);
     stage.on("closed", () => { if (this.stage === stage) this.stage = null; });
+    // a window manager that keeps windows on the screen would show it: then no stage, as on Wayland
+    const check = () => { if (!stage.isDestroyed() && onScreen(stage.getBounds())) this.dropStage(); };
+    stage.on("move", check);
     this.stage = stage;
-    return stage;
+    check();
+    return this.stage;
+  }
+
+  /** gives up the stage for good: its tabs paint only while shown, and have no picture otherwise */
+  private dropStage(): void {
+    const stage = this.stage;
+    this.noStage = true;
+    this.stage = null;
+    if (!stage || stage.isDestroyed()) return;
+    for (const view of [...stage.contentView.children]) stage.contentView.removeChildView(view);
+    stage.destroy();
   }
 
   navigate(id: number, url: string): boolean {

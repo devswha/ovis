@@ -492,7 +492,13 @@ export function App() {
   // the desktop app's built-in browser (BrowserPanel.tsx): its tabs while it is on, and the one shown in the file panel's place
   const browserTabs = desktopBrowser?.tabs ?? null;
   const { selected: browserTab, select: setBrowserTab, shown: shownBrowserTab, opened: setOpeningTab } = useShownBrowserTab(browserTabs);
-  const browserShown = browserTabs !== null && filePanelAvailable && (browserTab === "new" || shownBrowserTab !== null) && webPage === null && !(viewing !== null && fileDocked);
+  // a tab opens in the file panel's place: a web page or a docked file there gives way to it
+  const openBrowserTab = (tab: number | "new") => {
+    if (webPage !== null) closeWebPage(true);
+    if (viewing !== null && fileDocked) closeFile();
+    setBrowserTab(tab);
+  };
+  const browserShown = browserTabs !== null && filePanelAvailable && !inMode && (browserTab === "new" || shownBrowserTab !== null) && webPage === null && !(viewing !== null && fileDocked);
   const panePresence = useCallback((): PanePresence => !(locked === false && linkLanded && pendingFile.current === null && pendingCreate.current === null
     && !drawerOpen && !settingsOpen && !newSessionOpen
     && !(filesOpen && !filesDocked) && !machineDialog && !paletteOpen && !diffViewing && !(viewing && !fileDocked)
@@ -1122,7 +1128,7 @@ export function App() {
           <RenderBoundary resetKey={null} fallback={(retry) => <RegionCrash message={t("The sidebar can't be shown.")} retry={retry} />}>
             <CrashProbe region="sidebar" />
             <ReorderContext.Provider value={reorderCoordinator}><MachineSidebar machines={sidebarMachines} allMachines={machines} watching={auth?.role === "watch"} appLayout={appLayoutOn} drawerOpen={drawerOpen} filterRequest={sidebarFilterRequest} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} activity={activity} actions={actions} onSelect={selectTarget} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={openNewOn}
-              afterPcs={browserTabs !== null && filePanelAvailable ? <BrowserTabsGroup tabs={browserTabs} selected={browserTab} onSelect={(tab) => { if (webPage !== null) closeWebPage(true); setBrowserTab(tab); }} /> : undefined}
+              afterPcs={browserTabs !== null && filePanelAvailable ? <BrowserTabsGroup tabs={browserTabs} selected={browserTab} onSelect={openBrowserTab} /> : undefined}
               footerStart={<>{setupRow}{modeOffered && wideScreen && !markEnters && <InboxFootEntry onOpen={() => { actions.counted?.("inbox", "button"); enterInbox(); }} />}</>} /></ReorderContext.Provider>
           </RenderBoundary>
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
@@ -1336,10 +1342,10 @@ export function App() {
         {webPage !== null && !(viewing !== null && fileDocked) &&
           <WebPanel key={webPage} url={webPage} docked={filePanelAvailable} covered={webDialogCover} onClose={closeWebPage} panelStart={filePanelAvailable ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined} />}
         {/* a tab open beside the pane takes the right panel's place: both would squeeze the conversation */}
-        {desktopBrowser !== null && wideScreen && !inMode && !browserShown && <MachineContext.Provider value={selectedMachineId}>
+        {desktopBrowser !== null && filePanelAvailable && !inMode && !browserShown && <MachineContext.Provider value={selectedMachineId}>
           <BrowserSidePanel browser={desktopBrowser} pane={selectedPane ? { id: selectedPane.pane_id, agent: selectedAgent, status: selectedPane.agent_status } : null}
             agentOf={(paneId) => machines.find((machine) => machine.id === "local")?.snapshot?.panes.find((pane) => pane.pane_id === paneId)?.agent ?? null}
-            onOpen={(tab) => { if (webPage !== null) closeWebPage(true); setBrowserTab(tab); }} />
+            onOpen={openBrowserTab} />
         </MachineContext.Provider>}
         {browserShown && <BrowserPanel tab={shownBrowserTab} covered={dialogCover || webDialogCover} onOpened={setOpeningTab} onClose={() => setBrowserTab(null)}
           panelStart={<FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} />} />}
