@@ -15,6 +15,7 @@ package sh.ovis.app;
  *       `bridge-only`, `not-started`, `not-ovis`;</li>
  *   <li>a first install from the phone: `install-unsupported`, `install-missing-tool`,
  *       `install-permission`, `install-disk`, `install-failed`;</li>
+ *   <li>`tailscale-check`: Tailscale SSH asks to approve this phone again (`command` is its link);</li>
  *   <li>`cancelled`, `internal`.</li>
  * </ul>
  */
