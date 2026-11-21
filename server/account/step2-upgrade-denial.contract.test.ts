@@ -136,6 +136,41 @@ async function rebind(pc: Awaited<ReturnType<typeof fixture>>, app: ReturnType<t
   expect((await post("/api/account/one-press", { account: ACCOUNT })).status).toBe(200);
 }
 
+test.skipIf(!available)("a companion freeze still covers a newer account row before and after clock correction", async () => {
+  const pc = await fixture("original");
+  const newer = await phone();
+  const no = pc.service.registerDevice(ACCOUNT, newer.spki, "Newer account phone");
+  expect(no).toBeGreaterThan(pc.record.target_no);
+  const app = pc.start();
+  const now = Date.now();
+  const wall = spyOn(Date, "now").mockReturnValue(now);
+  try {
+    pc.connect();
+    const { accountMailbox, devices, safetyLog } = app.context.services;
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    wall.mockReturnValue(now + JOIN_HOLD_MS + 1);
+    const id = accountDeviceId(pc.serverId, newer.spki);
+    expect(devices.sessionRow(id)?.key).toBe(newer.spki);
+    expect(safetyLog?.append({ got: "snapshot", record: pc.record, asof: {
+      signer_no: pc.record.signer_no, target_no: pc.record.target_no, after: null, joined: null, signer_removed: false, target_only: true,
+    } }).outcome).toBe("applied");
+    expect(safetyLog?.append({ got: "snapshot", record: {
+      v: 1, kind: "freeze", account: ACCOUNT, id: `f:${pc.record.id}`, target: pc.record.target,
+      after: pc.record.target_no, signer: "service", signed_at: pc.record.signed_at, signature: "",
+    } }).outcome).toBe("applied");
+    const results = [];
+    for (const at of [now + 3 * day, now + JOIN_HOLD_MS + 1]) {
+      wall.mockReturnValue(at);
+      results.push({ cookie: await credentialStatus(app.port, pc.cookie), numbered: devices.admitsFromList(newer.spki, ACCOUNT),
+        listed: devices.sessionRow(id) !== null });
+    }
+    expect(results).toEqual(Array(2).fill({ cookie: 200, numbered: false, listed: false }));
+  } finally {
+    wall.mockRestore();
+    await app.stop();
+  }
+}, 15_000);
+
 test.skipIf(!available).each(["signer", "target"] as const)(
   "a previous binding's %s pin cannot authorize a target-only block", async missing => {
     const pc = await fixture("original");
@@ -211,6 +246,37 @@ test.skipIf(!available).each(["hold", "expired", "service-off", "live"] as const
       expect(devices.sessionRow(accountDeviceId(pc.serverId, pc.owner.spki))?.key ?? null)
         .toBe(standing === "live" ? pc.owner.spki : null);
       expect(await credentialStatus(app.port, pc.cookie)).toBe(200);
+    } finally {
+      wall.mockRestore();
+      await app.stop();
+    }
+  }, 15_000,
+);
+
+test.skipIf(!available).each(["hold", "expired", "frozen", "live"] as const)(
+  "an owner sees a pending Not me only from a live member: %s", async standing => {
+    const pc = await fixture("original", "listed");
+    pc.omit(pc.victim.spki);
+    const app = pc.start();
+    const now = Date.now();
+    const wall = spyOn(Date, "now").mockReturnValue(now);
+    try {
+      pc.connect();
+      const { devices, accountMailbox } = app.context.services;
+      expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+      if (standing !== "hold") wall.mockReturnValue(now + JOIN_HOLD_MS + 1);
+      if (standing === "expired") {
+        wall.mockReturnValue(now + 61 * day);
+        expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+      }
+      if (standing === "frozen") {
+        expect(app.context.services.safetyLog?.append({ got: "snapshot", record: {
+          v: 1, kind: "freeze", id: `f:${"c".repeat(64)}`, account: ACCOUNT, target: pc.owner.spki,
+          after: 1, signer: "service", signed_at: new Date(now).toISOString(), signature: "",
+        } }).outcome).toBe("applied");
+      }
+      expect((await devices.applyBlock(pc.record, "mailbox")).outcome).toBe("refused");
+      expect([...devices.pendingNotMeRows()]).toEqual(standing === "live" ? [pc.targetId] : []);
     } finally {
       wall.mockRestore();
       await app.stop();

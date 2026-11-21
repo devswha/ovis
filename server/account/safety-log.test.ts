@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DeviceStore } from "../devices.ts";
+import { DeviceStore, type StoredDevice } from "../devices.ts";
+import { mergeRegistries } from "../state-merge.ts";
+import { legacyOrigin } from "./admission-order.ts";
+import { RemovalEvidence } from "./removal-evidence.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
 import { exportAccountKey, newRecordId, signSafetyRecord, type SafetyRecord } from "../../shared/account-records.ts";
 import { DEVICE_JOURNAL_FILE, pcRecordId, SAFETY_LOG_FILE, SafetyLog, type BlockAsOf } from "./safety-log.ts";
@@ -54,6 +57,34 @@ function serviceFreeze(blockId: string, target: string): SafetyRecord {
 const ids = (entries: readonly { record: { id: string } }[]) => entries.map((entry) => entry.record.id).sort();
 
 describe("the PC safety log (account-log.json)", () => {
+  test.each(["older-own", "newer-own", "quarantined", "imported", "sibling-time"] as const)(
+    "a keyless cookie under a legacy cutoff needs an older, trusted own timestamp: %s", async history => {
+      const dir = stateDir();
+      const cutoff = Date.parse(AT);
+      const older = new Date(cutoff - 1000).toISOString();
+      const newer = new Date(cutoff + 1000).toISOString();
+      const created = history === "newer-own" || history === "sibling-time" ? newer : older;
+      const token = newRecordId();
+      const row: StoredDevice = { id: "12".repeat(8), label: "Browser", role: "drive",
+        token_hash: createHash("sha256").update(token).digest("hex"), last_seen_at: null, created_at: created,
+        origin: legacyOrigin(created), ...(history === "imported" ? { imported: true } : {}),
+        ...(history === "quarantined" ? { untrusted_created_at: created } : {}) };
+      const registry = { gate_closed_at: older, devices: [row] };
+      const { origin: _origin, ...twin } = row;
+      const merged = history === "sibling-time" ? mergeRegistries(registry, {
+        gate_closed_at: older, devices: [{ ...twin, created_at: older }],
+      }, { own: null, other: null }, undefined, { dropConflictingKeys: true }) : registry;
+      writeFileSync(join(dir, "devices.json"), JSON.stringify({ gate_closed_at: older, devices: merged.devices }), { mode: 0o600 });
+      const safety = SafetyLog.open(dir);
+      const devices = new DeviceStore(dir, null, null, { safety, removals: RemovalEvidence.open(dir, safety) });
+      expect(devices.match(token)?.id).toBe(row.id);
+      const block = await signedBlock(await key(), await signer());
+      expect(safety.append({ got: "snapshot", record: block, asof: { signer_no: 0, target_no: 0, after: 0,
+        joined: 0, legacy_created_at: cutoff, signer_removed: false } }).outcome).toBe("applied");
+      expect(devices.match(token)?.id ?? null).toBe(history === "older-own" ? row.id : null);
+    },
+  );
+
   test("P24: append preserves signed bytes, IDs and increasing local numbers", async () => {
     const dir = stateDir();
     const by = await signer();

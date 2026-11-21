@@ -18,7 +18,7 @@ let release: Awaited<ReturnType<typeof v057Fixture>>;
 beforeAll(async () => { if (available) release = await v057Fixture(join(root, "release")); }, 30_000);
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-test.skipIf(!available).each(["lock", "local-block", "service-freeze", "held-key"] as const)(
+test.skipIf(!available).each(["lock", "local-block", "snapshot-block", "standalone-freeze", "held-key"] as const)(
   "release standing policy survives upgrade, ending, and offline restart: %s", async policy => {
     const stateDir = mkdtempSync(join(root, "pc-"));
     const service = new FakeAccountService();
@@ -81,7 +81,6 @@ test.skipIf(!available).each(["lock", "local-block", "service-freeze", "held-key
       target: target.spki, target_no: 2, nonce: newRecordId(), signed_at: new Date(epoch).toISOString() }, owner.keys.privateKey);
     const listedId = accountDeviceId(serverId, listed.spki);
     let baseline: number[] = [];
-    const compared = policy === "service-freeze" ? 1 : 2;
     let lock: string | undefined;
     try {
       expect(await released.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
@@ -97,35 +96,45 @@ test.skipIf(!available).each(["lock", "local-block", "service-freeze", "held-key
           expect(released.context.services.devices.isTombstoned(target.spki)).toBe(true);
           break;
         }
-        case "service-freeze":
+        case "snapshot-block":
           expect((await service.fetch(new Request("https://account.test/v1/safety-records", {
             method: "POST", headers: { authorization: `Bearer ${service.issueToken(ACCOUNT)}` }, body: JSON.stringify({ record: block }),
           }))).status).toBe(200);
           expect(await released.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
           break;
+        case "standalone-freeze": {
+          const log = released.context.services.safetyLog;
+          expect(log?.append({ got: "snapshot", record: { v: 1, kind: "freeze", account: ACCOUNT,
+            id: `f:${block.id}`, target: target.spki, after: 2, signer: "service",
+            signed_at: block.signed_at, signature: "" } }).outcome).toBe("applied");
+          expect(log?.state().blocks).toHaveLength(0);
+          expect(log?.state().freezes.map(entry => entry.record.id)).toEqual([`f:${block.id}`]);
+          expect(await released.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+          break;
+        }
         case "held-key":
           expect(released.context.services.devices.sessionRow(listedId)).toBeNull();
           break;
       }
-      // v0.5.7 opt-in refused every keyless cookie after a snapshot block; head places an older cookie before the cut.
-      // That cookie's widening is a hub decision, so the service-freeze oracle compares the cut cookie only.
-      baseline = [await credentialStatus(released.port, cookie), await credentialStatus(released.port, olderCookie)].slice(0, compared);
+      baseline = [await credentialStatus(released.port, cookie), await credentialStatus(released.port, olderCookie)];
       expect(baseline[0]).toBe(policy === "held-key" ? 200 : 401);
-      if (policy === "lock") expect(baseline[1]).toBe(401);
+      if (policy === "lock" || policy === "snapshot-block" || policy === "standalone-freeze") expect(baseline[1]).toBe(401);
     } finally {
       await released.stop();
       initialScreen.writer.releaseLock();
     }
     const nextScreen = screen();
+    // Unlike v0.5.7, the upgrade can place this older cookie by its own, non-quarantined pairing time.
+    const expected = policy === "snapshot-block" ? [401, 200] : baseline;
     const start = () => createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "matrix-owner",
       tailscaleOwner: null, sidecar: false, accountOpensAll: true, accountService, desktopOwner: nextScreen.desktopOwner });
     online = false;
     const upgraded = start();
     try {
-      expect([await credentialStatus(upgraded.port, cookie), await credentialStatus(upgraded.port, olderCookie)].slice(0, compared)).toEqual(baseline);
+      expect([await credentialStatus(upgraded.port, cookie), await credentialStatus(upgraded.port, olderCookie)]).toEqual(expected);
       if (policy === "held-key") expect(upgraded.context.services.devices.sessionRow(listedId)).toBeNull();
       else if (policy === "lock") await confirm(upgraded, nextScreen.writer, await post(upgraded, "/api/account/unlock", { lock }));
-      else {
+      else if (policy !== "standalone-freeze") {
         const lift = await signSafetyRecord({ v: 1, kind: "lift", account: ACCOUNT, signer: owner.spki, signer_no: 1,
           target: block.id, signed_at: new Date(epoch).toISOString() }, owner.keys.privateKey);
         for (const record of [block, lift]) expect((await service.fetch(new Request("https://account.test/v1/safety-records", {
@@ -139,13 +148,17 @@ test.skipIf(!available).each(["lock", "local-block", "service-freeze", "held-key
     const restarted = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "matrix-owner",
       tailscaleOwner: null, sidecar: false, accountOpensAll: true, accountService });
     try {
-      const statuses = async () => [await credentialStatus(restarted.port, cookie), await credentialStatus(restarted.port, olderCookie)].slice(0, compared);
-      expect(await statuses()).toEqual(baseline);
+      const statuses = async () => [await credentialStatus(restarted.port, cookie), await credentialStatus(restarted.port, olderCookie)];
+      expect(await statuses()).toEqual(expected);
       online = true;
       expect(await restarted.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
       // The legacy member cannot order itself before a legacy-cut row, so its lift leaves that deny standing.
-      expect(await statuses()).toEqual(baseline);
-      if (policy !== "held-key" && targetId) expect(restarted.context.services.devices.sessionRow(targetId)).toBeNull();
+      expect(await statuses()).toEqual(expected);
+      if (policy !== "held-key" && policy !== "standalone-freeze" && targetId) expect(restarted.context.services.devices.sessionRow(targetId)).toBeNull();
+      if (policy === "standalone-freeze") {
+        expect(restarted.context.services.safetyLog?.state().freezes.map(entry => entry.record.id)).toEqual([`f:${block.id}`]);
+        expect(restarted.context.services.safetyLog?.state().blocks).toHaveLength(0);
+      }
       if (policy === "held-key") {
         expect(restarted.context.services.devices.sessionRow(listedId)).toBeNull();
         time += JOIN_HOLD_MS + 1;

@@ -7,6 +7,7 @@ import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { leaveAccount } from "../../src/lib/account/leave.ts";
 import { AccountService } from "../../src/lib/account/service.ts";
+import { beginSignIn, finishOwnSignIn } from "../../src/lib/account/signin.ts";
 import type { RelayDevice, RelayDeviceStore } from "../../src/lib/relay/device.ts";
 import { memoryAccountStore } from "../../src/lib/account/store.ts";
 import { createServer } from "../index.ts";
@@ -118,6 +119,34 @@ test.skipIf(!available).each(["sign-out", "leave"] as const)("released phone acc
     await restarted.stop();
     rmSync(pc.folders.a, { recursive: true, force: true });
   }
+}, 20_000);
+
+test.skipIf(!available).each([ACCOUNT, "acct_other"] as const)("PC browser signs out and back into %s without rebinding its PC", async next => {
+  const pc = await releasedPc();
+  const app = pc.start();
+  try {
+    const browserStore = memoryAccountStore();
+    const client = new AccountService({ store: browserStore, fetch: pc.service.fetch });
+    const redirectUri = `http://127.0.0.1:${app.port}/callback`;
+    const signIn = async (account: string) => {
+      pc.service.signInAs("github", account);
+      const started = await beginSignIn("github", { store: browserStore, service: SERVICE, redirectUri });
+      const location = (await pc.service.fetch(started)).headers.get("location");
+      if (!location) throw new Error("No return to the PC browser");
+      const back = new URL(location);
+      expect(back.origin + back.pathname).toBe(redirectUri);
+      return finishOwnSignIn(started, back.search, { store: browserStore, fetch: pc.service.fetch });
+    };
+    const binding = PcAccountState.open(pc.folders.a).binding();
+    expect(binding?.account).toBe(ACCOUNT);
+    expect((await signIn(ACCOUNT)).account).toBe(ACCOUNT);
+    await client.signOut();
+    expect(await client.session()).toBeUndefined();
+    expect((await signIn(next)).account).toBe(next);
+    expect((await client.session())?.account).toBe(next);
+    expect(PcAccountState.open(pc.folders.a).binding()).toEqual(binding);
+    for (const cookie of pc.cookies) expect(await credentialStatus(app.port, cookie)).toBe(200);
+  } finally { await app.stop(); }
 }, 20_000);
 
 test.skipIf(!available).each([ACCOUNT, "acct_other"] as const)("identity reset and a real one-press rebind to %s carry no old account state", async next => {
