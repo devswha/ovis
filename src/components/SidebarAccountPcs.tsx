@@ -93,6 +93,11 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, openabl
     try { return localStorage.getItem(declineKey(pc.server_id)) === (pc.new_until ?? ""); } catch { return false; }
   };
   const failure = accountPcs.failure;
+  // each PC's own failure, kept while the next PC is added (the pairing keeps the last one alone), until it is tried anew
+  const [failures, setFailures] = useState<ReadonlyMap<string, string>>(new Map());
+  useEffect(() => {
+    if (failure !== null) setFailures((current) => new Map(current).set(failure.server_id, failure.message));
+  }, [failure]);
   useEffect(() => {
     if (failure?.code === undefined) return;
     if (failure.code !== "account_pc_declined") {
@@ -110,6 +115,7 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, openabl
     passing.current.clear();
     for (const serverId of again) retried.current.add(serverId);
     setTried((current) => new Set([...current].filter((serverId) => !again.includes(serverId))));
+    setFailures((current) => new Map([...current].filter(([serverId]) => !again.includes(serverId))));
   }, [reads]);
   const listing = accountPcs.pcs?.map((pc) => `${pc.server_id}:${pc.new_until ?? ""}`).join("\n") ?? "";
   const lastListing = useRef("");
@@ -118,6 +124,7 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, openabl
     lastListing.current = listing;
     retried.current.clear();
     setTried(new Set());
+    setFailures(new Map());
   }, [listing]);
   // the relay back on after it was off is a new look at every PC but a declined one, as a new listing is
   const wasJoined = useRef(false);
@@ -125,6 +132,7 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, openabl
     if (joined && !wasJoined.current && lastListing.current !== "") {
       retried.current.clear();
       setTried(new Set());
+      setFailures(new Map());
     }
     wasJoined.current = joined;
   }, [joined]);
@@ -143,14 +151,14 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, openabl
     void accountPcs.add(next);
   }, [next?.server_id]);
   if (waiting.length === 0) return null;
-  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} declined={declined(pc)} hidden={hidden} opens={openable?.has(pc.server_id) === true} />)}</>;
+  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} declined={declined(pc)} failedWith={failures.get(pc.server_id)} hidden={hidden} opens={openable?.has(pc.server_id) === true} />)}</>;
 }
 
 /**
  * One PC of the account not in this app yet, as a PC group's header with where it is under it. `opens`: this device keeps
  * its own link to it, which the row stands in for while the PC is added, so its name opens it as that link would.
  */
-function AccountPcRow({ pc, hidden, declined, opens, pcs: { stateOf, pairing, failure } }: { pc: AccountPcEntry & { readonly new_until?: string | null }; hidden: boolean; /** a member declined it, in this browser, for this listing */ declined: boolean; opens: boolean; pcs: AccountPcs }) {
+function AccountPcRow({ pc, hidden, declined, failedWith, opens, pcs: { stateOf, pairing } }: { pc: AccountPcEntry & { readonly new_until?: string | null }; hidden: boolean; /** a member declined it, in this browser, for this listing */ declined: boolean; /** why its last add failed, until it is tried anew */ failedWith: string | undefined; opens: boolean; pcs: AccountPcs }) {
   const t = useT();
   const [expiredAt, setExpiredAt] = useState<string>();
   const newUntil = pc.new_until;
@@ -163,11 +171,11 @@ function AccountPcRow({ pc, hidden, declined, opens, pcs: { stateOf, pairing, fa
   }, [newUntil]);
   const state = stateOf(pc.server_id);
   const adding = pairing?.server_id === pc.server_id;
-  const failed = !adding && failure?.server_id === pc.server_id;
+  const failed = !adding && failedWith !== undefined;
   const refused = !adding && !failed && declined;
   const away = state === "offline" || state === "outdated" || failed || refused;
   // where it is, beside its name only: the words are the dot's tooltip and what a screen reader hears
-  const words = failed ? failure.message : refused ? t("Not approved") : state === undefined ? t("Checking…") : state === "offline" ? t("Switched off") : state === "outdated" ? t("Update Ovis on that PC") : t("Connecting…");
+  const words = failed ? failedWith : refused ? t("Not approved") : state === undefined ? t("Checking…") : state === "offline" ? t("Switched off") : state === "outdated" ? t("Update Ovis on that PC") : t("Connecting…");
   return (
     <section hidden={hidden && !adding} className={`machine-group account-pc-group${away ? " is-offline" : ""}`} aria-label={t("PC {name}", { name: pc.name })} data-pc-state={state ?? "checking"}>
       <header className="machine-header">

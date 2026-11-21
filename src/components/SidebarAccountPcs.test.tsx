@@ -362,6 +362,17 @@ describe("the account's PCs in the sidebar", () => {
     expect(row("Away").findAll((node) => node.type === "a")).toHaveLength(0);
   });
 
+  it("keeps each PC's own failure while the next PC is added", async () => {
+    awayAnswers = ["ready"];
+    await mount();
+    await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_unreachable", message: "Desk did not answer." } })); pairLines!.close(); });
+    await settle();
+    expect(admitted).toEqual([DESK.server_id, AWAY.server_id]);
+    expect(text(row("Away"))).toContain("Connecting…");
+    expect(text(row("Desk"))).toContain("Desk did not answer.");
+    expect(text(row("Desk"))).not.toContain("Connecting…");
+  });
+
   it("steps aside for the sidebar filter without ending a pairing under way", async () => {
     await mount();
     await act(async () => { renderer!.update(tree(() => {}, [local, lab], true)); });
