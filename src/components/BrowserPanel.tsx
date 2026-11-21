@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Bot, Globe, RotateCw, X } from "lucide-react";
 import { useT } from "../lib/i18n.ts";
 import { goBrowserTab, hideBrowserTab, holdBrowserTab, navigateBrowserTab, openBrowserTab, showBrowserTab, typedAddress, type DesktopBrowserTab } from "../lib/desktopBrowser.ts";
@@ -48,6 +48,11 @@ export function BrowserPanel({ tab, onOpened, onClose, panelStart, covered = fal
     };
   }, [id, covered]);
 
+  // which address form an answer from main belongs to: a new tab's form left (closed, or another tab shown) drops its answer
+  const form = useRef(0);
+  useEffect(() => { form.current += 1; }, [tab?.id]);
+  useEffect(() => () => { form.current = -1; }, []);
+
   const go = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const address = typedAddress(new FormData(event.currentTarget).get("address")?.toString() ?? "");
@@ -55,8 +60,9 @@ export function BrowserPanel({ tab, onOpened, onClose, panelStart, covered = fal
       setRefused(true);
       return;
     }
-    const opened = tab === null ? openBrowserTab(address).then((opened) => { if (opened !== null) onOpened(opened); return opened !== null; }) : navigateBrowserTab(tab.id, address);
-    void opened.then((done) => setRefused(!done));
+    const asked = form.current;
+    const opened = tab === null ? openBrowserTab(address).then((opened) => { if (opened !== null && form.current === asked) onOpened(opened); return opened !== null; }) : navigateBrowserTab(tab.id, address);
+    void opened.then((done) => { if (form.current === asked) setRefused(!done); });
   };
 
   const title = tab === null ? t("New tab") : tab.title || tab.address;

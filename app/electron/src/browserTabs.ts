@@ -98,6 +98,8 @@ export class BrowserTabs {
   private stage: BrowserWindow | null = null;
   /** the stage turned out visible here (the window manager placed it on a screen): it is not made again */
   private noStage = false;
+  /** the picture being taken, which the next one waits for */
+  private pictures: Promise<void> = Promise.resolve();
   /** the sessions this BrowserTabs has guarded: webRequest and permission handlers replace the previous ones */
   private guarded = new Set<Session>();
 
@@ -211,7 +213,14 @@ export class BrowserTabs {
   }
 
   /** a picture of the tab as PNG data, or null while it is not drawn (not shown, and no stage to draw it on) */
-  async thumbnail(id: number): Promise<string | null> {
+  thumbnail(id: number): Promise<string | null> {
+    // one picture at a time: a staged tab is put on top to be taken, so two at once would cover each other
+    const taken = this.pictures.then(() => this.takePicture(id));
+    this.pictures = taken.then(() => undefined, () => undefined);
+    return taken;
+  }
+
+  private async takePicture(id: number): Promise<string | null> {
     const tab = this.tabs.get(id);
     // a tab neither shown nor on a stage paints nothing (and a picture of it may never come back)
     if (!tab || tab.allowed === null || (this.shown !== id && !this.onStage(tab))) return null;

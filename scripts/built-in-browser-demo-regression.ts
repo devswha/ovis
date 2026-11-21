@@ -26,6 +26,9 @@ function standInBridge(): void {
     tabs: [tab(1, "agent", "https://mobbin.com/screens/notion", "Notion 로그인"), tab(2, "mine", "http://localhost:5173/", "localhost:5173")],
     listeners: [] as ((browser: unknown) => void)[],
     next: 3,
+    /** while set, open() answers only when release() is called: a slow main */
+    held: null as null | (() => void),
+    holdOpen: false,
   };
   const emit = () => { for (const listener of state.listeners) listener({ tabs: state.tabs.map((entry) => ({ ...entry })) }); };
   const drawn = () => {
@@ -44,6 +47,7 @@ function standInBridge(): void {
     onChange: (listener: (browser: unknown) => void) => { state.listeners.push(listener); return () => { state.listeners = state.listeners.filter((other) => other !== listener); }; },
     open: async (url: string) => {
       state.calls.push(["open", url]);
+      if (state.holdOpen) await new Promise<void>((done) => { state.held = done; });
       const id = state.next++;
       state.tabs.push(tab(id, "mine", url, new URL(url).host));
       emit();
@@ -142,6 +146,23 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   await group.getByRole("button", { name: /localhost:3000/ }).waitFor();
   assert.deepEqual((await calls(page)).filter(([name]) => name === "open"), [["open", "http://localhost:3000/docs"]], `${tag}: a typed address opens a tab of one's own`);
   assert.equal(await group.getByRole("button", { name: /localhost:3000/ }).getAttribute("aria-current"), "true", `${tag}: the new tab is the one shown`);
+
+  // a new tab's form closed before main answers, then another form opened: the late answer does not take it over
+  await page.evaluate(() => { (window as unknown as { __browser: { holdOpen: boolean } }).__browser.holdOpen = true; });
+  await group.getByRole("button", { name: "새 탭", exact: true }).click();
+  await page.getByRole("textbox", { name: "주소", exact: true }).fill("first.example");
+  await page.getByRole("textbox", { name: "주소", exact: true }).press("Enter");
+  await page.waitForFunction(() => (window as unknown as { __browser: { held: unknown } }).__browser.held !== null);
+  await page.locator(".browser-panel").getByRole("button", { name: "닫기", exact: true }).click();
+  await group.getByRole("button", { name: "새 탭", exact: true }).click();
+  const second = page.getByRole("textbox", { name: "주소", exact: true });
+  await second.fill("second.example");
+  await page.evaluate(() => { const bridge = (window as unknown as { __browser: { holdOpen: boolean; held: (() => void) | null } }).__browser; bridge.holdOpen = false; bridge.held?.(); });
+  await group.getByRole("button", { name: /first\.example/ }).waitFor();
+  assert.equal(await second.inputValue(), "second.example", `${tag}: the second form keeps what is typed in it`);
+  assert.equal(await group.getByRole("button", { name: /first\.example/ }).getAttribute("aria-current"), null, `${tag}: the dismissed tab is not shown`);
+  await group.getByRole("button", { name: /localhost:3000/ }).click();
+  await page.getByRole("textbox", { name: "주소", exact: true }).waitFor();
 
   // a row's x closes that tab
   await group.locator(".browser-tab-row", { hasText: "localhost:5173" }).hover();
