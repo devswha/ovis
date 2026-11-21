@@ -548,8 +548,18 @@ describe("AddThisPc", () => {
     expect(renderer.toJSON()).toBeNull();
   });
 
-  test("a PC already in an account, with no wait kept, shows nothing", async () => {
+  test("a PC already in the signed-in account shows Added without opening or listing", async () => {
     pc.account = ACCOUNT;
+    const renderer = await mount();
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(buttons(renderer)).toEqual([]);
+    expect(links()).toBe(0);
+    expect(directory).toEqual([]);
+  });
+
+  test.each(["acct_other", null])("a bound PC shows no add status when signed in as %s", async (account) => {
+    pc.account = ACCOUNT;
+    signedIn = account;
     const renderer = await mount();
     expect(renderer.toJSON()).toBeNull();
   });
@@ -685,10 +695,11 @@ describe("AddThisPc", () => {
     expect(directory).toEqual(["putPc"]);
   });
 
-  test("a sign-in that just finished on a PC already in an account shows nothing and lists nothing", async () => {
+  test("a sign-in that just finished on a PC already in that account shows Added and lists nothing", async () => {
     pc.account = ACCOUNT;
     const renderer = await mount(ACCOUNT);
-    expect(renderer.toJSON()).toBeNull();
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(buttons(renderer)).toEqual([]);
     expect(links()).toBe(0);
     expect(directory).toEqual([]);
   });
