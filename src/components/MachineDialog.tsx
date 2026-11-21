@@ -62,6 +62,8 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const [vouch, setVouch] = useState(true);
   const [added, setAdded] = useState<SshAddOutcome | "adding" | null>(null);
   const addedFor = useRef<string | null>(null);
+  // an update asked with "Add it to my account": the server takes the add as its own setup, run once the update connects
+  const addAfterUpdate = useRef<string | null>(null);
   const [install, setInstall] = useState<PcInstallJob | null>(null);
   const installing = install !== null && !["connected", "failed", "cancelled"].includes(install.phase);
   useEffect(() => {
@@ -110,13 +112,15 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
 
   const begin = async (choice?: HerdrChoice, installedId?: string) => {
     if (pending) return;
-    addedFor.current = null; setAdded(null);
-    const asAccountAdd = accountAdd !== null && vouch;
+    addedFor.current = null; setAdded(null); addAfterUpdate.current = null;
+    const updating = needsBridgeUpdate || updateRemote;
+    const asAccountAdd = accountAdd !== null && vouch && !updating;
     setError(null); setPending(true);
     if (choice && machine?.herdr_profile_id) choice = { ...choice, session: machine.target?.session };
     if (choice) { if ("session" in choice) setSession(choice.session ?? ""); setHerdrSocket(choice.herdr_socket ?? ""); setStartNewHerdr(choice.start_new_herdr === true); setOwnOvis(choice.own_ovis ?? ""); }
     const sentFor = [destination.trim(), port, choice && "session" in choice ? choice.session ?? "" : session].join("\0");
-    try { const next = await startMachineSetup({ destination: destination.trim(), ...(name.trim() && !machine?.herdr_profile_id ? { name: name.trim() } : {}), ...(port ? { port: Number(port) } : {}), ...(key.trim() ? { identity_file: key.trim() } : {}), ...(session.trim() ? { session: session.trim() } : {}), ...(herdrSocket ? { herdr_socket: herdrSocket } : {}), ...(startNewHerdr || herdrInstead && !herdrSocket && !ownOvis ? { start_new_herdr: true } : {}), ...(ownOvis ? { own_ovis: ownOvis } : {}), ...choice, ...(machine ? { machine_id: machine.id } : installedId ? { machine_id: installedId } : {}), ...(needsBridgeUpdate || updateRemote ? { update_remote: true } : {}), ...(asAccountAdd ? { account_add: true } : {}) });
+    try { const next = await startMachineSetup({ destination: destination.trim(), ...(name.trim() && !machine?.herdr_profile_id ? { name: name.trim() } : {}), ...(port ? { port: Number(port) } : {}), ...(key.trim() ? { identity_file: key.trim() } : {}), ...(session.trim() ? { session: session.trim() } : {}), ...(herdrSocket ? { herdr_socket: herdrSocket } : {}), ...(startNewHerdr || herdrInstead && !herdrSocket && !ownOvis ? { start_new_herdr: true } : {}), ...(ownOvis ? { own_ovis: ownOvis } : {}), ...choice, ...(machine ? { machine_id: machine.id } : installedId ? { machine_id: installedId } : {}), ...(updating ? { update_remote: true } : {}), ...(asAccountAdd ? { account_add: true } : {}) });
+      if (updating && accountAdd !== null && vouch) addAfterUpdate.current = next.id;
       // the address, port or session edited while it was in flight: that PC's sessions are never offered for this one
       if (mounted.current) setJob(next.action_required === "choose_herdr" && sentFor !== identityRef.current ? { ...next, action_required: null, found_herdr_sessions: undefined } : next);
       else if (!["connected", "failed", "cancelled"].includes(next.phase) && (next.windows_startup || !["installing", "starting"].includes(next.phase))) await answerMachineSetup(next.id, { action: "cancel" });
@@ -132,6 +136,11 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     setAdded("adding");
     void addOverSsh(new AccountService({ store: indexedAccountStore }), { id, account_add: job.account_add }, { account: accountAdd, running: () => mounted.current && jobRef.current?.id === id })
       .then((outcome) => { if (mounted.current && addedFor.current === id) setAdded(outcome); });
+  }, [job?.id, job?.phase]);
+  useEffect(() => {
+    if (!job || job.phase !== "connected" || addAfterUpdate.current !== job.id) return;
+    addAfterUpdate.current = null;
+    void begin(undefined, job.machine_id);
   }, [job?.id, job?.phase]);
   // Ovis installed there with the official installer, then the account add again on the PC it added
   const installOvis = async () => {
