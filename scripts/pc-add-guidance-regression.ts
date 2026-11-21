@@ -65,6 +65,10 @@ try {
       await provider.waitFor();
       assert.equal(await sheet.getByTestId("pc-add-source-bound").count(), 0);
       assert.equal(await signin.locator("p.settings-description, p.settings-hint").count(), 0);
+      // one hairline between the sign-in and the phone's QR code: the QR part's own, none again on the phone part it opens with
+      const scan = sheet.locator('[data-testid="connect-account-qr"] > [data-testid="connect-phone-scan"]');
+      await scan.waitFor();
+      assert.equal(await scan.evaluate((el) => getComputedStyle(el).borderTopWidth), "0px", "no second hairline above the phone's QR code");
       assert.equal(await provider.isEnabled(), true);
       assert.ok(!(await sheet.innerText()).includes("acct_"));
       assert.equal(await sheet.evaluate(el => el.scrollWidth <= el.clientWidth), true, "No horizontal clipping");

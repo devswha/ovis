@@ -286,6 +286,12 @@
   border-top: 0;
 }
 
+/* the part's own hairline already sits above a phone part that opens it: one line, not two */
+.connect-account-qr > .connect-phone-scan:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .connect-signin[data-bare] {
   display: contents;
 }
