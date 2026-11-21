@@ -124,11 +124,10 @@ test.each(cells)("boot=%s folders=%s clock=%s history=%s", async (boot, folder, 
       newAccountSession: devices.sessionRow(accountDeviceId(serverId, newcomer.spki)),
       revokedSession: revokedId === undefined ? null : devices.sessionRow(revokedId),
       tombstone: revokedId === undefined || devices.isTombstoned(revoked.spki),
-      clockRefusesNewGrant: clock === "normal" || !devices.admits(newcomer.spki),
-    }).toEqual({
+    }, devices.accountError ?? undefined).toEqual({
       credentials: Object.fromEntries(Object.keys(cookies).map(label => [label, 200])),
       existingRelay: trusted.spki, unknownCookie: 401, newAccountSession: null,
-      revokedSession: null, tombstone: true, clockRefusesNewGrant: true,
+      revokedSession: null, tombstone: true,
     });
   } finally {
     await upgraded.stop();

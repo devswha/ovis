@@ -1015,12 +1015,14 @@ it("revoking a paired device removes its persistent push subscription", async ()
   } finally { fake.stop(); server.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
-it.each(["single device", "all devices"] as const)("returns an error when revocation of %s cannot be persisted, then allows a retry only here", async target => {
+it.each([
+  ["single device", true], ["all devices", true], ["single device", false], ["all devices", false],
+] as const)("returns an error when revocation of %s cannot be persisted, then allows a retry (Step 2: %s)", async (target, accountOpensAll) => {
   const root = mkdtempSync(join(tmpdir(), "herdr-device-write-"));
   const store = new DeviceStore(root);
   const paired = store.pair(store.startPairing().code, "Phone", "drive")!;
   store.match(paired.token);
-  const server = createServer({ port: 0, stateDir: root, token: "test-write", tailscaleOwner: null, machines: false, accountOpensAll: true });
+  const server = createServer({ port: 0, stateDir: root, token: "test-write", tailscaleOwner: null, machines: false, accountOpensAll });
   const base = `http://127.0.0.1:${server.port}`;
   try {
     const revoke = (headers: Record<string, string> = {}) => fetch(`${base}/api/devices/${target === "all devices" ? "revoke-all" : paired.device.id}`, {
@@ -1033,9 +1035,11 @@ it.each(["single device", "all devices"] as const)("returns an error when revoca
       expect(await failed.json()).toMatchObject({ error: { code: "internal_error" } });
       expect(new DeviceStore(root).match(paired.token)).not.toBeNull();
     } finally { fsync.mockRestore(); }
-    const remote = await revoke({ "x-forwarded-for": "100.64.0.9" });
-    expect(remote.status).toBe(403);
-    expect(await remote.json()).toMatchObject({ error: { code: "strict" } });
+    if (accountOpensAll) {
+      const remote = await revoke({ "x-forwarded-for": "100.64.0.9" });
+      expect(remote.status).toBe(403);
+      expect(await remote.json()).toMatchObject({ error: { code: "strict" } });
+    }
     expect((await revoke()).status).toBe(target === "all devices" ? 200 : 204);
     expect(new DeviceStore(root).match(paired.token)).toBeNull();
   } finally { server.stop(); rmSync(root, { recursive: true, force: true }); }

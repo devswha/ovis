@@ -27,6 +27,12 @@ export interface AccountBinding {
   readonly service?: true;
 }
 
+interface ServiceStep2 {
+  readonly bind_id: string;
+  readonly revision: number;
+  readonly off: boolean;
+}
+
 interface PcDoc {
   v: 1;
   next_admit: number;
@@ -42,6 +48,7 @@ interface PcDoc {
   evidence_written?: true;
   /** A listed PC's explicit service opt-out cannot be undone by a named recovery release. */
   step2_off_for?: string | null;
+  service_step2?: ServiceStep2;
 }
 
 const REASONS: ReadonlySet<string> = new Set(["revoke_all", "identity_reset", "left_on_pc", "unlisted"]);
@@ -66,9 +73,19 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (typeof doc.others_ever !== "boolean") return "invalid others_ever";
   if (doc.evidence_written !== undefined && doc.evidence_written !== true) return "invalid evidence_written";
   if (doc.step2_off_for != null && (typeof doc.step2_off_for !== "string" || !ID.test(doc.step2_off_for))) return "invalid step2_off_for";
+  const step2 = doc.service_step2;
+  if (step2 !== undefined && (step2 === null || typeof step2 !== "object" || typeof step2.bind_id !== "string"
+    || !ID.test(step2.bind_id) || !Number.isSafeInteger(step2.revision) || step2.revision < 0 || typeof step2.off !== "boolean")) return "invalid service_step2";
   if (doc.gen === undefined) return { ...doc, gen: 0 } as PcDoc;
   if (!Number.isSafeInteger(doc.gen) || doc.gen < 0) return "invalid gen";
   return doc as PcDoc;
+}
+
+/** Old opt-out markers rank behind versioned decisions for the same binding. */
+function serviceStep2(doc: PcDoc, binding: AccountBinding | null): ServiceStep2 | undefined {
+  if (binding === null) return undefined;
+  if (doc.service_step2?.bind_id === binding.bind_id) return doc.service_step2;
+  return doc.step2_off_for === binding.bind_id ? { bind_id: binding.bind_id, revision: 0, off: true } : undefined;
 }
 
 /** A folder by what it is on disk, so a link to it and its real path are one folder (P21). */
@@ -204,14 +221,22 @@ export class PcAccountState {
     if (own !== null && theirs !== null && own.account !== theirs.account) { this.problem = `${this.path} and ${path} bind this PC to two accounts`; return; }
     this.siblingBinding = theirs;
     const doc = { ...this.doc, binding: own, clears, others_ever: this.doc.others_ever || parsed.others_ever };
-    const off = (binding: AccountBinding | null) => binding !== null
-      && (this.doc.step2_off_for === binding.bind_id || parsed.step2_off_for === binding.bind_id);
+    const sharedStep2 = (binding: AccountBinding | null) => {
+      const mine = serviceStep2(this.doc, binding);
+      const other = serviceStep2(parsed, binding);
+      // A reconciliation supersedes the off decision it observed. An independent concurrent off wins a tie.
+      if (mine === undefined || (other !== undefined && (other.revision > mine.revision
+        || (other.revision === mine.revision && other.off)))) return other;
+      return mine;
+    };
     const activeBinding = own ?? theirs;
-    if (activeBinding !== null && off(activeBinding)) doc.step2_off_for = activeBinding.bind_id;
+    const activeStep2 = sharedStep2(activeBinding);
+    if (activeStep2) doc.service_step2 = activeStep2;
     // Both folders keep the clears and the service opt-out for the binding they hold.
-    if (parsed.clears.length !== clears.length || (theirs !== null && off(theirs) && parsed.step2_off_for !== theirs.bind_id)) {
+    const siblingStep2 = sharedStep2(theirs);
+    if (parsed.clears.length !== clears.length || (siblingStep2 && JSON.stringify(siblingStep2) !== JSON.stringify(parsed.service_step2))) {
       const siblingDoc: PcDoc = { ...parsed, clears, binding: standing(parsed.binding) ?? (parsed.binding?.pending === true && !clears.some((clear) => clear.bind_id === parsed.binding!.bind_id) ? parsed.binding : null) };
-      if (theirs !== null && off(theirs)) siblingDoc.step2_off_for = theirs.bind_id;
+      if (siblingStep2) siblingDoc.service_step2 = siblingStep2;
       try { writePrivateState(path, siblingDoc); } catch (error) {
         this.problem = `${path} cannot learn this PC's account denials (${error instanceof Error ? error.message : String(error)})`;
         return;
@@ -320,14 +345,18 @@ export class PcAccountState {
   }
 
   serviceStep2Off(): boolean {
-    const binding = this.binding();
-    return binding !== null && this.doc.step2_off_for === binding.bind_id;
+    return serviceStep2(this.doc, this.binding())?.off === true;
   }
 
   setServiceStep2Off(off: boolean): boolean {
     const binding = this.binding();
-    if (binding === null || this.serviceStep2Off() === off) return false;
-    try { this.write({ ...this.doc, step2_off_for: off ? binding.bind_id : null }); }
+    if (binding === null) return false;
+    const prior = serviceStep2(this.doc, binding);
+    if ((prior?.off ?? false) === off) return false;
+    const revision = (prior?.revision ?? 0) + 1;
+    if (!Number.isSafeInteger(revision)) throw new Error("The service's Step 2 revision is exhausted");
+    try { this.write({ ...this.doc, step2_off_for: off ? binding.bind_id : null,
+      service_step2: { bind_id: binding.bind_id, revision, off } }); }
     catch (error) {
       this.unwritten(error, "The service's Step 2 status could not be saved");
       throw error;

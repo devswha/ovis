@@ -1019,9 +1019,11 @@ is what authenticates the PC.
 
 ### Turning Step 2 off
 
-If the account service disables Step 2 for an account, a listed PC gets `step2_off` on its
-snapshot read. Phones paired before Step 2 can still connect as in Step 1, subject to any blocks
-or other denials already on that PC. Account-joined phones wait until a whole snapshot succeeds again.
+Phones paired before Step 2 keep their existing connection across upgrades and offline restarts,
+subject to the PC's local denials. The old credential does not confer Step 2 authority before a
+whole snapshot. If the account service disables Step 2, a listed PC gets `step2_off` on its snapshot
+read. Account-joined phones wait until a whole snapshot succeeds again; a named recovery release
+cannot override that wait.
 
 Step 2 is on by default. Only the exact value `0` turns it off. An unset or empty value, `1`,
 `false`, and all other values leave it on.
@@ -1076,9 +1078,10 @@ These limits apply while Step 2 is on, which is the default.
 - **Strict mode and key confirmations are Linux only for now.** Turning strict mode on or off,
   and approving a new key on the PC's screen, need the PC's own screen, which this release has
   only on Linux. On macOS and Windows neither is available yet; pairing works as before.
-- **A clock that ran ahead keeps the PC closed.** If this PC's clock ran more than a day ahead, it
-  stays closed to account devices until real time comes within a day of the times it wrote and Ovis
-  is restarted; there is no repair command yet.
+- **A legacy pairing made with a clock more than a day ahead keeps its existing connection but
+  cannot authorize Step 2 actions.** Correcting the clock does not give that old timestamp
+  authority. Other phones and account reconciliation are unaffected. A clock fault in new Step 2
+  state still makes the PC refuse account access until that state can be read safely.
 - **A locked PC is driven only from the PC itself.** While strict mode is on, the PC takes its
   orders only from the desktop app that started it (its owner channel) or from the confirm page
   on its own screen. No other device, browser window, access token or relay connection can change

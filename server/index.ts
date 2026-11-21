@@ -88,7 +88,6 @@ import { loopbackRelay, registerBridge, relayTarget } from "./bridge.ts";
 import { PiSessionReader } from "./pi-session-metadata.ts";
 import { HerdrSidebarConfig, herdrConfigPath, snapshotWithoutHiddenTokens } from "./herdr-sidebar.ts";
 import { closeCodexDaemonSources } from "./codex-daemon.ts";
-import { FirstActivation } from "./account/first-activation.ts";
 import { holdOpenCodeNative } from "./opencode-native.ts";
 import { holdCommandHistory } from "./claude-command-history.ts";
 import { holdFilePool } from "./file-pool.ts";
@@ -310,7 +309,6 @@ export function createServer(
   const conflicts: StoredDevice[] = [];
   const closure = safetyLog !== null && (safetyLog.strict !== null || safetyLog.state().locked || safetyLog.state().freezes.length > 0);
   const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, onDropped: (device) => conflicts.push(device) } : {}) : null;
-  const activation = opensAll && !untouched ? FirstActivation.open(stateDir, sibling) : undefined;
   let accountBlocked: string | null = accountMerge;
   if (sibling && !untouched && accountBlocked === null) {
     try { accountBlocked = mergeAccountTombstones(stateDir, sibling, opensAll); }
@@ -618,7 +616,7 @@ export function createServer(
     },
     removalsPending: () => devices.pendingLockRemovals().length > 0,
   } }) : undefined;
-  const accountCatchUp = new AccountCatchUp(devices, accountRows, { pc: pcAccount, releases: recoveryReleases, activation });
+  const accountCatchUp = new AccountCatchUp(devices, accountRows, { pc: pcAccount, releases: recoveryReleases });
   const catchUp = accountCatchUp.gate;
   const accountOrder = safetyLog !== null ? AccountOrder.open(stateDir) : null;
   devices.attachAccountOrder(accountOrder);

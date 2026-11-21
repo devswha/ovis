@@ -202,6 +202,7 @@ export interface StoredDevice {
   origin?: RowOrigin;
   /** A clock-ahead legacy stamp has no authority, even after the clock catches up. */
   untrusted_created_at?: string;
+  invalid_origin?: true;
   /** a copy a sibling merge brought into this dir with the release flag on: no row of this dir's own, never legacy (T50) */
   imported?: true;
   /** A promoted list admission keeps the original notice ID until its hold ends. */
@@ -350,6 +351,7 @@ export function readDeviceRegistry(path: string, opensAll = accountOpensAll()): 
       && (d.linked_at === undefined || typeof d.linked_at === "string")
       && (d.link_moved_key === undefined || typeof d.link_moved_key === "boolean")
       && (d.imported === undefined || d.imported === true)
+      && (d.invalid_origin === undefined || d.invalid_origin === true)
       && (d.untrusted_created_at === undefined || typeof d.untrusted_created_at === "string")
       && (d.account_add === undefined || isJsonObject(d.account_add))
       && (!opensAll || (d.held === undefined || (typeof d.held === "string" && /^[0-9a-f]{32}$/.test(d.held)))
@@ -357,7 +359,8 @@ export function readDeviceRegistry(path: string, opensAll = accountOpensAll()): 
       && (d.paired_over === undefined || (Array.isArray(d.paired_over) && d.paired_over.every((id) => typeof id === "string")))
       )) return { kind: "bad" };
   // an origin that cannot be read is no age (P22): the row stays, without it
-  const devices = (parsed.devices as StoredDevice[]).map((d) => d.origin === undefined || isRowOrigin(d.origin) ? d : (({ origin: _unreadable, ...rest }) => rest)(d));
+  const devices = (parsed.devices as StoredDevice[]).map((d) => d.origin === undefined || isRowOrigin(d.origin) ? d
+    : (({ origin: _unreadable, ...rest }) => ({ ...rest, invalid_origin: true as const }))(d));
   return { kind: "ok", gateClosedAt: parsed.gate_closed_at, devices, placeholder: parsed.placeholder === true && parsed.devices.length === 0 };
 }
 
@@ -502,7 +505,7 @@ export class DeviceStore {
    * `expires`: the wall-clock end of its ten minutes, which its `expires_at` shows; `deadline`: the same end on the
    * store's clock, which only moves forward; `over`: set the first time either says its ten minutes are over (codeOver)
    */
-  private pending: { code: string; id: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; approvedIn?: string; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly account: string }; issuedUnder?: string; reserved?: Map<string, { readonly key: string; readonly how: "code" | "qr" }>; cancelExpiry?: () => void } | null = null;
+  private pending: { code: string; id: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; approvedIn?: string; memberRequired: boolean; ownPc?: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly account: string }; issuedUnder?: string; reserved?: Map<string, { readonly key: string; readonly how: "code" | "qr" }>; cancelExpiry?: () => void } | null = null;
   private readonly pairingEndedListeners = new Set<(codeId: string) => void>();
   /** How the latest codes made for an account ended, newest last: ENDED_ACCOUNT_CODES at most, in memory only. */
   private endedAccountCodes: Extract<AccountPairingState, { state: "ended" }>[] = [];
@@ -635,7 +638,7 @@ export class DeviceStore {
     // a time this PC wrote that lies more than a day ahead is no time it wrote: it would push every later stamp past it,
     // so the PC fails closed until it is repaired (S19, P13)
     if (this.evidence !== null) {
-      const ahead = [...this.ownTimes(), ...this.carried.filter((t) => t.record_id === "local").map((t) => t.removed_at)].find((t) => !isIsoTime(t) || Date.parse(t) > now + DAY_MS);
+      const ahead = [...this.ownTimes(), ...this.ownTombstoneTimes(this.carried)].find((t) => !isIsoTime(t) || Date.parse(t) > now + DAY_MS);
       if (ahead !== undefined) this.accountProblem ??= `A time this PC wrote lies in the future (${ahead}): account records are refused until it is repaired.`;
     }
     if (this.error === null && this.accountProblem === null && this.pc?.strict == null && !this.revokeAllIntent?.strict) {
@@ -744,13 +747,24 @@ export class DeviceStore {
   /** The times this PC wrote itself: rows' making, its own tombstones and Revokes; never a time a record carries (P13). */
   private ownTimes(): string[] {
     return [...this.devices.filter(row => !row.imported && row.untrusted_created_at !== row.created_at).map(row => row.created_at), ...(this.joinedRows?.rows() ?? []).map(row => row.confirmed_at),
-      ...this.tombstones.filter((t) => t.record_id === "local").map((t) => t.removed_at), ...this.evidence?.times() ?? []];
+      ...this.ownTombstoneTimes(this.tombstones), ...this.evidence?.times() ?? []];
+  }
+
+  private ownTombstoneTimes(tombstones: readonly AccountTombstone[]): string[] {
+    const now = Date.now();
+    return tombstones.filter(t => t.record_id === "local" && !this.evidence?.hasUntrustedRevokeTime(t, now)).map(t => t.removed_at);
+  }
+
+  /** An unstamped Step-1 registry row, including a pairing written during rollback. */
+  private legacyFromRegistry(row: StoredDevice): boolean {
+    return row.origin === undefined && !row.imported && !row.invalid_origin && row.held === undefined
+      && row.carried_notice === undefined && row.paired_over === undefined && isIsoTime(row.created_at)
+      && !this.journal?.entries().some(entry => entry.row === row.id);
   }
 
   private quarantineLegacyClock(now: number): void {
-    const firstMigration = this.pc?.migrating === true && !this.pc.upgrading;
     const marked = this.devices.map(row => {
-      const legacy = !row.imported && (row.origin?.from === "legacy" || (firstMigration && row.origin === undefined));
+      const legacy = !row.imported && (row.origin?.from === "legacy" || this.legacyFromRegistry(row));
       return legacy && isIsoTime(row.created_at) && Date.parse(row.created_at) > now + DAY_MS && row.untrusted_created_at !== row.created_at
         ? { ...row, untrusted_created_at: row.created_at } : row;
     });
@@ -768,7 +782,8 @@ export class DeviceStore {
   private repairEvidenceRows() {
     const latest = Date.now() + DAY_MS;
     return this.devices.map(row => ({ relay_public_key: row.relay_public_key, created_at: row.created_at,
-      pairedHere: pairedHere(row) && row.untrusted_created_at !== row.created_at && isIsoTime(row.created_at) && Date.parse(row.created_at) <= latest }));
+      pairedHere: pairedHere(row) && !row.imported && !row.invalid_origin && row.untrusted_created_at !== row.created_at
+        && isIsoTime(row.created_at) && Date.parse(row.created_at) <= latest }));
   }
 
   nextStamp(now: number): string {
@@ -834,8 +849,7 @@ export class DeviceStore {
   }
 
   get accountError(): string | null {
-    const bad = this.pc === null ? undefined : this.devices.find(row => !row.imported && row.untrusted_created_at === row.created_at);
-    return this.accountIntegrityError ?? (bad ? `A legacy pairing time lies in the future (${bad.created_at}): account records are refused until it is repaired.` : null);
+    return this.accountIntegrityError;
   }
 
   /** A local denial does not need the listed registry; it still needs the rest of the PC's safety state. */
@@ -856,11 +870,6 @@ export class DeviceStore {
     return this.denyProblem !== null && this.revokeIntegrityError === null && this.error === null;
   }
 
-  /** The local owner may take access away without trusting any legacy timestamp. */
-  clockOnlyFault(): boolean {
-    return this.accountError !== null && this.accountIntegrityError === null && this.error === null;
-  }
-
   /** No device gets in by a row or a code when the PC cannot trust its account state. */
   get failsClosed(): boolean {
     // one rule (S19): with the flag on, anything that makes account records refused makes only this PC get in
@@ -879,7 +888,12 @@ export class DeviceStore {
     try { this.pc.settlePending((binding, key) => this.devices.some((d) => d.account === binding.account && d.relay_public_key === key)); }
     catch (error) { this.pc.unwritten(error); return; }
     const members = [...new Set(this.devices.flatMap((d) => d.account === undefined ? [] : [d.account]))];
-    if (!this.pc.migrating) { this.pc.checkAbove(numbered); this.pc.checkMembers(members); return; }
+    if (!this.pc.migrating) {
+      this.pc.checkAbove(numbered);
+      this.pc.checkMembers(members);
+      if (this.accountIntegrityError === null) this.stampLegacyRows();
+      return;
+    }
     // a PC that ever had a device, its rows revoked since, is no first-device PC (T67): its gate stayed closed
     const hadDevices = this.devices.length > 0 || this.gateClosedAt !== null;
     // S2-03's counter file: the rows are numbered already, and only the binding is migrated (T50)
@@ -894,14 +908,16 @@ export class DeviceStore {
     if (numbered.length > 0) { this.pc.missingBeside(); return; }
     const account = this.pc.migrationAccount(this.devices);
     if (this.pc.strict !== null) return;
-    const own = (d: StoredDevice) => d.origin === undefined && d.imported !== true;
-    if (this.devices.some(own)) {
-      const next = this.devices.map((d) => own(d) ? { ...d, origin: legacyOrigin(d.created_at) } : d);
-      // a pass that cannot be written leaves the account state unknown: strict, never a failed start (S19)
-      try { this.save(next); } catch (error) { this.pc.unwritten(error); return; }
-      this.devices = next;
-    }
+    if (!this.stampLegacyRows()) return;
     try { this.pc.migrate(account, hadDevices); } catch (error) { this.pc.unwritten(error); }
+  }
+
+  private stampLegacyRows(): boolean {
+    const next = this.devices.map(row => this.legacyFromRegistry(row) ? { ...row, origin: legacyOrigin(row.created_at) } : row);
+    if (next.every((row, i) => row === this.devices[i])) return true;
+    try { this.save(next); } catch (error) { this.pc?.unwritten(error); return false; }
+    this.devices = next;
+    return true;
   }
 
   /**
@@ -919,6 +935,7 @@ export class DeviceStore {
     const state = this.safety?.state();
     if (state === undefined) return true;
     if (key !== undefined) {
+      if (proof !== "legacy_credential" && this.devices.some(row => row.relay_public_key === key && row.untrusted_created_at === row.created_at)) return false;
       if (this.accountHeld?.(key) || this.removedByAccount(key)) return false;
       if (!options?.pairingHere && (this.isTombstoned(key) || (this.evidence?.standingRevokes(key).length ?? 0) > 0)) return false;
     }
@@ -1152,7 +1169,8 @@ export class DeviceStore {
   private canSpeak(id: string, ownLeave = false): boolean {
     if (this.accountError !== null) return false;
     const member = this.devices.find(row => row.id === id);
-    if (member) return !this.catchingUp(id, false) && this.memberAdmitted(member, Date.now(), ownLeave);
+    if (member) return (this.pc === null || member.untrusted_created_at !== member.created_at)
+      && !this.catchingUp(id, false) && this.memberAdmitted(member, Date.now(), ownLeave);
     const row = this.joinedRows?.row(id);
     const access = row ? this.listedAccess(row) : null;
     return access !== null && ("ok" in access || (ownLeave && access.refused === "join_hold"));
@@ -1250,7 +1268,7 @@ export class DeviceStore {
     if (this.accountError !== null) return "unorderable";
     const caller = callerId === null ? undefined : this.anyRow(callerId);
     const target = this.anyRow(targetId);
-    if (caller === undefined || target === undefined) return "unorderable";
+    if (caller === undefined || target === undefined || caller.untrusted_created_at === caller.created_at) return "unorderable";
     const rows = target.relay_public_key === undefined ? [target] : this.rowsOfKey(target.relay_public_key);
     if (rows.some((row) => row.id === caller.id)) return rows.length === 1 ? "allowed" : "unorderable";
     // rule B: every row of the target joined after every row of the caller's key, in both stores
@@ -1265,7 +1283,6 @@ export class DeviceStore {
    * and every target row must be newer than every member row of the signer.
    */
   removeAuthority(signer: string, key: string, account: string): boolean {
-    if (this.clockOnlyFault()) return false;
     if (signer === key) return true;
     // an account-joined key signs only its own remove (P5, ruling 1): only devices.json member rows count here
     if (!this.memberRows(signer, account).some((row) => this.devices.includes(row))) return false;
@@ -1525,7 +1542,7 @@ export class DeviceStore {
    * (null for this PC itself), which holds it from then on. One that is paired no more by now, or may only watch by
    * now, starts nothing (assertHolder), and the code pending stays as it was.
    */
-  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; by?: string | null; account?: string; issuedUnder?: string } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
+  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; ownPc?: boolean; open?: boolean; noAccountOnly?: boolean; by?: string | null; account?: string; issuedUnder?: string } = { remote: false, startedBy: null, memberRequired: false, ownPc: true }): PairingCode {
     this.assertWritable();
     const { by = null, account, issuedUnder, ...how } = from;
     if (by !== null) this.assertHolder(by);
@@ -2030,8 +2047,10 @@ export class DeviceStore {
   /** Whether the devices.json row `id` waits for the first whole read (T41). */
   catchingUp(id: string, credential = true): boolean {
     const device = this.devices.find((d) => d.id === id);
-    return device !== undefined && (this.catchUp?.waits({ id, origin: device.origin }, credential,
-      () => this.admissionAllowed(device.relay_public_key, "legacy_credential")) ?? false);
+    if (device === undefined) return false;
+    const legacy = credential && device.origin?.from === "legacy" && !device.imported && !device.invalid_origin;
+    return this.catchUp?.waits({ id, origin: device.origin }, legacy
+      ? () => this.admissionAllowed(device.relay_public_key, "legacy_credential") : undefined) ?? false;
   }
 
   /** Whether `id` is an account-joined row (S2-26): its every route goes through accountRowMay. */
@@ -2159,7 +2178,11 @@ export class DeviceStore {
     const startedBy = this.pending?.startedBy ?? null;
     if (this.pending?.memberRequired && (startedBy === null || !this.isAccountApprover(startedBy))) return null;
     const token = randomBytes(32).toString("hex");
-    const device: StoredDevice = { id: randomBytes(8).toString("hex"), label, role, token_hash: hash(token), created_at: new Date(now).toISOString(), last_seen_at: null };
+    const created_at = new Date(now).toISOString();
+    // An owner-issued local code during service opt-out pairs a cookie, never a Step-2 key.
+    const legacy = this.pending?.ownPc === true && !this.pending.remote && this.pc?.serviceStep2Off() === true;
+    const device: StoredDevice = { id: randomBytes(8).toString("hex"), label, role, token_hash: hash(token), created_at,
+      last_seen_at: null, ...(legacy ? { origin: legacyOrigin(created_at) } : {}) };
     if (!this.gated) {
       this.voidPending();
       this.unconfirmedFirstPairs.push({ device, expires: now + CODE_TTL_MS, origin });
@@ -3204,6 +3227,7 @@ export class DeviceStore {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
     if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId, vouched, replacement);
+    if (this.pc !== null && device.untrusted_created_at === device.created_at) return null;
     const moved = key !== oldKey || device.link_moved_key === true;
     // the link that takes a row from no account into one is on the device's own word unless a member of that same
     // account approved its pairing: a code started by a device outside the account names its starter in `added_by` and
@@ -3360,7 +3384,7 @@ const CHECK_MS = 3_000;
  * `onRevoked` is told the id of every device a request revoked, once the registry says so: the
  * cleanup that follows (push subscriptions, page media) works from those ids, never from the path.
  */
-export async function handleDeviceRequest(request: Request, pathname: string, store: DeviceStore, access: Access, relayKey: string | null, onRevoked?: (ids: string[]) => void, lanHttps = false, connections?: DeviceConnections): Promise<Response> {
+export async function handleDeviceRequest(request: Request, pathname: string, store: DeviceStore, access: Access, relayKey: string | null, onRevoked?: (ids: string[]) => void, lanHttps = false, connections?: DeviceConnections, ownWindow = false): Promise<Response> {
   if (store.error !== null) return jsonResponse({ error: { code: "device_store_unavailable", message: access.level === "full" ? store.error : "Device pairing is unavailable; ask the owner to check Settings → Devices on the host." } }, 503);
   const json = async (): Promise<Record<string, unknown> | Response> => {
     try {
@@ -3433,7 +3457,7 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
       // the paired device that asks, through the relay or at this PC's own address: the code goes when it is revoked
       const by = access.level === "full" ? access.device?.id ?? null : null;
       const open = access.level === "full" && access.via === "open";
-      return jsonResponse(store.startPairing(Date.now(), { remote, startedBy, memberRequired: remote && store.account() !== null, by, ...(open ? { open } : {}) }), 200, { "cache-control": "no-store" });
+      return jsonResponse(store.startPairing(Date.now(), { remote, startedBy, memberRequired: remote && store.account() !== null, ownPc: ownWindow, by, ...(open ? { open } : {}) }), 200, { "cache-control": "no-store" });
     } catch (error) {
       if (error instanceof PairingRateLimitedError) return jsonResponse({ error: { code: error.code, message: error.message } }, 429, { "retry-after": String(error.retryAfter), "cache-control": "no-store" });
       if (error instanceof DeviceGoneError) return jsonResponse({ error: { code: error.code, message: error.message } }, 401, { "cache-control": "no-store" });

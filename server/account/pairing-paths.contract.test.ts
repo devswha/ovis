@@ -97,9 +97,9 @@ test("a paired device's first link gives a PC in no account its first member; a 
   expect((await ask(second.session, "/api/account/status")).body).toMatchObject({ account: "acct_7", members: 1, unlinked: [second.id] });
 });
 
-test("this PC itself lists its devices, reads its account, starts and ends a code and removes a device, with no token and no pairing", async () => {
+test.each([false, true])("the PC itself lists devices, reads its account, manages a code and removes a device without a token (Step 2: %s)", async accountOpensAll => {
   const member = await memberRow("acct_1");
-  const f = await pc({ rows: [member.row] });
+  const f = await pc({ rows: [member.row], server: { accountOpensAll } });
   expect((await f.listed()).map((device) => [device.id, device.role, device.account])).toEqual([[member.row.id, "drive", "acct_1"]]);
   expect(await f.status()).toMatchObject({ account: "acct_1", members: 1, unlinked: [] });
   const started = await f.local("/api/devices/pair/start", { method: "POST", headers: { "x-herdr-machine": "1" }, body: {} });
@@ -107,5 +107,5 @@ test("this PC itself lists its devices, reads its account, starts and ends a cod
   const ended = await f.local("/api/devices/pair/cancel", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { code: started.body.code } });
   expect([ended.status, ended.body.cancelled]).toEqual([200, true]);
   expect((await f.local(`/api/devices/${member.row.id}`, { method: "DELETE", headers: { "x-herdr-machine": "1" } })).status).toBe(204);
-  expect(await f.status()).toMatchObject({ account: null, members: 0 });
+  expect(await f.status()).toMatchObject({ account: accountOpensAll ? "acct_1" : null, members: 0 });
 });

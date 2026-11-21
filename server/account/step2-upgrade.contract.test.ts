@@ -3,15 +3,19 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { accountDeviceId, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
+import { ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { DEVICE_COOKIE } from "../auth.ts";
 import { relayIdentityPath, rotateRelayIdentity } from "../relay/identity.ts";
 import { mergeSiblingState } from "../state-merge.ts";
 import { relayConnection, relayFixture } from "../relay/test-helpers.ts";
 import { legacyOrigin } from "./admission-order.ts";
+import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { ask, memberRow, phone } from "./pairing.test-helpers.ts";
 import { PcAccountState } from "./pc-binding.ts";
+import { applyAccountRecords } from "./records.ts";
 
 const ACTIVATION_FILE = "account-activation.json";
 const DAY = 24 * 60 * 60_000;
@@ -65,7 +69,7 @@ test.each(["offline", "a service outage"] as const)("a first activation during %
   expect((await ask(link, "/api/devices")).status).toBe(200);
 });
 
-test.each(["damaged", "missing"] as const)("a %s activation file after first startup keeps the boot wait", async how => {
+test.each(["damaged", "missing"] as const)("a %s obsolete activation marker changes neither the old cookie nor Step 2 authority", async how => {
   const pc = await upgrade();
   const first = pc.start();
   const before = first.devices.match(pc.token);
@@ -76,31 +80,35 @@ test.each(["damaged", "missing"] as const)("a %s activation file after first sta
 
   const reopened = pc.start();
 
-  expect([before?.id ?? null, reopened.devices.match(pc.token)]).toEqual([pc.device.id, null]);
-  expect(reopened.devices.catchingUp(pc.device.id)).toBe(true);
+  expect([before?.id, reopened.devices.match(pc.token)?.id]).toEqual([pc.device.id, pc.device.id]);
+  expect(reopened.devices.catchingUp(pc.device.id, false)).toBe(true);
 });
 
-test("a PC already running Step 2 keeps the boot wait; a genuine first activation does not", async () => {
+test("legacy credential access stays independent of whether the PC already ran Step 2", async () => {
   const existing = await upgrade({ established: true });
   const fresh = await upgrade();
 
-  expect([existing.start().devices.match(existing.token), fresh.start().devices.match(fresh.token)?.id]).toEqual([null, fresh.device.id]);
+  expect([existing.start(offline).devices.match(existing.token)?.id, fresh.start(offline).devices.match(fresh.token)?.id]).toEqual([existing.device.id, fresh.device.id]);
 });
 
-test("a reconciled snapshot ends first activation for good, even across restart", async () => {
+test("a snapshot ends the authority wait for this boot without ending existing credentials on the next boot", async () => {
   const pc = await upgrade();
   const first = pc.start();
   const before = first.devices.match(pc.token);
   first.fixture.app.stop();
-  const pending = pc.start();
+  const pending = pc.start(offline);
   const recoveredBeforeRead = pending.devices.match(pc.token);
-  expect(await pending.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
-  expect(pending.devices.match(pc.token)?.id).toBe(pc.device.id);
+  expect(pending.devices.catchingUp(pc.device.id, false)).toBe(true);
   pending.fixture.app.stop();
+  const reading = pc.start();
+  expect(await reading.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(reading.devices.catchingUp(pc.device.id, false)).toBe(false);
+  reading.fixture.app.stop();
 
-  const after = pc.start();
+  const after = pc.start(offline);
 
-  expect([before?.id, recoveredBeforeRead?.id, after.devices.match(pc.token)]).toEqual([pc.device.id, pc.device.id, null]);
+  expect([before?.id, recoveredBeforeRead?.id, after.devices.match(pc.token)?.id]).toEqual([pc.device.id, pc.device.id, pc.device.id]);
+  expect(after.devices.catchingUp(pc.device.id, false)).toBe(true);
 });
 
 test.each([false, true])("a future legacy timestamp keeps credential access on a bound=%s PC, not Step 2 grants", async bound => {
@@ -136,28 +144,22 @@ test("a future legacy timestamp cannot infer a re-pair over a subsequent local R
   expect(devices.match(pc.token)).toBeNull();
 });
 
-test("a clock-ahead legacy row cannot say It's me after the clock catches up without a restamp", async () => {
+test.each([false, true])("an otherwise eligible legacy member answers It's me only without quarantine (quarantined=%s)", async quarantined => {
   const now = Date.now();
-  const pc = await upgrade({ created: now - 2 * DAY });
+  const pc = await upgrade({ created: now + 2 * DAY });
   const pending = await phone();
-  const first = pc.start();
-  pc.service.registerDevice(ACCOUNT, pending.spki, "New phone");
-  expect(await first.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
-  const originalNotice = first.devices.openNotices().find(entry => entry.key === pending.spki);
-  if (!originalNotice?.row) throw new Error("Expected an open admission notice for the new phone");
-  await first.fixture.app.stop();
-
-  // Reopen with the legacy timestamp already quarantined by a previous start.
-  const created_at = new Date(now + 2 * DAY).toISOString();
-  writeFileSync(join(pc.stateDir, "devices.json"), JSON.stringify({ gate_closed_at: pc.row.created_at, devices: [{
-    ...pc.row, created_at, origin: legacyOrigin(created_at), untrusted_created_at: created_at,
-  }] }), { mode: 0o600 });
+  if (quarantined) await pc.start(offline).fixture.app.stop();
   const wall = spyOn(Date, "now").mockReturnValue(now + 3 * DAY);
   closes.push(() => wall.mockRestore());
-  const { devices } = pc.start(offline);
-  expect(devices.openNotices().some(entry => entry.id === originalNotice.id)).toBe(true);
-  expect(devices.itsMe(pc.device.id, originalNotice.id, pc.device.publicKey)).toBe(false);
-  expect(devices.openNotices().some(entry => entry.id === originalNotice.id)).toBe(true);
+  pc.service.registerDevice(ACCOUNT, pc.device.publicKey, "Existing phone");
+  pc.service.registerDevice(ACCOUNT, pending.spki, "New phone");
+  const { devices, accountMailbox } = pc.start();
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const notice = devices.openNotices().find(entry => entry.key === pending.spki);
+  if (!notice?.row) throw new Error("Expected an open admission notice for the new phone");
+  expect(devices.sessionRow(pc.device.id)?.key).toBe(pc.device.publicKey);
+  expect(devices.itsMe(pc.device.id, notice.id, pc.device.publicKey)).toBe(!quarantined);
+  expect(devices.openNotices().some(entry => entry.id === notice.id)).toBe(quarantined);
   expect(devices.failsClosed).toBe(false);
 });
 
@@ -207,7 +209,7 @@ test("a future timestamp from an imported Step 1 row does not shut out a normal 
   expect(devices.sessionRow(sibling.device.id)).toBeNull();
 });
 
-test("identity reset followed by an unbound restart cannot carry first activation into a new binding", async () => {
+test("identity reset and rebind preserve a local cookie without carrying over Step 2 authority", async () => {
   const pc = await upgrade();
   const step1 = pc.start(offline, { accountOpensAll: false });
   const browser = step1.devices.pair(step1.devices.startPairing().code, "Local browser", "drive");
@@ -227,11 +229,11 @@ test("identity reset followed by an unbound restart cannot carry first activatio
   state.bind(ACCOUNT, next.spki).commit();
 
   expect(state.binding()?.bind_id).not.toBe(oldBinding);
-  expect(unbound.devices.catchingUp(browser.device.id)).toBe(true);
-  expect(unbound.devices.match(browser.token)).toBeNull();
+  expect(unbound.devices.catchingUp(browser.device.id, false)).toBe(true);
+  expect(unbound.devices.match(browser.token)?.id).toBe(browser.device.id);
 });
 
-test("a later account binding does not inherit an unbound PC's first activation", async () => {
+test("later binding preserves an existing cookie while its Step 2 authority waits", async () => {
   const pc = await upgrade({ bound: false });
   const first = pc.start();
   expect(first.devices.match(pc.token)?.id).toBe(pc.device.id);
@@ -240,8 +242,8 @@ test("a later account binding does not inherit an unbound PC's first activation"
 
   const { devices } = pc.start(async () => { throw new TypeError("offline"); });
 
-  expect(devices.catchingUp(pc.device.id)).toBe(true);
-  expect(devices.match(pc.token)).toBeNull();
+  expect(devices.catchingUp(pc.device.id, false)).toBe(true);
+  expect(devices.match(pc.token)?.id).toBe(pc.device.id);
 });
 
 test.each(["single", "all"] as const)("a clock-only fault permits the owner's local %s Revoke", async kind => {
@@ -281,7 +283,7 @@ test("the owner's clock-fault Revoke keeps the key tombstoned after rolling back
   const { devices, fixture } = pc.start(offline);
   const base = `http://127.0.0.1:${fixture.app.port}`;
   expect(devices.match(pc.token)?.id).toBe(pc.device.id);
-  expect(devices.clockOnlyFault()).toBe(true);
+  expect(devices.admits(pc.device.publicKey)).toBe(false);
   const revoke = await fetch(`${base}/api/devices/${pc.device.id}`, { method: "DELETE", headers: {
     origin: base, "x-herdr-machine": "1", authorization: "Bearer owner-only",
   } });
@@ -297,7 +299,7 @@ test("the owner's clock-fault Revoke keeps the key tombstoned after rolling back
 test("install opt-out still lets a local code pair after a Step 2 legacy clock fault", async () => {
   const pc = await upgrade({ created: Date.now() + 2 * DAY });
   const first = pc.start(offline);
-  expect(first.devices.clockOnlyFault()).toBe(true);
+  expect(first.devices.admits(pc.device.publicKey)).toBe(false);
   await first.fixture.app.stop();
   const prior = process.env["OVIS_ACCOUNT_OPENS_ALL"];
   process.env["OVIS_ACCOUNT_OPENS_ALL"] = "0";
@@ -314,4 +316,57 @@ test("install opt-out still lets a local code pair after a Step 2 legacy clock f
     if (prior === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
     else process.env["OVIS_ACCOUNT_OPENS_ALL"] = prior;
   }
+});
+
+test("service opt-out keeps local pairing available while the clock-ahead row has no Step 2 authority", async () => {
+  const pc = await upgrade({ created: Date.now() + 2 * DAY });
+  pc.service.opensAll = false;
+  pc.service.reportsStep2Off = true;
+  const { devices, accountMailbox, fixture } = pc.start();
+  await accountMailbox.readSnapshot();
+  expect(PcAccountState.open(pc.stateDir).serviceStep2Off()).toBe(true);
+
+  const base = `http://127.0.0.1:${fixture.app.port}`;
+  const guard = { origin: base, "x-herdr-machine": "1", "content-type": "application/json" };
+  const issue = await fetch(`${base}/api/devices/pair/start`, { method: "POST", headers: { ...guard, authorization: "Bearer owner-only" } });
+  expect(issue.status).toBe(200);
+  const { code } = await issue.json() as { code: string };
+  const paired = await fetch(`${base}/api/devices/pair`, { method: "POST", headers: { ...guard, "x-forwarded-for": "100.64.0.9" },
+    body: JSON.stringify({ code, label: "Local browser" }) });
+
+  expect(paired.status).toBe(204);
+  expect(devices.admits(pc.device.publicKey)).toBe(false);
+  const cookie = paired.headers.getSetCookie().find(line => line.startsWith(`${DEVICE_COOKIE}=`))?.split(";")[0];
+  if (!cookie) throw new Error("Local pairing returned no cookie");
+  expect((await fetch(`${base}/api/devices`, { headers: { cookie, "x-forwarded-for": "100.64.0.9" } })).status).toBe(200);
+  const browser = devices.list(null).find(row => row.label === "Local browser");
+  if (!browser) throw new Error("Expected a local pairing");
+  expect(devices.sessionRow(browser.id)?.key).toBeUndefined();
+  expect(devices.catchingUp(browser.id, false)).toBe(true);
+});
+
+test("a clock-ahead legacy row does not prevent reconciliation, account-joined access or a signed removal", async () => {
+  const pc = await upgrade({ created: Date.now() + 2 * DAY });
+  const listed = await phone();
+  pc.service.registerDevice(ACCOUNT, pc.device.publicKey, "Clock-ahead phone");
+  pc.service.registerDevice(ACCOUNT, listed.spki, "Listed phone");
+  const { fixture, devices, accountMailbox, serverId } = pc.start();
+  const id = accountDeviceId(serverId, listed.spki);
+  expect(devices.catchingUp(pc.device.id, false)).toBe(true);
+
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(devices.accountError).toBeNull();
+  expect(devices.isAccountApproverSession(pc.device.id, pc.device.publicKey)).toBe(false);
+  expect(devices.match(pc.token)?.id).toBe(pc.device.id);
+  const wall = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS + 1);
+  closes.push(() => wall.mockRestore());
+  const link = await relayConnection(fixture, { serverId });
+  await link.auth({ id, keys: listed.keys, publicKey: listed.spki }, [ACCOUNT_OPENS_ALL_FEATURE]);
+  expect((await ask(link, "/api/devices")).status).toBe(200);
+  const leave = await signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: listed.spki, signer: listed.spki,
+    issued_at: new Date(Date.now()).toISOString(), id: newRecordId() }, listed.keys.privateKey);
+
+  expect(await applyAccountRecords(devices, [leave], serverId)).toMatchObject([{ outcome: "applied" }]);
+  expect(devices.sessionRow(id)).toBeNull();
+  expect(devices.match(pc.token)?.id).toBe(pc.device.id);
 });

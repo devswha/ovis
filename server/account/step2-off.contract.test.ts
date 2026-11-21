@@ -1,4 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
@@ -44,9 +46,9 @@ async function legacyPc(options: { tombstone?: boolean; freeze?: "target" | "cut
     mailbox: pc.app.context.services.accountMailbox };
 }
 
-test("a proved step2_off response lets a pre-Step-2 phone sign in and serve requests", async () => {
+test("a proved step2_off response leaves pre-Step-2 credential access intact", async () => {
   const { pc, legacy, mailbox, serverId } = await legacyPc();
-  expect(pc.devices.catchingUp(legacy.id)).toBe(true);
+  expect(pc.devices.catchingUp(legacy.id, false)).toBe(true);
   pc.account.reportsStep2Off = true;
 
   await mailbox.pull();
@@ -92,15 +94,17 @@ test.each([
   ["a 5xx carrying the code", () => Response.json({ error: { code: "step2_off" } }, { status: 503 })],
   ["a 403 carrying the code", () => Response.json({ error: { code: "step2_off" } }, { status: 403 })],
   ["a malformed 404", () => new Response('{"error":{"code":"step2_off"', { status: 404 })],
-] as const)("%s does not release a legacy phone; a later step2_off does", async (_name, failure) => {
+] as const)("%s is not a service opt-out and does not affect the existing credential", async (_name, failure) => {
   const { pc, legacy, mailbox } = await legacyPc({ failure });
 
   await mailbox.readSnapshot();
   const duringFailure = pc.devices.sessionRow(legacy.id);
+  expect(PcAccountState.open(pc.stateDir).serviceStep2Off()).toBe(false);
   pc.account.reportsStep2Off = true;
   await mailbox.readSnapshot();
 
-  expect([duringFailure?.key ?? null, pc.devices.sessionRow(legacy.id)?.key]).toEqual([null, legacy.publicKey]);
+  expect([duringFailure?.key, pc.devices.sessionRow(legacy.id)?.key]).toEqual([legacy.publicKey, legacy.publicKey]);
+  expect(PcAccountState.open(pc.stateDir).serviceStep2Off()).toBe(true);
 });
 
 test("a whole snapshot after step2_off restores an account-joined phone's access", async () => {
@@ -153,4 +157,22 @@ test.skipIf(process.platform === "win32")("a named recovery release cannot satis
   service.opensAll = true;
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   expect(devices.sessionRow(device.id)?.key).toBe(device.publicKey);
+});
+
+test("a reconciled snapshot clears service opt-out in both folders of the same binding", async () => {
+  const { pc, mailbox } = await legacyPc();
+  const sibling = mkdtempSync(join(tmpdir(), "ovis-step2-off-sibling-"));
+  closes.push(() => rmSync(sibling, { recursive: true, force: true }));
+  pc.account.opensAll = false;
+  pc.account.reportsStep2Off = true;
+  await mailbox.readSnapshot();
+  const other = PcAccountState.open(sibling);
+  other.takeSibling(pc.stateDir);
+  other.migrate(ACCOUNT, true);
+  expect(other.serviceStep2Off()).toBe(true);
+
+  pc.account.opensAll = true;
+  expect(await mailbox.readSnapshot()).toMatchObject({ committed: true });
+  PcAccountState.open(pc.stateDir).takeSibling(sibling);
+  expect([PcAccountState.open(pc.stateDir).serviceStep2Off(), PcAccountState.open(sibling).serviceStep2Off()]).toEqual([false, false]);
 });

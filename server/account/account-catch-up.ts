@@ -2,7 +2,6 @@ import type { AccountSnapshot } from "../../shared/account-snapshot.ts";
 import type { DeviceStore } from "../devices.ts";
 import { STALE_READ_MS, type accountRowsFor } from "./account-devices.ts";
 import { CatchUpGate } from "./catch-up-gate.ts";
-import type { FirstActivation } from "./first-activation.ts";
 import type { PcAccountState } from "./pc-binding.ts";
 import type { Readmission } from "./readmission.ts";
 import type { RecoveryReleases } from "./recovery.ts";
@@ -21,13 +20,12 @@ export class AccountCatchUp {
   constructor(
     private readonly devices: DeviceStore,
     private readonly rows: ReturnType<typeof accountRowsFor> | null,
-    private readonly options: { readonly pc: PcAccountState | null; readonly releases?: RecoveryReleases | undefined; readonly activation?: FirstActivation | undefined },
+    private readonly options: { readonly pc: PcAccountState | null; readonly releases?: RecoveryReleases | undefined },
   ) {
-    const { pc, releases, activation } = options;
+    const { pc, releases } = options;
     this.releases = releases;
-    activation?.scope(pc);
     this.gate = rows === null ? null : new CatchUpGate(() => pc?.binding()?.bind_id ?? null,
-      id => releases?.releaseOf(id) != null, binding => activation?.pending(binding) === true);
+      id => releases?.releaseOf(id) != null);
     devices.attachCatchUp(this.gate, releases);
     if (rows && releases) this.stopRecovery = releases.registerRecoverySource(() =>
       (rows.store()?.waitingRows() ?? []).map(row => devices.listedRecoveryCandidate(row)));
@@ -53,7 +51,6 @@ export class AccountCatchUp {
   /** An explicit opt-out is not a whole read: no renewal, no lift, and no account-list access. */
   step2Off(): void {
     if (this.options.pc?.setServiceStep2Off(true)) this.rows?.store()?.waitForService();
-    this.gate?.step2Off();
   }
 
   /** `readmission`: the proved returning device a sign-in's own pull may readmit (S2-28, T55). */
@@ -64,7 +61,6 @@ export class AccountCatchUp {
       const accountError = this.devices.accountError;
       if (accountError !== null) throw new SnapshotWriteRefused(accountError);
       store?.expire();
-      this.options.activation?.complete(this.options.pc?.binding()?.bind_id ?? null);
       this.releases?.endAll();
       this.gate?.wholeRead(this.devices.list(null).filter(row => !this.devices.admits(this.devices.relayKeyOf(row.id))).map(row => row.id));
       this.options.pc?.setServiceStep2Off(false);

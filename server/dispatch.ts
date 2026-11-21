@@ -288,7 +288,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   }
   const askingTheScreen = ownWindow
     && ((pathname === "/api/account/lock" && request.method === "GET") || (pathname === "/api/account/unlock" && request.method === "POST"));
-  const localDenial = ownWindow && !funnel && (devices.localRemovalRetry() || devices.clockOnlyFault())
+  const localDenial = ownWindow && !funnel && devices.localRemovalRetry()
     && ((request.method === "POST" && pathname === "/api/devices/revoke-all")
       || (request.method === "DELETE" && /^\/api\/devices\/[0-9a-f]{16}$/.test(pathname)));
   // strict is every source the store fails closed on (the log, the admission order, removal evidence, the journal: S19)
@@ -597,7 +597,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
           // and every page media address its renders were given
           forgetPageMedia({ device: id });
         }
-      }, ctx.lanHttps === true, { list: () => ctx.services.relay.connections(), check: (ms) => ctx.services.relay.checkConnections(ms) });
+      }, ctx.lanHttps === true, { list: () => ctx.services.relay.connections(), check: (ms) => ctx.services.relay.checkConnections(ms) }, ownWindow && !funnel);
     } catch (error) { return errorResponse(error); }
   }
 

@@ -13,14 +13,18 @@ const ACCOUNT = "acct_1";
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 
-/** A PC in ACCOUNT with the release flag on, started with one legacy member row and no whole read yet. */
-async function startedPc() {
+/** A PC in ACCOUNT started with a pre-Step-2 or remotely admitted Step-2 member. */
+async function startedPc(legacy = false) {
   // the service answers no snapshot yet: the PC's own reads after its start cannot end the wait
   const service = new FakeAccountService();
   const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, {
     accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch },
-    prepare: stateDir => PcAccountState.open(stateDir).migrate(ACCOUNT, true),
-    origin: legacyOrigin,
+    prepare: stateDir => {
+      const pc = PcAccountState.open(stateDir);
+      pc.migrate(ACCOUNT, true);
+      if (!legacy) pc.admit("remote", "code", null, Date.now());
+    },
+    origin: legacy ? legacyOrigin : at => ({ from: "remote", how: "code", by: null, admit_no: 1, at }),
   });
   closes.push(() => fixture.close());
   rotateRelayIdentity(fixture.stateDir);
@@ -43,7 +47,7 @@ async function signIn(pc: Awaited<ReturnType<typeof startedPc>>, features: reado
 }
 
 describe("S2-27 a devices.json row not paired at this PC waits for the first whole read after a start (T41, T42)", () => {
-  test("P7/S22: a waiting legacy row's sign-in reads the ready service before the periodic pull", async () => {
+  test("P7/S22: a waiting Step 2 row's sign-in reads the ready service before the periodic pull", async () => {
     const pc = await startedPc();
     // Drain the failed startup pull before the service recovers, so it cannot race this sign-in.
     await pc.fixture.app.context.services.accountMailbox.pull();
@@ -55,12 +59,19 @@ describe("S2-27 a devices.json row not paired at this PC waits for the first who
     expect((await ask(link, "/api/account/status")).status).toBe(200);
   });
 
-  test("T41: a legacy row's proved sign-in is refused catching_up until a whole read; an old app gets today's code", async () => {
+  test("T41: a remotely admitted Step 2 row is held before a whole read; an old app gets auth_failed", async () => {
     const pc = await startedPc();
-    expect(pc.fixture.app.context.services.devices.originOf(pc.member.id)?.from).toBe("legacy");
+    expect(pc.fixture.app.context.services.devices.originOf(pc.member.id)?.from).toBe("remote");
     expect(await signIn(pc, [ACCOUNT_OPENS_ALL_FEATURE])).toEqual({ code: "held", message: "This PC waits for the account's list before letting this device in", hold: { reason: "catching_up" } });
     expect(await signIn(pc, [])).toEqual({ code: "auth_failed", message: "auth_failed" });
     expect(pc.fixture.app.context.services.devices.sessionRow(pc.member.id)).toBeNull();
+  });
+
+  test("a legacy credential signs in before a whole read with both old and new clients", async () => {
+    const pc = await startedPc(true);
+    expect(pc.fixture.app.context.services.devices.originOf(pc.member.id)?.from).toBe("legacy");
+    expect(await signIn(pc, [ACCOUNT_OPENS_ALL_FEATURE])).toBe("ok");
+    expect(await signIn(pc, [])).toBe("ok");
   });
 
   test("T42: the first whole read ends the wait for a row the admission guard passes", async () => {
@@ -85,7 +96,7 @@ describe("S2-27 a devices.json row not paired at this PC waits for the first who
   });
 
   test("S22/P7: a legacy member has neither signer nor approval authority until judged", async () => {
-    const pc = await startedPc();
+    const pc = await startedPc(true);
     const { devices, accountMailbox } = pc.fixture.app.context.services;
     const authority = () => [
       devices.accountSigner(pc.member.publicKey, ACCOUNT)?.id,
