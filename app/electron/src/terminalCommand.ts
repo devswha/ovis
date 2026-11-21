@@ -182,8 +182,10 @@ export function shellPath(output: string): string | null {
   return line === undefined ? null : line.slice("__OVIS_PATH__=".length).trim();
 }
 
-// as install.ps1 adds its cmd\ folder: appended to the user's Path, once
-const ADD_USER_PATH = "$d=$env:OVIS_COMMAND_DIR; $p=[Environment]::GetEnvironmentVariable('Path','User'); if (-not (@($p -split ';') -contains $d)) { [Environment]::SetEnvironmentVariable('Path', ((@($p -split ';' | Where-Object { $_ }) + $d) -join ';'), 'User') }";
+// as install.ps1 adds its cmd\ folder: appended to the user's Path as stored, once, keeping its %VAR% entries and its
+// registry kind (GetEnvironmentVariable expands them, and writing that back flattens them); setting and removing a
+// variable through .NET then announces the changed environment to new terminals
+const ADD_USER_PATH = "$d=$env:OVIS_COMMAND_DIR; $k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); try { $p=[string]$k.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); if (-not (@($p -split ';') -contains $d)) { $t=if ($k.GetValueNames() -contains 'Path') { $k.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }; $k.SetValue('Path', ((@($p -split ';' | Where-Object { $_ }) + $d) -join ';'), $t); [Environment]::SetEnvironmentVariable('OVIS_PATH_CHANGED','1','User'); [Environment]::SetEnvironmentVariable('OVIS_PATH_CHANGED',$null,'User') } } finally { $k.Dispose() }";
 
 export async function commandState(host: CommandHost): Promise<CommandState> {
   const path = await host.terminalPath();

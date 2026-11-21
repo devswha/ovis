@@ -449,12 +449,22 @@ function Write-OvisCommand {
         Write-Host "Ovis: $shim appeared while Ovis was writing it, so it was left as it is"
         return
     } finally { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not (($userPath -split ';') -contains $dir)) {
-        [Environment]::SetEnvironmentVariable('Path', ((@($userPath -split ';' | Where-Object { $_ }) + $dir) -join ';'), 'User')
-        Write-Host "Ovis: added $dir to your PATH: open a new terminal to run ovis"
-    }
+    if ([Environment]::OSVersion.Platform -ne 'Win32NT') { return }
+    # the user's Path as stored: GetEnvironmentVariable expands %VAR% entries, and writing that back would flatten them
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    try {
+        $userPath = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if (-not (($userPath -split ';') -contains $dir)) {
+            $kind = if ($key.GetValueNames() -contains 'Path') { $key.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+            $key.SetValue('Path', ((@($userPath -split ';' | Where-Object { $_ }) + $dir) -join ';'), $kind)
+            # setting and removing a variable through .NET announces the changed environment to Explorer and new terminals
+            [Environment]::SetEnvironmentVariable('OVIS_PATH_CHANGED', '1', 'User')
+            [Environment]::SetEnvironmentVariable('OVIS_PATH_CHANGED', $null, 'User')
+            Write-Host "Ovis: added $dir to your PATH: open a new terminal to run ovis"
+        }
+    } finally { $key.Dispose() }
 }
+
 $newInstall = $false
 $binaryDone = $false
 $ovisPlugin = Join-Path $ovisHome 'plugin'
