@@ -592,15 +592,21 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
           }
           await openSettings(page);
           await openSettingsPage(page, "Devices and PCs");
-          const account = page.locator("[data-section='account']");
-          assert.equal(await account.evaluate((group) => group.closest("details") === null), true, "the Account group is not folded away");
-          await openSettingsFolds(page);
+          let account = page.locator("[data-section='account']");
           const shot = async (name: string) => {
             if (!process.env.UI_EVIDENCE_DIR) return;
             await account.scrollIntoViewIfNeeded();
             await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `${name}-${width}.png`), animations: "disabled" });
           };
           if (!signedIn) {
+            // signed out, the page draws no account card: Add a connection's relay tab is where this page signs in
+            const add = page.locator("[data-section='devices']").getByRole("button", { name: "Add a connection", exact: true });
+            await add.waitFor();
+            assert.equal(await account.count(), 0, `signed out, Devices and PCs has no account card (${width}px)`);
+            await add.click();
+            const sheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
+            await sheet.locator('.connect-ways [data-tab="relay"]').click();
+            account = sheet.getByTestId("connect-signin");
             const buttons = account.locator(".account-provider");
             if (offered.length === 2) {
               await buttons.nth(1).waitFor();
@@ -608,21 +614,32 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
               assert.equal(await account.locator("[data-provider='google'] svg path").count(), 4, "Google's G keeps its four colours");
               await shot("account-google-signin");
             } else {
-              await account.locator("[data-offer='service'] .account-provider").first().waitFor();
+              await account.locator(".account-provider").first().waitFor();
               assert.deepEqual(await buttons.allTextContents(), ["Continue with GitHub"], `no Google button while the service offers none (${width}px)`);
             }
           } else {
-            const methods = account.locator(".account-method");
+            assert.equal(await account.evaluate((group) => group.closest("details") === null), true, "the Account group is not folded away");
+            // the account is one line: who is signed in, Manage account and Sign out; the rest waits in Manage account's sheet
+            const head = account.locator(".account-head");
+            await head.getByText("Signed in with Google", { exact: true }).waitFor();
+            assert.deepEqual(await head.getByRole("button").allInnerTexts(), ["Manage account", "Sign out"], `the account's line holds Manage account and Sign out (${width}px)`);
+            assert.equal(await account.locator(".account-method").count(), 0, `the ways to sign in are not on the page (${width}px)`);
+            assert.equal(await account.getByText("Delete account", { exact: true }).count(), 0, `Delete account is not on the page (${width}px)`);
+            assert.ok(!(await account.innerText()).includes("acct_"), `the line names no account id (${width}px)`);
+            await shot("account-google-line");
+            await head.getByRole("button", { name: "Manage account", exact: true }).click();
+            const sheet = page.getByTestId("manage-account");
+            const methods = sheet.locator(".account-method");
             await methods.nth(1).waitFor();
-            assert.equal(await account.locator(".account-head").getByText("Google", { exact: true }).count(), 1, "the account row names Google");
             assert.deepEqual(await methods.evaluateAll((rows) => rows.map((row) => [row.getAttribute("data-provider"), row.querySelector("button") !== null])), [["github", true], ["google", false]],
               "every way to sign in can be removed but the one this page signed in with");
-            const foot = page.locator(".account-delete-foot");
-            assert.equal(await foot.locator("summary").textContent(), "Delete account", `Delete account sits at the foot of the page (${width}px)`);
-            assert.equal(await account.getByText("Delete account", { exact: true }).count(), 0, `Delete account is not in the Account card (${width}px)`);
-            assert.ok(await foot.evaluate((node) => [...document.querySelectorAll(".settings-body:not([hidden]) .settings-section")].every((group) => group.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)),
-              `Delete account comes after every group of the page (${width}px)`);
-            await shot("account-google-methods");
+            const deleteAt = sheet.locator(".account-delete");
+            assert.equal(await deleteAt.locator("summary").textContent(), "Delete account", `Delete account sits at the foot of Manage account (${width}px)`);
+            assert.ok(await deleteAt.evaluate((node) => [...node.closest("[data-testid='manage-account']")!.querySelectorAll(".account-methods")].every((part) => part.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)),
+              `Delete account comes after the ways to sign in (${width}px)`);
+            if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-google-methods-${width}.png`), animations: "disabled" });
+            await page.keyboard.press("Escape");
+            await sheet.waitFor({ state: "detached" });
             if (width === 1280) {
               // a search finds settings rows only: the account's own rows answer it
               const search = dialogOf(page).getByRole("searchbox", { name: "Search settings", exact: true });

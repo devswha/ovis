@@ -70,7 +70,7 @@ import { AccountService } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
-import { ConnectPhoneDialog, relayOffered } from "./ConnectPhoneDialog.tsx";
+import { ConnectPhoneDialog, relayOffered, relayPending } from "./ConnectPhoneDialog.tsx";
 import { ACCOUNT_QR_WATCH_EVENT, accountQrNoticeWaiting } from "../lib/accountQrWatch.ts";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { AlertWebhookGroup } from "./AlertWebhookGroup.tsx";
@@ -293,7 +293,6 @@ function pageNote(t: Translate, page: SettingsPage): string | null {
     case "alerts": return t("When this device alerts you, and where else alerts go.");
     case "agents": return t("Coding agents on this PC, their accounts and plan limits.");
     case "shortcuts": return t("Keyboard shortcuts, and herdr's prefix keys.");
-    case "devices": return t("Phones, browsers and PCs that reach this Ovis.");
     case "experimental": return t("Features still being shaped; they may change.");
     default: return null;
   }
@@ -1206,8 +1205,6 @@ function deviceKind(label: string, t: ReturnType<typeof useT>): string | null {
   return t("Browser");
 }
 
-const groupedId = (id: string): string => id.match(/.{1,4}/g)?.join(" ") ?? id;
-
 function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSettings, pcSettingsError, onPcSettings, openAddPc, connectPc, opensAll, withdrawn }: {
   opensAll?: (() => boolean) | undefined;
   withdrawn?: (() => boolean) | undefined;
@@ -1237,7 +1234,6 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const [accountChecks, setAccountChecks] = useState(0);
   const searching = useContext(SettingsQuery).length > 0;
   const [devicesMore, setDevicesMore] = useState<HTMLDivElement | null>(null);
-  const [accountDelete, setAccountDelete] = useState<HTMLDivElement | null>(null);
   const [devicesCheck, setDevicesCheck] = useState<HTMLDivElement | null>(null);
   const closeConnect = useCallback(() => setConnecting(false), []);
   const pairingHeld = useRef(false);
@@ -1284,7 +1280,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       {/* the account first: the sign-in the relay depends on is not left in More settings */}
       {/* a PC page the hosted app opened has no PC sign-in of its own: the hosted one, with the overview's Sign out */}
       {accountService === null && <HostedAccountGroup signIn={hostedSignIn} />}
-      <AccountSection onAccount={setAccount} recheck={accountChecks} deleteSlot={accountDelete} {...(opensAll === undefined ? {} : { opensAll })} {...(withdrawn === undefined ? {} : { withdrawn })} />
+      <AccountSection onAccount={setAccount} recheck={accountChecks} signInElsewhere={(relayOffered(relay) || relayPending(relay)) && !relayReadOnly} {...(opensAll === undefined ? {} : { opensAll })} {...(withdrawn === undefined ? {} : { withdrawn })} />
 
       {/* what is connected to this PC: its name atop one list of the other PCs, phones and browsers, the one in use first */}
       <SettingsGroup section="devices">
@@ -1360,9 +1356,6 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
         <AccessFacts facts={security} />
         <RemotePcsMore machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={onPcSettings} />
       </SettingsFold>
-
-      {/* Delete account sits last on the page, away from the account's everyday rows */}
-      <div className="account-delete-foot" ref={setAccountDelete} />
 
       {connecting && (
         <ConnectPhoneDialog plan={plan} pairUrl={pairUrl}
@@ -1461,7 +1454,6 @@ function MyPcRows({ machines, account, accountPcs, onAccountChanged, relayKey, w
         <li className="devices-row my-device-self" data-testid="this-pc">
           <div className="devices-name">
             <span className="settings-label">{local.name}<span className="devices-kind is-self">{t("This PC")}</span></span>
-            {id !== undefined && <span className="settings-description my-device-id">{t("ID {id}", { id: groupedId(id) })}</span>}
           </div>
           <div className="devices-actions my-device-check" ref={selfAction} />
         </li>

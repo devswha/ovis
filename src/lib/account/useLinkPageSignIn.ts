@@ -33,7 +33,10 @@ export type LinkPageSignInState =
 export interface LinkPageSignIn {
   readonly state: LinkPageSignInState;
   readonly ready: boolean;
-  /** the providers to pick from for an own sign-in, null where the one button starts the link page's */
+  /**
+   * the providers to pick from: an own sign-in's, or, where the service has no link page, each provider's device sign-in;
+   * null where the one button starts the link page's
+   */
   readonly own: readonly AccountProvider[] | null;
   /** the providers the link page offers, as its copy names them */
   readonly linkPage: readonly AccountProvider[];
@@ -63,10 +66,14 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
     setState({ kind: "idle" });
   }, []);
 
-  const own = offer === null || (bridge === null && !ownRedirect) ? null : offer.providers;
+  const ownSignIn = offer !== null && (bridge !== null || Boolean(ownRedirect));
+  // no link page to pick a provider on: each provider's own device page, one button each (once this window is known
+  // not to sign in its own way)
+  const deviceOnly = offer !== null && !ownSignIn && ownRedirect !== undefined && offer.page.length === 0 && offer.device.length > 0;
+  const own = offer === null ? null : ownSignIn ? offer.providers : deviceOnly ? offer.device : null;
   const start = useCallback((provider?: AccountProvider) => {
     if (offer === null) return;
-    if (own !== null && provider !== undefined) {
+    if (ownSignIn && provider !== undefined) {
       running.current?.abort();
       const controller = new AbortController();
       running.current = controller;
@@ -105,8 +112,9 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       const requester = { label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
       const options = { service, store: indexedAccountStore, requester };
       const fallback = offer.device[0];
-      const started = fallback === undefined
-        ? await startDeviceSignIn({ ...options, provider: "ovis" })
+      const picked = deviceOnly ? offer.device.find((device) => device === provider) : undefined;
+      const started = picked !== undefined ? await startDeviceSignIn({ ...options, provider: picked })
+        : fallback === undefined ? await startDeviceSignIn({ ...options, provider: "ovis" })
         : await startLinkPageSignIn(options, fallback);
       controller.signal.throwIfAborted();
       if (tab !== null) tab.location.href = started.verificationUriComplete ?? started.verificationUri;
@@ -122,7 +130,7 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       console.warn("Ovis: the sign-in did not finish", error instanceof Error ? error.name : error);
       setState({ kind: "failed", error });
     }).finally(() => { if (running.current === controller) running.current = null; });
-  }, [service, offer, own, bridge, ownRedirect, onOpenAccount]);
+  }, [service, offer, ownSignIn, deviceOnly, bridge, ownRedirect, onOpenAccount]);
 
   return { state, ready: offer !== null && ownRedirect !== undefined, own, linkPage: offer === null ? [] : offer.page.length > 0 ? offer.page : offer.device, start, cancel };
 }

@@ -130,4 +130,5 @@ export const RELAY_KO: Record<string, string> = {
   "Add a PC|screen": "PC 추가",
   "This pairing link is not this app's. Scan the QR code your PC shows.": "이 페어링 링크는 이 앱의 링크가 아닙니다. PC에 표시된 QR 코드를 스캔하세요.",
   "{host} is not on a tailnet or a home network, so plain http would send everything you type across the internet unencrypted. Use its https address, or open it again to go ahead.": "{host} 주소는 tailnet이나 집 네트워크의 주소가 아니어서, 일반 http로는 입력하는 모든 내용이 암호화되지 않은 채 인터넷으로 오갑니다. https 주소를 쓰거나, 그래도 열려면 한 번 더 여세요.",
+  "Open app.ovis.sh": "app.ovis.sh 열기",
 };

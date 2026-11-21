@@ -185,11 +185,6 @@
   color: var(--accent);
 }
 
-.my-device-id {
-  font-family: var(--font-mono);
-  overflow-wrap: anywhere;
-}
-
 .my-devices {
   display: flex;
   flex-direction: column;

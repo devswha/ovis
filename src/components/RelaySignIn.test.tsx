@@ -204,11 +204,14 @@ describe("the relay tab's Sign in", () => {
     expect(after[0]).toBe(before?.[0]);
   });
 
-  it("uses the offered Google device page when the link page is unavailable", async () => {
+  it("offers each provider's device page as its own button where the service has no link page", async () => {
     fake.offerSignIns(["google"], ["google"]);
     linkPageAvailable = false;
     await mount();
-    await signIn();
+    expect(renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === "Sign in to Ovis")).toHaveLength(0);
+    const google = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === "Continue with Google");
+    expect(google).toHaveLength(1);
+    await act(async () => { google[0]!.props.onClick(); });
     await act(async () => { await firstPoll; });
     expect(tab?.location.href).toBe("https://www.google.com/device");
     expect(renderer?.root.findAllByType("a").map(text)).toEqual(["Open Google"]);

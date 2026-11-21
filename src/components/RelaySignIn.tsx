@@ -78,7 +78,7 @@ export function RelaySignIn({ service, onSignedIn, onOpenAccount, boundPc = fals
   const failure = state.kind === "failed" ? failureText(t, state.error) : null;
   return (
     <>
-      <p className="settings-description">{boundPc ? t("Sign in to this PC's account.") : t("Connect from anywhere through your Ovis account.")}</p>
+      {boundPc && <p className="settings-description">{t("Sign in to this PC's account.")}</p>}
       {own !== null ? <AccountSignIn providers={own} onSignIn={start} error={failure} /> : <>
       <button ref={signInButton} type="button" className="btn btn-primary connect-signin-button" aria-disabled={!ready || state.kind === "starting"} onClick={() => { if (ready && state.kind !== "starting") start(); }}>{state.kind === "starting" ? t("Signing in…") : t("Sign in to Ovis")}</button>
       {failure !== null && <p className="account-error" role="alert">{failure}</p>}

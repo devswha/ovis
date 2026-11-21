@@ -130,4 +130,5 @@ export const RELAY_ZH: Record<string, string> = {
   "Add a PC|screen": "添加电脑",
   "This pairing link is not this app's. Scan the QR code your PC shows.": "此配对链接不属于此应用。请扫描电脑上显示的二维码。",
   "{host} is not on a tailnet or a home network, so plain http would send everything you type across the internet unencrypted. Use its https address, or open it again to go ahead.": "{host} 不在 tailnet 或家庭网络中，使用普通 http 会让你输入的所有内容未经加密地经过互联网。请使用它的 https 地址，或再次打开以继续。",
+  "Open app.ovis.sh": "打开 app.ovis.sh",
 };

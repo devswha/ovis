@@ -5,7 +5,6 @@
  * and the Ovis link page where the service has it, else the provider's device flow.
  */
 import { useCallback, useContext, useEffect, useEffectEvent, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { Check, Plus, X } from "lucide-react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
@@ -26,8 +25,8 @@ import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { deviceLabel, deviceOs } from "../lib/phone.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
-import { AccountPcList, AccountSignIn, HOSTED_APP_URL, PROVIDER_NAMES, ProviderMark, providerChoice } from "./AccountPcs.tsx";
-import { AccountHead } from "./AccountHead.tsx";
+import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark, providerChoice } from "./AccountPcs.tsx";
+import { AccountHead, ManageAccountSheet } from "./AccountHead.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { statusText } from "./RelayPanel.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
@@ -189,7 +188,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
    * add the PC becomes the plain offer. Only that idle offer changes; an add or a wait under way goes on as it is.
    */
   relayOn?: boolean;
-  /** false where the relay's own switch beside it already says that turning it on closes the device gate (the relay tab) */
+  /** false on the relay tab, which holds no sentence: that turning the relay on closes the device gate is then the button's tooltip */
   gateNote?: boolean;
   /** this PC lists account-opens-all/1 now (its step-2 switch is on): only then is a one press tried */
   opensAll?: () => boolean;
@@ -618,7 +617,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
   useEffect(() => {
     if (!relayOff) return;
     let live = true;
-    fetchBridgeHealth().then(({ security }) => { if (live) setClosesGate(security !== undefined && security.pairing_gate === "open" && !security.token_configured); },
+    // a relay that may not start (serve-only) closes nothing: no note about turning it on
+    Promise.all([fetchBridgeHealth(), fetchRelay()]).then(([{ security }, relay]) => { if (live) setClosesGate(relay.blocked === null && security !== undefined && security.pairing_gate === "open" && !security.token_configured); },
       warned("Ovis: this PC's access facts could not be read"));
     return () => { live = false; };
   }, [relayOff]);
@@ -690,51 +690,33 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         <p className="settings-description" role="status">{t("Signed in. Adding this PC to your account…")}</p>
       ) : state.kind === "relay-off" ? (
         <>
-          <p className="settings-description">{t("Add this PC to your account, so every device of your account can use it with one approval.")}</p>
-          <p className="settings-description">{t("The Ovis relay lets your devices reach this PC from anywhere.")}</p>
+          {/* the one press turns the relay on too: the button says only what it is for, and where no sentence may stand
+              (the relay tab) that turning the relay on closes the device gate is its tooltip */}
           {closesGate && gateNote && <p className="settings-condition">{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
-          <button type="button" className="btn btn-primary" onClick={() => startRelayAndAdd(state.account)}>{t("Turn on the relay and add this PC")}</button>
+          <button type="button" className="btn btn-primary account-add-pc-button" data-relay="off" title={closesGate && !gateNote ? t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.") : undefined} onClick={() => startRelayAndAdd(state.account)}>{t("Add this PC to my account")}</button>
           {state.error !== null && <p className="settings-condition" role="alert">{state.error}</p>}
         </>
       ) : state.kind === "waiting" ? (
         <>
-          {state.signedIn === true && <p className="settings-description">{t("Signed in. Adding this PC to your account…")}</p>}
-          <p className="settings-description">{t("On a device signed in to this account (the Ovis app or app.ovis.sh), choose Add on {name}. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.", { name: state.name })}</p>
-          <NoOtherDevice />
-          <p className="settings-description" role="status">{t("Waiting. The window reopens by itself if Ovis restarts.")}</p>
+          <p className="settings-description" role="status">{t("On another device of your account, choose Add on {name}.", { name: state.name })}</p>
           <button type="button" className="btn" onClick={stop}>{t("Stop waiting")}</button>
         </>
       ) : state.kind === "done" ? (
-        <>
-          <p className="settings-description" role="status">{state.enrolling
-            ? t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")
-            : t("This PC is in your account. A new device of your account may need one approval here.")}</p>
-        </>
+        state.enrolling
+          ? <p className="settings-description" role="status">{t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")}</p>
+          : <p className="account-add-pc-done" role="status"><Check aria-hidden="true" />{t("Added")}</p>
       ) : state.kind === "expired" ? (
         <>
           <p className="settings-description" role="status">{t("This PC stopped waiting after 30 minutes.")}</p>
-          <NoOtherDevice />
           <button type="button" className="btn btn-primary" onClick={() => add()}>{t("Keep waiting")}</button>
         </>
       ) : (
         <>
-          <p className="settings-description">{t("Add this PC to your account, so every device of your account can use it with one approval.")}</p>
-          <button type="button" className="btn btn-primary" onClick={() => add()}>{t("Add this PC to my account")}</button>
+          <button type="button" className="btn btn-primary account-add-pc-button" onClick={() => add()}>{t("Add this PC to my account")}</button>
           {state.kind === "error" && <p className="settings-condition" role="alert">{state.message}</p>}
         </>
       )}
     </div>
-  );
-}
-
-/** The one-PC owner's way to the other side of the add (first-user path D4): the hosted app in another tab of this browser. */
-function NoOtherDevice() {
-  const t = useT();
-  return (
-    <>
-      <p className="settings-description">{t("No other device? Open app.ovis.sh in a new tab here and sign in the same way. Choose Add there, then come back to this tab to approve.")}</p>
-      <ExternalLink kind="ovis" className="btn" href={HOSTED_APP_URL}>{t("Open app.ovis.sh")}</ExternalLink>
-    </>
   );
 }
 
@@ -787,20 +769,24 @@ const pcServiceHere = (): string | null => desktopAccount() === null && !inNativ
 
 export const accountServiceHere = (): string | null => desktopAccount()?.service ?? pcServiceHere();
 
-export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, deleteSlot = null }: {
+export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, signInElsewhere = false }: {
   onAccount?: (state: AccountState) => void;
   recheck?: number;
   /** this PC lists account-opens-all/1 now (App, from the local socket's features) */
   opensAll?: () => boolean;
   /** this PC's last feature list lacked the account release (an explicit withdrawal, S32-1): no block goes to the service */
   withdrawn?: () => boolean;
-  /** where Delete account goes: the foot of the Devices and PCs page, below every other group; a row of the group without one */
-  deleteSlot?: HTMLElement | null;
+  /**
+   * Signing in has its own place on this page (Add a connection's relay tab): signed out, the section draws no
+   * card of its own, only why a sign-in ended. The sign-in under way it began itself is still drawn.
+   */
+  signInElsewhere?: boolean;
 } = {}) {
   const t = useT();
-  // a search finds settings rows only: while one runs, Delete account is the group's row again
+  // a search finds settings rows only: while one runs, the account's rows are the group's own rows, not a sheet
   const searching = useContext(SettingsQuery).length > 0;
-  const foot = searching ? null : deleteSlot;
+  /** Manage account's sheet is open: the ways in, the plan and Delete account */
+  const [managing, setManaging] = useState(false);
   const bridge = desktopAccount();
   const pcService = pcServiceHere();
   const ownRedirect = useOwnWindowRedirect(bridge === null && pcService !== null);
@@ -902,6 +888,8 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, de
     }
   });
   useEffect(() => { recheckAccount(); }, [offered, load, recheck]);
+  // a sign-out or a deleted account takes Manage account's sheet with it
+  useEffect(() => { if (view.kind !== "signed-in") setManaging(false); }, [view.kind]);
   useEffect(() => {
     const signedIn = view.kind === "signed-in" ? view : null;
     onAccount?.({ signedIn: signedIn !== null, account: signedIn?.account ?? null, pcs: signedIn?.pcs ?? null, provider: signedIn?.provider ?? null,
@@ -1318,7 +1306,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, de
     : null;
   const deleteActions = (
     <>
-      <button type="button" className={asked !== null ? "btn btn-danger" : foot === null ? "btn" : "account-delete-link"} data-action="delete-account" data-confirm={asked !== null ? "delete-account" : undefined}
+      <button type="button" className={asked !== null ? "btn btn-danger" : searching ? "btn" : "account-delete-link"} data-action="delete-account" data-confirm={asked !== null ? "delete-account" : undefined}
         disabled={deleteOut !== null} aria-busy={deleteOut !== null ? "true" : undefined}
         onClick={() => { if (asked !== null) confirmDelete(asked); else askDelete(); }}>{asked !== null ? t("Delete account for good?") : t("Delete account")}</button>
       {asked !== null && <button type="button" className="btn btn-ghost" onClick={() => setDeleteAsked(null)}>{t("Cancel")}</button>}
@@ -1330,7 +1318,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, de
     <>
       {/* A PC's own page in a browser signs in with a device code or the link page, whose sign-in the service never lets
           delete the account (web_sign_in_required): it says where to delete instead. */}
-      {foot === null
+      {searching
         ? bridge === null
           ? <SettingsRow label={t("Delete account")} description={whereToDelete}>{null}</SettingsRow>
           : <SettingsRow label={t("Delete account")} description={deleteSays ?? undefined}>{deleteActions}</SettingsRow>
@@ -1357,13 +1345,59 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, de
     </>
   );
 
+  const methodsPart = view.kind === "signed-in" && view.methods !== null && (
+    <div className="settings-item account-methods">
+      <div className="account-method-row" title={bridge === null ? t("Add another way to sign in from the Ovis desktop app.") : undefined}>
+        <span className="settings-label">{t("Ways to sign in")}{bridge === null && <span className="visually-hidden"> {t("Add another way to sign in from the Ovis desktop app.")}</span>}</span>
+        <ul className="account-method-list">
+          {view.methods.map((method) => (
+            <li key={method.provider} className="account-method account-chip" data-provider={method.provider} title={PROVIDER_NAMES[method.provider]}>
+              <ProviderMark provider={method.provider} />
+              <span className="visually-hidden">{t("{provider}, connected", { provider: PROVIDER_NAMES[method.provider] })}</span>
+              <Check className="account-chip-icon" aria-hidden="true" />
+              {/* the method this device signed in with stays: removing it would end this sign-in. */}
+              {view.methods !== null && view.methods.length > 1 && method.provider !== view.provider && (
+                <button type="button" className="account-chip-remove" title={t("Remove {provider}", { provider: PROVIDER_NAMES[method.provider] })} onClick={() => removeMethod(method.provider)}>
+                  <X aria-hidden="true" /><span className="visually-hidden">{t("Remove {provider}", { provider: PROVIDER_NAMES[method.provider] })}</span>
+                </button>
+              )}
+            </li>
+          ))}
+          {unlinked.map((provider) => (
+            <li key={provider}>
+              <button type="button" className="account-chip account-chip-add" data-provider={provider} title={t("Add {provider}", { provider: PROVIDER_NAMES[provider] })} onClick={() => addMethod(provider)}>
+                <Plus className="account-chip-icon" aria-hidden="true" /><ProviderMark provider={provider} />
+                <span className="visually-hidden">{t("Add {provider}", { provider: PROVIDER_NAMES[provider] })}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+      {reauthShown !== null && reauthShown.action !== "delete" && (
+        <div className="account-reauth" role="alert">
+          <p className="settings-description">{bridge === null
+              // a sign-in again stays with this account's provider, at its own device page, never the link page's choice
+              ? t("To change how you sign in, sign in again with {provider} on its own sign-in page first.", { provider: PROVIDER_NAMES[view.provider] })
+              : t("To change how you sign in, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
+          {(bridge !== null || isDeviceProvider(view.provider)) && <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>}
+        </div>
+      )}
+    </div>
+  );
+
+  // signed out where the relay tab signs in: no card here, only why the last sign-in ended
+  if (signInElsewhere && !unreachable && (view.kind === "loading" || view.kind === "signed-out")) {
+    const said = view.kind === "signed-out" ? view.error ?? view.notice ?? null : null;
+    return said === null ? null : <p className="settings-item settings-hint" role="status">{said}</p>;
+  }
+
   return (
-    <SettingsGroup title={t("Account")} section="account" keepNote note={view.kind === "signed-out" ? t("Sign in to use this PC from your phone and your other PCs.|account group") : undefined}>
+    <SettingsGroup {...(view.kind === "signed-in" ? {} : { title: t("Account") })} section="account" keepNote note={view.kind === "signed-out" ? t("Sign in to use this PC from your phone and your other PCs.|account group") : undefined}>
       {signInParts}
       {view.kind === "signed-in" && (
         <>
-          {/* which account: the service keeps no login or email, so its id names it, in the tooltip only (G-106) */}
-          <AccountHead provider={view.provider} plan={plan} title={view.account} onSignOut={signOut} />
+          {/* who is signed in, on one line: the account's id is shown nowhere (G-106) */}
+          <AccountHead provider={view.provider} plan={searching ? plan : null} onSignOut={signOut} {...(searching ? {} : { onManage: () => setManaging(true) })} />
           {/* the question is its own sign-in's: under another account's view it is not drawn */}
           {unsentAsked !== null && unsentAsked.session.account === view.account && (
             <div className="settings-item" role="status">
@@ -1383,48 +1417,17 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, de
               }}>{t("OK")}</button>}
             </div>
           )}
-          {view.methods !== null && (
-            <div className="settings-item account-methods">
-              <div className="account-method-row" title={bridge === null ? t("Add another way to sign in from the Ovis desktop app.") : undefined}>
-                <span className="settings-label">{t("Ways to sign in")}{bridge === null && <span className="visually-hidden"> {t("Add another way to sign in from the Ovis desktop app.")}</span>}</span>
-                <ul className="account-method-list">
-                  {view.methods.map((method) => (
-                    <li key={method.provider} className="account-method account-chip" data-provider={method.provider} title={PROVIDER_NAMES[method.provider]}>
-                      <ProviderMark provider={method.provider} />
-                      <span className="visually-hidden">{t("{provider}, connected", { provider: PROVIDER_NAMES[method.provider] })}</span>
-                      <Check className="account-chip-icon" aria-hidden="true" />
-                      {/* the method this device signed in with stays: removing it would end this sign-in. */}
-                      {view.methods !== null && view.methods.length > 1 && method.provider !== view.provider && (
-                        <button type="button" className="account-chip-remove" title={t("Remove {provider}", { provider: PROVIDER_NAMES[method.provider] })} onClick={() => removeMethod(method.provider)}>
-                          <X aria-hidden="true" /><span className="visually-hidden">{t("Remove {provider}", { provider: PROVIDER_NAMES[method.provider] })}</span>
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                  {unlinked.map((provider) => (
-                    <li key={provider}>
-                      <button type="button" className="account-chip account-chip-add" data-provider={provider} title={t("Add {provider}", { provider: PROVIDER_NAMES[provider] })} onClick={() => addMethod(provider)}>
-                        <Plus className="account-chip-icon" aria-hidden="true" /><ProviderMark provider={provider} />
-                        <span className="visually-hidden">{t("Add {provider}", { provider: PROVIDER_NAMES[provider] })}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              {reauthShown !== null && reauthShown.action !== "delete" && (
-                <div className="account-reauth" role="alert">
-                  <p className="settings-description">{bridge === null
-                      // a sign-in again stays with this account's provider, at its own device page, never the link page's choice
-                      ? t("To change how you sign in, sign in again with {provider} on its own sign-in page first.", { provider: PROVIDER_NAMES[view.provider] })
-                      : t("To change how you sign in, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
-                  {(bridge !== null || isDeviceProvider(view.provider)) && <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>}
-                </div>
-              )}
-            </div>
+          {/* while a search runs the account's rows are the group's own; otherwise they wait in Manage account's sheet */}
+          {searching && <>{methodsPart}{deleteParts}</>}
+          {managing && !searching && (
+            <ManageAccountSheet onClose={() => setManaging(false)}>
+              {methodsPart}
+              {plan !== null && <div className="settings-row account-plan-row"><span className="settings-label">{t("Plan|account plan")}</span><span className="account-plan">{plan}</span></div>}
+              {deleteParts}
+            </ManageAccountSheet>
           )}
-          <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} {...(opensAll === undefined ? {} : { opensAll })} />
+          {!signInElsewhere && <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} {...(opensAll === undefined ? {} : { opensAll })} />}
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
-          {foot !== null ? deleteParts && createPortal(deleteParts, foot) : deleteParts}
           {view.error !== null && <p className="settings-condition" role="alert">{view.error}{view.error === inUseShown && <> <ExternalLink kind="link" className="settings-link" href={IN_USE_HELP}>{t("See how")}</ExternalLink></>}</p>}
         </>
       )}
