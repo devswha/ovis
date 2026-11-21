@@ -1,7 +1,7 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, directTarget, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, sshDetails, t, tailnetPcs } from "./shell.js";
+import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, directTarget, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, sshDetails, t, tabPcs } from "./shell.js";
 
 localize();
 followScheme();
@@ -256,27 +256,64 @@ for (const scan of document.querySelectorAll("[data-scan]")) scan.addEventListen
   }
 });
 
-/** The Tailscale tab's PCs: those this phone opened at a Tailscale address, each with Connect. */
-function renderTailnet(saved, names) {
-  const pcs = tailnetPcs(saved, names);
-  document.getElementById("tailnet").replaceChildren(...pcs.map(({ origin, label }) => {
+const WAY_TAGS = { tailscale: () => "Tailscale", direct: () => t("Direct", "직접"), ssh: () => "SSH" };
+
+/**
+ * A tab's own saved PCs (tabPcs: the Tailscale tab's at a tailnet address, Direct's at any other, none on the relay's):
+ * each a compact row of its name, the way it connects and, for the PC this screen was opened from, Connected; with
+ * Connect, and Forget (an SSH PC's Manage, as its keys live on this phone).
+ */
+function renderPcs(tab, list, section, state) {
+  const pcs = tabPcs(savedOrigins, tab, state.names ?? {}, sshPcs);
+  list.replaceChildren(...pcs.flatMap(({ origin, label, way }) => {
     const item = document.createElement("li");
     const text = document.createElement("span");
     text.className = "way-text";
     const title = document.createElement("span");
-    title.className = "way-title";
+    title.className = "way-title pc-name";
     title.textContent = label;
+    // the second line: the way it connects, Connected for the PC this screen was opened from, then its address
     const sub = document.createElement("span");
-    sub.className = "sub";
-    sub.textContent = new URL(origin).host;
+    sub.className = "sub pc-sub";
+    const tag = document.createElement("span");
+    tag.className = "pc-tag";
+    tag.textContent = WAY_TAGS[way]();
+    sub.append(tag);
+    if (state.choosing === true && origin === state.current) {
+      const on = document.createElement("span");
+      on.className = "pc-on";
+      on.textContent = t("Connected", "연결됨");
+      sub.append(on);
+    }
+    const address = document.createElement("span");
+    address.className = "pc-address";
+    address.textContent = way === "ssh" ? sshDetails(sshPcs[origin]).address : new URL(origin).host;
+    sub.append(address);
     text.append(title, sub);
     const connect = button(t("Connect", "연결"), () => void open(origin), "primary");
     connect.setAttribute("aria-label", t(`Connect to ${label}`, `${label}에 연결`));
-    item.append(text, connect);
-    return item;
+    if (way !== "ssh") {
+      const forget = button(t("Forget", "지우기"), async () => { await shell("forget", { url: origin }); await load(); }, "forget");
+      forget.setAttribute("aria-label", t(`Forget ${label}`, `${label} 지우기`));
+      item.append(text, connect, forget);
+      return [item];
+    }
+    const manage = button(t("Manage", "관리"), () => {
+      const shown = item.nextElementSibling?.classList.contains("manage-row");
+      if (shown) { item.nextElementSibling.remove(); manage.setAttribute("aria-expanded", "false"); return; }
+      const row = document.createElement("li");
+      row.className = "manage-row";
+      row.append(managePanel(origin, label));
+      item.after(row);
+      manage.setAttribute("aria-expanded", "true");
+    }, "forget");
+    manage.setAttribute("aria-expanded", "false");
+    manage.setAttribute("aria-label", t(`Manage ${label}`, `${label} 관리`));
+    item.append(text, connect, manage);
+    return [item];
   }));
-  document.getElementById("tailnet-section").hidden = pcs.length === 0;
-  document.getElementById("tailnet-none").hidden = pcs.length > 0;
+  section.hidden = pcs.length === 0;
+  return pcs.length;
 }
 
 function button(text, onClick, className = "") {
@@ -376,38 +413,6 @@ function managePanel(origin, label) {
   return panel;
 }
 
-function renderSaved(saved, current, names) {
-  const list = document.getElementById("saved");
-  list.replaceChildren();
-  for (const origin of saved) {
-    const item = document.createElement("li");
-    const sshPc = sshPcs[origin];
-    const label = names[origin] ? (sshPc ? names[origin] : `${names[origin]} (${new URL(origin).host})`) : (sshPc ? `${sshPc.label} (SSH)` : origin);
-    const openButton = button(origin === current ? `${label} ${t("(last opened)", "(마지막으로 연 PC)")}` : label, () => void open(origin), "open");
-    if (sshPc) {
-      // an SSH PC is managed rather than only forgotten: its key and host key live on this phone
-      const manage = button(t("Manage", "관리"), () => {
-        const shown = item.nextElementSibling?.classList.contains("manage-row");
-        if (shown) { item.nextElementSibling.remove(); manage.setAttribute("aria-expanded", "false"); return; }
-        const row = document.createElement("li");
-        row.className = "manage-row";
-        row.append(managePanel(origin, label));
-        item.after(row);
-        manage.setAttribute("aria-expanded", "true");
-      }, "forget");
-      manage.setAttribute("aria-expanded", "false");
-      manage.setAttribute("aria-label", t(`Manage ${label}`, `${label} 관리`));
-      item.append(openButton, manage);
-    } else {
-      const forget = button(t("Forget", "지우기"), async () => { await shell("forget", { url: origin }); await load(); }, "forget");
-      forget.setAttribute("aria-label", t(`Forget ${label}`, `${label} 지우기`));
-      item.append(openButton, forget);
-    }
-    list.append(item);
-  }
-  document.getElementById("saved-section").hidden = saved.length === 0;
-}
-
 async function load() {
   const state = await shell("getState");
   savedOrigins = state.saved ?? [];
@@ -416,8 +421,9 @@ async function load() {
     try { for (const pc of (await ssh("list")).pcs ?? []) sshPcs[pc.origin] = pc; }
     catch { /* an app without the plugin lists its PCs as before */ }
   }
-  renderSaved(savedOrigins, state.last ?? "", state.names ?? {});
-  renderTailnet(savedOrigins, state.names ?? {});
+  const tailnet = renderPcs("tailscale", document.getElementById("tailnet"), document.getElementById("tailnet-section"), state);
+  document.getElementById("tailnet-none").hidden = tailnet > 0;
+  renderPcs("direct", document.getElementById("direct-pcs"), document.getElementById("direct-section"), state);
   // an SSH PC whose address on this phone another app took first is not opened (OvisSshPlugin.listen)
   if (state.kind === "ssh-port") {
     error.textContent = t(

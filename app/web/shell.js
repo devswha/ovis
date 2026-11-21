@@ -206,14 +206,22 @@ export function directTarget(text) {
 }
 
 /**
- * The PCs this phone opened at a Tailscale address, which the Tailscale tab offers again: a phone has no list of its
- * tailnet's machines, only the ones opened here. `saved` and `names` as HerdrShell's getState gives them.
+ * The saved PCs a connect tab lists, each under the one tab of the way it connects: none on the relay tab (a PC on the
+ * app's origin, whose account lists it after the sign-in), those at a Tailscale address on the Tailscale tab (a phone has
+ * no list of its tailnet's machines, only the ones opened here), and every other address on Direct, an SSH PC's own
+ * (way "ssh") among them. Each is `{ origin, label, way }`, by its saved name or else its host. `saved` and `names` as
+ * HerdrShell's getState gives them, `ssh` the SSH PCs by origin (OvisSsh list).
  */
-export function tailnetPcs(saved, names) {
+export function tabPcs(saved, tab, names, ssh = {}, appOrigin = APP_ORIGIN) {
+  const app = new URL(appOrigin).origin;
   return saved.flatMap((origin) => {
     let url;
     try { url = new URL(origin); } catch { return []; }
-    return tailnetHost(url.hostname) ? [{ origin, label: names[origin] || url.hostname.split(".")[0] }] : [];
+    if (url.origin === app) return [];
+    const way = tailnetHost(url.hostname) ? "tailscale" : ssh[origin] ? "ssh" : "direct";
+    if ((way === "tailscale") !== (tab === "tailscale") || tab === "relay") return [];
+    const label = names[origin] || (way === "tailscale" ? url.hostname.split(".")[0] : way === "ssh" ? ssh[origin].label : url.host);
+    return [{ origin, label, way }];
   });
 }
 

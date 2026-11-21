@@ -69,6 +69,15 @@ main.first h1.step { margin: 0 0 1rem; font-size: 1.4rem; }
 .card.list li { gap: .75rem; margin: 0; padding: .6rem .5rem .6rem .75rem; border-radius: .6rem; background: var(--input); }
 .card.list li .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card.list li .primary { flex: none; }
+.card.list li .forget { padding: .5rem .6rem; font-size: .9rem; }
+.card.list li .primary { padding: .6rem .85rem; }
+/* a saved PC's row: its name, the way it connects and Connected for the PC this screen was opened from (connect.js renderPcs) */
+.pc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card.list li .pc-sub { display: flex; align-items: center; gap: .35rem; margin-top: .15rem; }
+.pc-address { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-tag, .pc-on { flex: none; padding: .05rem .4rem; border-radius: .35rem; font-size: .72rem; font-weight: 600; line-height: 1.4; }
+.pc-tag { border: 1px solid var(--border); color: var(--dim); }
+.pc-on { background: var(--primary); color: var(--primary-text); }
 .label { color: var(--strong); font-weight: 700; }
 .field { display: flex; gap: .5rem; align-items: center; padding: .3rem .3rem .3rem 0; border: 1px solid var(--border); border-radius: .75rem; background: var(--input); }
 .field:focus-within { outline: 2px solid var(--primary); outline-offset: 1px; }

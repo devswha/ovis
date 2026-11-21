@@ -56,6 +56,11 @@
       </div>
     </section>
     <section id="panel-direct" class="panel" role="tabpanel" aria-labelledby="tab-direct" hidden>
+      <!-- the PCs this phone opened at an address or over SSH (connect.js renderPcs), each listed under its own tab only -->
+      <section id="direct-section" hidden>
+        <h2 data-ko="직접 연결한 PC">PCs connected directly</h2>
+        <ul id="direct-pcs" class="card list"></ul>
+      </section>
       <!-- one field for an address or SSH's user@host (shell.js directTarget); SSH only where the app has OvisSsh -->
       <label class="label" for="address" id="address-label" data-ko="주소 또는 SSH">Address or SSH</label>
       <form id="connect" class="field" novalidate>
@@ -75,10 +80,6 @@
     </div>
     <p class="error" id="error" role="alert"></p>
     </div>
-    <section id="saved-section" hidden>
-      <h2 data-ko="내 PC">Your PCs</h2>
-      <ul id="saved"></ul>
-    </section>
   </main>
   <script type="module" src="connect.js"></script>
 </body>

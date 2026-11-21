@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
-import { APP_ORIGIN, directTarget, homeHost, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, tailnetHost, tailnetPcs } from "../app/web/shell.js";
+import { APP_ORIGIN, directTarget, homeHost, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, tabPcs, tailnetHost } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
 
@@ -37,13 +37,33 @@ describe("Direct's one field", () => {
   });
 });
 
-describe("the Tailscale tab's PCs", () => {
-  it("offers the PCs this phone opened at a Tailscale address, by their saved name or their host's first word", () => {
-    const saved = ["http://100.101.12.7:7317", "https://nas.tail1e211e.ts.net", "http://192.168.0.10:7317", "https://app.ovis.sh", "not an address"];
-    expect(tailnetPcs(saved, { "http://100.101.12.7:7317": "home-server", "http://192.168.0.10:7317": "desk" })).toEqual([
-      { origin: "http://100.101.12.7:7317", label: "home-server" },
-      { origin: "https://nas.tail1e211e.ts.net", label: "nas" },
+describe("each connect tab's saved PCs", () => {
+  const relayPc = `https://app.ovis.sh/s/${SERVER_ID}/`;
+  const saved = ["http://100.101.12.7:7317", "https://nas.tail1e211e.ts.net", "http://192.168.0.10:7317", relayPc, "https://app.ovis.sh", "http://127.0.0.1:41234", "not an address"];
+  const names = { "http://100.101.12.7:7317": "home-server", "http://192.168.0.10:7317": "desk", [relayPc]: "Studio PC" };
+  const ssh = { "http://127.0.0.1:41234": { label: "pi@nas" } };
+
+  it("lists none on the relay tab: the account's PCs come from its sign-in", () => {
+    expect(tabPcs(saved, "relay", names, ssh)).toEqual([]);
+  });
+
+  it("lists the PCs opened at a Tailscale address on the Tailscale tab, by their saved name or their host's first word", () => {
+    expect(tabPcs(saved, "tailscale", names, ssh)).toEqual([
+      { origin: "http://100.101.12.7:7317", label: "home-server", way: "tailscale" },
+      { origin: "https://nas.tail1e211e.ts.net", label: "nas", way: "tailscale" },
     ]);
+  });
+
+  it("lists the PCs opened at any other address, and those added over SSH, on the Direct tab", () => {
+    expect(tabPcs(saved, "direct", names, ssh)).toEqual([
+      { origin: "http://192.168.0.10:7317", label: "desk", way: "direct" },
+      { origin: "http://127.0.0.1:41234", label: "pi@nas", way: "ssh" },
+    ]);
+  });
+
+  it("lists each PC on one tab at most", () => {
+    const listed = ["relay", "tailscale", "direct"].flatMap((tab) => tabPcs(saved, tab, names, ssh).map((pc: { origin: string }) => pc.origin));
+    expect(new Set(listed).size).toBe(listed.length);
   });
 });
 
