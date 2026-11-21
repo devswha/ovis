@@ -402,8 +402,13 @@ OnUnitActiveSec=1min
 WantedBy=timers.target
 ```
 
-With both Rust slots gone, or the maintainer PC off, the value ages and every run's job goes hosted
-before it queues; nothing waits for a runner that is not there. The repository variable `CI_RUST_LABELS` can only keep it hosted (any other value fails
+With both Rust slots gone, or the maintainer PC off, the value ages and every later run's job goes
+hosted before it queues. A run routed in the five minutes before that still waits for the slots, and
+GitHub never moves a queued job: so once no Rust runner has been seen for six minutes, the same timer
+cancels each run of this repository whose Rust job is still queued and runs it again in full, and its
+Detect changes then sends the job hosted (at most twice per run; a fork's run is never touched). Such a
+run waits about seven minutes at most, and its other jobs run again. With the maintainer PC off too,
+nothing re-runs it: cancel and re-run it by hand (`gh run cancel <id>`, then `gh run rerun <id>`). The repository variable `CI_RUST_LABELS` can only keep it hosted (any other value fails
 Detect changes):
 
 ```sh
