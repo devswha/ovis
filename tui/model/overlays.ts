@@ -47,9 +47,14 @@ export function field(text: string): Field {
 /** `text` typed or pasted at the cursor: line breaks, tabs and other control characters become spaces. */
 function insert(current: Field, text: string): Field {
   const base = current.fresh ? { ...current, graphemes: [], cursor: 0 } : current;
-  const room = TEXT_FIELD_MAX_GRAPHEMES - base.graphemes.length;
-  const added = graphemes(text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")).slice(0, Math.max(0, room));
-  return { ...base, graphemes: [...base.graphemes.slice(0, base.cursor), ...added, ...base.graphemes.slice(base.cursor)], cursor: base.cursor + added.length, fresh: false };
+  // segmented together with the grapheme before the cursor, so a mark or joiner that comes in a later read than its
+  // base joins it, as when both came in one read
+  const before = base.cursor > 0 ? base.graphemes[base.cursor - 1]! : "";
+  const head = base.graphemes.slice(0, base.cursor - (before === "" ? 0 : 1));
+  const tail = base.graphemes.slice(base.cursor);
+  const room = TEXT_FIELD_MAX_GRAPHEMES - head.length - tail.length;
+  const added = graphemes(before + text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")).slice(0, Math.max(0, room));
+  return { ...base, graphemes: [...head, ...added, ...tail], cursor: head.length + added.length, fresh: false };
 }
 
 function wordStart(chars: readonly string[], from: number): number {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection } from "../server/herdr-core/connection.ts";
+import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection } from "../server/herdr-core/connection.ts";
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
@@ -58,6 +58,18 @@ function oneTab(count: number, zoomed = false): FakeHcCore {
 }
 
 const channelOf = (run: Run, terminal: string): number => run.core.viewers(terminal).at(-1)!.channel;
+/** every byte the screen sent a terminal's program, as hex, read from the fake's log: kept after the terminal is removed */
+const sentTo = (run: Run, terminal: string): string => Buffer.concat(run.core.log.flatMap((entry) =>
+  entry.what === "frame" && entry.from === "viewer" && entry.terminal === terminal && (entry.kind === FRAME_DATA || entry.kind === FRAME_AUTOMATIC_INPUT) ? [entry.payload] : [])).toString("hex");
+/** each read once the screen settled from the one before: the core answers a write, then tells of what it did, and the
+ * screen draws it over its own clock; a read after the instant a pane went live */
+async function settled(run: Run): Promise<void> {
+  await run.advance(200);
+  await run.settle();
+  await run.advance(FRAME_PASS_MS);
+  await run.settle();
+  await run.advance(1);
+}
 const framesOf = (run: Run, kind: number, from = 0) => run.sent.slice(from).filter((frame) => frame.kind === kind && frame.channel !== 0);
 const megabyte = (fill: string) => fill.repeat(1024 * 1024 / fill.length);
 
@@ -312,10 +324,11 @@ describe("the loop", () => {
   }, TEST_MS);
 
   it("random key sequences route alike read whole, split at every byte, and a byte at a time", async () => {
-    // prefix actions (moves, zoom, close, help, the workspace picker, resize mode, detach), text and Enter, with the
-    // default prefix (a key of its own) and with a printable one (one text run holds the actions and what follows them)
-    const ACTIONS = ["l", "h", "z", "x", "?", "q", "w", "r"];
-    const TEXT = ["a", "b", "q", "l", "\r"];
+    // prefix actions (moves, zoom, close, help, the workspace picker, resize mode, rename, a new tab's name, detach), text
+    // with combining marks, a ZWJ emoji, CJK and wide characters, and Enter; with the default prefix (a key of its own)
+    // and with a printable one (one text run holds the actions and what follows them)
+    const ACTIONS = ["l", "h", "z", "x", "?", "q", "w", "r", "P", "c"];
+    const TEXT = ["a", "q", "e\u0301", "\u0301", "\u{1F469}\u200D\u{1F4BB}", "한", "中", "\uFF21", "\r"];
     let seed = 0x5eed;
     const random = () => {
       seed = (seed + 0x6d2b79f5) | 0;
@@ -323,7 +336,7 @@ describe("the loop", () => {
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
-    const outcome = async (prefix: string, reads: string[]) => {
+    const outcome = async (prefix: string, reads: Uint8Array[]) => {
       const run = await Run.start({ fixture: demo });
       try {
         await run.live();
@@ -331,44 +344,72 @@ describe("the loop", () => {
         await run.advance(1);
         let ended = false;
         void run.loop.done.then(() => { ended = true; });
-        // each read once the screen settled from the one before: the core answers a write, then tells of what it did
-        // and the screen draws it over its own clock, and a read that comes in between meets the screen as it is then
-        for (const read of reads) {
-          run.type(read);
-          await run.advance(200);
-          await run.settle();
-          // the frame pass that shows what the core answered meanwhile, and a read after the instant a pane went live
-          await run.advance(FRAME_PASS_MS);
-          await run.settle();
-          await run.advance(1);
+        for (const [at, read] of reads.entries()) {
+          run.host.feed(read);
+          // a read cut inside a character is followed at once by the rest of it, as a terminal writes whole characters:
+          // the framer stamps a character with the time of its first byte, and a pane refuses what was read before its
+          // picture, so a character's halves read 200 ms apart would meet a newer picture; any other read comes once the
+          // screen settled
+          const inside = (reads[at + 1]?.[0] ?? 0) >> 6 === 0b10;
+          if (inside) await run.advance(1);
+          else await settled(run);
         }
         const model = run.loop.model();
-        const removed = (terminal: string) => run.core.calls().some((call) => call.method === "terminal.rm" && call.params["terminal"] === terminal);
         return {
-          ended, focus: model.focus, mode: model.mode.name, overlays: model.overlays.map((overlay) => overlay.kind),
-          received: ["t1", "t2", "t3", "t4"].map((terminal) => (removed(terminal) ? "removed" : run.core.program(terminal).receivedHex())),
+          ended, focus: model.focus, mode: model.mode.name,
+          overlays: model.overlays.map((overlay) => ("field" in overlay ? `${overlay.kind}:${overlay.field.graphemes.join("|")}` : overlay.kind)),
+          received: ["t1", "t2", "t3", "t4"].map((terminal) => sentTo(run, terminal)),
         };
       } finally {
         await run.close();
       }
     };
     // A detach never waits for a layout write (it leaves at once), so a write still under way when the screen left may
-    // or may not have landed: for a run that detached, what the writes did (a removed terminal, the focus) is not
-    // compared, only that it left and what each program was sent.
+    // or may not have landed: for a run that detached, only that it left and what each program was sent are compared.
     type Outcome = Awaited<ReturnType<typeof outcome>>;
-    const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received.map((sent) => (sent === "removed" ? "" : sent)) } : seen);
+    const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received } : seen);
     for (const prefix of ["\x02", "-"]) {
       const tokens = [...ACTIONS.map((action) => prefix + action), ...TEXT];
       for (let n = 0; n < 10; n++) {
-        const bytes = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
+        const text = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
+        const bytes = new TextEncoder().encode(text);
         const joined = compared(await outcome(prefix, [bytes]));
-        expect({ bytes, outcome: compared(await outcome(prefix, [...bytes])) }).toEqual({ bytes, outcome: joined });
+        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)))) }).toEqual({ text, outcome: joined });
         for (let cut = 1; cut < bytes.length; cut++) {
-          expect({ bytes, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)])) }).toEqual({ bytes, cut, outcome: joined });
+          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)])) }).toEqual({ text, cut, outcome: joined });
         }
       }
     }
   }, SOAK_MS);
+
+  it("a text field keeps whole graphemes however the reads split them: 129 decomposed letters, a mark read apart, a ZWJ emoji", async () => {
+    const field = async (reads: (string | Uint8Array)[]) => {
+      const run = await Run.start({ fixture: demo });
+      try {
+        await run.live();
+        await run.advance(1);
+        // rename the focused pane: a one-line field
+        run.type("\x02P");
+        await settled(run);
+        for (const read of reads) {
+          run.host.feed(read);
+          await settled(run);
+        }
+        const top = run.loop.model().overlays.at(-1);
+        return top && "field" in top ? top.field.graphemes : null;
+      } finally {
+        await run.close();
+      }
+    };
+    const accented = "e\u0301".repeat(129);
+    expect((await field([accented]))?.length).toBe(129);
+    expect((await field([...accented]))?.length).toBe(129);
+    // the mark in a read of its own joins its letter, and one Backspace takes both
+    expect(await field(["e", "\u0301"])).toEqual(["e\u0301"]);
+    expect(await field(["e", "\u0301", "\x7f"])).toEqual([]);
+    const emoji = new TextEncoder().encode("\u{1F469}\u200D\u{1F4BB}");
+    expect(await field([...emoji].map((byte) => Uint8Array.of(byte)))).toEqual(["\u{1F469}\u200D\u{1F4BB}"]);
+  }, TEST_MS);
 
   it("quit detaches within its bound when the core never answers", async () => {
     const run = await start({ fixture: demo });
@@ -447,16 +488,16 @@ describe("the loop", () => {
           await run.advance(20);
         }
         const model = run.loop.model();
-        // a close ends its terminal: the fake then has no program for it
-        const received = (terminal: string) => (run.core.calls().some((call) => call.method === "terminal.rm" && call.params["terminal"] === terminal) ? "removed" : run.core.program(terminal).receivedHex());
-        return { focus: model.focus, mode: model.mode.name, received: ["t1", "t2", "t3", "t4"].map(received) };
+        return { focus: model.focus, mode: model.mode.name, received: ["t1", "t2", "t3", "t4"].map((terminal) => sentTo(run, terminal)) };
       } finally {
         await run.close();
       }
     };
     // a directional focus, two of them, the workspace picker and a key of its mode, resize mode, a zoom and a close,
     // each followed by text in the same read
-    for (const bytes of ["\x02lzy\r", "\x02l\x02hab", "\x02wlab", "\x02rhab", "\x02zab", "\x02xab", "\x02?qab"]) {
+    // the help's close key with a combining mark after it: read apart, q closes the help and the mark goes on to the pane,
+    // so one read must give the overlay code points too (a text field joins a mark to its letter itself)
+    for (const bytes of ["\x02lzy\r", "\x02l\x02hab", "\x02wlab", "\x02rhab", "\x02zab", "\x02xab", "\x02?qab", "\x02?q\u0301ab"]) {
       const joined = await outcome([bytes]);
       expect({ bytes, outcome: await outcome([...bytes]) }).toEqual({ bytes, outcome: joined });
       for (let cut = 1; cut < bytes.length; cut++) {
