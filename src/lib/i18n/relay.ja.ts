@@ -119,6 +119,8 @@ export const RELAY_JA: Record<string, string> = {
   "Turn on Tailscale to connect": "接続するには Tailscale をオンにしてください",
   "PCs on Tailscale": "Tailscale 上の PC",
   "Address or SSH": "アドレスまたは SSH",
+  "Every device was signed out.": "すべてのデバイスからサインアウトしました。",
+  "You signed in to another account. No device was signed out.": "別のアカウントにサインインしました。サインアウトしたデバイスはありません。",
   "The previous account was deleted. You're now signed in to another account.": "以前のアカウントを削除しました。現在は別のアカウントでサインインしています。",
   "Not deleted: you're signed in to another account. Sign in to the account you want to delete.": "別のアカウントでサインインしているため、削除しませんでした。削除するアカウントでもう一度サインインしてください。",
   "Scan a QR code": "QR を読み取る",
