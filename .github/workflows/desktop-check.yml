@@ -1,7 +1,7 @@
 name: Desktop app check
 # A pull request that changes the desktop app runs the app's unit tests, its type check and one build
-# (Linux x64) on the self-hosted pool; a fork's runs on ubuntu-24.04. All five builds are desktop.yml's:
-# every day on main, at a release, and for a pull request that changes desktop.yml itself.
+# (Linux x64). All five builds are desktop.yml's: every day on main, at a release, and for a pull request
+# that changes desktop.yml itself.
 on:
   pull_request:
     paths:
@@ -15,8 +15,10 @@ concurrency:
 jobs:
   check:
     name: check (linux-x64)
-    # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
-    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
+    # GitHub's image: the tests start a real Electron, which needs GTK and other libraries the self-hosted
+    # runner image (scripts/self-hosted-runner/Dockerfile: Chromium's only) does not have, and a job there
+    # cannot install them
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
