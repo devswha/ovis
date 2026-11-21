@@ -253,6 +253,7 @@ const BASE: Record<string, string> = {
   "Add|account pc": "添加",
   "No|account pc": "不",
   "Remove from my account": "从我的账号移除",
+  "\"{name}\" asks to join your account": "\"{name}\" 请求加入你的账号",
   "The PC could not be added. Try again.": "无法添加这台电脑，请重试。",
   "Sign in again to add it: your sign-in is more than ten minutes old.": "登录已超过 10 分钟，无法添加。请重新登录。",
   "Sign in on this device to add it.": "请在这台设备上直接登录后再添加。",

@@ -5,6 +5,8 @@ import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
 import { tailnetHost } from "../lib/phone.ts";
+import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
+import { NewPcNotices } from "./NewPcNotices.tsx";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
 import { AddressForm, canScanQr, SavedPcs, scanQr, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
 
@@ -51,7 +53,9 @@ export function AccountRelayPanel({ onCodeStart, onSignInAgain }: { readonly onC
   const open = useAddressOpen();
   return (
     <>
-      <UnconfirmedPcNotices onSignInAgain={onSignInAgain} />
+      <NewPcNotices />
+      <AccountJoinRequests />
+      <UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={onSignInAgain} />
       <p className="relay-shell-copy">{t("Turn on Ovis on the PC and sign in with the same account.")}</p>
       {canScanQr()
         ? <ScanWay open={open} failed={onCodeStart} />

@@ -89,6 +89,7 @@ import { InstallHint } from "./components/InstallHint.tsx";
 import { DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
 import { NewPcNotices } from "./components/NewPcNotices.tsx";
 import { UnconfirmedPcNotices } from "./components/UnconfirmedPcNotices.tsx";
+import { AccountJoinRequests } from "./components/AccountJoinRequests.tsx";
 import { hostedAccountItems } from "./components/AccountHead.tsx";
 import { useHostedSignIn } from "./lib/account/hostedSignIn.ts";
 import { ownWindowHere } from "./lib/account/addThisPc.ts";
@@ -1178,6 +1179,8 @@ export function App() {
         {/* NewPcNotices above tells of a PC confirmed here; the hosted app's sign-in again comes back to this page, which goes on with the add */}
         {health !== null && <UnconfirmedPcNotices enabled={machineSessions.peek("local")?.socket?.accountOpensAll() === true} tellConfirmed={false}
           onSignInAgain={hostedSignIn?.signInAgain} />}
+        {/* a PC asking to join while this phone went straight into another PC: its join card would never show */}
+        {health !== null && hostedSignIn !== null && <AccountJoinRequests />}
         {/* The PC's pending-redemptions stream owns the list; a decline response can arrive after a newer event. */}
         <PendingKeys pending={ownWindow ? [] : pendingKeys} onDecline={(id) => { void declinePendingKey(id).catch((error: unknown) => console.warn("Ovis: the device was not declined", error instanceof Error ? error.name : error)); }} />
         {removedNotices.length > 0 && <DeviceRemovedNotice events={removedNotices} onDismiss={dismissRemovedNotice} />}
