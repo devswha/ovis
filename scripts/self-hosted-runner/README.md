@@ -376,9 +376,34 @@ it as quick here: in the shared pool the same runs' jobs waited 8 to 55 s at the
 minutes at the 90th percentile, behind Integration tests and the browser parts. HostHatch and old-desktop
 run one each. Rebuild the
 image with the toolchain (`--build`) before you add the label. `scripts/ci-runner-route.sh` keeps forks,
-`hosted_only` and manual runs on `ubuntu-24.04`, and sends the job there too once a job of these slots has
-waited more than a minute (both busy, or both hosts gone), and while `CI_SELF_HOSTED_LABELS` names the
-hosted image. The repository variable `CI_RUST_LABELS` can only keep it hosted (any other value fails
+`hosted_only` and manual runs on `ubuntu-24.04`, and sends the job there too while `CI_SELF_HOSTED_LABELS`
+names the hosted image, while no Rust slot has been seen online for five minutes, and once a job of these
+slots has waited more than a minute (both busy).
+
+The workflow token cannot list runners, so "seen online" is the repository variable `CI_RUST_RUNNER_SEEN`:
+the epoch seconds at which `rust-heartbeat.sh` last found a runner with the label online. It runs every
+minute on the maintainer PC with an admin `gh`, beside the Mac's heartbeat, as a systemd user timer:
+
+```ini
+# ~/.config/systemd/user/ovis-rust-heartbeat.service
+[Unit]
+Description=Ovis Rust runners' heartbeat (CI_RUST_RUNNER_SEEN)
+[Service]
+Type=oneshot
+ExecStart=/bin/bash %h/.local/share/ovis-ci-runner/rust-heartbeat.sh
+
+# ~/.config/systemd/user/ovis-rust-heartbeat.timer
+[Unit]
+Description=Ovis Rust runners' heartbeat every minute
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+[Install]
+WantedBy=timers.target
+```
+
+With both Rust slots gone, or the maintainer PC off, the value ages and every run's job goes hosted
+before it queues; nothing waits for a runner that is not there. The repository variable `CI_RUST_LABELS` can only keep it hosted (any other value fails
 Detect changes):
 
 ```sh

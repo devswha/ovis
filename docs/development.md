@@ -1430,7 +1430,8 @@ fork pull request workflows (every outside contributor's run waits for a maintai
 The Rust PTY host job asks for `["self-hosted","self-hosted-ovis-rust"]`, a label only the hosts' Rust
 slots carry ([Routing jobs to it](../scripts/self-hosted-runner/README.md#routing-jobs-to-it)); the route
 sends it to `ubuntu-24.04` for a fork, under `hosted_only`, when `CI_SELF_HOSTED_LABELS` or `CI_RUST_LABELS`
-names that image, and once one of its jobs has waited a minute for those runners.
+names that image, while no Rust slot has been seen online for five minutes (the heartbeat
+`CI_RUST_RUNNER_SEEN`), and once one of its jobs has waited a minute for those runners.
 
 The other Windows and macOS jobs,
 `remote-bundles.yml`'s other jobs (Rust builds, and the SSH job's `sudo apt-get` and Docker),

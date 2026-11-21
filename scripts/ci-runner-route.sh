@@ -24,11 +24,15 @@ offline_wait=60
 live_job=3600
 # The Rust PTY host job asks for a label only the runners whose image has the Rust toolchain carry (one slot each
 # on the hosts that run them, scripts/self-hosted-runner/README.md "Routing jobs to it"). It takes about a minute on
-# either side, and GitHub's hosted queue holds it for seconds: once one has waited a minute for those runners (busy
-# or gone), the next run's goes hosted.
+# either side, and GitHub's hosted queue holds it for seconds: once one has waited a minute for those runners (busy),
+# the next run's goes hosted. The workflow token cannot list runners, so whether one is online at all comes from the
+# repository variable CI_RUST_RUNNER_SEEN: the epoch seconds at which scripts/self-hosted-runner/rust-heartbeat.sh,
+# run every minute with an admin token, last saw one online. Unset, not a number or older than rust_seen_limit sends
+# the job hosted before it queues, so a run never waits for runners that are all gone.
 rust_label=self-hosted-ovis-rust
 rust_labels="[\"self-hosted\",\"$rust_label\"]"
 rust_queue_limit=60
+rust_seen_limit=300
 
 # Prints "<output>=<labels>"; the output is linux unless a third argument names another.
 choose_labels() {
@@ -164,7 +168,7 @@ fi
 # repository variable CI_RUST_LABELS names the hosted image, or a job of theirs has waited too long. CI_RUST_LABELS
 # only turns the Rust runners off: no value of it sends the job anywhere the rules above keep it from.
 route_rust() {
-  local configured_rust="${RUST_LABELS:-}" configured_all="${CONFIGURED_LABELS:-}" counts waited
+  local configured_rust="${RUST_LABELS:-}" configured_all="${CONFIGURED_LABELS:-}" seen="${RUST_SEEN:-}" now="${ROUTE_NOW:-$(date +%s)}" counts waited
   if [[ "${HOSTED_ONLY:-}" == true ]]; then
     echo "Rust PTY host: ubuntu-24.04 (called with hosted_only)" >&2
     echo "rust=$hosted"
@@ -183,6 +187,12 @@ route_rust() {
       exit 1
     fi
     echo "Rust PTY host: ubuntu-24.04 (from repository variable CI_RUST_LABELS)" >&2
+    echo "rust=$hosted"
+  elif ! [[ "$seen" =~ ^[0-9]{1,12}$ ]]; then
+    echo "Rust PTY host: ubuntu-24.04 (the Rust runners' heartbeat CI_RUST_RUNNER_SEEN is unset or not a number)" >&2
+    echo "rust=$hosted"
+  elif (( now - 10#$seen > rust_seen_limit )); then
+    echo "Rust PTY host: ubuntu-24.04 (no Rust runner seen online for $(( now - 10#$seen ))s)" >&2
     echo "rust=$hosted"
   elif ! counts=$(pool_counts); then
     echo "::warning::could not read the self-hosted runners' jobs; the Rust PTY host uses ubuntu-24.04" >&2

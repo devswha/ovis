@@ -390,8 +390,11 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
 
   describe("the Rust PTY host", () => {
     const ours = ["self-hosted", "self-hosted-ovis-rust"];
-    const pr = { EVENT_NAME: "pull_request", HEAD_REPO: repo };
-    const push = { EVENT_NAME: "push", REF: "refs/heads/main" };
+    // the heartbeat rust-heartbeat.sh writes: a Rust runner was seen online `ago` seconds before ROUTE_NOW
+    const now = 2_000_000_000;
+    const seen = (ago: number) => ({ ROUTE_NOW: String(now), RUST_SEEN: String(now - ago) });
+    const pr = { EVENT_NAME: "pull_request", HEAD_REPO: repo, ...seen(30) };
+    const push = { EVENT_NAME: "push", REF: "refs/heads/main", ...seen(30) };
 
     it("goes to the Rust runners for a same-repository pull request and a push while none of its jobs has waited a minute", () => {
       expect(rust({ ...pr, FAKE_GH: actions({}) })).toEqual(ours);
@@ -406,6 +409,27 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(rust({ ...push, FAKE_GH: actions({ queued: { 1: waiting(1, 90, ["Self-Hosted", "self-hosted-ovis-rust"]) } }) })).toBe("ubuntu-24.04");
       expect(rust({ ...pr, FAKE_GH: actions({ queued: { 1: waiting(3, 600) } }) })).toEqual(ours);
       expect(rust({ ...pr, FAKE_GH: actions({ queued: { 1: waiting(1, 90_000, ours) } }) })).toEqual(ours);
+    });
+
+    it("goes hosted, before it queues and without asking the API, while no Rust runner has been seen online for five minutes", () => {
+      for (const [heartbeat, why] of [
+        [{ ROUTE_NOW: String(now) }, /heartbeat CI_RUST_RUNNER_SEEN is unset or not a number/],
+        [{ ROUTE_NOW: String(now), RUST_SEEN: "" }, /unset or not a number/],
+        [{ ROUTE_NOW: String(now), RUST_SEEN: "soon" }, /unset or not a number/],
+        [seen(301), /no Rust runner seen online for 301s/],
+        [seen(86_400), /no Rust runner seen online for 86400s/],
+      ] as const) {
+        for (const base of [{ EVENT_NAME: "pull_request", HEAD_REPO: repo }, { EVENT_NAME: "push", REF: "refs/heads/main" }]) {
+          const state = actions({});
+          const result = route({ ...base, ...heartbeat, FAKE_GH: state });
+          expect(result.status).toBe(0);
+          expect(result.stdout.split("\n")[2]).toBe('rust="ubuntu-24.04"');
+          expect(result.stderr).toMatch(why);
+          if (base.EVENT_NAME === "push") expect(existsSync(join(state, "calls"))).toBe(false);
+        }
+      }
+      expect(rust({ ...pr, ...seen(300), FAKE_GH: actions({}) })).toEqual(ours);
+      expect(rust({ ...pr, ...seen(-5), FAKE_GH: actions({}) })).toEqual(ours);
     });
 
     it("reads the Actions API once for both routes", () => {
