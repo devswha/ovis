@@ -313,6 +313,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // the PC page this shell opens acts on the account through these: Settings → Devices and PCs → Manage account
   keepShellAccount(account.enabled ? {
     signOut: account.signOut, leave: account.leave,
+    signInAgain: (provider) => account.signIn(provider, undefined, undefined, entry.serverId ?? undefined),
     deleteAccount: async () => {
       await account.deleteAccount();
       const now = account.state;

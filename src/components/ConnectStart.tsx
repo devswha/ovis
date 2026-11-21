@@ -1,9 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { QrCode } from "lucide-react";
 
+import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
 import { tailnetHost } from "../lib/phone.ts";
+import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
 import { AddressForm, canScanQr, SavedPcs, scanQr, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
 
 type ConnectWay = "relay" | "tailscale" | "direct";
@@ -44,11 +46,12 @@ function OpenError({ open }: { readonly open: AddressOpen }) {
  * The Ovis relay tab signed in: a PC joins the account from its own Ovis, signed in with the same account, so this
  * says so; a PC in no account pairs by its QR code where the phone app can scan, or by its code in a browser.
  */
-export function AccountRelayPanel({ onCodeStart }: { readonly onCodeStart: () => void }) {
+export function AccountRelayPanel({ onCodeStart, onSignInAgain }: { readonly onCodeStart: () => void; readonly onSignInAgain?: ((provider: AccountProvider) => void) | undefined }) {
   const t = useT();
   const open = useAddressOpen();
   return (
     <>
+      <UnconfirmedPcNotices onSignInAgain={onSignInAgain} />
       <p className="relay-shell-copy">{t("Turn on Ovis on the PC and sign in with the same account.")}</p>
       {canScanQr()
         ? <ScanWay open={open} failed={onCodeStart} />

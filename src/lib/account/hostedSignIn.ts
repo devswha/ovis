@@ -20,6 +20,8 @@ export interface ShellAccount {
   readonly signOut: () => void;
   readonly leave: () => Promise<LeaveOutcome>;
   readonly deleteAccount: () => Promise<string | null>;
+  /** a fresh own sign-in with `provider`, whose return comes back to the PC page that asked for it */
+  readonly signInAgain?: (provider: AccountProvider) => void;
 }
 
 export interface HostedSignIn extends ShellAccount {

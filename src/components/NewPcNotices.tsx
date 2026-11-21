@@ -90,7 +90,7 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
   });
 }
 
-function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
+export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
   readonly pc: NewPc;
   readonly session: AccountSession;
   readonly dismissalKey: string;

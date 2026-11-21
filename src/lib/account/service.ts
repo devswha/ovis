@@ -187,6 +187,11 @@ export interface DirectoryPc {
   readonly admitted_at: string | null;
   /** the PC was added in one press under the first-PC exemption before this device joined: nobody was told of it */
   readonly admitted_before_you: boolean;
+  /**
+   * PCL-1: listed by a device code (a PC's own sign-in), which anyone can type for any PC, and not confirmed by an app's own
+   * sign-in since: only `listUnconfirmedPcs` returns such a row, and nothing opens or lists it as the account's.
+   */
+  readonly unconfirmed?: true;
 }
 
 type Fetch = (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
@@ -251,7 +256,8 @@ function parsePc(value: unknown): DirectoryPc | null {
   const invited_at = typeof value.invited_at === "string" && !Number.isNaN(Date.parse(value.invited_at)) ? value.invited_at : undefined;
   return { server_id: value.server_id, label: value.label, added_at: value.added_at, last_seen_at: value.last_seen_at, public_key, relay, new_until, admitted_at, admitted_before_you: admitted_at !== null && value.admitted_before_you === true,
     ...(listing_id === undefined ? {} : { listing_id }), ...(invited_at === undefined ? {} : { invited_at }),
-    ...(value.new_until != null && new_until === null ? { new_until_unreadable: true as const } : {}) };
+    ...(value.new_until != null && new_until === null ? { new_until_unreadable: true as const } : {}),
+    ...(value.unconfirmed === true ? { unconfirmed: true as const } : {}) };
 }
 
 export function sessionOf(body: unknown, service: string, now: number): AccountSession {
@@ -356,7 +362,35 @@ export class AccountService {
     const body = await this.call("GET", "/v1/pcs", undefined, signal, again);
     const pcs = isRecord(body) && Array.isArray(body.pcs) ? body.pcs : null;
     if (pcs === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no PC list");
-    return pcs.map(parsePc).filter((pc): pc is DirectoryPc => pc !== null);
+    // a row the service marks unconfirmed is never the account's here, whatever asked for it
+    return pcs.map(parsePc).filter((pc): pc is DirectoryPc => pc !== null && pc.unconfirmed !== true);
+  }
+
+  /** PCL-1: the account's PCs a device code listed and no app's own sign-in confirmed, to offer them for a confirm. */
+  async listUnconfirmedPcs(signal?: AbortSignal): Promise<DirectoryPc[]> {
+    const body = await this.call("GET", "/v1/pcs?include=unconfirmed", undefined, signal);
+    const pcs = isRecord(body) && Array.isArray(body.pcs) ? body.pcs : null;
+    if (pcs === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no PC list");
+    return pcs.map(parsePc).filter((pc): pc is DirectoryPc => pc !== null && pc.unconfirmed === true);
+  }
+
+  /**
+   * PCL-1/PCL-4: this own sign-in says the PC is the account's, with the key and relay its listing gave. The service refuses
+   * a device code's sign-in (`own_sign_in_required`), one older than ten minutes (`session_not_fresh`) and one without
+   * two-step in a used account (`two_step_required`). The confirmed row comes back new for 24 hours (C3).
+   */
+  async confirmPc(pc: DirectoryPc): Promise<DirectoryPc> {
+    if (pc.public_key === null || pc.relay === null) throw new AccountServiceError(409, "unconfirmable", "The listing gives no key or relay to confirm");
+    const body = await this.call("PUT", `/v1/pcs/${pc.server_id}`, { label: pc.label, public_key: pc.public_key, relay: pc.relay, confirm: true });
+    const row = isRecord(body) ? parsePc(body.pc) : null;
+    if (row === null || row.server_id !== pc.server_id || row.unconfirmed === true) throw new AccountServiceError(502, "invalid_answer", "The account service did not confirm the PC");
+    return row;
+  }
+
+  /** Whether this sign-in is an app's own (a device code's never is): only such a sign-in may confirm a PC. */
+  async ownSignIn(signal?: AbortSignal): Promise<boolean> {
+    const body = await this.call("GET", "/v1/session", undefined, signal);
+    return isRecord(body) && body.own_sign_in === true;
   }
 
   /** Lists a PC in the account's directory, with its relay key and relay so a new device can compare digits with it. */

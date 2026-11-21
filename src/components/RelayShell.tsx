@@ -217,7 +217,7 @@ export function RelayShell(props: RelayShellProps) {
         {/* one wrapper whether the dialog is open or not: swapping it in would remount the page, losing the control that opened it before its focus trap records it */}
         <div className="relay-shell account-centered relay-shell-signin" inert={addingPc || undefined}>
           {noneOnline}
-          <ConnectStart menu={<StartScreenAccountMenu />} devices={addPcs} relay={<AccountRelayPanel onCodeStart={() => { setAddingPc(true); onCodeStart(); }} />} />
+          <ConnectStart menu={<StartScreenAccountMenu />} devices={addPcs} relay={<AccountRelayPanel onSignInAgain={onSignIn} onCodeStart={() => { setAddingPc(true); onCodeStart(); }} />} />
           {account.error !== null && (
             <p className="account-error relay-add-directory-error" role="alert">{account.error}{onRefreshAccount && <> <button type="button" className="account-link" onClick={() => { void onRefreshAccount(); }}>{t("Try again")}</button></>}</p>
           )}
