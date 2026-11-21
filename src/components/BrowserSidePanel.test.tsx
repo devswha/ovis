@@ -141,7 +141,8 @@ test("asks a Claude pane for its pages once per status, never again while the an
   const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ artifacts: [] }), globalThis.fetch));
   install(stub(async () => view));
   await render({ id: "w1:p1", agent: "claude", status: "working" });
-  await act(async () => { jest.advanceTimersByTime(60_000); });
+  // the cards' picture timer runs on; the pages are still asked for once, however long the panel stays
+  await act(async () => { jest.advanceTimersByTime(600_000); });
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 

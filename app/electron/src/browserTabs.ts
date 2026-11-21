@@ -36,6 +36,9 @@ function onScreen(bounds: { x: number; y: number; width: number; height: number 
 const STAGE_FRAMES = 8;
 /** how long one capture may take before it is given up (one that never answers would hold every later picture) */
 const PICTURE_MS = 1000;
+/** a tab smaller than this on a side has no room to draw a picture in, and is laid out as a desktop window first */
+const MIN_PICTURED = 100;
+const DESKTOP_SIZE = { width: 1280, height: 800 };
 const STAGE_FRAME_MS = 50;
 const AGENT_OPEN_MS = 30_000;
 /** a download larger than this is cancelled, and a profile keeps at most MAX_DOWNLOADS from one start of the app */
@@ -175,7 +178,7 @@ export class BrowserTabs {
     this.guard(partition, profile);
     const view = new WebContentsView({ webPreferences: { session: partition, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: false, safeDialogs: true } });
     // a page lays out at its view's size, drawn or not: one no person has placed yet gets a desktop window's
-    view.setBounds({ x: 0, y: 0, width: 1280, height: 800 });
+    view.setBounds({ x: 0, y: 0, ...DESKTOP_SIZE });
     const tab: Tab = { id: this.nextId++, profile, owner: profile === "agent" ? owner : null, view, allowed: null, title: "", held: false };
     this.tabs.set(tab.id, tab);
     this.watch(tab);
@@ -245,33 +248,28 @@ export class BrowserTabs {
     const tab = this.tabs.get(id);
     if (!tab || tab.allowed === null) return null;
     if (this.shown === id) return capture(tab.view.webContents);
+    // only an agent's tab is pictured while nobody looks at it (the right panel's cards); a person's own tab only shown
+    if (tab.profile !== "agent") return null;
     const stage = this.stageWindow();
     if (stage === null) return null;
     stage.contentView.addChildView(tab.view);
     try {
-      // a view just put in a window has no surface to draw on until it is resized: a pixel shorter, then the
-      // stage's whole size, then taken as soon as its compositor has a frame of it (a few frames at most)
-      this.fitStage(tab, -1);
+      // put in as it is, not resized (a page the agent works on gets no resize event from a picture), unless it was
+      // left with no room to draw in (hidden while its window had none), and taken as soon as its compositor has a frame
+      // of it (a frame or two)
+      const { width, height } = tab.view.getBounds();
+      if (width < MIN_PICTURED || height < MIN_PICTURED) tab.view.setBounds({ x: 0, y: 0, ...DESKTOP_SIZE });
       for (let attempt = 0; attempt < STAGE_FRAMES; attempt++) {
         await new Promise((next) => setTimeout(next, STAGE_FRAME_MS));
         // shown or closed meanwhile: show() has placed it, or it is gone
         if (!this.onStage(tab) || tab.view.webContents.isDestroyed()) return null;
-        if (attempt === 0) this.fitStage(tab);
-        else {
-          const picture = await capture(tab.view.webContents);
-          if (picture !== null) return picture;
-        }
+        const picture = await capture(tab.view.webContents);
+        if (picture !== null) return picture;
       }
       return null;
     } finally {
       if (this.onStage(tab)) this.stage?.contentView.removeChildView(tab.view);
     }
-  }
-
-  /** sizes a tab on the stage to the whole stage, `less` pixels shorter */
-  private fitStage(tab: Tab, less = 0): void {
-    const [width = 1280, height = 800] = this.stage?.getContentSize() ?? [];
-    tab.view.setBounds({ x: 0, y: 0, width, height: height + less });
   }
 
   private onStage(tab: Tab): boolean {

@@ -85,9 +85,15 @@ void app.whenReady().then(async () => {
   const waitingTab = await tab(`${A}/blank`, "mine");
   result["bigDownload"] = await downloadState(`${A}/big`);
   result["smallDownload"] = await downloadState(`${A}/small`);
-  // a tab nobody has shown still has a picture for the right panel, under a newer one too
-  const cover = await tab(`${A}/blank`, "mine");
-  result["hiddenThumbnail"] = (await tabs.thumbnail(waitingTab.id))?.startsWith("data:image/png") ?? false;
+  // an agent's tab nobody has shown still has a picture for the right panel, under a newer one too; a person's own
+  // tab has one only while shown
+  const pictured = await tab(`${A}/blank`, "agent");
+  const cover = await tab(`${A}/blank`, "agent");
+  await pictured.contents.executeJavaScript("window.__resizes = 0; addEventListener('resize', () => window.__resizes++); true");
+  result["hiddenThumbnail"] = (await tabs.thumbnail(pictured.id))?.startsWith("data:image/png") ?? false;
+  result["hiddenMine"] = await tabs.thumbnail(waitingTab.id);
+  // a picture never resizes the page an agent works on
+  result["pictureResizes"] = await pictured.contents.executeJavaScript("window.__resizes");
   // shown, hidden again, then pictured: it is on the stage only while its picture is taken
   tabs.show(cover.id, { x: 0, y: 0, width: 400, height: 300 });
   tabs.hide();
@@ -102,7 +108,8 @@ void app.whenReady().then(async () => {
   stage?.setPosition(display.x, display.y);
   stage?.emit("move");
   await new Promise((done) => setTimeout(done, 100));
-  result["stageGivenUp"] = { had: stage !== undefined, hidden: stage?.isVisible() === false, picture: await tabs.thumbnail(waitingTab.id) };
+  result["stageGivenUp"] = { had: stage !== undefined, hidden: stage?.isVisible() === false, picture: await tabs.thumbnail(pictured.id) };
+  tabs.close(pictured.id);
   result["results"] = tabs.results().map(({ kind, name, done, tab: from, profile }) => ({ kind, name, done, fromTab: from === waitingTab.id, profile }));
   result["resultPath"] = tabs.results().every(({ id, done }) => (tabs.resultPath(id) !== null) === done);
   // a site blocked while a request's name resolves: the request is decided again by the policy as it is then
