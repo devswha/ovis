@@ -61,7 +61,7 @@ function parseDoc(value: unknown): Doc | null {
 export interface Forgettings { forgets(key: string, account: string): readonly string[] }
 
 /** The id of a local Revoke, the same whether it is made here or read back from a tombstone (P13). */
-function localRevokeId(key: string, account: string, at: string): string {
+export function localRevokeId(key: string, account: string, at: string): string {
   return createHash("sha256").update(`${key}\n${account}\n${at}`).digest("hex").slice(0, 32);
 }
 
@@ -92,6 +92,11 @@ export class RemovalEvidence {
 
   /** Whether the file is on disk. */
   get onDisk(): boolean { return existsSync(this.path); }
+
+  /** The first device-journal entry must not outlive this companion. Do not import or replay anything here. */
+  ensureFile(): void {
+    if (!this.onDisk) this.write(this.doc);
+  }
 
   /** A missing file this PC once wrote is damage, not a fresh start (S19). */
   missingAfterWritten(): void {
@@ -197,6 +202,10 @@ export class RemovalEvidence {
    * of its key that was paired here is taken in already ended. An account tombstone with no removal of that id
    * becomes one.
    */
+  importDenials(tombstones: readonly EvidenceTombstone[]): void {
+    this.takeIn(tombstones, [], Date.now());
+  }
+
   takeIn(tombstones: readonly EvidenceTombstone[], rows: readonly { relay_public_key?: string | undefined; created_at: string; pairedHere: boolean }[], now: number): void {
     let doc = this.doc;
     const at = new Date(now).toISOString();

@@ -143,6 +143,7 @@ export type RecoveryAction =
   | { readonly act: "undo"; readonly rows: readonly string[] | null }
   | { readonly act: "remove"; readonly targets: readonly string[] }
   | { readonly act: "revoke_all" }
+  | { readonly act: "restamp"; readonly confirm?: string }
   | { readonly act: "lift"; readonly blocks: readonly string[] }
   | { readonly act: "admit"; readonly pending: string; readonly fingerprint: string };
 
@@ -206,11 +207,12 @@ export function parseBlockReceipt(value: unknown): BlockReceipt {
 
 /** Device table R11: one recovery act; throws AccountDevicesApiError. Every list names 1-64 entries. */
 export function parseRecoveryAction(value: unknown): RecoveryAction {
-  const action = shape(value, ["act", "rows", "targets", "blocks", "pending", "fingerprint"]);
+  const action = shape(value, ["act", "rows", "targets", "blocks", "pending", "fingerprint", "confirm"]);
   const only = (...fields: string[]) => Object.keys(action).every((name) => name === "act" || fields.includes(name));
   const ok = (() => {
     switch (action.act) {
       case "list": case "revoke_all": return only();
+      case "restamp": return only("confirm") && (!("confirm" in action) || (typeof action.confirm === "string" && HEX32.test(action.confirm)));
       case "release": return only("rows") && ids(action.rows, ROW_ID);
       case "undo": return only("rows") && (action.rows === null || ids(action.rows, ROW_ID));
       // a row id or an account key, nothing in between

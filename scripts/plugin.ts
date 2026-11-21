@@ -1313,7 +1313,7 @@ export async function runPlugin(): Promise<void> {
       "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
       "link --code: show a code and a QR code to pair one device instead.",
       "tui: herdr-core's terminals in this terminal, as herdr shows them.",
-      ...(accountOpensAll() ? ["recover: list the devices that wait for this PC's account to be read; --release <id>... lets them in until then, --undo ends that.", "confirm: open this PC's confirm page, where turning strict mode on or off waits for your approval."] : []),
+      ...(accountOpensAll() ? ["recover: list the devices that wait for this PC's account to be read; --release <id>... lets them in until then, --undo ends that, and --restamp queues a clock repair.", "confirm: open this PC's confirm page, where turning strict mode on or off waits for your approval."] : []),
       "",
     ].join("\n"));
     process.exit(2);

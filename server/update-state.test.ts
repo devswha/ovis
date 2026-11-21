@@ -28,6 +28,16 @@ const withRegistry = (dir: string): string => {
 };
 
 describe("the state dir from before the rename", () => {
+  it("does not move a restamp participant into the unavailable origin's folder", () => {
+    const config = configHome();
+    const legacy = withDevices(join(config, "herdr-web-ui"));
+    const next = join(config, "ovis");
+    writeFileSync(join(legacy, "restamp-participant.json"), JSON.stringify({ origin: next, digest: "a".repeat(64) }));
+    adoptLegacyDir(legacy, next);
+    expect(existsSync(next)).toBe(false);
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config })).toBe(legacy);
+  });
+
   it("keeps an installed supervisor on its checkout and port's state when both names hold files", () => {
     const config = configHome();
     const root = join(config, "checkout");

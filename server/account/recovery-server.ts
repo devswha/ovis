@@ -8,6 +8,7 @@ import type { PendingRedemptions } from "./pending.ts";
 import { recoveryActs, type RecoverySeams } from "./recovery-acts.ts";
 import { openRecoverySocket, type RecoveryReleases } from "./recovery.ts";
 import { pcRecordId, SafetyLog } from "./safety-log.ts";
+import { restampAct } from "./restamp.ts";
 
 /** Wire the PC's stores into its local recovery socket. */
 export function openPcRecovery(options: {
@@ -19,6 +20,8 @@ export function openPcRecovery(options: {
   readonly releases: RecoveryReleases;
   readonly pending: PendingRedemptions | undefined;
   readonly pairings: KeyProofPairings | undefined;
+  readonly sibling?: string | null | undefined;
+  readonly retryRestamp?: boolean;
 }) {
   const { stateDir, devices, pcAccount, journal, safetyLog, releases, pending, pairings } = options;
   // The log's freeze set already includes each standing block once.
@@ -27,6 +30,11 @@ export function openPcRecovery(options: {
     return kind === "block" || kind === "freeze" ? [{ kind, id, target, account, signer }] : [];
   });
   const seams: RecoverySeams = {
+    restamp: restampAct({
+      stateDir, sibling: options.sibling, journal,
+      install: process.env["OVIS_DESKTOP_APP"] === "1" ? "desktop" : process.env["HERDR_PLUGIN_ROOT"] ? "plugin" : "other",
+      problem: () => devices.restampRefusal(options.retryRestamp === true),
+    }),
     pendingList: () => (pending?.list() ?? []).map(({ id, label, fingerprint }) => ({ id, label, fingerprint })),
     standing,
     admitPending: (id, fingerprint) => {
