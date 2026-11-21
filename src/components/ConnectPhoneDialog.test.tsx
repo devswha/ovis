@@ -506,14 +506,15 @@ describe("Connect a phone on a phone", () => {
     const values = () => qrCodes().map((qr) => String(qr.props.value));
     // the Tailscale tab's QR code is its Tailscale address, never the proxy this page is open at
     expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913"]);
-    // Direct shows the same code at this page's own address, and asks for no second code, which would end the first
+    // Direct shows the same code, as a code with no QR code, and asks for no second code, which would end the first
     await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     expect(starts()).toBe(1);
-    expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913", "https://desk.example.com/?pair=482913"]);
+    expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913"]);
+    expect(text(renderer!.root.findByProps({ "data-tab-panel": "direct" }))).toContain("482 913");
   });
 
-  it("on a plain-http LAN page with Tailscale serving it, Direct shows this page's address, and a tab opened while the first code is asked for asks for none", async () => {
+  it("a tab opened while the first tab's code is asked for asks for none, and shows that code", async () => {
     Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
     const pageEvents = new EventTarget();
     Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
@@ -525,7 +526,7 @@ describe("Connect a phone on a phone", () => {
     let release = (): void => {};
     pairStarts.push({ code: "135792", gate: new Promise<void>((resolve) => { release = resolve; }) });
     await act(async () => {
-      renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} pageUrl="http://192.168.0.12:7317" relay={relayState()} readOnly={false} closesGate={false} canPair
+      renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
         signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
     });
     await until(() => starts() === 1, "the Tailscale tab's code asked for");
@@ -533,9 +534,9 @@ describe("Connect a phone on a phone", () => {
     await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     await act(async () => { release(); });
-    await until(() => qrCodes().length === 2, "both tabs' QR codes");
+    await until(() => text(renderer!.root.findByProps({ "data-tab-panel": "direct" })).includes("135 792"), "Direct's code");
     expect(starts()).toBe(1);
-    expect(qrCodes().map((qr) => String(qr.props.value))).toEqual(["https://workstation.example.ts.net/?pair=135792", "http://192.168.0.12:7317/?pair=135792"]);
+    expect(qrCodes().map((qr) => String(qr.props.value))).toEqual(["https://workstation.example.ts.net/?pair=135792"]);
   });
 
   it("a tab that waited on the first tab's code asks for its own when that request fails", async () => {
@@ -550,7 +551,7 @@ describe("Connect a phone on a phone", () => {
     let refuse = (): void => {};
     pairStarts.push({ code: "000000", gate: new Promise<void>((resolve) => { refuse = resolve; }), refused: true }, { code: "246810", gate: Promise.resolve() });
     await act(async () => {
-      renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} pageUrl="http://192.168.0.12:7317" relay={relayState()} readOnly={false} closesGate={false} canPair
+      renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
         signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
     });
     await until(() => starts() === 1, "the Tailscale tab's code asked for");
@@ -560,7 +561,7 @@ describe("Connect a phone on a phone", () => {
     await act(async () => { refuse(); });
     // the request it waited on failed: nothing will announce a code, so the waiting tab asks itself
     await until(() => starts() === 2, "the waiting tab's own request");
-    await until(() => qrCodes().some((qr) => String(qr.props.value) === "http://192.168.0.12:7317/?pair=246810"), "the waiting tab's QR code");
+    await until(() => text(renderer!.root.findByProps({ "data-tab-panel": "direct" })).includes("246 810"), "the waiting tab's own code");
   });
 
   describe("the Tailscale tab's step, one press each and never a terminal step until a serve is refused", () => {
@@ -667,7 +668,7 @@ describe("Connect a phone on a phone", () => {
     });
   });
 
-  describe("Direct: a same-Wi-Fi QR code where this PC answers on its network, never a bare code under Scan", () => {
+  describe("Direct in 0.5.10: this PC's same-Wi-Fi address as a line and the pairing code under it, never a QR code", () => {
     const mountDirect = async (lanUrl: string | null) => {
       Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
       const pageEvents = new EventTarget();
@@ -678,7 +679,7 @@ describe("Connect a phone on a phone", () => {
       const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
       // this PC's own window on loopback: its page is no address a phone opens
       await act(async () => {
-        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} lanUrl={lanUrl} pairUrl={served.url} pageUrl={null} relay={relayState()} readOnly={false} closesGate={false} canPair
+        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} lanUrl={lanUrl} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
           signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
       });
       await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
@@ -686,22 +687,27 @@ describe("Connect a phone on a phone", () => {
       return () => renderer!.root.findByProps({ "data-tab-panel": "direct" });
     };
 
-    it("shows the QR code of this PC's same-Wi-Fi address with the pairing code, the code under it, under a plain label and no outside link", async () => {
+    const lanLine = (panel: ReactTestInstance) => panel.findByProps({ "data-testid": "direct-lan" });
+    const scan = (panel: ReactTestInstance) => panel.findByProps({ "data-testid": "connect-phone-scan" });
+
+    it("with a same-Wi-Fi address, names it in one line with the code and its refresh and copy under it, and no QR code", async () => {
       const panel = await mountDirect("http://192.168.0.12:7317");
-      await until(() => panel().findAllByType(QrCode).length === 1, "Direct's QR code");
-      expect(panel().findAllByType(QrCode).map((qr) => String(qr.props.value))).toEqual(["http://192.168.0.12:7317/?pair=482913"]);
-      expect(text(panel())).toContain("Scan it with the Ovis app on your phone");
-      expect(text(panel())).toContain("482 913");
+      await until(() => text(panel()).includes("482 913"), "Direct's code");
+      expect(text(lanLine(panel()))).toBe("Same Wi-Fi address: http://192.168.0.12:7317");
+      expect(scan(panel()).findAllByType(QrCode)).toEqual([]);
+      expect(panel().findAllByType(QrCode)).toEqual([]);
+      expect(scan(panel()).findAll((node) => node.type === "button").map(text).map((label) => label.trim())).toEqual(expect.arrayContaining(["Copy"]));
+      expect(text(scan(panel()))).not.toContain("Scan it with the Ovis app on your phone");
       expect(panel().findAll((node) => node.type === "label").map(text)[0]).toBe("Add another PC from this one");
       expect(panel().findAll((node) => node.type === "a").map(text)).toEqual([]);
     });
 
-    it("with no address a phone opens, names the code a pairing code to type, not one to scan", async () => {
+    it("on loopback alone, says same-Wi-Fi connections are off, and still shows the code, with no QR code", async () => {
       const panel = await mountDirect(null);
       await until(() => text(panel()).includes("482 913"), "Direct's code");
+      expect(text(lanLine(panel()))).toBe("Same Wi-Fi connections are off on this PC.");
       expect(panel().findAllByType(QrCode)).toEqual([]);
-      expect(text(panel())).not.toContain("Scan it with the Ovis app on your phone");
-      expect(text(panel().findByProps({ "data-testid": "connect-phone-scan" }))).toContain("Pairing code");
+      expect(text(scan(panel()))).toContain("Pairing code");
     });
   });
 

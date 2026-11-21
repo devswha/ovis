@@ -250,6 +250,8 @@ export const DEVICES_ZH: Record<string, string> = {
   "Scan it with the Ovis app on your phone": "用手机上的 Ovis 应用扫描",
   "QR code that opens this PC in the Ovis app": "在 Ovis 应用中打开这台电脑的二维码",
   "No other PC of this Tailscale login was found.": "未找到此 Tailscale 登录下的其他 PC。",
+  "Same Wi-Fi address: {address}": "同一 Wi-Fi 地址：{address}",
+  "Same Wi-Fi connections are off on this PC.": "这台电脑的同一 Wi-Fi 连接已关闭。",
   "Add another PC from this one": "从这台电脑添加另一台电脑",
   "Opens that PC's Ovis here. On that PC, open Settings → Devices and PCs → Add a connection → Direct, and type the six-digit pairing code it shows. This PC can then drive that PC.": "在此窗口中打开那台电脑的 Ovis。在那台电脑上打开“设置 → 设备和电脑 → 添加连接 → 直接连接”，输入显示的 6 位配对码。之后这台电脑就可以操作那台电脑。",
   "Enter only that PC's Ovis address, starting with https://": "只输入那台电脑 Ovis 的地址，以 https:// 开头。",

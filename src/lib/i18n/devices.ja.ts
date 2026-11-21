@@ -250,6 +250,8 @@ export const DEVICES_JA: Record<string, string> = {
   "Scan it with the Ovis app on your phone": "スマホの Ovis アプリで読み取ってください",
   "QR code that opens this PC in the Ovis app": "この PC を Ovis アプリで開く QR コード",
   "No other PC of this Tailscale login was found.": "この Tailscale ログインの他の PC は見つかりませんでした。",
+  "Same Wi-Fi address: {address}": "同じ Wi-Fi のアドレス: {address}",
+  "Same Wi-Fi connections are off on this PC.": "この PC では同じ Wi-Fi の接続がオフです。",
   "Add another PC from this one": "この PC から別の PC を追加",
   "Opens that PC's Ovis here. On that PC, open Settings → Devices and PCs → Add a connection → Direct, and type the six-digit pairing code it shows. This PC can then drive that PC.": "その PC の Ovis をこのウィンドウで開きます。その PC で「設定 → デバイスと PC → 接続を追加 → 直接接続」を開き、表示される6桁のペアリングコードを入力してください。この PC からその PC を操作できるようになります。",
   "Enter only that PC's Ovis address, starting with https://": "https:// で始まるその PC の Ovis のアドレスだけを入力してください。",

@@ -124,11 +124,9 @@ export interface ConnectPhoneDialogProps {
   tailscale?: PhonePlan;
   /** the platform this PC's server reports (RemoteAccess.platform): which Tailscale download and app this PC takes */
   platform?: string | undefined;
-  /** the address a phone on this PC's own network opens (RemoteAccess.lan_url): Direct's QR code where this page is no such address */
+  /** the address this PC answers at on its own network (RemoteAccess.lan_url): Direct names it as text, with no QR code (0.5.10) */
   lanUrl?: string | null | undefined;
   pairUrl: string | null;
-  /** this page's own address when a phone could open it (not loopback, not the hosted shell): Direct's QR code; `pairUrl` when omitted */
-  pageUrl?: string | null;
   relay: RelayState;
   /** a watching device or a Portal visitor: it reads, and starts nothing */
   readOnly: boolean;
@@ -160,7 +158,7 @@ export interface ConnectPhoneDialogProps {
   onClose: () => void;
 }
 
-export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, lanUrl: givenLanUrl = null, pairUrl, pageUrl = pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, lanUrl: givenLanUrl = null, pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -206,9 +204,6 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   const { status: portal } = usePortal();
   const local = localWays({ plan, readOnly, canPair, portal });
   const tailnet = localWays({ plan: tailscale, readOnly, canPair, portal: null });
-  // a phone on the same Wi-Fi opens Portal's address where it runs, else this page's own when it is no Tailscale one, else
-  // the address this PC answers at on its own network (lan_url)
-  const directUrl = portal?.phase === "running" && portal.url !== null ? portal.url : pageUrl !== null && pageUrl !== tailnet.address ? pageUrl : lanUrl;
   // one pairing code for both tabs that show one: the PC keeps one pending code, so a second would end the first
   const sharedCode = useRef<SharedCode>({ code: null, asking: false, waiting: new Set() });
   useTailscaleWatch(!waiting && ((tab === "tailscale" && tailnet.tailscaleStep !== null) || (tab === null && local.tailscaleStep !== null)), setFresh);
@@ -243,8 +238,17 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
           {opened.current.has("direct") && tabs.includes("direct") && (
             <div className="connect-tab" data-tab-panel="direct" hidden={tab !== "direct"}>
               <DirectTab found={found} machines={machines} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} />
-              {local.code && <PhoneScan codeOnly={directUrl === null}><CodeRoute pairUrl={directUrl} startAtOnce={tab === "direct"} shared={sharedCode} phone={phone} compact /></PhoneScan>}
-              {local.portal && <section className="connect-section" aria-label="Portal"><PortalPanel readOnly={readOnly} addressQr={!local.code || directUrl !== portal?.url} /></section>}
+              {/* 0.5.10: this PC's same-Wi-Fi address as text and the pairing code under it, no QR code (joining by the
+                  address, with the PC's approval, comes in 0.5.11) */}
+              {local.code && (
+                <PhoneScan codeOnly>
+                  <p className="settings-description" data-testid="direct-lan" data-lan={lanUrl === null ? "off" : "on"}>
+                    {lanUrl === null ? t("Same Wi-Fi connections are off on this PC.") : t("Same Wi-Fi address: {address}", { address: lanUrl })}
+                  </p>
+                  <CodeRoute pairUrl={null} startAtOnce={tab === "direct"} shared={sharedCode} phone={phone} compact />
+                </PhoneScan>
+              )}
+              {local.portal && <section className="connect-section" aria-label="Portal"><PortalPanel readOnly={readOnly} /></section>}
             </div>
           )}
           {opened.current.has("relay") && tabs.includes("relay") && (
