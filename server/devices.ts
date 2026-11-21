@@ -2846,10 +2846,11 @@ export class DeviceStore {
     if (tailnet.unreadable) return [];
     // only a saved block lets the removal go on: the fail-closed state after a failed write ends with this run
     const fresh = nodes.filter((node) => !tailnet.holds(node.id));
-    if (fresh.length === 0) return [];
+    if (nodes.length === 0) return [];
     try {
+      // the nodes already blocked are blocked again with this removal's time (TailnetNodes.block); only new ones are journalled
       for (const node of fresh) this.journalEvent({ kind: "tailnet", how: "block", key: null, no: null, row, label: `${node.hostname ?? tailnet.hostnameOf(node.id)} · ${node.id}`, by: null, account: null });
-      return tailnet.block(fresh);
+      return tailnet.block(nodes);
     } catch (error) {
       // a block that did not land keeps every node out for this run: the removal it belongs to may already stand
       tailnet.failClosed(`A Tailscale device could not be kept out (${describe(error)}): no Tailscale login is let in until this PC restarts.`);

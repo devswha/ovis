@@ -210,9 +210,10 @@ export class TailnetNodes {
     if (this.unreadable) throw new Error(this.problem ?? `Cannot read ${this.path}`);
     const changedAt = new Date(this.now()).toISOString();
     const fresh = nodes.filter((node) => !this.holds(node.id));
-    if (fresh.length === 0) return [];
-    const next = this.nodes.map((own) => fresh.some((node) => node.id === own.id) ? { ...own, blocked: true, changed_at: changedAt } : own);
-    for (const node of fresh) {
+    if (nodes.length === 0) return [];
+    // every node named is stamped, one already blocked too: this removal is newer than any Allow a sibling holds
+    const next = this.nodes.map((own) => nodes.some((node) => node.id === own.id) ? { ...own, blocked: true, changed_at: changedAt } : own);
+    for (const node of nodes) {
       if (!next.some((own) => own.id === node.id)) next.push({ id: node.id, hostname: node.hostname ?? node.id, login: null, seen_at: null, blocked: true, changed_at: changedAt });
     }
     this.write(trimmed(next));
