@@ -270,11 +270,11 @@ export interface SheetJoin {
 }
 /**
  * An address of the control page the hosted app had before 0.5.10 (`#overview`, `#pcs`, `#devices`, `#relay`,
- * `#settings`, with a query, or an older `#relay-dash-*` anchor): the page is gone, and such a link or bookmark lands
+ * `#settings`, with a query, or an older `#relay-dash-*` anchor; `#my-machines` of 0.5.6 to 0.5.9): the page is gone, and such a link or bookmark lands
  * on the app as its bare address does.
  */
 export function oldDashboardHash(hash: string): boolean {
-  return /^#(?:overview|pcs|devices|relay|settings|relay-dash-[a-z]+)(?:\?.*)?$/.test(hash);
+  return /^#(?:overview|pcs|devices|relay|settings|my-machines|relay-dash-[a-z]+)(?:\?.*)?$/.test(hash);
 }
 export function sheetContext(serverId?: string): SheetJoin | null {
   try {
