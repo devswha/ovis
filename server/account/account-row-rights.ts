@@ -81,6 +81,9 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
   "POST /api/devices/pair": { action: "pair_start" },
   // a live member may mark a join seen for every window of this PC, as it may drive it
   "POST /api/devices/joins/seen": { action: "drive" },
+  // blocking a tailnet node and answering its card are this PC's own window's (server/tailnet-nodes.ts)
+  "POST /api/devices/tailnet-nodes/block": { action: "local_control" },
+  "POST /api/devices/tailnet-nodes/answer": { action: "local_control" },
   "POST /api/runtime": { action: "drive" },
   "POST /api/runtime/move": { action: "drive" },
   "DELETE /api/runtime/move": { action: "drive" },

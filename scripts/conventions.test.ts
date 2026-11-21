@@ -347,6 +347,8 @@ describe("demo transport", () => {
     "/api/account/records": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
     "/api/devices/pending": "devices waiting for this PC's screen: only with the release flag on, which the demo never is",
     "/api/devices/pending/decline": "devices waiting for this PC's screen: only with the release flag on, which the demo never is",
+    "/api/devices/tailnet-nodes/block": "keeping a Tailscale device out: the demo lists none, so its removal dialog offers none to choose",
+    "/api/devices/tailnet-nodes/answer": "a removed Tailscale device asking to get back in: the demo lists none, so no card asks",
     "/api/account/lock": "strict mode: only with the release flag on, which the demo never is",
     "/api/account/unlock": "strict mode: only with the release flag on, which the demo never is",
     "/api/account/local-confirm": "refused to every caller (local_required): an act is confirmed on the PC's own screen, never through a route",

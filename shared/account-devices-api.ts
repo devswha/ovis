@@ -30,8 +30,8 @@ function fail(message: string): never {
   throw new AccountDevicesApiError(message);
 }
 
-/** Device table P15: the journal kinds a notice can carry; `release` and `admit` are the recovery's own (R11). */
-export type NoticeKind = "admit" | "drop" | "remove" | "block" | "lift" | "promote" | "confirm" | "lock" | "unlock" | "account" | "method" | "merge" | "release";
+/** Device table P15: the journal kinds a notice can carry; `release` and `admit` are the recovery's own (R11), `tailnet` a block or Allow of a tailnet node (server/tailnet-nodes.ts). */
+export type NoticeKind = "admit" | "drop" | "remove" | "block" | "lift" | "promote" | "confirm" | "lock" | "unlock" | "account" | "method" | "merge" | "release" | "tailnet";
 
 /** Device table P18, T34, T58: the registering sign-in provider for a list admission, if the snapshot still names it. */
 export type NoticeSignInMethod = "github" | "google" | "apple" | null;

@@ -15,7 +15,8 @@ import { bindScope, cameThroughProxy, decideAccess, decideMachineAccess, forward
 import { type DeviceStore, handleDeviceRequest, newStreamKey, streamCookie, streamKeys, type DeviceMatch } from "./devices.ts";
 import { handlePreferencesRequest, type PreferenceStore } from "./preferences.ts";
 import { handleSeenRequest, type SeenStore } from "./seen.ts";
-import { openTailscaleApp, remoteAccess, serveTailscale, tailscaleBinary } from "./tailscale.ts";
+import { openTailscaleApp, remoteAccess, serveTailscale, tailscaleBinary, type TailnetNode } from "./tailscale.ts";
+import { handleTailnetNodeRequest, tailnetNodeGate, type TailnetNodes } from "./tailnet-nodes.ts";
 import { TAILSCALE_CONTROLS } from "./dispatch-routes.ts";
 import { lanUrl, privateLanAddresses } from "./lan-https.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute, wordedHeaders, wordHerdrFailures } from "./http.ts";
@@ -122,6 +123,9 @@ export interface RequestServices {
   /** `loginPath`: the request states a Tailscale login, so the PC's own login must be known, not merely cached as unknown */
   readonly identityOf: (grantPath: boolean, host: string | null, loginPath?: boolean) => Promise<TailnetIdentity>;
   readonly serveOnly: boolean;
+  /** the tailnet nodes this PC keeps out (server/tailnet-nodes.ts), and the WhoIs read that names a request's node */
+  readonly tailnetNodes: TailnetNodes;
+  readonly whoisNode: (address: string) => Promise<TailnetNode | null>;
   readonly portalGuards: () => { tokenSet: boolean; serveOnly: boolean };
   readonly shellAgents: ShellAgentLocator;
   readonly agentDetector: AgentDetector;
@@ -291,6 +295,14 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       role: portalProven ? options.portal?.roleFor(request.headers.get("x-portal-user"), request.headers.get("x-portal-auth")) ?? "watch" : "watch",
     },
   });
+  // a node the owner removed gets no Tailscale grant, and a device's own credential over the tailnet names its node on
+  // its row (server/tailnet-nodes.ts). Only the address the local tailscaled wrote counts: one source, from loopback
+  if (options.profile !== "machine" && relayPeer === undefined) {
+    access = await tailnetNodeGate(access, {
+      address: loopback && forwarded && !funnel && inTailnet(forwardedFor) ? forwardedFor : null,
+      owner: identity.owner, nodes: ctx.services.tailnetNodes, rows: devices, whois: ctx.services.whoisNode,
+    });
+  }
   // the lock and a log that cannot be read decide here, once, for every way in (server/lock-boundary.ts)
   const safety = ctx.services.safetyLog;
   // this PC's own window may still read the lock and ask for an unlock: both only ask the screen, which grants
@@ -628,6 +640,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     if (pendingRedemptions !== undefined) return handlePendingRequest(request, pathname, pendingRedemptions, access);
   }
   if (pathname === JOIN_SEEN_PATH) return handleJoinSeen(request, ctx.services.joins, access, joinViewer);
+  if (pathname === "/api/devices/tailnet-nodes" || pathname.startsWith("/api/devices/tailnet-nodes/")) {
+    try {
+      return await handleTailnetNodeRequest(request, pathname, {
+        nodes: ctx.services.tailnetNodes, rows: devices, ownWindow: ownWindow && !funnel, locked: safety?.state().locked === true,
+      });
+    } catch (error) { return errorResponse(error); }
+  }
   if (pathname === "/api/devices" || pathname.startsWith("/api/devices/")) {
     try {
       // one device, or all of them: the registry names what was revoked, and the cleanup follows its ids

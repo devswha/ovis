@@ -38,6 +38,8 @@ import { CLEAR_LEGACY_DEVICE_COOKIE, COOKIE_MAX_AGE_SECONDS, DEVICE_COOKIE_CLEAR
 import { badRequest, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { privateStateRefusal, writePrivateState } from "./private-state.ts";
+import { STABLE_NODE_ID } from "./tailscale.ts";
+import type { TailnetNodes } from "./tailnet-nodes.ts";
 
 /** How long a pairing code pairs new devices. */
 export const CODE_TTL_MS = 10 * 60_000;
@@ -215,6 +217,8 @@ export interface StoredDevice {
   carried_notice?: string;
   /** the account removals of its key that its pairing on this PC knew, and stands over (P13) */
   paired_over?: string[];
+  /** the Tailscale StableNodeIDs its own credential arrived from, oldest first: removing the row keeps them out (tailnet-nodes.ts) */
+  tailnet_nodes?: string[];
 }
 
 /**
@@ -363,6 +367,7 @@ export function readDeviceRegistry(path: string, opensAll = accountOpensAll()): 
       && (!opensAll || (d.held === undefined || (typeof d.held === "string" && /^[0-9a-f]{32}$/.test(d.held)))
         && (d.carried_notice === undefined || (typeof d.carried_notice === "string" && /^[0-9a-f]{32}$/.test(d.carried_notice))))
       && (d.paired_over === undefined || (Array.isArray(d.paired_over) && d.paired_over.every((id) => typeof id === "string")))
+      && (d.tailnet_nodes === undefined || (Array.isArray(d.tailnet_nodes) && d.tailnet_nodes.every((id) => typeof id === "string" && STABLE_NODE_ID.test(id))))
       )) return { kind: "bad" };
   // an origin that cannot be read is no age (P22): the row stays, without it
   const devices = (parsed.devices as StoredDevice[]).map((d) => d.origin === undefined || isRowOrigin(d.origin) ? d
@@ -492,6 +497,8 @@ function describe(error: unknown): string {
 }
 /** How many keys may hold a reservation of one code at once (T71). */
 export const PENDING_PER_CODE = 5;
+/** How many tailnet nodes a row keeps: a phone's node changes only when it is set up again. */
+const TAILNET_NODES_PER_ROW = 8;
 
 export class DeviceStore {
   private devices: StoredDevice[] = [];
@@ -2803,11 +2810,59 @@ export class DeviceStore {
     this.journal?.decide(id);
   }
 
+  /** The nodes the owner's tailnet requests are checked against (tailnet-nodes.ts); none on a store that has none. */
+  attachTailnetNodes(nodes: TailnetNodes): void { this.tailnet = nodes; }
+  private tailnet: TailnetNodes | null = null;
+
+  /** A row's credential arrived from the tailnet node `nodeId`: kept on the row, at its first use and each change. */
+  noteTailnetNode(rowId: string, nodeId: string): void {
+    const device = this.devices.find((d) => d.id === rowId);
+    if (this.error !== null || device === undefined || device.tailnet_nodes?.includes(nodeId)) return;
+    const updated = { ...device, tailnet_nodes: [...device.tailnet_nodes ?? [], nodeId].slice(-TAILNET_NODES_PER_ROW) };
+    const next = this.devices.map((d) => d === device ? updated : d);
+    try {
+      this.save(next);
+      this.devices = next;
+    } catch (error) { console.warn(`[devices] the tailnet node of ${rowId} was not saved: ${describe(error)}`); }
+  }
+
+  tailnetRowsOf(nodeId: string): string[] {
+    return this.devices.filter((d) => d.tailnet_nodes?.includes(nodeId)).map((d) => d.id);
+  }
+
+  /**
+   * Blocks tailnet nodes, each journalled first (P24): an entry or a block that cannot be written throws, and the
+   * removal it belongs to does not happen. `row`: the row whose removal blocks them, for the journal.
+   */
+  keepOutTailnetNodes(nodes: readonly { readonly id: string; readonly hostname?: string }[], row: string | null = null): string[] {
+    const tailnet = this.tailnet;
+    if (tailnet === null) return [];
+    const fresh = nodes.filter((node) => !tailnet.isBlocked(node.id));
+    if (fresh.length === 0) return [];
+    for (const node of fresh) this.journalEvent({ kind: "tailnet", how: "block", key: null, no: null, row, label: `${node.hostname ?? tailnet.hostnameOf(node.id)} · ${node.id}`, by: null, account: null });
+    return tailnet.block(fresh);
+  }
+
+  /** Allow on this PC's own window: the node is let in by its login again, journalled first. */
+  allowTailnetNode(id: string): void {
+    const tailnet = this.tailnet;
+    if (tailnet === null) throw new Error("This PC keeps no Tailscale devices out.");
+    this.journalEvent({ kind: "tailnet", how: "allow", key: null, no: null, row: null, label: `${tailnet.hostnameOf(id)} · ${id}`, by: null, account: null });
+    tailnet.allow(id);
+  }
+
+  private keepOutNodesOf(rows: readonly StoredDevice[]): void {
+    const ids = [...new Set(rows.flatMap((d) => d.tailnet_nodes ?? []))];
+    this.keepOutTailnetNodes(ids.map((id) => ({ id })), rows[0]?.id ?? null);
+  }
+
   revoke(id: string, by: DeviceRemovedEvent["by"] = "pc"): boolean {
     this.assertWritable();
     this.resumeRevokeAll();
     const target = this.anyRow(id);
     if (!target) return false;
+    // the nodes its credential came from are kept out before the row goes: a block not written removes nothing
+    this.keepOutNodesOf(this.devices.filter((d) => d.id === id || (target.relay_public_key !== undefined && d.relay_public_key === target.relay_public_key)));
     if (this.evidence !== null) {
       const key = target.relay_public_key;
       const rows = this.devices.filter((d) => d === target || (key !== undefined && d.relay_public_key === key));
@@ -2842,6 +2897,7 @@ export class DeviceStore {
     const key = named !== undefined ? named.relay_public_key : isRelayPublicKey(input.target) ? input.target : undefined;
     if (named === undefined && key === undefined) return { refused: "unknown" };
     const gone = this.devices.filter((d) => d === named || (key !== undefined && d.relay_public_key === key));
+    this.keepOutNodesOf(gone);
     const now = Date.now();
     const evidence = this.evidence;
     const denied = this.deny(key === undefined ? [] : [key], () => {
@@ -2904,6 +2960,9 @@ export class DeviceStore {
    */
   revokeAll(user?: string): string[] {
     this.assertWritable();
+    // every tailnet node seen so far, and every one a row's credential came from, stays out with them
+    const nodes = new Set([...this.tailnet?.seenIds() ?? [], ...this.devices.flatMap((d) => d.tailnet_nodes ?? [])]);
+    this.keepOutTailnetNodes([...nodes].map((id) => ({ id })));
     if (this.revokeAllIntent !== null) return this.revokeAllInOrder(this.revokeAllIntent, user);
     this.endAccountRows("revoke_all");
     this.tombstone(this.devices, Date.now());

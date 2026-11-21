@@ -30,6 +30,7 @@ export const DISPATCH_MUTATIONS = {
   POST: [
     ...Object.values(RELAY_CONTROLS), ...LOCAL_DRIVE_POSTS,
     "/api/devices/pair", "/api/devices/pair/start", "/api/devices/pair/cancel", "/api/devices/revoke-all", "/api/devices/joins/seen",
+    "/api/devices/tailnet-nodes/block", "/api/devices/tailnet-nodes/answer",
     "/api/account/link", "/api/account/enroll", "/api/account/introduce", "/api/account/records",
     "/api/account/relay-account", "/api/account/one-press", "/api/account/pc-proof", "/api/alerts/webhook", "/api/alerts/webhook/test",
     "/api/push/subscribe", "/api/push/status", "/api/push/test", "/api/runtime",

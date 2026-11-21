@@ -1198,6 +1198,8 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/relay") return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
   // the demo is this PC's own window, with no account join waiting
   if (path === "/api/relay/joins") return json({ joins: [] }, 200, { "cache-control": "no-store" });
+  // nor any Tailscale device kept out or asking to get back in (server/tailnet-nodes.ts)
+  if (path === "/api/devices/tailnet-nodes") return json({ pending: null, nodes: [] }, 200, { "cache-control": "no-store" });
   if (path === "/api/relay/start" || path === "/api/relay/stop" || path === "/api/relay/offer" || path === "/api/relay/reset-identity"
     || path === "/api/relay/link" || path === "/api/relay/link/close" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel" || path === "/api/relay/direct" || path === "/api/relay/join") {
     if (method !== "POST") return error("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
