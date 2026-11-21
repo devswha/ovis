@@ -1,6 +1,6 @@
 import { DRAIN_WAIT_MS, REPLY_WAIT_MS, SIGNAL_END_WAIT_MS } from "../model/deadlines.ts";
 import type { ColorDepth, Host, HostEnd, HostSize, ProbeResult } from "./index.ts";
-import { emptyProbe, PROBE_QUERY, ReplyFilter, withReply } from "./probe.ts";
+import { DISPLAY_QUERY, emptyProbe, PROBE_QUERY, ReplyFilter, withReply } from "./probe.ts";
 
 /**
  * What `enter` turns on, in order, after raw mode: the alternate screen, the cursor hidden, focus
@@ -67,6 +67,7 @@ export function guardedHost(port: TerminalPort): Host {
   let state: "idle" | "entered" | "left" = "idle";
   let rawOn = false;
   let modesOn = false;
+  let watchingDisplay = false;
   let gone = false;
   let ending = false;
   let entering = false;
@@ -174,7 +175,7 @@ export function guardedHost(port: TerminalPort): Host {
   const take = (chunk: Uint8Array) => {
     if (state !== "entered") return;
     if (phase !== "probing" && phase !== "late") { deliver(chunk); return; }
-    const taken = filter.feed(chunk, port.now());
+    const taken = filter.feed(chunk, port.now(), phase === "late" && watchingDisplay);
     if (phase === "probing") for (const reply of taken.replies) probeResult = withReply(probeResult, reply);
     if (taken.rest) {
       if (phase === "probing") finishProbe(true);
@@ -195,7 +196,7 @@ export function guardedHost(port: TerminalPort): Host {
     // a write error that is not gone is thrown once the terminal is given back, never before
     let failed: { error: unknown } | null = null;
     if (modesOn) {
-      try { send(encoder.encode(LEAVE)); } catch (error) { failed = { error }; }
+      try { send(encoder.encode(watchingDisplay ? `\x1b[?2031l${LEAVE}` : LEAVE)); } catch (error) { failed = { error }; }
     }
     modesOn = false;
     if (rawOn) {
@@ -280,6 +281,16 @@ export function guardedHost(port: TerminalPort): Host {
       }
       if (phase === "probing") cancelProbeTimer = port.timer(REPLY_WAIT_MS, () => finishProbe(false));
       return probePromise;
+    },
+
+    watchDisplay() {
+      if (state !== "entered" || watchingDisplay) return;
+      watchingDisplay = true;
+      send(encoder.encode("\x1b[?2031h"));
+    },
+
+    refreshDisplay() {
+      if (state === "entered") send(encoder.encode(DISPLAY_QUERY));
     },
 
     drain() {

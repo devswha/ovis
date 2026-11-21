@@ -465,6 +465,21 @@ describe("the start probe", () => {
     expect(count(host.output(), PROBE)).toBe(1);
   });
 
+  it("restores display notifications and passes late palette updates, but not late DA1, to the input decoder", async () => {
+    const host = new HeadlessHost();
+    const seen = inputs(host);
+    host.enter();
+    const probed = host.probe();
+    host.advance(500);
+    await probed;
+    host.watchDisplay();
+    host.watchDisplay();
+    const update = `${ESC}]11;#123456\x07`;
+    host.feed(`${update}${ESC}[?62c`);
+    host.leave();
+    expect([seen, count(host.output(), `${ESC}[?2031h`), host.output().endsWith(`${ESC}[?2031l${LEAVE}`)]).toEqual([[update], 1, true]);
+  });
+
   it("ends at leave and keeps its replies out of the input to the last", async () => {
     const host = new HeadlessHost();
     host.enter();
