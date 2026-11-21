@@ -754,6 +754,18 @@ try {
 
         await withPage(browser, base, off, "/", block("the Ovis mark at the drawer's head, and no drawer in the mode"), async (page) => {
           await page.locator(".pane-slot").first().waitFor();
+          await page.evaluate(() => {
+            const trace: string[] = [];
+            Object.assign(window, { inboxSwipeTrace: trace });
+            for (const name of ["back", "forward", "go", "pushState", "replaceState"] as const) {
+              const original = history[name].bind(history) as (...args: unknown[]) => unknown;
+              Object.defineProperty(history, name, { configurable: true, value: (...args: unknown[]) => {
+                trace.push(`${name} ${JSON.stringify(args)} ${location.href}`);
+                return original(...args);
+              } });
+            }
+            window.addEventListener("popstate", () => trace.push(`popstate ${location.href}`));
+          });
           await openDrawerForMark(page);
           assert.equal(await page.locator(".sidebar.is-open .inbox-foot-entry").count(), 0, "the drawer's foot has no Open agent inbox: the mark at its head is the way in");
           const mark = page.locator(".app-header #drawer-toggle.is-mark");
@@ -769,7 +781,15 @@ try {
           for (let x = 24; x <= 304; x += 40) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: 422 }] });
           await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
           await frames(page);
-          assert.equal(await page.locator("#workspace-drawer, .scrim.is-open").count(), 0, "a swipe from the edge opens no drawer in the mode");
+          const afterSwipe = await page.evaluate(() => ({
+            url: location.href,
+            trace: (window as unknown as { inboxSwipeTrace: string[] }).inboxSwipeTrace,
+            inbox: document.querySelector(".mode-inbox") !== null,
+            matches: [...document.querySelectorAll("#workspace-drawer, .scrim.is-open")].map((node) => ({
+              id: node.id, className: node.className, modal: node.getAttribute("aria-modal"),
+            })),
+          }));
+          assert.equal(afterSwipe.matches.length, 0, `a swipe from the edge opens no drawer in the mode: ${JSON.stringify(afterSwipe)}`);
           await page.locator(".mode-inbox").waitFor();
           pass(13, "the open drawer's head is the Ovis mark, named Open agent inbox, which opens the list, and its foot has no row for it; in the mode a swipe from the left edge opens no drawer");
         });

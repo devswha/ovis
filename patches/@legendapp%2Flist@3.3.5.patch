@@ -7,9 +7,18 @@ diff --git a/react.d.ts b/react.d.ts
 diff --git a/react.mjs b/react.mjs
 --- a/react.mjs
 +++ b/react.mjs
-@@ -1252,6 +1252,29 @@ function calculateOffsetWithOffsetPosition(ctx, offsetParam, params) {
+@@ -1251,7 +1251,38 @@ function calculateOffsetWithOffsetPosition(ctx, offsetParam, params) {
+   return offset;
  }
  
++// Notify Ovis around actual instant writes, including delayed scrollToEnd and row adjustments.
++// A before notification lets it see native movement not yet reported by a scroll event.
++function layoutScrollWrite(node, write) {
++  node.dispatchEvent(new Event("ovis:layout-scroll-start", { bubbles: true }));
++  try { write(); }
++  finally { node.dispatchEvent(new Event("ovis:layout-scroll-end", { bubbles: true })); }
++}
++
  // src/core/clampScrollOffset.ts
 +function scrollableMaxOffset(state) {
 +  var _a3, _b;
@@ -37,7 +46,7 @@ diff --git a/react.mjs b/react.mjs
  function clampScrollOffset(ctx, offset, scrollTarget) {
    const state = ctx.state;
    const contentSize = getContentSize(ctx);
-@@ -1260,7 +1283,9 @@ function clampScrollOffset(ctx, offset, scrollTarget) {
+@@ -1260,7 +1291,9 @@ function clampScrollOffset(ctx, offset, scrollTarget) {
      const baseMaxOffset = Math.max(0, contentSize - state.scrollLength);
      const viewOffset = scrollTarget == null ? void 0 : scrollTarget.viewOffset;
      const extraEndOffset = typeof viewOffset === "number" && viewOffset < 0 ? -viewOffset : 0;
@@ -48,7 +57,7 @@ diff --git a/react.mjs b/react.mjs
      clampedOffset = Math.min(offset, maxOffset);
    }
    clampedOffset = Math.max(0, clampedOffset);
-@@ -4783,10 +4808,35 @@ function updateItemSizes(ctx, measurement) {
+@@ -4783,10 +4816,35 @@ function updateItemSizes(ctx, measurement) {
      updateItemSizesBatch(ctx, [measurement]);
    }
  }
@@ -84,7 +93,7 @@ diff --git a/react.mjs b/react.mjs
    for (const measurement of measurements) {
      const ownsMeasuredItem = measurement.containerId === void 0 || peek$(ctx, `containerItemKey${measurement.containerId}`) === measurement.itemKey;
      if (ownsMeasuredItem) {
-@@ -5668,7 +5718,10 @@ function sortDOMElements(container, indexByElement) {
+@@ -5668,7 +5726,10 @@ function sortDOMElements(container, indexByElement) {
            break;
          }
        }
@@ -96,7 +105,8 @@ diff --git a/react.mjs b/react.mjs
          container.insertBefore(element, nextStableElement);
        } else {
          container.appendChild(element);
-@@ -5716,32 +5769,19 @@
+@@ -5715,35 +5776,22 @@ function findLIS(arr) {
+ // src/hooks/useDOMOrder.ts
  function useDOMOrder(ref) {
    const ctx = useStateContext();
 -  const debounceRef = useRef(void 0);
@@ -117,14 +127,6 @@ diff --git a/react.mjs b/react.mjs
 -            }
 -          }
 -          sortDOMElements(parent, indexByElement);
--        }
--        debounceRef.current = void 0;
--      }, 500);
--    });
--    return () => {
--      unsubscribe();
--      if (debounceRef.current !== void 0) {
--        clearTimeout(debounceRef.current);
 +  const [version, invalidate] = useReducer((value) => value + 1, 0);
 +  useEffect(() => listen$(ctx, "lastPositionUpdate", invalidate), [ctx]);
 +  useLayoutEffect(() => {
@@ -136,7 +138,14 @@ diff --git a/react.mjs b/react.mjs
 +        const index = peek$(ctx, `containerItemIndex${containerId}`);
 +        if (element && index !== void 0) {
 +          indexByElement.set(element, index);
-+        }
+         }
+-        debounceRef.current = void 0;
+-      }, 500);
+-    });
+-    return () => {
+-      unsubscribe();
+-      if (debounceRef.current !== void 0) {
+-        clearTimeout(debounceRef.current);
        }
 -    };
 -  }, [ctx]);
@@ -144,7 +153,37 @@ diff --git a/react.mjs b/react.mjs
 +    }
 +  }, [ctx, version]);
  }
-@@ -6425,8 +6465,11 @@ function ScrollAdjust() {
+ function useFreshDataTransitionVisibility(readyToRender, transitionEpoch) {
+   const [completedTransitionEpoch, setCompletedTransitionEpoch] = useState(transitionEpoch);
+@@ -6100,7 +6148,8 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+       } else {
+         options.top = clampedOffset;
+       }
+-      target.scrollTo(options);
++      if (animated) target.scrollTo(options);
++      else layoutScrollWrite(target, () => target.scrollTo(options));
+     },
+     [getMaxScrollOffset, getScrollTarget, horizontal, isWindowScroll]
+   );
+@@ -6120,7 +6169,7 @@ var ListComponentScrollView = forwardRef(function ListComponentScrollView2({
+         if (!target || typeof target.scrollBy !== "function") {
+           return;
+         }
+-        target.scrollBy({ behavior: "auto", left: x, top: y });
++        layoutScrollWrite(target, () => target.scrollBy({ behavior: "auto", left: x, top: y }));
+       },
+       scrollTo: (options) => {
+         const { x = 0, y = 0, animated = true } = options;
+@@ -6384,7 +6433,7 @@ function getScrollAdjustTarget(ctx, contentNode) {
+   return scrollElement ? { contentNode: resolvedContentNode, scrollElement } : null;
+ }
+ function scrollAdjustBy(el, left, top) {
+-  el.scrollBy({ behavior: "auto", left, top });
++  layoutScrollWrite(el, () => el.scrollBy({ behavior: "auto", left, top }));
+ }
+ function ScrollAdjust() {
+   const ctx = useStateContext();
+@@ -6425,8 +6474,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -157,7 +196,7 @@ diff --git a/react.mjs b/react.mjs
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7194,10 +7237,12 @@ function scrollToEnd(ctx, options) {
+@@ -7194,10 +7246,12 @@ function scrollToEnd(ctx, options) {
    }
    const paddingBottom = state.props.stylePaddingBottom || 0;
    const footerSize = peek$(ctx, "footerSize") || 0;
@@ -171,15 +210,15 @@ diff --git a/react.mjs b/react.mjs
      viewPosition: 1
    });
    return true;
-@@ -7288,6 +7333,7 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+@@ -7286,6 +7340,7 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+     }
+   };
    const startImperativeScroll = (resolve) => {
 +    state.mvcpAnchorLock = void 0;
      state.scheduledWork.cancel("imperativeScrollReady");
      const token = ++imperativeScrollToken;
      settlePendingImperativeScroll(state);
-     state.pendingScrollResolve = resolve;
-     return token;
-@@ -7436,15 +7482,24 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+@@ -7436,15 +7491,24 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
          params.index >= 0 ? () => isScrollToIndexReady(params.index) : void 0
        );
      },

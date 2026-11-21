@@ -1,3 +1,4 @@
+import { layoutScroll } from "../lib/layoutScroll.ts";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { createPortal, flushSync } from "react-dom";
 import {
@@ -1260,7 +1261,7 @@ function TerminalSnapshot({ text }: { text: string }) {
     if (pinned !== null || !followOnRelease.current) return;
     followOnRelease.current = false;
     const view = section.current?.closest<HTMLElement>(".chat-view");
-    if (view) view.scrollTop = view.scrollHeight;
+    if (view) layoutScroll(view, () => { view.scrollTop = view.scrollHeight; });
   }, [pinned]);
   return <section ref={section} className="chat-terminal-snapshot" aria-label={t("Terminal")} data-newer-read={shown !== text ? "" : undefined}>
     <div className="chat-terminal-snapshot-head"><span><SquareTerminal aria-hidden="true" />{t("Terminal")}</span>
@@ -1940,7 +1941,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const node = scroller.current;
     if (node !== null && stickToBottom.current && !selecting.current) {
       if (state.source === "conversation") timeline.current?.scrollToEnd({ animated: false });
-      else node.scrollTop = node.scrollHeight;
+      else layoutScroll(node, () => { node.scrollTop = node.scrollHeight; });
     }
   }, [state, prompt, agentStatus, connected, ended]);
 
@@ -1967,7 +1968,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         // Put the view at the DOM end before paint. A deferred scroll to the list's measured
         // end could undo that write if some of the transcript is still unmeasured.
         dropPendingListScroll(timeline.current);
-        node.scrollTop = node.scrollHeight;
+        layoutScroll(node, () => { node.scrollTop = node.scrollHeight; });
         followed(node.scrollTop);
       }
       measureEndRef.current();
@@ -1986,7 +1987,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const node = scroller.current;
     if (node !== null && stickToBottom.current && !selecting.current) {
       if (timeline.current) timeline.current.scrollToEnd({ animated: false });
-      else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
+      else layoutScroll(node, () => node.scrollTo({ top: node.scrollHeight, behavior: "instant" }));
     }
   }, [faces]);
   useEffect(() => {
@@ -2104,7 +2105,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (layoutMoved && stickToBottom.current && !pagingAway.current && !manualLayout.current && !selecting.current
       && scrollbarPress.current === null && distanceFromBottom > READER_ALLOWANCE_PX) {
       if (!listEndPadded(node)) {
-        node.scrollTop = node.scrollHeight;
+        layoutScroll(node, () => { node.scrollTop = node.scrollHeight; });
         followed(node.scrollTop);
       }
       else if (scrollingUp && distanceFromBottom > LAYOUT_ALLOWANCE_PX) timeline.current?.scrollToEnd({ animated: false });
