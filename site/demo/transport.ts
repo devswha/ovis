@@ -1,6 +1,6 @@
 import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { resolveHerdrKeys } from "../../shared/herdr-keys.ts";
-import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PaneMoved, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, RelayStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeInventory, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
+import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicePairedSeenEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PaneMoved, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, RelayStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeInventory, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { PushSubscriptionStatus, RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
 import { nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
 import type { PullRequestCheckLog, PullRequestView } from "../../shared/pull-request.ts";
@@ -1128,6 +1128,16 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       else setTimeout(demoDevicePairs, DEVICE_PAIRS_AFTER_MS);
     }
     return json(startDemoPairing(), 200, { "cache-control": "no-store" });
+  }
+  if (path === "/api/devices/joins/seen") {
+    if (method !== "POST") return error("method_not_allowed", "use POST", 400);
+    if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
+    let body: { event_id?: unknown };
+    try { body = JSON.parse(String(init?.body ?? "{}")) as { event_id?: unknown }; } catch { return error("invalid_json", "The body is not JSON", 400); }
+    if (typeof body.event_id !== "string") return error("invalid_body", "event_id must be a join's event id", 400);
+    // seen in one window, gone from every demo window, as the PC tells its streams
+    emitSse({ type: "device-paired-seen", event_id: body.event_id } satisfies DevicePairedSeenEvent);
+    return json({ seen: true }, 200, { "cache-control": "no-store" });
   }
   if (path === "/api/account/status" && ACCOUNT_MEMBER) return json({ account: "demo-account", unlinked: [], removals: [], adds: [], blocked: [] }, 200, { "cache-control": "no-store" });
   if (DEVICE_STATE !== null) {
