@@ -103,7 +103,9 @@ async function open(text) {
     catch (err) { error.textContent = String(err?.message ?? err); }
     return;
   }
-  if (publicHttp(url) && !savedOrigins.some((saved) => new URL(saved).origin === url.origin) && warned !== url.href) {
+  // an unreadable saved address (kept on disk for its Forget) is no saved origin, and never stops this one
+  const savedOrigin = (saved) => { try { return new URL(saved).origin; } catch { return null; } };
+  if (publicHttp(url) && !savedOrigins.some((saved) => savedOrigin(saved) === url.origin) && warned !== url.href) {
     warned = url.href;
     error.textContent = t(
       `${url.host} is not on a tailnet or a home network, so plain http would send the pairing code and everything you type across the internet unencrypted. Use its https address, or open it again to go ahead.`,
