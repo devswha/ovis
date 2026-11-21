@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties, type ReactNode } from "react";
+import { useMemo, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { Inbox } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
@@ -12,7 +12,9 @@ import { agentName } from "../lib/runtimeMove.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 import { paneMark } from "../lib/sidebarAgents.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
-import { agentRowTitle } from "./AgentSidebar.tsx";
+import { useSettings } from "../lib/settings.ts";
+import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
+import { agentRowTitle, inboxRowTopic } from "./AgentSidebar.tsx";
 import { InboxAvatar } from "./InboxList.tsx";
 import { InboxRailBlank } from "./InboxRail.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
@@ -28,7 +30,7 @@ export interface ThreadProps {
   severalPcs: boolean;
 }
 
-function threadFacts({ machines, activity, machineId, pane, connection, watching, severalPcs }: ThreadProps, t: Translate) {
+function threadFacts({ machines, activity, machineId, pane, connection, watching, severalPcs }: ThreadProps, t: Translate, autoLabels: Readonly<Record<string, string>> | null) {
   const machine = machines.find((candidate) => candidate.id === machineId);
   const row = agentRoster(machines, { byActivity: false, seqs: activity.seqs, pinned: [] }).rest
     .find((candidate) => candidate.machine.id === machineId && candidate.entry.pane.pane_id === pane.pane_id);
@@ -37,7 +39,7 @@ function threadFacts({ machines, activity, machineId, pane, connection, watching
   const said = connection !== null ? t(connection === "connected" ? "Connected" : "Reconnecting…")
     : [watching ? t("View only") : null, severalPcs && machine ? machine.name : null, state].filter((part) => part !== null).join(" · ");
   return {
-    name: row ? agentRowTitle(row, false).title : displayPaneTitle(pane),
+    name: row ? inboxRowTopic(row, autoLabels) ?? agentRowTitle(row, false).title : displayPaneTitle(pane),
     kind: row?.entry.canonicalAgent ?? null,
     mark: row ? paneMark(row.entry) ?? "" : null,
     said,
@@ -46,8 +48,11 @@ function threadFacts({ machines, activity, machineId, pane, connection, watching
 
 export function ThreadTitle(props: ThreadProps) {
   const t = useT();
+  const { settings } = useSettings();
+  const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
+  const autoLabels = settings.autoTabNames ? firstLines : null;
   const { machines, activity, machineId, pane, connection, watching, severalPcs } = props;
-  const { name, kind, mark, said } = useMemo(() => threadFacts({ machines, activity, machineId, pane, connection, watching, severalPcs }, t), [machines, activity, machineId, pane, connection, watching, severalPcs, t]);
+  const { name, kind, mark, said } = useMemo(() => threadFacts({ machines, activity, machineId, pane, connection, watching, severalPcs }, t, autoLabels), [machines, activity, machineId, pane, connection, watching, severalPcs, t, autoLabels]);
   return (
     <div className="thread-title" title={name}>
       <InboxAvatar mark={mark} />
@@ -61,8 +66,11 @@ export function ThreadTitle(props: ThreadProps) {
 
 function ThreadChip(props: ThreadProps) {
   const t = useT();
+  const { settings } = useSettings();
+  const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
+  const autoLabels = settings.autoTabNames ? firstLines : null;
   const { machines, activity, machineId, pane, connection, watching, severalPcs } = props;
-  const { name, kind, mark, said } = useMemo(() => threadFacts({ machines, activity, machineId, pane, connection, watching, severalPcs }, t), [machines, activity, machineId, pane, connection, watching, severalPcs, t]);
+  const { name, kind, mark, said } = useMemo(() => threadFacts({ machines, activity, machineId, pane, connection, watching, severalPcs }, t, autoLabels), [machines, activity, machineId, pane, connection, watching, severalPcs, t, autoLabels]);
   return (
     <div className="thread-chip" title={name}>
       <InboxAvatar mark={mark} />
