@@ -23,6 +23,8 @@ import { DeviceStore, folderTombstones, mergeAccountTombstones, readDeviceRegist
 import { PreferenceStore } from "./preferences.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
 import { readBrowserToolSetting } from "./agent-launch.ts";
+import { BROWSER_TOKENS_DIR } from "../shared/browser-broker.ts";
+import { entryCommand } from "./entries.ts";
 import { SeenStore } from "./seen.ts";
 import type { SeenFinish } from "../shared/seen.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
@@ -369,7 +371,15 @@ export function createServer(
   if (options.profile === "machine") devices.closeGate();
   const preferences = new PreferenceStore(stateDir);
   readOmpHeldFilesSetting(() => preferences.get().settings.ompHeldFiles === true);
-  readBrowserToolSetting(() => preferences.get().settings.agentBrowserTools, join(stateDir, "browser tools"));
+  // the desktop app names its built-in browser's socket (app/electron/src/children.ts serverEnv); the agent runs this
+  // same program's browser-mcp entry (server/browser-mcp.ts)
+  const browserSocket = process.env["OVIS_DESKTOP_APP"] === "1" ? process.env["OVIS_BROWSER_SOCKET"] || null : null;
+  readBrowserToolSetting(() => preferences.get().settings.agentBrowserTools, join(stateDir, "browser tools"), {
+    socket: browserSocket,
+    enabled: () => preferences.get().settings.builtInBrowser === true,
+    tokensDir: join(stateDir, BROWSER_TOKENS_DIR),
+    command: entryCommand("browser-mcp"),
+  });
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
   const stopPinBridge = capabilities().pins ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
   try {

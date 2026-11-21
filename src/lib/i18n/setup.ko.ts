@@ -87,4 +87,6 @@ export const SETUP_KO: Record<string, string> = {
   "Install another agent ({count})": "다른 에이전트 설치 ({count})",
   "None": "없음",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "에이전트가 다룰 수 있는 브라우저입니다. Ovis가 이 에이전트를 띄울 때 버전을 고정한 MCP 서버를 붙입니다. 그 브라우저는 따로 만든 프로필을 써서 내 로그인은 쓰지 않고, Ovis가 지켜보거나 막지 않습니다. 다음에 띄울 때부터 적용되고, 터미널에서 직접 띄운 에이전트는 바뀌지 않습니다.",
+  "Ovis built-in browser": "Ovis 내장 브라우저",
+  "The agent uses tabs of its own in this app's built-in browser, through a few tools Ovis defines: open, read, click, type, take a picture, list and close. Your blocked sites apply, and its tabs keep cookies apart from yours. Applies from the next start; an agent started from a terminal is not changed.": "에이전트가 이 앱의 내장 브라우저에서 자기 탭을 씁니다. Ovis가 정한 도구 몇 개만 씁니다: 열기, 읽기, 클릭, 입력, 그림 찍기, 목록, 닫기. 차단한 사이트가 그대로 적용되고, 에이전트 탭의 쿠키는 내 탭과 따로 보관됩니다. 다음 실행부터 적용되며, 터미널에서 직접 띄운 에이전트는 바뀌지 않습니다.",
 };

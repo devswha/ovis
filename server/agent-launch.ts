@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
 import { join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { freeAgentName } from "./agent-name.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { isShellAgentKind, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
@@ -8,7 +8,7 @@ import { agentStart, HerdrError, sessionSnapshot } from "./herdr/client.ts";
 import { requestFault } from "./http.ts";
 import { agentStartArgs } from "./claude-settings-file.ts";
 import { DSH_EFFORTS, launchArgsFault } from "../shared/launch-rules.ts";
-import { browserToolArgs, browserToolChoices, browserToolConfig, isBrowserToolAgent, withBrowserToolArgs } from "../shared/browser-tools.ts";
+import { BUILT_IN_BROWSER_TOOL, browserToolArgs, browserToolChoices, browserToolConfig, isBrowserToolAgent, withBrowserToolArgs, type BuiltInBrowserLaunch } from "../shared/browser-tools.ts";
 import { hcMachine } from "./herdr-core/runtime.ts";
 import { userHome } from "./user-home.ts";
 
@@ -80,30 +80,160 @@ async function startDshTui(paneId: string, args: string[], options: { locator?: 
   }
 }
 
-let browserTools: { read: () => unknown; dir: string } | null = null;
+interface BuiltInBrowserHost {
+  /** the desktop app's socket for its built-in browser (OVIS_BROWSER_SOCKET), null outside the desktop app */
+  socket: string | null;
+  /** whether the shared Built-in browser setting is on */
+  enabled: () => boolean;
+  /** where each pane's token goes (shared/browser-broker.ts BROWSER_TOKENS_DIR) */
+  tokensDir: string;
+  /** the server's own program and the arguments that run its `browser-mcp` entry */
+  command: string[];
+}
 
-/** Where the launch reads the shared `agentBrowserTools` setting from, and the folder its MCP config files go in. */
-export function readBrowserToolSetting(read: () => unknown, dir: string): void {
-  browserTools = { read, dir: resolve(dir) };
+let browserTools: { read: () => unknown; dir: string; builtIn: BuiltInBrowserHost | null } | null = null;
+
+/**
+ * Where the launch reads the shared `agentBrowserTools` setting from, the folder its MCP config files go in, and what
+ * the desktop app's built-in browser needs (null: never offered).
+ */
+export function readBrowserToolSetting(read: () => unknown, dir: string, builtIn: BuiltInBrowserHost | null = null): void {
+  browserTools = { read, dir: resolve(dir), builtIn };
+}
+
+/** writes `text` at `file` through a new file renamed over it (only the user can read it): a link there is replaced, never written through */
+function writeAnew(file: string, text: string): void {
+  const staged = `${file}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(staged, text, { flag: "wx", mode: 0o600 });
+    renameSync(staged, file);
+  } catch (error) {
+    rmSync(staged, { force: true });
+    throw error;
+  }
 }
 
 /**
- * `args` with the browser tool chosen for this agent, if any (shared/browser-tools.ts). Claude Code and Copilot read
- * it from a file in this PC's state folder, so an agent another machine of the core starts gets none: it would look
- * for the file there.
+ * A pane's token for the built-in browser, under a key made for this launch (shared/browser-broker.ts): the token file
+ * and, beside it, the pane that owns it. A pane moved keeps its key and only that owner changes, so a later pane given
+ * the old id never meets this agent's token. The app takes calls only while the token is there.
  */
-export function withBrowserTool(kind: string, args: string[] | undefined, platform: string): string[] | undefined {
+function builtInLaunch(host: BuiltInBrowserHost, paneId: string): (BuiltInBrowserLaunch & { key: string }) | null {
+  // no socket where the app said it would be (the app not up): the agent starts without the tool, and no token is written
+  if (host.socket === null || !host.enabled() || !/^[A-Za-z0-9_-]{1,120}$/.test(paneId) || !existsSync(host.socket)) return null;
+  const key = randomBytes(16).toString("hex");
+  const tokenFile = join(host.tokensDir, `${key}.token`);
+  if ([host.socket, tokenFile, ...host.command].some((part) => part.includes("'"))) return null;
+  // the pane's agent started anew: its earlier tokens go
+  forgetBuiltInBrowserToken(paneId);
+  mkdirSync(host.tokensDir, { recursive: true, mode: 0o700 });
+  builtInGrantedAt.set(key, Date.now());
+  writeAnew(join(host.tokensDir, `${key}.pane`), paneId);
+  writeAnew(tokenFile, randomBytes(32).toString("base64url"));
+  return { command: host.command, socket: host.socket, tokenFile, key };
+}
+
+/**
+ * When this server issued or moved each key's token, by the clock a snapshot's asking time is read from (Date.now()):
+ * a key not here is older than every snapshot this server asked for.
+ */
+const builtInGrantedAt = new Map<string, number>();
+
+/** each token key with the pane that owns it now */
+function builtInOwners(tokensDir: string): { key: string; pane: string }[] {
+  let names: string[];
+  try {
+    names = readdirSync(tokensDir);
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const key = /^([A-Za-z0-9_-]{1,120})\.pane$/.exec(name)?.[1];
+    if (key === undefined) return [];
+    try {
+      return [{ key, pane: readFileSync(join(tokensDir, name), "utf8").trim() }];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** removes a launch's token, its owner and the agent config made for it */
+function dropBuiltInKey(host: BuiltInBrowserHost, key: string): void {
+  builtInGrantedAt.delete(key);
+  for (const name of [`${key}.token`, `${key}.pane`]) rmSync(join(host.tokensDir, name), { force: true });
+  if (!browserTools) return;
+  let configs: string[];
+  try {
+    configs = readdirSync(browserTools.dir);
+  } catch {
+    return;
+  }
+  for (const name of configs) if (name.endsWith(`-${key}.json`)) rmSync(join(browserTools.dir, name), { force: true });
+}
+
+/** Takes back a pane's token for the built-in browser: its agent's calls stop being answered at once. */
+export function forgetBuiltInBrowserToken(paneId: string): void {
+  const host = browserTools?.builtIn;
+  if (!host) return;
+  for (const { key, pane } of builtInOwners(host.tokensDir)) if (pane === paneId) dropBuiltInKey(host, key);
+}
+
+/**
+ * Takes back the tokens of panes not in a snapshot asked for at `askedAt` (one that ended while the server was not running
+ * heard no end). A token issued or moved since the snapshot was asked for is newer than it, and kept.
+ */
+export function keepBuiltInBrowserTokens(paneIds: ReadonlySet<string>, askedAt: number): void {
+  const host = browserTools?.builtIn;
+  if (!host) return;
+  const owners = builtInOwners(host.tokensDir);
+  for (const { key, pane } of owners) {
+    const at = builtInGrantedAt.get(key);
+    if (!paneIds.has(pane) && (at === undefined || at < askedAt)) dropBuiltInKey(host, key);
+  }
+  // a token with no pane beside it is no launch's (the app answers none): it goes too
+  const keys = new Set(owners.map(({ key }) => key));
+  try {
+    for (const name of readdirSync(host.tokensDir)) {
+      const key = /^([A-Za-z0-9_-]{1,120})\.token$/.exec(name)?.[1];
+      if (key !== undefined && !keys.has(key) && !builtInGrantedAt.has(key)) rmSync(join(host.tokensDir, name), { force: true });
+    }
+  } catch {}
+}
+
+/** A pane moved (herdr gave it another id): its agent keeps its token, now owned by the new id. */
+export function moveBuiltInBrowserToken(from: string, to: string): void {
+  const host = browserTools?.builtIn;
+  if (!host || !/^[A-Za-z0-9_-]{1,120}$/.test(to)) return;
+  for (const { key, pane } of builtInOwners(host.tokensDir)) {
+    if (pane !== from) continue;
+    builtInGrantedAt.set(key, Date.now());
+    writeAnew(join(host.tokensDir, `${key}.pane`), to);
+  }
+}
+
+export function withBrowserTool(kind: string, args: string[] | undefined, platform: string, paneId?: string): string[] | undefined {
   if (browserTools === null || !isBrowserToolAgent(kind)) return args;
   const tool = browserToolChoices(browserTools.read())[kind];
   if (tool === undefined) return args;
+  let builtIn: (BuiltInBrowserLaunch & { key: string }) | undefined;
+  if (tool === BUILT_IN_BROWSER_TOOL) {
+    // the app's socket and the token are this PC's: an agent another machine of the core starts cannot reach them
+    const launch = browserTools.builtIn !== null && paneId !== undefined && hcMachine() === null ? builtInLaunch(browserTools.builtIn, paneId) : null;
+    if (launch === null) {
+      console.warn(`browser tool: the built-in browser is not added to ${kind}: it is off, or this server does not run in the desktop app`);
+      return args;
+    }
+    builtIn = launch;
+  }
   let file = "";
   if (kind !== "codex") {
     if (hcMachine() !== null) {
       console.warn(`browser tool: not added to ${kind}, which starts on another machine than this PC's config file`);
       return args;
     }
-    file = join(browserTools.dir, `${kind}-${tool}.json`);
-    const config = browserToolConfig(kind, tool, platform);
+    file = join(browserTools.dir, builtIn === undefined ? `${kind}-${tool}.json` : `${kind}-${tool}-${builtIn.key}.json`);
+    const config = browserToolConfig(kind, tool, platform, builtIn);
     if (!existsSync(file) || readFileSync(file, "utf8") !== config) {
       mkdirSync(browserTools.dir, { recursive: true, mode: 0o700 });
       // a new file renamed over the old one: a link left at that name is replaced, never written through
@@ -117,7 +247,7 @@ export function withBrowserTool(kind: string, args: string[] | undefined, platfo
       }
     }
   }
-  return withBrowserToolArgs(args ?? [], browserToolArgs(kind, tool, platform, file));
+  return withBrowserToolArgs(args ?? [], browserToolArgs(kind, tool, platform, file, builtIn));
 }
 
 export async function agentLaunch(paneId: string, agent: AgentPayload, launched?: (pid: number) => void, locator?: ShellAgentLocator, options: { platform?: string; settingsDir?: string; home?: string } = {}): Promise<{ agent_started: true } | { agent_started: false; error: { code: string; message: string } }> {
@@ -136,7 +266,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
     else {
       const given = typeof agent.name === "string" && agent.name.length > 0 ? agent.name : null;
       // on Windows a Claude Code's inline JSON --settings goes as a file's path (server/claude-settings-file.ts)
-      const launchArgs = withBrowserTool(kind, args, options.platform ?? process.platform);
+      const launchArgs = withBrowserTool(kind, args, options.platform ?? process.platform, paneId);
       const startArgs = launchArgs === undefined ? undefined : agentStartArgs(kind, launchArgs, { platform: options.platform, dir: options.settingsDir });
       // herdr refuses a name another agent holds. Two creations at once can pick the same
       // free one: the refused one picks again. It also refuses a pane whose shell is not up

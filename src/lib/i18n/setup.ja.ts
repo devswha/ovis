@@ -87,4 +87,6 @@ export const SETUP_JA: Record<string, string> = {
   "Install another agent ({count})": "別のエージェントをインストール ({count})",
   "None": "なし",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "エージェントが操作できるブラウザです。Ovis がこのエージェントを起動するときに、バージョンを固定した MCP サーバーを追加します。そのブラウザは専用のプロフィールを使うため、あなたのログインは使われません。Ovis はそのブラウザを監視も制限もしません。次の起動から適用され、ターミナルから直接起動したエージェントは変わりません。",
+  "Ovis built-in browser": "Ovis 内蔵ブラウザー",
+  "The agent uses tabs of its own in this app's built-in browser, through a few tools Ovis defines: open, read, click, type, take a picture, list and close. Your blocked sites apply, and its tabs keep cookies apart from yours. Applies from the next start; an agent started from a terminal is not changed.": "エージェントはこのアプリの内蔵ブラウザーで自分のタブを使います。使えるのは Ovis が定めた少数のツールだけです: 開く、読む、クリック、入力、画像を撮る、一覧、閉じる。ブロックしたサイトがそのまま適用され、エージェントのタブの Cookie は自分のタブとは別に保存されます。次回の起動から適用され、ターミナルから起動したエージェントは変わりません。",
 };

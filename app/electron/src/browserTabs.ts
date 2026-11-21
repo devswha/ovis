@@ -84,11 +84,19 @@ export interface BrowserBounds {
   height: number;
 }
 
+/** an agent the broker answers: its launch's key and the pane that launch runs in now */
+export interface AgentGrant {
+  grant: string;
+  pane: string;
+}
+
 interface Tab {
   id: number;
   profile: BrowserProfile;
-  /** the pane whose agent opened it (browserBroker.ts); its tools see no other tab */
+  /** the pane whose agent opened it, as shown in the app; it follows the pane when herdr moves it */
   owner: string | null;
+  /** the launch whose agent opened it (its token's key, browserBroker.ts): its tools see no other tab */
+  grant: string | null;
   view: WebContentsView;
   allowed: Allowed | null;
   title: string;
@@ -177,7 +185,7 @@ export class BrowserTabs {
   }
 
   /** a tab of `profile` on `url`, or null when the address is refused or the tabs are at their limit */
-  open(url: string, profile: BrowserProfile, owner: string | null = null): number | null {
+  open(url: string, profile: BrowserProfile, owner: string | null = null, grant: string | null = null): number | null {
     // each profile has its own limit: a person's tabs never leave an agent without one, nor the other way round
     const sameProfile = [...this.tabs.values()].filter((tab) => tab.profile === profile).length;
     if (sameProfile >= MAX_BROWSER_TABS || !this.decide(url, null).allowed) return null;
@@ -186,7 +194,7 @@ export class BrowserTabs {
     const view = new WebContentsView({ webPreferences: { session: partition, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: false, safeDialogs: true } });
     // a page lays out at its view's size, drawn or not: one no person has placed yet gets a desktop window's
     view.setBounds({ x: 0, y: 0, ...DESKTOP_SIZE });
-    const tab: Tab = { id: this.nextId++, profile, owner: profile === "agent" ? owner : null, view, allowed: null, title: "", held: false };
+    const tab: Tab = { id: this.nextId++, profile, owner: profile === "agent" ? owner : null, grant: profile === "agent" ? grant : null, view, allowed: null, title: "", held: false };
     this.tabs.set(tab.id, tab);
     this.watch(tab);
     void view.webContents.loadURL(url).catch(() => {});
@@ -345,11 +353,11 @@ export class BrowserTabs {
   }
 
   /**
-   * An agent tab for `owner` on `url`: its id once the first address it commits is allowed, or null
+   * An agent tab for `agent` on `url`: its id once the first address it commits is allowed, or null
    * when it is refused, fails to load or the tabs are at their limit (and then it is gone).
    */
-  async openFor(owner: string, url: string): Promise<number | null> {
-    const id = this.open(url, "agent", owner);
+  async openFor(agent: AgentGrant, url: string): Promise<number | null> {
+    const id = this.open(url, "agent", agent.pane, agent.grant);
     const tab = id === null ? undefined : this.tabs.get(id);
     if (!tab) return null;
     const contents = tab.view.webContents;
@@ -374,14 +382,21 @@ export class BrowserTabs {
     return listed ? tab.id : null;
   }
 
-  ownTabs(owner: string): BrowserTab[] {
-    return this.list().filter((tab) => this.tabs.get(tab.id)?.owner === owner);
+  ownTabs(grant: string): BrowserTab[] {
+    return this.list().filter((tab) => this.tabs.get(tab.id)?.grant === grant);
   }
 
-  /** An owner's tab its tools may use now, or the reason they may not. */
-  agentTab(owner: string, id: number): AgentTab | string {
+  /** A launch's tabs now shown under `pane` (herdr moved its pane): its agent keeps them, a pane given the old id does not. */
+  reown(agent: AgentGrant): void {
+    let moved = false;
+    for (const tab of this.tabs.values()) if (tab.grant === agent.grant && tab.owner !== agent.pane) { tab.owner = agent.pane; moved = true; }
+    if (moved) this.tell();
+  }
+
+  /** A launch's tab its tools may use now, or the reason they may not. */
+  agentTab(grant: string, id: number): AgentTab | string {
     const tab = this.tabs.get(id);
-    if (!tab || tab.owner !== owner || tab.allowed === null) return "No such tab of yours: list them with browser_tabs.";
+    if (!tab || tab.grant !== grant || tab.allowed === null) return "No such tab of yours: list them with browser_tabs.";
     if (tab.held) return "The user has taken control of this tab: wait until they hand it back.";
     return { id, contents: tab.view.webContents, address: shownAddress(tab.allowed), shown: this.shown === id };
   }
@@ -478,7 +493,7 @@ export class BrowserTabs {
     contents.setWindowOpenHandler(({ url }) => {
       if (!this.tabs.has(tab.id)) return { action: "deny" };
       // a window the page opens is a tab of the same profile and, for an agent's, of the same pane
-      this.open(url, tab.profile, tab.owner);
+      this.open(url, tab.profile, tab.owner, tab.grant);
       this.tell();
       return { action: "deny" };
     });

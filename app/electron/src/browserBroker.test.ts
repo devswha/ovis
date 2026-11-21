@@ -55,7 +55,11 @@ beforeAll(async () => {
   if (!linux) return;
   root = mkdtempSync(join(tmpdir(), "ovis-browser-broker-"));
   mkdirSync(join(root, "tokens"));
-  for (const [pane, token] of Object.entries(tokens)) writeFileSync(join(root, "tokens", `${pane}.token`), token, { mode: 0o600 });
+  // each launch's token under its key, with its pane beside it (here the key is the pane's name)
+  for (const [pane, token] of Object.entries(tokens)) {
+    writeFileSync(join(root, "tokens", `${pane}.token`), token, { mode: 0o600 });
+    writeFileSync(join(root, "tokens", `${pane}.pane`), pane, { mode: 0o600 });
+  }
   site = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -162,6 +166,15 @@ describe.skipIf(!linux)("the built-in browser's agent socket in Electron", () =>
     });
     expect(JSON.parse(words((await call("b", "browser_tabs")).content))).toEqual([]);
     expect(words((await call("a", "browser_close", { tab: popup.id })).content)).toBe("Closed.");
+
+    // herdr moves a's pane: its agent keeps its tabs, and an agent in a new pane given a's old id sees none of them
+    writeFileSync(join(root, "tokens", "a.pane"), "a-moved");
+    expect(JSON.parse(words((await call("a", "browser_tabs")).content))).toEqual([expect.objectContaining({ id: tab.id })]);
+    const reused = "c".repeat(40);
+    writeFileSync(join(root, "tokens", "c.token"), reused, { mode: 0o600 });
+    writeFileSync(join(root, "tokens", "c.pane"), "a");
+    expect(JSON.parse(words((await callBroker(join(root, "socket", "broker.sock"), join(root, "tokens", "c.token"), "browser_tabs", {})).content))).toEqual([]);
+    expect(words((await callBroker(join(root, "socket", "broker.sock"), join(root, "tokens", "c.token"), "browser_snapshot", { tab: tab.id })).content)).toContain("No such tab of yours");
 
     await harness(`hold ${tab.id}`);
     expect(words((await call("a", "browser_snapshot", { tab: tab.id })).content)).toContain("taken control");

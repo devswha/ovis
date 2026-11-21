@@ -44,6 +44,8 @@ if (isConnectionScreen) {
   // the built-in browser's tabs (main.ts, browserTabs.ts): main answers only its own server's page, and
   // null while the setting is off. The page keeps the place a tab is drawn in and steers its own tabs
   contextBridge.exposeInMainWorld("ovisBrowser", {
+    // whether an agent can be given the built-in browser: not on Windows, which has no local-only socket for it yet
+    agentTools: process.platform !== "win32",
     current: (): Promise<unknown> => ipcRenderer.invoke("ovis:tabs"),
     onChange: (listener: (browser: unknown) => void): (() => void) => {
       const heard = (_event: unknown, browser: unknown) => listener(browser);

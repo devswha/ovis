@@ -59,11 +59,22 @@ interface Bridge {
   navigate?(id: number, url: string): Promise<boolean>;
   go?(id: number, step: "back" | "forward" | "reload" | "stop"): void;
   hold?(id: number, held: boolean): void;
+  agentTools?: boolean;
 }
 
 function bridge(): Bridge | undefined {
   const found = typeof window === "undefined" ? undefined : (window as Window & { ovisBrowser?: Partial<Bridge> }).ovisBrowser;
   return typeof found?.current === "function" && typeof found.onChange === "function" && typeof found.close === "function" ? found as Bridge : undefined;
+}
+
+/** whether this page is the desktop app's own (its built-in browser's bridge is there) */
+export function inDesktopApp(): boolean {
+  return bridge() !== undefined;
+}
+
+/** whether this desktop app can give an agent its built-in browser as a tool (no way in on Windows yet) */
+export function builtInBrowserForAgents(): boolean {
+  return bridge()?.agentTools === true;
 }
 
 const record = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;

@@ -2,7 +2,7 @@ import { Fragment, useContext, useEffect, useRef, useState, type ReactNode } fro
 import { CalendarClock, Check, ChevronDown, ChevronRight, ChevronUp, Compass, Cpu, Eye, EyeOff, Gauge, Globe, History, KeyRound, Network, Plus, RotateCw, Shield, ShieldCheck, SquareTerminal, Users, Zap } from "lucide-react";
 
 import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
-import { BROWSER_TOOL_IDS, BROWSER_TOOLS, browserToolCommand, isBrowserToolAgent, type BrowserToolAgent, type BrowserToolId } from "../../shared/browser-tools.ts";
+import { BROWSER_TOOL_IDS, BROWSER_TOOLS, BUILT_IN_BROWSER_TOOL, browserToolCommand, isBrowserToolAgent, type BrowserToolAgent, type BrowserToolId } from "../../shared/browser-tools.ts";
 import type { AgentIntegration, CLIProxyStatus, ProviderUsage, UsageProviderId } from "../../shared/protocol.ts";
 import type { UsageLoginRequest } from "../../shared/usage-login.ts";
 
@@ -16,6 +16,7 @@ import { loadIntegrations, outcomeFor, type IntegrationsResult } from "../lib/in
 import { lastSeen } from "../lib/lastSeen.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useSettings } from "../lib/settings.ts";
+import { builtInBrowserForAgents, inDesktopApp } from "../lib/desktopBrowser.ts";
 import { openSetupGuide } from "../lib/setupGuide.ts";
 import { canSignInAgain, glanceWindow, isHubAccount, isSignIn, meterText, moveInOrder, orderProviders, PROVIDER_MARK, PROVIDER_NAME, recordedBy, recordedNote, usageName, useStatuslineSwitch, useUsage, windowLabel } from "../lib/usage.ts";
 import { userErrorMessage, type UserError } from "../lib/userError.ts";
@@ -94,13 +95,23 @@ function BrowserToolRow({ agent }: { agent: BrowserToolAgent }) {
     const { [agent]: _was, ...rest } = settings.agentBrowserTools;
     update({ agentBrowserTools: next === "" ? rest : { ...rest, [agent]: next } });
   };
+  // the desktop app's built-in browser, offered while its setting is on and the app can let agents in (not on Windows yet)
+  const offered = BROWSER_TOOL_IDS.filter((known) => known !== BUILT_IN_BROWSER_TOOL || (settings.builtInBrowser && builtInBrowserForAgents()));
+  // a choice kept from where it was offered: on another device (a phone, a browser) this page cannot tell what the
+  // desktop app's server will do, so it shows it, not to be picked; in a desktop app that cannot let agents in it is none
+  const elsewhere = tool === BUILT_IN_BROWSER_TOOL && !offered.includes(tool) && !inDesktopApp();
+  const shown = tool !== undefined && (offered.includes(tool) || elsewhere) ? tool : undefined;
+  const builtIn = shown === BUILT_IN_BROWSER_TOOL;
   return (
     <SettingsRow icon={Globe} label={t("Browser tool")} htmlFor={id} wide
-      description={t("A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.")}
-      condition={tool === undefined ? undefined : <code className="settings-integration-command">{browserToolCommand(tool, "").join(" ")}</code>}>
-      <SettingsSelect id={id} value={tool ?? ""} onChange={(event) => choose(BROWSER_TOOL_IDS.find((known) => known === event.target.value) ?? "")}>
+      description={builtIn
+        ? t("The agent uses tabs of its own in this app's built-in browser, through a few tools Ovis defines: open, read, click, type, take a picture, list and close. Your blocked sites apply, and its tabs keep cookies apart from yours. Applies from the next start; an agent started from a terminal is not changed.")
+        : t("A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.")}
+      condition={shown === undefined ? undefined : <code className="settings-integration-command">{browserToolCommand(shown, "").join(" ")}</code>}>
+      <SettingsSelect id={id} value={shown ?? ""} onChange={(event) => choose(BROWSER_TOOL_IDS.find((known) => known === event.target.value) ?? "")}>
         <option value="">{t("None")}</option>
-        {BROWSER_TOOL_IDS.map((known) => <option key={known} value={known}>{BROWSER_TOOLS[known].name}</option>)}
+        {offered.map((known) => <option key={known} value={known}>{known === BUILT_IN_BROWSER_TOOL ? t("Ovis built-in browser") : BROWSER_TOOLS[known].name}</option>)}
+        {elsewhere && <option value={BUILT_IN_BROWSER_TOOL} disabled>{t("Ovis built-in browser")}</option>}
       </SettingsSelect>
     </SettingsRow>
   );

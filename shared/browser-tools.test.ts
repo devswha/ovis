@@ -44,3 +44,11 @@ describe("the browser tool chosen for an agent", () => {
     expect(withBrowserToolArgs([], ["--mcp-config", "/f"])).toEqual(["--mcp-config", "/f"]);
   });
 });
+
+describe("the built-in browser tool", () => {
+  it("is a choice kept like the others, and shows the server's own entry", () => {
+    expect(browserToolChoices({ claude: "ovis", copilot: "ovis", codex: "nope" })).toEqual({ claude: "ovis", copilot: "ovis" });
+    expect(browserToolCommand("ovis", "linux")).toEqual(["ovis-server", "browser-mcp"]);
+    expect(browserToolCommand("ovis", "win32", { command: ["C:/ovis/ovis-server.exe", "browser-mcp"], socket: "\\\\.\\pipe\\ovis-browser-u", tokenFile: "C:/s/t.token" })).toEqual(["C:/ovis/ovis-server.exe", "browser-mcp", "--socket", "\\\\.\\pipe\\ovis-browser-u", "--token-file", "C:/s/t.token"]);
+  });
+});

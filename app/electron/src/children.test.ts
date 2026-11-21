@@ -68,6 +68,12 @@ describe("environments", () => {
     for (const name of ["HERDR_PLUGIN_ROOT", "OVIS_MANAGED", "HERDR_SOCKET", "OVIS_TOKEN"]) expect(env).not.toHaveProperty(name);
   });
 
+  it("passes the built-in browser's socket only when the app names one, never one it was started with", () => {
+    const inherited = { OVIS_BROWSER_SOCKET: "/elsewhere/broker.sock" };
+    expect(serverEnv(inherited, { hc: "/hc", stateDir: "/s", port: 1 })).not.toHaveProperty("OVIS_BROWSER_SOCKET");
+    expect(serverEnv(inherited, { hc: "/hc", stateDir: "/s", port: 1, browserSocket: "/app/broker.sock" })).toHaveProperty("OVIS_BROWSER_SOCKET", "/app/broker.sock");
+  });
+
   it("drops a token set under its name from before the rename, which the server would take back", () => {
     const old = legacyName("OVIS_TOKEN")!;
     const env = serverEnv({ [old]: "t", [legacyName("OVIS_TELEMETRY")!]: "0" }, { hc: "/hc", stateDir: "/s", port: 1 });
