@@ -2843,7 +2843,10 @@ export class DeviceStore {
   keepOutTailnetNodes(nodes: readonly { readonly id: string; readonly hostname?: string }[], row: string | null = null): string[] {
     const tailnet = this.tailnet;
     if (tailnet === null) return [];
-    const fresh = nodes.filter((node) => !tailnet.isBlocked(node.id));
+    // an unreadable list cannot be written over: every Tailscale login stays out until it is fixed, as before
+    if (tailnet.unreadable) return [];
+    // only a saved block lets the removal go on: the fail-closed state after a failed write ends with this run
+    const fresh = nodes.filter((node) => !tailnet.holds(node.id));
     if (fresh.length === 0) return [];
     try {
       for (const node of fresh) this.journalEvent({ kind: "tailnet", how: "block", key: null, no: null, row, label: `${node.hostname ?? tailnet.hostnameOf(node.id)} · ${node.id}`, by: null, account: null });

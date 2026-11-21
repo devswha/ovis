@@ -103,6 +103,8 @@ export class TailnetNodes {
   private nodes: StoredTailnetNode[] = [];
   private readonly path: string;
   private failure: string | null = null;
+  /** the file itself could not be read: nothing is written over it, so no block can be saved this run */
+  readonly unreadable: boolean;
   /** the live connections and streams of each node, ended when it is blocked (DeviceStore.onRevoke does it for a row) */
   private readonly streams = new Map<string, Set<() => void>>();
   private asking: (TailnetNodePrompt & { readonly at: number }) | null = null;
@@ -112,6 +114,7 @@ export class TailnetNodes {
   constructor(stateDir: string, blocked: string | null = null, private readonly now: () => number = Date.now) {
     this.path = join(stateDir, TAILNET_NODES_FILE);
     const read = readNodes(this.path);
+    this.unreadable = read === null;
     if (read === null) this.failure = `Cannot read ${this.path}: no Tailscale login is let in until it is restored or fixed.`;
     else this.nodes = read;
     if (blocked !== null) this.failure ??= blocked;
@@ -170,6 +173,14 @@ export class TailnetNodes {
     return this.problem !== null || this.nodes.some((node) => node.id === id && node.blocked);
   }
 
+  /**
+   * Whether `id`'s block is saved: what a removal needs before its row may go. Unlike isBlocked, the fail-closed state
+   * after a failed write does not count, since that ends with this run.
+   */
+  holds(id: string): boolean {
+    return this.nodes.some((node) => node.id === id && node.blocked);
+  }
+
   /** Whether a node this PC cannot name must be kept out: one is blocked, or the list cannot be read. */
   anyBlocked(): boolean {
     return this.problem !== null || this.nodes.some((node) => node.blocked);
@@ -191,11 +202,14 @@ export class TailnetNodes {
     catch (error) { console.warn(`[tailnet-nodes] a sighting was not saved: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
-  /** Blocks the nodes named, in one durable write; one that cannot be written throws, and nothing is blocked. */
+  /**
+   * Blocks the nodes named, in one durable write; one that cannot be written throws, and nothing is blocked. After an
+   * earlier write failed (fail closed for this run) a block is still written, so a retried removal can stand.
+   */
   block(nodes: readonly { readonly id: string; readonly hostname?: string }[]): string[] {
-    if (this.problem !== null) throw new Error(this.problem);
+    if (this.unreadable) throw new Error(this.problem ?? `Cannot read ${this.path}`);
     const changedAt = new Date(this.now()).toISOString();
-    const fresh = nodes.filter((node) => !this.isBlocked(node.id));
+    const fresh = nodes.filter((node) => !this.holds(node.id));
     if (fresh.length === 0) return [];
     const next = this.nodes.map((own) => fresh.some((node) => node.id === own.id) ? { ...own, blocked: true, changed_at: changedAt } : own);
     for (const node of fresh) {
