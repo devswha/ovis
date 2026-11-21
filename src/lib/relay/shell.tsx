@@ -416,7 +416,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     }
     shell ??= (mount.createRoot ?? createRoot)(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null, createElement(RelayShell, {
-      state, scoped, iosTab, addEntry: !scoped && entryHash === "#add", pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onFindPc: () => void findPc(), onPair: confirmed, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget,
+      state, scoped, iosTab, addEntry: !scoped && entryHash === "#add", pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onFindPc: () => void findPc(), onPair: confirmed, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onForgetSaved: forgetSaved,
       onUpdate: updates.update, onMatch: match, onJoinInstead: joinInstead, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, onOpenPc: openPc,
       sheetJoin, launchJoin: entry.serverId !== null && launchJoinFor(entry.serverId), onWaitAgain: () => void waitAgain(),
       plainFront: !frontChosen(), signedIn: account.state?.kind === "signed-in", onAskAgain: askAgain,
@@ -1105,6 +1105,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (serverId !== null && deviceOnlyPc() === serverId) keepDeviceOnlyPc(null);
     if (serverId !== null && confirmedSignIn()?.server_id === serverId) keepConfirmedSignIn(null);
     void (async () => { if (serverId !== null) { account.cancelEnrollment(serverId); await forgetSavedPc(serverId, store); } show({ kind: "forgotten", name }); })();
+  };
+  // one of this phone's pairings forgotten from the front page's list: as Forget this PC does, then the list again
+  const forgetSaved = (serverId: string): void => {
+    if (deviceOnlyPc() === serverId) keepDeviceOnlyPc(null);
+    if (confirmedSignIn()?.server_id === serverId) keepConfirmedSignIn(null);
+    void (async () => { account.cancelEnrollment(serverId); await forgetSavedPc(serverId, store); await showFront(); })();
   };
   const arrived = (): boolean => {
     const confirmedPc = takeConfirmedPc();

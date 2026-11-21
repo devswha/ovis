@@ -290,6 +290,8 @@ const BASE: Record<string, string> = {
   "The block was not sent. Try again.": "차단을 보내지 못했어요. 다시 해 보세요.",
   "Other PCs": "다른 PC",
   "Unnamed PC": "이름 없는 PC",
+  "Relay": "릴레이",
+  "Online": "온라인",
   "Off|pc state": "꺼짐",
   "Checking…": "확인 중…",
   "relay": "릴레이",

@@ -253,7 +253,7 @@ export function RelayShellCardContent({ props, view, signInFirst, addingPc, setS
       <div className="visually-hidden" role="status">{announcedStatus}</div>
       {state.kind === "ready" && onOpenPc && <ReadyCheckpoint open={onOpenPc} cancel={onCancel} state={state} retry={onRetry} />}
       {signInFirst && (
-        <ConnectStart devices={state.kind === "list" ? state.devices : []} relay={(
+        <ConnectStart devices={state.kind === "list" ? state.devices : []} onForget={props.onForgetSaved} relay={(
           <>
             {signIn}
             <p className="relay-shell-first-time">{t("First time? Your account is made right away.")}</p>

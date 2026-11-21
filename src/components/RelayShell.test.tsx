@@ -93,7 +93,7 @@ describe("the front page's account part", () => {
     expect(html).not.toContain("relay-add-manage");
   });
 
-  it("opens a signed-in front page on the connect tabs, this device's own PCs under them and not the account's (#16), whatever the address", () => {
+  it("opens a signed-in front page on the connect tabs, the relay tab listing this device's own PCs and then the account's it can open, each once, whatever the address", () => {
     Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } });
     const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
     const pcStatus = new Map([["b".repeat(32), { kind: "offline", reason: "pc" }]] as const);
@@ -108,7 +108,7 @@ describe("the front page's account part", () => {
     expect(tabsOf(html).map(([tab, , pressed]) => [tab, pressed])).toEqual([["relay", "true"], ["tailscale", "false"], ["ssh", "false"]]);
     expect(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]).toBe("Connect a PC");
     const rows = [...html.matchAll(/<a class="relay-add-saved-pc" href="([^"]+)">([\s\S]*?)<\/a>/g)].map(([, href, inner]) => [href, inner!.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, " ").trim().replace(/\s+/g, " ")]);
-    expect(rows).toEqual([[`/s/${"a".repeat(32)}/`, "p620"], [`/s/${"b".repeat(32)}/`, "nuc Off"]]);
+    expect(rows).toEqual([[`/s/${"a".repeat(32)}/`, "p620 Relay"], [`/s/${"b".repeat(32)}/`, "nuc Relay Off"], [`/s/${"c".repeat(32)}/`, "desk Relay"], [`/s/${"d".repeat(32)}/`, "attic Relay Off"]]);
     expect(html).not.toContain("Needs approval");
     // the old control page's address is the same front page
     (window.location as { hash: string }).hash = "#pcs";
@@ -451,9 +451,12 @@ describe("the hosted front page", () => {
         expect(assigned).toEqual([`https://app.ovis.sh/s/${ids.mini}/#offer=abc`]);
         await act(async () => { tab("tailscale").props.onClick(); });
         const tailnet = renderer!.root.findAll((node) => node.type === "li" && node.props["data-tailnet-pc"] !== undefined).map((node) => [node.props["data-tailnet-pc"], textOf(node)]);
-        expect(tailnet).toEqual([["https://desk.tail1e211e.ts.net", "Deskdesk.tail1e211e.ts.netConnect"], ["http://100.101.1.2:7317", "100.101.1.2:7317Connect"]]);
-        await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-tailnet-pc"] === "https://desk.tail1e211e.ts.net").findByType("button").props.onClick(); });
+        expect(tailnet).toEqual([["https://desk.tail1e211e.ts.net", "DeskTailscaledesk.tail1e211e.ts.netForget"], ["http://100.101.1.2:7317", "100.101.1.2:7317TailscaleForget"]]);
+        const deskRow = renderer!.root.find((node) => node.type === "li" && node.props["data-tailnet-pc"] === "https://desk.tail1e211e.ts.net");
+        await act(async () => { deskRow.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
         expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
+        await act(async () => { deskRow.find((node) => node.type === "button" && node.props.className === "btn btn-ghost phone-pc-forget").props.onClick(); });
+        expect(called).toContain("HerdrShell.forget https://desk.tail1e211e.ts.net");
         await act(async () => { renderer!.unmount(); });
         tailscaleOn = false;
         await mount(shown);
@@ -496,7 +499,7 @@ describe("the hosted front page", () => {
         expect(textOf(renderer!.root.find((node) => node.type === "label"))).toBe("SSH");
         expect(sshField().props.placeholder).toBe("user@host");
         await submitSsh("pi@192.168.0.20:2222");
-        expect(called).toEqual(["HerdrShell.openSshSetup pi@192.168.0.20:2222"]);
+        expect(called.filter((call) => call !== "HerdrShell.getState")).toEqual(["HerdrShell.openSshSetup pi@192.168.0.20:2222"]);
         // the hosted page never adds an SSH PC itself: the app's own page does, after the person confirms there
         expect(called.some((line) => line.startsWith("OvisSsh."))).toBe(false);
       } finally {

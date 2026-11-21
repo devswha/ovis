@@ -37,9 +37,10 @@
       <!-- the QR code a PC shows (its relay pairing, or its address): here, not under Tailscale, which hides its part while Tailscale is off -->
       <button type="button" class="way" data-scan><span class="way-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 20h2M20 14v2" stroke-linecap="round"/></g></svg></span><span class="way-text"><span class="way-title" data-ko="PC 화면의 QR 찍기">Scan the QR on the PC's screen</span></span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <p class="note" data-ko="Tailscale · SSH는 로그인 없이 돼요">Tailscale and SSH need no sign-in.</p>
-      <!-- the PCs this phone paired over the relay (a pairing link, ovis pair --relay), under the sign-in (connect.js renderPcs) -->
+      <!-- the PCs this phone paired over the relay (a pairing link, ovis pair --relay), under the sign-in; never the account's
+           PCs, which come with its sign-in (connect.js renderPcs) -->
       <section id="relay-section" hidden>
-        <h2 data-ko="릴레이로 연결한 PC">PCs paired over the relay</h2>
+        <h2 data-ko="이 폰이 연결한 PC">PCs this phone is on</h2>
         <ul id="relay-pcs" class="card list"></ul>
       </section>
     </section>
@@ -51,16 +52,17 @@
         <button type="button" class="primary" id="open-tailscale" data-ko="Tailscale 열기">Open Tailscale</button>
       </div>
       <div id="tailscale-on">
-        <section id="tailnet-section" hidden>
-          <h2 data-ko="Tailscale의 PC">PCs on Tailscale</h2>
-          <ul id="tailnet" class="card list"></ul>
-        </section>
         <p class="note" id="tailnet-none" data-ko="이 폰이 연 Tailscale PC가 아직 없어요. PC의 Tailscale 주소를 넣거나 QR을 찍으세요.">No PC on Tailscale was opened on this phone yet. Type the PC's Tailscale address or scan its QR code.</p>
         <form id="tailnet-connect" class="field" novalidate>
           <input id="tailnet-address" name="address" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="my-pc.tailnet.ts.net" autocomplete="url" aria-label="Tailscale address" data-ko-label="Tailscale 주소">
           <button type="submit" class="primary" data-ko="연결">Connect</button>
         </form>
         <button type="button" class="way" data-scan><span class="way-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 20h2M20 14v2" stroke-linecap="round"/></g></svg></span><span class="way-text"><span class="way-title" data-ko="QR 찍기">Scan a QR code</span><span class="sub" data-ko="PC의 Tailscale QR">The PC&#39;s Tailscale QR</span></span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <!-- the PCs this phone opened on the tailnet, under the tab's controls (connect.js renderPcs) -->
+        <section id="tailnet-section" hidden>
+          <h2 data-ko="이 폰이 연결한 PC">PCs this phone is on</h2>
+          <ul id="tailnet" class="card list"></ul>
+        </section>
       </div>
     </section>
     <section id="panel-ssh" class="panel" role="tabpanel" aria-labelledby="tab-ssh" hidden>
@@ -78,15 +80,10 @@
         <input id="web-address" name="address" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://my-pc.example.com" autocomplete="url" aria-label="PC address" data-ko-label="PC 주소">
         <button type="submit" class="primary" data-ko="연결">Connect</button>
       </form>
-      <!-- the PCs this phone added over SSH, each with Manage (connect.js renderPcs) -->
+      <!-- the PCs this phone added over SSH (each with Manage) or opened at any other address, one list (connect.js renderPcs) -->
       <section id="ssh-section" hidden>
-        <h2 data-ko="SSH로 연결한 PC">PCs added over SSH</h2>
+        <h2 data-ko="이 폰이 연결한 PC">PCs this phone is on</h2>
         <ul id="ssh-pcs" class="card list"></ul>
-      </section>
-      <!-- the PCs this phone opened at any other address before (a same-Wi-Fi one among them): kept, to open or forget -->
-      <section id="saved-section" hidden>
-        <h2 data-ko="저장된 주소">Saved addresses</h2>
-        <ul id="saved-pcs" class="card list"></ul>
       </section>
     </section>
     <!-- what an open does, under whichever tab is up: the status text stays in the page, empty until an open starts,

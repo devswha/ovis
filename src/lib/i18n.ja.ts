@@ -292,6 +292,8 @@ const BASE: Record<string, string> = {
   "The block was not sent. Try again.": "ブロックを送信できませんでした。もう一度お試しください。",
   "Other PCs": "ほかの PC",
   "Unnamed PC": "名前のないPC",
+  "Relay": "リレー",
+  "Online": "オンライン",
   "Off|pc state": "オフ",
   "Checking…": "確認しています…",
   "relay": "リレー",

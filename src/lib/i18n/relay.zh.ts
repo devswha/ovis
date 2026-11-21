@@ -3,6 +3,9 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const RELAY_ZH: Record<string, string> = {
+  "PCs this phone is on": "这部手机连接过的电脑",
+  "Forget {name}": "移除 {name}",
+  "Forget|this phone's PC": "移除",
   "Your PCs": "我的电脑",
   "To add another PC, open Settings → Devices and PCs → Add a connection → Ovis relay on it and scan the QR code.": "要添加另一台电脑，请在那台电脑上打开“设置 → 设备和电脑 → 添加连接 → Ovis 中继”并扫描二维码。",
   "Scan the QR code on your PC": "请扫描电脑上的二维码",
@@ -115,7 +118,6 @@ export const RELAY_ZH: Record<string, string> = {
   "First time? Your account is made right away.": "首次使用会立即创建账户",
   "Turn on Ovis on the PC and sign in with the same account.": "在电脑上打开 Ovis，并用同一个账号登录",
   "Turn on Tailscale to connect": "打开 Tailscale 才能连接",
-  "PCs on Tailscale": "Tailscale 上的电脑",
   "Every device was signed out.": "已在所有设备上退出登录。",
   "You signed in to another account. No device was signed out.": "你登录了另一个账户。没有设备退出登录。",
   "The previous account was deleted. You're now signed in to another account.": "已删除之前的账户。你现在登录的是另一个账户。",

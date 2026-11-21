@@ -4,11 +4,13 @@ import { QrCode } from "lucide-react";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
-import { tailnetHost } from "../lib/phone.ts";
+import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
+import type { MyPc } from "../lib/account/myPcs.ts";
+import { serverScopePath } from "../lib/shellMode.ts";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 import { NewPcNotices } from "./NewPcNotices.tsx";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
-import { AddressForm, canScanQr, SavedPcs, scanQr, sshHandoff, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
+import { AddressForm, canScanQr, scanQr, sshHandoff, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
 
 type ConnectWay = "relay" | "tailscale" | "ssh";
 const CONNECT_WAYS: readonly ConnectWay[] = ["relay", "tailscale", "ssh"];
@@ -16,22 +18,101 @@ const CONNECT_WAYS: readonly ConnectWay[] = ["relay", "tailscale", "ssh"];
 /** The phone app's shell plugin (app/android HerdrShellPlugin): the PCs this phone opened, and whether Tailscale is on. */
 const SHELL = "HerdrShell";
 
-export interface TailnetPc { readonly origin: string; readonly host: string; readonly name: string }
+/** A PC the phone app saved, by the way it connects: at a Tailscale address, added over SSH (a loopback address on the phone), or at any other address. */
+export interface PhoneSavedPc { readonly origin: string; readonly host: string; readonly name: string; readonly way: "tailscale" | "ssh" | "address" }
 
 /**
- * The PCs this phone opened at a Tailscale address, which the Tailscale tab offers again (app/web/shell.js `tailnetPcs`,
- * the phone app's own list): a phone has no list of its tailnet's machines, only the ones opened here. `saved` and
+ * The PCs the phone app opened (app/web/shell.js `tabPcs`, the app's own lists), each by the way it connects, for the
+ * Tailscale and SSH tabs: a phone has no list of its tailnet's machines, only the ones opened here. A page of the app's
+ * origin (`appOrigin`: the relay's, listed on the relay tab) and an unreadable entry are on neither. `saved` and
  * `names` as HerdrShell's getState gives them; a MagicDNS name goes by its first label, an address by itself.
  */
-export function tailnetPcs(saved: readonly string[], names: Readonly<Record<string, string>>): TailnetPc[] {
+export function phoneSavedPcs(saved: readonly string[], names: Readonly<Record<string, string>>, appOrigin: string): PhoneSavedPc[] {
   return saved.flatMap((origin) => {
     let url: URL;
     try { url = new URL(origin); } catch { return []; }
+    if (url.origin === appOrigin) return [];
     const host = url.hostname.replace(/^\[|\]$/g, "");
-    if (!tailnetHost(host)) return [];
+    const way = tailnetHost(host) ? "tailscale" : isLoopbackHost(host) ? "ssh" : "address";
     const short = host.toLowerCase().endsWith(".ts.net") ? host.split(".")[0]! : url.host;
-    return [{ origin, host: url.host, name: names[origin] || short }];
+    return [{ origin, host: url.host, name: names[origin] || short, way }];
   });
+}
+
+/** A relay PC of the relay tab's list: this phone's own pairing (`saved`, by a QR or a code), or one of the account's. */
+export interface RelayTabPc { readonly server_id: string; readonly name?: string | undefined; readonly status?: "online" | "off" | undefined; readonly saved: boolean }
+
+/**
+ * The relay tab's PCs this phone is on: its own pairings, then, signed in, the account's PCs it can open (one its own
+ * page can join) that are not among them, so a PC both paired here and in the account is listed once, as this phone's.
+ * An account PC is online unless the directory says it is off; a pairing as its last check found it.
+ */
+export function relayTabPcs(devices: readonly SavedPc[], account: readonly MyPc[] | null): RelayTabPc[] {
+  const own = devices.map((device): RelayTabPc => ({ server_id: device.server_id, name: device.name, status: device.status, saved: true }));
+  const more = (account ?? []).filter((pc) => !pc.paired && pc.join !== undefined && !own.some((row) => row.server_id === pc.server_id))
+    .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: pc.state === "offline" ? "off" : "online", saved: false }));
+  return [...own, ...more];
+}
+
+/** One row of a tab's list of the PCs this phone is on: one row component fed by each tab's list. */
+interface PhonePc {
+  readonly key: string;
+  readonly name: string;
+  readonly tag: string;
+  readonly status?: "online" | "off" | undefined;
+  readonly address?: string | undefined;
+  /** a relay PC's own page, or what opening it does */
+  readonly href?: string;
+  readonly open?: () => void;
+  readonly forget?: (() => void) | undefined;
+  readonly data?: Readonly<Record<string, string>>;
+}
+
+/** A tab's list of the PCs this phone is on, under its controls: name, the way it connects and an online dot or Off; a tap opens it, Forget at its end. */
+function PhonePcs({ pcs }: { readonly pcs: readonly PhonePc[] }) {
+  const t = useT();
+  if (pcs.length === 0) return null;
+  return (
+    <section className="relay-add-saved phone-pcs">
+      <h2 className="relay-add-saved-title">{t("PCs this phone is on")}</h2>
+      <ul>
+        {pcs.map((pc) => {
+          const inside = (
+            <>
+              <span className="relay-add-saved-name">{pc.name}</span>
+              <span className="phone-pc-meta">
+                <span className="phone-pc-tag">{pc.tag}</span>
+                {pc.status === "online" && <span className="phone-pc-dot" role="img" aria-label={t("Online")} />}
+                {pc.status === "off" && <span className="relay-add-saved-note">{t("Off|pc state")}</span>}
+                {pc.address !== undefined && pc.address !== pc.name && <span className="relay-add-saved-note">{pc.address}</span>}
+              </span>
+            </>
+          );
+          return (
+            <li key={pc.key} className="phone-pc" {...pc.data}>
+              {pc.href !== undefined
+                ? <a className="relay-add-saved-pc" href={pc.href}>{inside}</a>
+                : <button type="button" className="relay-add-saved-pc" onClick={pc.open}>{inside}</button>}
+              {pc.forget && <button type="button" className="btn btn-ghost phone-pc-forget" aria-label={t("Forget {name}", { name: pc.name })} onClick={pc.forget}>{t("Forget|this phone's PC")}</button>}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/** The PCs the phone app saved, read once, with a way to read them again (after a Forget); none outside the app. */
+function usePhoneSaved(native: boolean): [PhoneSavedPc[], () => void] {
+  const [pcs, setPcs] = useState<PhoneSavedPc[]>([]);
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    if (!native) return;
+    let live = true;
+    callNative<{ saved?: string[]; names?: Record<string, string> }>(SHELL, "getState").then((state) => { if (live) setPcs(phoneSavedPcs(state.saved ?? [], state.names ?? {}, window.location.origin)); }, () => undefined);
+    return () => { live = false; };
+  }, [native, round]);
+  return [pcs, () => setRound((n) => n + 1)];
 }
 
 /** Scan a QR code, where the phone app can scan: what it read opens as a typed address would (`open`). */
@@ -75,7 +156,7 @@ function TailscalePanel() {
   const open = useAddressOpen();
   const native = hasNativePlugin(SHELL);
   const [on, setOn] = useState(true);
-  const [pcs, setPcs] = useState<TailnetPc[]>([]);
+  const [saved, reread] = usePhoneSaved(native);
   useEffect(() => {
     if (!native) return;
     let live = true;
@@ -84,7 +165,6 @@ function TailscalePanel() {
       callNative<{ on?: boolean }>(SHELL, "tailscale").then((answer) => { if (live) setOn(answer.on !== false); }, () => undefined);
     };
     check();
-    callNative<{ saved?: string[]; names?: Record<string, string> }>(SHELL, "getState").then((state) => { if (live) setPcs(tailnetPcs(state.saved ?? [], state.names ?? {})); }, () => undefined);
     const visible = (): void => { if (document.visibilityState === "visible") check(); };
     document.addEventListener("visibilitychange", visible);
     return () => { live = false; document.removeEventListener("visibilitychange", visible); };
@@ -100,23 +180,15 @@ function TailscalePanel() {
   }
   return (
     <div className="connect-start-panel" data-tab-panel="tailscale">
-      {pcs.length > 0 && (
-        <section className="connect-start-tailnet">
-          <h2 className="relay-add-saved-title">{t("PCs on Tailscale")}</h2>
-          <ul>
-            {pcs.map((pc) => (
-              <li key={pc.origin} data-tailnet-pc={pc.origin}>
-                <span className="connect-start-tailnet-text"><span className="relay-add-saved-name">{pc.name}</span>{pc.host !== pc.name && <span className="relay-add-saved-note">{pc.host}</span>}</span>
-                <button type="button" className="btn" onClick={() => open.take(new URL(pc.origin))}>{t("Connect")}</button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
       <AddressForm open={open} labelShown label={t("Tailscale address")} placeholder="my-pc.tailnet.ts.net" submit={t("Connect")} />
       <p className="relay-shell-detail">{t("The phone needs the Tailscale app turned on too.")}</p>
       {canScanQr() && <ScanWay open={open} failed={open.failed} />}
       <OpenError open={open} />
+      <PhonePcs pcs={saved.filter((pc) => pc.way === "tailscale").map((pc) => ({
+        key: pc.origin, name: pc.name, tag: "Tailscale", address: pc.host, data: { "data-tailnet-pc": pc.origin },
+        open: () => open.take(new URL(pc.origin)),
+        forget: () => { callNative(SHELL, "forget", { url: pc.origin }).then(reread, open.failed); },
+      }))} />
     </div>
   );
 }
@@ -130,12 +202,19 @@ function SshPanel() {
   const open = useAddressOpen();
   const ssh = sshHandoff();
   const [byAddress, setByAddress] = useState(false);
+  const [saved, reread] = usePhoneSaved(hasNativePlugin(SHELL));
   return (
     <div className="connect-start-panel" data-tab-panel="ssh">
       {ssh && <AddressForm open={open} labelShown ssh label="SSH" placeholder="user@host" submit={t("Connect")} />}
       <button type="button" className="connect-address-link" aria-expanded={byAddress} onClick={() => { open.setError(null); setByAddress((shown) => !shown); }}>{t("Add by address")}</button>
       {byAddress && <AddressForm open={open} labelShown label={t("PC address")} placeholder="https://my-pc.example.com" submit={t("Connect")} autoFocus />}
       <OpenError open={open} />
+      {/* an SSH PC is forgotten with its keys, from the app's own connect screen (Manage) */}
+      <PhonePcs pcs={saved.filter((pc) => pc.way !== "tailscale").map((pc) => ({
+        key: pc.origin, name: pc.name, tag: pc.way === "ssh" ? "SSH" : t("Address"), address: pc.host,
+        open: () => open.take(new URL(pc.origin)),
+        forget: pc.way === "ssh" ? undefined : () => { callNative(SHELL, "forget", { url: pc.origin }).then(reread, open.failed); },
+      }))} />
     </div>
   );
 }
@@ -146,7 +225,15 @@ function SshPanel() {
  * account's menu at the top, signed in. A browser cannot see the tailnet or reach SSH, so Tailscale and SSH each take
  * a PC's address (RelayAddPc's AddressForm, which opens that PC's own Ovis); the phone app adds what it knows.
  */
-export function ConnectStart({ relay, devices, menu }: { readonly relay: ReactNode; readonly devices: readonly SavedPc[]; readonly menu?: ReactNode }) {
+export function ConnectStart({ relay, devices, accountPcs = null, onForget, menu }: {
+  readonly relay: ReactNode;
+  readonly devices: readonly SavedPc[];
+  /** signed in, the account's PCs, which the relay tab's list adds to this phone's own pairings (relayTabPcs) */
+  readonly accountPcs?: readonly MyPc[] | null;
+  /** forgets one of this phone's pairings */
+  readonly onForget?: ((serverId: string) => void) | undefined;
+  readonly menu?: ReactNode;
+}) {
   const t = useT();
   const [way, setWay] = useState<ConnectWay>("relay");
   const label: Record<ConnectWay, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", ssh: "SSH" };
@@ -157,10 +244,17 @@ export function ConnectStart({ relay, devices, menu }: { readonly relay: ReactNo
       <div className="segmented connect-start-tabs" role="group" aria-label={t("How to connect")}>
         {CONNECT_WAYS.map((each) => <button key={each} type="button" aria-pressed={way === each} data-tab={each} onClick={() => setWay(each)}>{label[each]}</button>)}
       </div>
-      {way === "relay" && <div className="connect-start-panel" data-tab-panel="relay">{relay}</div>}
+      {way === "relay" && (
+        <div className="connect-start-panel" data-tab-panel="relay">
+          {relay}
+          <PhonePcs pcs={relayTabPcs(devices, accountPcs).map((pc) => ({
+            key: pc.server_id, name: pc.name ?? t("Unnamed PC"), tag: t("Relay"), status: pc.status, href: serverScopePath(pc.server_id),
+            forget: pc.saved && onForget ? () => onForget(pc.server_id) : undefined,
+          }))} />
+        </div>
+      )}
       {way === "tailscale" && <TailscalePanel />}
       {way === "ssh" && <SshPanel />}
-      {devices.length > 0 && <SavedPcs devices={devices} />}
     </>
   );
 }

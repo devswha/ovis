@@ -37,6 +37,8 @@ export interface RelayShellProps {
   onRefreshAccount?: () => void | Promise<void>;
   /** Admission succeeded; only this action hands the scoped page to the PC app. */
   onOpenPc?: () => void;
+  /** forgets one of this phone's pairings from the front page's list (ConnectStart) */
+  onForgetSaved?: (serverId: string) => void;
   scoped: boolean; iosTab: boolean;
   onPair: () => void; onRetry: () => void; onCancel: () => void; onBack: () => void; onForget: () => void;
   onUpdate: () => void;
@@ -198,9 +200,11 @@ export function RelayShell(props: RelayShellProps) {
   // the PCs Add a PC lists: this device's pairings, then the account's PCs not on it yet (their own page joins them),
   // each with what is known of it
   const offOf = (serverId: string): boolean => { const now = pcStatus?.get(serverId); const shown = now?.kind === "checking" ? now.previous : now; return shown?.kind === "offline" && shown.reason === "pc"; };
-  const savedPcs = devices.map((device) => ({ server_id: device.server_id, name: device.name, ...(offOf(device.server_id) ? { note: t("Off|pc state") } : {}) }));
+  const answered = (serverId: string): boolean => { const now = pcStatus?.get(serverId); return (now?.kind === "checking" ? now.previous : now)?.kind === "answered"; };
+  // the front page's relay tab: this phone's pairings as their last check found them (ConnectStart adds the account's)
+  const savedPcs = devices.map((device) => ({ server_id: device.server_id, name: device.name, ...(offOf(device.server_id) ? { status: "off" as const } : answered(device.server_id) ? { status: "online" as const } : {}) }));
   const addPcs = [
-    ...savedPcs,
+    ...devices.map((device) => ({ server_id: device.server_id, name: device.name, ...(offOf(device.server_id) ? { note: t("Off|pc state") } : {}) })),
     // only a row its own page can join: one with no way to join would open on nothing
     ...(account?.kind === "signed-in" ? account.pcs ?? [] : []).filter((row) => !row.paired && row.join !== undefined && !devices.some((device) => device.server_id === row.server_id))
       .map((row) => ({ server_id: row.server_id, name: row.name, ...(row.state === "offline" ? { note: t("Off|pc state") } : row.state === "needs-approval" ? { note: t("Needs approval") } : {}) })),
@@ -249,7 +253,7 @@ export function RelayShell(props: RelayShellProps) {
             : <>
               {noneOnline}
               {/* the account's PCs are not listed here (#16): this device's own pairings only */}
-              <ConnectStart menu={<StartScreenAccountMenu />} devices={savedPcs} relay={<AccountRelayPanel onSignInAgain={onSignIn} onCodeStart={() => { setAddingPc(true); onCodeStart(); }} />} />
+              <ConnectStart menu={<StartScreenAccountMenu />} devices={savedPcs} accountPcs={account.pcs} onForget={props.onForgetSaved} relay={<AccountRelayPanel onSignInAgain={onSignIn} onCodeStart={() => { setAddingPc(true); onCodeStart(); }} />} />
             </>}
           {scan.error !== null && <p className="account-error" role="alert">{scan.error}</p>}
           {account.error !== null && (

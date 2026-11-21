@@ -89,7 +89,7 @@ export function Way({ icon: Icon, title, sub, onClick, action }: { readonly icon
   );
 }
 
-export type SavedPc = { readonly server_id: string; readonly name?: string | undefined; readonly note?: string | undefined };
+export type SavedPc = { readonly server_id: string; readonly name?: string | undefined; readonly note?: string | undefined; readonly status?: "online" | "off" | undefined };
 
 /** The PCs this device paired before (and, signed in, the account's PCs not on it yet), each by its page. */
 export function SavedPcs({ devices }: { readonly devices: readonly SavedPc[] }) {

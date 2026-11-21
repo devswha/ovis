@@ -268,66 +268,66 @@ for (const scan of document.querySelectorAll("[data-scan]")) scan.addEventListen
   }
 });
 
-/** the way a row connects, on its second line; a saved address has none, its list's title says it */
-const WAY_TAGS = { relay: () => t("Relay", "릴레이"), tailscale: () => "Tailscale", ssh: () => "SSH", address: () => null, broken: () => t("Unreadable", "읽을 수 없음") };
+/** the way a row connects, on its second line */
+const WAY_TAGS = { relay: () => t("Relay", "릴레이"), tailscale: () => "Tailscale", ssh: () => "SSH", address: () => t("Address", "주소"), broken: () => t("Unreadable", "읽을 수 없음") };
 
 /**
- * A list's saved PCs (tabPcs: the relay tab's paired over the relay, the Tailscale tab's at a tailnet address, the SSH tab's
- * added over SSH, and its saved addresses, any other):
- * each a compact row of its name, the way it connects and, for the PC this screen was opened from, Connected; with
- * Connect, and Forget (an SSH PC's Manage, as its keys live on this phone).
+ * A tab's list of the PCs this phone is already on (tabPcs), under its controls: each a compact row of its name, the way
+ * it connects and, for the PC this screen was opened from, Connected, then its address. A tap on the row opens it; Forget
+ * at its end (an SSH PC's Manage, as its keys live on this phone); an entry saved unreadable opens nothing.
  */
 function renderPcs(which, list, section, state) {
   const pcs = tabPcs(savedOrigins, which, state.names ?? {}, sshPcs);
   list.replaceChildren(...pcs.flatMap(({ origin, label, way }) => {
     const item = document.createElement("li");
-    const text = document.createElement("span");
-    text.className = "way-text";
+    const row = document.createElement(way === "broken" ? "span" : "button");
+    row.className = "pc-open";
+    if (way !== "broken") {
+      row.type = "button";
+      row.setAttribute("aria-label", t(`Open ${label}`, `${label} 열기`));
+      row.addEventListener("click", () => void open(origin));
+    }
     const title = document.createElement("span");
     title.className = "way-title pc-name";
     title.textContent = label;
-    // the second line: the way it connects, Connected for the PC this screen was opened from, then its address
     const sub = document.createElement("span");
     sub.className = "sub pc-sub";
-    const tagText = WAY_TAGS[way]();
-    if (tagText !== null) {
-      const tag = document.createElement("span");
-      tag.className = "pc-tag";
-      tag.textContent = tagText;
-      sub.append(tag);
-    }
+    const tag = document.createElement("span");
+    tag.className = "pc-tag";
+    tag.textContent = WAY_TAGS[way]();
+    sub.append(tag);
     if (state.choosing === true && origin === state.current) {
       const on = document.createElement("span");
       on.className = "pc-on";
       on.textContent = t("Connected", "연결됨");
       sub.append(on);
     }
-    const address = document.createElement("span");
-    address.className = "pc-address";
-    address.textContent = way === "ssh" ? sshDetails(sshPcs[origin]).address : way === "broken" ? "" : new URL(origin).host;
-    sub.append(address);
-    text.append(title, sub);
-    const connect = button(t("Connect", "연결"), () => void open(origin), "primary");
-    connect.setAttribute("aria-label", t(`Connect to ${label}`, `${label}에 연결`));
+    const address = way === "ssh" ? sshDetails(sshPcs[origin]).address : way === "broken" ? "" : new URL(origin).host;
+    if (address !== "" && address !== label) {
+      const where = document.createElement("span");
+      where.className = "pc-address";
+      where.textContent = address;
+      sub.append(where);
+    }
+    row.append(title, sub);
     if (way !== "ssh") {
       const forget = button(t("Forget", "지우기"), async () => { await shell("forget", { url: origin }); await load(); }, "forget");
       forget.setAttribute("aria-label", t(`Forget ${label}`, `${label} 지우기`));
-      // an entry saved unreadable opens nothing: Forget alone
-      item.append(...(way === "broken" ? [text, forget] : [text, connect, forget]));
+      item.append(row, forget);
       return [item];
     }
     const manage = button(t("Manage", "관리"), () => {
       const shown = item.nextElementSibling?.classList.contains("manage-row");
       if (shown) { item.nextElementSibling.remove(); manage.setAttribute("aria-expanded", "false"); return; }
-      const row = document.createElement("li");
-      row.className = "manage-row";
-      row.append(managePanel(origin, label));
-      item.after(row);
+      const panelRow = document.createElement("li");
+      panelRow.className = "manage-row";
+      panelRow.append(managePanel(origin, label));
+      item.after(panelRow);
       manage.setAttribute("aria-expanded", "true");
     }, "forget");
     manage.setAttribute("aria-expanded", "false");
     manage.setAttribute("aria-label", t(`Manage ${label}`, `${label} 관리`));
-    item.append(text, connect, manage);
+    item.append(row, manage);
     return [item];
   }));
   section.hidden = pcs.length === 0;
@@ -460,7 +460,6 @@ async function load() {
   const tailnet = renderPcs("tailscale", document.getElementById("tailnet"), document.getElementById("tailnet-section"), state);
   document.getElementById("tailnet-none").hidden = tailnet > 0;
   renderPcs("ssh", document.getElementById("ssh-pcs"), document.getElementById("ssh-section"), state);
-  renderPcs("saved", document.getElementById("saved-pcs"), document.getElementById("saved-section"), state);
   // an SSH PC whose address on this phone another app took first is not opened (OvisSshPlugin.listen)
   if (state.kind === "ssh-port") {
     error.textContent = t(

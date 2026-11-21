@@ -5,6 +5,7 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_KO: Record<string, string> = {
+  "Forget": "잊기",
   "Finished": "완료",
   "Direct typing": "직접 입력",
   "Microphone permission was denied": "마이크 권한이 거부되었습니다",
@@ -302,7 +303,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "Increase interface font size": "인터페이스 글자 크기 키우기",
   "Forget this PC?": "이 PC를 잊을까요?",
   "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "이 폰에서 해당 키를 삭제합니다. PC에서는 폐기하기 전까지 이 폰이 목록에 남습니다. 다시 페어링하려면 PC의 새 QR 코드가 필요합니다.",
-  "Forget": "잊기",
   "Terminal command": "터미널 명령",
   "Use ovis in a terminal": "터미널에서 ovis 쓰기",
   "Adds the ovis command for this app: in a new terminal window, ovis login, ovis status and ovis approve work on this app's Ovis.": "이 앱의 ovis 명령을 추가합니다. 새 터미널 창에서 ovis login, ovis status, ovis approve가 이 앱의 Ovis에 동작합니다.",

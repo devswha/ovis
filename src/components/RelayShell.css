@@ -115,28 +115,50 @@
   height: var(--touch-target);
 }
 
-/* the phone app's Tailscale tab: the PCs this phone opened on the tailnet, each with Connect */
-.connect-start-tailnet ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.connect-start-tailnet li {
+/* a tab's list of the PCs this phone is on (ConnectStart PhonePcs): a row opens its PC, Forget at its end */
+.phone-pc {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  min-height: var(--touch-target);
+  gap: var(--space-2);
 }
 
-.connect-start-tailnet-text {
-  display: flex;
+.phone-pc > .relay-add-saved-pc {
   flex: 1;
-  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.phone-pc-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   min-width: 0;
 }
 
-.connect-start-tailnet-text > .relay-add-saved-note { margin-inline: 0; }
+.phone-pc-meta > .relay-add-saved-note { margin-inline: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.phone-pc-tag {
+  flex: none;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.phone-pc-dot {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: 50%;
+  background: var(--status-done);
+}
+
+.phone-pc-forget { flex: none; }
 
 .connect-start-tabs {
   display: flex;

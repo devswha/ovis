@@ -294,6 +294,8 @@ const BASE: Record<string, string> = {
   "The block was not sent. Try again.": "阻止未能发送。请重试。",
   "Other PCs": "其他电脑",
   "Unnamed PC": "未命名的电脑",
+  "Relay": "中继",
+  "Online": "在线",
   "Off|pc state": "已关闭",
   "Checking…": "正在检查…",
   "relay": "中继",

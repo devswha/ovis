@@ -5,6 +5,7 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_JA: Record<string, string> = {
+  "Forget": "削除",
   "Finished": "完了",
   "Direct typing": "直接入力",
   "Microphone permission was denied": "マイクの使用が許可されませんでした",
@@ -302,7 +303,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "Increase interface font size": "インターフェースの文字サイズを大きく",
   "Forget this PC?": "このPCを削除しますか？",
   "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "このスマホ側のキーを削除します。PC側ではそこで取り消すまでこのスマホが一覧に残ります。再度ペアリングするにはPCの新しいQRコードが必要です。",
-  "Forget": "削除",
   "Terminal command": "ターミナルコマンド",
   "Use ovis in a terminal": "ターミナルで ovis を使う",
   "Adds the ovis command for this app: in a new terminal window, ovis login, ovis status and ovis approve work on this app's Ovis.": "このアプリの ovis コマンドを追加します。新しいターミナルウィンドウで ovis login、ovis status、ovis approve がこのアプリの Ovis に対して動きます。",

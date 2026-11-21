@@ -75,6 +75,8 @@ main.first h1.step { margin: 0 0 1rem; font-size: 1.4rem; }
 .card.list li .forget { padding: .5rem .6rem; font-size: .9rem; }
 .card.list li .primary { padding: .6rem .85rem; }
 /* a saved PC's row: its name, the way it connects and Connected for the PC this screen was opened from (connect.js renderPcs) */
+/* a PC row of a tab's list: the whole row opens it (connect.js renderPcs) */
+.card.list li .pc-open { display: flex; flex-direction: column; flex: 1; min-width: 0; padding: 0; border: 0; background: none; text-align: left; color: inherit; }
 .pc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card.list li .pc-sub { display: flex; align-items: center; gap: .35rem; margin-top: .15rem; }
 .pc-address { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

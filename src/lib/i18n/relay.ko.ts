@@ -3,6 +3,9 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const RELAY_KO: Record<string, string> = {
+  "PCs this phone is on": "이 폰이 연결한 PC",
+  "Forget {name}": "{name} 지우기",
+  "Forget|this phone's PC": "지우기",
   "Your PCs": "내 PC",
   "To add another PC, open Settings → Devices and PCs → Add a connection → Ovis relay on it and scan the QR code.": "다른 PC를 추가하려면 그 PC에서 설정 → 기기와 PC → 연결 추가 → Ovis 릴레이를 열고 QR 코드를 스캔하세요.",
   "Scan the QR code on your PC": "PC에서 QR 코드를 스캔하세요",
@@ -115,7 +118,6 @@ export const RELAY_KO: Record<string, string> = {
   "First time? Your account is made right away.": "처음이면 계정이 바로 만들어져요",
   "Turn on Ovis on the PC and sign in with the same account.": "PC에서 Ovis를 켜고 같은 계정으로 로그인하세요",
   "Turn on Tailscale to connect": "Tailscale을 켜야 연결할 수 있어요",
-  "PCs on Tailscale": "Tailscale의 PC",
   "Every device was signed out.": "모든 기기에서 로그아웃했습니다.",
   "You signed in to another account. No device was signed out.": "다른 계정으로 로그인했습니다. 로그아웃한 기기는 없습니다.",
   "The previous account was deleted. You're now signed in to another account.": "이전 계정을 삭제했어요. 지금은 다른 계정으로 로그인돼 있어요.",

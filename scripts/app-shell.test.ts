@@ -45,15 +45,23 @@ describe("the connect tabs", () => {
     expect(scans.some((at) => at < page.indexOf('<div id="tailscale-on">') || at > page.indexOf('<div id="tailscale-on">') + tailscaleOn.length)).toBe(true);
   });
 
-  it("put on SSH user@host first, Add by address as a text link to an https address's field, then the SSH PCs and the saved addresses", () => {
+  it("put on SSH user@host first, Add by address as a text link to an https address's field, then the PCs this phone is on", () => {
     const ssh = panel("ssh");
     const at = (needle: string) => ssh.indexOf(needle);
-    const order = ['id="address"', 'id="by-address"', 'id="web-address"', 'id="ssh-pcs"', 'id="saved-pcs"'];
+    const order = ['id="address"', 'id="by-address"', 'id="web-address"', 'id="ssh-pcs"'];
     for (const needle of order) expect(at(needle)).toBeGreaterThan(-1);
     expect(order.map(at)).toEqual([...order.map(at)].sort((a: number, b: number) => a - b));
     expect(ssh).toMatch(/<button type="button" class="text-link" id="by-address"[^>]*data-ko="주소로 추가">Add by address</);
     expect(ssh).toMatch(/<form id="address-connect"[^>]*hidden>/);
-    expect(ssh).toContain('data-ko="저장된 주소"');
+  });
+
+  it("ends each tab in its one list of the PCs this phone is on, under the tab's controls", () => {
+    for (const [tab, list, last] of [["relay", 'id="relay-pcs"', "data-scan"], ["tailscale", 'id="tailnet"', "data-scan"], ["ssh", 'id="ssh-pcs"', 'id="web-address"']] as const) {
+      const shown = panel(tab);
+      expect(shown.match(/class="card list"/g)?.length).toBe(1);
+      expect(shown.indexOf(list)).toBeGreaterThan(shown.lastIndexOf(last));
+      expect(shown).toContain('data-ko="이 폰이 연결한 PC">PCs this phone is on</h2>');
+    }
   });
 });
 
@@ -97,19 +105,16 @@ describe("each connect tab's saved PCs", () => {
     ]);
   });
 
-  it("lists the PCs added over SSH on the SSH tab", () => {
-    expect(tabPcs(saved, "ssh", names, ssh)).toEqual([{ origin: "http://127.0.0.1:41234", label: "pi@nas", way: "ssh" }]);
-  });
-
-  it("keeps the PCs opened at any other address as the SSH tab's saved addresses, and one saved unreadable to forget", () => {
-    expect(tabPcs(saved, "saved", names, ssh)).toEqual([
+  it("lists on the SSH tab, as one list, the PCs added over SSH and those opened at any other address, and one saved unreadable to forget", () => {
+    expect(tabPcs(saved, "ssh", names, ssh)).toEqual([
       { origin: "http://192.168.0.10:7317", label: "desk", way: "address" },
+      { origin: "http://127.0.0.1:41234", label: "pi@nas", way: "ssh" },
       { origin: "not an address", label: "not an address", way: "broken" },
     ]);
   });
 
   it("lists each PC in one list at most, and every saved one but the app's own front page in some list", () => {
-    const listed = ["relay", "tailscale", "ssh", "saved"].flatMap((tab) => tabPcs(saved, tab, names, ssh).map((pc: { origin: string }) => pc.origin));
+    const listed = ["relay", "tailscale", "ssh"].flatMap((tab) => tabPcs(saved, tab, names, ssh).map((pc: { origin: string }) => pc.origin));
     expect(new Set(listed).size).toBe(listed.length);
     expect(new Set(listed)).toEqual(new Set(saved.filter((origin) => origin !== "https://app.ovis.sh")));
   });

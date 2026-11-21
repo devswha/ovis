@@ -3,6 +3,9 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const RELAY_JA: Record<string, string> = {
+  "PCs this phone is on": "このスマホが接続した PC",
+  "Forget {name}": "{name} を削除",
+  "Forget|this phone's PC": "削除",
   "Your PCs": "あなたのPC",
   "To add another PC, open Settings → Devices and PCs → Add a connection → Ovis relay on it and scan the QR code.": "別の PC を追加するには、その PC で「設定 → デバイスと PC → 接続を追加 → Ovis リレー」を開き、QR コードをスキャンしてください。",
   "Scan the QR code on your PC": "PCのQRコードをスキャンしてください",
@@ -115,7 +118,6 @@ export const RELAY_JA: Record<string, string> = {
   "First time? Your account is made right away.": "初めてなら、アカウントはすぐに作られます",
   "Turn on Ovis on the PC and sign in with the same account.": "PC で Ovis を起動し、同じアカウントでサインインしてください",
   "Turn on Tailscale to connect": "接続するには Tailscale をオンにしてください",
-  "PCs on Tailscale": "Tailscale 上の PC",
   "Every device was signed out.": "すべてのデバイスからサインアウトしました。",
   "You signed in to another account. No device was signed out.": "別のアカウントにサインインしました。サインアウトしたデバイスはありません。",
   "The previous account was deleted. You're now signed in to another account.": "以前のアカウントを削除しました。現在は別のアカウントでサインインしています。",

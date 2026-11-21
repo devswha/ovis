@@ -220,11 +220,11 @@ export function savedPcLabel(origin, names, ssh = {}) {
 }
 
 /**
- * The saved PCs a list of the connect screen shows, each in the one list of the way it connects: the relay tab's, under
- * its sign-in, the PCs paired over the relay (a scope on the app's origin; the app's own front page is no PC), the
- * Tailscale tab's those at a Tailscale address (a phone has no list of its tailnet's machines, only the ones opened
- * here), and on the SSH tab the PCs added over SSH (`ssh`) and, as its saved addresses (`saved`), every other address
- * (way "address") and an entry saved unreadable (way "broken"), there to be forgotten. Each is `{ origin, label, way }`
+ * The PCs this phone is already on, one list under each tab's controls, each PC in the one list of the way it connects:
+ * the relay tab's the PCs paired over the relay (a scope on the app's origin; the app's own front page is no PC, and the
+ * account's PCs come with its sign-in, never here), the Tailscale tab's those at a Tailscale address (a phone has no list
+ * of its tailnet's machines, only the ones opened here), and the SSH tab's the PCs added over SSH (way "ssh"), every
+ * other address (way "address") and an entry saved unreadable (way "broken"), there to be forgotten. Each is `{ origin, label, way }`
  * (savedPcLabel). `saved` and `names` as HerdrShell's getState gives them, `ssh` the SSH PCs by origin (OvisSsh list).
  */
 export function tabPcs(saved, list, names, ssh = {}, appOrigin = APP_ORIGIN) {
@@ -235,7 +235,7 @@ export function tabPcs(saved, list, names, ssh = {}, appOrigin = APP_ORIGIN) {
     const way = url === null ? "broken"
       : url.origin === app ? (/^\/s\/[0-9a-f]{32}\/?$/.test(url.pathname) ? "relay" : null)
       : tailnetHost(url.hostname) ? "tailscale" : ssh[origin] ? "ssh" : "address";
-    const home = way === "address" || way === "broken" ? "saved" : way;
+    const home = way === "address" || way === "broken" ? "ssh" : way;
     return home === list ? [{ origin, label: savedPcLabel(origin, names, ssh), way }] : [];
   });
 }
