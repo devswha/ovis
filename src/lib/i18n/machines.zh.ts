@@ -1,13 +1,11 @@
 /**
  * Simplified Chinese for the keys only the machines files use:
- * components/MachineSidebar.tsx (with STATE_WORD), components/MachineDialog.tsx,
+ * components/MachineSidebar.tsx (with STATE_WORD), components/MachineHeader.tsx, components/MachineDialog.tsx,
  * lib/bridgeProgress.ts (with STAGES), components/MachineStats.tsx, lib/systemReport.ts.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const MACHINES_ZH: Record<string, string> = {
-  "1 agent": "1 个代理",
   "Inbox": "收件箱",
-  "{n} agents": "{n} 个代理",
   "{where} refused the SSH connection: the PC may be off, or nothing answers on that port.": "{where} 拒绝了 SSH 连接：PC 可能已关机，或该端口上没有服务响应。",
   "{where} is not a name this web server can look up: check the address.": "{where} 不是此 Web 服务器能解析的名称：请检查地址。",
   "{where} did not answer in time: check that the PC is on and reachable.": "{where} 未及时响应：请确认 PC 已开机且可以访问。",

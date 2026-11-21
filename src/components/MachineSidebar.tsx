@@ -1,15 +1,6 @@
-/**
- * Where a PC's folded header is kept: by its id, and in the hosted app also by the PC whose page this is, as every PC
- * there names its own machine "local".
- */
-export function collapsedKey(machineId: string, page: { relayShell: boolean; pathname: string } = { relayShell: shellMode() === "relay", pathname: window.location.pathname }): string {
-  const server = page.relayShell ? serverIdOfPath(page.pathname) : null;
-  return server === null ? `ovis:pc-collapsed:${machineId}` : `ovis:pc-collapsed:${server}:${machineId}`;
-}
-
 import { tally } from "../lib/usageCounters.ts";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, Download, EyeOff, Inbox, Monitor, Pencil, Plug, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Trash2, Unplug, X } from "lucide-react";
+import { Download, EyeOff, Inbox, Pencil, Plug, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Trash2, Unplug, X } from "lucide-react";
 import { OWN_UPDATE_OFFER, pairedPc, type Machine, type MachineState, type MachineUpdate, type RemoteOvis } from "../../shared/machines.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { AppLayoutContext, FULL_LAYOUT, MachineContext, type LayoutOffer } from "../lib/machineContext.tsx";
@@ -18,6 +9,7 @@ import { describeProgress } from "../lib/bridgeProgress.ts";
 import { keepDismissed, noticeKey, readDismissed, waitingMachines, writeDismissed } from "../lib/machineNotice.ts";
 import type { AppActions } from "../lib/actions.ts";
 import { Sidebar } from "./Sidebar.tsx";
+import { MachineHeader, useMachineFold } from "./MachineHeader.tsx";
 import { AgentSidebar } from "./AgentSidebar.tsx";
 import { SidebarSplit } from "./SidebarSplit.tsx";
 import { storedSidebarSplit, storeSidebarSplit, type SplitFold, type SplitOrder } from "../lib/sidebarSplit.ts";
@@ -309,10 +301,6 @@ function InboxEntry({ waiting, open }: { waiting: number; open(): void }) {
   );
 }
 
-function SidebarCount({ className, n, words, tooltip = true }: { className: string; n: number; words: string; tooltip?: boolean }) {
-  return <span className={className} title={tooltip ? words : undefined}><span aria-hidden="true">{n}</span><span className="visually-hidden">{words}</span></span>;
-}
-
 // the server's words for a relay PC's failed connection (shared/relay-channel.ts, server/relay-pc.ts)
 const RELAY_UNREACHABLE = /^(The relay (could not be reached|connection failed|closed the connection|did not answer)|Relay carrier lost during admission)/;
 const RELAY_PC_SILENT = /^The PC did not answer through the relay/;
@@ -338,6 +326,11 @@ export function machineAway(machine: Pick<Machine, "kind" | "enabled" | "state" 
   if (machine.kind !== "ssh" || !/connect to host/i.test(machine.error)) return null;
   const reason = sshFailure(machine.error)?.reason;
   return reason === "refused" || reason === "timeout" || reason === "unreachable" ? "unreachable" : null;
+}
+
+export function machineDotState(machine: Machine): string {
+  if (machine.action_required === "setup" || asksWhatToConnect(machine)) return "setup";
+  return machineAway(machine) !== null ? "disconnected" : machine.state;
 }
 
 export type ManageAction = "rename" | "toggle" | "setup" | "update" | "hide" | "remove";
@@ -366,7 +359,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   const compact = useSettings().settings.sidebarRows === "one";
   const drawer = useMediaQuery(DRAWER_QUERY);
   const sheet = useMediaQuery(SHEET_QUERY);
-  const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem(collapsedKey(machine.id)) === "1"; } catch { return false; } });
+  const [collapsed, toggleCollapsed] = useMachineFold(machine.id);
   const [menu, setMenu] = useState<HTMLElement | null>(null);
   const manageButton = useRef<HTMLButtonElement>(null);
   const titleButton = useRef<HTMLButtonElement>(null);
@@ -455,18 +448,14 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   const context = filtered !== null && !matched;
   const toggle = () => {
     if (filtered !== null) { setFilterFold(!folded); return; }
-    setCollapsed(!collapsed);
-    try { localStorage.setItem(collapsedKey(machine.id), collapsed ? "0" : "1"); } catch {}
+    toggleCollapsed();
   };
   const agentCount = useMemo(() => sidebarAgents(machine.snapshot).length, [machine.snapshot]);
   const current = props.selectedMachineId === machine.id;
   // a watching device is refused a new workspace (G-040): the + stays where it is, disabled, and says why
   const canCreate = online && !props.watching;
   const createTitle = props.watching ? `${t("New workspace")} · ${t("View only")}` : t("New workspace");
-  const foldLabel = folded ? t("Expand {name}", { name: machine.name }) : t("Collapse {name}", { name: machine.name });
-  const titleBody = <>
-    <span className="sidebar-mark" aria-hidden="true"><Monitor /></span>
-    {renaming ? <input
+  const renameField = renaming ? <input
           className="input machine-rename-input"
           aria-label={t("PC name")}
           data-own-escape=""
@@ -484,22 +473,13 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
             endRename(event.key === "Enter");
             manageButton.current?.focus({ preventScroll: true });
           }}
-    /> : <span className="machine-name" title={machine.name}>{machine.name}</span>}
-    {machine.kind === "local" && <span className="machine-kind" title={t("The computer this app runs on")}>{t("Host")}</span>}
-    {machine.view_only === true && <span className="machine-kind">{t("View only")}</span>}
-    {/* where a PC is, beside its name: nothing once it is connected */}
-    {!online && <span className={`machine-dot is-${machine.action_required === "setup" || asksWhatToConnect(machine) ? "setup" : away !== null ? "disconnected" : machine.state}`} title={quiet ? dotWords : stateWords} aria-hidden="true" />}
-  </>;
+    /> : undefined;
   return <section className={`machine-group${current ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}${compact ? "" : " is-two-line"}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
-    {!headerless && <header className={`machine-header${compact ? " is-compact" : ""}`}>
-      {renaming
-        ? <div className="machine-title">{titleBody}</div>
-        : <button ref={titleButton} type="button" className={`machine-title${current ? " is-current" : ""}`} aria-expanded={!folded} aria-label={foldLabel} title={machine.name} aria-current={current ? "true" : undefined} onClick={toggle}>{titleBody}</button>}
-      {online && agentCount > 0 && <SidebarCount className="machine-agent-count" n={agentCount} words={agentCount === 1 ? t("1 agent") : t("{n} agents", { n: agentCount })} tooltip={false} />}
-      {machine.kind !== "local" && <button ref={manageButton} type="button" className="sidebar-row-action machine-manage" aria-label={t("Manage {name}", { name: machine.name })} title={t("Manage PC")} aria-haspopup={sheet ? "dialog" : "menu"} aria-expanded={menu !== null} onClick={(event) => setMenu(menu === null ? event.currentTarget : null)}><SlidersHorizontal aria-hidden="true" /></button>}
-      <button className="sidebar-row-action machine-toggle" tabIndex={-1} aria-hidden="true" aria-expanded={!folded} aria-label={foldLabel} title={foldLabel} onClick={toggle}>{folded ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
-      <button className="sidebar-row-action machine-new" disabled={!canCreate} aria-label={t("New workspace on {name}", { name: machine.name })} title={createTitle} onClick={() => props.onNew(machine.id)}><Plus aria-hidden="true" /></button>
-    </header>}
+    {!headerless && <MachineHeader machine={machine} folded={folded} onToggle={toggle} compact={compact} current={current} name={renameField} titleRef={titleButton}
+      agents={online && agentCount > 0 ? { count: agentCount, words: agentCount === 1 ? t("1 agent") : t("{n} agents", { n: agentCount }) } : null}
+      dot={online ? null : { state: machineDotState(machine), title: quiet ? dotWords : stateWords }}
+      actions={machine.kind !== "local" && <button ref={manageButton} type="button" className="sidebar-row-action machine-manage" aria-label={t("Manage {name}", { name: machine.name })} title={t("Manage PC")} aria-haspopup={sheet ? "dialog" : "menu"} aria-expanded={menu !== null} onClick={(event) => setMenu(menu === null ? event.currentTarget : null)}><SlidersHorizontal aria-hidden="true" /></button>}
+      end={<button className="sidebar-row-action machine-new" disabled={!canCreate} aria-label={t("New workspace on {name}", { name: machine.name })} title={createTitle} onClick={() => props.onNew(machine.id)}><Plus aria-hidden="true" /></button>} />}
     {noticed && <MachineActionNotice machine={machine} onSetup={props.onSetup} />}
     {away !== null && !quiet ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} failure={recheck.failure} onCheck={props.watching || machine.kind === "relay" ? undefined : recheck.check} returnFocus={() => titleButton.current} />
     : quiet ? <p className="machine-state visually-hidden" role="status">{online ? null : dotWords}</p>

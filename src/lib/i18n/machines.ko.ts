@@ -1,13 +1,11 @@
 /**
  * Korean for the keys only the machines files use:
- * components/MachineSidebar.tsx (with STATE_WORD), components/MachineDialog.tsx,
+ * components/MachineSidebar.tsx (with STATE_WORD), components/MachineHeader.tsx, components/MachineDialog.tsx,
  * lib/bridgeProgress.ts (with STAGES), components/MachineStats.tsx, lib/systemReport.ts.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const MACHINES_KO: Record<string, string> = {
-  "1 agent": "에이전트 1개",
   "Inbox": "인박스",
-  "{n} agents": "에이전트 {n}개",
   "{where} refused the SSH connection: the PC may be off, or nothing answers on that port.": "{where}이(가) SSH 연결을 거부했습니다. PC가 꺼져 있거나 그 포트에서 응답하는 것이 없을 수 있습니다.",
   "{where} is not a name this web server can look up: check the address.": "{where}은(는) 이 웹 서버가 찾을 수 없는 이름입니다. 주소를 확인하세요.",
   "{where} did not answer in time: check that the PC is on and reachable.": "{where}이(가) 제때 응답하지 않았습니다. PC가 켜져 있고 연결 가능한지 확인하세요.",

@@ -2240,9 +2240,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   says **Open agent inbox** too; and a row of the command palette at every width. The Ovis wordmark at
   the sidebar's head is no button: an entry there read as a mode of the header. The design follows the
   Codex and Claude apps, whose sidebar head is the app's mark alone and whose places sit in the
-  sidebar's own rows. **Back to Ovis** leaves it: first in a phone's More, the
-  Ovis mark at the top of the rail on a wide window (the rail, below; no More there says it a
-  second time: one fact, one place), and in the palette, the app's own mark (`OvisMark`) standing for it in each. Entering leaves a file open over the pane behind,
+  sidebar's own rows. **Back to Ovis** leaves it: first in a phone's More and in the palette, the
+  app's own mark (`OvisMark`) standing for it; on a wide window **Back to main view**, the
+  monitor right above Settings at the rail's foot (the rail, below; no More there says it a
+  second time: one fact, one place). Entering leaves a file open over the pane behind,
   as a move to another pane does: its viewer closes, its own entry stays under the mode's, and
   Back shows the pane with its file again. The setup guide has the classic shell to itself
   and shows no entry. A watching device may use the mode and is offered no New workspace.
@@ -2372,8 +2373,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     …** when the last words are the user's own message). Where it has none the line says its
     state's word (**Needs you**, **Working**, **Done**), and for an agent at rest the place it
     runs in (the workspace, a worktree by its short name, then the tab), or **Ready** when its
-    name already says the place. With more than one PC shown the PC's name leads the line
-    ("mac-mini · Adding the replay metric"). The words are `--text-dim`; a row that asks for a
+    name already says the place. With more than one PC shown each PC's rows stand under its own
+    header, the sidebar's one-line PC header (MachineHeader.tsx: the monitor mark, the name, the
+    host tag, the away dot, the agent count at rest and the fold's caret), in the PCs' order and
+    folded with the same stored fold as that PC in the sidebar; the line names no PC. A filter or
+    a search draws only the groups it leaves a row in. The words are `--text-dim`; a row that asks for a
     look (needs you, done and not looked at) draws them in `--text`, one step stronger, as a
     messenger darkens an unread line.
   - The state's mark at the end of the words' line (`.inbox-state`): the sidebar's compact
@@ -2393,8 +2397,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     (`--status-blocked`) in the mark's place and is named **Turn failed**, never Done. The row's
     accessible name says the agent's kind, its name, its state's word, its words, then the
     time.
-  A PC that is away draws its rows disabled and faded to 0.55, with no mark, saying **Offline**
-  after the PC's name.
+  A PC that is away draws its rows disabled and faded to 0.55, with no mark, saying **Offline**;
+  its header is faded with its dot, as in the sidebar.
 - Order: needs you first, then working, done and ready, by the same displayed state the Agents
   list draws (a finish that was read is ready), and inside a state in the order the Agents list
   grouped by state uses: this device's Settings → Within a state (the longest in the state
@@ -2454,8 +2458,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   rows (the roster's event stream, lib/useMachineRoster.ts `rosterConnection`), whether or not a
   pane is mounted under the list, a cold load of the mode's own address included: Reconnecting…
   while it is lost after the page had it, Connected for a moment when it is back. A thread says
-  its own pane's word under its name. On a wide window the list draws no line: the rail's PC
-  says the word (the rail, below), in its name and its tooltip and with a dot, which is drawn
+  its own pane's word under its name. On a wide window the list draws no line: the rail's
+  monitor says the word (the rail, below), in its name and its tooltip and with a dot, which is drawn
   only while the open thread's chip does not say the same word: one fact, one place.
 - The monitor button (`LensToggle` `thread`; lucide `Monitor`, **Show the terminal**, then
   **Show the chat**) runs the lens switch for the thread's pane: the terminal already mounted
@@ -2484,21 +2488,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     band's centre line, with the list's top controls and the thread's chip. Its surface is the
     column's (`--bg-nav`) with a hairline `--border` at its end: the rail and the list are one
     region. Its buttons stand `--space-3` from its top, its foot and both sides (the end inset
-    counts the hairline) and `--space-2` apart, twice that after the first. From the top: the
-    Ovis mark (**Back to Ovis**: `OvisMark` at `--mark-size`; it leaves the mode by one history
-    entry, on the pane of the open thread), **Agent inbox** (lucide `Inbox`: the mode's one
+    counts the hairline) and `--space-2` apart. At its top: **Agent inbox** (lucide `Inbox`: the mode's one
     place, always the current one, `aria-current="page"`; a press takes the list to its top and
     gives it the keyboard's focus). It draws no magnifier: the list's search field is the
     screen's one, and the command palette is under its shortcut and in the thread's More
     (below), where a touch screen with no keyboard reaches it. Pushed to the foot, so that
     the last one stands where the list's foot stood: the count of the agents that wait (below),
     **Alerts** (lucide `Bell`, `BellOff` while they are off, `aria-pressed`, the bell's own
-    sentence as its tooltip: this device's alerts), **Settings** (lucide `Settings`, its
-    shortcut in the tooltip) and the PC (below). Each of them is in the rail and nowhere else
+    sentence as its tooltip: this device's alerts), the main view (below) and **Settings**
+    (lucide `Settings`, its shortcut in the tooltip), always the rail's last button, as the
+    gear ends the sidebar's foot. Each of them is in the rail and nowhere else
     on a wide window. The list's own search says its scope: **Search agents**, in its field and
     in its button's name and tooltip.
   - A rail button is the icon button at `--inbox-control`, `--radius-md`, with an `--icon-size`
-    glyph, and no box at rest (a `--text-dim` glyph on the rail's surface): six raised discs
+    glyph, and no box at rest (a `--text-dim` glyph on the rail's surface): five raised discs
     would be the loudest thing in the window. Under a hovering pointer it fills with
     `--side-hover` and its glyph takes `--text`; a press fills it half way from
     `--side-selected` to `--border-strong` under a `--text-strong` glyph, the list row's own
@@ -2525,24 +2528,22 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     for you**, and a press opens the next of them as its row would. The pill is hidden from a
     screen reader. With none to open the button is not drawn; it is the first of the lower
     group, so nothing under it moves when it comes or goes.
-  - The PC is the rail's last button (lucide `Monitor`; `MonitorOff` only while every PC is
-    away). Its name and its tooltip say the one PC and how it stands (**PC workstation ·
-    Connected**, **Reconnecting…**, **Offline**), or with several PCs how many are connected
-    (**PCs, 2 of 3 connected**); Reconnecting… is said of every PC while the page has lost the
-    stream its rows come from. Its dot (`.inbox-rail-dot`, `--dot-size`, on the glyph's lower
+  - The main view is the button right above Settings (lucide `Monitor`, **Back to main view**):
+    the one way out of the mode on a wide window, by one history entry, on the pane of the open
+    thread. It opens no menu: the list's PC headers say which PCs there are, and a row opens its
+    own PC. While the page has lost the stream its rows come from its name and tooltip add the
+    word (**Back to main view · Reconnecting…**). Its dot (`.inbox-rail-dot`, `--dot-size`, on the glyph's lower
     end corner, ringed as the count is) is drawn only while the connection has something to
     say, as the list's line was: `--status-reconnecting`, pulsing, while it is lost after the
     page had it, `--status-done` for the moment after it is back, and not at all while the open
     thread's chip says the same word. The word is also announced from a status line that is in
-    the document before it. A press opens the list of PCs as a menu (`RowMenu`): one row per PC
-    with its name and its state in words, the one the app is on marked (`aria-current`). A row
-    of another connected PC opens that PC as the classic app opens one, with no thread chosen;
-    a PC that is away opens nothing, as its rows in the list.
+    the document before it.
   - The design follows the strip of icon-only controls that Claude's web app (claude.ai) draws
     down the left edge of a wide window: its controls near the top, the account at its foot,
-    the current place on a pale rounded fill. The mode's rail begins with the way out of the
-    mode instead, and its foot holds the agents that wait, this device's alerts, Settings and
-    the PC. Zed opens its panels from buttons in its status bar, Warp's vertical tabs are a
+    the current place on a pale rounded fill. The mode's rail holds its one place at the top,
+    and its foot the agents that wait, this device's alerts, the way back to the main view and,
+    last, Settings (owner test #18: a mark at the top as the way back, and a PC button under
+    Settings, read as "switch PC"). Zed opens its panels from buttons in its status bar, Warp's vertical tabs are a
     sidebar, and T3 Code lists its threads in a sidebar: the mode's list is already
     that sidebar, and its shell draws no status bar. No icon, colour or markup of any of them
     is used.
@@ -2595,7 +2596,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     narrower than 769px the same rule keeps a row's time and mark where they are.
   - The column has no foot: the rows run to the window's edge, `--space-3` and the bottom safe
     area under the last one. What the foot held is in the list's top row (the state filter) and
-    in the rail (Back to Ovis, and More's items as buttons of their own).
+    in the rail (Back to main view, and More's items as buttons of their own).
   - Over the pane (`.thread-top`) a name chip (`.thread-chip`) stands on the pane's middle: an
     opaque pill, `--control-h` tall, `--bg-elevated` inside a hairline `--border`, holding the
     agent's round mark at `--mark-size`, the name (`--fs-md`, `--fw-medium`) and, after it, the
@@ -2623,10 +2624,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   only draws it again takes none: a window widened past a phone's with a thread open leaves the
   focus in the thread's composer. The column's search field, put away by Escape in a list too
   narrow to show it always, gives the focus to the round Search button that opened it. On a wide window the keyboard's order is the drawn
-  one, which is the document's: the rail's buttons from the Ovis mark down to the PC, each a
+  one, which is the document's: the rail's buttons from Agent inbox down to Settings, each a
   plain Tab stop that Enter and Space press, then the list's top row, its rows, the column's
   resize grip, and the thread. The rail's Agent inbox gives the focus to the list's section,
-  as an opening does, and the list of PCs gives it back to its button when it closes. Back to Ovis takes the control that was pressed away with the mode's
+  as an opening does. Back to main view takes the control that was pressed away with the mode's
   shell: a focus left nowhere goes to the classic header's workspace-list toggle (the drawer's
   on a phone, the sidebar's from 769px), as it does whenever the control that held it is gone
   (lib/focus.ts). Where something took it meanwhile it stays there: the pane's composer on a

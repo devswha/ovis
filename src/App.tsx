@@ -1149,9 +1149,7 @@ export function App() {
         {inMode ? (inboxWide && <aside className="sidebar inbox-column">
           <InboxRail onExit={leaveMode} onInbox={() => inbox.list.current?.toTop()} waiting={railWaiting}
             alerts={{ on: bell.on, title: bell.title, toggle: () => void bell.run() }} onSettings={actions.openSettings} shortcutTitle={shortcutTitle}
-            pcs={{ machines: sidebarMachines, selectedId: selectedMachineId, connection: rosterConnection,
-              saidByThread: !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection,
-              onSelect: (machineId) => selectTarget(machineId, null) }} />
+            connection={rosterConnection} saidByThread={!inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection} />
           {modeList(true)}
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>) : <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}

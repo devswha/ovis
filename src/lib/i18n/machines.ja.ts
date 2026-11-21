@@ -1,13 +1,11 @@
 /**
  * Japanese for the keys only the machines files use:
- * components/MachineSidebar.tsx (with STATE_WORD), components/MachineDialog.tsx,
+ * components/MachineSidebar.tsx (with STATE_WORD), components/MachineHeader.tsx, components/MachineDialog.tsx,
  * lib/bridgeProgress.ts (with STAGES), components/MachineStats.tsx, lib/systemReport.ts.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const MACHINES_JA: Record<string, string> = {
-  "1 agent": "エージェント: 1 件",
   "Inbox": "受信トレイ",
-  "{n} agents": "エージェント: {n} 件",
   "{where} refused the SSH connection: the PC may be off, or nothing answers on that port.": "{where} が SSH 接続を拒否しました。PC の電源が切れているか、そのポートで応答するものがない可能性があります。",
   "{where} is not a name this web server can look up: check the address.": "{where} はこのウェブサーバーが解決できない名前です。アドレスを確認してください。",
   "{where} did not answer in time: check that the PC is on and reachable.": "{where} が時間内に応答しませんでした。PC の電源が入っていて到達できるか確認してください。",
