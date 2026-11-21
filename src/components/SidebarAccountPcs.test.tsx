@@ -4,7 +4,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import type { Machine } from "../../shared/machines.ts";
 import type { AccountPcEntry } from "../lib/api.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import type { AccountPcsSource } from "./RelayAccountPcs.tsx";
+import type { AccountPcsSource } from "../lib/account/useAccountPcs.ts";
 import { SidebarAccountPcs } from "./SidebarAccountPcs.tsx";
 
 const pc = (id: string, name: string): AccountPcEntry => ({ server_id: id.repeat(32).slice(0, 32), server_public_key: "key", relay: "wss://relay.ovis.example", name });

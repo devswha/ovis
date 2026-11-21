@@ -220,6 +220,21 @@ describe("the relay tab's Sign in", () => {
     });
   }
 
+  it("a sign-in on a PC already in that account with its relay off stays on the tab, with the relay's switch", async () => {
+    pcAccountId = "acct_one";
+    approveOnPoll = true;
+    const off: RelayState = { ...relay, status: { ...ONLINE, phase: "off" } };
+    const finished = Promise.withResolvers<boolean>();
+    const account = { service: SERVICE, onOpen() {}, onSignedIn: (home: boolean) => finished.resolve(home) };
+    const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={off} closesGate={false} signedIn={signedIn} accountId={signedIn ? "acct_one" : null} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>;
+    await act(async () => { renderer = create(tab(false), { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) }); });
+    await signIn();
+    expect(await finished.promise).toBe(false);
+    await act(async () => { renderer!.update(tab(true)); });
+    expect(renderer!.root.findAll((node) => node.props.role === "switch" || (node.type === "input" && node.props.type === "checkbox")).length).toBeGreaterThan(0);
+    expect(text(renderer!.root)).toContain("Let this PC be reached from anywhere");
+  });
+
   it("offers each provider's device page as its own button where the service has no link page", async () => {
     fake.offerSignIns(["google"], ["google"]);
     linkPageAvailable = false;

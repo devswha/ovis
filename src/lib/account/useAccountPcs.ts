@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { Machine } from "../../shared/machines.ts";
-import { AccountService } from "../lib/account/service.ts";
-import { indexedAccountStore } from "../lib/account/store.ts";
-import { ACCOUNT_PCS_CHANGED_EVENT, myPcs } from "../lib/account/myPcs.ts";
-import { ApiError, checkAccountPcs, pairAccountPc, startAccountPc, type AccountPcEntry, type AccountPcState } from "../lib/api.ts";
-import { useT } from "../lib/i18n.ts";
-import { deviceOs } from "../lib/phone.ts";
+import type { Machine } from "../../../shared/machines.ts";
+import { AccountService } from "./service.ts";
+import { indexedAccountStore } from "./store.ts";
+import { ACCOUNT_PCS_CHANGED_EVENT, myPcs } from "./myPcs.ts";
+import { ApiError, checkAccountPcs, pairAccountPc, startAccountPc, type AccountPcEntry, type AccountPcState } from "../api.ts";
+import { useT } from "../i18n.ts";
+import { deviceOs } from "../phone.ts";
 
 type AccountPcRow = AccountPcEntry & { readonly new_until?: string | null };
 
@@ -50,7 +50,7 @@ type Round = { asked: Set<string>; invalid: Set<string>; failed: Set<string>; sc
 /** an Add under way: `waiting` once that PC took the request and waits for a member's approval on another device */
 export type Pairing = { server_id: string; waiting: boolean; abort: AbortController };
 
-/** The account's other PCs as both lists use them: which would pair, and Add, which pairs one once a member approves it. */
+/** The account's other PCs as the sidebar uses them: which would pair, and Add, which pairs one once a member approves it. */
 export interface AccountPcs {
   /** the account's PCs but this one; null until read, when not signed in, or when this PC will not check them */
   pcs: readonly AccountPcRow[] | null;
@@ -62,9 +62,6 @@ export interface AccountPcs {
   /** `code`: the server's refusal (ApiError.code), absent for one this page decided */
   failure: { server_id: string; message: string; code?: string } | null;
   add(pc: AccountPcEntry): Promise<void>;
-  cancel(): void;
-  /** asks that PC again whether it would pair (Check again on one that did not answer); rejects when it could not be asked */
-  recheck(pc: AccountPcEntry): Promise<void>;
 }
 
 /**
@@ -102,7 +99,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       listed.current = { asked: new Set(), invalid: new Set(), failed: new Set(), scope: null };
       return;
     }
-    // the sidebar lists nothing until it knows which PC it is on, so it never lists itself; the relay tab, as before
+    // with `expect` (the sidebar), nothing is listed until it knows which PC it is on, so it never lists itself
     if (expect !== undefined && own === undefined) return;
     let live = true;
     account.current!.list().then((read) => {
@@ -115,7 +112,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
         listed.current = { asked: new Set(), invalid: new Set(), failed: new Set(), scope };
         setStates(new Map());
       } else {
-        // a refresh is the one new look a PC that did not answer gets, besides its Check again
+        // a refresh is the one new look a PC that did not answer gets
         for (const id of listed.current.failed) listed.current.asked.delete(id);
         listed.current.failed.clear();
       }
@@ -127,7 +124,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     });
     return () => { live = false; };
   }, [own, enabled, expect, refresh, changes]);
-  // the newest ask of each PC, its first check and every Check again alike: an older one answering late changes nothing
+  // the newest ask of each PC: an older one answering late changes nothing
   const asks = useRef(new Map<string, number>());
   const nextAsk = (serverId: string): number => {
     const ask = (asks.current.get(serverId) ?? 0) + 1;
@@ -140,7 +137,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     checkAccountPcs([pc]).then(({ pcs: [checked] }) => {
       if (listed.current === round && asks.current.get(pc.server_id) === ask && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
     }, (error: unknown) => {
-      // a newer ask of this PC (its Check again, or a later look) has the say: an older one failing changes nothing
+      // a newer ask of this PC (a later look) has the say: an older one failing changes nothing
       if (listed.current !== round || asks.current.get(pc.server_id) !== ask) return;
       // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) stays out of this round's list, also after a refresh reads it again
       if (error instanceof ApiError && error.code === "account_pc_invalid") {
@@ -155,8 +152,8 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
         setPcs(null);
         return;
       }
-      // anything else is that PC not answering: its row says so, with Check again, and the others stay. It is asked
-      // again on the next refresh or Check again, never because the roster changed
+      // anything else is that PC not answering: its row says so, and the others stay. It is asked again on the next
+      // refresh, never because the roster changed
       round.failed.add(pc.server_id);
       setStates((current) => new Map(current).set(pc.server_id, "offline"));
     });
@@ -194,28 +191,12 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       if (running.current === abort) running.current = null;
       if (abort.signal.aborted) return;
       setPairing(null);
-      // another window (the sidebar's own add, or another relay tab) is adding that PC now: nothing failed here, and the
+      // another window's sidebar is adding that PC now: nothing failed here, and the
       // roster shows it added once that one ends
       if (error instanceof ApiError && error.code === "account_pc_busy") return;
       if (error instanceof ApiError && error.code === "account_pc_outdated") setStates((current) => new Map(current).set(pc.server_id, "outdated"));
       setFailure(error instanceof ApiError ? { server_id: pc.server_id, message: error.detail, ...(error.code === null ? {} : { code: error.code }) } : { server_id: pc.server_id, message: t("That PC could not be added. Try again.") });
     }
   };
-  const cancel = (): void => {
-    pairing?.abort.abort();
-    setPairing(null);
-  };
-  const recheck = async (pc: AccountPcEntry): Promise<void> => {
-    setFailure((current) => current?.server_id === pc.server_id ? null : current);
-    const round = listed.current;
-    const ask = nextAsk(pc.server_id);
-    if (!await stillOurs()) throw new Error(t("Sign in again"));
-    // the PC's last answer stays until the new one, and a failed ask leaves every row: it is told on this one
-    const { pcs: [checked] } = await checkAccountPcs([pc]);
-    if (listed.current !== round || asks.current.get(pc.server_id) !== ask || checked === undefined) return;
-    // it answered: a refresh need not ask it again
-    round.failed.delete(pc.server_id);
-    setStates((current) => new Map(current).set(checked.server_id, checked.state));
-  };
-  return { pcs, added, stateOf: (serverId) => states.get(serverId), pairing, failure, add, cancel, recheck };
+  return { pcs, added, stateOf: (serverId) => states.get(serverId), pairing, failure, add };
 }

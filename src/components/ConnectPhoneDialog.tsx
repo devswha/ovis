@@ -108,7 +108,8 @@ export function openingTab({ tabs, noticeWaiting, hasAccount, asked = null }: { 
 export interface RelayAccount {
   service: string;
   onOpen: () => void;
-  /** `home`: the sign-in is to the account this PC is already in, so nothing is left to add here and the page goes to its sessions */
+  /** `home`: the sign-in is to the account this PC is already in, with its relay on, so nothing is left to do here and the
+   * page goes to its sessions; with the relay off the tab stays, with the relay's switch */
   onSignedIn: (home: boolean) => void;
   /** this PC's step-2 switch, as Settings reads it: only then does Add this PC try the one press */
   opensAll?: () => boolean;
@@ -747,7 +748,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
-        <RelaySignIn service={account.service} boundPc={pcAddFromAccount === true || pcIn !== null} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(pcIn !== null && session.account === pcIn); }} />
+        <RelaySignIn service={account.service} boundPc={pcAddFromAccount === true || pcIn !== null} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(on && pcIn !== null && session.account === pcIn); }} />
       </div>
       {qr(false)}
     </>

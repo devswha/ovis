@@ -12,7 +12,7 @@ import { fetchRelay } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import type { AccountPcEntry } from "../lib/api.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
-import { signedInAccount, useAccountPcs, type AccountPcs, type AccountPcsSource } from "./RelayAccountPcs.tsx";
+import { signedInAccount, useAccountPcs, type AccountPcs, type AccountPcsSource } from "../lib/account/useAccountPcs.ts";
 
 /**
  * Signed in to the Ovis account on a PC that is in that account with its relay online: the account's other PCs that
