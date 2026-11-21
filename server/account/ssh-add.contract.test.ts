@@ -64,6 +64,28 @@ test.skipIf(process.platform === "win32")("a PC in another account binds nothing
   expect(b.devices.account()).toBe("acct_other");
 });
 
+test("a bound PC's completion receipt the service did not take is sent again after its next pull, and the directory then shows it completed", async () => {
+  let refuse = 1;
+  const b = await pairingPc({ server: { accountOpensAll: true }, accountFetch: async (request, service) => {
+    if (new URL(request.url).pathname === "/v1/pc/complete" && refuse-- > 0) return Response.json({ error: { code: "unavailable", message: "down" } }, { status: 503 });
+    return await service.fetch(request);
+  } });
+  b.account.opensAll = true;
+  b.account.completions = true;
+  pcs.push(b);
+  await setUpFor(b, "acct_1");
+  await admitAt(b, "acct_1");
+  expect((await b.local("/api/account/one-press", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account: "acct_1" } })).status).toBe(200);
+  const serverId = b.app.context.services.relay.currentIdentity()!.server_id;
+  const completedAt = async () => {
+    const answer = await b.account.fetch(new Request("https://account.test/v1/pcs", { headers: { authorization: `Bearer ${b.account.issueToken("acct_1")}` } }));
+    return ((await answer.json()) as { pcs: { server_id: string; completed_at?: string | null }[] }).pcs.find((pc) => pc.server_id === serverId)?.completed_at;
+  };
+  expect(await completedAt()).toBeNull();
+  await b.app.context.services.accountMailbox.pull();
+  expect(await completedAt()).toEqual(expect.any(String));
+});
+
 test("a device through the relay cannot vouch for another PC", async () => {
   const a = await pc();
   const serverId = a.app.context.services.relay.currentIdentity()!.server_id;

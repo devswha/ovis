@@ -172,6 +172,11 @@ export interface DirectoryPc {
   readonly added_at: string;
   /** absent from an old service, which has no refresh route; null when the service sent one that is unusable */
   readonly listing_id?: string | null;
+  /**
+   * When the PC said it is bound by this listing's add (account#57, POST /v1/pc/complete): null while it is only listed or
+   * admitted; absent from an older service, which does not tell.
+   */
+  readonly completed_at?: string | null;
   readonly invited_at?: string;
   readonly last_seen_at: string | null;
   /** the PC's relay key (X25519, 64 hex) and relay, to compare digits with it; null from an entry without them */
@@ -255,8 +260,9 @@ function parsePc(value: unknown): DirectoryPc | null {
   const admitted_at = typeof value.admitted_at === "string" && !Number.isNaN(Date.parse(value.admitted_at)) ? value.admitted_at : null;
   const listing_id = "listing_id" in value ? (typeof value.listing_id === "string" && SERVER_ID.test(value.listing_id) ? value.listing_id : null) : undefined;
   const invited_at = typeof value.invited_at === "string" && !Number.isNaN(Date.parse(value.invited_at)) ? value.invited_at : undefined;
+  const completed_at = "completed_at" in value ? (typeof value.completed_at === "string" && !Number.isNaN(Date.parse(value.completed_at)) ? value.completed_at : null) : undefined;
   return { server_id: value.server_id, label: value.label, added_at: value.added_at, last_seen_at: value.last_seen_at, public_key, relay, new_until, admitted_at, admitted_before_you: admitted_at !== null && value.admitted_before_you === true,
-    ...(listing_id === undefined ? {} : { listing_id }), ...(invited_at === undefined ? {} : { invited_at }),
+    ...(listing_id === undefined ? {} : { listing_id }), ...(completed_at === undefined ? {} : { completed_at }), ...(invited_at === undefined ? {} : { invited_at }),
     ...(value.new_until != null && new_until === null ? { new_until_unreadable: true as const } : {}),
     ...(value.unconfirmed === true ? { unconfirmed: true as const } : {}) };
 }
