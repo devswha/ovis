@@ -19,7 +19,7 @@ export function openablePcs(devices: readonly RelayDevice[]): RelayDevice[] {
  * - the PC trusts the account's device list for this device's registered key (`accountOpen`, with a verified `join`);
  * - its listing is confirmed: the PC itself pulled this account's mailbox with its server proof (`last_seen_at`), since
  *   anyone can list any PC in their directory;
- * - it is past its new window (`new_until`): a PC inside its 24 hours stays under condition 3;
+ * - it is past its new window (`new_until`): a PC inside its 24 hours, or whose window does not parse, stays under condition 3;
  * - no saved row here: a PC an introduction alone saved (introduction-only) or a pairing never finished is not one;
  * - no "added before you joined" notice for it is still open on this device (NewPcNotices.tsx).
  */
@@ -29,7 +29,7 @@ export function accountOpenablePcs(pcs: readonly MyPc[], here: { readonly accoun
     && !newPcNoticeClosed(newPcNoticeKey(here.account, { server_id: pc.server_id, admitted_at: pc.admitted_at ?? null, new_until: pc.new_until ?? null }));
   return pcs.flatMap((pc) => !pc.paired && pc.join !== undefined && pc.accountOpen === true
     && pc.last_seen_at !== null
-    && !isNewAccountPc(pc, here.now)
+    && !isNewAccountPc(pc, here.now) && pc.new_until_unreadable !== true
     && !saved.has(pc.server_id)
     && !noticeOpen(pc)
     // checked by the key and relay its row carries, which myPcs kept only when the key is the one its id names

@@ -1419,6 +1419,7 @@ describe("the hosted shell's front page", () => {
     it.each([
       ["its listing is unconfirmed (the PC never pulled this account's mailbox)", () => ({ row: accountRow({ last_seen_at: null }), saved: [] as RelayDevice[] })],
       ["it is inside its new window", () => ({ row: accountRow({ new_until: new Date(Date.now() + 3_600_000).toISOString(), admitted_at: new Date().toISOString() }), saved: [] as RelayDevice[] })],
+      ["its new window does not parse (it may still be inside it)", () => ({ row: accountRow({ new_until: "not a date" }), saved: [] as RelayDevice[] })],
     ])("C3: a launch never opens an account-only PC when %s", async (_case, make) => {
       const { row, saved } = make();
       const { went, asked, bare } = await accountOnlyLaunch(row, saved);
