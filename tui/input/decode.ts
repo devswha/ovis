@@ -157,9 +157,14 @@ function isPrintable(code: number): boolean {
   return code >= 0x20 && code <= 0x10ffff && !(code >= 0x7f && code <= 0x9f) && !(code >= 0xd800 && code <= 0xdfff);
 }
 
+/** kitty numbers the keys that type nothing (Caps Lock, the modifiers, F26 and up, the media keys) in the private use area */
+const isFunctionalNumber = (code: number): boolean => code >= 0xe000 && code <= 0xf8ff;
+
 function numberedKey(code: number, mods: Mods, action: KeyAction, reported?: string): Key | undefined {
   const name = NUMBERED_KEYS[code];
   if (name) return key(name, mods, action);
+  // a functional key this table does not name is unknown: its number is never a character to type
+  if (isFunctionalNumber(code)) return undefined;
   return isPrintable(code) ? typedKey(String.fromCodePoint(code), mods, action, reported) : undefined;
 }
 

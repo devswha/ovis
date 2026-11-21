@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { bytes, expectEveryWay, raw } from "../testing/input-runs.ts";
+import { bytes, expectEveryWay, feedReads, raw } from "../testing/input-runs.ts";
 import type { Mods } from "./decode.ts";
 import type { Framer } from "./framer.ts";
 
@@ -186,6 +186,11 @@ const ROWS: Row[] = [
   ["kitty keypad 0", bytes("\x1b[57399u"), [key("NUMPAD_0")]],
   ["kitty keypad Enter", bytes("\x1b[57414u"), [key("NUMPAD_ENTER")]],
   ["kitty keypad up", bytes("\x1b[57419u"), [key("NUMPAD_UP")]],
+  ["kitty left shift types nothing", bytes("\x1b[57441u"), [unknown("\x1b[57441u")]],
+  ["kitty Caps Lock types nothing", bytes("\x1b[57358u"), [unknown("\x1b[57358u")]],
+  ["kitty media play types nothing", bytes("\x1b[57428u"), [unknown("\x1b[57428u")]],
+  ["kitty F27 types nothing", bytes("\x1b[57390u"), [unknown("\x1b[57390u")]],
+  ["mok left shift types nothing", bytes("\x1b[27;5;57441~"), [unknown("\x1b[27;5;57441~")]],
   ["kitty F13", bytes("\x1b[57376u"), [key("F13")]],
   ["kitty menu", bytes("\x1b[57363u"), [key("CONTEXT_MENU")]],
   ["kitty print screen", bytes("\x1b[57361;5u"), [key("PRINT_SCREEN", C)]],
@@ -243,4 +248,16 @@ describe("decode table", () => {
   for (const [name, input, events, setup] of ROWS) {
     it(name, () => expectEveryWay(input, events, setup));
   }
+});
+
+describe("kitty's functional key numbers", () => {
+  it("never types a number of the private use area as a character, named or not", () => {
+    const typed: number[] = [];
+    for (let code = 0xe000; code <= 0xf8ff; code++) {
+      for (const event of feedReads([bytes(`\x1b[${code}u`)])) {
+        if (event.type === "text" || (event.type === "key" && (event.text !== undefined || event.key === "UNIDENTIFIED"))) typed.push(code);
+      }
+    }
+    expect(typed).toEqual([]);
+  });
 });
