@@ -2212,22 +2212,18 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Phone & devices → Install offers it when the browser can install, and the steps otherwise,
   as the Claude web app keeps getting its apps in the account menu rather than a sidebar row.
 - The footer's first row, above every other, is **Open agent inbox** (`.inbox-foot-entry`, a
-  full-width `.sidebar-footer-action` as the Change PC row is: lucide `Inbox` in the icon's
+  full-width `.sidebar-footer-action`: lucide `Inbox` in the icon's
   column, then the words, and no chevron at its end: the Agents disclosure row above it starts
   with one, and one foot does not draw two with two meanings): the way into the inbox mode
   (Inbox mode, below), only in a collapsed sidebar's peek. With the sidebar shown from `769px` the
   Ovis wordmark at the sidebar's head is the way in, and on a phone the Ovis mark in the open
   drawer's head: a row saying the same thing above the gear was one too many, and a phone's drawer
   keeps its foot to the gear. The setup guide's shell does not draw it.
-- Above that row, only where the page is one PC of a phone's list (a PC's page on the hosted
-  relay shell, or the phone app), one full-width row (`.sidebar-footer-pc`) names the PC, the lone
-  Host's name its header no longer shows, then **Change PC** in `--text-dim` and a switch glyph: a
-  tap goes back to the list of PCs (the shell's front page, or the app's list), as the Claude app's
-  sidebar foot names whose account it is and switches it in one tap. Only from `769px`: below that
-  the drawer keeps its foot to the gear, and Settings' list of pages ends in **Change PC** at the
-  same widths (`.settings-change-pc`, under the pages, `DRAWER_QUERY`), so the way back is the gear
-  and that row. Settings →
-  Devices and PCs keeps its Change PC row. A PC's own app never shows it: its sidebar lists its PCs itself.
+- No foot row and no Settings page switches PCs: every PC's sidebar lists the account's PCs itself
+  (SidebarAccountPcs.tsx adds the ones missing), and the hosted shell and phone app open an online
+  PC by themselves (lib/relay/pcPick.ts), so there is nothing to switch to. The phone app keeps one
+  way back to its own connect screen, Settings → This app, and an access refusal's card keeps its
+  button.
 
 ### Inbox mode (`.mode-inbox`, `.inbox-rail`, `.thread-title`, `.thread-top`)
 - The agent inbox is a mode of the app: the list of agents and the thread a row opens, in the
@@ -5120,10 +5116,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Install (a row of More settings' This device, shown only when the browser can install) offers it;
   About links the repository.
 - In the hosted relay shell (app.ovis.sh, `<meta name="ovis-shell">`, lib/shellMode.ts) the page
-  opens with a **This app** group of three rows the native build never shows: **Change PC** (a neutral button to the
-  shell's front page: Add a PC, listing this device's PCs and the account's, or, signed out where the account
-  service runs, the sign-in screen with that list behind **Start without signing in**; the same row the iOS app
-  gets for its own list), **Relayed connections** with **Manage** (a neutral button to `/#overview`, the relay
+  opens with a **This app** group of two rows the native build never shows: **Relayed connections** with **Manage** (a neutral button to `/#overview`, the relay
   dashboard, which no launch, sign-in or pairing ever lands on: people open it on purpose to manage the PCs they
   reach through the relay)
   and **Forget this PC** (a neutral button that asks once in a `ConfirmDialog`, **Forget**, then
