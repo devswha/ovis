@@ -11,10 +11,14 @@ const RELEASE = { "v0.5.6": "c482ad601132ebb80c0013f9d9063d474eac96c1", "v0.5.7"
 
 export function hasReleaseFixtures(...tags: (keyof typeof RELEASE)[]): boolean {
   if (process.env.CI) return true; // CI must fail, rather than silently dropping the release matrix.
-  return (tags.length ? tags : ["v0.5.7"] as const).every(tag =>
+  const missing = (tags.length ? tags : ["v0.5.7"] as const).filter(tag =>
     Bun.spawnSync(["git", "cat-file", "-e", `${RELEASE[tag]}^{commit}`], {
       cwd: join(import.meta.dir, "../.."), env: { ...process.env, GIT_MASTER: "1" }, stdout: "ignore", stderr: "ignore",
-    }).exitCode === 0);
+    }).exitCode !== 0);
+  if (missing.length > 0) {
+    console.warn(`Skipping release-backed upgrade tests: missing ${missing.join(", ")} (${missing.map(tag => `git fetch origin tag ${tag}`).join("; ")})`);
+  }
+  return missing.length === 0;
 }
 
 /** Run the release's own writers in disposable state, not Step 2 with an option flipped. */

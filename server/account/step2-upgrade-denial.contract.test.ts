@@ -123,6 +123,19 @@ test.skipIf(!available).each([
   }, 15_000,
 );
 
+async function rebind(pc: Awaited<ReturnType<typeof fixture>>, app: ReturnType<typeof createServer>, omitted: string) {
+  expect(app.context.services.devices.clearAccountBinding("left_on_pc", "pc")).toBe(true);
+  pc.omit(omitted);
+  const base = `http://127.0.0.1:${app.port}`;
+  const post = (path: string, body: object) => fetch(base + path, { method: "POST",
+    headers: { origin: base, authorization: "Bearer matrix-owner", "x-herdr-machine": "1" }, body: JSON.stringify(body) });
+  expect((await post("/api/account/relay-account", { account: ACCOUNT })).status).toBe(204);
+  expect((await pc.service.fetch(new Request(`https://account.test/v1/pcs/${pc.serverId}/admit`, {
+    method: "POST", headers: { authorization: `Bearer ${pc.service.issueToken(ACCOUNT, { twoStep: true })}` }, body: "{}",
+  }))).status).toBe(200);
+  expect((await post("/api/account/one-press", { account: ACCOUNT })).status).toBe(200);
+}
+
 test.skipIf(!available).each(["signer", "target"] as const)(
   "a previous binding's %s pin cannot authorize a target-only block", async missing => {
     const pc = await fixture("original");
@@ -131,17 +144,7 @@ test.skipIf(!available).each(["signer", "target"] as const)(
       pc.connect();
       const { devices, accountMailbox } = app.context.services;
       expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
-      expect(devices.clearAccountBinding("left_on_pc", "pc")).toBe(true);
-      pc.omit(missing === "signer" ? pc.owner.spki : pc.victim.spki);
-      const base = `http://127.0.0.1:${app.port}`;
-      const post = (path: string, body: object) => fetch(base + path, { method: "POST",
-        headers: { origin: base, authorization: "Bearer matrix-owner", "x-herdr-machine": "1" }, body: JSON.stringify(body) });
-      expect((await post("/api/account/relay-account", { account: ACCOUNT })).status).toBe(204);
-      expect((await pc.service.fetch(new Request(`https://account.test/v1/pcs/${pc.serverId}/admit`, {
-        method: "POST", headers: { authorization: `Bearer ${pc.service.issueToken(ACCOUNT, { twoStep: true })}` },
-        body: "{}",
-      }))).status).toBe(200);
-      expect((await post("/api/account/one-press", { account: ACCOUNT })).status).toBe(200);
+      await rebind(pc, app, missing === "signer" ? pc.owner.spki : pc.victim.spki);
       expect(await devices.applyBlock(pc.record, "mailbox")).toMatchObject({ outcome: "refused", reason: "unknown_target" });
       expect(devices.isTombstoned(pc.victim.spki)).toBe(false);
       expect(app.context.services.safetyLog?.waitingBlocks().map(entry => entry.record.id)).toContain(pc.record.id);
@@ -165,7 +168,9 @@ test.skipIf(!available).each(["proof-present", "proof-later"] as const)(
       if (proof === "proof-later") {
         expect(receipt).toMatchObject({ outcome: "refused", reason: "unknown_target" });
         expect(safetyLog?.waitingBlocks().map(entry => entry.record.id)).toContain(pc.record.id);
-        expect(devices.list(null).find(row => row.id === pc.targetId)?.not_me_waiting).toBe(true);
+        const shown = await fetch(`http://127.0.0.1:${app.port}/api/devices`, { headers: { authorization: "Bearer matrix-owner" } });
+        const { devices: rows } = await shown.json() as { devices: { id: string; not_me_waiting?: true }[] };
+        expect(rows.filter(row => row.not_me_waiting).map(row => row.id)).toEqual([pc.targetId]);
         pc.connect();
         expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
       }

@@ -64,6 +64,8 @@ interface MergeRecord {
   devices: string[];
   /** Exact credentials witnessed in both folders by an ordinary Step 1 merge. Never an admission order. */
   legacy_credentials?: string[];
+  /** The relay identity those credentials were witnessed under: a later reset or a foreign sibling does not unwitness them. */
+  legacy_identity?: string;
   preferences: Record<string, PreferencesSnapshot>;
   preferences_target?: PreferencesSnapshot;
   push: Record<string, string[]>;
@@ -192,6 +194,7 @@ const isRecord = (value: unknown): value is MergeRecord =>
   isObject(value) && value["version"] === 1 && Number.isSafeInteger(value["seq"]) && typeof value["at"] === "string"
   && isStrings(value["dirs"]) && isStrings(value["devices"])
   && (value["legacy_credentials"] === undefined || isStrings(value["legacy_credentials"]))
+  && (value["legacy_identity"] === undefined || typeof value["legacy_identity"] === "string")
   && isObject(value["preferences"]) && Object.values(value["preferences"]).every(isSnapshot)
   && (value["preferences_target"] === undefined || isSnapshot(value["preferences_target"]))
   && isObject(value["push"]) && Object.values(value["push"]).every(isStrings)
@@ -582,6 +585,19 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
   }
 }
 
+const witnessed = (rules: MergeRules, legacy: ReadonlySet<string>) => !rules.dropConflictingKeys ? {}
+  : { legacy_credentials: [...legacy], ...(rules.sharedLegacyIdentity === undefined ? {} : { legacy_identity: rules.sharedLegacyIdentity }) };
+
+/** The exact credentials this folder's last merge witnessed, for a start that runs no merge. */
+export function recordedLegacyCredential(active: string): ((row: StoredDevice) => boolean) | undefined {
+  const read = readStateDocument(join(active, RECORD));
+  const record = read.kind === "json" && isRecord(read.value) ? read.value : null;
+  const identity = record?.legacy_identity;
+  if (!record?.dirs.includes(realpath(active)) || identity === undefined || !record.legacy_credentials?.length) return undefined;
+  const verified = new Set(record.legacy_credentials);
+  return row => verified.has(credentialFingerprint(identity, row));
+}
+
 export function mergeSiblingState(active: string, sibling: string, now = new Date(), rules: MergeRules = {}): SiblingMerge {
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   let blocked: string | null;
@@ -610,7 +626,7 @@ function merge(active: string, sibling: string, now: Date, stamp: string, rules:
   let intent: MergeRecord | null = null;
   const intend: Intent = (ids, sides, gated) => {
     intent = { version: 1, seq: (base?.seq ?? 0) + 1, at: now.toISOString(), dirs: pair, devices: base?.devices ?? [],
-      ...(rules.dropConflictingKeys ? { legacy_credentials: [...legacy] } : {}),
+      ...witnessed(rules, legacy),
       gated: gated || base?.gated === true, preferences: base?.preferences ?? {},
       ...(base?.preferences_target ? { preferences_target: base.preferences_target } : {}), push: base?.push ?? {}, pending: { ids, sides } };
     try { writePrivateState(join(active, RECORD), intent); }
@@ -634,7 +650,7 @@ function merge(active: string, sibling: string, now: Date, stamp: string, rules:
     at: now.toISOString(),
     dirs: pair,
     devices: devices.ids ?? base?.devices ?? [],
-    ...(rules.dropConflictingKeys ? { legacy_credentials: [...legacy] } : {}),
+    ...witnessed(rules, legacy),
     ...(devices.ids === null && (written?.pending ?? base?.pending) ? { pending: written?.pending ?? base?.pending } : {}),
     gated: devices.gated === true || base?.gated === true,
     preferences: preferences?.snapshots ?? base?.preferences ?? {},

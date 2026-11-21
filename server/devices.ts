@@ -1111,18 +1111,27 @@ export class DeviceStore {
     const targets = this.devices.filter((d) => d.relay_public_key === record.target);
     const joinedTargets = allTargets.filter((d) => !targets.includes(d));
     const serverId = this.accountOrderServerId?.() ?? null;
+    const bindId = this.pc?.binding()?.bind_id;
     const order = (got === "mailbox" || got === "snapshot") && serverId !== null && this.accountOrder !== null
-      && this.accountOrder.lastVersion(this.pc?.binding()?.bind_id, serverId) !== null ? this.accountOrder : null;
-    const legacyTarget = targets.length > 0 && targets.every(row => row.origin?.from === "legacy"
+      && this.accountOrder.lastVersion(bindId, serverId) !== null ? this.accountOrder : null;
+    // Local rollback provenance identifies the target only; it never gives that row order or signing authority.
+    const legacyTarget = targets.length > 0 && targets.every(row => row.origin?.from === "legacy" || this.legacyFromRegistry(row)
       || (row.imported && this.siblingLegacyCredential?.(row) === true))
       && targets.some(row => row.imported || row.untrusted_created_at === row.created_at);
-    const pinnedSigner = order?.no(record.signer);
-    const pinnedTarget = order?.no(record.target);
+    const placed = (key: string) => bindId !== undefined && order?.listedOn(key, bindId) === true ? order.no(key) : null;
+    const pinnedSigner = placed(record.signer);
+    const pinnedTarget = placed(record.target);
     const denyByAccountOrder = order != null && legacyTarget && pinnedSigner != null && pinnedTarget != null;
+    // A signer speaks from the live standing of the store that owns its row: holds, expiry and opt-out included.
+    const standing = (row: StoredDevice): boolean => {
+      if (this.devices.includes(row)) return this.memberAdmitted(row, Date.now());
+      const listed = this.joinedRows?.row(row.id);
+      const access = listed ? this.listedAccess(listed) : null;
+      return access !== null && "ok" in access;
+    };
     const signers = denyByAccountOrder
       ? this.memberRows(record.signer, record.account).filter(row => !row.imported && !row.invalid_origin && row.held === undefined
-        && admissionPosition(row) !== null && this.memberAdmitted(row, Date.now())
-        && this.admissionAllowed(record.signer, "legacy_credential", { legacyRow: row }))
+        && admissionPosition(row) !== null && standing(row) && this.admissionAllowed(record.signer, "legacy_credential", { legacyRow: row }))
       : this.signingRows(record.signer, record.account);
     if (signers.length === 0 && !(legacyTarget && this.memberRows(record.signer, record.account).length > 0)) return refused("signer_not_member");
     if (signers.some((d) => this.frozen(d))) return refused("frozen");
@@ -1273,7 +1282,9 @@ export class DeviceStore {
     const blocked = this.safety.state().blocks.find((entry) => entry.record.id === record.target);
     if (blocked === undefined) {
       const line = this.safety.state().freezes.find((entry) => entry.record.id === `f:${record.target}`)?.record;
-      if (line?.kind !== "freeze" || line.account !== record.account || !order || order.late(record.signer)) return false;
+      const bound = this.pc?.binding()?.bind_id;
+      if (line?.kind !== "freeze" || line.account !== record.account || !order || order.late(record.signer) || bound === undefined
+        || !order.listedOn(record.signer, bound) || !order.listedOn(line.target, bound)) return false;
       const signerNo = order.no(record.signer);
       const targetNo = order.no(line.target);
       return signerNo !== null && targetNo !== null && signerNo < Math.min(targetNo, line.after)

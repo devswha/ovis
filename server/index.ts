@@ -45,7 +45,7 @@ import { HC_RELEASE, hcInstallTarget, installHc } from "./herdr-core/install.ts"
 import { userHome } from "./user-home.ts";
 import { type HerdrCoreFacts, LOCAL_MACHINE } from "../shared/machines.ts";
 import { type AlertTiming, defaultStateDir } from "./push.ts";
-import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
+import { mergeSiblingState, recordedLegacyCredential, siblingStateDir } from "./state-merge.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
 import { sweepSshDirs } from "./ssh.ts";
 import { OpenCodePromptState } from "./prompt.ts";
@@ -308,12 +308,19 @@ export function createServer(
   // key differs between the two copies is dropped (T48, T27)
   const conflicts: StoredDevice[] = [];
   const closure = safetyLog !== null && (safetyLog.strict !== null || safetyLog.state().locked || safetyLog.state().freezes.length > 0);
+  // A browser-only folder never saved a relay identity: the twin rows and the merge record are the evidence, scoped to
+  // the one identity this PC has; two different identities are two PCs and witness nothing.
   const ownIdentity = opensAll && sibling ? savedServerId(stateDir) : undefined;
+  const otherIdentity = opensAll && sibling ? savedServerId(sibling) : undefined;
   const ownBinding = pcAccount?.binding()?.bind_id;
   const otherBinding = opensAll && sibling ? PcAccountState.open(sibling).binding()?.bind_id : undefined;
-  const sharedLegacyIdentity = ownIdentity !== undefined && !!sibling && ownIdentity === savedServerId(sibling)
-    && (ownBinding === undefined || otherBinding === undefined || ownBinding === otherBinding) ? ownIdentity : undefined;
+  const pcIdentity = ownIdentity === undefined || otherIdentity === undefined || ownIdentity === otherIdentity ? ownIdentity ?? otherIdentity : undefined;
+  const sharedLegacyIdentity = pcIdentity !== undefined && (ownBinding === undefined || otherBinding === undefined || ownBinding === otherBinding)
+    ? pcIdentity : undefined;
   const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, sharedLegacyIdentity, onDropped: (device) => conflicts.push(device) } : {}) : null;
+  // With no merge this start (a sibling now of another identity, or none given), only credentials an earlier merge
+  // witnessed stay Step 1 credentials; a merge that ran decides alone, so its deletions still veto.
+  const siblingLegacyCredential = merge ? merge.legacyCredential : opensAll && !untouched ? recordedLegacyCredential(stateDir) : undefined;
   let accountBlocked: string | null = accountMerge;
   if (sibling && !untouched && accountBlocked === null) {
     try { accountBlocked = mergeAccountTombstones(stateDir, sibling, opensAll); }
@@ -354,7 +361,7 @@ export function createServer(
   }) : null;
   const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
     safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: rowsForDevices, held: (key) => accountMailbox.gates().held(key),
-    ...(merge?.legacyCredential ? { siblingLegacyCredential: merge.legacyCredential } : {}),
+    ...(siblingLegacyCredential ? { siblingLegacyCredential } : {}),
   });
   const accountRows = opened.rows;
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });

@@ -426,7 +426,10 @@ export class SafetyLog {
     const of = (kind: SafetyRecordKind) => byN.filter((entry) => entry.record.kind === kind);
     const locks = of("lock").filter((entry) => !unlocked.has(at(entry.record.account, entry.record.id)));
     const blocks = of("block").filter((entry) => !lifted.has(at(entry.record.account, entry.record.id)));
-    const serviceFreezes = of("freeze").filter((entry) => !lifted.has(at(entry.record.account, entry.record.id.slice(2))));
+    // A target-only block and the service's freeze line for that same block are one decision: the key alone.
+    const targetOnly = new Set(blocks.filter(entry => entry.asof?.target_only === true).map(entry => at(entry.record.account, entry.record.id)));
+    const serviceFreezes = of("freeze").filter((entry) => !lifted.has(at(entry.record.account, entry.record.id.slice(2)))
+      && !targetOnly.has(at(entry.record.account, entry.record.id.slice(2))));
     return {
       locked: locks.length > 0,
       locks,
