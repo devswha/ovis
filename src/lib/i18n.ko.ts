@@ -250,6 +250,8 @@ const BASE: Record<string, string> = {
   "No|account pc": "아니요",
   "Remove from my account": "계정에서 빼기",
   "\"{name}\" asks to join your account": "\"{name}\" 추가 요청",
+  "Another device of your account declined adding this PC.": "내 계정의 다른 기기에서 이 PC 추가를 거절했어요.",
+  "The request could not be declined. Try again.": "요청을 거절하지 못했어요. 다시 시도하세요.",
   "The PC could not be added. Try again.": "PC를 추가하지 못했어요. 다시 시도하세요.",
   "Sign in again to add it: your sign-in is more than ten minutes old.": "로그인한 지 10분이 지나서 추가할 수 없어요. 다시 로그인하세요.",
   "Sign in on this device to add it.": "이 기기에서 직접 로그인해야 추가할 수 있어요.",

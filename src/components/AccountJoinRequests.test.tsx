@@ -126,14 +126,18 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
     expect(fake.requests.filter((line) => !line.startsWith("GET ") && !line.startsWith("POST /v1/token"))).toEqual([`PUT /v1/pcs/${DESK}`, `PUT /v1/pcs/${MAC}`]);
   });
 
-  it("hides it on this device on Decline, until the account lists it anew", async () => {
+  it("denies that request on Decline: removed from the account for every device, the PC not added, and a new request shows again", async () => {
     await listedByItsOwner(mac, "hasang-MacBookPro");
     await mount();
     await press("Decline");
+    expect(fake.requests).toContain(`DELETE /v1/pcs/${MAC}`);
+    expect(fake.pcs(ACCOUNT).map((pc) => pc.server_id)).toEqual([DESK]);
+    expect(opened).toEqual([]);
     expect(buttons()).toEqual([]);
+    // the PC asks again: a new listing from its own Settings
+    await listedByItsOwner(mac, "hasang-MacBookPro");
     await mount();
-    expect(buttons()).toEqual([]);
-    expect(fake.pcs(ACCOUNT).map((pc) => pc.server_id)).toContain(MAC);
+    expect(buttons()).toEqual(["Allow", "Decline"]);
   });
 
   it("asks nothing for a PC paired here, one whose request is over ten minutes old, or one that already joined", async () => {

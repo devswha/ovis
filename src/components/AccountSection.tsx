@@ -8,7 +8,7 @@ import { useCallback, useContext, useEffect, useEffectEvent, useRef, useState } 
 import { Check, Plus, X } from "lucide-react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { AddPcWaitOver, addInOnePress, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, addInOnePress, closeAddWindow, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn, type DesktopAccountBridge } from "../lib/account/desktop.ts";
 import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
@@ -131,13 +131,15 @@ type AddThisPcState =
    */
   | { kind: "waiting"; name: string; until: number; mark: AddPcWaiting | null; resumed: boolean; signedIn?: boolean }
   | { kind: "expired" }
+  /** another device of the account denied the request (removed its listing): the PC is not added, and a press asks anew */
+  | { kind: "declined" }
   /** `enrolling`: the device that added the PC has not let the account's other devices in yet */
   | { kind: "done"; account: string; enrolling: boolean }
   | { kind: "error"; message: string };
 
 const pageHidden = (): boolean => typeof document !== "undefined" && document.hidden === true;
 
-const offering = (state: AddThisPcState): boolean => state.kind === "offer" || state.kind === "expired" || state.kind === "error" || state.kind === "relay-off";
+const offering = (state: AddThisPcState): boolean => state.kind === "offer" || state.kind === "expired" || state.kind === "declined" || state.kind === "error" || state.kind === "relay-off";
 
 const IN_USE_HELP = "https://github.com/devswha/ovis/blob/main/docs/guide.md#a-sign-in-method-that-belongs-to-another-account";
 
@@ -389,6 +391,18 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         : { kind: "offer" });
     };
     const stopped = (): void => { forget(); left(); };
+    /**
+     * The listing this wait made, gone from the account once it was seen there: a device of the account denied the
+     * request (Deny on its join request). The wait ends rather than list the PC again, which would ask once more.
+     */
+    let seenListed = false;
+    const deniedElsewhere = async (): Promise<boolean> => {
+      if (mark === null) return false;
+      const listed = await listedInAccount(accountService(), mark.serverId, mark.account);
+      if (listed === true) seenListed = true;
+      return listed === false && seenListed;
+    };
+    const declined = (): void => { forget(); setState({ kind: "declined" }); };
     const stopsThen = stops.current;
     const startsThen = starts.current;
     let joinedWait = false;
@@ -431,6 +445,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         // one that waited, and no window is opened on that one
         if (mark !== null && !await pcAnswers(mark.serverId)) { if (live) stopped(); return; }
         if (!live || withdrawn()) return;
+        if (await deniedElsewhere()) { if (live && !withdrawn()) declined(); return; }
+        if (!live || withdrawn()) return;
         const { serverId: pc, windowId } = await reopenAddWindow();
         const closed = windowId !== undefined && closeLate(windowId);
         // it changed PC between that question and the window: the wait is not this one's
@@ -472,6 +488,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (withdrawn()) { left(); return true; }
         // listed only under the account the press was made in: another sign-in since then ends the wait
         if (!await stillSignedIn()) { if (live) stopped(); return true; }
+        if (!live || over) return true;
+        // denied on another device since a reopen saw it listed: never listed again by itself
+        if (seenListed && await deniedElsewhere()) { if (live && !withdrawn()) declined(); return true; }
         if (!live || over) return true;
         if (withdrawn()) { left(); return true; }
         const kept = shared ? readAddPcWaiting() : null;
@@ -823,6 +842,11 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         state.enrolling
           ? <p className="settings-description" role="status">{t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")}</p>
           : <p className="account-add-pc-done" role="status"><Check aria-hidden="true" />{t("Added")}</p>
+      ) : state.kind === "declined" ? (
+        <>
+          <p className="settings-description" role="status">{t("Another device of your account declined adding this PC.")}</p>
+          <button type="button" className="btn btn-primary account-add-pc-button" onClick={() => add()}>{t("Add this PC to my account")}</button>
+        </>
       ) : state.kind === "expired" ? (
         <>
           <p className="settings-description" role="status">{t("This PC stopped waiting after 30 minutes.")}</p>

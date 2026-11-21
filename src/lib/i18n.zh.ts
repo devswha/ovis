@@ -254,6 +254,8 @@ const BASE: Record<string, string> = {
   "No|account pc": "不",
   "Remove from my account": "从我的账号移除",
   "\"{name}\" asks to join your account": "\"{name}\" 请求加入你的账号",
+  "Another device of your account declined adding this PC.": "你账号的另一台设备拒绝了添加这台电脑。",
+  "The request could not be declined. Try again.": "无法拒绝该请求，请重试。",
   "The PC could not be added. Try again.": "无法添加这台电脑，请重试。",
   "Sign in again to add it: your sign-in is more than ten minutes old.": "登录已超过 10 分钟，无法添加。请重新登录。",
   "Sign in on this device to add it.": "请在这台设备上直接登录后再添加。",

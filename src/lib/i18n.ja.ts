@@ -252,6 +252,8 @@ const BASE: Record<string, string> = {
   "No|account pc": "いいえ",
   "Remove from my account": "アカウントから外す",
   "\"{name}\" asks to join your account": "\"{name}\" がアカウントへの追加を求めています",
+  "Another device of your account declined adding this PC.": "アカウントの別のデバイスがこの PC の追加を拒否しました。",
+  "The request could not be declined. Try again.": "リクエストを拒否できませんでした。もう一度お試しください。",
   "The PC could not be added. Try again.": "PC を追加できませんでした。もう一度お試しください。",
   "Sign in again to add it: your sign-in is more than ten minutes old.": "サインインから 10 分以上たっているため追加できません。もう一度サインインしてください。",
   "Sign in on this device to add it.": "追加するには、このデバイスで直接サインインしてください。",

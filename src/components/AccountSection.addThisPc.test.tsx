@@ -60,6 +60,8 @@ describe("AddThisPc", () => {
   let tab: Map<string, string>;
   let restore: (() => void)[];
   let puts: string[];
+  /** the PCs the account lists, as GET /v1/pcs answers; null: none (the default, which no wait reads as a decline) */
+  let listedNow: string[] | null;
   let relayRequest: ((path: string, init?: RequestInit) => Promise<Response>) | null;
   const loopbackFetch = globalThis.fetch;
   let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null; close: Promise<void> | null; press: Promise<void> | null };
@@ -67,7 +69,7 @@ describe("AddThisPc", () => {
   const service = (bound?: string, boundSignIn?: string): AccountService => {
     const mine = (): void => { if (bound !== undefined && (signedIn !== bound || (boundSignIn !== undefined && boundSignIn !== `r-${signInNo}`))) throw new SignedOutError(); };
     return {
-      listPcs: async () => { mine(); await held.listPcs; return []; },
+      listPcs: async () => { mine(); await held.listPcs; return (listedNow ?? []).map((id) => ({ server_id: id, label: "desk", added_at: new Date(at).toISOString(), last_seen_at: null, public_key: null, relay: null, new_until: null, admitted_at: null, admitted_before_you: false })); },
       putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); await held.putPc; },
       deletePc: async () => { mine(); directory.push("deletePc"); },
       admitPc: async () => { mine(); admitted.push(signedIn ?? ""); if (!onePress.admits) throw new AccountServiceError(403, "two_step_required", "Set up two-step sign-in first"); return { account: signedIn, new_until: new Date(at + 86_400_000).toISOString() }; },
@@ -91,6 +93,7 @@ describe("AddThisPc", () => {
     asked = [];
     directory = [];
     puts = [];
+    listedNow = null;
     relayRequest = null;
     held = { listPcs: null, putPc: null, session: null, link: null, start: null, close: null, press: null };
     tab = new Map();
@@ -958,6 +961,24 @@ describe("AddThisPc", () => {
     const opened = links();
     await advance(REOPEN_MS * 2);
     expect(links()).toBe(opened);
+  });
+
+  test("a request another device of the account denied ends the wait: not added, not listed again, and asked anew only by a press", async () => {
+    listedNow = [SERVER];
+    const renderer = await mount(ACCOUNT);
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    await advance(REOPEN_MS);
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    // Deny on the phone removed the listing
+    listedNow = [];
+    await advance(REOPEN_MS);
+    expect(words(renderer)).toContain("Another device of your account declined adding this PC.");
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(tab.has(MARKER)).toBe(false);
+    await advance(RELIST_MS);
+    expect(directory).toEqual(["putPc"]);
+    await press(renderer, "Add this PC to my account");
+    expect(directory).toEqual(["putPc", "putPc"]);
   });
 
   test("a sign-in that was already there lists nothing by itself: the offer and its button", async () => {

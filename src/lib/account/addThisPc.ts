@@ -287,6 +287,21 @@ export async function addInOnePress(service: AccountService, serverId: string, a
 
 export type OnePress = "added" | "sign-in-again" | "refused";
 
+/**
+ * Whether the account still lists `serverId`, read as the stored sign-in of `account`: false once a device of the
+ * account denied the PC's request (Deny on its join request removes the listing); null when it could not be read, or
+ * another sign-in is stored.
+ */
+export async function listedInAccount(service: AccountService, serverId: string, account: string): Promise<boolean | null> {
+  const session = await service.session();
+  if (session?.account !== account) return null;
+  try { return (await service.forSignIn(session).listPcs()).some((pc) => pc.server_id === serverId); }
+  catch (error) {
+    if (!(error instanceof Error)) throw error;
+    return null;
+  }
+}
+
 /** the admit refusals that are about the sign-in alone (docs/account.md, "One press"): a fresh own sign-in may pass them */
 const SIGN_IN_REFUSALS: readonly string[] = ["two_step_required", "session_not_fresh", "own_sign_in_required"];
 

@@ -2,6 +2,7 @@ import { Monitor } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ACCOUNT_PCS_CHANGED_EVENT, myPcs, newPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, SignedOutError, type AccountService } from "../lib/account/service.ts";
+import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { indexedDeviceStore, type RelayDevice } from "../lib/relay/device.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
@@ -9,11 +10,7 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
 
-type Asking = { readonly account: string; readonly pcs: readonly MyPc[] };
-
-/** a Decline is kept in this browser per account and PC, for that listing (its invitation) only: listed anew, it asks again */
-const declineKey = (account: string, pc: MyPc): string => `ovis:declined-join:${JSON.stringify([account, pc.server_id, pc.invited_at ?? pc.added_at])}`;
-const declined = (account: string, pc: MyPc): boolean => { try { return localStorage.getItem(declineKey(account, pc)) !== null; } catch { return false; } };
+type Asking = { readonly session: AccountSession; readonly pcs: readonly MyPc[] };
 
 /**
  * A PC that asks to join the account, as the PC's own Add this PC to my account leaves it when its one press is refused
@@ -21,7 +18,9 @@ const declined = (account: string, pc: MyPc): boolean => { try { return localSto
  * the account's mailbox), its request under ten minutes old, with a key its id is derived from (myPcs `join`, newPcs),
  * and no pairing of this device with it. A launch that goes straight into another PC never shows its join card, so this
  * device says so here: Allow opens that PC's own page, whose join takes the number the PC's screen shows and the PC's
- * approval (the guards of every join, AddPcSheet); Decline hides it on this device until the account lists it anew.
+ * approval (the guards of every join, AddPcSheet). Decline denies the request: it removes the listing with this sign-in
+ * (DELETE /v1/pcs/:id), so no device shows it and the PC is not added; the waiting PC ends its wait (AccountSection
+ * deniedElsewhere) and asks again only by a new press. Only an app's own sign-in is offered either.
  */
 const pairedHere = (): Promise<readonly RelayDevice[]> => indexedDeviceStore.list();
 const openPcPage = (serverId: string): void => window.location.assign(serverScopePath(serverId));
@@ -34,7 +33,9 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
 }) {
   const t = useT();
   const [asking, setAsking] = useState<Asking | null>(null);
-  const [, noteDecline] = useState(0);
+  const [denied, setDenied] = useState<ReadonlySet<string>>(new Set());
+  const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
   useEffect(() => {
     let version = 0;
     const read = async (): Promise<void> => {
@@ -43,9 +44,11 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
         const session = await service.session();
         if (mine !== version) return;
         if (session === undefined) { setAsking(null); return; }
-        const [listed, here] = await Promise.all([service.forSignIn(session).listPcs(), devices()]);
+        const directory = service.forSignIn(session);
+        const [own, listed, here] = await Promise.all([directory.ownSignIn(), directory.listPcs(), devices()]);
         if (mine !== version) return;
-        setAsking({ account: session.account, pcs: newPcs(myPcs(listed, here, { now: now() }), now()) });
+        // a device code's sign-in is no one's to let a PC in or turn it away with
+        setAsking(own ? { session, pcs: newPcs(myPcs(listed, here, { now: now() }), now()) } : null);
       } catch (error) {
         if (mine !== version) return;
         if (error instanceof SignedOutError) setAsking(null);
@@ -69,17 +72,30 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
   }, [service, devices, now]);
 
   if (asking === null) return null;
-  const { account } = asking;
-  return asking.pcs.filter((pc) => !declined(account, pc)).map((pc) => (
+  const deny = async (pc: MyPc): Promise<void> => {
+    if (busy !== null) return;
+    setBusy(pc.server_id);
+    setFailed(null);
+    try {
+      await service.forSignIn(asking.session).deletePc(pc.server_id);
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      setFailed(pc.server_id);
+      return;
+    } finally { setBusy(null); }
+    setDenied((prior) => new Set([...prior, pc.server_id]));
+    window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+  };
+  return asking.pcs.filter((pc) => !denied.has(pc.server_id)).map((pc) => (
     <div key={pc.server_id} className="update-notice is-paired device-notice" role="status" data-join-request={pc.server_id}>
       <Monitor aria-hidden="true" />
-      <span className="device-notice-text"><span>{t("\"{name}\" asks to join your account", { name: pc.name })}</span></span>
+      <span className="device-notice-text">
+        <span>{t("\"{name}\" asks to join your account", { name: pc.name })}</span>
+        {failed === pc.server_id && <span className="account-error" role="alert">{t("The request could not be declined. Try again.")}</span>}
+      </span>
       <div className="device-paired-actions">
-        <button type="button" className="btn" onClick={() => open(pc.server_id)}>{t("Allow")}</button>
-        <button type="button" className="btn" onClick={() => {
-          try { localStorage.setItem(declineKey(account, pc), "1"); } catch { /* not kept: asked again on the next load */ }
-          noteDecline((count) => count + 1);
-        }}>{t("Decline")}</button>
+        <button type="button" className="btn" disabled={busy !== null} onClick={() => open(pc.server_id)}>{t("Allow")}</button>
+        <button type="button" className="btn" disabled={busy !== null} onClick={() => void deny(pc)}>{t("Decline")}</button>
       </div>
     </div>
   ));
