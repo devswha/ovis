@@ -37,8 +37,11 @@ describe("the relay tab's Sign in", () => {
   let linkPageAvailable: boolean;
   /** the port the PC reports for its own window, null for any other window */
   let ownPort: number | null;
+  /** the account this PC says it is in (/api/account/status), null for none */
+  let pcAccountId: string | null;
 
   beforeEach(() => {
+    pcAccountId = null;
     fake = new FakeAccountService();
     fake.offerLinkPage(["github", "google"]);
     popupBlocked = false;
@@ -86,6 +89,7 @@ describe("the relay tab's Sign in", () => {
       querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => SERVICE } : null,
     } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).startsWith("/api/account/status")) return Response.json({ account: pcAccountId, unlinked: [] });
       if (String(input).startsWith("/api/health")) return Response.json({ ok: true, auth: { required: false, authenticated: true }, bridge_protocol: 1, ...(ownPort === null ? {} : { own_window: { port: ownPort } }) });
       const url = new URL(String(input instanceof Request ? input.url : input));
       if (url.origin !== SERVICE) return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
@@ -120,7 +124,7 @@ describe("the relay tab's Sign in", () => {
   });
 
   const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
-  const mount = async (onSignedIn: () => void = () => undefined) => {
+  const mount = async (onSignedIn: (home: boolean) => void = () => undefined) => {
     const account = { service: SERVICE, onOpen: () => { settings.push("account"); }, onSignedIn };
     await act(async () => {
       renderer = create(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>, {
@@ -203,6 +207,18 @@ describe("the relay tab's Sign in", () => {
     expect(after.map(text)).toContain("Signed in with GitHub");
     expect(after[0]).toBe(before?.[0]);
   });
+
+  // the owner's sign-out and sign-in on a PC already in the account: nothing is left to add, so the page goes to its sessions
+  for (const [name, pcIn, home] of [["already in that account", "acct_one", true], ["in another account", "acct_two", false], ["in no account", null, false]] as const) {
+    it(`a sign-in on a PC ${name} ${home ? "sends the page home" : "stays on the tab"}`, async () => {
+      pcAccountId = pcIn;
+      approveOnPoll = true;
+      const finished = Promise.withResolvers<boolean>();
+      await mount((goesHome) => finished.resolve(goesHome));
+      await signIn();
+      expect(await finished.promise).toBe(home);
+    });
+  }
 
   it("offers each provider's device page as its own button where the service has no link page", async () => {
     fake.offerSignIns(["google"], ["google"]);

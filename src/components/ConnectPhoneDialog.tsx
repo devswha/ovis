@@ -32,7 +32,6 @@ import { PhonePanel, QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { failureText, openOwnOffer, RelayPairing, statusText } from "./RelayPanel.tsx";
 import { RelaySignIn } from "./RelaySignIn.tsx";
-import { RelayAccountPcs } from "./RelayAccountPcs.tsx";
 import { SettingsQuery, Toggle } from "./SettingsControls.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { usePortal } from "../lib/portal.ts";
@@ -109,7 +108,8 @@ export function openingTab({ tabs, noticeWaiting, hasAccount, asked = null }: { 
 export interface RelayAccount {
   service: string;
   onOpen: () => void;
-  onSignedIn: () => void;
+  /** `home`: the sign-in is to the account this PC is already in, so nothing is left to add here and the page goes to its sessions */
+  onSignedIn: (home: boolean) => void;
   /** this PC's step-2 switch, as Settings reads it: only then does Add this PC try the one press */
   opensAll?: () => boolean;
 }
@@ -672,8 +672,8 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   machines?: readonly Machine[]; onConnectMachine?: (machine: Machine) => void;
 }) {
   const t = useT();
-  // signed in to the PC's own account, the account's PCs are listed at once (below); signed in to another, the prompt
-  // opens the account. A window signed out of a PC in an account gets the sign-in alone (below), not this prompt beside it
+  // signed in to the PC's own account, the tab is the signed-in line and the phone's QR code (the account's PCs are in
+  // the sidebar); signed in to another, the prompt opens the account. A window signed out of a PC in an account gets the sign-in alone (below), not this prompt beside it
   const accountAdd = pcAddFromAccount === true && onConnectMachine && !(signedIn && joinBySignIn) ? (
       <div className="connect-found" data-testid="pc-add-source-bound">
         <p className="settings-hint">{t("This PC is in an account. Add PCs from your account.")}</p>
@@ -737,29 +737,26 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   const mine = signedIn ? accountId : null;
   const pcIn = pcAccount !== undefined ? pcAccount : joinBySignIn ? mine : null;
   const bare = signedIn && pcIn !== null && relay.status?.phase === "online";
-  const pcsAbove = signedIn && joinBySignIn && onConnectMachine !== undefined;
   const qr = (ownSwitch: boolean) => (
     <AccountQr relay={relay} phone={phone} active={active} signedIn={signedIn} accountId={mine} provider={provider} serverId={machines.find((machine) => machine.kind === "local")?.server_id ?? null}
       pcAccount={pcIn} onPcAccount={setPcAccount} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll}
-      first={bare} pcsAbove={pcsAbove} relayControls={ownSwitch ? <>{relaySwitch}{switchFailure}{startFailure}</> : null} />
+      first={bare} relayControls={ownSwitch ? <>{relaySwitch}{switchFailure}{startFailure}</> : null} />
   );
   // signed out the tab is its sign-in buttons: the relay's own switch stays in More settings
   if (!signedIn) return (
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
-        <RelaySignIn service={account.service} boundPc={pcAddFromAccount === true || pcIn !== null} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(); }} />
+        <RelaySignIn service={account.service} boundPc={pcAddFromAccount === true || pcIn !== null} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(pcIn !== null && session.account === pcIn); }} />
       </div>
       {qr(false)}
     </>
   );
-  const thisPc = machines.find((machine) => machine.kind === "local")?.name ?? null;
   return (
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin" data-bare={bare || undefined}>
         {signInStatus}
         {accountAdd}
-        {pcsAbove && <RelayAccountPcs machines={machines} onConnectMachine={onConnectMachine} self={thisPc} />}
         {pcIn !== null ? (
           !bare && <>{relaySwitch}{switchFailure}{startFailure}</>
         ) : (
@@ -843,11 +840,9 @@ const names = (strays: readonly AccountQrStray[]): string => strays.map((stray) 
  * A press made while the page's relay state said otherwise (it is read every 15 seconds) is refused by the PC: the QR
  * code comes down with no failure to read, and the relay's state is read again, which brings that sentence.
  */
-export function AccountQr({ relay, phone, active, signedIn, accountId = null, provider = null, serverId = null, pcAccount, onPcAccount, first = false, pcsAbove = false, relayControls, onPairingHeld, onRevokedAll }: {
+export function AccountQr({ relay, phone, active, signedIn, accountId = null, provider = null, serverId = null, pcAccount, onPcAccount, first = false, relayControls, onPairingHeld, onRevokedAll }: {
   relay: RelayState; phone: boolean; active: boolean; signedIn: boolean;
   first?: boolean;
-  /** the tab lists the account's PCs above, this PC first: nothing here says again that it is in the account */
-  pcsAbove?: boolean;
   accountId?: string | null;
   /** how this page is signed in, and this PC's relay ID: the QR code of a PC in an account (signInLink) */
   provider?: AccountProvider | null;
@@ -1208,7 +1203,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
   const checkingLine = checking.length > 0 && <p className="settings-description" data-testid="connect-account-checking">{t("Checking a device that just paired: {devices}.", { devices: names(checking) })}</p>;
   const revokeEvery = <button type="button" className="btn btn-danger" onClick={() => setConfirming(true)}>{t("Not me: revoke every device")}</button>;
   const relayState = relay.status !== null && !(connecting && relayControls !== null) && <p className="settings-hint" role="status">{statusText(t, relay.status)}</p>;
-  const standingLabel = standing && signedIn && !(here === "mine" && pcsAbove);
+  const standingLabel = standing && signedIn;
   const phoneLink = standing && online && serverId !== null && relay.status !== null ? signInLink(relay.status.app, serverId, here === "mine" ? provider : null) : null;
   const labelled = standing ? standingLabel : told || shown;
   return (

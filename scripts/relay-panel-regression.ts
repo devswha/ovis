@@ -433,11 +433,9 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     page.on("request", noteOffer);
     await connect.click();
     await ui.openTab("relay");
-    // opened again, the tab lists the account's PCs, this PC first, and says no more that it is in the account
-    const accountPcs = relayTab.locator(".relay-account-pcs");
-    await accountPcs.getByTestId("relay-account-self").getByText("This PC", { exact: true }).waitFor();
-    assert.equal(await accountPcs.getByText("Your account's PCs", { exact: true }).count(), 1, "the list is the account's PCs");
-    assert.equal(await accountQr.getByText("This PC is in your account.", { exact: true }).count(), 0, "with no line above it saying so again");
+    // opened again, the tab is the signed-in line and the phone's QR code: no list of the account's PCs (the sidebar has them)
+    await accountQr.getByText("This PC is in your account.", { exact: true }).waitFor();
+    assert.equal(await relayTab.getByText("Your account's PCs", { exact: true }).count(), 0, "the relay tab lists no PCs");
     assert.equal(await accountQr.getByRole("button").count(), 0, "opened again, a PC in an account still offers no code to press for");
     assert.equal(await accountQr.getByRole("img", { name: "QR code that opens this PC in the Ovis app", exact: true }).count(), 1, "and still the QR code that opens it in the Ovis app");
     assert.equal(await relayQr.count(), 0, "and shows none");

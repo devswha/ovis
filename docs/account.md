@@ -911,9 +911,9 @@ clients that do not identify a PC add can still use legacy code pairing. Full
 PC-to-PC key proof remains a follow-up. This limitation does not change the source
 PC's refusal or the Tailscale tab's SSH connection.
 
-**Add a connection → Ovis relay** on a PC (A) whose page is signed in, with A in that account, lists
-the account's other PCs: **Connect** for one already in A's machine list,
-**Add** for one that would pair, and "Update Ovis on that PC" or "Offline" with no button. **Add**
+The sidebar of a PC (A) whose page is signed in, with A in that account, lists the account's other
+PCs that A has not added yet, and adds one that would pair on its own ("Update Ovis on that PC" or
+"Offline" for one that would not); **Add a connection → Ovis relay** lists no PCs. An add
 makes A's server a paired device of that PC (B), as **Add a PC through the relay** with a link does,
 and A then lists B like any SSH PC, after a restart too. B's row is a plain watch row: A is never an
 account member, holds no account key and signs nothing ([rule 3](#rules)), and it only watches B.
@@ -1492,8 +1492,8 @@ with "continue only if you started this on your own PC".
   own word ([How a device joined](#how-a-device-joined)): review them there, and revoke any device
   you don't recognize.
 - **A PC the directory names under a familiar name.** Whoever holds a sign-in to the account can
-  list a PC of their own in the directory (device-code phishing, [Who is asking](#who-is-asking)). **Add** on
-  its row in the relay tab pairs A with that PC, whose owner approves it there: A's machine list then
+  list a PC of their own in the directory (device-code phishing, [Who is asking](#who-is-asking)). Its row in
+  the sidebar pairs A with that PC, whose owner approves it there: A's machine list then
   holds a stranger's PC. It gets no access to A or to the account's PCs by that; what the person then
   types into its terminals goes to it. The prompt to approve shows on a device of the account only
   when the PC really is one of the account's: a request approved without that prompt is the sign.

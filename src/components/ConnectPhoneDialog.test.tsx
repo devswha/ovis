@@ -17,7 +17,6 @@ import type { AddPcPreset } from "../lib/actions.ts";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { RelayPairing } from "./RelayPanel.tsx";
 import { QrCode } from "./QrCode.tsx";
-import { RelayAccountPcs } from "./RelayAccountPcs.tsx";
 
 // the confirmation before Revoke all is a portal on document.body, which this renderer has none of
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
@@ -1236,10 +1235,13 @@ describe("the relay tab's QR code behind a press", () => {
     await flush();
   };
   const qrCodes = () => renderer!.root.findAllByType(QrCode);
-  it("signed in to a bound PC's own account, lists the account's PCs at once, with no prompt above them", async () => {
+  it("signed in to a bound PC's own account, the tab is the signed-in line and the phone's QR code: no list of the account's PCs, no prompt", async () => {
     pcAccount = ACCOUNT_ID;
-    await mount({ pcAdd: true, joinBySignIn: true });
-    expect(renderer!.root.findAllByType(RelayAccountPcs)).toHaveLength(1);
+    await mount({ pcAdd: true, joinBySignIn: true, provider: "github" });
+    expect(renderer!.root.findAll((node) => typeof node.props.className === "string" && node.props.className.includes("relay-account-pcs"))).toHaveLength(0);
+    expect(text(renderer!.root)).not.toContain("Your account's PCs");
+    expect(text(section())).toContain("This PC is in your account.");
+    expect(qrCodes()).toHaveLength(1);
     expect(text(renderer!.root)).not.toContain("This PC is in an account. Add PCs from your account.");
     expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Add from account")).toHaveLength(0);
   });
@@ -1248,7 +1250,7 @@ describe("the relay tab's QR code behind a press", () => {
     pcAccount = ACCOUNT_ID;
     await mount({ pcAdd: true, accountId: "acct_mine_0000000000000" });
     expect(text(renderer!.root)).toContain("This PC is in an account. Add PCs from your account.");
-    expect(renderer!.root.findAllByType(RelayAccountPcs)).toHaveLength(0);
+    expect(text(renderer!.root)).not.toContain("Your account's PCs");
     expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Add from account")).toHaveLength(1);
   });
   const minted = () => requests.filter((path) => path === "/api/relay/code" || path === "/api/relay/offer" || path === "/api/devices/pair/start");
@@ -1276,7 +1278,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(text(renderer!.root)).toContain("Can't add a PC right now. Try again in a moment.");
     expect(text(renderer!.root)).not.toContain("Add from account");
     expect(text(renderer!.root)).not.toContain("Show the QR code");
-    expect(renderer!.root.findAllByType(RelayAccountPcs)).toHaveLength(0);
+    expect(text(renderer!.root)).not.toContain("Your account's PCs");
     expect(minted()).toEqual([]);
   });
   const count = (path: string) => requests.filter((request) => request === path).length;

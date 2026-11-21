@@ -1,12 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
-import "./ConnectPhoneDialog.css";
-import "./RelayAccountPcs.css";
-
 import type { Machine } from "../../shared/machines.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
-import { ACCOUNT_PCS_CHANGED_EVENT, isNewAccountPc, myPcs } from "../lib/account/myPcs.ts";
+import { ACCOUNT_PCS_CHANGED_EVENT, myPcs } from "../lib/account/myPcs.ts";
 import { ApiError, checkAccountPcs, pairAccountPc, startAccountPc, type AccountPcEntry, type AccountPcState } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { deviceOs } from "../lib/phone.ts";
@@ -221,56 +218,4 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     setStates((current) => new Map(current).set(checked.server_id, checked.state));
   };
   return { pcs, added, stateOf: (serverId) => states.get(serverId), pairing, failure, add, cancel, recheck };
-}
-
-/**
- * One already in this app reads Open; one that would pair reads Add (useAccountPcs); an older or offline one says so
- * and gets no button.
- */
-export function RelayAccountPcs({ machines, onConnectMachine, source, self = null }: { machines: readonly Machine[]; onConnectMachine: (machine: Machine) => void; source?: AccountPcsSource; /** this PC's name, listed first as one of the account's PCs */ self?: string | null }) {
-  const t = useT();
-  const { pcs, added, stateOf, pairing, failure, add, cancel } = useAccountPcs({ machines, source, onAdded: onConnectMachine });
-
-  if (self === null && (pcs === null || pcs.length === 0)) return null;
-  return (
-    <div className="connect-found relay-account-pcs">
-      <p className="settings-label">{t("Your account's PCs")}</p>
-      <ul className="connect-found-list">
-        {self !== null && (
-          <li className="relay-account-pc" data-pc-state="self" data-testid="relay-account-self">
-            <div className="connect-found-row">
-              <span className="connect-found-name">{self}<span className="connect-found-source">{t("This PC")}</span></span>
-              <span className="connect-found-detail">{t("Online")}</span>
-            </div>
-          </li>
-        )}
-        {(pcs ?? []).map((pc) => {
-          const machine = added(pc.server_id);
-          const state = stateOf(pc.server_id);
-          const waiting = pairing?.server_id === pc.server_id;
-          const detail = machine !== undefined ? t("In this app") : state === undefined ? t("Checking…") : state === "ready" ? t("Online")
-            : state === "outdated" ? t("Update Ovis on that PC") : t("Offline");
-          return (
-            <li key={pc.server_id} className="relay-account-pc" data-pc-state={machine !== undefined ? "added" : state ?? "checking"}>
-              <div className="connect-found-row">
-                <span className="connect-found-name">{pc.name}</span>
-                <span className="connect-found-detail">{isNewAccountPc(pc, Date.now()) ? `${t("New PC")} · ` : ""}{detail}</span>
-                {machine !== undefined
-                  ? <button type="button" className="btn" onClick={() => onConnectMachine(machine)}>{t("Open")}</button>
-                  : state === "ready" && (waiting
-                    ? <button type="button" className="btn" onClick={cancel}>{t("Cancel")}</button>
-                    : <button type="button" className="btn" disabled={pairing !== null} aria-label={t("Add {name}", { name: pc.name })} onClick={() => void add(pc)}>{t("Add")}</button>)}
-              </div>
-              {waiting && (
-                <div className="relay-account-wait" role="status">
-                  <span className="settings-hint">{pairing.waiting ? t("Approve on another device of your account") : t("Asking {name}…", { name: pc.name })}</span>
-                </div>
-              )}
-              {failure?.server_id === pc.server_id && <p className="settings-hint relay-error" role="alert">{failure.message}</p>}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
 }
