@@ -451,7 +451,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         if (found !== null && !navigatedSinceEntry()) { leaveFor(found); return; }
         if (found === null) noneOnline = true;
       }
-      const pc = view?.kind === "signed-in" ? accountLaunchPc(view.pcs ?? [], Date.now()) : null;
+      // a PC this launch's own check just found off is no join card's either, whatever the account's last read of it says
+      const foundOff = (serverId: string): boolean => {
+        const now = sweep.status.get(serverId), found = now?.kind === "checking" ? now.previous : now;
+        return found?.kind === "offline" && found.reason === "pc";
+      };
+      const pc = view?.kind === "signed-in" ? accountLaunchPc((view.pcs ?? []).filter((row) => !foundOff(row.server_id)), Date.now()) : null;
       // its join card, waiting for the person's press: never the PC's bare page, which opens a PC the account lets this
       // device into by itself (security-triage condition 3: nothing this device did not choose opens without a press)
       // no storage for the mark: no card a reload could open by the account's key; the front page lists the PC instead

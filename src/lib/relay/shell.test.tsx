@@ -1443,6 +1443,17 @@ describe("the hosted shell's front page", () => {
       return { went, asked, bare: `/s/${row.server_id}/` };
     };
 
+    it("puts up no join card for an account-only PC the launch's own check just found off", async () => {
+      launch();
+      const row = accountRow({ new_until: new Date(Date.now() - 60_000).toISOString() });
+      const went: string[] = [], asked: string[] = [];
+      await mountRelayShell(mountFor({ store: deviceStore([]), navigate: (path) => { went.push(path); }, ...await registeredSignIn(), accountFetch: directoryOf([row]),
+        checkPc: async (device) => { asked.push(device.server_id); return { kind: "offline", reason: "pc" }; } }));
+      await until(() => went.length > 0 || (rendered.length > 0 && ["list", "empty"].includes(last().state.kind)), "the launch's end");
+      expect([went, asked]).toEqual([[], [row.server_id]]);
+      expect(browser.sessionStore.has("ovis-launch-join")).toBe(false);
+    });
+
     it("t13r: a launch opens an account-only PC whose listing is confirmed and whose new window has passed, through its own page", async () => {
       const row = accountRow({ new_until: new Date(Date.now() - 60_000).toISOString() });
       const { went, asked } = await accountOnlyLaunch(row);
