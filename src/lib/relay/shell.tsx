@@ -550,8 +550,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (Date.now() - awayCheckAt < CHECK_GAP_MS) return;
     awayCheckAt = Date.now();
     const here = last.offer.server_id;
-    // the account's PCs as they are now: this page's own read of them may be old, or was never made
-    if (account.enabled) await account.load(null);
+    // the account's PCs as they are now: this page's own read of them may be old, or was never made. Waited for no longer
+    // than a read may take (fixed wait: see ACCOUNT_READ_WAIT_MS): a hung read moves on with what was read before
+    if (account.enabled) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<void>((resolve) => { timer = setTimeout(resolve, ACCOUNT_READ_WAIT_MS); });
+      try { await Promise.race([account.load(null), late]); }
+      finally { clearTimeout(timer); }
+    }
     const pc = await answering(candidates(await store.list()).filter((target) => target.server_id !== here).slice(0, LAUNCH_PCS));
     if (pc === null || app === null || transport !== from || from.route !== undefined || left) return;
     left = true;

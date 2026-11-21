@@ -1602,6 +1602,25 @@ describe("the hosted shell's front page", () => {
       page.transport.close();
     });
 
+    it("moves on when the account's read hangs: the move waits for it no longer than a read may take", async () => {
+      const b = "b".repeat(32);
+      let reads = 0;
+      const page = await opened([b], answering(), { mount: { ...await registeredSignIn(), accountFetch: async (input) => {
+        if (new URL(String(input)).pathname !== "/v1/pcs") return new Response(null, { status: 404 });
+        reads++;
+        return new Promise<Response>(() => {});
+      } } });
+      jest.useFakeTimers();
+      page.away();
+      await drain();
+      expect(reads).toBeGreaterThan(0);
+      expect(page.moves).toEqual([]);
+      jest.advanceTimersByTime(ACCOUNT_READ_WAIT_MS);
+      await until(() => page.moves.length > 0, "the move");
+      expect(page.moves).toEqual([`/s/${b}/`]);
+      page.transport.close();
+    });
+
     it("moves to an account-only PC this device may open by itself, and never to one inside its new window", async () => {
       const fresh = accountRow({ new_until: new Date(Date.now() + 3_600_000).toISOString(), admitted_at: new Date().toISOString() }), old = accountRow();
       const asked: string[] = [];
