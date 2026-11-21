@@ -397,7 +397,9 @@ export function startLoop(options: LoopOptions): Loop {
         act(`run:${effect.action}`);
         const writing = layout.run(effect);
         if (writing !== null) {
-          holdUntil(writing);
+          // a zoom that follows the focus moves nothing input is routed by (the focus moved already): the next move
+          // goes on at once, and the layout writes only the latest of such zooms
+          if (effect.action !== "zoom_follow") holdUntil(writing);
           return;
         }
         // an action no module performs yet: one notice per press, never silence
