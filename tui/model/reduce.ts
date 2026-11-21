@@ -320,8 +320,14 @@ function ladderText(acc: Acc, event: TextInput): void {
           rest = after;
           continue;
         }
+        const from = acc.effects.length;
         toCopy(acc, s.mode, { ...run, text: first });
-        if (acc.s.mode.name !== "copy") return;
+        // a label or a yank closes copy mode only once the screen copied (it may find nothing to copy): the rest of the
+        // run waits for it, as a later read would; after a key that left copy mode here it goes on down the ladder
+        if (acc.effects.slice(from).some((effect) => effect.type === "copy" && (effect.command.kind === "pick" || effect.command.kind === "yank"))) {
+          if (after.length > 0) acc.effects.push({ type: "input", event: { type: "text", text: after, at: event.at } });
+          return;
+        }
         rest = after;
         continue;
       }
@@ -368,7 +374,8 @@ function ladderText(acc: Acc, event: TextInput): void {
 function handBack(acc: Acc, from: number, rest: string, at: number): boolean {
   // nothing typed after a detach goes anywhere: the rest of the run ends with it, as a later read would
   if (acc.effects.slice(from).some((effect) => effect.type === "quit")) return true;
-  if (!acc.effects.slice(from).some((effect) => effect.type === "run")) return false;
+  // copy mode's start is the screen's to make (it refuses a pane with no picture): what follows meets the mode it left
+  if (!acc.effects.slice(from).some((effect) => effect.type === "run" || (effect.type === "copy" && effect.command.kind === "enter"))) return false;
   if (rest.length > 0) acc.effects.push({ type: "input", event: { type: "text", text: rest, at } });
   return true;
 }

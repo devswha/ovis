@@ -95,11 +95,12 @@ it("nothing reaches the pane", async () => {
   run.type("\x1b[200~paste that never reaches the program\x1b[201~");
   await run.keys("press@4:4,release@4:4");
   expect(data(run)).toEqual([]);
-  run.type("qdiscard");
+  // q leaves copy mode; what its read holds after it goes to the program, as it would read apart
+  run.type("qafter");
   await run.advance(1);
-  expect(data(run)).toEqual([]);
+  expect(data(run)).toEqual(["after"]);
   await run.keys("Z");
-  expect(data(run)).toEqual(["Z"]);
+  expect(data(run)).toEqual(["after", "Z"]);
 });
 
 it.each([
