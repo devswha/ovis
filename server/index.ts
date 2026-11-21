@@ -308,7 +308,12 @@ export function createServer(
   // key differs between the two copies is dropped (T48, T27)
   const conflicts: StoredDevice[] = [];
   const closure = safetyLog !== null && (safetyLog.strict !== null || safetyLog.state().locked || safetyLog.state().freezes.length > 0);
-  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, onDropped: (device) => conflicts.push(device) } : {}) : null;
+  const ownIdentity = opensAll && sibling ? savedServerId(stateDir) : undefined;
+  const ownBinding = pcAccount?.binding()?.bind_id;
+  const otherBinding = opensAll && sibling ? PcAccountState.open(sibling).binding()?.bind_id : undefined;
+  const sharedLegacyIdentity = ownIdentity !== undefined && !!sibling && ownIdentity === savedServerId(sibling)
+    && (ownBinding === undefined || otherBinding === undefined || ownBinding === otherBinding) ? ownIdentity : undefined;
+  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, sharedLegacyIdentity, onDropped: (device) => conflicts.push(device) } : {}) : null;
   let accountBlocked: string | null = accountMerge;
   if (sibling && !untouched && accountBlocked === null) {
     try { accountBlocked = mergeAccountTombstones(stateDir, sibling, opensAll); }
@@ -349,6 +354,7 @@ export function createServer(
   }) : null;
   const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
     safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: rowsForDevices, held: (key) => accountMailbox.gates().held(key),
+    ...(merge?.legacyCredential ? { siblingLegacyCredential: merge.legacyCredential } : {}),
   });
   const accountRows = opened.rows;
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
@@ -619,7 +625,7 @@ export function createServer(
   const accountCatchUp = new AccountCatchUp(devices, accountRows, { pc: pcAccount, releases: recoveryReleases });
   const catchUp = accountCatchUp.gate;
   const accountOrder = safetyLog !== null ? AccountOrder.open(stateDir) : null;
-  devices.attachAccountOrder(accountOrder);
+  devices.attachAccountOrder(accountOrder, serverIdNow);
   const readPorts = safetyLog !== null && pcAccount !== null && journal !== null && accountOrder !== null
     ? (readmission?: Readmission) => snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: serverIdNow, requestRead: () => { void accountMailbox.pull(); },
       // the read's commit turn: the account rows take its list, idle rows expire (T54), and the wait after a start ends

@@ -46,6 +46,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Rename {name}": "重命名 {name}",
   "Revoke?": "撤销？",
   "Revoke {name}": "撤销 {name}",
+  "Not me is waiting. Revoke this device to stop its access now.": "「不是我」请求正在等待处理。要立即阻止访问，请撤销此设备的配对。",
   "Revoke every device": "撤销所有设备",
   "Revoke all": "全部撤销",
   "Every paired device, this one included, loses its pairing access at once. The access token, this PC and its Tailscale login are not affected.": "包括此设备在内的所有已配对设备将一次性失去配对访问权限。访问 Token、此 PC 本机以及此 PC 的 Tailscale 登录不受影响。",

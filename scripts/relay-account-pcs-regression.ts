@@ -2,6 +2,7 @@
  * service is shared/account-service-fake.ts, a route of the browser context for A's page and B's own fetch, and A's
  * account status is pinned, so neither account.ovis.sh nor the PC running this changes the outcome.
  */
+import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -23,9 +24,16 @@ import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
 const ACCOUNT = "acct_relay_tab";
-const ACCOUNT_SERVICE = "https://account.ovis.sh";
+const ACCOUNT_SERVICE = "https://account.fixture.test";
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const cleanup: (() => unknown)[] = [];
+// The PC's real HTML and CSP must name the same service the browser route below intercepts.
+const previousService = process.env["OVIS_ACCOUNT_SERVICE_URL"];
+process.env["OVIS_ACCOUNT_SERVICE_URL"] = ACCOUNT_SERVICE;
+cleanup.push(() => {
+  if (previousService === undefined) delete process.env["OVIS_ACCOUNT_SERVICE_URL"];
+  else process.env["OVIS_ACCOUNT_SERVICE_URL"] = previousService;
+});
 
 const relay = startBunRelay({ port: 0, limiters: {
   perAddress: { async limit() { return { success: true }; } },
@@ -72,8 +80,10 @@ const member = { id: randomBytes(8).toString("hex"), label: "Owner's phone", rol
   relay_public_key: memberKey, account: ACCOUNT, created_at: new Date().toISOString(), last_seen_at: null };
 writeFileSync(join(bState, "devices.json"), JSON.stringify({ gate_closed_at: member.created_at, devices: [member] }), { mode: 0o600 });
 const bRelay = relayService(bState);
+// This fixture uses the legacy account-vouched flow and its existing phone approver,
+// not a Step 2 admission or a new account-service grant.
 const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false,
-  relay: bRelay.relayService, accountService, usage: new UsageService(undefined, []) });
+  relay: bRelay.relayService, accountService, accountOpensAll: false, usage: new UsageService(undefined, []) });
 cleanup.push(() => b.stop());
 const bBase = `http://127.0.0.1:${b.port}`;
 await startRelay(bBase, bRelay.synced);
@@ -89,7 +99,7 @@ await service.fetch(new Request(`${ACCOUNT_SERVICE}/v1/pcs/${deriveServerId(away
 const aState = stateDir();
 const aRelay = relayService(aState);
 const a = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false,
-  relay: aRelay.relayService, relayPcSocket: aRelay.local, accountService, usage: new UsageService(undefined, []),
+  relay: aRelay.relayService, relayPcSocket: aRelay.local, accountService, accountOpensAll: false, usage: new UsageService(undefined, []),
   tailnetPcs: { readStatus: async () => null }, sshCandidates: { sshDir: join(aState, "no-ssh"), readStatus: async () => null } });
 cleanup.push(() => a.stop());
 const origin = `http://127.0.0.1:${a.port}`;
@@ -117,12 +127,6 @@ async function signedInWindow(browser: Browser, pageErrors: string[]): Promise<{
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   cleanup.push(() => context.close());
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
-  await context.addInitScript((url) => document.addEventListener("DOMContentLoaded", () => {
-    const meta = document.createElement("meta");
-    meta.name = "ovis-pc-account-service";
-    meta.content = url;
-    document.head.append(meta);
-  }), ACCOUNT_SERVICE);
   await context.route("**/api/access", (route) => route.fulfill({ json: { port: 0, tailscale: { state: "missing", dns_name: null, serving_url: null, serve_command: null, serve_url: null } } }));
   await context.route("**/api/account/status*", (route) => route.fulfill({ json: { account: ACCOUNT, members: 1, unlinked: [], removals: [], adds: [], blocked: [], enrolling: false, mailbox: { last_pull_at: null, error: null } } }));
   await context.route(`${ACCOUNT_SERVICE}/**`, async (route) => {

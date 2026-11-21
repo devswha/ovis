@@ -38,6 +38,8 @@ export interface BlockAsOf {
   readonly joined: number | null;
   readonly signer_removed: boolean;
   readonly legacy_created_at?: number;
+  /** Account order proved the removal, not the target's place in this folder's admission order. */
+  readonly target_only?: true;
 }
 
 /**
@@ -123,7 +125,9 @@ function recordProblem(record: unknown, asof: BlockAsOf | undefined): string | n
     const a = asof as unknown as Record<string, unknown>;
     if (typeof a !== "object" || a === null || !isNo(a.signer_no) || !isNo(a.target_no) || !isNo(a.after) || !isNo(a.joined) || typeof a.signer_removed !== "boolean") return "invalid asof";
     const hasLegacyDate = Object.hasOwn(a, "legacy_created_at");
-    if (Object.keys(a).length !== (hasLegacyDate ? 6 : 5)
+    const targetOnly = Object.hasOwn(a, "target_only");
+    if (Object.keys(a).length !== 5 + Number(hasLegacyDate) + Number(targetOnly)
+      || (targetOnly && (a.target_only !== true || a.joined !== null || hasLegacyDate))
       || (hasLegacyDate && (a.joined !== 0 || !Number.isSafeInteger(a.legacy_created_at)))) return "invalid asof";
   } else if (asof !== undefined) return "only a block keeps asof";
   return null;
@@ -427,7 +431,7 @@ export class SafetyLog {
       locked: locks.length > 0,
       locks,
       blocks,
-      freezes: [...blocks, ...serviceFreezes].sort((a, b) => a.n - b.n),
+      freezes: [...blocks.filter(entry => entry.asof?.target_only !== true), ...serviceFreezes].sort((a, b) => a.n - b.n),
       markers: of("block").filter((entry) => !forgotten.has(at(entry.record.account, entry.record.id))),
     };
   }

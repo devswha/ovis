@@ -549,6 +549,7 @@ export class DeviceStore {
    */
   private readonly safety: SafetyLog | null;
   private accountOrder: AccountOrder | null = null;
+  private accountOrderServerId: (() => string | null) | undefined;
   readonly handedLifts: HandedLifts;
   private joinedRows: AccountRowSource | null = null;
   private readonly promotedHolds = new PromotedHolds((key) => this.admits(key), (row) => {
@@ -559,6 +560,7 @@ export class DeviceStore {
   private readonly pc: PcAccountState | null;
   private readonly evidence: RemovalEvidence | null;
   private readonly accountHeld: ((key: string) => boolean) | undefined;
+  private readonly siblingLegacyCredential: ((row: StoredDevice) => boolean) | undefined;
   /** every tombstone of this folder and its sibling as read before any coalescing merge (T48): each is evidence */
   private readonly carried: readonly AccountTombstone[];
   private readonly journal: DeviceJournal | null;
@@ -571,7 +573,7 @@ export class DeviceStore {
   private readonly revokeAllIntent: RevokeAllIntent | null;
   /** A restored file is not part of this process's view until the next open. */
   private waitingForListedRestore = false;
-  constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; joinedRows?: AccountRowSource | ((devices: DeviceStore) => AccountRowSource | null) | null; held?: (key: string) => boolean } = {}) {
+  constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; joinedRows?: AccountRowSource | ((devices: DeviceStore) => AccountRowSource | null) | null; held?: (key: string) => boolean; siblingLegacyCredential?: (row: StoredDevice) => boolean } = {}) {
     this.joinedRows = typeof account.joinedRows === "function" ? account.joinedRows(this) : account.joinedRows ?? null;
     this.safety = account.safety ?? null;
     this.handedLifts = new HandedLifts(stateDir);
@@ -580,6 +582,7 @@ export class DeviceStore {
     this.revokeAllPath = join(stateDir, "revoke-all.json");
     this.evidence = account.removals ?? null;
     this.accountHeld = account.held;
+    this.siblingLegacyCredential = account.siblingLegacyCredential;
     // removal evidence this PC wrote once and that is gone now is damage, never a fresh start (S19)
     if (this.evidence !== null && this.pc?.evidenceWritten() === true) this.evidence.missingAfterWritten();
     this.carried = account.carried ?? [];
@@ -635,10 +638,12 @@ export class DeviceStore {
       if (this.accountProblem === null) this.quarantineLegacyClock(now);
       if (pendingRead === null && tombstones !== null) this.evidence.takeIn([...this.carried, ...tombstones], this.repairEvidenceRows(), now);
     }
-    // a time this PC wrote that lies more than a day ahead is no time it wrote: it would push every later stamp past it,
-    // so the PC fails closed until it is repaired (S19, P13)
+    // Malformed legacy tombstones are damaged evidence. Valid Step 1 dates retain the denial
+    // without making its wall clock authoritative for Step 2 (S19, P13).
     if (this.evidence !== null) {
-      const ahead = [...this.ownTimes(), ...this.ownTombstoneTimes(this.carried)].find((t) => !isIsoTime(t) || Date.parse(t) > now + DAY_MS);
+      const invalidRevoke = [...this.carried, ...this.tombstones]
+        .find(t => t.record_id === "local" && !isIsoTime(t.removed_at));
+      const ahead = invalidRevoke?.removed_at ?? this.ownTimes().find(t => !isIsoTime(t) || Date.parse(t) > now + DAY_MS);
       if (ahead !== undefined) this.accountProblem ??= `A time this PC wrote lies in the future (${ahead}): account records are refused until it is repaired.`;
     }
     if (this.error === null && this.accountProblem === null && this.pc?.strict == null && !this.revokeAllIntent?.strict) {
@@ -747,12 +752,7 @@ export class DeviceStore {
   /** The times this PC wrote itself: rows' making, its own tombstones and Revokes; never a time a record carries (P13). */
   private ownTimes(): string[] {
     return [...this.devices.filter(row => !row.imported && row.untrusted_created_at !== row.created_at).map(row => row.created_at), ...(this.joinedRows?.rows() ?? []).map(row => row.confirmed_at),
-      ...this.ownTombstoneTimes(this.tombstones), ...this.evidence?.times() ?? []];
-  }
-
-  private ownTombstoneTimes(tombstones: readonly AccountTombstone[]): string[] {
-    const now = Date.now();
-    return tombstones.filter(t => t.record_id === "local" && !this.evidence?.hasUntrustedRevokeTime(t, now)).map(t => t.removed_at);
+      ...this.evidence?.times() ?? []];
   }
 
   /** An unstamped Step-1 registry row, including a pairing written during rollback. */
@@ -876,6 +876,12 @@ export class DeviceStore {
     return (this.safety !== null || this.pc !== null || this.evidence !== null) && this.accountIntegrityError !== null;
   }
 
+  pendingNotMeRows(): ReadonlySet<string> {
+    const account = this.account();
+    const keys = new Set(this.safety?.waitingBlocks().filter(({ record }) => record.account === account).map(({ record }) => record.target));
+    return new Set(this.devices.filter(row => row.relay_public_key !== undefined && keys.has(row.relay_public_key)).map(row => row.id));
+  }
+
 
   /**
    * The one-time migration of a PC from before the upgrade (T50): the rows' one account becomes the binding, and every
@@ -929,8 +935,8 @@ export class DeviceStore {
     return this.admissionAllowed(key, confirm, options);
   }
 
-  private admissionAllowed(key: string | undefined, proof: ConfirmProof | "list" | "legacy_credential" | undefined, options?: { pairingHere?: boolean }): boolean {
-    if (this.failsClosed || (proof !== "legacy_credential" && this.accountError !== null)) return false;
+  private admissionAllowed(key: string | undefined, proof: ConfirmProof | "list" | "legacy_credential" | undefined, options?: { pairingHere?: boolean; legacyRow?: StoredDevice }): boolean {
+    if (this.failsClosed || (this.opensAll() && proof !== "legacy_credential" && this.accountError !== null)) return false;
     const state = this.safety?.state();
     if (state === undefined) return true;
     if (key !== undefined) {
@@ -946,7 +952,7 @@ export class DeviceStore {
     if (state.freezes.length === 0) return true;
     // a key confirm on this PC's own screen, or ovis recover --admit, of this very key passes a freeze (P23, rule R1)
     if (confirmed) return true;
-    const rows = key === undefined ? [] : this.devices.filter((d) => d.relay_public_key === key);
+    const rows = options?.legacyRow ? [options.legacyRow] : key === undefined ? [] : this.devices.filter((d) => d.relay_public_key === key);
     // Only retaining a current list admission can use its age: a new pairing or readmission cannot inherit it.
     const listed = proof === "list" && key !== undefined ? this.joinedRows?.rowsByKey(key).find(candidate => candidate.state !== "expired") : undefined;
     if (listed) rows.push(this.joinedAsStored(listed));
@@ -1049,6 +1055,7 @@ export class DeviceStore {
 
   /** P16: a screen-confirmed row is never newer; an unplaced row counts as newer. */
   private newerThanFreeze(device: StoredDevice, asof: BlockAsOf | undefined): boolean {
+    if (asof?.target_only === true) return false;
     if (device.origin?.from === "pc") return false;
     if (asof?.joined == null) return true;
     const cutoff = { admit_no: asof.joined, ...(asof.legacy_created_at === undefined ? {} : { legacy_created_at: asof.legacy_created_at }) };
@@ -1099,13 +1106,34 @@ export class DeviceStore {
     const known = safety.receipt(record.id);
     if (known !== null && known.outcome !== "refused") return known;
     if (evidence === null || record.account !== this.account()) return refused("record_invalid");
-    const signers = this.signingRows(record.signer, record.account);
-    if (signers.length === 0) return refused("signer_not_member");
-    if (signers.some((d) => this.frozen(d))) return refused("frozen");
     // the target's rows in both stores: the account rows (S2-25) are targets as devices.json rows are
     const allTargets = this.rowsOfKey(record.target);
     const targets = this.devices.filter((d) => d.relay_public_key === record.target);
     const joinedTargets = allTargets.filter((d) => !targets.includes(d));
+    const serverId = this.accountOrderServerId?.() ?? null;
+    const order = (got === "mailbox" || got === "snapshot") && serverId !== null && this.accountOrder !== null
+      && this.accountOrder.lastVersion(this.pc?.binding()?.bind_id, serverId) !== null ? this.accountOrder : null;
+    const legacyTarget = targets.length > 0 && targets.every(row => row.origin?.from === "legacy"
+      || (row.imported && this.siblingLegacyCredential?.(row) === true))
+      && targets.some(row => row.imported || row.untrusted_created_at === row.created_at);
+    const pinnedSigner = order?.no(record.signer);
+    const pinnedTarget = order?.no(record.target);
+    const denyByAccountOrder = order != null && legacyTarget && pinnedSigner != null && pinnedTarget != null;
+    const signers = denyByAccountOrder
+      ? this.memberRows(record.signer, record.account).filter(row => !row.imported && !row.invalid_origin && row.held === undefined
+        && admissionPosition(row) !== null && this.memberAdmitted(row, Date.now())
+        && this.admissionAllowed(record.signer, "legacy_credential", { legacyRow: row }))
+      : this.signingRows(record.signer, record.account);
+    if (signers.length === 0 && !(legacyTarget && this.memberRows(record.signer, record.account).length > 0)) return refused("signer_not_member");
+    if (signers.some((d) => this.frozen(d))) return refused("frozen");
+    if (denyByAccountOrder && (signers.length === 0 || !order.registered(record.signer, record.account)
+      || order.late(record.signer) || pinnedSigner !== record.signer_no || pinnedTarget !== record.target_no
+      || pinnedSigner >= pinnedTarget)) return refused("signer_not_older");
+    if (legacyTarget && !denyByAccountOrder) {
+      if (!safety.wait({ record, got, signer_removed: false })) return refused("record_invalid");
+      return refused("unknown_target");
+    }
+    if (signers.length === 0) return refused("signer_not_member");
     // a target this PC has no row of: the block waits, ends nobody, and is judged when its target is here (P19)
     if (allTargets.length === 0) {
       if (!safety.wait({ record, got, signer_removed: false })) return refused("record_invalid");
@@ -1113,14 +1141,17 @@ export class DeviceStore {
     }
     let cutoff: AdmissionPosition | null = null;
     for (const target of allTargets) {
+      if (denyByAccountOrder) break;
       const position = admissionPosition(target);
       if (position === null || !signers.every((signer) => compareAdmission(signer, target) === "older")) return refused("signer_not_older");
       if (cutoff === null || compareAdmissionPositions(position, cutoff) === "older") cutoff = position;
     }
-    if (cutoff === null) return refused("unknown_target");
-    const { admit_no: joined, ...legacyDate } = cutoff;
     const signerNo = Math.min(...signers.map((d) => d.origin!.admit_no));
-    const asof: BlockAsOf = { signer_no: signerNo, target_no: joined, after: joined, joined, signer_removed: false, ...legacyDate };
+    if (cutoff === null && !denyByAccountOrder) return refused("unknown_target");
+    const asof: BlockAsOf = denyByAccountOrder
+      ? { signer_no: pinnedSigner, target_no: pinnedTarget, after: null, joined: null, signer_removed: false, target_only: true }
+      : { signer_no: signerNo, target_no: cutoff!.admit_no, after: cutoff!.admit_no, joined: cutoff!.admit_no, signer_removed: false,
+        ...(cutoff!.legacy_created_at === undefined ? {} : { legacy_created_at: cutoff!.legacy_created_at }) };
     const affected = this.devices.filter((d) => d.relay_public_key !== record.target && this.newerThanFreeze(d, asof));
     let receipt = refused("record_invalid");
     // P8: advance gen before a durable log receipt can be replayed.
@@ -1197,7 +1228,7 @@ export class DeviceStore {
     return ids.filter((id) => this.has(id));
   }
 
-  private applyWaitingBlocks(): void {
+  applyWaitingBlocks(): void {
     if (this.safety === null) return;
     for (const { record, got, signer_removed: signerRemoved } of [...this.safety.waitingBlocks()]) {
       if (this.failsClosed) return;
@@ -1309,9 +1340,10 @@ export class DeviceStore {
   }
 
   /** Step 2 (S2-24): the account's order as this PC's whole reads saw it; set only while Step 2 is on. */
-  attachAccountOrder(order: AccountOrder | null): void {
+  attachAccountOrder(order: AccountOrder | null, serverId?: () => string | null): void {
     order?.recordJoins(this.devices);
     this.accountOrder = order;
+    this.accountOrderServerId = serverId;
   }
 
   /** Whether the account-opens-all release flag is on for this store. */
@@ -2048,10 +2080,11 @@ export class DeviceStore {
     const device = this.devices.find((d) => d.id === id);
     if (device === undefined) return false;
     // A Step-1 writer may have added a credential during rollback. It gets no admission order.
-    const legacy = credential && !device.imported && !device.invalid_origin
-      && (device.origin?.from === "legacy" || this.legacyFromRegistry(device));
+    const legacy = credential && !device.invalid_origin && (device.imported
+      ? this.siblingLegacyCredential?.(device) === true && !this.journal?.entries().some(entry => entry.row === id)
+      : device.origin?.from === "legacy" || this.legacyFromRegistry(device));
     return this.catchUp?.waits({ id, origin: device.origin }, legacy
-      ? () => this.admissionAllowed(device.relay_public_key, "legacy_credential") : undefined) ?? false;
+      ? () => this.admissionAllowed(device.relay_public_key, "legacy_credential", { legacyRow: device }) : undefined) ?? false;
   }
 
   /** Whether `id` is an account-joined row (S2-26): its every route goes through accountRowMay. */
@@ -2802,7 +2835,7 @@ export class DeviceStore {
   }
 
   /** Holding a pairing code requires an ordinary paired member, not just a drive session. */
-  canHoldCode(id: string): boolean { return this.accountError === null && this.devices.some(device => device.id === id) && this.canDrive(id); }
+  canHoldCode(id: string): boolean { return (!this.opensAll() || this.accountError === null) && this.devices.some(device => device.id === id) && this.canDrive(id); }
 
   private pruneUnconfirmedFirstPairs(now: number): void {
     this.unconfirmedFirstPairs = this.unconfirmedFirstPairs.filter(({ expires }) => now <= expires);
@@ -3436,8 +3469,10 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
     const live = manager ? connections?.list() ?? new Map<string, DeviceConnection>() : new Map<string, DeviceConnection>();
     // Callers without PC-level Revoke authority get their verdict for each row (T19, T20).
     const callerId = access.level === "full" ? access.device?.id ?? null : null;
+    const pendingNotMe = ownWindow && drive ? store.pendingNotMeRows() : null;
     const devices = store.list(callerId, drive)
       .map((device) => { const connection = live.get(device.id); return connection ? { ...device, connection } : device; })
+      .map((device) => pendingNotMe?.has(device.id) ? { ...device, not_me_waiting: true as const } : device)
       .map((device) => orderedRevoke ? { ...device, remote_revoke: drive ? store.remoteRevoke(callerId, device.id) : "read_only" as const } : device);
     return jsonResponse({ devices, ...(orderedRevoke ? { revoke_all: "local_only" as const } : {}) }, 200, { "cache-control": "no-store" });
   }

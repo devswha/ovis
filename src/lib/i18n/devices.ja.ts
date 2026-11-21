@@ -46,6 +46,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Rename {name}": "{name} の名前を変更",
   "Revoke?": "取り消しますか?",
   "Revoke {name}": "{name} を取り消す",
+  "Not me is waiting. Revoke this device to stop its access now.": "「自分ではない」の処理を待っています。今すぐアクセスを止めるには、このデバイスのペアリングを取り消してください。",
   "Revoke every device": "すべてのデバイスを取り消す",
   "Revoke all": "すべて取り消す",
   "Every paired device, this one included, loses its pairing access at once. The access token, this PC and its Tailscale login are not affected.": "このデバイスを含むすべてのペアリング済みデバイスのペアリングによるアクセスが一度に終わります。アクセストークン、この PC 本体、この PC の Tailscale ログインには影響しません。",

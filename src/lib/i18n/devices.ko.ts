@@ -46,6 +46,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Rename {name}": "{name} 이름 바꾸기",
   "Revoke?": "폐기할까요?",
   "Revoke {name}": "{name} 폐기",
+  "Not me is waiting. Revoke this device to stop its access now.": "‘내가 아닙니다’ 요청이 대기 중입니다. 지금 접근을 막으려면 이 기기를 폐기하세요.",
   "Revoke every device": "모든 기기 폐기",
   "Revoke all": "모두 폐기",
   "Every paired device, this one included, loses its pairing access at once. The access token, this PC and its Tailscale login are not affected.": "이 기기를 포함한 모든 페어링 기기의 페어링 접근이 한 번에 끝납니다. 접속 토큰, 이\u00a0PC, 이\u00a0PC의 Tailscale 로그인은 그대로 유지됩니다.",

@@ -31,7 +31,9 @@ const LAN = "10.99.0.1";
 const TAILNET = "100.64.0.7";
 const listener = { port: 0 };
 
-async function twoPcs(options: { direct?: { reachable: (dial: number, host: string) => boolean; held?: (dial: number) => Promise<void> | undefined; named?: (port: number) => readonly string[] }; updates?: UpdateService } = {}) {
+// The shared transport fixture uses legacy offers; exercise the Step 2 refusal explicitly.
+async function twoPcs(options: { direct?: { reachable: (dial: number, host: string) => boolean; held?: (dial: number) => Promise<void> | undefined; named?: (port: number) => readonly string[] }; updates?: UpdateService; accountOpensAll?: boolean } = {}) {
+  const opensAll = options.accountOpensAll ?? false;
   const relay = startBunRelay({ port: 0, limiters: {
     perAddress: { async limit() { return { success: true }; } },
     global: { async limit() { return { success: true }; } },
@@ -56,7 +58,7 @@ async function twoPcs(options: { direct?: { reachable: (dial: number, host: stri
   const bState = stateDir();
   const service = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local, pairCodeRelay: `wss://127.0.0.1:${relay.port}`,
     ...(options.direct ? { direct: { addresses: () => ["127.0.0.1"], advertise: (port: number) => { listener.port = port; return options.direct!.named?.(port) ?? [`ws://${LAN}:7319`]; }, peerAllowed: () => true, preferredPort: 0 } } : {}) });
-  const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: service, ...(options.updates ? { updates: options.updates } : {}) });
+  const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: service, accountOpensAll: opensAll, ...(options.updates ? { updates: options.updates } : {}) });
   cleanup.push(async () => { await service.shutdown(); b.stop(); });
   const bBase = `http://127.0.0.1:${b.port}`;
   const started = await fetch(`${bBase}/api/relay/start`, { method: "POST", headers: { origin: bBase, "x-herdr-update": "1" } });
@@ -91,7 +93,7 @@ async function twoPcs(options: { direct?: { reachable: (dial: number, host: stri
   };
   const startA = () => {
     const a = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relayPcSocket: local, relayPcDirectSocket: onLan,
-      pcUpdateTimings: { pollMs: 20, startMs: 5_000, checkMs: 1_000 } });
+      accountOpensAll: opensAll, pcUpdateTimings: { pollMs: 20, startMs: 5_000, checkMs: 1_000 } });
     let stopped = false;
     const stop = () => { if (!stopped) { stopped = true; a.stop(); } };
     cleanup.push(stop);
@@ -140,11 +142,16 @@ async function machineWhen(base: string, wanted: (machine: Machine) => boolean, 
   } finally { abort.abort(); }
 }
 
-it("adds a PC through the relay, shows its panes, signs in again after a restart and stops at a revocation", async () => {
-  const { b, link, aState, startA } = await twoPcs();
+it.each([false, true])("adds a PC through a legacy relay offer only with Step 2 opted out (%s)", async accountOpensAll => {
+  const { b, link, aState, startA } = await twoPcs({ accountOpensAll });
   let a = startA();
 
   const added = await addRelayPc(a.base, link, "Lab");
+  if (accountOpensAll) {
+    expect(added.status, await added.clone().text()).toBe(400);
+    expect(await errorCode(added)).toBe("machine_request_failed");
+    return;
+  }
   expect(added.status).toBe(201);
   const { machine } = await added.json() as { machine: Machine };
   expect(machine).toMatchObject({ kind: "relay", name: "Lab", relay: { server_id: new URL(link).pathname.split("/")[2] } });
@@ -196,8 +203,8 @@ it("adds a PC through the relay, shows its panes, signs in again after a restart
   expect(existsSync(keys) ? readdirSync(keys) : []).toEqual([]);
 }, 60_000);
 
-it("finds a PC by the code it shows, keeps its offer while its ID is compared, and adds it once that ID is confirmed", async () => {
-  const { bBase, startA } = await twoPcs();
+it("with Step 2 opted out, finds a PC by its typed code and adds it after ID confirmation", async () => {
+  const { bBase, startA } = await twoPcs({ accountOpensAll: false });
   const a = startA();
   const notACode = await findRelayPc(a.base, "hello");
   expect(notACode.status).toBe(400);

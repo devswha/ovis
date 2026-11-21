@@ -1025,6 +1025,12 @@ whole snapshot. If the account service disables Step 2, a listed PC gets `step2_
 read. Account-joined phones wait until a whole snapshot succeeds again; a named recovery release
 cannot override that wait.
 
+A PC that was offline cannot know about a new account block until it contacts the service.
+It reads its mailbox before reconciling the account list. If a **Not me** targets a legacy
+device whose local pairing time cannot be trusted, the PC keeps the request until a reconciled
+read can establish the order of both keys. On that PC, **Settings → Devices and PCs** shows
+the pending request beside the device. Choose **Revoke** there to stop its access immediately.
+
 Step 2 is on by default. Only the exact value `0` turns it off. An unset or empty value, `1`,
 `false`, and all other values leave it on.
 

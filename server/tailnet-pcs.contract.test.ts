@@ -67,7 +67,8 @@ async function pcB(login: string, options: { codeServerId?: string } = {}) {
   };
   const bState = stateDir();
   const service = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local, pairCodeRelay: `wss://127.0.0.1:${relay.port}` });
-  const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: "me@example.com", sidecar: false, registerBridge: false, relay: service });
+  // The one-tap Tailnet test supplies the released Step 1 offer, not a Step 2 screen approval.
+  const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: "me@example.com", sidecar: false, registerBridge: false, relay: service, accountOpensAll: false });
   cleanup.push(async () => { await service.shutdown(); b.stop(); });
   const bBase = `http://127.0.0.1:${b.port}`;
   expect((await fetch(`${bBase}/api/relay/start`, { method: "POST", headers: { origin: bBase, "x-herdr-update": "1" } })).status).toBe(200);

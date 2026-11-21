@@ -34,7 +34,7 @@ export interface Removal {
   readonly records?: readonly unknown[];
 }
 export interface Marker { readonly key: string; readonly account: string; readonly removals: readonly Removal[] }
-export interface Revoke { readonly id: string; readonly key: string; readonly account: string | null; readonly at: string; readonly untrusted_time?: true }
+export interface Revoke { readonly id: string; readonly key: string; readonly account: string | null; readonly at: string; readonly untrusted_time?: true; readonly legacy_time?: true }
 export interface Unrevoke { readonly id: string; readonly revoke: string; readonly at: string; readonly by: string }
 
 /** The tombstone shape of server/devices.ts, written from the evidence. */
@@ -54,7 +54,7 @@ function parseDoc(value: unknown): Doc | null {
   if (doc.row_drops !== undefined && !(Array.isArray(doc.row_drops) && doc.row_drops.every(isRowDrop))) return null;
   const removalOk = (r: Removal) => typeof r === "object" && r !== null && typeof r.id === "string" && isStrings(r.over) && typeof r.tomb === "string" && typeof r.at === "string" && (r.records === undefined || Array.isArray(r.records));
   if (!doc.markers.every((m) => typeof m === "object" && m !== null && typeof m.key === "string" && typeof m.account === "string" && Array.isArray(m.removals) && m.removals.every(removalOk))) return null;
-  if (!doc.revokes.every((r) => typeof r === "object" && r !== null && typeof r.id === "string" && typeof r.key === "string" && (r.account === null || typeof r.account === "string") && typeof r.at === "string" && (r.untrusted_time === undefined || (r.untrusted_time === true && isIsoTime(r.at))))) return null;
+  if (!doc.revokes.every((r) => typeof r === "object" && r !== null && typeof r.id === "string" && typeof r.key === "string" && (r.account === null || typeof r.account === "string") && typeof r.at === "string" && (r.untrusted_time === undefined || (r.untrusted_time === true && isIsoTime(r.at))) && (r.legacy_time === undefined || r.legacy_time === true))) return null;
   if (!doc.unrevokes.every((u) => typeof u === "object" && u !== null && typeof u.id === "string" && typeof u.revoke === "string" && typeof u.at === "string" && typeof u.by === "string")) return null;
   return doc as Doc;
 }
@@ -175,14 +175,7 @@ export class RemovalEvidence {
   /** A Revoke on this PC of a row holding `key`: its own entry, the deny that goes to disk before anything else. */
   /** The times this PC wrote here, its Revokes and unrevokes, for the store's one sequence (DeviceStore.nextStamp); a removal's time is the record's. */
   times(): string[] {
-    return [...this.doc.revokes.filter(r => !r.untrusted_time).map((r) => r.at), ...this.doc.unrevokes.map((u) => u.at)];
-  }
-
-  /** Before import, a future time found only in the Step-1 projection has no ordering authority. */
-  hasUntrustedRevokeTime(tombstone: EvidenceTombstone, now: number): boolean {
-    const id = localRevokeId(tombstone.key, tombstone.account, tombstone.removed_at);
-    const revoke = this.doc.revokes.find(r => r.id === id);
-    return revoke ? revoke.untrusted_time === true : isIsoTime(tombstone.removed_at) && Date.parse(tombstone.removed_at) > now + DAY_MS;
+    return [...this.doc.revokes.filter(r => !r.untrusted_time && !r.legacy_time).map((r) => r.at), ...this.doc.unrevokes.map((u) => u.at)];
   }
 
   addRevoke(key: string, account: string | null, now: number, drop?: RowDrop): void {
@@ -217,7 +210,8 @@ export class RemovalEvidence {
         if (doc.revokes.some((r) => r.id === id)) continue;
         const untrusted = isIsoTime(tombstone.removed_at) && Date.parse(tombstone.removed_at) > now + DAY_MS;
         const ended = !untrusted && rows.some((row) => row.relay_public_key === tombstone.key && row.pairedHere && Date.parse(row.created_at) > Date.parse(tombstone.removed_at));
-        doc = { ...doc, revokes: [...doc.revokes, { id, key: tombstone.key, account: tombstone.account === "" ? null : tombstone.account, at: tombstone.removed_at,
+        // A rollback tombstone proves a Revoke, not this PC's clock. It may have been written while the clock was ahead.
+        doc = { ...doc, revokes: [...doc.revokes, { id, key: tombstone.key, account: tombstone.account === "" ? null : tombstone.account, at: tombstone.removed_at, legacy_time: true,
           ...(untrusted ? { untrusted_time: true as const } : {}) }],
           unrevokes: ended ? [...doc.unrevokes, { id: randomBytes(16).toString("hex"), revoke: id, at, by: "pc" }] : doc.unrevokes };
         continue;

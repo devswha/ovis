@@ -60,7 +60,8 @@ async function accountPcs(options: { clock?: () => number; aIdentity?: boolean }
     relay_public_key: memberKey, account: ACCOUNT, created_at: new Date().toISOString(), last_seen_at: null };
   writeFileSync(join(bState, "devices.json"), JSON.stringify({ gate_closed_at: member.created_at, devices: [member] }), { mode: 0o600 });
   const relayService = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local });
-  const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: relayService,
+  // This fixture puts a released Step 1 member on B and uses its account-vouched comparison.
+  const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: relayService, accountOpensAll: false,
     accountService: { url: "https://account.test", fetch: service.fetch } });
   cleanup.push(async () => { await relayService.shutdown(); b.stop(); });
   const bBase = `http://127.0.0.1:${b.port}`;
@@ -72,7 +73,7 @@ async function accountPcs(options: { clock?: () => number; aIdentity?: boolean }
     body: JSON.stringify({ label: "Desk", public_key: bytesToHex(importPublicKey(offer.server_public_key)), relay: offer.relay }) }));
   const aState = stateDir();
   const aRelayIdentity = options.aIdentity ? rotateRelayIdentity(aState) : undefined;
-  const a = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relayPcSocket: local });
+  const a = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relayPcSocket: local, accountOpensAll: false });
   cleanup.push(() => a.stop());
   const aBase = `http://127.0.0.1:${a.port}`;
   /** the member, signed in to B over a session of B's own, that may approve through the relay */
@@ -168,7 +169,7 @@ it("adds a PC of the account once a member there picked the digits: a plain row 
   expect(listed.machines.some((m) => m.id === machine!.id && m.kind === "relay")).toBe(true);
   expect((await start(aBase, pc)).body.error?.code).toBe("account_pc_added");
   a.stop();
-  const again = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false });
+  const again = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, accountOpensAll: false });
   cleanup.push(() => again.stop());
   const restarted = await (await fetch(`http://127.0.0.1:${again.port}/api/machines`, { headers: { origin: `http://127.0.0.1:${again.port}` } })).json() as { machines: Machine[] };
   expect(restarted.machines.some((m) => m.id === machine!.id && m.kind === "relay")).toBe(true);

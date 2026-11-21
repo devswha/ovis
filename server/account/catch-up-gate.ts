@@ -29,10 +29,10 @@ export class CatchUpGate {
 
   waits(row: GatedRow, legacyCredential?: () => boolean): boolean {
     const binding = this.binding();
-    if (binding === null || this.released(row.id)) return false;
+    if (binding === null) return false;
     if (this.lifted.has(row.id)) return true;
-    if (pairedAtPc(row.origin)) return false;
     if (legacyCredential !== undefined) return !legacyCredential();
+    if (this.released(row.id) || pairedAtPc(row.origin)) return false;
     if (this.caughtUpFor === binding) return this.waiting.has(row.id);
     return true;
   }

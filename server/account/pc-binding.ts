@@ -47,7 +47,6 @@ interface PcDoc {
   /** the removal evidence was on disk once: its file missing since is damage, never a fresh start (S19) */
   evidence_written?: true;
   /** A listed PC's explicit service opt-out cannot be undone by a named recovery release. */
-  step2_off_for?: string | null;
   service_step2?: ServiceStep2;
 }
 
@@ -72,7 +71,6 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (first !== null && !(typeof first === "object" && first !== undefined && typeof first.key === "string" && (first.list_key === null || typeof first.list_key === "string"))) return "invalid first";
   if (typeof doc.others_ever !== "boolean") return "invalid others_ever";
   if (doc.evidence_written !== undefined && doc.evidence_written !== true) return "invalid evidence_written";
-  if (doc.step2_off_for != null && (typeof doc.step2_off_for !== "string" || !ID.test(doc.step2_off_for))) return "invalid step2_off_for";
   const step2 = doc.service_step2;
   if (step2 !== undefined && (step2 === null || typeof step2 !== "object" || typeof step2.bind_id !== "string"
     || !ID.test(step2.bind_id) || !Number.isSafeInteger(step2.revision) || step2.revision < 0 || typeof step2.off !== "boolean")) return "invalid service_step2";
@@ -81,11 +79,8 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   return doc as PcDoc;
 }
 
-/** Old opt-out markers rank behind versioned decisions for the same binding. */
 function serviceStep2(doc: PcDoc, binding: AccountBinding | null): ServiceStep2 | undefined {
-  if (binding === null) return undefined;
-  if (doc.service_step2?.bind_id === binding.bind_id) return doc.service_step2;
-  return doc.step2_off_for === binding.bind_id ? { bind_id: binding.bind_id, revision: 0, off: true } : undefined;
+  return binding !== null && doc.service_step2?.bind_id === binding.bind_id ? doc.service_step2 : undefined;
 }
 
 /** A folder by what it is on disk, so a link to it and its real path are one folder (P21). */
@@ -355,8 +350,7 @@ export class PcAccountState {
     if ((prior?.off ?? false) === off) return false;
     const revision = (prior?.revision ?? 0) + 1;
     if (!Number.isSafeInteger(revision)) throw new Error("The service's Step 2 revision is exhausted");
-    try { this.write({ ...this.doc, step2_off_for: off ? binding.bind_id : null,
-      service_step2: { bind_id: binding.bind_id, revision, off } }); }
+    try { this.write({ ...this.doc, service_step2: { bind_id: binding.bind_id, revision, off } }); }
     catch (error) {
       this.unwritten(error, "The service's Step 2 status could not be saved");
       throw error;

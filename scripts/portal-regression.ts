@@ -146,7 +146,10 @@ try {
   await ownerPage.getByRole("button", { name: "Unlock", exact: true }).click();
   await ownerPage.locator(".conn-live").waitFor({ state: "attached", timeout: 15_000 });
   const ownerAuth = await ownerPage.evaluate(async () => (await (await fetch("/api/health?scope=bridge")).json()).auth);
-  assert.deepEqual(ownerAuth, { required: false, authenticated: true, via: "token", role: "drive" }, "the UI token login receives the owner role");
+  assert.deepEqual(ownerAuth, {
+    required: false, authenticated: true, via: "token", role: "drive",
+    ...(server.context.services.lockRoutes === undefined ? {} : { own_window: true }),
+  }, "the UI token login receives the owner role and the local-window hint when supported");
 
   await openPhoneSettings(ownerPage);
   const ownerSettings = settingsOf(ownerPage);

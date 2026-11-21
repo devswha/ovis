@@ -32,6 +32,7 @@ const INCOMPLETE = "state-merge-devices-incomplete.json";
 export interface SiblingMerge {
   /** why the device registries could not be merged: the store must stay gated (devices.ts) */
   devicesBlocked: string | null;
+  legacyCredential?: (row: StoredDevice) => boolean;
 }
 
 export function siblingStateDir(active: string, env: Record<string, string | undefined> = process.env): string | null {
@@ -61,6 +62,8 @@ interface MergeRecord {
   at: string;
   dirs: string[];
   devices: string[];
+  /** Exact credentials witnessed in both folders by an ordinary Step 1 merge. Never an admission order. */
+  legacy_credentials?: string[];
   preferences: Record<string, PreferencesSnapshot>;
   preferences_target?: PreferencesSnapshot;
   push: Record<string, string[]>;
@@ -94,7 +97,10 @@ const earliest = (values: (string | null | undefined)[]): string | null =>
  * a freeze in force, so a row only the other dir holds is no import now and stays in that dir's file; and
  * `dropConflictingKeys`, so a row whose key differs between the two copies is dropped rather than given either key.
  */
-export interface MergeRules { readonly holdImports?: boolean; readonly dropConflictingKeys?: boolean; readonly onDropped?: (device: StoredDevice) => void }
+export interface MergeRules { readonly holdImports?: boolean; readonly dropConflictingKeys?: boolean; readonly onDropped?: (device: StoredDevice) => void; readonly sharedLegacyIdentity?: string }
+
+const credentialFingerprint = (identity: string, row: StoredDevice): string =>
+  createHash("sha256").update(text([identity, row.id, row.relay_public_key, row.token_hash])).digest("base64url");
 
 // Rollback cannot transfer a held credential to a live twin, in either direction.
 function separateHeldTwins(own: StoredDevice, other: StoredDevice): boolean {
@@ -185,6 +191,7 @@ const isSnapshot = (value: unknown): value is PreferencesSnapshot =>
 const isRecord = (value: unknown): value is MergeRecord =>
   isObject(value) && value["version"] === 1 && Number.isSafeInteger(value["seq"]) && typeof value["at"] === "string"
   && isStrings(value["dirs"]) && isStrings(value["devices"])
+  && (value["legacy_credentials"] === undefined || isStrings(value["legacy_credentials"]))
   && isObject(value["preferences"]) && Object.values(value["preferences"]).every(isSnapshot)
   && (value["preferences_target"] === undefined || isSnapshot(value["preferences_target"]))
   && isObject(value["push"]) && Object.values(value["push"]).every(isStrings)
@@ -276,7 +283,7 @@ function keptOrigin(copy: StoredDevice, other: StoredDevice, key: string | undef
   return own.from === theirs.from && own.how === theirs.how && own.by === theirs.by && own.admit_no === theirs.admit_no && own.at === theirs.at ? own : undefined;
 }
 
-function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string, intend: Intent, now: Date, rules: MergeRules): { blocked: string | null; ids: string[] | null; changed: number; gated?: boolean } {
+function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string, intend: Intent, now: Date, rules: MergeRules, legacy: Set<string>): { blocked: string | null; ids: string[] | null; changed: number; gated?: boolean } {
   const ownPath = join(active, "devices.json");
   const otherPath = join(sibling, "devices.json");
   const baseOf = (dir: string, path: string): ReadonlySet<string> | null => {
@@ -300,6 +307,21 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
   const registry = (read: typeof own): Registry | null => read.kind === "ok" ? { gate_closed_at: read.gateClosedAt, devices: read.devices } : null;
   const mine = registry(own);
   const theirs = registry(other);
+  const identity = rules.sharedLegacyIdentity;
+  if (rules.dropConflictingKeys && identity !== undefined && base !== null && !ownIncomplete && !otherIncomplete) {
+    const eligible = (row: StoredDevice): boolean => !row.invalid_origin && row.held === undefined
+      && (row.origin === undefined || row.origin.from === "legacy")
+      && row.carried_notice === undefined && row.paired_over === undefined;
+    const twins = new Map(theirs?.devices.filter(eligible).map(row => [row.id, row]));
+    const previouslyVerified = new Set(base.legacy_credentials);
+    for (const row of mine?.devices ?? []) {
+      const twin = twins.get(row.id);
+      if (!twin || !eligible(row) || row.imported && twin.imported || !bases.own?.has(row.id) || !bases.other?.has(row.id)) continue;
+      const fingerprint = credentialFingerprint(identity, row);
+      if (fingerprint === credentialFingerprint(identity, twin)
+        && (base.legacy_credentials === undefined || previouslyVerified.has(fingerprint))) legacy.add(fingerprint);
+    }
+  }
   if (mine === null && theirs === null) {
     // both gone after a merge that knew paired devices or a closed gate: this is no first installation
     if (base !== null && (base.devices.length > 0 || base.gated === true || (base.pending?.ids.length ?? 0) > 0)) {
@@ -563,17 +585,20 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
 export function mergeSiblingState(active: string, sibling: string, now = new Date(), rules: MergeRules = {}): SiblingMerge {
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   let blocked: string | null;
+  const legacy = new Set<string>();
   try {
-    blocked = merge(active, sibling, now, stamp, rules);
+    blocked = merge(active, sibling, now, stamp, rules, legacy);
   } catch (error) {
     // whatever went wrong, the server still starts, gated: a start that failed would fall back to an older release
     blocked = `Cannot merge the state of ${sibling} into ${active} (${error instanceof Error ? error.message : String(error)}). External access without a token or trusted Tailscale login remains blocked; restart the server once it is fixed.`;
   }
   if (blocked !== null) closeGateOnDisk(active, stamp, now, rules.dropConflictingKeys === true);
-  return { devicesBlocked: blocked };
+  const identity = rules.sharedLegacyIdentity;
+  return { devicesBlocked: blocked, ...(blocked === null && identity !== undefined && legacy.size > 0
+    ? { legacyCredential: (row: StoredDevice) => legacy.has(credentialFingerprint(identity, row)) } : {}) };
 }
 
-function merge(active: string, sibling: string, now: Date, stamp: string, rules: MergeRules): string | null {
+function merge(active: string, sibling: string, now: Date, stamp: string, rules: MergeRules, legacy: Set<string>): string | null {
   const pair = [realpath(active), realpath(sibling)].sort();
   let base: MergeRecord | null;
   try {
@@ -585,6 +610,7 @@ function merge(active: string, sibling: string, now: Date, stamp: string, rules:
   let intent: MergeRecord | null = null;
   const intend: Intent = (ids, sides, gated) => {
     intent = { version: 1, seq: (base?.seq ?? 0) + 1, at: now.toISOString(), dirs: pair, devices: base?.devices ?? [],
+      ...(rules.dropConflictingKeys ? { legacy_credentials: [...legacy] } : {}),
       gated: gated || base?.gated === true, preferences: base?.preferences ?? {},
       ...(base?.preferences_target ? { preferences_target: base.preferences_target } : {}), push: base?.push ?? {}, pending: { ids, sides } };
     try { writePrivateState(join(active, RECORD), intent); }
@@ -595,7 +621,7 @@ function merge(active: string, sibling: string, now: Date, stamp: string, rules:
     try { writePrivateState(join(sibling, RECORD), intent); } catch {}
     return null;
   };
-  const devices = mergeDevices(active, sibling, base, stamp, intend, now, rules);
+  const devices = mergeDevices(active, sibling, base, stamp, intend, now, rules, legacy);
   const written = intent as MergeRecord | null;
   const preferences = mergePreferences(active, sibling, base, stamp);
   const push = mergePush(active, sibling, base, stamp);
@@ -608,6 +634,7 @@ function merge(active: string, sibling: string, now: Date, stamp: string, rules:
     at: now.toISOString(),
     dirs: pair,
     devices: devices.ids ?? base?.devices ?? [],
+    ...(rules.dropConflictingKeys ? { legacy_credentials: [...legacy] } : {}),
     ...(devices.ids === null && (written?.pending ?? base?.pending) ? { pending: written?.pending ?? base?.pending } : {}),
     gated: devices.gated === true || base?.gated === true,
     preferences: preferences?.snapshots ?? base?.preferences ?? {},
