@@ -535,6 +535,31 @@
 .markdown-h5 { color: inherit; font-weight: var(--fw-semibold); line-height: var(--lh-heading); }
 .markdown-h6 { color: var(--text-dim); font-weight: var(--fw-semibold); line-height: var(--lh-heading); }
 
+/* Chat replies use the theme's existing syntax roles, as Codex's Markdown scopes do.
+   Keep prose neutral and font/size cues intact; do not recolor file previews or code tokens.
+   Mixing toward strong text keeps light palettes readable without hardcoded theme colors. */
+.chat-turn-agent .markdown {
+  --markdown-heading: color-mix(in srgb, var(--syntax-function) 70%, var(--text-strong));
+  --markdown-subheading: color-mix(in srgb, var(--syntax-type) 70%, var(--text-strong));
+  --markdown-detail: color-mix(in srgb, var(--syntax-meta) 70%, var(--text-strong));
+  --markdown-strong: color-mix(in srgb, var(--syntax-variable) 70%, var(--text-strong));
+  --markdown-emphasis: color-mix(in srgb, var(--syntax-meta) 70%, var(--text-strong));
+  --markdown-inline-code: color-mix(in srgb, var(--syntax-keyword) 70%, var(--text-strong));
+}
+
+.chat-turn-agent .markdown :is(.markdown-h1, .markdown-h2) { color: var(--markdown-heading); }
+.chat-turn-agent .markdown :is(.markdown-h3, .markdown-h4) { color: var(--markdown-subheading); }
+.chat-turn-agent .markdown :is(.markdown-h5, .markdown-h6) { color: var(--markdown-detail); }
+.chat-turn-agent .markdown :is(strong, b) { color: var(--markdown-strong); }
+.chat-turn-agent .markdown :is(em, i) { color: var(--markdown-emphasis); }
+.chat-turn-agent .markdown :not(pre) > code { color: var(--markdown-inline-code); }
+.chat-turn-agent .markdown .markdown-list > li::marker { color: var(--markdown-heading); }
+.chat-turn-agent .markdown blockquote { border-left-color: var(--markdown-subheading); }
+.chat-turn-agent .markdown th { color: var(--markdown-subheading); }
+
+/* A nested emphasis keeps the section or link's color, never erasing its hierarchy. */
+.chat-turn-agent .markdown :is(.markdown-h1, .markdown-h2, .markdown-h3, .markdown-h4, .markdown-h5, .markdown-h6, a) :is(strong, b, em, i) { color: inherit; }
+
 /* A marker sits outside its item, in this indent, and is drawn in the Chat font: in a monospace face
    every digit and the ". " after it take a whole cell (`1ch`), so a fixed 20px cut "1." off on the
    left (#1993). The indent is the widest marker in cells, never less than the 20px a bullet always
