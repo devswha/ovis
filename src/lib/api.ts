@@ -12,7 +12,7 @@ import type { MovePlanResponse, MoveStartRequest, MoveStopAllOffer, MoveStopAllR
 import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "../../shared/files.ts";
 import { parseSystemReport } from "./systemReport.ts";
 import { TAILNET_NODE_ROUTES, type TailnetNodesAnswer } from "../../shared/tailnet-nodes.ts";
-import { machinePath, type OwnJoinRequest, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type PendingKey, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
+import { machinePath, type OwnJoinRequest, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PendingKey, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   WorkspaceMoved,
   HerdrPane,
@@ -1559,6 +1559,9 @@ export async function pairAccountPc(ticket: string, onWaiting: () => void, signa
 export const startMachineSetup = (request: SetupRequest) => machineRequest<SetupJob>("/setup", "POST", request);
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);
+/** Ovis installed on a PC over SSH with the official installer, pinned to this app's release (PcInstallJob) */
+export const startPcInstall = (request: PcInstallRequest) => machineRequest<PcInstallJob>("/install", "POST", request);
+export const fetchPcInstall = (id: string) => machineRequest<PcInstallJob>(`/install/${encodeURIComponent(id)}`);
 
 /** GET /api/voice: whether the server holds a key; the key itself never comes back. */
 export async function fetchVoiceStatus(): Promise<VoiceStatus> {

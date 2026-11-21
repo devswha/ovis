@@ -983,6 +983,34 @@ row before publishing its usual paired-device notification; **Revoke** removes i
 B without proof support or the journal, or a digit answer from an older approver cannot admit a PC
 this way. All other comparison paths still require their original digits.
 
+### Adding a PC over SSH
+
+From this PC's own window, signed in to the account this PC is in, Add PC over SSH can also add
+the other PC (B) to that account (Linux and macOS on both ends; a Windows B adds itself with its
+number). SSH only says which machine and OS user was reached; the account's one-press admission
+decides which account B may join.
+
+- **SSH.** Public keys only (the user's SSH config, key files and agent): no password or
+  keyboard-interactive login, and no reconnect key of this app's is used or enrolled. B's host key
+  must be known or confirmed in the dialog; a changed key is refused.
+- **B's own Ovis only.** The job lands only on an Ovis registered by B's user that is not a bridge
+  this app started (`managed_remote: false`, proved over its own credential); a bridge-only PC is
+  refused, and a PC without Ovis is offered the official installer (`install_ovis`). Nothing is
+  installed or started in its place.
+- **Inspect.** B's registration names its recovery socket (`recover_socket`). It is forwarded over
+  the job's connection into the connection's private folder, and `account_add_inspect` returns B's
+  ID, public key, advertised relay, label and account. The ID must derive from the key.
+- **List and admit.** The window lists B (`PUT /v1/pcs/:id`) unless already listed, then admits it
+  (`POST /v1/pcs/:id/admit`) with the same stored sign-in. The service applies its usual rules:
+  fresh own sign-in, and two-step unless the account was never used. On `two_step_required` the
+  window says to add B with the number on its Ovis page.
+- **Take.** `POST /api/account/ssh-add` `{job_id, server_id}`, this PC's own window only. This PC
+  sends B only its own binding's account (`account_add_take`) over the same connection, while the
+  job's PC keeps the generation it had at inspect. B names itself for that account and takes the
+  admission on its own proof (`POST /v1/pc/admission`), as one press does. B already in that
+  account answers as added; B in another account binds nothing. A listing or an admission alone
+  never shows as added.
+
 ### Introductions
 
 A device just admitted on PC X learns the account's other PCs from the member that approved it,
