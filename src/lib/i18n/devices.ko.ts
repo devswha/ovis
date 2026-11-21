@@ -9,7 +9,7 @@
 export const DEVICES_KO: Record<string, string> = {
   "Sign in to this PC's account.": "이 PC의 계정으로 로그인하세요.",
   "This PC is in your account.": "이 PC는 내 계정에 있습니다.",
-  "The PCs of this Tailscale login.": "이 Tailscale 로그인에 연결된 PC입니다.",
+  "The PCs of this Tailscale login. Connect goes over SSH, with nothing to install there.": "이 Tailscale 계정의 PC예요. SSH로 연결하고, 그 PC에 설치할 것은 없어요.",
   "This PC is in an account. Add PCs from your account.": "이 PC는 계정에 연결돼 있어요. 계정에서 PC를 추가하세요.",
   "This PC joined a different account.": "이 PC가 다른 계정에 연결됐어요.",
   "Add from account": "계정에서 추가",

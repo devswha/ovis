@@ -5,7 +5,7 @@ import type { RowDrop } from "./row-drop-evidence.ts";
 import type { Sayer } from "./join-hold.ts";
 import type { Readmission } from "./readmission.ts";
 
-export type DropReason = "list" | "left_on_pc" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke" | "expired" | "catching_up" | "promoted";
+export type DropReason = "list" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke" | "expired" | "catching_up" | "promoted";
 
 /**
  * What Track A's deny path (DeviceStore.attachAccountRows, set only while Step 2 is on) asks of the

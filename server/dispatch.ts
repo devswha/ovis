@@ -582,9 +582,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     }
     return handleAuthRequest(request, token, client);
   }
-  const pendingRedemptions = ctx.services.pendingRedemptions;
-  if (pendingRedemptions !== undefined && (pathname === "/api/devices/pending" || pathname.startsWith("/api/devices/pending/"))) {
-    return handlePendingRequest(request, pathname, pendingRedemptions, access);
+  if (pathname === "/api/devices/pending" || pathname.startsWith("/api/devices/pending/")) {
+    const pendingRedemptions = ctx.services.pendingRedemptions;
+    if (pendingRedemptions !== undefined) return handlePendingRequest(request, pathname, pendingRedemptions, access);
   }
   if (pathname === "/api/devices" || pathname.startsWith("/api/devices/")) {
     try {

@@ -9,7 +9,7 @@
 export const DEVICES_JA: Record<string, string> = {
   "Sign in to this PC's account.": "この PC のアカウントにサインインしてください。",
   "This PC is in your account.": "この PC はあなたのアカウントに接続されています。",
-  "The PCs of this Tailscale login.": "この Tailscale ログインの PC です。",
+  "The PCs of this Tailscale login. Connect goes over SSH, with nothing to install there.": "この Tailscale ログインの PC です。SSH で接続し、その PC に何もインストールしません。",
   "This PC is in an account. Add PCs from your account.": "この PC はアカウントに接続されています。PC はアカウントから追加してください。",
   "This PC joined a different account.": "この PC は別のアカウントに接続されました。",
   "Add from account": "アカウントから追加",

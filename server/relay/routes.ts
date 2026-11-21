@@ -165,8 +165,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       }
       case RELAY_CONTROLS.reset: {
         setRequestRoute("/api/relay/reset-identity");
-        // it ends every relay row whatever its age: with the release flag on, only this PC itself may ask (T20, rule B)
-        if (context.services.devices.opensAll() && !local) return fail("local_required", "Resetting the relay identity is done at that PC", 403);
+        // Reset ends every relay row: a PC under account policy requires the same local authority as Revoke all.
+        if (context.services.devices.accountPolicyActive() && !local) return fail("local_required", "Resetting the relay identity is done at that PC", 403);
         const status = await service.resetIdentity();
         return reply(status, status.blocked ? 409 : 200);
       }

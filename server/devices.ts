@@ -1088,7 +1088,7 @@ export class DeviceStore {
 
   private approvedOver(row: StoredDevice, id: string): boolean {
     return !row.imported && !row.invalid_origin && (row.origin?.from === "pc"
-      || (row.origin?.from === "recover" && row.recovered_over?.some(known => known === id || `f:${known}` === id) === true));
+      || (row.origin?.from === "recover" && row.recovered_over?.some(known => known.replace(/^f:/, "") === id.replace(/^f:/, "")) === true));
   }
 
   /** An owner's approval belongs to the exact row retained here, not to a new grant for the same key. */
@@ -1428,14 +1428,41 @@ export class DeviceStore {
   /** The PC leaves its account, for one of the named reasons (P12); nothing else clears the binding. */
   clearAccountBinding(reason: ClearReason, by: string): boolean {
     if (reason !== "revoke_all") this.resumeRevokeAll();
-    if (this.pc !== null) {
-      const cleared = this.pc.clear(reason, by);
-      if (cleared) this.endAccountRows(reason);
-      return cleared;
+    const pc = this.pc ?? (existsSync(join(this.stateDirPath, "account-pc.json")) ? PcAccountState.open(this.stateDirPath) : null);
+    const binding = pc?.binding();
+    if (!pc || !binding || pc.strict !== null) return false;
+    try {
+      // The binding clear is the commit point: after it reaches disk no row can still name the old account.
+      this.assertWritable();
+      this.endAccountRows(reason);
+      this.settleMemberRows(binding.account, reason);
+      return pc.clear(reason, by);
+    } catch (error) {
+      pc.unwritten(error, "This PC could not finish clearing its account");
+      throw error;
     }
-    // with the flag off nothing of the account is read, but a binding a flag-on run left is still cleared, so the next
-    // flag-on start is in no account (P12); a folder that never had one is not touched
-    return existsSync(join(this.stateDirPath, "account-pc.json")) ? PcAccountState.open(this.stateDirPath).clear(reason, by) : false;
+  }
+
+  private settleMemberRows(account: string, reason: ClearReason): void {
+    const members = this.devices.filter(row => row.account === account || row.member_approved_in === account);
+    if (!members.length) return;
+    const gone = members.filter(row => {
+      const origin = row.origin;
+      const local = origin?.from === "pc" || (pairedHere(row) && row.account_add === undefined &&
+        (origin?.from === "legacy" || (origin?.from === "remote" && origin.how === "code" && origin.by === null)));
+      // A removal that covered the member must not stop covering it just because its account field is gone.
+      return !local || row.imported || row.invalid_origin || this.coveredByEvidence(row);
+    });
+    if (gone.length) this.drop(gone, "pc", reason);
+    if (gone.length === members.length) return;
+    const next = this.devices.map(row => {
+      if (row.account !== account && row.member_approved_in !== account) return row;
+      const { account: _account, linked_at: _linked, member_approved_in: _approval,
+        account_add: _add, joined_by: _joined, ...paired } = row;
+      return paired;
+    });
+    this.save(next);
+    this.devices = next;
   }
 
   /** Every account-joined row ends: its sessions close first, then it leaves account-devices.json (T44, P8 order). */

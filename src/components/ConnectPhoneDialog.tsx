@@ -309,7 +309,7 @@ export function TailscaleTab({ found: { found, unread, failed, withheld, stateOf
   const pcs = found?.filter((pc) => pc.source === "tailscale" || pc.tailnet !== undefined) ?? null;
   return (
     <>
-      <p className="settings-description">{t("The PCs of this Tailscale login.")}</p>
+      <p className="settings-description">{t("The PCs of this Tailscale login. Connect goes over SSH, with nothing to install there.")}</p>
       {pcs === null ? <p className="settings-hint" role="status">{t("Looking for PCs…")}</p>
         : pcs.length > 0 ? (
           <div className="connect-found">

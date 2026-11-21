@@ -16,8 +16,9 @@ import { ADMISSION_FILE, type OriginFrom, type OriginHow, type RowOrigin } from 
 import { DEVICE_JOURNAL_FILE } from "./safety-log.ts";
 
 /** `unlisted`: a PC bound on the account service's word that the account stopped listing (one press, docs/account.md) */
-export type ClearReason = "revoke_all" | "identity_reset" | "left_on_pc" | "unlisted";
-export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason; readonly by: string }
+export type ClearReason = "revoke_all" | "identity_reset" | "unlisted";
+// A receipt written by an older version still invalidates its bind_id; new clears cannot emit that reason.
+export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason | "left_on_pc"; readonly by: string }
 export interface AccountBinding {
   readonly account: string;
   readonly bind_id: string;

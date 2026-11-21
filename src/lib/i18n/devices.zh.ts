@@ -9,7 +9,7 @@
 export const DEVICES_ZH: Record<string, string> = {
   "Sign in to this PC's account.": "请登录这台 PC 所在的账号。",
   "This PC is in your account.": "这台 PC 已连接到你的账号。",
-  "The PCs of this Tailscale login.": "此 Tailscale 登录下的 PC。",
+  "The PCs of this Tailscale login. Connect goes over SSH, with nothing to install there.": "此 Tailscale 登录下的 PC。通过 SSH 连接，无需在那台 PC 上安装任何东西。",
   "This PC is in an account. Add PCs from your account.": "这台 PC 已连接到账号。请从你的账号添加 PC。",
   "This PC joined a different account.": "这台 PC 已连接到另一个账号。",
   "Add from account": "从账号添加",
