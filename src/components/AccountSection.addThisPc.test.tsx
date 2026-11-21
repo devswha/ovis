@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
+import { unitHerdrOnly } from "../../scripts/test-herdr.ts";
 import { pairingPc } from "../../server/account/pairing.test-helpers.ts";
 import { handleRelayRequest } from "../../server/relay/routes.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
@@ -12,6 +13,9 @@ import { AccountServiceError, SignedOutError, type AccountService } from "../lib
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
 import { ADDED_POLL_MS, ADDING_MS, AddThisPc, ANSWER_MS, REOPEN_MS, SIGNED_IN_RETRY_MS, WAITING_MS } from "./AccountSection.tsx";
+
+// the real PC of realRelay reads no herdr: its status reads would put their timeouts on this suite's fake timer queue
+afterAll(unitHerdrOnly());
 
 const at = Date.parse("2026-11-10T03:00:00Z");
 const MARKER = "ovis-add-pc-waiting";
