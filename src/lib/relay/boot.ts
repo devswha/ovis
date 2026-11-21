@@ -95,6 +95,15 @@ export function shellLoaded(memory: TabMemory | null): void {
   try { memory?.removeItem(LOAD_RELOAD_KEY); } catch { /* the next failure then shows the notice at once */ }
 }
 
+/**
+ * Reloads the page at the address it was entered by: takeEntryUrl took an offer, a sign-in's return or a query off the
+ * address before the shell loaded, and a reload of what is left would drop them. The reloaded page takes them off again.
+ */
+export function reloadEntry(page: { history: Page["history"]; location: { reload(): void } }, entryUrl: string): void {
+  page.history.replaceState(null, "", entryUrl);
+  page.location.reload();
+}
+
 function tabMemory(): TabMemory | null {
   try { return window.sessionStorage; } catch { return null; }
 }
@@ -115,7 +124,7 @@ export function bootRelayShell(container: HTMLElement, renderApp: () => Root, lo
     },
     (error: unknown) => {
       console.error("Ovis: the relay shell did not load", error);
-      if (reloadAfterFailedLoad(memory)) window.location.reload();
+      if (reloadAfterFailedLoad(memory)) reloadEntry(window, entryUrl);
       else createRoot(container).render(createElement(AppLoadFailed));
     },
   ).catch((error: unknown) => {

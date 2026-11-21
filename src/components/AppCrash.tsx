@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type Ref } from "react";
 import { copyText } from "../lib/clipboard.ts";
 import { crashProbe, type CrashRegion } from "../lib/crashProbe.ts";
-import { t, useT } from "../lib/i18n.ts";
+import { resolveLanguage, t, translate, useT, type Language } from "../lib/i18n.ts";
+import { loadSettings } from "../lib/settings.ts";
 import "./AppCrash.css";
 
 export function crashDetails(error: unknown): string {
@@ -41,10 +42,13 @@ export function AppCrash({ error }: { error: unknown }) {
 
 /**
  * What the hosted shell shows when its code still did not load after one reload (lib/relay/boot.ts):
- * nothing broke in the app, so no crash details, only the way to try again. Outside SettingsProvider,
- * like AppCrash.
+ * nothing broke in the app, so no crash details, only the way to try again. It shows before any
+ * SettingsProvider set the language, so it reads the saved one itself.
  */
 export function AppLoadFailed() {
+  let language: Language;
+  try { language = resolveLanguage(loadSettings().language); } catch { language = resolveLanguage("system"); }
+  const t = (key: string): string => translate(language, key);
   return (
     <main className="app-crash">
       <div className="app-crash-card error-state" role="alert">

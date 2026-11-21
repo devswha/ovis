@@ -109,7 +109,8 @@ function fileResponse(path: string, status = 200): Response {
 }
 
 function notFound(site: PagesSite, served: string): Response {
-  for (let dir = served.slice(0, served.lastIndexOf("/")); ; dir = dir.slice(0, dir.lastIndexOf("/"))) {
+  const decoded = decodeURIComponent(served);
+  for (let dir = decoded.slice(0, decoded.lastIndexOf("/")); ; dir = dir.slice(0, dir.lastIndexOf("/"))) {
     const page = fileAt(site, `${dir}/404.html`);
     if (page !== null) return fileResponse(page, 404);
     if (dir === "") break;
