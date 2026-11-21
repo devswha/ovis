@@ -161,7 +161,8 @@ fi
 
 # The Rust PTY host job: hosted where the Linux jobs are hosted by a rule (hosted_only, a fork, CI_SELF_HOSTED_LABELS
 # naming the hosted image, an event other than a pull request or a push), else on the Rust runners unless the
-# repository variable CI_RUST_LABELS names other labels or the hosted image, or a job of theirs has waited too long.
+# repository variable CI_RUST_LABELS names the hosted image, or a job of theirs has waited too long. CI_RUST_LABELS
+# only turns the Rust runners off: no value of it sends the job anywhere the rules above keep it from.
 route_rust() {
   local configured_rust="${RUST_LABELS:-}" configured_all="${CONFIGURED_LABELS:-}" counts waited
   if [[ "${HOSTED_ONLY:-}" == true ]]; then
@@ -170,16 +171,18 @@ route_rust() {
   elif [[ ("$event" == "pull_request" || "$event" == "pull_request_target") && "${HEAD_REPO:-}" != "${REPOSITORY:-}" ]]; then
     echo "Rust PTY host: ubuntu-24.04 (pull request from fork ${HEAD_REPO:-unknown})" >&2
     echo "rust=$hosted"
-  elif [[ "${configured_rust//[[:space:]]/}" == "$hosted" ]]; then
-    echo "Rust PTY host: ubuntu-24.04 (from repository variable CI_RUST_LABELS)" >&2
-    echo "rust=$hosted"
-  elif [[ -n "${configured_rust//[[:space:]]/}" ]]; then
-    choose_labels "repository variable CI_RUST_LABELS" "$configured_rust" rust
   elif [[ "${configured_all//[[:space:]]/}" == "$hosted" ]]; then
     echo "Rust PTY host: ubuntu-24.04 (from repository variable CI_SELF_HOSTED_LABELS)" >&2
     echo "rust=$hosted"
   elif [[ "$event" != pull_request && "$event" != push ]]; then
     echo "Rust PTY host: ubuntu-24.04 ($event)" >&2
+    echo "rust=$hosted"
+  elif [[ -n "${configured_rust//[[:space:]]/}" ]]; then
+    if [[ "${configured_rust//[[:space:]]/}" != "$hosted" ]]; then
+      echo "::error::repository variable CI_RUST_LABELS may only be \"ubuntu-24.04\" (or unset), got: $configured_rust" >&2
+      exit 1
+    fi
+    echo "Rust PTY host: ubuntu-24.04 (from repository variable CI_RUST_LABELS)" >&2
     echo "rust=$hosted"
   elif ! counts=$(pool_counts); then
     echo "::warning::could not read the self-hosted runners' jobs; the Rust PTY host uses ubuntu-24.04" >&2

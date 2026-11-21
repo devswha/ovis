@@ -51,8 +51,10 @@ host's loopback. What the runners share is `scripts/check.ts`'s slots, in a volu
 the herdr-backed CI lanes of every runner on the PC count against one `CHECK_MAX_RUNS` and wait for
 a slot, instead of each runner believing it has the PC to itself ([Check slots](#check-slots)). The
 `--shm-size 2g` Docker setting sizes `/dev/shm` for browser scratch space; it is not a total RAM
-limit. The container still has a pids limit of 8192, and `--ulimit core=0`: a crash never leaves a
-core file in the checkout, where `scripts/check.ts` would count it as a source change.
+limit. The container still has a pids limit of 8192, and `--ulimit core=0:1`: a crash never leaves a
+core file in the checkout, where `scripts/check.ts` would count it as a source change. The hard limit
+of 1 byte lets `server/pty/host.test.ts` lower a crashing command's limit to 1 byte, for which the
+kernel writes no core file and starts no piped `core_pattern` handler either; at 0 that test skips.
 
 Each slot's network is a /28 of one block, `10.213.0.0/16`, never a range docker picks. Left to
 itself, docker takes 172.17-31.x/16 ranges and then 192.168.x/20 ones: on a host whose 172 ranges
@@ -376,7 +378,8 @@ run one each. Rebuild the
 image with the toolchain (`--build`) before you add the label. `scripts/ci-runner-route.sh` keeps forks,
 `hosted_only` and manual runs on `ubuntu-24.04`, and sends the job there too once a job of these slots has
 waited more than a minute (both busy, or both hosts gone), and while `CI_SELF_HOSTED_LABELS` names the
-hosted image. The repository variable `CI_RUST_LABELS` overrides it:
+hosted image. The repository variable `CI_RUST_LABELS` can only keep it hosted (any other value fails
+Detect changes):
 
 ```sh
 gh variable set CI_RUST_LABELS --body '"ubuntu-24.04"'   # the Rust slots are gone: the job hosted

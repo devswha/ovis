@@ -196,8 +196,8 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
     it("never asks the API for a fork, a configured label set or the hosted override", () => {
       for (const env of [
         { EVENT_NAME: "pull_request", HEAD_REPO: "someone/fork" },
-        // the Rust PTY host's own route reads the API unless CI_RUST_LABELS names its runners
-        { ...pr, CONFIGURED_LABELS: labels, RUST_LABELS: labels },
+        // the Rust PTY host's own route reads the API unless CI_RUST_LABELS keeps it hosted
+        { ...pr, CONFIGURED_LABELS: labels, RUST_LABELS: '"ubuntu-24.04"' },
         { ...pr, CONFIGURED_LABELS: '"ubuntu-24.04"' },
       ]) {
         const state = actions({});
@@ -438,11 +438,13 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       }
     });
 
-    it("follows CI_RUST_LABELS: the hosted image or other self-hosted labels", () => {
+    it("follows CI_RUST_LABELS only to the hosted image, and never past the rules that keep the job hosted", () => {
       expect(rust({ ...pr, RUST_LABELS: '"ubuntu-24.04"' })).toBe("ubuntu-24.04");
-      expect(rust({ ...push, RUST_LABELS: '["self-hosted","other"]', CONFIGURED_LABELS: '"ubuntu-24.04"' })).toEqual(["self-hosted", "other"]);
       expect(rust({ ...pr, RUST_LABELS: " ", FAKE_GH: actions({}) })).toEqual(ours);
-      for (const value of ['["other"]', "[]", '["self-hosted",']) {
+      for (const env of [{ ...push, CONFIGURED_LABELS: '"ubuntu-24.04"' }, { EVENT_NAME: "workflow_dispatch" }, { ...pr, HOSTED_ONLY: "true" }]) {
+        expect(rust({ ...env, RUST_LABELS: '["self-hosted","self-hosted-ovis-rust"]' })).toBe("ubuntu-24.04");
+      }
+      for (const value of ['["self-hosted","self-hosted-ovis-rust"]', '["self-hosted","other"]', '["other"]', "[]", '["self-hosted",']) {
         const result = route({ ...pr, RUST_LABELS: value, FAKE_GH: actions({}) });
         expect(result.status).toBe(1);
         expect(result.stdout).toBe("");
