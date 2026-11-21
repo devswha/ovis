@@ -2134,6 +2134,28 @@ describe("another machine of the core, as its own PC (#2497)", () => {
     expect(cores[0]!.calls.filter((call) => call.method === "doc.get").map((call) => call.params["on"])).toEqual(["lab-id", "lab-id"]);
   });
 
+  it("nests a linked worktree's workspace under its repository by git run on that machine, not on this disk", async () => {
+    const asked: string[][] = [];
+    const answer = (stdout: string) => ({ code: 0, timed_out: false, stdout: Buffer.from(stdout).toString("base64"), stderr: "" });
+    const { socket, cores } = await setup([terminal("lab/t1", { cwd: "/srv/lab/wt" })], {
+      "doc.get": (params) => ({ value: params["on"] === "lab-id" ? LAB_LAYOUT : LAYOUT, version: 1 }),
+      "machine.exec": (params) => {
+        const argv = params["argv"] as string[];
+        asked.push(argv);
+        if (argv.includes("rev-parse")) return answer("/srv/lab/wt\n/srv/lab/.git\n/srv/lab/.git/worktrees/wt\n");
+        return answer("worktree /srv/lab\0HEAD abc\0branch refs/heads/main\0\0worktree /srv/lab/wt\0HEAD def\0branch refs/heads/fix\0\0");
+      },
+    }, undefined, "lab");
+    const snapshot = await sessionSnapshot(socket);
+    expect(snapshot.workspaces[0]!.worktree).toEqual({ repo_key: "/srv/lab/.git", repo_name: "lab", repo_root: "/srv/lab", checkout_path: "/srv/lab/wt", is_linked_worktree: true });
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((argv) => argv[0] === "/usr/bin/git" && argv[1] === "-C" && argv[2] === "/srv/lab/wt")).toBe(true);
+    // aimed at that machine: without `on` the core would run git on this PC, where the folder is not
+    const execs = cores[0]!.calls.filter((call) => call.method === "machine.exec");
+    expect(execs.length).toBeGreaterThan(0);
+    expect(execs.every((call) => call.params["on"] === "lab-id")).toBe(true);
+  });
+
   it("reaches each terminal by its address on the core, and starts a new one there", async () => {
     let started: Record<string, unknown> = {};
     const { socket, cores } = await setup(listed(), {
