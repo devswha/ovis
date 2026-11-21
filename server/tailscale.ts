@@ -41,6 +41,11 @@ function parseJson<T>(text: string | null): T | null {
   try { return JSON.parse(text) as T; } catch { return null; }
 }
 
+/** Whether `text` is JSON at all: `null` is, and is what a node that serves nothing may print. */
+function isJson(text: string): boolean {
+  try { JSON.parse(text); return true; } catch { return false; }
+}
+
 /**
  * `tailscale status --json` with every `UserID` kept as the digits written. Tailscale's user ids
  * pass 2^53, so as a double an id stops matching its key in `User`, and two ids can become one.
@@ -103,8 +108,9 @@ function readServe(output: TailscaleOutput | null, port: number, candidates: rea
   const free = servingUrl === null ? candidates.find((candidate) => !taken.has(candidate)) ?? null : null;
   return {
     free,
-    // whether the serve status was read at all: only then are the taken ports known
-    known: serve !== null,
+    // whether the serve status was read at all: only then are the taken ports known. A command that succeeded with
+    // JSON was read, `null` or `{}` included (nothing served); only a failed command or output that is no JSON was not
+    known: output.serve !== null && isJson(output.serve),
     access: {
       state: "running",
       dns_name: dns,
