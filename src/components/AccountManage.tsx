@@ -36,9 +36,10 @@ export function offlinePc(pc: { readonly last_seen_at: string | null; readonly a
 /**
  * Manage account's lists, for when a phone is lost or a PC is gone: the account's other devices on the PC this page
  * is on, each disconnected from every PC of the account, and the account's PCs, an offline one removed from it. One
- * line a row: a dot says how it is, a press asks once. `onLeave`: this device leaves the account (the hosted app).
+ * line a row: a dot says how it is, a press asks once. `onLeave`: this device leaves the account (the hosted app); a
+ * throw keeps its confirm up with the error.
  */
-export function AccountManageLists({ account, watching, onLeave }: { readonly account: string; readonly watching: boolean; readonly onLeave?: () => void }) {
+export function AccountManageLists({ account, watching, onLeave }: { readonly account: string; readonly watching: boolean; readonly onLeave?: () => Promise<void> }) {
   return (
     <>
       <AccountDevices account={account} {...(onLeave ? { onLeave } : {})} />
@@ -47,7 +48,7 @@ export function AccountManageLists({ account, watching, onLeave }: { readonly ac
   );
 }
 
-function AccountDevices({ account, onLeave }: { readonly account: string; readonly onLeave?: () => void }) {
+function AccountDevices({ account, onLeave }: { readonly account: string; readonly onLeave?: () => Promise<void> }) {
   const t = useT();
   const [devices, setDevices] = useState<PairedDevice[] | null>(null);
   const [key, setKey] = useState<string | null>(null);
@@ -105,7 +106,7 @@ function AccountDevices({ account, onLeave }: { readonly account: string; readon
       {note !== null && <p className="settings-condition" role="alert">{note}</p>}
       {asked === "self" && onLeave && (
         <ConfirmDialog title={t("Remove this device?")} body={t("Every PC of the account removes this device. QR pairings outside the account stay.")}
-          confirmLabel={t("Disconnect")} onClose={() => setAsked(null)} onConfirm={async () => { setAsked(null); onLeave(); }} />
+          confirmLabel={t("Disconnect")} onClose={() => setAsked(null)} onConfirm={async () => { await onLeave(); setAsked(null); }} />
       )}
       {asked !== null && asked !== "self" && (
         <ConfirmDialog title={t("Disconnect {name}?", { name: asked.label })} body={t("{name} loses access to every PC of your account. Pairings it made outside the account stay.", { name: asked.label })}

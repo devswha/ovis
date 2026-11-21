@@ -4,12 +4,21 @@ import { ACCOUNT_SIGN_OUT_EVENT } from "./service.ts";
 import { ACCOUNT_SESSION_EVENT, indexedAccountStore, type AccountProvider } from "./store.ts";
 
 /**
+ * What this device leaving the account says: why it did not leave (`left` false), or the PCs that kept this device
+ * after it left; no message once it left everywhere, or when the leave was called off.
+ */
+export interface LeaveOutcome {
+  readonly left: boolean;
+  readonly message: string | null;
+}
+
+/**
  * The mounted hosted shell's account actions (accountController): Sign out, this device leaving the account, and
  * Delete account, which answers why it did not delete (null once it did, or when the delete was called off).
  */
 export interface ShellAccount {
   readonly signOut: () => void;
-  readonly leave: () => void;
+  readonly leave: () => Promise<LeaveOutcome>;
   readonly deleteAccount: () => Promise<string | null>;
 }
 

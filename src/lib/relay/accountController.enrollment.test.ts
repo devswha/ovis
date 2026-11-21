@@ -173,8 +173,11 @@ describe("account enrollment ownership", () => {
     const { first } = await laterSignIn(run);
     const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
     await (held === "renewal" ? run.renewalRequested.promise : run.requested.promise);
-    run.controller.leave();
+    const said = await run.controller.leave();
     await run.viewChanged;
+    // the leave answers what the page that asked shows: nothing once it left everywhere, else the PC that may keep the key
+    if (held === "renewal") expect(said).toEqual({ left: true, message: null });
+    else expect(said).toEqual({ left: true, message: expect.stringContaining("Desk") });
     if (held === "renewal") {
       expect(run.service.mailbox(run.original.server_id, "account")).toMatchObject([{ kind: "remove", account: "account", key: run.key.public_spki }]);
       expect(await run.store.get(run.original.server_id)).toBeUndefined();

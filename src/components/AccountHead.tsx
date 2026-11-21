@@ -83,20 +83,28 @@ export function HostedAccountGroup({ signIn, watching = false }: { signIn: Hoste
   const [managing, setManaging] = useState(false);
   const [deleting, setDeleting] = useState<"asked" | "out" | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  if (signIn === null) return null;
-  const close = (): void => { setManaging(false); setDeleting(null); setDeleteError(null); };
+  // what this device's leave said of the PCs that kept it: the sheet keeps it after the sign-in it left is gone
+  const [leaveNote, setLeaveNote] = useState<string | null>(null);
+  if (signIn === null && leaveNote === null) return null;
+  const close = (): void => { setManaging(false); setDeleting(null); setDeleteError(null); setLeaveNote(null); };
+  const leave = async (from: HostedSignIn): Promise<void> => {
+    const { left, message } = await from.leave();
+    if (!left && message !== null) throw new Error(message);
+    if (message === null) close(); else setLeaveNote(message);
+  };
   const remove = (): void => {
     if (deleting !== "asked") { setDeleting("asked"); setDeleteError(null); return; }
     setDeleting("out");
-    void signIn.deleteAccount().then(setDeleteError, () => setDeleteError(t("The account could not be deleted. Try again."))).finally(() => setDeleting(null));
+    void signIn?.deleteAccount().then(setDeleteError, () => setDeleteError(t("The account could not be deleted. Try again."))).finally(() => setDeleting(null));
   };
   return (
     <SettingsGroup section="account">
-      <AccountHead provider={signIn.provider} onSignOut={signIn.signOut} onManage={() => setManaging(true)} />
+      {signIn !== null && <AccountHead provider={signIn.provider} onSignOut={signIn.signOut} onManage={() => setManaging(true)} />}
       {managing && (
         <ManageAccountSheet onClose={close}>
-          <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} onLeave={() => { close(); signIn.leave(); }} />
-          <div className="settings-item account-delete">
+          {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} onLeave={() => leave(signIn)} />}
+          {leaveNote !== null && <p className="settings-condition" role="alert">{leaveNote}</p>}
+          {signIn !== null && <div className="settings-item account-delete">
             {deleting === "asked" && <p className="settings-description" role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</p>}
             <div className="account-delete-actions">
               <button type="button" className={deleting === "asked" ? "btn btn-danger" : "account-delete-link"} data-action="delete-account" data-confirm={deleting === "asked" ? "delete-account" : undefined}
@@ -104,7 +112,7 @@ export function HostedAccountGroup({ signIn, watching = false }: { signIn: Hoste
               {deleting === "asked" && <button type="button" className="btn btn-ghost" onClick={() => setDeleting(null)}>{t("Cancel")}</button>}
             </div>
             {deleteError !== null && <p className="settings-condition" role="alert">{deleteError}</p>}
-          </div>
+          </div>}
         </ManageAccountSheet>
       )}
     </SettingsGroup>

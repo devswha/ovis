@@ -32,6 +32,7 @@ class FakeService {
 }
 await mock.module("../lib/account/service.ts", () => ({ ...Service, AccountService: FakeService }));
 const { AccountManageLists } = await import("./AccountManage.tsx");
+const { HostedAccountGroup } = await import("./AccountHead.tsx");
 
 const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 
@@ -89,7 +90,7 @@ describe("Manage account's devices and PCs", () => {
     descriptors.clear();
   });
 
-  const mount = async (props: { watching?: boolean; onLeave?: () => void } = {}): Promise<ReactTestInstance> => {
+  const mount = async (props: { watching?: boolean; onLeave?: () => Promise<void> } = {}): Promise<ReactTestInstance> => {
     await act(async () => {
       renderer = create(createElement(SettingsProvider, { children: createElement(AccountManageLists, { account: "acct", watching: props.watching ?? false, ...(props.onLeave ? { onLeave: props.onLeave } : {}) }) }), {
         createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
@@ -138,11 +139,47 @@ describe("Manage account's devices and PCs", () => {
 
   it("lets this device leave the account from its own row, after a confirm, where the page offers it", async () => {
     let left = 0;
-    const root = await mount({ onLeave: () => { left++; } });
+    const root = await mount({ onLeave: async () => { left++; } });
     expect(rows(root, "account-devices")[0]).toBe("This deviceDisconnect");
     await act(async () => { action(root, "leave-account").props.onClick(); });
     expect(left).toBe(0);
     await act(async () => { await press(root, "Disconnect"); });
     expect(left).toBe(1);
+  });
+
+  type Leave = () => Promise<{ readonly left: boolean; readonly message: string | null }>;
+  const hosted = (leave: Leave) => ({ provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null });
+  const group = (signIn: ReturnType<typeof hosted> | null) => createElement(SettingsProvider, { children: createElement(HostedAccountGroup, { signIn }) });
+  const leaveFromSheet = async (leave: Leave): Promise<ReactTestInstance> => {
+    await act(async () => {
+      renderer = create(group(hosted(leave)), {
+        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
+      });
+    });
+    const root = renderer!.root;
+    await act(async () => { action(root, "manage-account").props.onClick(); });
+    await act(async () => { action(root, "leave-account").props.onClick(); });
+    await act(async () => { await press(root, "Disconnect"); });
+    return root;
+  };
+  const sheets = (root: ReactTestInstance) => root.findAll((node) => node.type === "div" && node.props["data-testid"] === "manage-account");
+
+  it("keeps the sheet and its confirm up with the error when this device could not leave the account", async () => {
+    const root = await leaveFromSheet(async () => ({ left: false, message: "This device could not leave the account. Try again." }));
+    expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("This device could not leave the account. Try again.");
+    expect(sheets(root)).toHaveLength(1);
+  });
+
+  it("names the PCs that kept this device in the sheet after a partial leave, once the sign-in is gone", async () => {
+    const root = await leaveFromSheet(async () => ({ left: true, message: "These PCs still have it, so revoke it on them: Desk" }));
+    await act(async () => { renderer!.update(group(null)); });
+    expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
+    expect(sheets(root)).toHaveLength(1);
+    expect(textOf(sheets(root)[0]!.find((node) => node.props.role === "alert"))).toBe("These PCs still have it, so revoke it on them: Desk");
+  });
+
+  it("closes the sheet once this device left everywhere", async () => {
+    const root = await leaveFromSheet(async () => ({ left: true, message: null }));
+    expect(sheets(root)).toHaveLength(0);
   });
 });

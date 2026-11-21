@@ -12,6 +12,7 @@ import type { SignInReturn } from "../account/signin.ts";
 import type { AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
+import type { LeaveOutcome } from "../account/hostedSignIn.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable, SignInNotWanted } from "../account/native.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
@@ -226,8 +227,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     void changed();
     void ending.then((session) => session === undefined ? undefined : account.forSignIn(session).signOut()).catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
   };
-  const leave = (): void => {
-    if (leaving) return;
+  /** This device leaves the account; the outcome is the asking page's to show (hostedSignIn.ts, LeaveOutcome). */
+  const leave = (): Promise<LeaveOutcome> => {
+    if (leaving) return Promise.resolve({ left: false, message: null });
     deletion = undefined;
     leaving = true;
     const epoch = ++generation;
@@ -235,21 +237,20 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const from = account.session();
     // an enrollment of this tab stops here; one still linking, here or in another tab, is in the leave's snapshot (leave.ts)
     for (const serverId of running.values()) cancelEnrollment(serverId);
-    void from.then((session) => {
+    return from.then((session) => {
       if (session === undefined) throw new SignedOutError();
       return leaveAccount({ service: account, accountStore, relayStore: store, session });
-    }).then(async ({ unconfirmed }) => {
-      if (epoch !== generation) return;
+    }).then(async ({ unconfirmed }): Promise<LeaveOutcome> => {
       // a PC the account does not list kept this device: say so, rather than claim it is gone everywhere
       const names = new Map((await store.list()).map((device) => [device.server_id, device.name ?? device.server_id.slice(0, 8)]));
-      accountView = { kind: "signed-out", error: unconfirmed.length === 0 ? null
-        : t("This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}", { pcs: unconfirmed.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ") }) };
-      await changed();
-    }, async (error: unknown) => {
+      const message = unconfirmed.length === 0 ? null
+        : t("This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}", { pcs: unconfirmed.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ") });
+      if (epoch === generation) { accountView = { kind: "signed-out", error: message }; await changed(); }
+      return { left: true, message };
+    }, async (error: unknown): Promise<LeaveOutcome> => {
       console.warn("Ovis: this device did not leave the account", error instanceof Error ? error.name : error);
-      if (epoch !== generation) return;
-      if (accountView?.kind === "signed-in") accountView = { ...accountView, error: t("This device could not leave the account. Try again.") };
-      await changed();
+      if (epoch === generation) await changed();
+      return { left: false, message: t("This device could not leave the account. Try again.") };
     }).finally(() => { leaving = false; });
   };
 
