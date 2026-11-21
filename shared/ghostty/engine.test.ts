@@ -754,3 +754,81 @@ describe("shared/ghostty engine", () => {
     expect(message(() => browsers.write(bytesOf("A")))).toBe("returned");
   });
 });
+
+
+describe("a screen engine's size, slot and hold", () => {
+  it("resizes to the size it has again once the program switched its columns, and skips it while nothing changed the grid", () => {
+    const real = instantiate().exports as unknown as GhosttyExports;
+    let resizes = 0;
+    const counting = new GhosttyModule({ ...real, ghostty_terminal_resize: (...args: Parameters<GhosttyExports["ghostty_terminal_resize"]>) => {
+      resizes++;
+      return real.ghostty_terminal_resize(...args);
+    } });
+    const { engine } = screenEngine(80, 24, {}, counting);
+    engine.resize(80, 24, 8, 16);
+    engine.resize(80, 24, 8, 16);
+    // output that leaves the grid as it is changes nothing: a program with mode 2048 gets no second size report
+    engine.write(bytesOf("hello\x1b[1mbold\x1b[0m"));
+    engine.resize(80, 24, 8, 16);
+    expect(resizes).toBe(1);
+    // the program switches to 132 columns: the same size must reach the module again
+    engine.write(bytesOf("\x1b[?40h\x1b[?3h"));
+    engine.resize(80, 24, 8, 16);
+    expect(resizes).toBe(2);
+    engine.write(bytesOf("\x1b[2JX"));
+    let drawn = 0;
+    engine.frameAll((_y, runs) => {
+      for (const run of runs) drawn = Math.max(drawn, run.x + run.cells.reduce((width, cell) => width + (cell.wide ? 2 : 1), 0));
+    });
+    expect(drawn).toBe(80);
+    engine.dispose();
+  });
+
+  it("refuses a handle slot the module had no room for before any call writes through it, and frees its slot whatever comes", () => {
+    const real = instantiate().exports as unknown as GhosttyExports;
+    let terminals = 0;
+    const noSlot = new GhosttyModule({ ...real, ghostty_wasm_alloc_opaque: () => 0, ghostty_terminal_new: (...args: Parameters<GhosttyExports["ghostty_terminal_new"]>) => {
+      terminals++;
+      return real.ghostty_terminal_new(...args);
+    } });
+    const low = () => [...new Uint8Array(real.memory.buffer, 0, 16)];
+    const before = low();
+    expect(message(() => new GhosttyEngine(noSlot, 20, 4, { widths: "core", images: false, events: {} }))).toBe("ghostty-vt: no memory for the engine's handle slot");
+    expect({ terminals, low: low() }).toEqual({ terminals: 0, low: before });
+
+    const counted = instantiate().exports as unknown as GhosttyExports;
+    let freed = 0;
+    let room = true;
+    const counting = new GhosttyModule({
+      ...counted,
+      ghostty_wasm_free_opaque: (slot: number) => {
+        freed++;
+        counted.ghostty_wasm_free_opaque(slot);
+      },
+      ghostty_wasm_alloc: (len: number) => (room ? counted.ghostty_wasm_alloc(len) : 0),
+    });
+    const made = screenEngine(20, 4, {}, counting);
+    expect(freed).toBe(1);
+    made.engine.dispose();
+    room = false;
+    expect(message(() => new GhosttyEngine(counting, 20, 4, { widths: "core", images: false, events: {} }))).toStartWith("ghostty-vt: no memory for the engine's scratch block");
+    expect(freed).toBe(2);
+  });
+
+  it("begins and ends a hold through setMode(2026) as the program's own bytes would, each reported once", () => {
+    const { engine, holds } = screenEngine(20, 2);
+    const row = () => rowText(screenRows(engine).get(0)!);
+    engine.write(bytesOf("A\x1b[?2026hB"));
+    expect({ row: row(), holds }).toEqual({ row: "A", holds: [true] });
+    engine.setMode(2026, false);
+    expect({ sync: engine.modes().syncOutput, row: row(), holds }).toEqual({ sync: false, row: "AB", holds: [true, false] });
+    engine.setMode(2026, false);
+    expect(holds).toEqual([true, false]);
+    engine.setMode(2026, true);
+    engine.write(bytesOf("C"));
+    expect({ sync: engine.modes().syncOutput, row: row(), holds }).toEqual({ sync: true, row: "AB", holds: [true, false, true] });
+    engine.releaseHold();
+    expect({ row: row(), holds }).toEqual({ row: "ABC", holds: [true, false, true, false] });
+    engine.dispose();
+  });
+});

@@ -29,6 +29,7 @@ export interface GhosttyExports {
   ghostty_wasm_alloc(len: number): number;
   ghostty_wasm_free(ptr: number, len: number): void;
   ghostty_wasm_alloc_opaque(): number;
+  ghostty_wasm_free_opaque(slot: number): void;
   ghostty_wasm_take_opaque(slot: number): number;
   ghostty_free(allocator: number, ptr: number, len: number): void;
   ghostty_terminal_new(allocator: number, slot: number, cols: number, rows: number): number;
@@ -99,7 +100,7 @@ export interface GhosttyExports {
 
 /** every module function the core calls; the type turns one missing here into a compile error */
 export const ENGINE_FUNCTIONS: Record<Exclude<keyof GhosttyExports, "memory" | "__indirect_function_table">, true> = {
-  ghostty_type_json: true, ghostty_wasm_alloc: true, ghostty_wasm_free: true, ghostty_wasm_alloc_opaque: true,
+  ghostty_type_json: true, ghostty_wasm_alloc: true, ghostty_wasm_free: true, ghostty_wasm_alloc_opaque: true, ghostty_wasm_free_opaque: true,
   ghostty_wasm_take_opaque: true, ghostty_free: true, ghostty_terminal_new: true, ghostty_terminal_free: true, ghostty_terminal_reset: true,
   ghostty_terminal_resize: true, ghostty_terminal_set: true, ghostty_terminal_get: true, ghostty_terminal_vt_write: true,
   ghostty_terminal_scroll_viewport: true, ghostty_terminal_grid_ref: true, ghostty_terminal_point_from_grid_ref: true,
@@ -347,6 +348,8 @@ const MODE = {
   sgrMouse: 1006, altScroll: 1007, urxvtMouse: 1015, sgrPixelsMouse: 1016, bracketedPaste: 2004, syncOutput: 2026, graphemeCluster: 2027,
 } as const;
 const WIN32_INPUT_MODE = 9001;
+/** DECCOLM: a program switches the grid to 80 or 132 columns with it */
+const DECCOLM = 3;
 
 const MOUSE_BUTTONS = { left: "LEFT", middle: "MIDDLE", right: "RIGHT", wheelUp: "FOUR", wheelDown: "FIVE", wheelLeft: "SIX", wheelRight: "SEVEN" } as const;
 const KEY_ACTIONS = { press: "PRESS", repeat: "REPEAT", release: "RELEASE" } as const;
@@ -557,11 +560,14 @@ export class GhosttyEngine {
   private size: { cols: number; rows: number; cellW: number; cellH: number };
   /** whether a synchronized-output hold is on: frames then come from the render state captured when it began */
   private held = false;
+  /** since the last resize the program switched its columns (DECCOLM), or the terminal was reset: the grid may not be the size the engine was given */
+  private gridTouched = false;
   private win32Input = false;
   /** where the written bytes stand in a `CSI ? Pm h|l` that may name 9001, carried from one write to the next */
   private scan: "ground" | "esc" | "csi" | "private" = "ground";
   private scanParam = 0;
   private scanNames9001 = false;
+  private scanNamesColumns = false;
   /** an error a callback of the caller threw while the module ran: kept out of the wasm frames and thrown after them */
   private callbackError: unknown = null;
   private keyEncoder = 0;
@@ -586,6 +592,11 @@ export class GhosttyEngine {
     const undo: (() => void)[] = [];
     try {
       this.slot = exports.ghostty_wasm_alloc_opaque();
+      if (this.events) {
+        // a screen's engine refuses a slot the module had no room for before any call writes through it, and frees it
+        if (this.slot === 0) throw new Error("ghostty-vt: no memory for the engine's handle slot");
+        undo.push(() => exports.ghostty_wasm_free_opaque(this.slot));
+      }
       this.scratch = this.allocate(SCRATCH_BYTES, "the engine's scratch block");
       undo.push(() => exports.ghostty_wasm_free(this.scratch, SCRATCH_BYTES));
       const take = (result: number, what: string, free: (handle: number) => void): number => {
@@ -600,6 +611,8 @@ export class GhosttyEngine {
       this.cells = take(exports.ghostty_render_state_row_cells_new(0, this.slot), "row_cells_new", exports.ghostty_render_state_row_cells_free);
       this.images = take(exports.ghostty_render_state_image_iterator_new(0, this.slot), "image_iterator_new", exports.ghostty_render_state_image_iterator_free);
       this.setUp(module, options, undo);
+      // every handle is taken, so a screen's engine needs its slot no more (the browser's keeps its loader's ways)
+      if (this.events) exports.ghostty_wasm_free_opaque(this.slot);
     } catch (error) {
       // a screen's engine leaves nothing behind: its route goes, what it made is freed, and a trap marks the
       // module as one in any later call would; the browser's fails as its loader always had it
@@ -639,21 +652,7 @@ export class GhosttyEngine {
           return true;
         },
         bell: () => this.callback(() => this.events?.onEffect?.({ type: "bell" })),
-        hold: (held) => {
-          // the terminal holds exactly the frame the program wants left on screen: capture it now (a failure is
-          // reported after the module returns, like any callback's, never thrown through its frames; a trap
-          // marks the module, as one in any call does)
-          if (held) this.callback(() => {
-            try {
-              this.check(this.x.ghostty_render_state_update(this.state, this.terminal), "render_state_update");
-            } catch (error) {
-              if (error instanceof WebAssembly.RuntimeError) this.module.trap = error;
-              throw error;
-            }
-          });
-          this.held = held;
-          this.callback(() => this.events?.onHold?.(held));
-        },
+        hold: (held) => this.setHeld(held),
         clipboardWrite: (request) => this.callback(() => this.events?.onEffect?.(this.readClipboardWrite(request))),
       });
       this.userdata = userdata;
@@ -739,7 +738,7 @@ export class GhosttyEngine {
     if (!this.events) return this.feed(bytes);
     this.guard(() => {
       this.feed(bytes);
-      this.watchWin32Input(bytes);
+      this.followWrittenModes(bytes);
     });
   }
 
@@ -766,11 +765,11 @@ export class GhosttyEngine {
 
   /**
    * Follows `CSI ? Pm h` and `CSI ? Pm l` naming 9001 (win32-input-mode), which the module parses but does not
-   * keep, and a full reset (ESC c), across writes. Only the byte after an ESC and the inside of a `CSI ?`
+   * keep, or 3 (DECCOLM, which changes the grid's columns), and a full reset (ESC c), across writes. Only the byte after an ESC and the inside of a `CSI ?`
    * are looked at: any other sequence is skipped to the next ESC, so plain and styled output costs one
    * indexOf per escape sequence.
    */
-  private watchWin32Input(bytes: Uint8Array): void {
+  private followWrittenModes(bytes: Uint8Array): void {
     for (let at = 0; at < bytes.length; at++) {
       const byte = bytes[at]!;
       if (this.scan === "ground") {
@@ -784,21 +783,27 @@ export class GhosttyEngine {
       if (byte === 0x18 || byte === 0x1a) { this.scan = "ground"; continue; }
       switch (this.scan) {
         case "esc":
-          if (byte === 0x63) this.win32Input = false;
+          if (byte === 0x63) {
+            this.win32Input = false;
+            this.gridTouched = true;
+          }
           this.scan = byte === 0x5b ? "csi" : "ground";
           continue;
         case "csi":
           this.scan = byte === 0x3f ? "private" : "ground";
           this.scanParam = 0;
           this.scanNames9001 = false;
+          this.scanNamesColumns = false;
           continue;
         case "private":
           if (byte >= 0x30 && byte <= 0x39) this.scanParam = Math.min(this.scanParam * 10 + byte - 0x30, 1e6);
           else if (byte === 0x3b) {
             if (this.scanParam === WIN32_INPUT_MODE) this.scanNames9001 = true;
+            if (this.scanParam === DECCOLM) this.scanNamesColumns = true;
             this.scanParam = 0;
           } else if (byte >= 0x40 && byte <= 0x7e) {
             if ((byte === 0x68 || byte === 0x6c) && (this.scanNames9001 || this.scanParam === WIN32_INPUT_MODE)) this.win32Input = byte === 0x68;
+            if ((byte === 0x68 || byte === 0x6c) && (this.scanNamesColumns || this.scanParam === DECCOLM)) this.gridTouched = true;
             this.scan = "ground";
           }
       }
@@ -815,9 +820,14 @@ export class GhosttyEngine {
 
   /** sets a terminal mode as ghostty_mode_new() encodes it (a DEC private mode is its own number) */
   setMode(mode: number, on: boolean): void {
+    if (mode === DECCOLM) this.gridTouched = true;
     // the browser's loader toggles 2027 around every emoji joiner: as with write, no guard on its engines
     if (!this.events) return this.setModeConfig(this.e.GhosttyTerminalOption.MODE, mode, on);
-    this.guard(() => this.setModeConfig(this.e.GhosttyTerminalOption.MODE, mode, on));
+    this.guard(() => {
+      this.setModeConfig(this.e.GhosttyTerminalOption.MODE, mode, on);
+      // setting the mode this way does not call back: a hold begins or ends here, as the program's own bytes would make it
+      if (mode === MODE.syncOutput) this.setHeld(on);
+    });
   }
 
   private getMode(mode: number): boolean {
@@ -861,29 +871,52 @@ export class GhosttyEngine {
   releaseHold(): void {
     this.guard(() => {
       if (!this.held) return;
-      // turning the mode off this way does not call back, so the end is reported here
+      // turning the mode off this way does not call back, so the end is made here
       this.setModeConfig(this.e.GhosttyTerminalOption.MODE, MODE.syncOutput, false);
-      this.held = false;
-      this.callback(() => this.events?.onHold?.(false));
+      this.setHeld(false);
     });
+  }
+
+  /**
+   * The one way a hold begins or ends, whether the program's bytes, releaseHold or setMode(2026) turn it: a hold
+   * already so changes nothing and reports nothing. A hold that begins keeps exactly the frame the program wants left
+   * on screen, captured now (a failure is reported after the module returns, like any callback's, never thrown
+   * through its frames; a trap marks the module, as one in any call does).
+   */
+  private setHeld(held: boolean): void {
+    if (held === this.held) return;
+    if (held) this.callback(() => {
+      try {
+        this.check(this.x.ghostty_render_state_update(this.state, this.terminal), "render_state_update");
+      } catch (error) {
+        if (error instanceof WebAssembly.RuntimeError) this.module.trap = error;
+        throw error;
+      }
+    });
+    this.held = held;
+    this.callback(() => this.events?.onHold?.(held));
   }
 
   reset(): void {
     this.guard(() => {
+      this.gridTouched = true;
       this.x.ghostty_terminal_reset(this.terminal);
       this.placementsGeneration = -1;
       this.win32Input = false;
     });
   }
 
-  /** a no-op when nothing changed: the module would send a program with mode 2048 on a second size report */
+  /**
+   * The browser's engine resizes every time, as its loader always did. A screen's engine skips a resize to the size it
+   * has only while nothing changed its grid since (a written or set DECCOLM, which switches to 80 or 132 columns, or a
+   * reset could): the module would send a program with mode 2048 a second size report.
+   */
   resize(cols: number, rows: number, cellW: number, cellH: number): void {
     const w = Math.max(1, Math.round(cellW)), h = Math.max(1, Math.round(cellH));
-    const size = this.size;
-    if (size.cols === cols && size.rows === rows && size.cellW === w && size.cellH === h) return;
-    this.guard(() => {
-      // the module reads the new size back through the SIZE callback during the call, so it is set first and
-      // put back when the module refuses: the next resize to that size must reach the module again
+    // the module reads the new size back through the SIZE callback during the call, so it is set first and put back
+    // when the module refuses: the next resize to that size must reach the module again
+    const apply = (): void => {
+      const size = this.size;
       this.size = { cols, rows, cellW: w, cellH: h };
       try {
         this.check(this.x.ghostty_terminal_resize(this.terminal, cols, rows, w, h), "resize");
@@ -891,6 +924,13 @@ export class GhosttyEngine {
         this.size = size;
         throw error;
       }
+      this.gridTouched = false;
+    };
+    if (!this.events) return apply();
+    this.guard(() => {
+      const size = this.size;
+      if (!this.gridTouched && size.cols === cols && size.rows === rows && size.cellW === w && size.cellH === h) return;
+      apply();
     });
   }
 

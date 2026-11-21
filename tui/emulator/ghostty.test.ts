@@ -450,6 +450,7 @@ describe("calls from inside a running call", () => {
     expect(result.ok).toBe(true);
     expect(freedInHandler).toBe(false);
     expect(log.filter((name) => name === "ghostty_terminal_free")).toHaveLength(1);
+    expect(log).toContain("ghostty_render_state_update");
     expect(log.lastIndexOf("ghostty_render_state_update")).toBeLessThan(log.indexOf("ghostty_terminal_free"));
     expect(log.lastIndexOf("ghostty_terminal_vt_write")).toBeLessThan(log.indexOf("ghostty_terminal_free"));
     expect(callsAfterFree(log)).toEqual([]);
