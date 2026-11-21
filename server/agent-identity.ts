@@ -1,6 +1,9 @@
 import nodePath from "node:path";
 import { AGENT_CATALOG, CATALOG_PLATFORMS, type CatalogPlatform } from "../shared/agent-catalog.ts";
+import { reportedAgent } from "../shared/agent-identity.ts";
 import type { AgentSessionInfo, AgentStatus } from "../shared/herdr-api.generated.ts";
+
+export { reportedAgent };
 
 /**
  * Today herdr-core's snapshot names its panes here (herdr's TUI names its own); sessions and status
@@ -24,18 +27,11 @@ function candidatesOf(platform: ProgramPlatform): readonly CatalogPlatform[] {
   return platform === "posix" ? ["linux", "macos"] : [platform];
 }
 
-const REPORTED_NAMES: Readonly<Record<string, string>> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi", "grok-build": "grok" };
-
 /** The interpreters an agent's script runs under when its install is a script (npm's node bin, a Python entry point). */
 const INTERPRETERS = new Set(["node", "bun", "python", "python3"]);
 
 export function programName(word: string): string {
   return nodePath.posix.basename(word.replace(/\\/g, "/")).replace(/\.(?:exe|cmd|js|mjs|cjs)$/i, "");
-}
-
-export function reportedAgent(app: string | null | undefined): string | null {
-  if (!app) return null;
-  return Object.hasOwn(REPORTED_NAMES, app) ? REPORTED_NAMES[app]! : app;
 }
 
 /** A path's last part as `platform` names files: on Windows at either slash and in any case, a program without its `.exe` or `.cmd`. */

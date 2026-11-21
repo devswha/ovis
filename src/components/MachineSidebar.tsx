@@ -290,7 +290,7 @@ export function MachineSidebar(props: Props) {
           showing in every tab. */}
       <div className="sidebar-footer-row">
         <button className="btn btn-ghost sidebar-footer-action sidebar-footer-settings" aria-label={t("Settings")} title={t("Settings (⌘⇧,)")} onClick={() => { tally(() => props.actions.counted?.("settings", "button")); props.actions.openSettings(); }}><Settings aria-hidden="true" /></button>
-        <UsageMeters watching={props.watching} onLocalLogin={props.watching ? undefined : props.onUsageLogin} />
+        <UsageMeters machines={roster} watching={props.watching} onLocalLogin={props.watching ? undefined : props.onUsageLogin} />
       </div>
     </footer>
   </div></SidebarFilterProvider></SidebarActivityProvider>;

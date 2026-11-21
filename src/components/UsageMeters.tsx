@@ -7,7 +7,8 @@ import type { ProviderUsage, UsageCredits, UsageWindow } from "../../shared/prot
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useSettings, type UsageCount, type UsageGlance } from "../lib/settings.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
-import { canSignInAgain, creditsText, formatPercent, formatResetIn, glanceWindow, HIGH_PERCENT, meterPercent, meterText, orderProviders, PROVIDER_MARK, PROVIDER_NAME, recordedNote, usageName, useStatuslineSwitch, useUsage, windowLabel } from "../lib/usage.ts";
+import { canSignInAgain, creditsText, formatPercent, formatResetIn, glanceWindow, HIGH_PERCENT, meterPercent, meterText, PROVIDER_MARK, PROVIDER_NAME, recordedNote, subscriptionUsage, usageName, useStatuslineSwitch, useUsage, windowLabel } from "../lib/usage.ts";
+import type { Machine } from "../../shared/machines.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { UsageSignInAgain } from "./UsageLocalLogin.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
@@ -121,12 +122,12 @@ function Provider({ usage, now, count, onLocalLogin, onFollow, watching }: { usa
 }
 
 /** `watching`: a watching device is not offered what it cannot turn on or sign in to */
-export function UsageMeters({ onLocalLogin, watching = false }: { /** opens a sign-in tab; a watching device has none */ readonly onLocalLogin?: (paneId: string) => void; readonly watching?: boolean }) {
+export function UsageMeters({ machines, onLocalLogin, watching = false }: { readonly machines: readonly Machine[]; /** opens a sign-in tab; a watching device has none */ readonly onLocalLogin?: (paneId: string) => void; readonly watching?: boolean }) {
   const t = useT();
   const { settings } = useSettings();
   const { report, loading, refresh } = useUsage(settings.showUsage);
   const [open, setOpen] = useState(false);
-  const shown = report ? orderProviders(report.providers, settings.usageOrder).filter((usage) => !settings.usageHidden.includes(usage.key)) : [];
+  const shown = report ? subscriptionUsage(report.providers, settings.usageOrder, settings.usageHidden, machines) : [];
   const drawn = settings.showUsage && shown.length > 0;
   usePhoneSheetBack(() => setOpen(false), open && drawn);
   const [following, setFollowing] = useState<Extract<UsageLoginRequest, { provider: "claude" | "codex" }> | null>(null);

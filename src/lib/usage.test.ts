@@ -1,11 +1,48 @@
 import { describe, expect, it } from "bun:test";
+import type { Machine } from "../../shared/machines.ts";
 import type { ProviderUsage, UsageWindow } from "../../shared/protocol.ts";
 import { agedReport, canSignInAgain, composerUsage, creditsText, formatPercent, formatResetIn, glanceWindow, goneBy, heldReport, isCurrent, isSignIn, meterPercent, meterText, moveInOrder, orderProviders, planForPane, providerForAgent, recordedBy, recordedNote, statusWindows, tightestWindow, usageName, windowLabel, type DeviceTime, type HeldReport } from "./usage.ts";
+import { subscriptionUsage } from "./usage.ts";
 
 const NOW = Date.parse("2026-09-29T12:00:00Z");
 const window = (used_percent: number, kind: UsageWindow["kind"] = "week", scope: string | null = null): UsageWindow => ({ kind, scope, used_percent, resets_at: null, starts_at: null });
 const provider = (id: ProviderUsage["id"], windows: UsageWindow[], account: string | null = null): ProviderUsage => ({
   id, key: account ? `${id}:${account}` : id, account, plan: null, windows, problem: null, checked_at: null,
+});
+
+describe("subscription usage", () => {
+  const accounts = ["claude", "codex", "antigravity", "cursor"].map((id) => provider(id as ProviderUsage["id"], []));
+  const connected = (...agents: string[]): Pick<Machine, "state" | "snapshot"> => ({
+    state: "connected",
+    snapshot: {
+      protocol: 22, version: "test", agents: [], tabs: [], layouts: [],
+      workspaces: [{ workspace_id: "w1", active_tab_id: "w1:t1", label: "Work", number: 1, tab_count: 1, pane_count: agents.length, focused: false, agent_status: "idle" }],
+      panes: agents.map((agent, index) => ({ agent, pane_id: `p${index}`, terminal_id: `t${index}`, workspace_id: "w1", tab_id: "w1:t1", revision: 1, focused: false, agent_status: "idle" })),
+    },
+  });
+  const keys = (machines: Parameters<typeof subscriptionUsage>[3], hidden: string[] = []) =>
+    subscriptionUsage(accounts, ["antigravity"], hidden, machines).map((usage) => usage.key);
+
+  it("keeps enabled active agents across connected PCs in Settings order, including reported aliases", () => {
+    expect(keys([connected("claude-code"), connected("antigravity"), { ...connected("codex"), state: "disconnected" }]))
+      .toEqual(["antigravity", "claude", "cursor"]);
+  });
+
+  it("hides disabled accounts even when active", () => {
+    expect(keys([connected("claude", "agy")], ["claude", "cursor"])).toEqual(["antigravity"]);
+  });
+
+  it("keeps enabled accounts while the roster is unknown", () => {
+    const expected = ["antigravity", "claude", "cursor"];
+    expect(keys([], ["codex"])).toEqual(expected);
+    expect(keys([{ ...connected("claude"), state: "disconnected" }], ["codex"])).toEqual(expected);
+    expect(keys([connected("claude"), { state: "connected", snapshot: null }], ["codex"])).toEqual(expected);
+  });
+
+  it("keeps only accounts without a catalog agent when the known roster is empty", () => {
+    expect(keys([connected()])).toEqual(["cursor"]);
+    expect(keys([connected()], ["cursor"])).toEqual([]);
+  });
 });
 
 describe("usage meters", () => {

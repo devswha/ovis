@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AGENT_CATALOG } from "../../shared/agent-catalog.ts";
+import { reportedAgent } from "../../shared/agent-identity.ts";
+import type { Machine } from "../../shared/machines.ts";
 import type { ProviderUsage, StatuslineState, UsageCredits, UsageProviderId, UsageRecorder, UsageReport, UsageWindow } from "../../shared/protocol.ts";
 import { RECORDED_STALE_AFTER_MS } from "../../shared/usage.ts";
 import { ApiError, fetchStatusline, fetchUsage, setStatusline } from "./api.ts";
@@ -6,6 +9,7 @@ import type { UsageCount, UsageGlance } from "./settings.ts";
 import { currentLocale, t } from "./i18n.ts";
 import { lastSeen } from "./lastSeen.ts";
 import { usePageVisible } from "./visibility.ts";
+import { sidebarAgents } from "./sidebarAgents.ts";
 
 /** The server asks a provider at most every 5 minutes; a minute here only picks that up sooner. */
 const POLL_MS = 60_000;
@@ -51,6 +55,28 @@ export function planForPane(agent: string | null | undefined, provider: string |
 export function composerUsage(providers: readonly ProviderUsage[], agent: string | null, order: readonly string[], hidden: readonly string[], provider?: string | null): ProviderUsage | undefined {
   const providerId = planForPane(agent, provider);
   return orderProviders(providers, order).find((usage) => usage.id === providerId && !hidden.includes(usage.key));
+}
+
+export function subscriptionUsage(
+  providers: readonly ProviderUsage[],
+  order: readonly string[],
+  hidden: readonly string[],
+  machines: readonly Pick<Machine, "state" | "snapshot">[],
+): ProviderUsage[] {
+  const enabled = orderProviders(providers, order).filter((usage) => !hidden.includes(usage.key));
+  const connected = machines.filter((machine) => machine.state === "connected");
+  if (connected.length === 0 || connected.some((machine) => machine.snapshot === null)) return enabled;
+
+  const active = new Set(connected.flatMap((machine) => sidebarAgents(machine.snapshot).map((row) => reportedAgent(row.canonicalAgent))));
+  const mapped = new Set<UsageProviderId>();
+  const activeProviders = new Set<UsageProviderId>();
+  for (const entry of AGENT_CATALOG) {
+    const provider = entry.sign_in?.provider;
+    if (provider == null) continue;
+    mapped.add(provider);
+    if (active.has(entry.id)) activeProviders.add(provider);
+  }
+  return enabled.filter((usage) => !mapped.has(usage.id) || activeProviders.has(usage.id));
 }
 
 export function statusWindows(usage: ProviderUsage): UsageWindow[] {
