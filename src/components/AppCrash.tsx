@@ -39,6 +39,24 @@ export function AppCrash({ error }: { error: unknown }) {
   );
 }
 
+/**
+ * What the hosted shell shows when its code still did not load after one reload (lib/relay/boot.ts):
+ * nothing broke in the app, so no crash details, only the way to try again. Outside SettingsProvider,
+ * like AppCrash.
+ */
+export function AppLoadFailed() {
+  return (
+    <main className="app-crash">
+      <div className="app-crash-card error-state" role="alert">
+        <p className="error-message">{t("Ovis could not load. Check your connection, then try again.")}</p>
+        <div className="app-crash-actions">
+          <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>{t("Try again")}</button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
 export function RegionCrash({ message, retry, retryLabel, buttonRef, onShown }: {
   message: string; retry: () => void; retryLabel?: string; buttonRef?: Ref<HTMLButtonElement>; onShown?: () => void;
 }) {

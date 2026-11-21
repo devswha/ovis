@@ -3,7 +3,7 @@ import "../../components/SheepMascot.css";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
-import { AppCrash } from "../../components/AppCrash.tsx";
+import { AppCrash, AppLoadFailed } from "../../components/AppCrash.tsx";
 import { moveQueryToFragment, queryWithoutSignIn } from "../pageQuery.ts";
 import { loadRelayShell } from "../relay.ts";
 import { SHEEP_FOR } from "./sheepBadges.ts";
@@ -71,6 +71,34 @@ export function watchNavigation(target: { addEventListener(type: string, listene
   return () => navigated;
 }
 
+export type TabMemory = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+const LOAD_RELOAD_KEY = "ovis:shell-load-reload";
+
+/**
+ * Whether the page reloads after the shell's code failed to load (a dropped link, a host between two
+ * deployments): once, until a load succeeds (`shellLoaded`), recorded in the tab's sessionStorage so a
+ * load that fails again after the reload shows the retry notice instead of reloading forever. A retry in
+ * the page could not help: Chrome keeps a failed import's answer for the page's life, and Vite's loader
+ * skips a stylesheet it tried before. Storage that throws answers no: a missed reload costs less than a loop.
+ */
+export function reloadAfterFailedLoad(memory: TabMemory | null): boolean {
+  if (memory === null) return false;
+  try {
+    if (memory.getItem(LOAD_RELOAD_KEY) !== null) return false;
+    memory.setItem(LOAD_RELOAD_KEY, "1");
+    return memory.getItem(LOAD_RELOAD_KEY) !== null;
+  } catch { return false; }
+}
+
+export function shellLoaded(memory: TabMemory | null): void {
+  try { memory?.removeItem(LOAD_RELOAD_KEY); } catch { /* the next failure then shows the notice at once */ }
+}
+
+function tabMemory(): TabMemory | null {
+  try { return window.sessionStorage; } catch { return null; }
+}
+
 export function bootRelayShell(container: HTMLElement, renderApp: () => Root, load: typeof loadRelayShell = loadRelayShell): void {
   const entryUrl = takeEntryUrl(window);
   const navigatedSinceEntry = watchNavigation(window);
@@ -79,7 +107,18 @@ export function bootRelayShell(container: HTMLElement, renderApp: () => Root, lo
   window.addEventListener("popstate", () => { moveQueryToFragment(window); });
   // data-relay-shell="mounted": the shell has read its entry to the end (a sign-in's return included), so whatever it
   // opens by itself has started; a test that changes the saved PCs waits for it
-  void load().then(({ mountRelayShell }) => mountRelayShell({ container, entryUrl, renderApp, navigatedSinceEntry })).then(() => { container.dataset["relayShell"] = "mounted"; }).catch((error: unknown) => {
+  const memory = tabMemory();
+  void load().then(
+    ({ mountRelayShell }) => {
+      shellLoaded(memory);
+      return mountRelayShell({ container, entryUrl, renderApp, navigatedSinceEntry }).then(() => { container.dataset["relayShell"] = "mounted"; });
+    },
+    (error: unknown) => {
+      console.error("Ovis: the relay shell did not load", error);
+      if (reloadAfterFailedLoad(memory)) window.location.reload();
+      else createRoot(container).render(createElement(AppLoadFailed));
+    },
+  ).catch((error: unknown) => {
     console.error("Ovis: the relay shell did not start", error);
     createRoot(container).render(createElement(AppCrash, { error }));
   });
