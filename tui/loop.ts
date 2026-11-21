@@ -38,7 +38,7 @@ import { PaneGrid } from "./view/grid.ts";
 import { CopyView } from "./view/copy.ts";
 import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
-import { layOut, paneScene, type ScreenShape } from "./view/screen.ts";
+import { layOut, paneScene, type PaneSpot, type ScreenShape } from "./view/screen.ts";
 import type { ViewStore } from "./view-store.ts";
 
 /** The caller's clock and its one timer: `arm` sets the timer for `at` (on the same clock) and answers its cancel. */
@@ -473,7 +473,10 @@ export function startLoop(options: LoopOptions): Loop {
   function perform(effect: Effect): void {
     switch (effect.type) {
       case "copy": {
-        const answer = copyView.run(effect, panes.view(effect.pane), drawn.get(effect.pane));
+        // a copy command reads the pane as it is now, not as the last frame drew it: what one read holds (a scroll, hint
+        // mode, a label) acts as it does read apart, with a frame between each
+        const spot = shape?.spots.find((spot) => spot.pane === effect.pane && !spot.covered);
+        const answer = copyView.run(effect, panes.view(effect.pane), painter && spot ? sceneNow(painter.styles, spot) : drawn.get(effect.pane));
         if (answer.text !== undefined) writeCopy(answer.text);
         if (answer.close) dispatch({ type: "copy_closed", pane: effect.pane });
         if (answer.unavailable) dispatch({ type: "notice", code: "copy_unavailable", at: clock.now() });
@@ -689,6 +692,26 @@ export function startLoop(options: LoopOptions): Loop {
     if (passOwed && painter && now >= lastPass + FRAME_PASS_MS) pass(now);
   }
 
+  /**
+   * A shown pane as its emulator holds it now: its grid brought up to date (step 1 of a frame pass; the rows it copies stay
+   * owed to the painter) and the scene that draws it, kept as the pane's drawn scene.
+   */
+  function sceneNow(styles: Painter["styles"], spot: PaneSpot, view: PaneView | undefined = panes.view(spot.pane)): PaneScene {
+    const actual = view?.actual ?? { cols: spot.cells.cols, rows: spot.cells.rows };
+    let held = grids.get(spot.pane);
+    const emulator = view?.emulator ?? null;
+    if (!held || held.emulator !== emulator) {
+      held = { emulator, grid: new PaneGrid(styles, actual.cols, actual.rows) };
+      grids.set(spot.pane, held);
+    }
+    held.grid.resize(actual.cols, actual.rows);
+    if (emulator) held.grid.copy(emulator, held.grid.allDirty);
+    const live = paneLive(view, shown);
+    const scene = paneScene(spot, held.grid, actual, { live, hold: holds.has(spot.pane), dim: !live });
+    drawn.set(spot.pane, scene);
+    return scene;
+  }
+
   function pass(now: number): void {
     if (!painter || !shape || ended) return;
     passOwed = false;
@@ -703,21 +726,8 @@ export function startLoop(options: LoopOptions): Loop {
     for (const spot of shape.spots) {
       if (spot.covered) continue;
       const view = panes.view(spot.pane);
-      const actual = view?.actual ?? { cols: spot.cells.cols, rows: spot.cells.rows };
-      let held = grids.get(spot.pane);
-      const emulator = view?.emulator ?? null;
-      if (!held || held.emulator !== emulator) {
-        held = { emulator, grid: new PaneGrid(painter.styles, actual.cols, actual.rows) };
-        grids.set(spot.pane, held);
-      }
-      held.grid.resize(actual.cols, actual.rows);
-      if (emulator) {
-        held.grid.copy(emulator, held.grid.allDirty);
-        copied.add(spot.pane);
-      }
-      const live = paneLive(view, shown);
-      const scene = paneScene(spot, held.grid, actual, { live, hold: holds.has(spot.pane), dim: !live });
-      drawn.set(spot.pane, scene);
+      const scene = sceneNow(painter.styles, spot, view);
+      if (view?.emulator) copied.add(spot.pane);
       const look = lookOf(spot.pane, view, scene);
       const selection = pointer.shown(spot.pane, paneFocus, look);
       const copy = copyView.draw(scene);

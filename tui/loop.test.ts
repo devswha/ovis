@@ -80,6 +80,8 @@ async function settled(run: Run): Promise<void> {
   await run.settle();
   await run.advance(1);
 }
+/** what the screen copied to the host's clipboard (OSC 52), in order */
+const clipsOf = (run: Run): string[] => [...run.host.output().matchAll(/\x1b]52;c;([A-Za-z0-9+/=]+)\x1b\\/g)].map((match) => Buffer.from(match[1]!, "base64").toString());
 const framesOf = (run: Run, kind: number, from = 0) => run.sent.slice(from).filter((frame) => frame.kind === kind && frame.channel !== 0);
 const megabyte = (fill: string) => fill.repeat(1024 * 1024 / fill.length);
 
@@ -365,9 +367,9 @@ describe("the loop", () => {
     // prefix actions (moves, zoom, close, help, the workspace picker, resize mode, rename, a new tab's name, detach), text
     // with combining marks, a ZWJ emoji, CJK and wide characters, and Enter; with the default prefix (a key of its own)
     // and with a printable one (one text run holds the actions and what follows them)
-    // copy mode (prefix+[) and its search box (/) too
+    // copy mode (prefix+[), its search box (/) and its hint labels (f, then a digit: the second pane shows a path) too
     const ACTIONS = ["l", "h", "z", "x", "?", "q", "w", "r", "P", "c", "["];
-    const TEXT = ["a", "q", "/", "e\u0301", "\u0301", "\u{1F469}\u200D\u{1F4BB}", "한", "中", "\uFF21", "\r"];
+    const TEXT = ["a", "q", "/", "f", "1", "e\u0301", "\u0301", "\u{1F469}\u200D\u{1F4BB}", "한", "中", "\uFF21", "\r"];
     let seed = 0x5eed;
     const random = () => {
       seed = (seed + 0x6d2b79f5) | 0;
@@ -406,6 +408,7 @@ describe("the loop", () => {
         }));
         return named({
           ended, focus: model.focus, mode: model.mode.name, panes: model.world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.id))).sort(), zoomed: layout?.workspaces.flatMap((workspace) => workspace.tabs.map((tab) => tab.zoomed)) ?? [],
+          clips: clipsOf(run),
           overlays: model.overlays.map((overlay) => ("field" in overlay ? `${overlay.kind}:${overlay.field.graphemes.join("|")}` : overlay.kind)),
           received: Object.fromEntries(before.map((terminal) => [terminal, sentTo(run, terminal)])),
         });
@@ -473,6 +476,34 @@ describe("the loop", () => {
       const joined = await search([bytes]);
       expect({ text, outcome: await search([...bytes].map((byte) => Uint8Array.of(byte))) }).toEqual({ text, outcome: joined });
       for (let cut = 1; cut < bytes.length; cut++) expect({ text, cut, outcome: await search([bytes.slice(0, cut), bytes.slice(cut)]) }).toEqual({ text, cut, outcome: joined });
+    }
+  }, TEST_MS);
+
+  it("a hint label read with hint mode copies its target as when read apart: f then 1, and after scrolling back", async () => {
+    const urls = Array.from({ length: 30 }, (_, n) => `https://example.org/${n} 한글 e\u0301\r\n`).join("");
+    const hint = async (reads: Uint8Array[]) => {
+      const run = await Run.start({ cols: 60, rows: 14, fixture: { build: (core) => place(core, { space: "w", spaceName: "w", tab: "t", tabName: "t" }, urls) } });
+      try {
+        await run.live();
+        await run.advance(1);
+        for (const read of reads) {
+          run.host.feed(read);
+          await settled(run);
+        }
+        return { mode: run.loop.model().mode, clips: clipsOf(run), received: sentTo(run, "t1") };
+      } finally {
+        await run.close();
+      }
+    };
+    // hint mode and its label; then the same after moving the copy cursor up past the top (the history scrolls back), and
+    // text after the copy closed copy mode
+    for (const text of ["\x02[f1", `\x02[${"k".repeat(16)}f2Z`]) {
+      const bytes = new TextEncoder().encode(text);
+      const joined = await hint([bytes]);
+      expect(joined.clips).toHaveLength(1);
+      expect(joined.mode).toEqual({ name: "terminal" });
+      expect({ text, outcome: await hint([...bytes].map((byte) => Uint8Array.of(byte))) }).toEqual({ text, outcome: joined });
+      for (let cut = 1; cut < bytes.length; cut++) expect({ text, cut, outcome: await hint([bytes.slice(0, cut), bytes.slice(cut)]) }).toEqual({ text, cut, outcome: joined });
     }
   }, TEST_MS);
 

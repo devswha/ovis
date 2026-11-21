@@ -22,7 +22,7 @@ interface Session {
   match: ScreenRange | null;
   searchFresh: boolean;
   searchNotice: "copy_no_match" | null;
-  hints: "scan" | readonly CopyHint[] | null;
+  hints: readonly CopyHint[] | null;
 }
 
 const value = <T>(result: EmulatorResult<T>): T | null => result.ok ? result.value : null;
@@ -33,6 +33,21 @@ function range(s: Session): ScreenRange | null {
   const selected = ordered({ start: s.selection.anchor, end: s.point });
   if (s.selection.shape === "char") return selected;
   return { start: { x: 0, y: selected.start.y }, end: { x: s.cols - 1, y: selected.end.y } };
+}
+
+/** The pane's scene clipped around the copy cursor, with the selection or match, and where the cursor is drawn. */
+function framed(s: Session, scene: PaneScene): { pane: PaneScene; point: { col: number; row: number } } {
+  const gridRow = s.point.y - s.top;
+  const row = clipTop(gridRow, s.rows, scene.rect.height);
+  const col = clipTop(s.point.x, s.cols, scene.rect.width);
+  const selected = range(s) ?? s.match;
+  const point = { col: scene.rect.x + s.point.x - col, row: scene.rect.y + gridRow - row };
+  const { grid } = scene.grid;
+  if (s.point.x > 0 && grid.width[gridRow * grid.cols + s.point.x] === 0) point.col--;
+  const pane = { ...scene, view: { col, row }, ...(selected === null ? {} : {
+    selection: { start: { x: selected.start.x, y: selected.start.y - s.top }, end: { x: selected.end.x, y: selected.end.y - s.top } },
+  }) };
+  return { pane, point };
 }
 
 /** Coordinates refer to one emulator generation and buffer. Only its current viewport is rendered. */
@@ -140,10 +155,12 @@ export class CopyView {
         this.search(s, command.toward);
         break;
       case "hints":
-        s.hints = "scan";
+        // numbered from the pane as it is now (the loop hands in its current scene), never at the next draw: a label in
+        // the same read finds them
+        s.hints = visibleCopyHints(framed(s, scene).pane, emulator, s.top);
         break;
       case "pick": {
-        const chosen = s.hints !== "scan" && s.hints?.[command.digit - 1];
+        const chosen = s.hints?.[command.digit - 1];
         if (chosen) return { close: true, text: chosen.text };
         break;
       }
@@ -178,18 +195,7 @@ export class CopyView {
   draw(scene: PaneScene): { pane: PaneScene; hints: readonly CopyHint[]; input: Scene["input"]; searchNotice: Session["searchNotice"] } | null {
     const s = this.session;
     if (!s || s.pane !== scene.id) return null;
-    const gridRow = s.point.y - s.top;
-    const row = clipTop(gridRow, s.rows, scene.rect.height);
-    const col = clipTop(s.point.x, s.cols, scene.rect.width);
-    const view = { col, row };
-    const selected = range(s) ?? s.match;
-    const point = { col: scene.rect.x + s.point.x - col, row: scene.rect.y + gridRow - row };
-    const { grid } = scene.grid;
-    if (s.point.x > 0 && grid.width[gridRow * grid.cols + s.point.x] === 0) point.col--;
-    const pane = { ...scene, view, ...(selected === null ? {} : {
-      selection: { start: { x: selected.start.x, y: selected.start.y - s.top }, end: { x: selected.end.x, y: selected.end.y - s.top } },
-    }) };
-    if (s.hints === "scan") s.hints = visibleCopyHints(pane, s.emulator, s.top);
+    const { pane, point } = framed(s, scene);
     return {
       pane, hints: s.hints ?? [], input: holds(scene.rect, point.col, point.row) ? point : "overlay",
       searchNotice: s.searchNotice,
