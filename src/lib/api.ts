@@ -910,6 +910,11 @@ export async function renameDevice(id: string, label: string): Promise<PairedDev
   return (await sendJson(`/api/devices/${encodeURIComponent(id)}`, "PATCH", { label })).json();
 }
 
+/** POST /api/devices/joins/seen: a join this window showed is seen, for every window of the PC (`device-paired-seen`). */
+export async function markJoinSeen(eventId: string): Promise<void> {
+  await sendJson("/api/devices/joins/seen", "POST", { event_id: eventId });
+}
+
 export async function revokeDevice(id: string): Promise<void> {
   await sendJson(`/api/devices/${encodeURIComponent(id)}`, "DELETE", {});
 }

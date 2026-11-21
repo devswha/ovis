@@ -685,8 +685,8 @@ test("every connected device hears of the admission and of the member that appro
   await confirm(p);
   expect((await p.inbox.next()).type).toBe(FrameType.AUTH_OK);
   for (const index of [0, 1]) {
-    await until(index, '"type":"device-paired"');
-    expect(texts[index]).toContain(`"approved_by":{"device_id":"${member.id}","label":"Account phone"}`);
+    // the streams opened on the earlier joins nobody has seen yet: this one is the join the member approved
+    await until(index, `"approved_by":{"device_id":"${member.id}","label":"Account phone"}`);
     expect(texts[index]).not.toContain(`"digits":"${digits}"`);
     await streams[index]!.cancel();
   }

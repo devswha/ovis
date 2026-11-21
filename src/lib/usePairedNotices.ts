@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { markJoinSeen } from "./api.ts";
 import type { DevicePairedEvent, DeviceRemovedEvent, PendingKey, RelayPairingRequest, RemotePairingRequest } from "../../shared/machines.ts";
 
 export function usePairedNotices(pendingAccess: boolean | undefined) {
@@ -20,6 +21,11 @@ export function usePairedNotices(pendingAccess: boolean | undefined) {
     if (pendingAccess === false) clearPendingKeys();
   }, [pendingAccess, clearPendingKeys]);
   const dismissRemovedNotice = useCallback((event: DeviceRemovedEvent) => setRemovedNotices((list) => list.filter((item) => item.event_id !== event.event_id)), []);
-  const dismissPairedNotice = useCallback((event: DevicePairedEvent) => setPairedNotices((list) => list.filter((item) => item.event_id !== event.event_id)), []);
+  // seen here is seen in every window of the PC; a watching window, which may not mark it, still drops it here
+  const dropPairedNotice = useCallback((eventId: string) => setPairedNotices((list) => list.filter((item) => item.event_id !== eventId)), []);
+  const dismissPairedNotice = useCallback((event: DevicePairedEvent) => {
+    dropPairedNotice(event.event_id);
+    markJoinSeen(event.event_id).catch((error: unknown) => console.warn("Ovis: the join could not be marked seen on the PC", error instanceof Error ? error.message : error));
+  }, [dropPairedNotice]);
   return { pairedNotices, setPairedNotices, dismissPairedNotice, relayPairings, setRelayPairings, remotePairings, setRemotePairings, removedNotices, setRemovedNotices, dismissRemovedNotice, pendingKeys: pendingAccess === true ? pendingKeys : [], setPendingKeys, clearPendingKeys };
 }

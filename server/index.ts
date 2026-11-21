@@ -72,6 +72,7 @@ import { AccountIntroductions } from "./account/introductions.ts";
 import { RecoveryReleases } from "./account/recovery.ts";
 import { openPcRecovery } from "./account/recovery-server.ts";
 import { PendingRedemptions, type PendingRedemption } from "./account/pending.ts";
+import { JoinNotices } from "./join-notices.ts";
 import { askScreenForKey, KeyProofPairings } from "./account/key-proof.ts";
 import { lockRoutes } from "./account/lock-routes.ts";
 import { LockSignal } from "./lock-boundary.ts";
@@ -370,6 +371,9 @@ export function createServer(
     safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: rowsForDevices, held: (key) => accountMailbox.gates().held(key),
     ...(siblingLegacyCredential ? { siblingLegacyCredential } : {}),
   });
+  // a join is told to every window of this PC that opens until one of them sees it (server/join-notices.ts)
+  const joins = new JoinNotices(join(stateDir, "join-notices.json"), (id) => devices.has(id));
+  devices.onPaired((event, origin) => joins.add(event, origin));
   const accountRows = opened.rows;
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
   const accountMailbox = new AccountMailbox({
@@ -675,7 +679,7 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
     get localConfirms() { return devices.screenApprovalActive() ? localConfirms : undefined; },
     get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
     get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },

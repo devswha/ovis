@@ -78,6 +78,8 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
   "POST /api/push/test": { action: "push_subscribe" },
   "POST /api/account/records": { action: "records" },
   "POST /api/devices/pair": { action: "pair_start" },
+  // a live member may mark a join seen for every window of this PC, as it may drive it
+  "POST /api/devices/joins/seen": { action: "drive" },
   "POST /api/runtime": { action: "drive" },
   "POST /api/runtime/move": { action: "drive" },
   "DELETE /api/runtime/move": { action: "drive" },

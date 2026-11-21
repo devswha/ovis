@@ -392,6 +392,14 @@ export interface DevicePairedEvent {
   /** the account member that approved it from another device (docs/account.md, "Who may admit a device"); absent when approved on this PC or by a code */
   approved_by?: { device_id: string; label: string };
 }
+/**
+ * A join is told to every window of this PC that opens until one window marks it seen (POST /api/devices/joins/seen):
+ * then every window drops it.
+ */
+export interface DevicePairedSeenEvent {
+  type: "device-paired-seen";
+  event_id: string;
+}
 /** What a comparison asks for (docs/account.md, "Negotiation"): pairing this PC only, or joining the account. */
 export type PairingIntent = "pc" | "account";
 /**
@@ -461,6 +469,7 @@ export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "
   /** finishes a browser of this server presented (shared/seen.ts): every record when the stream opens, then each change */
   | { type: "seen"; finishes: SeenFinish[] }
   | DevicePairedEvent
+  | DevicePairedSeenEvent
   | DeviceRemovedEvent
   | RelayPairingsEvent
   | RemotePairingsEvent

@@ -1075,6 +1075,11 @@ is what authenticates the PC.
   drive access only: `by` is `"pc"` for a revoke on the PC itself (Revoke all, a reset relay
   identity), the device that revoked it through the app, or the member that signed an account
   `remove`.
+- A join (`device-paired`) waits on the PC, in `join-notices.json` beside `devices.json`, until a window sees it:
+  each machines event stream opens on the joins nobody has seen yet (the newest three, within a week, of devices
+  still here), never the new device's own nor a window the open LAN let in. `POST /api/devices/joins/seen
+  { "event_id" }` from a window that may drive the PC marks it seen for all, and every open stream is told
+  `{ "type": "device-paired-seen", "event_id" }`.
 - `GET /api/devices` adds `account`, `account_key` (the member's `relay_public_key`, which is public)
   and `added_by` to account members' rows, for a caller with drive access only; a watching device
   sees none of them.

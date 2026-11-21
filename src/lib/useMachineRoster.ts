@@ -338,6 +338,8 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
       if (payload.type === "herdr-sidebar") { setAgentRowTokens(payload.agents); return; }
       if (payload.type === "seen") { receiveSeen(payload.finishes); return; }
       if (payload.type === "device-paired") { setPairedNotices((list) => withPairedNotice(list, payload)); return; }
+      // another window of this PC saw it
+      if (payload.type === "device-paired-seen") { setPairedNotices((list) => list.filter((item) => item.event_id !== payload.event_id)); return; }
       if (payload.type === "relay-pairings") { setRelayPairings(payload.pairings); return; }
       if (payload.type === "remote-pairings") { setRemotePairings(payload.pairings); return; }
       if (payload.type === "device-removed") { setRemovedNotices((list) => withPairedNotice(list, payload)); return; }

@@ -78,6 +78,7 @@ import { bridgeIdentity } from "./bridge.ts";
 import { discoverHerdrSessions } from "./herdr-discovery.ts";
 import { ACCOUNT_PC_OWNER_ONLY, handleMachineRequest, nonCanonicalPath, slowMachinePath, type EventStreamBudget } from "./machine-api.ts";
 import { machinePairingEvents } from "./machine-pairing-events.ts";
+import { handleJoinSeen, JOIN_SEEN_PATH, type JoinNotices } from "./join-notices.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
 import type { PiSessionReader } from "./pi-session-metadata.ts";
 import { withoutHiddenTokens, type HerdrSidebarConfig } from "./herdr-sidebar.ts";
@@ -104,6 +105,8 @@ export interface RequestServices {
   readonly bridgeToken: string;
   readonly bootId: string;
   readonly devices: DeviceStore;
+  /** the joins no window of this PC has seen yet (server/join-notices.ts) */
+  readonly joins: JoinNotices;
   readonly accountMailbox: AccountMailbox;
   readonly accountIntroductions: AccountIntroductions;
   readonly accountHolds: AccountHolds;
@@ -621,6 +624,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const pendingRedemptions = ctx.services.pendingRedemptions;
     if (pendingRedemptions !== undefined) return handlePendingRequest(request, pathname, pendingRedemptions, access);
   }
+  if (pathname === JOIN_SEEN_PATH) return handleJoinSeen(request, ctx.services.joins, access);
   if (pathname === "/api/devices" || pathname.startsWith("/api/devices/")) {
     try {
       // one device, or all of them: the registry names what was revoked, and the cleanup follows its ids
