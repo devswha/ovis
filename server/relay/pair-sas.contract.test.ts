@@ -921,6 +921,31 @@ test("a second vouched session cannot open while the first waits", async () => {
   first.p.channel.close();
 });
 
+test("a vouched request whose admission is still being checked holds no slot: a stranger cannot make a real PC's join fail", async () => {
+  const { f, admit } = await joinFixture(Date.now, true);
+  const mailbox = f.app.context.services.accountMailbox;
+  const real = mailbox.admitted.bind(mailbox);
+  const reached = deferred<void>();
+  const held = deferred<boolean>();
+  let first = true;
+  mailbox.admitted = async (key: string) => {
+    if (!first) return real(key);
+    first = false;
+    reached.resolve();
+    return held.promise;
+  };
+  // a stranger with no admission asks first, and its check is still out
+  const stranger = vouched(f);
+  await bounded(reached.promise);
+  const pending = remotePrompt(f);
+  const member = await vouched(f, async (key) => { await admit(key); await mailbox.pull(); });
+  expect(member.refused).toBeUndefined();
+  await pending;
+  held.resolve(false);
+  expect((await stranger).refused).toBe("auth_failed");
+  member.p.channel.close();
+});
+
 test("a server proof accepted in one vouched session cannot be replayed in another", async () => {
   const { f, admit } = await joinFixture(Date.now, true);
   const keys = generateKeyPair();

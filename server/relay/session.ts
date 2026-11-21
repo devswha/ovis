@@ -439,7 +439,7 @@ export class RelaySession {
         // Another PC of the account's server is taken only that way, window or not: its admission is its whole invitation
         if (this.intent === "vouched") {
           const key = proofKey(frame.payload.server_key);
-          if (!this.proofNegotiated || !key || !this.options.services.relay.approvals.reserveVouched(this.sessionId)) { this.close("auth_failed"); return; }
+          if (!this.proofNegotiated || !key) { this.close("auth_failed"); return; }
           const id = deriveServerId(key);
           this.proofChallenge = { id, ...serverChallenge(key, { server_id: id, role: "vouched-pc", connection_id: toBase64Url(this.sasBinding) }) };
         }
@@ -452,6 +452,9 @@ export class RelaySession {
           const joined = await this.accountJoin(frame.payload.public_key);
           if (joined === null) { this.close("auth_failed"); return; }
           if (!this.mux.active) return;
+          // the one vouched join at a time is taken only once its admission held: a request the account never saw holds no
+          // slot, so nobody can make a real PC's join fail by asking first
+          if (this.intent === "vouched" && !this.options.services.relay.approvals.reserveVouched(this.sessionId)) { this.close("auth_failed"); return; }
           membersOnly = true;
           firstJoin = joined === "first";
         }
