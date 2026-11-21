@@ -228,7 +228,7 @@ export function RelayShell(props: RelayShellProps) {
     const joining: MyPc = { server_id: sheetJoin.server_id, name: pc, state: "needs-approval", last_seen_at: null, added_at: null, listed: true, paired: false, linked: false };
     return (
       <main className="relay-shell-screen relay-add-screen" data-relay-state={stateName}>
-        <AddPcSheet mode={sheetJoin.mode} pc={joining} state={state} onJoin={() => {}} onPair={onPair} onMatch={onMatch} onRetry={onRetry} {...(onOpenPc ? { onOpenPc } : {})} onCancel={onCancel} onClose={onBack} onPairByQr={onCodeStart} {...(sheetJoin.mode === "new" && onJoinInstead ? { onAskToJoin: onJoinInstead } : {})} />
+        <AddPcSheet mode={sheetJoin.mode} pc={joining} state={state} onJoin={() => {}} onPair={onPair} onMatch={onMatch} onRetry={onRetry} {...(onOpenPc ? { onOpenPc } : {})} onCancel={onCancel} onClose={onBack} {...(sheetJoin.mode === "new" && onJoinInstead ? { onAskToJoin: onJoinInstead } : {})} />
       </main>
     );
   }

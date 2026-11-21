@@ -8,10 +8,6 @@ export type PcReachState = MyPcState | "unchecked" | "unreachable";
 
 export type OutOfReach = Extract<PcReachState, "offline" | "unreachable">;
 
-export function relayHost(origin: string): string {
-  try { return new URL(origin).host; } catch { return origin; }
-}
-
 export function outOfReachWord(state: OutOfReach, t: Translate): string {
   switch (state) {
     case "offline": return t("Machine offline");
@@ -32,22 +28,4 @@ export function outOfReachReason(pc: { readonly displayState: PcReachState; read
     }
     case "paired": case "unchecked": case "needs-approval": case "needs-update": return null;
   }
-}
-
-/**
- * It names the button it sits next to and the only two ways in: a connected device of the account approves, or
- * someone types the number the PC's own screen shows. The directory cannot say whether such a device exists now
- * (Revoke all keeps the row seen), so neither is claimed.
- */
-export function askToJoinReason(pc: { readonly added_at: string | null; readonly join?: unknown }, t: Translate): string | null {
-  if (pc.added_at === null || pc.join === undefined) return null;
-  return t("Join · approve on a connected device of your account, or type the number the PC shows");
-}
-
-export function routeText(check: PcStatus | null, t: Translate): string {
-  if (check === null) return t("Not checked");
-  if (check.kind === "checking") return t("Checking…");
-  if (check.kind === "offline") return t("No answer");
-  const way = check.route === "lan" ? t("Same network") : check.route === "tailscale" ? "Tailscale" : check.relay === undefined ? t("Relay") : relayHost(check.relay);
-  return `${way} · ${t("{n} ms", { n: check.rttMs })}`;
 }

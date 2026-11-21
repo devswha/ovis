@@ -557,7 +557,6 @@ const BASE: Record<string, string> = {
   "Offline": "オフライン",
   "Open": "開く",
   "Add a PC": "PC を追加",
-  "Relay": "リレー",
   "All": "すべて",
   "Search": "検索",
   "Choose one from the list to open its chat here.": "リストから選ぶと、チャットがここに開きます。",

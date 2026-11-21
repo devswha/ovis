@@ -22,10 +22,10 @@ describe("the Add-a-PC sheet", () => {
   let renderer: ReactTestRenderer | undefined;
   let events: EventTarget;
   let opener: { isConnected: boolean; focus: () => void; focused: number };
-  let calls: { joins: unknown[][]; matches: unknown[][]; cancels: number; closes: number; pairs: number; qr: number; retries: number; opens: number };
+  let calls: { joins: unknown[][]; matches: unknown[][]; cancels: number; closes: number; pairs: number; retries: number; opens: number };
 
   beforeEach(() => {
-    calls = { joins: [], matches: [], cancels: 0, closes: 0, pairs: 0, qr: 0, retries: 0, opens: 0 };
+    calls = { joins: [], matches: [], cancels: 0, closes: 0, pairs: 0, retries: 0, opens: 0 };
     for (const key of ["window", "document", "navigator", "localStorage", "sessionStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     events = new EventTarget();
     const store = new Map<string, string>();
@@ -72,7 +72,7 @@ describe("the Add-a-PC sheet", () => {
     descriptors.clear();
   });
 
-  const props = (mode: AddPcSheetProps["mode"], pc: MyPc | null, state: RelayShellState): AddPcSheetProps => ({
+  const props = (mode: AddPcSheetProps["mode"], pc: MyPc, state: RelayShellState): AddPcSheetProps => ({
     mode, pc, state,
     onJoin: (...args) => { calls.joins.push(args); },
     onPair: () => { calls.pairs += 1; },
@@ -81,7 +81,6 @@ describe("the Add-a-PC sheet", () => {
     onOpenPc: () => { calls.opens += 1; },
     onCancel: () => { calls.cancels += 1; },
     onClose: () => { calls.closes += 1; },
-    onPairByQr: () => { calls.qr += 1; },
   });
   const view = (shown: AddPcSheetProps) => createElement(SettingsProvider, { children: createElement(AddPcSheet, shown) });
   const mount = async (shown: AddPcSheetProps) => { await act(async () => { renderer = create(view(shown), { createNodeMock: node }); }); }, update = async (shown: AddPcSheetProps) => { await act(async () => { renderer!.update(view(shown)); }); };
@@ -396,23 +395,11 @@ describe("the Add-a-PC sheet", () => {
     let inert = true;
     opener.focus = () => { if (!inert) page.activeElement = opener; };
     const Behind = ({ shown }: { shown: boolean }) => { useLayoutEffect(() => { inert = shown; }, [shown]); return null; };
-    const screen = (shown: boolean) => createElement(SettingsProvider, { children: [shown && createElement(AddPcSheet, { key: "sheet", ...props("add", null, LIST) }), createElement(Behind, { key: "behind", shown })] });
+    const screen = (shown: boolean) => createElement(SettingsProvider, { children: [shown && createElement(AddPcSheet, { key: "sheet", ...props("new", pcOf(), LIST) }), createElement(Behind, { key: "behind", shown })] });
     await act(async () => { renderer = create(screen(true), { createNodeMock: node }); });
     page.activeElement = page.body;
     await act(async () => { renderer!.update(screen(false)); });
     expect(page.activeElement).toBe(opener);
-  });
-
-  it("with no PC, says how one is added in one concise sentence and leads to the QR and code screen", async () => {
-    await mount(props("add", null, LIST));
-    expect(all()).toContain("Add a PC");
-    expect(all()).toContain("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay, sign in, then choose Add this PC to my account. It then shows here.");
-    expect(steps()).toEqual([]);
-    expect(renderer!.root.findAll((instance) => instance.props.className === "add-pc-bars")).toHaveLength(0);
-    await click("Pair with a QR or code");
-    expect(calls.qr).toBe(1);
-    await click("Close");
-    expect(calls).toMatchObject({ closes: 1, cancels: 0 });
   });
 
   it("keeps a second way on a new PC's sheet and on the join sheet based on whether the PC waits to be added, not a number before Add starts", async () => {
@@ -423,30 +410,20 @@ describe("the Add-a-PC sheet", () => {
     await click("Ask to join");
     expect(asked).toBe(1);
     expect(calls.joins).toEqual([]);
-
-    let typed = 0;
-    await update({ ...props("join", pcOf(), LIST), onTypeNumber: () => { typed += 1; } });
-    expect(renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text)).toEqual(["Cancel", "Type the number", "Ask to join"]);
-    await click("Type the number");
-    expect(typed).toBe(1);
   });
 
   it("makes approval on a device already in use a join's one way at the start, with no QR choice: a PC in an account shows no QR code", async () => {
     const pc = pcOf();
     const primary = () => renderer!.root.findAll((n) => n.type === "button" && n.props["data-sheet-primary"] === true);
-    for (const typeNumber of [undefined, () => {}]) {
-      calls = { ...calls, joins: [], qr: 0 };
-      await mount({ ...props("join", pc, LIST), ...(typeNumber ? { onTypeNumber: typeNumber } : {}) });
-      // the one primary asks to join through the account
-      expect(primary()).toHaveLength(1);
-      await act(async () => { primary()[0]!.props.onClick(); });
-      expect([calls.joins, calls.qr]).toEqual([[[pc]], 0]);
-      // no way to the PC's QR code, and nothing after the footer
-      expect(renderer!.root.findAll((n) => n.type === "button" && n.props["data-action"] === "pair-qr")).toHaveLength(0);
-      const footer = renderer!.root.findByType("footer");
-      expect(footer.parent!.children.at(-1)).toBe(footer);
-      await act(async () => { renderer!.unmount(); });
-    }
+    await mount(props("join", pc, LIST));
+    // the one primary asks to join through the account
+    expect(primary()).toHaveLength(1);
+    await act(async () => { primary()[0]!.props.onClick(); });
+    expect(calls.joins).toEqual([[pc]]);
+    // no way to the PC's QR code, and nothing after the footer
+    expect(renderer!.root.findAll((n) => n.type === "button" && n.props["data-action"] === "pair-qr")).toHaveLength(0);
+    const footer = renderer!.root.findByType("footer");
+    expect(footer.parent!.children.at(-1)).toBe(footer);
   });
 
   it("offers Ask to join under a typed comparison, for a PC that shows no number, and only where the shell can turn the request into a join", async () => {
@@ -475,9 +452,7 @@ describe("the Add-a-PC sheet", () => {
     (window as unknown as { matchMedia: typeof phoneMedia }).matchMedia = phoneMedia;
     jest.useFakeTimers();
     try {
-      await mount(props("add", null, LIST));
-      expect(footerLabels()).toEqual(["Pair with a QR or code", "Close"]);
-      await update(props("new", pc, LIST));
+      await mount(props("new", pc, LIST));
       expect(footerLabels()).toEqual(["Add this PC", "Cancel"]);
       await update(props("join", pc, LIST));
       expect(footerLabels()).toEqual(["Ask to join", "Cancel"]);

@@ -332,4 +332,5 @@ export const DEVICES_KO: Record<string, string> = {
   "{name} leaves your account's PCs on every device. It revokes nothing on {name}; if it comes back online, add it again.": "모든 기기의 계정 PC 목록에서 {name} PC가 빠집니다. {name}에서 해제되는 것은 없으며, 다시 켜지면 다시 추가하세요.",
   "Devices could not be loaded.": "기기 목록을 불러오지 못했습니다.",
   "PCs could not be loaded.": "PC 목록을 불러오지 못했습니다.",
+  "Relay": "릴레이",
 };

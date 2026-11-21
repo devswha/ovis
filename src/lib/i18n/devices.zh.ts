@@ -332,4 +332,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "{name} leaves your account's PCs on every device. It revokes nothing on {name}; if it comes back online, add it again.": "{name} 将在所有设备上从账户的电脑列表中移除。{name} 上不会撤销任何内容；它重新上线后，请再次添加。",
   "Devices could not be loaded.": "无法加载设备列表。",
   "PCs could not be loaded.": "无法加载电脑列表。",
+  "Relay": "中继",
 };

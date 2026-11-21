@@ -332,4 +332,5 @@ export const DEVICES_JA: Record<string, string> = {
   "{name} leaves your account's PCs on every device. It revokes nothing on {name}; if it comes back online, add it again.": "すべてのデバイスで、アカウントの PC から {name} が外れます。{name} 側では何も取り消されません。再びオンラインになったら、もう一度追加してください。",
   "Devices could not be loaded.": "デバイス一覧を読み込めませんでした。",
   "PCs could not be loaded.": "PC 一覧を読み込めませんでした。",
+  "Relay": "リレー",
 };
