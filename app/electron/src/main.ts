@@ -15,7 +15,7 @@ import { argvLinkQuery, LINK_SCHEME, openLinkQuery, tellsLink } from "./openLink
 import { openOutside } from "./openOutside.ts";
 import { findBrowsers, readLinkBrowser, webAddress, writeLinkBrowser, type FoundBrowsers, type LinkBrowser } from "./browsers.ts";
 import { BrowserTabs, type BrowserBounds } from "./browserTabs.ts";
-import { debuggingSwitch, ownAddresses, readBrowserState } from "./browserState.ts";
+import { debuggingSwitch, ownAddresses, readBrowserState, serverFrame } from "./browserState.ts";
 import { networkInterfaces } from "node:os";
 import { BrowserBroker, brokerPath } from "./browserBroker.ts";
 import { BROWSER_TOKENS_DIR } from "../../../shared/browser-broker.ts";
@@ -100,7 +100,7 @@ function ours(url: string): boolean {
  * own address, in an opaque origin.
  */
 function serverPage(frame: Electron.WebFrameMain | null | undefined): boolean {
-  return frame != null && frame.parent === null && frame.origin === serverOrigin() && ours(frame.url);
+  return serverFrame(frame, serverOrigin());
 }
 
 function setStatus(next: Partial<Status>): void {

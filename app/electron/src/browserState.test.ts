@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decide } from "../../../shared/browser-policy.ts";
-import { debuggingSwitch, ownAddresses, readBrowserState, stageSupported } from "./browserState.ts";
+import { debuggingSwitch, ownAddresses, readBrowserState, stageSupported, serverFrame } from "./browserState.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -62,5 +62,19 @@ describe("drawing tabs nobody looks at off the screen", () => {
     expect(stageSupported("linux", { WAYLAND_DISPLAY: "wayland-0" })).toBe(false);
     expect(stageSupported("darwin", {})).toBe(false);
     expect(stageSupported("win32", {})).toBe(false);
+  });
+});
+
+describe("the frame the built-in browser answers", () => {
+  const server = "http://127.0.0.1:4321";
+  it("is the server's own top page only", () => {
+    expect(serverFrame({ parent: null, origin: server, url: `${server}/?ws=a` }, server)).toBe(true);
+    // a subframe of it, a file's HTML in an opaque origin, another site, no server yet, no frame
+    expect(serverFrame({ parent: {}, origin: server, url: `${server}/x` }, server)).toBe(false);
+    expect(serverFrame({ parent: null, origin: "null", url: `${server}/api/file?path=a.html` }, server)).toBe(false);
+    expect(serverFrame({ parent: null, origin: "https://evil.example", url: "https://evil.example/" }, server)).toBe(false);
+    expect(serverFrame({ parent: null, origin: server, url: "https://evil.example/" }, server)).toBe(false);
+    expect(serverFrame({ parent: null, origin: server, url: `${server}/` }, null)).toBe(false);
+    expect(serverFrame(null, server)).toBe(false);
   });
 });

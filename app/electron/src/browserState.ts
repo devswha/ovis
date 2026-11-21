@@ -66,3 +66,17 @@ export function hostForm(address: string): string {
 export function stageSupported(platform: string, env: Record<string, string | undefined>): boolean {
   return platform === "linux" && env["XDG_SESSION_TYPE"] !== "wayland" && !env["WAYLAND_DISPLAY"];
 }
+
+/**
+ * Whether a frame is the app's server page, the only one the built-in browser answers (main.ts's IPC): a top frame whose
+ * real origin is the server's and whose address is on it. A subframe, a file's HTML the server shows in an opaque origin,
+ * or another site's page is not.
+ */
+export function serverFrame(frame: { parent: unknown; origin: string; url: string } | null | undefined, server: string | null): boolean {
+  if (frame == null || frame.parent !== null || server === null || frame.origin !== server) return false;
+  try {
+    return new URL(frame.url).origin === server;
+  } catch {
+    return false;
+  }
+}
