@@ -276,6 +276,35 @@ const cliStatus = async (): Promise<string | null> => {
   return binary === null ? null : run(binary, ["status", "--json"]);
 };
 
+const cliWhois = async (address: string): Promise<string | null> => {
+  const binary = tailscaleBinary();
+  return binary === null ? null : run(binary, ["whois", "--json", address]);
+};
+
+/**
+ * The tailnet node a request came from, by `tailscale whois`: `id` is its StableNodeID, which survives a node key's
+ * rotation (the node key does not) and is what a block names; `hostname` is for display only.
+ */
+export interface TailnetNode { readonly id: string; readonly hostname: string; readonly login: string | null }
+
+export const STABLE_NODE_ID = /^[A-Za-z0-9]{1,64}$/;
+
+interface WhoisJson { Node?: { StableID?: string; Name?: string; ComputedName?: string; Hostinfo?: { Hostname?: string } }; UserProfile?: { LoginName?: string } }
+
+/** `tailscale whois --json <address>`'s node, or null when it names no StableID this PC can keep. */
+export function parseWhois(text: string | null): TailnetNode | null {
+  const whois = parseJson<WhoisJson>(text);
+  const node = whois?.Node;
+  const id = node?.StableID;
+  if (typeof id !== "string" || !STABLE_NODE_ID.test(id)) return null;
+  const name = node?.ComputedName || node?.Hostinfo?.Hostname || node?.Name?.replace(/\.$/, "").split(".")[0] || id;
+  const login = whois?.UserProfile?.LoginName;
+  return { id, hostname: name.slice(0, 64), login: typeof login === "string" && login !== "" ? login : null };
+}
+
+/** how long a tailnet address is taken to stay the same node */
+const WHOIS_TTL_MS = 60_000;
+
 /**
  * What `tailscale status --json` says about this PC and its tailnet, read through `readStatus` and
  * kept five minutes. `identity` answers every reader that does not grant from the cache, refreshing
@@ -291,7 +320,29 @@ export class TailnetIdentitySource {
   private cache: (TailnetIdentity & { at: number; settled: boolean; ownerKnown: boolean }) | null = null;
   private reading: Promise<void> | null = null;
 
-  constructor(private readonly readStatus: () => Promise<string | null> = cliStatus) {}
+  private readonly nodes = new Map<string, { node: TailnetNode; at: number }>();
+  private readonly asking = new Map<string, Promise<TailnetNode | null>>();
+
+  constructor(private readonly readStatus: () => Promise<string | null> = cliStatus,
+    private readonly readWhois: (address: string) => Promise<string | null> = cliWhois) {}
+
+  /**
+   * The node behind one tailnet address (`tailscale whois`), kept a minute; a read that fails is not kept, so the
+   * next request asks again. Reads of one address share the one in flight.
+   */
+  async node(address: string): Promise<TailnetNode | null> {
+    const kept = this.nodes.get(address);
+    if (kept !== undefined && Date.now() - kept.at < WHOIS_TTL_MS) return kept.node;
+    let reading = this.asking.get(address);
+    if (reading === undefined) {
+      reading = this.readWhois(address).then(parseWhois, () => null).finally(() => this.asking.delete(address));
+      this.asking.set(address, reading);
+    }
+    const node = await reading;
+    if (node === null) this.nodes.delete(address);
+    else this.nodes.set(address, { node, at: Date.now() });
+    return node;
+  }
 
   /**
    * A read that failed, or one whose status leaves the sole-login question open, keeps what the
