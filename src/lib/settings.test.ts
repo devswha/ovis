@@ -622,6 +622,14 @@ it("keeps the screen wake lock off until this device explicitly enables it", () 
   expect(sanitizeSettings({ terminalWheelSpeed: 99 }).terminalWheelSpeed).toBe(10);
   expect(sanitizeSettings({ terminalWheelSpeed: 0 }).terminalWheelSpeed).toBe(1);
   expect(sanitizeSettings({ terminalWheelSpeed: "3" }).terminalWheelSpeed).toBe(1);
+  expect(sanitizeSettings({}).terminalHistoryLines).toBe(1_000);
+  expect(sanitizeSettings({ terminalHistoryLines: 10 }).terminalHistoryLines).toBe(10);
+  expect(sanitizeSettings({ terminalHistoryLines: 50 }).terminalHistoryLines).toBe(50);
+  expect(sanitizeSettings({ terminalHistoryLines: 100 }).terminalHistoryLines).toBe(100);
+  expect(sanitizeSettings({ terminalHistoryLines: 500 }).terminalHistoryLines).toBe(500);
+  expect(sanitizeSettings({ terminalHistoryLines: 2_000 }).terminalHistoryLines).toBe(2_000);
+  expect(sanitizeSettings({ terminalHistoryLines: 999 }).terminalHistoryLines).toBe(1_000);
+  expect(sanitizeSettings({ terminalHistoryLines: "100" }).terminalHistoryLines).toBe(1_000);
 });
 
 it("keeps the suggestion chip off until this device turns it on, whatever an older version stored", () => {

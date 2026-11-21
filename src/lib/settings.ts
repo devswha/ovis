@@ -17,6 +17,10 @@ import { fontScale, sanitizeUiFontSize, uiFontStack } from "./typography.ts";
 import { sanitizeKeyBarExtras, type KeyBarExtra } from "./keys.ts";
 import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems, sanitizeKeyBarItems, type KeyBarItem } from "./keyBar.ts";
 import { applyThemeEntry, CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY, DARK_QUERY, defaultThemeSetting, readStoredAppearance, resolveTheme, sanitizeAppearance, SETTINGS_STORAGE_KEY, THEMES_STORAGE_KEY, type ResolvedTheme, type ThemeSetting } from "./themeBoot.ts";
+import { TERMINAL_HISTORY_LINE_OPTIONS, type TerminalHistoryLines } from "../../shared/terminal-flow.ts";
+
+export type { TerminalHistoryLines };
+export { TERMINAL_HISTORY_LINE_OPTIONS };
 
 export { resolveTheme };
 export type { ResolvedTheme, ThemeSetting };
@@ -98,6 +102,12 @@ export interface Settings {
   terminalFontSize: number;
   /** mouse reports sent to herdr per wheel event in the terminal: 1 is what xterm sends by itself */
   terminalWheelSpeed: number;
+  /**
+   * On herdr-core (`terminal-history`), how many scrollback lines this device's xterm keeps after an attach
+   * replays history. Classic herdr keeps scrollback at 0 and ignores this. Default matches the usual phone
+   * apps' 1_000-line window; the attach itself still replays up to TERMINAL_HISTORY_LINES.
+   */
+  terminalHistoryLines: TerminalHistoryLines;
   terminalFontFamily: string;
   /** let a pane's OSC 52 sequence write the clipboard (lib/osc52.ts), as vim, tmux and Claude Code copy;
    *  on unless chosen off, since any process in the pane can then plant text the user pastes elsewhere.
@@ -216,7 +226,7 @@ type TelemetrySourceSettings = Omit<Settings,
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort" | "agentBrowserTools"
   | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
   | "expandThinking" | "foldWork" | "customThemes" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
-  | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase" | "editTextFiles" | "reopenFileOnReturn" | "phoneTabs">;
+  | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase" | "editTextFiles" | "reopenFileOnReturn" | "phoneTabs" | "terminalHistoryLines">;
 
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
   return JSON.stringify(value) !== JSON.stringify(defaultValue);
@@ -288,7 +298,7 @@ export const SETTING_SCOPE = {
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
   terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", keyBarExpanded: "device", shortcutOverrides: "device", herdrPrefixKeys: "device", density: "device", phoneTabs: "device",
   terminalFontSize: "device",
-  terminalWheelSpeed: "device", terminalFontFamily: "device", paneClipboard: "device", releasePaneAway: "device",
+  terminalWheelSpeed: "device", terminalHistoryLines: "device", terminalFontFamily: "device", paneClipboard: "device", releasePaneAway: "device",
   terminalImages: "device",
   terminalAttachButton: "device",
   terminalKeyboardOnRequest: "device",
@@ -362,6 +372,7 @@ export const DEFAULT_SETTINGS: Settings = {
   customThemes: NO_CUSTOM_THEMES,
   terminalFontSize: 13,
   terminalWheelSpeed: 1,
+  terminalHistoryLines: 1_000,
   terminalFontFamily: "",
   paneClipboard: true,
   terminalImages: null,
@@ -465,6 +476,12 @@ export const TERMINAL_FONT_MIN = 10;
 export const TERMINAL_FONT_MAX = 22;
 export const TERMINAL_WHEEL_SPEED_MIN = 1;
 export const TERMINAL_WHEEL_SPEED_MAX = 10;
+
+export function sanitizeTerminalHistoryLines(value: unknown): TerminalHistoryLines {
+  return TERMINAL_HISTORY_LINE_OPTIONS.includes(value as TerminalHistoryLines)
+    ? value as TerminalHistoryLines
+    : DEFAULT_SETTINGS.terminalHistoryLines;
+}
 
 export const CHAT_FONT_MIN = 11;
 export const HISTORY_PROMPTS = 10;
@@ -572,6 +589,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     terminalWheelSpeed: typeof record["terminalWheelSpeed"] === "number" && Number.isFinite(record["terminalWheelSpeed"])
       ? Math.min(TERMINAL_WHEEL_SPEED_MAX, Math.max(TERMINAL_WHEEL_SPEED_MIN, Math.round(record["terminalWheelSpeed"])))
       : DEFAULT_SETTINGS.terminalWheelSpeed,
+    terminalHistoryLines: sanitizeTerminalHistoryLines(record["terminalHistoryLines"]),
     chatFontSize: typeof chatFont === "number" && Number.isFinite(chatFont)
       ? Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(chatFont)))
       : DEFAULT_SETTINGS.chatFontSize,

@@ -18,6 +18,17 @@ import { HERDR_PREFIX_ACTIONS, type HerdrKeys, type HerdrPrefixAction } from "..
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, phoneInboxOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
+import type { TerminalHistoryLines } from "../../shared/terminal-flow.ts";
+
+/** Inlined so the client bundle keeps the choices (a shared const was colliding with another `Et` binding). */
+const TERMINAL_HISTORY_CHOICES: { value: string; label: string }[] = [
+  { value: "10", label: "10" },
+  { value: "50", label: "50" },
+  { value: "100", label: "100" },
+  { value: "500", label: "500" },
+  { value: "1000", label: "1000" },
+  { value: "2000", label: "2000" },
+];
 import { isThemeId, pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
 import { chosenTheme, customRow, customRowId, type CustomTheme } from "../lib/customThemes.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT, type Translate } from "../lib/i18n.ts";
@@ -708,6 +719,9 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar, picturesByDefault }: { ke
       </SettingsRow>
       <SettingsRow label={t("Wheel scroll speed")} description={t("How far one turn of the mouse wheel scrolls a terminal pane on this device: 1× is the terminal's own step, and a higher number scrolls that many times as far.")} icon={Mouse} reset={["terminalWheelSpeed"]}>
         <Stepper label={t("Wheel scroll speed")} value={settings.terminalWheelSpeed} text={`${settings.terminalWheelSpeed}×`} min={TERMINAL_WHEEL_SPEED_MIN} max={TERMINAL_WHEEL_SPEED_MAX} decreaseLabel={t("Slower wheel scrolling")} increaseLabel={t("Faster wheel scrolling")} onChange={(terminalWheelSpeed) => update({ terminalWheelSpeed })} />
+      </SettingsRow>
+      <SettingsRow label={t("Terminal History")} description={t("On herdr-core, how many scrollback lines this device keeps in the terminal view after an attach. A smaller number keeps a phone lighter; Chat still holds the full conversation. Classic herdr ignores this and keeps no local history.")} icon={Rows3} reset={["terminalHistoryLines"]}>
+        <Segmented label={t("Terminal History")} value={String(settings.terminalHistoryLines)} onChange={(value) => update({ terminalHistoryLines: Number(value) as TerminalHistoryLines })} options={TERMINAL_HISTORY_CHOICES} />
       </SettingsRow>
       <SettingsRow label={t("Key bar")} description={t("The row of terminal keys (Esc, Tab, Ctrl, arrows) shown with a terminal pane on a touch screen or a narrow window. Edit key bar chooses its keys and their order, for this device.")} icon={Keyboard} reset={["terminalKeyboardOnRequest", "terminalFoldKeyBar", "terminalAttachButton"]}>
         <button type="button" ref={keyBarButtonRef} className="btn" onClick={onEditKeyBar}>{t("Edit key bar")}</button>

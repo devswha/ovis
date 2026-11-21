@@ -24,6 +24,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "Decrease terminal font size": "터미널 글자 작게",
   "Increase terminal font size": "터미널 글자 크게",
   "Wheel scroll speed": "휠 스크롤 속도",
+  "Terminal History": "터미널 기록",
+  "On herdr-core, how many scrollback lines this device keeps in the terminal view after an attach. A smaller number keeps a phone lighter; Chat still holds the full conversation. Classic herdr ignores this and keeps no local history.": "herdr-core에서는 연결 후 이 기기가 터미널 화면에 유지하는 스크롤백 줄 수입니다. 줄이면 휴대폰이 가벼워집니다. 채팅에는 전체 대화가 남습니다. 일반 herdr는 로컬 기록이 없어 이 설정을 무시합니다.",
   "Slower wheel scrolling": "휠 스크롤 느리게",
   "Faster wheel scrolling": "휠 스크롤 빠르게",
   "Terminal font": "터미널 글꼴",

@@ -26,6 +26,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Wheel scroll speed": "ホイールのスクロール速度",
   "Slower wheel scrolling": "ホイールスクロールを遅く",
   "Faster wheel scrolling": "ホイールスクロールを速く",
+  "Terminal History": "ターミナル履歴",
+  "On herdr-core, how many scrollback lines this device keeps in the terminal view after an attach. A smaller number keeps a phone lighter; Chat still holds the full conversation. Classic herdr ignores this and keeps no local history.": "herdr-core では、この端末がアタッチ後にターミナル表示に残すスクロールバック行数です。少なくするとスマホが軽くなります。チャットには会話全体が残ります。通常の herdr ではローカル履歴がなく、この設定は無視されます。",
   "Terminal font": "ターミナルのフォント",
   "Composer": "入力欄",
   "Enter sends": "Enter で送信",

@@ -687,7 +687,10 @@ On a phone:
   the currently held modifiers. Removing a held modifier button clears it.
 - Dragging the terminal scrolls the real herdr pane. A quick flick keeps scrolling after your finger
   lifts and slows to a stop, as a page does; touching the terminal stops it. **Wheel scroll speed**
-  in Settings → Terminal changes the mouse wheel and trackpad only.
+  in Settings → Terminal changes the mouse wheel and trackpad only. **Terminal History** (10, 50, 100,
+  500, 1,000 or 2,000 lines; default 1,000) sets how many scrollback lines this device keeps when the
+  PC runs herdr-core; classic herdr keeps no local history and ignores it. A smaller number keeps a
+  phone lighter; Chat still holds the conversation.
 - **Settings → Phone & devices → Keep screen on** keeps the screen awake while a terminal or chat
   pane is open. It is off by default, releases when the app is hidden, and resumes when
   you return. It needs HTTPS or localhost and browser support; power-saving mode may refuse it.

@@ -24,6 +24,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Decrease terminal font size": "减小终端字号",
   "Increase terminal font size": "增大终端字号",
   "Wheel scroll speed": "滚轮滚动速度",
+  "Terminal History": "终端历史",
+  "On herdr-core, how many scrollback lines this device keeps in the terminal view after an attach. A smaller number keeps a phone lighter; Chat still holds the full conversation. Classic herdr ignores this and keeps no local history.": "在 herdr-core 上，本设备在附着后于终端视图中保留的回滚行数。数值越小手机越轻；聊天仍保留完整对话。经典 herdr 无本地历史并忽略此项。",
   "Slower wheel scrolling": "滚轮滚动更慢",
   "Faster wheel scrolling": "滚轮滚动更快",
   "Terminal font": "终端字体",

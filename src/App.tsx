@@ -1312,6 +1312,7 @@ export function App() {
                         terminalFontSize={settings.terminalFontSize}
                         split={herdrSplit || paneSplit}
                         terminalWheelSpeed={settings.terminalWheelSpeed}
+                        terminalHistoryLines={settings.terminalHistoryLines}
                         terminalFontFamily={settings.terminalFontFamily}
                         colors={resolvedEntry.terminal}
                         onConnectionChange={active && itemActive ? (next, before) => { setConnected(next); setConnectedBefore(before); setReportedBy(`${slot}:${machineId}`); if (next) setOutputStopped(false); } : undefined}
