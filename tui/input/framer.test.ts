@@ -62,6 +62,21 @@ describe("esc", () => {
     }
   });
 
+  it("keeps an ESC read last in a string the drop wait ends, as the start of what follows or as a lone Escape", () => {
+    const escAt = T0 + SEQUENCE_DROP_MS - 1;
+    const arrow = new Framer();
+    arrow.feed(bytes("\x1b]11;x"), T0);
+    arrow.feed(bytes("\x1b"), escAt);
+    expect(arrow.feed(bytes("[A"), T0 + SEQUENCE_DROP_MS)).toEqual([{ type: "unknown", raw: "\x1b]11;x", at: T0 }, { ...UP, at: escAt }]);
+    const lone = new Framer();
+    lone.feed(bytes("\x1b]11;x"), T0);
+    lone.feed(bytes("\x1b"), escAt);
+    expect(lone.tick(T0 + SEQUENCE_DROP_MS)).toEqual([{ type: "unknown", raw: "\x1b]11;x", at: T0 }]);
+    expect(lone.deadline()).toBe(escAt + ESC_WAIT_MS);
+    expect(lone.tick(escAt + ESC_WAIT_MS - 1)).toEqual([]);
+    expect(lone.tick(escAt + ESC_WAIT_MS)).toEqual([{ ...ESCAPE, at: escAt }]);
+  });
+
   it("gives ESC ESC as two Escapes", () => {
     expectEveryWay(bytes("\x1b\x1b"), [ESCAPE, ESCAPE]);
   });
@@ -113,6 +128,20 @@ describe("paste", () => {
       { type: "paste", text: "a\nb", complete: true, at: T0 },
       { type: "text", text: "rest", at: T0 + 60_001 },
     ]);
+  });
+
+  it("keeps a U+FEFF wherever a read starts, in text and at the start of a paste", () => {
+    expectEveryWay(bytes("a\uFEFFb"), [{ type: "text", text: "a\uFEFFb" }]);
+    expectEveryWay(bytes("\x1b[200~\uFEFFabc\x1b[201~"), [{ type: "paste", text: "\uFEFFabc", complete: true }]);
+  });
+
+  it("keeps its own copy of a read, so a caller that reuses its buffer changes no paste", () => {
+    const framer = new Framer();
+    const reused = Buffer.from("abc");
+    framer.feed(bytes("\x1b[200~"), T0);
+    framer.feed(reused, T0 + 1);
+    reused.write("xyz");
+    expect(normalize(framer.feed(bytes("\x1b[201~"), T0 + 2))).toEqual([{ type: "paste", text: "abc", complete: true }]);
   });
 
   it("keeps an ESC inside a paste as data", () => {

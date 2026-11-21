@@ -21,7 +21,8 @@ const STRING_KINDS: Readonly<Record<number, "osc" | "dcs" | "apc">> = { 0x5d: "o
 const X10_REPORT_BYTES = 3;
 
 const latin1 = (bytes: readonly number[]): string => String.fromCharCode(...bytes);
-const utf8 = new TextDecoder();
+// U+FEFF is a character someone typed or pasted: a host terminal's input starts with no byte order mark
+const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /** How many continuation bytes a UTF-8 lead byte announces; 0 for a byte no character starts with. */
 function continuationCount(lead: number): number {
@@ -49,7 +50,8 @@ function firstContinuation(lead: number): [number, number] {
  *   start a string) waits ESC_WAIT_MS (ESC_WAIT_SLOW_MS while the host reports the mouse or has the kitty flag on) for
  *   the rest, then gives Escape or the Alt key that sends those bytes: Alt+[, Alt+O, Alt+], Alt+P or Alt+_.
  * - A longer unfinished sequence never becomes a key: it is dropped as `unknown` SEQUENCE_DROP_MS after
- *   its first byte.
+ *   its first byte. An ESC read last inside an unfinished string is not dropped with it: it keeps its
+ *   stamp and goes on as an ESC of its own.
  * - An unfinished UTF-8 character waits for the next read, however late, and is never split.
  * - A bracketed paste is one event; no wait ends it. Once it passes PASTE_LIMIT_BYTES it is refused whole
  *   at once, and the rest of it is swallowed up to its end mark; if that mark never comes, `reset` ends it.
@@ -379,7 +381,8 @@ export class Framer {
     if (paste.refused) return;
     paste.size += data.length;
     if (paste.size <= PASTE_LIMIT_BYTES) {
-      paste.chunks.push(data.slice());
+      // a copy: the caller may reuse its buffer once feed returns, and a Buffer's slice() shares it
+      paste.chunks.push(new Uint8Array(data));
       return;
     }
     paste.refused = true;
@@ -402,9 +405,13 @@ export class Framer {
     return this.state === "csi" || this.state === "ss3" || (this.state === "string" && this.stringEscAt === undefined);
   }
 
+  private escWait(): number {
+    return this.modes.mouse || this.modes.kitty ? ESC_WAIT_SLOW_MS : ESC_WAIT_MS;
+  }
+
   private arm(now: number): void {
     const introducerOnly = this.state === "esc" || this.introducerOnly();
-    if (introducerOnly) this.pending = now + (this.modes.mouse || this.modes.kitty ? ESC_WAIT_SLOW_MS : ESC_WAIT_MS);
+    if (introducerOnly) this.pending = now + this.escWait();
     else if (this.state === "csi" || this.state === "string") this.pending = this.seqAt + SEQUENCE_DROP_MS;
     else this.pending = undefined;
   }
@@ -424,7 +431,11 @@ export class Framer {
     }
   }
 
-  /** A sequence its wait ended: an introducer alone is a key, anything longer is dropped. */
+  /**
+   * A sequence its wait ended: an introducer alone is a key, anything longer is dropped. The ESC a read
+   * ended in inside a string is not part of the string: it keeps its stamp and waits as a lone ESC does,
+   * from that read, so what follows it is read with it.
+   */
   private flushSequence(): void {
     const at = this.seqAt;
     if (this.state === "esc") {
@@ -434,6 +445,11 @@ export class Framer {
       const char = String.fromCharCode(this.seq[1]!);
       this.ground();
       this.emit(typedKey(char, { alt: true }), at);
+    } else if (this.state === "string" && this.stringEscAt !== undefined) {
+      const escAt = this.stringEscAt;
+      this.finish(undefined);
+      this.begin("esc", [ESC], escAt);
+      this.pending = escAt + this.escWait();
     } else if (this.state === "csi" || this.state === "string") {
       this.finish(undefined);
     }
