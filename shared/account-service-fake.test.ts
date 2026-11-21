@@ -53,8 +53,27 @@ describe("the fake account service", () => {
     }
   });
 
+  test("PCR-1 ruling (b): with Step 2 off a device code's own listing is a member: its end counts as a removal, and another sign-in's is 403", async () => {
+    const service = new FakeAccountService();
+    const used = () => (service as unknown as { usedAccounts: Set<string> }).usedAccounts.has("acct_1");
+    const put = (token: string, machine: ReturnType<typeof pc>) => service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, {
+      method: "PUT", body: JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.test" }), headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    }));
+    const remove = (token: string, machine: ReturnType<typeof pc>) => service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } }));
+    const cli = service.issueToken("acct_1", { device: true });
+    const mine = pc();
+    expect((await put(cli, mine)).status).toBe(200);
+    expect((await remove(service.issueToken("acct_1", { device: true }), mine)).status).toBe(403);
+    expect(used()).toBe(false);
+    expect((await remove(cli, mine)).status).toBe(204);
+    expect(service.pcs("acct_1")).toEqual([]);
+    expect(used()).toBe(true);
+  });
+
   test("PCR-1 compat: a device code's sign-in ends only its own pending listing, logging nothing; everything else is 403", async () => {
     const service = new FakeAccountService();
+    // Step 2 on: the device code's listing is pending, never a member
+    service.opensAll = true;
     const put = (token: string, machine: ReturnType<typeof pc>) => service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, {
       method: "PUT", body: JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.test" }), headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     }));

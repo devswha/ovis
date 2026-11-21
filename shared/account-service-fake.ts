@@ -668,8 +668,8 @@ export class FakeAccountService {
     }
     if (pc !== undefined && request.method === "DELETE") {
       // PCR-1: removing unbinds the PC and cuts the account's devices off it, so it asks what deleting the account asks. The
-      // compat ruling's one exception: a device code's sign-in ends its own pending listing (written by it, never confirmed
-      // or admitted), as an installed CLI renews its card; that listing was never a member, so it leaves the account unused
+      // compat ruling's one exception: a device code's sign-in ends its own listing (written by it, never confirmed, admitted
+      // or completed), as an installed CLI renews its card
       if (this.deviceFamilies.has(session.family)) {
         const own = directory.get(pc);
         // as the service: written by this sign-in, never confirmed, admitted (one press or digits) or completed
@@ -678,6 +678,9 @@ export class FakeAccountService {
           return problem(403, "own_sign_in_required", "Sign in on this device to remove a PC");
         }
         directory.delete(pc);
+        // ruling (b): with Step 2 off every listing is a member, so its end is a member's removal (the account is used);
+        // with Step 2 on it was pending, never a member, and leaves the account as it was
+        if (!this.opensAll) this.usedAccounts.add(account);
         return new Response(null, { status: 204 });
       }
       if (!recent) return problem(403, "reauth_required", "Sign in again first");
