@@ -46,7 +46,6 @@ export const MACHINES_ZH: Record<string, string> = {
   "Manage PC": "管理 PC",
   "PC name": "PC 名称",
   "Rename…": "重命名…",
-  "Disconnect": "断开连接",
   "Bridge connection conflict": "桥接连接冲突",
   "Update the apps connected to this PC to the same version, or disconnect the other app, then reconnect here. Sessions keep running.": "将连接此电脑的应用更新到相同版本，或断开其他应用的连接，然后在此重新连接。会话会继续运行。",
   "{name} has a bridge connection conflict{others}.": "{name} 的桥接连接发生冲突{others}。",

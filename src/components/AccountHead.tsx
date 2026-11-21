@@ -1,4 +1,4 @@
-import { useContext, useEffect, useId, type ReactNode } from "react";
+import { useContext, useEffect, useId, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { LogOut, UserRound, X } from "lucide-react";
 
@@ -8,6 +8,7 @@ import { useT, type Translate } from "../lib/i18n.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
+import { AccountManageLists } from "./AccountManage.tsx";
 import { PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import type { RowMenuItem } from "./RowMenu.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
@@ -73,12 +74,39 @@ export function ManageAccountSheet({ onClose, children }: { onClose: () => void;
   );
 }
 
-/** Settings → Devices and PCs on a PC page the hosted app opened: the hosted sign-in, while there is one. */
-export function HostedAccountGroup({ signIn }: { signIn: HostedSignIn | null }) {
+/**
+ * Settings → Devices and PCs on a PC page the hosted app opened: the hosted sign-in, while there is one, and its
+ * Manage account (the account's devices and PCs, then Delete account, asked twice).
+ */
+export function HostedAccountGroup({ signIn, watching = false }: { signIn: HostedSignIn | null; watching?: boolean }) {
+  const t = useT();
+  const [managing, setManaging] = useState(false);
+  const [deleting, setDeleting] = useState<"asked" | "out" | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   if (signIn === null) return null;
+  const close = (): void => { setManaging(false); setDeleting(null); setDeleteError(null); };
+  const remove = (): void => {
+    if (deleting !== "asked") { setDeleting("asked"); setDeleteError(null); return; }
+    setDeleting("out");
+    void signIn.deleteAccount().then(setDeleteError, () => setDeleteError(t("The account could not be deleted. Try again."))).finally(() => setDeleting(null));
+  };
   return (
     <SettingsGroup section="account">
-      <AccountHead provider={signIn.provider} onSignOut={signIn.signOut} />
+      <AccountHead provider={signIn.provider} onSignOut={signIn.signOut} onManage={() => setManaging(true)} />
+      {managing && (
+        <ManageAccountSheet onClose={close}>
+          <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} onLeave={() => { close(); signIn.leave(); }} />
+          <div className="settings-item account-delete">
+            {deleting === "asked" && <p className="settings-description" role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</p>}
+            <div className="account-delete-actions">
+              <button type="button" className={deleting === "asked" ? "btn btn-danger" : "account-delete-link"} data-action="delete-account" data-confirm={deleting === "asked" ? "delete-account" : undefined}
+                disabled={deleting === "out"} aria-busy={deleting === "out" ? "true" : undefined} onClick={remove}>{deleting === "asked" ? t("Delete account for good?") : t("Delete account")}</button>
+              {deleting === "asked" && <button type="button" className="btn btn-ghost" onClick={() => setDeleting(null)}>{t("Cancel")}</button>}
+            </div>
+            {deleteError !== null && <p className="settings-condition" role="alert">{deleteError}</p>}
+          </div>
+        </ManageAccountSheet>
+      )}
     </SettingsGroup>
   );
 }

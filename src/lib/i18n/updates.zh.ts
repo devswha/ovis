@@ -70,4 +70,5 @@ export const UPDATES_ZH: Record<string, string> = {
   "Downloading Ovis {version}…": "正在下载 Ovis {version}…",
   "Downloading Ovis {version}… {percent}%": "正在下载 Ovis {version}… {percent}%",
   "The update did not go through: {error}": "更新未完成：{error}",
+  "Update": "更新",
 };

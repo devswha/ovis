@@ -62,12 +62,9 @@ import { failureText, openOwnOffer, RelayDirectRow, statusText } from "./RelayPa
 import { AccountSection, accountServiceHere, type AccountState } from "./AccountSection.tsx";
 import { HostedAccountGroup } from "./AccountHead.tsx";
 import { useHostedSignIn } from "../lib/account/hostedSignIn.ts";
-import { shellAccountServiceOf } from "../lib/account/service.ts";
-import { AccountPcRows, NoAccountPcHint, removePcFromAccount } from "./AccountPcs.tsx";
+import { AccountPcRows, NoAccountPcHint } from "./AccountPcs.tsx";
 import { removablePc, STATE_WORD } from "./MachineSidebar.tsx";
 import { AccountPcError, pcAccountStatus, type PcAccountStatus } from "../lib/account/join.ts";
-import { AccountService } from "../lib/account/service.ts";
-import { indexedAccountStore } from "../lib/account/store.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { ConnectPhoneDialog, relayOffered, relayPending } from "./ConnectPhoneDialog.tsx";
@@ -1280,9 +1277,9 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   return (
     <>
       {/* the account first: the sign-in the relay depends on is not left in More settings */}
-      {/* a PC page the hosted app opened has no PC sign-in of its own: the hosted one, with the overview's Sign out */}
-      {accountService === null && <HostedAccountGroup signIn={hostedSignIn} />}
-      <AccountSection onAccount={setAccount} recheck={accountChecks} signInElsewhere={(relayOffered(relay) || relayPending(relay)) && !relayReadOnly} {...(opensAll === undefined ? {} : { opensAll })} {...(withdrawn === undefined ? {} : { withdrawn })} />
+      {/* a PC page the hosted app opened has no PC sign-in of its own: the hosted one, with its Sign out and Manage account */}
+      {accountService === null && <HostedAccountGroup signIn={hostedSignIn} watching={auth?.role === "watch"} />}
+      <AccountSection watching={auth?.role === "watch"} onAccount={setAccount} recheck={accountChecks} signInElsewhere={(relayOffered(relay) || relayPending(relay)) && !relayReadOnly} {...(opensAll === undefined ? {} : { opensAll })} {...(withdrawn === undefined ? {} : { withdrawn })} />
 
       {/* what is connected to this PC: its name atop one list of the other PCs, phones and browsers, the one in use first */}
       <SettingsGroup section="devices">
@@ -1316,10 +1313,6 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
             )}
             {relayPc !== null && (
               <>
-                {/* the dashboard of the account's PCs, opened only on purpose: no launch or sign-in lands on it */}
-                {shellAccountServiceOf(document, window.location.origin, nativeApp) !== null && <SettingsRow label={t("Relayed connections")} description={t("Opens the page of every PC this device reaches through the relay, to check, join or forget them.")}>
-                  <button type="button" className="btn" data-action="manage-relayed" onClick={() => window.location.assign("/#overview")}>{t("Manage|relayed connections")}</button>
-                </SettingsRow>}
                 <SettingsRow label={t("Forget this PC")} description={t("Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.")}>
                   <button type="button" className="btn" onClick={() => setConfirmForget(true)}>{t("Forget this PC")}</button>
                 </SettingsRow>
@@ -1474,8 +1467,7 @@ function MyPcRows({ machines, account, accountPcs, onAccountChanged, relayKey, w
           )}
         </li>
       ))}
-      {account !== null && <AccountPcRows pcs={fromAccount} watching={watching} onRemoved={onAccountChanged}
-        remove={(serverId) => removePcFromAccount(new AccountService({ store: indexedAccountStore }), account, serverId)} />}
+      {account !== null && <AccountPcRows pcs={fromAccount} onChanged={onAccountChanged} />}
     </ul>
     {removing !== null && <ConfirmDialog title={t("Remove PC {name}?", { name: removing.name })} body={t(pairedPc(removing) ? "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC." : "Removes this registration. Remote sessions keep running.")} confirmLabel={t("Remove PC")}
       onConfirm={async () => { await machineRequest(`/${encodeURIComponent(removing.id)}`, "DELETE"); setRemoving(null); }} onClose={() => setRemoving(null)} />}

@@ -1,0 +1,148 @@
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { act, createElement, type ReactNode } from "react";
+import * as ReactDom from "react-dom";
+import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+
+import type { PairedDevice } from "../../shared/protocol.ts";
+import * as Api from "../lib/api.ts";
+import * as Leave from "../lib/account/leave.ts";
+import * as Service from "../lib/account/service.ts";
+import * as Store from "../lib/account/store.ts";
+import { SettingsProvider } from "../lib/settings.ts";
+
+const MY_KEY = "my-key";
+const NOW = Date.now();
+const ago = (minutes: number): string => new Date(NOW - minutes * 60_000).toISOString();
+const device = (id: string, extra: Partial<PairedDevice> = {}): PairedDevice => ({ id, label: id, role: "drive", created_at: "", last_seen_at: "", current: false, ...extra });
+
+let devices: PairedDevice[] = [];
+let pcs: Service.DirectoryPc[] = [];
+const calls: string[] = [];
+let deleteFails = false;
+
+// the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
+await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
+await mock.module("../lib/api.ts", () => ({ ...Api, fetchDevices: async () => devices }));
+await mock.module("../lib/account/leave.ts", () => ({ ...Leave, removeFromAccount: async (options: { key: string }) => { calls.push(`disconnect ${options.key}`); return { remove: {}, unconfirmed: [], queued: [] }; } }));
+await mock.module("../lib/account/store.ts", () => ({ ...Store, indexedAccountStore: { ...Store.indexedAccountStore, key: async () => ({ public_spki: MY_KEY }) } }));
+class FakeService {
+  async listPcs() { return pcs; }
+  async session() { return { account: "acct" }; }
+  forSignIn() { return { deletePc: async (id: string) => { if (deleteFails) throw new Error("502 from the service"); calls.push(`remove ${id}`); } }; }
+}
+await mock.module("../lib/account/service.ts", () => ({ ...Service, AccountService: FakeService }));
+const { AccountManageLists } = await import("./AccountManage.tsx");
+
+const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
+
+describe("Manage account's devices and PCs", () => {
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  let renderer: ReactTestRenderer | undefined;
+  let warn: typeof console.warn;
+
+  beforeEach(() => {
+    warn = console.warn;
+    console.warn = () => {};
+    calls.length = 0;
+    deleteFails = false;
+    devices = [
+      device("me", { current: true, account: "acct", account_key: MY_KEY, connection: { route: "relay", rtt_ms: 9 } as PairedDevice["connection"] }),
+      device("Lost phone", { account: "acct", account_key: "phone-key" }),
+      device("Other account", { account: "other", account_key: "x-key" }),
+      device("Cookie browser"),
+    ];
+    pcs = [
+      { server_id: "a".repeat(32), label: "Desk", public_key: null, relay: null, added_at: ago(60 * 24 * 300), last_seen_at: ago(2) },
+      { server_id: "b".repeat(32), label: "Dead box", public_key: null, relay: null, added_at: ago(60), last_seen_at: ago(30) },
+    ] as Service.DirectoryPc[];
+    for (const key of ["window", "document", "navigator", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    const events = new EventTarget();
+    const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    class HTMLElement { isConnected = true; focus(): void {} }
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: HTMLElement });
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Test", maxTouchPoints: 0 } });
+    Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      location: { href: "https://pc.example/", search: "", origin: "https://pc.example", pathname: "/", protocol: "https:" },
+      history: { state: null, replaceState() {} }, matchMedia, innerWidth: 1440,
+      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
+      setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+    } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
+      activeElement: new HTMLElement(), body: { nodeType: 1, children: [] },
+      querySelector: () => null, querySelectorAll: () => [],
+      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
+    } });
+  });
+
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    console.warn = warn;
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    descriptors.clear();
+  });
+
+  const mount = async (props: { watching?: boolean; onLeave?: () => void } = {}): Promise<ReactTestInstance> => {
+    await act(async () => {
+      renderer = create(createElement(SettingsProvider, { children: createElement(AccountManageLists, { account: "acct", watching: props.watching ?? false, ...(props.onLeave ? { onLeave: props.onLeave } : {}) }) }), {
+        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
+      });
+    });
+    if (!renderer) throw new Error("not mounted");
+    return renderer.root;
+  };
+  const rows = (root: ReactTestInstance, list: string) => root.find((node) => node.props["data-testid"] === list).findAll((node) => node.type === "li").map(textOf);
+  const action = (root: ReactTestInstance, name: string) => root.find((node) => node.type === "button" && node.props["data-action"] === name);
+  const dialog = (root: ReactTestInstance) => root.find((node) => node.props.role === "alertdialog");
+  const press = (root: ReactTestInstance, label: string) => dialog(root).find((node) => node.type === "button" && textOf(node) === label).props.onClick();
+
+  it("lists the account's other devices on this PC, one line each, and disconnects one after a single confirm", async () => {
+    const root = await mount();
+    expect(rows(root, "account-devices")).toEqual(["OfflineLost phoneDisconnect"]);
+    await act(async () => { action(root, "disconnect-device").props.onClick(); });
+    expect(textOf(dialog(root))).toContain("Disconnect Lost phone?");
+    expect(calls).toEqual([]);
+    await act(async () => { await press(root, "Disconnect"); });
+    expect(calls).toEqual(["disconnect phone-key"]);
+    expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
+  });
+
+  it("offers Remove on an offline PC whatever its age, never on one heard from lately, and removes it after one confirm", async () => {
+    const root = await mount();
+    expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead boxRemove"]);
+    await act(async () => { action(root, "remove-pc").props.onClick(); });
+    expect(textOf(dialog(root))).toContain("Remove Dead box from your account?");
+    await act(async () => { await press(root, "Remove"); });
+    expect(calls).toEqual([`remove ${"b".repeat(32)}`]);
+  });
+
+  it("keeps the confirm up with a retry line when the removal fails", async () => {
+    deleteFails = true;
+    const root = await mount();
+    await act(async () => { action(root, "remove-pc").props.onClick(); });
+    await act(async () => { await press(root, "Remove"); });
+    expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("Dead box could not be removed. Try again.");
+  });
+
+  it("offers a watching device no PC removal", async () => {
+    const root = await mount({ watching: true });
+    expect(root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-pc")).toHaveLength(0);
+  });
+
+  it("lets this device leave the account from its own row, after a confirm, where the page offers it", async () => {
+    let left = 0;
+    const root = await mount({ onLeave: () => { left++; } });
+    expect(rows(root, "account-devices")[0]).toBe("This deviceDisconnect");
+    await act(async () => { action(root, "leave-account").props.onClick(); });
+    expect(left).toBe(0);
+    await act(async () => { await press(root, "Disconnect"); });
+    expect(left).toBe(1);
+  });
+});

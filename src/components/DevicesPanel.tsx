@@ -13,13 +13,6 @@ import { ConnectionLine } from "./ConnectionLine.tsx";
 import { SettingsRow } from "./SettingsControls.tsx";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
-import { removeFromAccount } from "../lib/account/leave.ts";
-import { AccountService } from "../lib/account/service.ts";
-import { indexedAccountStore } from "../lib/account/store.ts";
-import { indexedDeviceStore } from "../lib/relay/device.ts";
-import { serverIdOfPath } from "../lib/shellMode.ts";
-import { useAccountSignedIn } from "../lib/account/useAccountSignedIn.ts";
-import { getTransport } from "../lib/transport.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 
 const POLL_MS = 3000;
@@ -48,17 +41,6 @@ export const VIA: Record<NonNullable<HealthAuth["via"]>, string> = {
   portal: "You are in through Portal's sign-in.",
   open: "This browser is in only because nothing is paired yet: from anywhere that can reach this address, so would anyone.",
 };
-
-/**
- * Whether `row` can be disconnected from every PC from here: another device of the account, and a
- * `remove` signed with this client's account key would be applied, as the PC takes one only from a
- * drive member of the account (server/account/records.ts). A browser signed in on the PC's own address,
- * paired by cookie, holds a key no row has, and every PC would refuse it (`signer_not_member`).
- */
-export function offersAccountRemove(devices: readonly PairedDevice[], row: PairedDevice, account: string, key: string | null): boolean {
-  return key !== null && !row.current && row.account === account && row.account_key !== undefined && row.account_key !== key
-    && devices.some((d) => d.account === account && d.account_key === key && d.role === "drive");
-}
 
 export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kindOf, currentAction = null, more = null, checkSlot = null }: DevicesPanelProps) {
   const t = useT();
@@ -171,38 +153,6 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
     if (!renaming) return;
     try { await renameDevice(renaming.id, renaming.label); setRenaming(null); await load(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
-  const signedIn = useAccountSignedIn();
-  /** this client's account key, read only once it is signed in (reading it makes one) */
-  const [accountKey, setAccountKey] = useState<string | null>(null);
-  useEffect(() => {
-    if (signedIn === null) return;
-    let live = true;
-    indexedAccountStore.key().then((key) => { if (live) setAccountKey(key.public_spki); }, () => undefined);
-    return () => { live = false; };
-  }, [signedIn]);
-  const [disconnecting, setDisconnecting] = useState<string | null>(null);
-  /** A device of the account, gone from every PC of it: at once here, from the mailbox on the others. */
-  const disconnect = async (id: string, key: string, account: string) => {
-    // fixed wait: the second tap must come within 4 seconds, as Revoke's does
-    if (disconnecting !== id) { setDisconnecting(id); window.setTimeout(() => setDisconnecting((c) => (c === id ? null : c)), 4000); return; }
-    setDisconnecting(null);
-    const transport = getTransport();
-    try {
-      const service = new AccountService({ store: indexedAccountStore });
-      const { unconfirmed, queued = [] } = await removeFromAccount({ service, accountStore: indexedAccountStore, relayStore: indexedDeviceStore, key, account,
-        here: (path, init) => transport.fetch(path, init), ...(serverIdOfPath(window.location.pathname) ? { hereId: serverIdOfPath(window.location.pathname)! } : {}) });
-      await load();
-      if (unconfirmed.length > 0 || queued.length > 0) {
-        // only this PC answered: the others are named, rather than claimed (one may have revoked this device and refuse it)
-        const names = new Map((await service.listPcs()).map((pc) => [pc.server_id, pc.label]));
-        const named = (ids: readonly string[]) => ids.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ");
-        setError([
-          unconfirmed.length > 0 ? t("Not removed yet on: {pcs}. Disconnect it from a device that is in the account there.", { pcs: named(unconfirmed) }) : "",
-          queued.length > 0 ? t("Sent to {pcs}: each removes it when it next comes online. If it still shows there, disconnect it from another device in the account.", { pcs: named(queued) }) : "",
-        ].filter(Boolean).join(" "));
-      }
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  };
   const revoke = async (id: string) => {
     if (confirming !== id) { setConfirming(id); window.setTimeout(() => setConfirming((c) => (c === id ? null : c)), 4000); return; }
     setConfirming(null);
@@ -303,11 +253,6 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
                   {!guest && (
                     <div className="devices-actions">
                       <button type="button" className="icon-button" aria-label={t("Rename {name}", { name: d.label })} onClick={() => setRenaming({ id: d.id, label: d.label })}><Pencil /></button>
-                      {signedIn !== null && offersAccountRemove(devices, d, signedIn, accountKey) && (
-                        <button type="button" className={disconnecting === d.id ? "btn btn-danger" : "btn"} onClick={() => void disconnect(d.id, d.account_key!, signedIn!)}>
-                          {disconnecting === d.id ? t("Disconnect everywhere?") : t("Disconnect from all PCs")}
-                        </button>
-                      )}
                       <button type="button" className={confirming === d.id ? "btn btn-danger" : "icon-button"} aria-label={confirming === d.id ? undefined : t("Revoke {name}", { name: d.label })} onClick={() => void revoke(d.id)}>
                         <Trash2 aria-hidden="true" />{confirming === d.id && t("Revoke?")}
                       </button>

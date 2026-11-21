@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, jest, spyOn } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
-import { keepShellSignOut, useHostedSignIn } from "../lib/account/hostedSignIn.ts";
+import { keepShellAccount, useHostedSignIn } from "../lib/account/hostedSignIn.ts";
 import { ACCOUNT_SIGN_OUT_EVENT } from "../lib/account/service.ts";
 import { ACCOUNT_SESSION_EVENT, indexedAccountStore, memoryAccountStore, type AccountStore } from "../lib/account/store.ts";
 import { translate } from "../lib/i18n.ts";
@@ -38,7 +38,7 @@ afterEach(async () => {
   renderer = null;
   more = [];
   openAccount.mockClear();
-  keepShellSignOut(null);
+  keepShellAccount(null);
   jest.restoreAllMocks();
   for (const [key, descriptor] of replaced) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -57,28 +57,30 @@ async function render(): Promise<void> {
   await act(async () => { renderer = create(<SettingsProvider><Page /></SettingsProvider>); });
 }
 
+const actions = (signOut: () => void) => ({ signOut, leave: jest.fn(), deleteAccount: async () => null });
+
 const buttons = (): ReactTestInstance[] => renderer?.root.findAll((node) => node.type === "button") ?? [];
 
 async function fire(name: string): Promise<void> {
   await act(async () => { window.dispatchEvent(new Event(name)); });
 }
 
-it("Settings shows the hosted sign-in with Sign out, which runs the overview's own Sign out", async () => {
+it("Settings shows the hosted sign-in with Manage account and Sign out, which runs the hosted app's own Sign out", async () => {
   const signOut = jest.fn();
-  keepShellSignOut(signOut);
+  keepShellAccount(actions(signOut));
   await store.set("session", session);
   await render();
-  const [button] = buttons();
-  expect(buttons()).toHaveLength(1);
+  expect(buttons().map((node) => node.children)).toEqual([["Manage account"], ["Sign out"]]);
+  const button = buttons()[1];
   expect(button?.props["aria-label"]).toBe("Sign out of GitHub");
   expect(button?.children).toEqual(["Sign out"]);
   await act(async () => { button?.props.onClick(); });
   expect(signOut).toHaveBeenCalledTimes(1);
 });
 
-it("the phone More lists the account, which opens it, then Sign out, which runs the overview's own Sign out", async () => {
+it("the phone More lists the account, which opens it, then Sign out, which runs the hosted app's own Sign out", async () => {
   const signOut = jest.fn();
-  keepShellSignOut(signOut);
+  keepShellAccount(actions(signOut));
   await store.set("session", session);
   await render();
   expect(more.map((item) => [item.id, item.label])).toEqual([["account", "Signed in with GitHub"], ["sign-out", "Sign out"]]);
@@ -90,13 +92,13 @@ it("the phone More lists the account, which opens it, then Sign out, which runs 
 });
 
 it("shows neither while signed out, and follows a sign-in and a sign-out made meanwhile", async () => {
-  keepShellSignOut(jest.fn());
+  keepShellAccount(actions(jest.fn()));
   await render();
   expect(buttons()).toHaveLength(0);
   expect(more).toEqual([]);
   await store.set("session", session);
   await fire(ACCOUNT_SESSION_EVENT);
-  expect(buttons()).toHaveLength(1);
+  expect(buttons()).toHaveLength(2);
   expect(more).toHaveLength(2);
   await store.set("session", undefined);
   await fire(ACCOUNT_SIGN_OUT_EVENT);

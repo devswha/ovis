@@ -19,7 +19,6 @@ import { UPDATES_ZH } from "./i18n/updates.zh.ts";
 import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 import { RELAY_ZH } from "./i18n/relay.zh.ts";
 import { DASHBOARD_ZH } from "./i18n/dashboard.zh.ts";
-import { MY_MACHINES_ZH } from "./i18n/my-machines.zh.ts";
 import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
 
 /**
@@ -39,7 +38,6 @@ const BASE: Record<string, string> = {
   "Type the number": "输入数字",
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "按键可能未送达终端：确认之前连接已断开。",
   "Open PC": "打开 PC",
-  "Open {name}": "打开 {name}",
   "View only": "仅查看",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "未粘贴：文件路径中含有换行，终端会将其当作 Enter。",
   "Attach files": "附加文件",
@@ -453,7 +451,6 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "切换电脑",
-  "Relayed connections": "中继连接",
   "Forget this PC": "忘记这台电脑",
   "Selected": "已选择",
   "Unsent text · {destination}": "未发送的文本 · {destination}",
@@ -562,14 +559,10 @@ const BASE: Record<string, string> = {
   "Approve this device on {name} within 90 seconds to finish.": "请在 90 秒内在 {name} 上批准此设备以完成。",
   "Type the number {name} shows": "输入 {name} 显示的数字",
   "Ready": "就绪",
-  "Needs approval": "需要批准",
   "Offline": "离线",
-  "Update Ovis on it": "需要更新 Ovis",
   "Open": "打开",
   "Add a PC": "添加电脑",
   "Relay": "中继",
-  "Add": "添加",
-  "Update": "更新",
   "All": "全部",
   "Search": "搜索",
   "Choose one from the list to open its chat here.": "从列表中选择一项，它的聊天会在这里打开。",
@@ -586,25 +579,11 @@ const BASE: Record<string, string> = {
   "Dark": "深色",
   "Light": "浅色",
   "System": "跟随系统",
-  "Density": "密度",
-  "Comfortable": "宽松",
-  "Compact": "紧凑",
-  "Language": "语言",
-  "Interface font size": "界面字号",
-  "Decrease interface font size": "减小界面字号",
-  "Increase interface font size": "增大界面字号",
-  "Forget this PC?": "忘记这台电脑？",
-  "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "此手机上的对应密钥将被删除；在电脑上撤销之前，它仍会列出这部手机。重新配对需要电脑上新的二维码。",
-  "Forget": "忘记",
   "No answer": "无响应",
-  "Ready · not in the account yet": "就绪 · 尚未加入账户",
   "Machine offline": "机器离线",
   "Could not reach this machine": "无法连接此机器",
   "Switched off": "已关机",
   "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name} 有响应，但没有及时完成连接。它可能正忙或正在重启。请重试；如果一直这样，请在 {name} 上重启 Ovis。",
-  "Last seen {when}.": "上次在线：{when}。",
-  "It is off, has no network, or Ovis is not running on it.": "它已关机、没有网络，或者其上的 Ovis 没有运行。",
-  "This device could not reach the relay. Check this device's network.": "此设备无法连接中继。请检查此设备的网络。",
   "Account setup is incomplete.": "账户设置尚未完成。",
   "{name} is ready to open on this device.": "此设备已准备好打开 {name}。",
   "In your account": "已加入你的账户",
@@ -673,6 +652,7 @@ const BASE: Record<string, string> = {
   "Browser": "浏览器",
   "Reload page": "重新加载页面",
   "Stop": "停止",
+  "Disconnect": "断开连接",
 };
 
 export const ZH_PARTS: Record<string, Record<string, string>> = {
@@ -693,7 +673,6 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   palette: PALETTE_ZH,
   relay: RELAY_ZH,
   dashboard: DASHBOARD_ZH,
-  "my-machines": MY_MACHINES_ZH,
   "runtime-move": RUNTIME_MOVE_ZH,
 };
 

@@ -70,4 +70,5 @@ export const UPDATES_JA: Record<string, string> = {
   "Downloading Ovis {version}…": "Ovis {version} をダウンロードしています…",
   "Downloading Ovis {version}… {percent}%": "Ovis {version} をダウンロードしています… {percent}%",
   "The update did not go through: {error}": "アップデートできませんでした: {error}",
+  "Update": "更新",
 };

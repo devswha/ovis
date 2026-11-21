@@ -19,7 +19,6 @@ import { UPDATES_KO } from "./i18n/updates.ko.ts";
 import { PALETTE_KO } from "./i18n/palette.ko.ts";
 import { RELAY_KO } from "./i18n/relay.ko.ts";
 import { DASHBOARD_KO } from "./i18n/dashboard.ko.ts";
-import { MY_MACHINES_KO } from "./i18n/my-machines.ko.ts";
 import { RUNTIME_MOVE_KO } from "./i18n/runtime-move.ko.ts";
 
 /**
@@ -35,7 +34,6 @@ const BASE: Record<string, string> = {
   "Type the number": "숫자 입력",
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "키가 터미널에 닿지 않았을 수 있습니다: 확인되기 전에 연결이 끊겼습니다.",
   "Open PC": "PC 열기",
-  "Open {name}": "{name} 열기",
   "View only": "보기 전용",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "붙여넣지 않았습니다: 파일 경로에 줄바꿈이 있어 터미널이 Enter로 받아들입니다.",
   "Attach files": "파일 첨부",
@@ -446,7 +444,6 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "PC 바꾸기",
-  "Relayed connections": "릴레이 연결",
   "Forget this PC": "이 PC 잊기",
   "Selected": "선택됨",
   "Unsent text · {destination}": "보내지 않은 글 · {destination}",
@@ -555,14 +552,10 @@ const BASE: Record<string, string> = {
   "Approve this device on {name} within 90 seconds to finish.": "90초 안에 {name}에서 이 기기를 승인하면 끝납니다.",
   "Type the number {name} shows": "{name}에 나온 숫자를 입력하세요",
   "Ready": "준비됨",
-  "Needs approval": "승인 필요",
   "Offline": "오프라인",
-  "Update Ovis on it": "Ovis 업데이트 필요",
   "Open": "열기",
   "Add a PC": "PC 추가",
   "Relay": "릴레이",
-  "Add": "추가",
-  "Update": "업데이트",
   "All": "전체",
   "Search": "검색",
   "Choose one from the list to open its chat here.": "목록에서 하나를 고르면 채팅이 여기에 열립니다.",
@@ -579,25 +572,11 @@ const BASE: Record<string, string> = {
   "Dark": "어둡게",
   "Light": "밝게",
   "System": "시스템",
-  "Density": "밀도",
-  "Comfortable": "여유",
-  "Compact": "촘촘",
-  "Language": "언어",
-  "Interface font size": "인터페이스 글자 크기",
-  "Decrease interface font size": "인터페이스 글자 크기 줄이기",
-  "Increase interface font size": "인터페이스 글자 크기 키우기",
-  "Forget this PC?": "이 PC를 잊을까요?",
-  "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "이 폰에서 해당 키를 삭제합니다. PC에서는 폐기하기 전까지 이 폰이 목록에 남습니다. 다시 페어링하려면 PC의 새 QR 코드가 필요합니다.",
-  "Forget": "잊기",
   "No answer": "응답 없음",
-  "Ready · not in the account yet": "준비됨 · 아직 계정에 없음",
   "Machine offline": "머신 오프라인",
   "Could not reach this machine": "이 머신에 연결할 수 없음",
   "Switched off": "꺼짐",
   "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name}에서 응답이 왔지만 제때 연결을 마치지 못했습니다. 바쁘거나 다시 시작하는 중일 수 있습니다. 다시 시도하고, 계속 그러면 {name}에서 Ovis를 다시 시작하세요.",
-  "Last seen {when}.": "{when} 마지막으로 확인되었습니다.",
-  "It is off, has no network, or Ovis is not running on it.": "전원이 꺼져 있거나, 네트워크가 없거나, Ovis가 실행되고 있지 않습니다.",
-  "This device could not reach the relay. Check this device's network.": "이 기기에서 릴레이에 연결하지 못했습니다. 이 기기의 네트워크를 확인하세요.",
   "Account setup is incomplete.": "계정 설정이 완료되지 않았습니다.",
   "{name} is ready to open on this device.": "이제 이 기기에서 {name}에 연결할 준비가 됐습니다.",
   "In your account": "계정에 추가됨",
@@ -666,6 +645,7 @@ const BASE: Record<string, string> = {
   "Browser": "브라우저",
   "Reload page": "페이지 새로고침",
   "Stop": "중지",
+  "Disconnect": "연결 끊기",
 };
 
 export const KO_PARTS: Record<string, Record<string, string>> = {
@@ -686,7 +666,6 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   palette: PALETTE_KO,
   relay: RELAY_KO,
   dashboard: DASHBOARD_KO,
-  "my-machines": MY_MACHINES_KO,
   "runtime-move": RUNTIME_MOVE_KO,
 };
 

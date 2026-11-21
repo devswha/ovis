@@ -46,7 +46,6 @@ export const MACHINES_KO: Record<string, string> = {
   "Manage PC": "PC 관리",
   "PC name": "PC 이름",
   "Rename…": "이름 바꾸기…",
-  "Disconnect": "연결 끊기",
   "Bridge connection conflict": "브리지 연결 충돌",
   "Update the apps connected to this PC to the same version, or disconnect the other app, then reconnect here. Sessions keep running.": "이 PC에 연결된 앱들을 같은 버전으로 업데이트하거나 다른 앱의 연결을 해제한 뒤 여기서 다시 연결하세요. 세션은 계속 실행됩니다.",
   "{name} has a bridge connection conflict{others}.": "{name}의 브리지 연결이 충돌합니다{others}.",

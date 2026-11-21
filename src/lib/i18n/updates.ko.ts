@@ -70,4 +70,5 @@ export const UPDATES_KO: Record<string, string> = {
   "Downloading Ovis {version}…": "Ovis {version} 받는 중…",
   "Downloading Ovis {version}… {percent}%": "Ovis {version} 받는 중… {percent}%",
   "The update did not go through: {error}": "업데이트하지 못했습니다: {error}",
+  "Update": "업데이트",
 };

@@ -817,7 +817,7 @@ until someone signs in on it; the steps below are then the way.
    opened, also end a code-less phone link opened meanwhile from **Add a connection**, and turn
    down a phone that was comparing digits through it: that link is asked for again before a phone
    can use it.
-2. On any device already in the account, the dashboard lists the PC as new in the account, with
+2. On any device already in the account, Add a PC lists the PC as new in the account, with
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
    The PC's key comes from the directory and is checked against its id, as for any PC there; the
    person then **types the six digits the new PC shows** (not a tap: the directory's name is
@@ -887,7 +887,7 @@ The sibling's old membership or signed add does not restore the cleared binding.
 invalid origin does not qualify. Unlisting does not
 lift a lock, block, freeze, Revoke or tombstone.
 
-A wrong number ends that comparison; the person starts again from **Add** on the dashboard. A device without an account
+A wrong number ends that comparison; the person starts again from **Add** in Add a PC. A device without an account
 pairs with a QR code or pairing code behind **Start without signing in** on the sign-in screen, which
 leads to **Add a PC**.
 
@@ -1347,11 +1347,11 @@ Clients:
 `DELETE /v1/pcs/{server_id}` is no lasting removal for a PC in use: a member device lists the PC
 again on its next connection to it (`enrollOwned`), and so does the PC's own waiting Add this PC
 screen. A PC the directory does not list gets no [relay pass](relay.md#relay-pass) (`not_listed`)
-and none of the account's later records. So the apps offer it only in a PC's own Settings →
-Devices and PCs, as **Remove from list**, and only for a PC the directory has not heard from for
-two days (`unusedPc` in [`src/components/AccountPcs.tsx`](../src/components/AccountPcs.tsx): its
-`last_seen_at`, or its `added_at` when it never pulled), with a confirm that says it revokes
-nothing and that the PC is listed again if it is used again.
+and none of the account's later records. So the apps offer it only in Settings → Devices
+and PCs → Manage account, as **Remove**, and only for a PC the directory has not heard from for
+15 minutes (`offlinePc` in [`src/components/AccountManage.tsx`](../src/components/AccountManage.tsx)),
+on any page that has the sheet: a PC's own page, the hosted app and the phone apps. A confirm says
+it revokes nothing and that the PC is listed again if it is used again.
 
 Push (the doorbell), per signed-in device:
 
