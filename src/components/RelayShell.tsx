@@ -3,7 +3,7 @@ import "./RelayShell.css";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import type { MyPc } from "../lib/account/myPcs.ts";
+import { ACCOUNT_PCS_CHANGED_EVENT, type MyPc } from "../lib/account/myPcs.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
@@ -149,6 +149,14 @@ export function RelayShell(props: RelayShellProps) {
   const { state, pcStatus, onRefreshAccount, scoped, onPair, onRetry, onCancel, onBack, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onOpenPc, onSignIn, sheetJoin = null, onJoinInstead } = props;
   const t = useT();
   const [cachedAccount, setCachedAccount] = useState<AccountView | null>(null);
+  // a notice on this page confirmed or removed one of the account's PCs: Your PCs reads them again at once
+  const latestRefresh = useRef(onRefreshAccount);
+  latestRefresh.current = onRefreshAccount;
+  useEffect(() => {
+    const changed = (): void => { void latestRefresh.current?.(); };
+    window.addEventListener(ACCOUNT_PCS_CHANGED_EVENT, changed);
+    return () => window.removeEventListener(ACCOUNT_PCS_CHANGED_EVENT, changed);
+  }, []);
   const rawAccount: AccountView | null = (state.kind === "list" || state.kind === "empty") && onSignIn ? state.account ?? null : null;
   if (rawAccount !== null && rawAccount !== cachedAccount) setCachedAccount(rawAccount);
   const account: AccountView | null = rawAccount ?? (addingPcOpen(state) && onSignIn ? cachedAccount : null);

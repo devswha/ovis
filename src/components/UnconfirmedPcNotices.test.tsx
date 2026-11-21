@@ -140,7 +140,11 @@ describe("a PC the account lists unconfirmed", () => {
     await signIn();
     await listedByDeviceCode();
     await mount();
+    let changed = 0;
+    window.addEventListener("ovis:account-pcs-changed", () => { changed += 1; });
     await press("Add");
+    // the account's PCs are read again wherever they are listed (the front page's Your PCs among them)
+    expect(changed).toBeGreaterThan(0);
     expect(fake.requests.filter((line) => line === `PUT /v1/pcs/${PC}`)).toHaveLength(2);
     const [listed] = await service.forSignIn((await service.session())!).listPcs();
     expect(listed?.server_id).toBe(PC);
@@ -196,6 +200,10 @@ describe("a PC the account lists unconfirmed", () => {
     expect(buttons()).not.toContain("Sign in again");
     expect(buttons()).toContain("No");
     expect(fake.pcs(ACCOUNT).find((pc) => pc.server_id === PC)?.listed_by_device).toBe(true);
+    // with no Add, the warning about a typed code has nothing to warn of: the name and the time stay
+    expect(text()).not.toContain("Add it only if you typed that code");
+    expect(text()).toContain(`Name the PC gave itself: "${LABEL}"`);
+    expect(text()).toContain("A PC was added to your account with a sign-in code at ");
   });
 
   it("says so from the start to a Google sign-in, which never carries two-step, once the account has another PC", async () => {
@@ -205,6 +213,8 @@ describe("a PC the account lists unconfirmed", () => {
     await mount();
     expect(text()).toContain("This account has no two-step sign-in to add it here. Add it with the number on the PC's screen.");
     expect(buttons()).toEqual(["No"]);
+    expect(text()).not.toContain("Add it only if you typed that code");
+    expect(text()).toContain(`Name the PC gave itself: "${LABEL}"`);
   });
 
   it("offers nothing to press to a device code's sign-in", async () => {

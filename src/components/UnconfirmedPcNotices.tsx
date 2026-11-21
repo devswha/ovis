@@ -182,7 +182,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, addable, retry, onSign
       <span className="device-notice-text">
         {young && !numberOnly && <span>{t("Add this PC to your account?")}</span>}
         <span>{t("Name the PC gave itself: \"{name}\"", { name: pc.label })}</span>
-        <span className="settings-hint">{t("A PC was added to your account with a sign-in code at {time}.", { time })}{young ? ` ${t("Add it only if you typed that code on that PC's own screen a moment ago.")}` : ""}</span>
+        <span className="settings-hint">{t("A PC was added to your account with a sign-in code at {time}.", { time })}{young && !numberOnly ? ` ${t("Add it only if you typed that code on that PC's own screen a moment ago.")}` : ""}</span>
         {young && shownProblem !== null && <span className={numberOnly && problem === null ? "settings-hint" : "account-error"} role={problem === null ? undefined : "alert"}>{shownProblem.text}</span>}
         {!young && problem !== null && <span className="account-error" role="alert">{problem.text}</span>}
       </span>

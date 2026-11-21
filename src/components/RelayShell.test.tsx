@@ -401,6 +401,14 @@ describe("the hosted front page", () => {
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Connect a PC");
     });
 
+    it("reads the account's PCs again when a notice changed them (a PC confirmed or removed), so Your PCs shows it at once", async () => {
+      let refreshed = 0;
+      await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onRefreshAccount: () => { refreshed += 1; } });
+      expect(refreshed).toBe(0);
+      await act(async () => { window.dispatchEvent(new Event("ovis:account-pcs-changed")); });
+      expect(refreshed).toBe(1);
+    });
+
     it("pairs with a code from the relay tab, signed in with no PC, in the pairing dialog", async () => {
       let started = 0;
       const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onCodeStart: () => { started += 1; } } satisfies RelayShellProps;
