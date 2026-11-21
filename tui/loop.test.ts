@@ -336,7 +336,7 @@ describe("the loop", () => {
     expect(await run.loop.done).toEqual({ kind: "quit" });
   }, TEST_MS);
 
-  it("a menu choice passes the rest of its read on: a place chosen by digit, then text and Enter, alike read whole, split and a byte at a time", async () => {
+  it("a menu choice passes the rest of its read on: an entry chosen by Enter, then text and Enter, alike read whole, split and a byte at a time", async () => {
     const outcome = async (reads: string[]) => {
       const run = await Run.start({ fixture: demo });
       try {
@@ -356,8 +356,9 @@ describe("the loop", () => {
         await run.close();
       }
     };
-    // the prefix and Enter open the menu; 5 is a place in the shown tab; z and Enter go to the focused pane after it
-    const bytes = "\x02\r5z\r";
+    // the prefix and Enter open herdr's menu; Enter chooses its first entry (settings) and closes it; z and Enter go to
+    // the focused pane after it
+    const bytes = "\x02\r\rz\r";
     const joined = await outcome([bytes]);
     expect(joined.received[0]).toBe(Buffer.from("z\r").toString("hex"));
     expect({ outcome: await outcome([...bytes]) }).toEqual({ outcome: joined });
@@ -544,15 +545,19 @@ describe("the loop", () => {
       try {
         await run.live();
         await run.advance(1);
-        // rename the focused pane: a one-line field
+        // rename the focused pane: a one-line field that opens with the pane's name, as herdr's; what the reads add is compared
         run.type("\x02P");
         await settled(run);
+        const fieldOf = () => {
+          const top = run.loop.model().overlays.at(-1);
+          return top && "field" in top ? top.field.graphemes : null;
+        };
+        const opened = fieldOf()?.length ?? 0;
         for (const read of reads) {
           run.host.feed(read);
           await settled(run);
         }
-        const top = run.loop.model().overlays.at(-1);
-        return top && "field" in top ? top.field.graphemes : null;
+        return fieldOf()?.slice(opened) ?? null;
       } finally {
         await run.close();
       }
