@@ -5,7 +5,7 @@ import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
 import { basename, join, posix } from "node:path";
 import { version } from "../package.json";
-import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type AccountAddTarget, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type SetupErrorCode, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
+import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type AccountAddTarget, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type SetupErrorCode, type SetupStepCode, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, HerdrPane } from "../shared/protocol.ts";
 import type { PushService } from "./push.ts";
 import { alertStatus } from "../shared/notify-policy.ts";
@@ -226,8 +226,34 @@ export function olderOrderRead(cached: SessionSnapshot | null | undefined, incom
     && Number.isSafeInteger(cached.read_seq) && Number.isSafeInteger(incoming.read_seq) && incoming.read_seq! < cached.read_seq!;
 }
 
-export function actionStep(action: "approve" | "answer"): string {
-  return action === "approve" ? "Installing on this PC…" : "Connecting with SSH keys and ssh-agent…";
+export function actionStep(action: "approve" | "answer"): SetupStepCode {
+  return { code: action === "approve" ? "installing" : "connecting" };
+}
+
+/** A setup step's English, from its code: what SetupJob.step says for logs and older apps */
+export function setupStepWords(step: SetupStepCode): string {
+  const to = (target: string | null) => target ? ` to v${target}` : "";
+  switch (step.code) {
+    case "connecting": return "Connecting with SSH keys and ssh-agent…";
+    case "fingerprint": return "Verify the server fingerprint";
+    case "authentication": return "SSH authentication required";
+    case "checking": return "Checking the remote environment…";
+    case "review": return "Review the changes on this PC";
+    case "installing": return "Installing on this PC…";
+    case "install_bundle": return `Installing verified ${step.platform} bundle…`;
+    case "install_herdr": return "Installing herdr with its own installer…";
+    case "register_key": return "Registering the app SSH key…";
+    case "restart_bridge": return "Restarting the verified remote bridge…";
+    case "start_bridge": return "Starting the remote bridge…";
+    case "own_update_ask": return `Asking this PC's own Ovis to update itself${to(step.target)}…`;
+    case "own_update_running": return `This PC's own Ovis is updating itself${to(step.target)}: ${OWN_UPDATE_STEPS[step.stage] ?? step.stage}…`;
+    case "own_update_connect": return "Connecting to this PC's updated Ovis…";
+    case "headless": return "Starting without Windows sign-in…";
+    case "connected": return "Connected";
+    case "failed": return "Connection failed";
+    case "timed_out": return "Connection timed out";
+    case "cancelled": return "Cancelled";
+  }
 }
 
 /**
@@ -1133,7 +1159,7 @@ export class MachineManager {
     const switchingSession = !!existing && moving && target.destination === existing.machine.target!.destination && samePort(target.port, existing.machine.target!.port);
     if (switchingSession) { clearTimeout(existing.retry); existing.retry = undefined; }
     const resumeRetry = existing?.machine.state === "reconnecting";
-    const job: JobState = { update: request.update_remote === true, auto, public: { id, machine_id: machineId, target, phase: "connecting", step: "Connecting with SSH keys and ssh-agent…", challenge: null, installations: [], error: null, ssh_output: null, progress: null }, abort: new AbortController(), timer: setTimeout(() => this.cancelJob(id, true), 600_000), stageStartedAt: Date.now(), finished: Promise.resolve() };
+    const job: JobState = { update: request.update_remote === true, auto, public: { id, machine_id: machineId, target, phase: "connecting", step: setupStepWords({ code: "connecting" }), step_code: { code: "connecting" }, challenge: null, installations: [], error: null, ssh_output: null, progress: null }, abort: new AbortController(), timer: setTimeout(() => this.cancelJob(id, true), 600_000), stageStartedAt: Date.now(), finished: Promise.resolve() };
     if (options.expectedRevision) job.expectedRevision = options.expectedRevision;
     if (options.fromInstall) job.fromInstall = true;
     if (accountAdd) job.accountAdd = {};
@@ -1162,11 +1188,11 @@ export class MachineManager {
         await ssh.start(auto || options.keysOnly ? undefined : (prompt, host) => {
           job.public.phase = "authentication";
           job.public.challenge = { id: randomUUID(), kind: host ? "host_key" : "secret", prompt };
-          job.public.step = host ? "Verify the server fingerprint" : "SSH authentication required";
+          this.step(job, { code: host ? "fingerprint" : "authentication" });
           return this.wait(job);
         });
         reached = true;
-        this.stage(job, "checking", "Checking the remote environment…");
+        this.stage(job, "checking", { code: "checking" });
         await this.prepare(runtime, job);
         if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
         if (job.accountAdd) job.public.account_add = await this.inspectForAccount(job, ssh, generation);
@@ -1209,7 +1235,7 @@ export class MachineManager {
         }
         if (switchingSession) this.disconnect(existing!);
         if (move) { clearInterval(runtime.offerTimer); this.watchOwnOffer(runtime, runtime.generation); }
-        this.stage(job, "connected", "Connected");
+        this.stage(job, "connected", { code: "connected" });
         this.emit();
       } catch (e) {
         await job.accountAdd?.channel?.close();
@@ -1231,7 +1257,7 @@ export class MachineManager {
           }
           else if (ownsRuntime && runtime.machine.action_required === "windows_login") { runtime.machine.action_required = null; runtime.machine.error = null; this.emit(); }
         } else {
-          job.public.phase = "failed"; job.public.step = "Connection failed";
+          job.public.phase = "failed"; this.step(job, { code: "failed" });
           job.public.error = error;
           job.public.error_code = e instanceof MachineActionRequired ? e.code ?? null : null;
           if (moving) { if (!switchingSession && ownsRuntime && runtime.machine.enabled && !this.stopped) { runtime.machine.error = null; runtime.machine.action_required = null; this.retryLater(runtime); } }
@@ -1288,9 +1314,14 @@ export class MachineManager {
     if (answer === null || typeof answer !== "object" || answer.account !== account) throw new AccountAddError("account_mismatch", "That PC answered for another account");
     return { account };
   }
-  private stage(job: JobState, phase: SetupJob["phase"], step: string): void {
+  /** a step by its code (its English beside it), or by words with no code: a PC's own notice */
+  private step(job: JobState, step: SetupStepCode | string): void {
+    job.public.step = typeof step === "string" ? step : setupStepWords(step);
+    job.public.step_code = typeof step === "string" ? null : step;
+  }
+  private stage(job: JobState, phase: SetupJob["phase"], step: SetupStepCode | string): void {
     if (job.abort.signal.aborted) throw new Error("Setup cancelled");
-    job.public.phase = phase; job.public.step = step; job.public.challenge = null; job.public.ssh_output = null;
+    job.public.phase = phase; this.step(job, step); job.public.challenge = null; job.public.ssh_output = null;
     if (phase === "installing") clearTimeout(job.timer);
     job.public.progress = null;
     this.showUpdate(job);
@@ -1318,7 +1349,7 @@ export class MachineManager {
     if (action.action === "start_headless") {
       if (job.abort.signal.aborted || job.public.phase !== "starting" || (job.public.action_required !== "windows_login" && job.public.action_required !== "windows_start_failed")) throw new Error("This PC is not waiting for Windows sign-in");
       job.public.action_required = null;
-      job.public.step = "Starting without Windows sign-in…";
+      this.step(job, { code: "headless" });
       job.headlessStart = true;
       return;
     }
@@ -1333,7 +1364,7 @@ export class MachineManager {
     const pending = job.pending;
     job.pending = undefined; job.public.challenge = null;
     job.public.phase = action.action === "approve" ? "installing" : "connecting";
-    job.public.step = actionStep(action.action);
+    this.step(job, actionStep(action.action));
     pending.resolve(action.action === "answer" ? action.answer : "approved");
   }
   /** `asked`: the person cancelled it here (its Cancel, or the PC's cancel of its update): only then is that PC asked to stop its own update */
@@ -1342,7 +1373,7 @@ export class MachineManager {
     const job = this.jobs.get(id);
     if (!job || ["connected", "failed", "cancelled"].includes(job.public.phase)) return;
     job.timedOut = timedOut;
-    job.public.phase = timedOut ? "failed" : "cancelled"; job.public.step = timedOut ? "Connection timed out" : "Cancelled"; job.public.challenge = null; job.public.ssh_output = null;
+    job.public.phase = timedOut ? "failed" : "cancelled"; this.step(job, { code: timedOut ? "timed_out" : "cancelled" }); job.public.challenge = null; job.public.ssh_output = null;
     if (timedOut) job.public.error = "Connection timed out";
     job.public.action_required = null; job.headlessStart = false;
     job.abort.abort(); job.pending?.reject(new Error("Setup cancelled")); job.pending = undefined;
@@ -1583,14 +1614,14 @@ export class MachineManager {
       job.public.installations = installs;
       // an automatic bridge update was approved by the app update (or the tap that started it)
       if (!job.auto) {
-        this.stage(job, "approval", "Review the changes on this PC");
+        this.stage(job, "approval", { code: "review" });
         await this.wait(job);
       }
       job.installationApproved = update || !descriptor;
-      if (update || !descriptor && !hasBundle) { this.stage(job, "installing", `Installing verified ${platform} bundle…`); await host.installBundle(ssh, platform, job.abort.signal, { cacheDir: join(this.stateDir, "bundles"), owner: installLockOwner(this.stateDir, target), onProgress: (stage, done, total) => this.progress(job, stage, done, total) }); }
-      if (!descriptor && !herdrPath && host.installHerdr) { this.stage(job, "installing", "Installing herdr with its own installer…"); herdrPath = await host.installHerdr(ssh); }
+      if (update || !descriptor && !hasBundle) { this.stage(job, "installing", { code: "install_bundle", platform }); await host.installBundle(ssh, platform, job.abort.signal, { cacheDir: join(this.stateDir, "bundles"), owner: installLockOwner(this.stateDir, target), onProgress: (stage, done, total) => this.progress(job, stage, done, total) }); }
+      if (!descriptor && !herdrPath && host.installHerdr) { this.stage(job, "installing", { code: "install_herdr" }); herdrPath = await host.installHerdr(ssh); }
       if (ssh.usedSecret && !job.accountAdd) {
-        this.stage(job, "installing", "Registering the app SSH key…");
+        this.stage(job, "installing", { code: "register_key" });
         const path = join(this.sshDir, runtime.machine.id);
         if (!existsSync(path)) {
           // Generate privately until the job still owns this destination. A cancelled job
@@ -1626,7 +1657,7 @@ export class MachineManager {
       if (verified.identity.managed_remote !== true || verified.identity.pid !== descriptor.pid) throw new Error("Bridge process verification failed; no process was stopped");
       if (newerBundle(verified.identity.bundle_version)) throw new MachineActionRequired(newerBridge(verified.identity.bundle_version), "bridge_conflict");
       if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
-      this.stage(job, "starting", "Restarting the verified remote bridge…");
+      this.stage(job, "starting", { code: "restart_bridge" });
       this.progress(job, "restart", 0, null);
       await host.stop(ssh, descriptor.pid);
       const deadline = Date.now() + 10_000;
@@ -1641,7 +1672,7 @@ export class MachineManager {
     if (!descriptor && !this.mayManageBridge(runtime) && !job) throw new MachineActionRequired("The saved herdr machine needs a web bridge. Set it up here; the SSH address and session are already filled in.", "setup");
     if (!descriptor) {
       if (job?.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
-      if (job) this.stage(job, "starting", "Starting the remote bridge…");
+      if (job) this.stage(job, "starting", { code: "start_bridge" });
       let notice: string | null = null;
       let waitingForLogin = false;
       do {
@@ -1871,8 +1902,7 @@ export class MachineManager {
     return answer(status, null);
   }
   private async runOwnUpdate(job: JobState, ssh: SshConnection, host: RemoteHost, descriptor: BridgeDescriptor, expectedSocket: string, offer: RemoteOvis): Promise<BridgeDescriptor> {
-    const to = offer.latest_version ? ` to v${offer.latest_version}` : "";
-    this.stage(job, "installing", `Asking this PC's own Ovis to update itself${to}…`);
+    this.stage(job, "installing", { code: "own_update_ask", target: offer.latest_version });
     const endpoint = await this.tunnel(ssh, descriptor);
     const updates = (install?: string) => fetch(`${endpoint.url}/api/updates${install ? "/install" : ""}`, {
       ...(install ? { method: "POST", body: JSON.stringify({ expected_revision: install }) } : {}),
@@ -1933,7 +1963,7 @@ export class MachineManager {
       if (next && await host.alive(ssh, next.pid)) {
         if (next.bundle_version !== REMOTE_BUNDLE_VERSION && !newerBundle(next.bundle_version)) throw new MachineActionRequired(`This PC's Ovis updated itself, but its version still differs from this app's (v${remoteWords(next.bundle_version)}; this app requires v${REMOTE_BUNDLE_VERSION}). Update it on that PC (Settings → Updates), then reconnect; it was left running.`, "setup");
         job.ownCancel = undefined;
-        this.stage(job, "starting", "Connecting to this PC's updated Ovis…");
+        this.stage(job, "starting", { code: "own_update_connect" });
         return next;
       }
       let status: Partial<UpdateStatus> | null = null;
@@ -1941,9 +1971,8 @@ export class MachineManager {
       if (ownInstallRunning(status)) started = true;
       if (status?.phase === "error" && (started || remoteWords(status.error) !== earlierError)) throw new Error(`That PC's Ovis could not update itself: ${remoteWords(status.error) ?? "no reason given"} Check its Settings → Updates there, then reconnect.`);
       if (status && ownInstallRunning(status)) {
-        const step = OWN_UPDATE_STEPS[status.step ?? ""] ?? status.phase;
-        const text = `This PC's own Ovis is updating itself${to}: ${step}…`;
-        if (job.public.step !== text) { job.public.step = text; this.showUpdate(job); }
+        const running: SetupStepCode = { code: "own_update_running", target: offer.latest_version, stage: status.step && Object.hasOwn(OWN_UPDATE_STEPS, status.step) ? status.step : status.phase ?? "" };
+        if (job.public.step !== setupStepWords(running)) { this.step(job, running); this.showUpdate(job); }
       }
       if (!started && status && Date.now() >= startBy) throw new Error(`This PC's Ovis did not start its update within ${Math.max(1, Math.round(this.ownUpdateStartMs / 1000))} seconds of being asked. Check its Settings → Updates there, then reconnect.`);
       await this.pause(job.abort.signal);

@@ -13,10 +13,10 @@ import { hostKeyFingerprints } from "../lib/hostKey.ts";
 import { sshOutputParts } from "../lib/sshOutput.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
-import { machineErrorText, previewVersion, setupErrorLines } from "../lib/userError.ts";
+import { machineErrorText, previewVersion, setupErrorLines, setupStepText } from "../lib/userError.ts";
 import { BridgeUpdateProgress, OwnOvisAddress, ownOvisAction } from "./MachineSidebar.tsx";
 import "./Machines.css";
-import { useT, type Translate } from "../lib/i18n.ts";
+import { useT } from "../lib/i18n.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { asksChoice, FoundHerdrChoices, HerdrSessionChoices, type HerdrChoice } from "./FoundHerdrChoices.tsx";
 
@@ -190,7 +190,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
         </div></details>
         </>}
       </form>}
-      {job && job.challenge?.kind !== "host_key" && <div className="machine-progress" role="status">{waitingForLogin ? <strong>{t(startupFailed ? "Windows desktop startup failed" : "Waiting for Windows sign-in")}</strong> : running && job.progress ? <BridgeUpdateProgress update={{ job_id: job.id, step: job.step, progress: job.progress }} /> : <strong>{choosing && job.error ? machineErrorText(job.error, t) : stepWords(job.step, t)}</strong>}{waitingForLogin && job.step !== "Waiting for Windows sign-in on this PC." && <p>{machineErrorText(job.step, t)}</p>}{!choosing && !choiceAfterFailure && setupErrorLines(job, t).map((line) => <p key={line}>{line}</p>)}{job.ssh_output && <SshOutput text={job.ssh_output} />}</div>}
+      {job && job.challenge?.kind !== "host_key" && <div className="machine-progress" role="status">{waitingForLogin ? <strong>{t(startupFailed ? "Windows desktop startup failed" : "Waiting for Windows sign-in")}</strong> : running && job.progress ? <BridgeUpdateProgress update={{ job_id: job.id, step: job.step, progress: job.progress }} /> : <strong>{choosing && job.error ? machineErrorText(job.error, t) : setupStepText(job, t)}</strong>}{waitingForLogin && job.step !== "Waiting for Windows sign-in on this PC." && <p>{machineErrorText(job.step, t)}</p>}{!choosing && !choiceAfterFailure && setupErrorLines(job, t).map((line) => <p key={line}>{line}</p>)}{job.ssh_output && <SshOutput text={job.ssh_output} />}</div>}
       {job?.action_required === "choose_herdr" && (job.found_herdr_sessions || job.found_ovis) && <FoundHerdrChoices sessions={job.found_herdr_sessions ?? []} ownOvis={job.found_ovis} error={job.error} busy={pending} onChoose={(choice) => void begin(choice)} foldedAbove={!machine?.herdr_profile_id} />}
       {waitingForLogin && <p className="field-hint">{t("Starting without Windows sign-in can break Codex sandbox commands, and desktop-control tools may be unavailable. This choice applies to one start.")}</p>}
       {waitingForLogin && <p className="field-hint">{t("Signing out of Windows ends herdr and its panes; lock the PC instead.")}</p>}
@@ -235,17 +235,6 @@ function addedWords(outcome: SshAddOutcome | "adding", t: ReturnType<typeof useT
     case "number": return t("Add it with the number on the server's Ovis page.");
     case "sign-in-again": return t("Sign in again on this PC, then add it again.");
     case "refused": return t("It was not added to your account. Try again.");
-  }
-}
-
-/** the words of a setup's step that the dialog says in the app's language: its ends, and the Windows start it offers */
-function stepWords(step: string, t: Translate): string {
-  switch (step) {
-    case "Starting without Windows sign-in…": return t("Starting without Windows sign-in…");
-    case "Connection failed": return t("Connection failed");
-    case "Connection timed out": return t("Connection timed out");
-    case "Cancelled": return t("Cancelled");
-    default: return step;
   }
 }
 

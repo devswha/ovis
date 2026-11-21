@@ -334,8 +334,13 @@ try {
           const page = await context.newPage();
           const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));
-          await page.route("**/api/machines/setup**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
-            id: "older", machine_id: "fixture", target: { destination: "old-desktop" }, phase: "failed", step: "Connection failed",
+          // the first answer is a step on its way, the polls after it the failure: each is worded from its code
+          let answers = 0;
+          await page.route("**/api/machines/setup**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(answers++ === 0 ? {
+            id: "older", machine_id: "fixture", target: { destination: "old-desktop" }, phase: "installing", step: "Installing verified linux-x64 bundle…",
+            step_code: { code: "install_bundle", platform: "linux-x64" }, error: null, action_required: null, installations: [], challenge: null, ssh_output: null, progress: null,
+          } satisfies SetupJob : {
+            id: "older", machine_id: "fixture", target: { destination: "old-desktop" }, phase: "failed", step: "Connection failed", step_code: { code: "failed" },
             error: "This PC runs its own Ovis v0.5.1, older than this app. Update it to v0.5.10-beta.2 to reconnect; it updates itself, and herdr sessions keep running.",
             error_code: { code: "own_ovis_older", version: "0.5.1", target: "0.5.10-beta.2" }, action_required: "update_bridge",
             remote_ovis: { version: "0.5.1", latest_version: "0.5.10-beta.2", updatable: true, reason: null, address: "old-desktop:7317", url: null },
@@ -347,6 +352,7 @@ try {
           await destination.fill("old-desktop");
           await destination.press("Enter");
           const card = dialog.locator(".machine-progress");
+          await card.locator("strong", { hasText: "검증된 linux-x64 번들을 설치하는 중…" }).waitFor();
           await card.locator("strong", { hasText: "연결 실패" }).waitFor();
           assert.deepEqual(await card.locator("p").allTextContents(), [
             "이 PC에서 도는 자체 Ovis(v0.5.1)가 이 앱보다 오래됐습니다. 다시 연결하려면 미리보기 버전(v0.5.10-beta.2)으로 업데이트하세요.",
@@ -356,7 +362,7 @@ try {
           await dialog.getByRole("button", { name: "이 PC의 Ovis를 미리보기 버전으로 업데이트하고 연결", exact: true }).waitFor();
           if (process.env["UI_EVIDENCE_DIR"]) { mkdirSync(process.env["UI_EVIDENCE_DIR"], { recursive: true }); await page.screenshot({ path: join(process.env["UI_EVIDENCE_DIR"], `fix19-after-${width}-ko.png`) }); }
           assert.deepEqual(errors, []);
-          console.log(`PASS ${width}px: an older own Ovis offered a prerelease is worded in Korean as a preview update, with its test-build line and the preview button`);
+          console.log(`PASS ${width}px: a step on its way and an older own Ovis offered a prerelease are worded in Korean from their codes, the failure as a preview update with its test-build line and the preview button`);
         } finally { await context.close(); }
       }
     } finally { await browser.close(); }

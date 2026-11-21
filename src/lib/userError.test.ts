@@ -3,7 +3,7 @@ import { ApiError, fetchSession } from "./api.ts";
 import { withChatReadDeadline } from "./chatReadDeadline.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
 import { RemoteResponseInvalid, RemoteResponseTooLarge } from "../../server/remote-json.ts";
-import { machineErrorText, saysHerdrAway, setupErrorLines, userErrorMessage, userFailure } from "./userError.ts";
+import { machineErrorText, saysHerdrAway, setupErrorLines, setupStepText, userErrorMessage, userFailure } from "./userError.ts";
 
 const api = (status: number, detail = "herdr said no") => new ApiError("/api/x", status, detail, null);
 
@@ -195,5 +195,32 @@ describe("setupErrorLines", () => {
   it("shows an error with no code in the server's words, as machineErrorText reads them", () => {
     expect(setupErrorLines({ error: "Start Ovis on that PC, or start a new herdr here", error_code: null }, keyed)).toEqual(["Start Ovis on that PC, or start a new herdr here"]);
     expect(setupErrorLines({ error: null }, keyed)).toEqual([]);
+  });
+});
+
+describe("setupStepText", () => {
+  const keyed = (key: string, params?: Record<string, string | number>): string => params === undefined ? key : `${key} ${JSON.stringify(params)}`;
+
+  it("words a step from its code and parameters", () => {
+    expect(setupStepText({ step: "Checking the remote environment…", step_code: { code: "checking" } }, keyed)).toBe("Checking the remote environment…");
+    expect(setupStepText({ step: "x", step_code: { code: "install_bundle", platform: "linux-x64" } }, keyed)).toBe(`Installing verified {platform} bundle… ${JSON.stringify({ platform: "linux-x64" })}`);
+    expect(setupStepText({ step: "x", step_code: { code: "own_update_ask", target: "0.5.10" } }, keyed)).toBe(`Asking this PC's own Ovis to update itself to {target}… ${JSON.stringify({ target: "v0.5.10" })}`);
+    expect(setupStepText({ step: "x", step_code: { code: "own_update_ask", target: null } }, keyed)).toBe("Asking this PC's own Ovis to update itself…");
+  });
+
+  it("names a prerelease an own Ovis updates to a preview, as the failure card does", () => {
+    expect(setupStepText({ step: "x", step_code: { code: "own_update_ask", target: "0.5.10-beta.2" } }, keyed)).toBe(`Asking this PC's own Ovis to update itself to the preview version {target}… ${JSON.stringify({ target: "v0.5.10-beta.2" })}`);
+    expect(setupStepText({ step: "x", step_code: { code: "own_update_running", target: "0.5.10-beta.2", stage: "build" } }, keyed))
+      .toBe(`This PC's own Ovis is updating itself to the preview version {target}: {stage}… ${JSON.stringify({ target: "v0.5.10-beta.2", stage: "building" })}`);
+  });
+
+  it("words an own update's stage, and shows a stage it does not know as that Ovis said it", () => {
+    expect(setupStepText({ step: "x", step_code: { code: "own_update_running", target: null, stage: "dependencies" } }, keyed)).toBe(`This PC's own Ovis is updating itself: {stage}… ${JSON.stringify({ stage: "installing dependencies" })}`);
+    expect(setupStepText({ step: "x", step_code: { code: "own_update_running", target: null, stage: "verifying" } }, keyed)).toBe(`This PC's own Ovis is updating itself: {stage}… ${JSON.stringify({ stage: "verifying" })}`);
+  });
+
+  it("shows a step with no code, from an older server or a PC's own notice, as it came", () => {
+    expect(setupStepText({ step: "Waiting for Windows sign-in on this PC.", step_code: null }, keyed)).toBe("Waiting for Windows sign-in on this PC.");
+    expect(setupStepText({ step: "Connected" }, keyed)).toBe("Connected");
   });
 });

@@ -219,6 +219,12 @@ export interface RemoteOvis {
 export const OWN_UPDATE_OFFER = "This PC runs its own Ovis";
 /** A setup failure the app words in its own language from a code and its parameters (versions without the v). */
 export type SetupErrorCode = { code: "own_ovis_older"; version: string | null; target: string | null };
+/** A setup step the app words in its own language from a code and its parameters (versions without the v; stage as that PC's Ovis names it). */
+export type SetupStepCode =
+  | { code: "connecting" | "fingerprint" | "authentication" | "checking" | "review" | "installing" | "install_herdr" | "register_key" | "restart_bridge" | "start_bridge" | "own_update_connect" | "headless" | "connected" | "failed" | "timed_out" | "cancelled" }
+  | { code: "install_bundle"; platform: string }
+  | { code: "own_update_ask"; target: string | null }
+  | { code: "own_update_running"; target: string | null; stage: string };
 export function pcAlertKey(machine: Pick<Machine, "name" | "relay" | "server_id">): string {
   return machine.relay?.server_id ?? machine.server_id ?? machine.name;
 }
@@ -351,6 +357,8 @@ export interface SetupJob {
   machine_id: string;
   phase: SetupPhase;
   step: string;
+  /** step's code and parameters where the app words it itself; step keeps the server's English. Null for a PC's own notice */
+  step_code?: SetupStepCode | null;
   challenge: SetupChallenge | null;
   installations: string[];
   error: string | null;
