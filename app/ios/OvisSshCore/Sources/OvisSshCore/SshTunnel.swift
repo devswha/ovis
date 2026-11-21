@@ -59,7 +59,9 @@ public actor SshTunnel {
     private var failedAt: TimeInterval = 0
     private var stopped: SshFailure?
 
-    public static func cookieName(port: Int) -> String { "ovis_ssh_gate_\(port)" }
+    static let gatePrefix = "ovis_ssh_gate_"
+
+    public static func cookieName(port: Int) -> String { gatePrefix + String(port) }
 
     public init(gate: String, port: Int, dialer: @escaping Dialer, clock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                 sshPorts: @escaping @Sendable () -> Set<Int> = { [] }, dialJoined: (@Sendable (Int) -> Void)? = nil,
@@ -220,7 +222,7 @@ public actor SshTunnel {
             }
             let pageRest = fromPage
             try await pc.executeThenClose { pcIn, toPc in
-                try await toPc.write(ByteBuffer(bytes: Self.forwardHead(head, cookie: cookie)))
+                try await toPc.write(ByteBuffer(bytes: Self.forwardHead(head)))
                 if early.readableBytes > 0 { try await toPc.write(early) }
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     group.addTask {
@@ -315,9 +317,10 @@ public actor SshTunnel {
         return true
     }
 
-    /// The head as it goes to the PC: without the gate cookie, and with `Connection: close` unless it is an upgrade
-    /// (a WebSocket), so every request has a connection of its own and the WebView never re-sends one on a reused one.
-    static func forwardHead(_ head: [UInt8], cookie: String) -> [UInt8] {
+    /// The head as it goes to the PC: without any SSH PC's gate cookie (cookies do not separate ports, so the WebView
+    /// sends every PC's gate to each one: none may leave the phone), and with `Connection: close` unless it is an
+    /// upgrade (a WebSocket), so every request has a connection of its own and the WebView never re-sends one on a reused one.
+    static func forwardHead(_ head: [UInt8]) -> [UInt8] {
         var all = lines(head)
         while all.last == "" { all.removeLast() }
         let upgrade = all.dropFirst().contains { $0.lowercased().hasPrefix("upgrade:") }
@@ -326,7 +329,7 @@ public actor SshTunnel {
             let lower = line.lowercased()
             if i > 0 && lower.hasPrefix("cookie:") {
                 let kept = line.dropFirst("cookie:".count).split(separator: ";", omittingEmptySubsequences: false)
-                    .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix(cookie + "=") }
+                    .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix(gatePrefix) }
                 if kept.joined(separator: ";").trimmingCharacters(in: .whitespaces).isEmpty { continue }
                 out.append("Cookie:" + kept.joined(separator: ";"))
             } else if i > 0 && !upgrade && (lower.hasPrefix("connection:") || lower.hasPrefix("keep-alive:")) {

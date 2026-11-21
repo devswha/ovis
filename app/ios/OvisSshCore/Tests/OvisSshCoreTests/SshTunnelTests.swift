@@ -175,8 +175,16 @@ final class SshTunnelTests: XCTestCase {
 
     func testAnUpgradeKeepsItsConnectionHeader() {
         let head = Array("GET /ws HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nCookie: ovis_ssh_gate_1=x\r\n\r\n".utf8)
-        let forwarded = String(decoding: SshTunnel.forwardHead(head, cookie: "ovis_ssh_gate_1"), as: UTF8.self)
+        let forwarded = String(decoding: SshTunnel.forwardHead(head), as: UTF8.self)
         XCTAssertEqual(forwarded, "GET /ws HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+    }
+
+    func testNoSshPcsGateReachesAnyPc() {
+        let head = Array("GET / HTTP/1.1\r\nCookie: ovis_ssh_gate_47321=other; theme=dark; ovis_ssh_gate_47320=mine\r\n\r\n".utf8)
+        let forwarded = String(decoding: SshTunnel.forwardHead(head), as: UTF8.self)
+        XCTAssertFalse(forwarded.contains("ovis_ssh_gate"))
+        XCTAssertFalse(forwarded.contains("other"))
+        XCTAssertTrue(forwarded.contains("theme=dark"))
     }
 
     func testARedirectToTheLoopbackAtAnotherPortIsRefused() async throws {
