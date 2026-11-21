@@ -686,6 +686,23 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             window.rootViewController = HerdrBridgeViewController()
             return
         }
+        open(pc, in: window)
+    }
+
+    /// The app's first view controller: the PC or the connect screen at once, or, for an SSH PC, a blank one of the
+    /// app's colour until its tunnel listens (reopen).
+    static func first() -> UIViewController {
+        guard let pc = OvisSsh.pc(PCStore.shown) else { return HerdrBridgeViewController() }
+        let waiting = UIViewController()
+        waiting.view.backgroundColor = UIColor(red: 0x12 / 255, green: 0x10 / 255, blue: 0x0e / 255, alpha: 1)
+        DispatchQueue.main.async {
+            guard let window = waiting.view.window else { return }
+            open(pc, in: window)
+        }
+        return waiting
+    }
+
+    private static func open(_ pc: SshPcs.Pc, in window: UIWindow) {
         Task { @MainActor in
             if !(await OvisSsh.prepare(pc)) { PCStore.current = nil }
             window.rootViewController = HerdrBridgeViewController()

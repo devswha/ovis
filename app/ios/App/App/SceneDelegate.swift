@@ -8,11 +8,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         window = UIWindow(windowScene: windowScene)
-        // an SSH PC listens on its address on this phone before its page loads (HerdrBridgeViewController.reopen)
-        window?.rootViewController = UIViewController()
-        window?.rootViewController?.view.backgroundColor = UIColor(red: 0x12 / 255, green: 0x10 / 255, blue: 0x0e / 255, alpha: 1)
+        window?.rootViewController = HerdrBridgeViewController.first()
         window?.makeKeyAndVisible()
-        HerdrBridgeViewController.reopen()
 
         SceneDelegateProxy.shared.scene(scene, willConnectTo: session, options: connectionOptions)
     }
