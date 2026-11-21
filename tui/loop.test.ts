@@ -299,7 +299,7 @@ describe("the loop", () => {
     for (const terminal of ["t1", "t2", "t3", "t4"]) expect(run.core.terminal(terminal).state).toBe("live");
   }, TEST_MS);
 
-  it("a detach never waits behind a layout write: with the core silent mid-close, the prefix and q leave within the quit bound", async () => {
+  it("a detach behind a layout write leaves within the quit bound: with the core silent mid-close, the prefix and q", async () => {
     const run = await start({ fixture: demo });
     await run.live();
     await run.advance(1);
@@ -316,7 +316,7 @@ describe("the loop", () => {
     expect(run.core.calls().filter(({ method }) => method === "terminal.kill" || method === "terminal.rm")).toEqual([]);
   }, TEST_MS);
 
-  it("a detach behind an action in the same read never waits behind a layout write either", async () => {
+  it("a detach behind an action in the same read leaves within the quit bound behind a layout write too", async () => {
     const run = await start({ fixture: demo });
     await run.live();
     // a printable prefix: a zoom and the detach after it are one text run, so the detach is the rest of that run
@@ -397,29 +397,37 @@ describe("the loop", () => {
         }
         const model = run.loop.model();
         const layout = run.core.docs.get(OVIS_LAYOUT_DOC)?.value as { workspaces: { tabs: { zoomed: string | null }[] }[] } | undefined;
-        return {
-          ended, focus: model.focus, mode: model.mode.name, zoomed: layout?.workspaces.flatMap((workspace) => workspace.tabs.map((tab) => tab.zoomed)) ?? [],
+        // a new tab's id is made at random: such ids are named by where they first appear, so equal outcomes compare equal
+        const made = new Map<string, string>();
+        const named = <T>(value: T): T => JSON.parse(JSON.stringify(value).replace(/ovis-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/g, (id) => {
+          if (!made.has(id)) made.set(id, `made-${made.size}`);
+          return made.get(id)!;
+        }));
+        return named({
+          ended, focus: model.focus, mode: model.mode.name, panes: model.world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.id))).sort(), zoomed: layout?.workspaces.flatMap((workspace) => workspace.tabs.map((tab) => tab.zoomed)) ?? [],
           overlays: model.overlays.map((overlay) => ("field" in overlay ? `${overlay.kind}:${overlay.field.graphemes.join("|")}` : overlay.kind)),
           received: Object.fromEntries(before.map((terminal) => [terminal, sentTo(run, terminal)])),
-        };
+        });
       } finally {
         await run.close();
       }
     };
-    // A detach never waits for a layout write (it leaves at once), so a write still under way when the screen left may
-    // or may not have landed: for a run that detached, only that it left and what each program was sent are compared.
+    // A detach waits behind a layout write in order with everything else, but leaves without the screen's own last writes
+    // (a zoom it follows need not have landed): for a run that detached, only that it left and what each program was sent
+    // are compared.
     type Outcome = Awaited<ReturnType<typeof outcome>>;
     const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received } : seen);
     // the third variant: a zoomed tab, where the workspace picker's moves and directional focus move the shared zoom
-    // to the pane the focus goes to (zoom_follow) and the last move wins
-    const variants: [prefix: string, zoomed: boolean, tokens: string[]][] = [
-      ["\x02", false, [...ACTIONS.map((action) => "\x02" + action), ...TEXT]],
-      ["-", false, [...ACTIONS.map((action) => "-" + action), ...TEXT]],
-      ["\x02", true, ["\x02w", "\x02l", "\x02h", "\x02z", "l", "h", "a", "\r"]],
+    // to the pane the focus goes to (zoom_follow) and the last move wins; a zoom, a close and text typed among the moves,
+    // so a command and text meet a zoom write still under way, read with them or apart
+    const variants: [prefix: string, zoomed: boolean, runs: number, tokens: string[]][] = [
+      ["\x02", false, 10, [...ACTIONS.map((action) => "\x02" + action), ...TEXT]],
+      ["-", false, 10, [...ACTIONS.map((action) => "-" + action), ...TEXT]],
+      ["\x02", true, 30, ["\x02w", "\x02l", "\x02h", "\x02z", "\x02x", "l", "h", "a", "Z", "\r"]],
     ];
-    for (const [prefix, zoomed, tokens] of variants) {
-      for (let n = 0; n < 10; n++) {
-        const text = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
+    for (const [prefix, zoomed, runs, tokens] of variants) {
+      for (let n = 0; n < runs; n++) {
+        const text = Array.from({ length: 3 + Math.floor(random() * 4) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
         const bytes = new TextEncoder().encode(text);
         const joined = compared(await outcome(prefix, [bytes], zoomed));
         expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)), zoomed)) }).toEqual({ text, outcome: joined });
@@ -431,7 +439,8 @@ describe("the loop", () => {
     // the gate's cases: zoomed, the picker and two moves then Enter, or two moves, in one read settle (focus and shared
     // zoom) where the same bytes split do, and a marker typed after them reaches the same program; and two moves with text
     // after each, the zoom following the focus: the text reaches the pane the zoom shows
-    for (const pinned of ["\x02wll\rZ", "\x02l\x02lZ", "\x02ll\x02lh", "\x02lab\x02hcd"]) {
+    // and a close or a zoom right after a move, with text after it: the command waits for the zoom write, never refused
+    for (const pinned of ["\x02wll\rZ", "\x02l\x02lZ", "\x02ll\x02lh", "\x02lab\x02hcd", "\x02l\x02xZ", "\x02l\x02zZ"]) {
       const gate = new TextEncoder().encode(pinned);
       const whole = compared(await outcome("\x02", [gate], true));
       expect({ pinned, outcome: compared(await outcome("\x02", [...gate].map((byte) => Uint8Array.of(byte)), true)) }).toEqual({ pinned, outcome: whole });
