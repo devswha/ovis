@@ -6,7 +6,7 @@ import "./RelayPairingPrompt.css";
 
 import type { OwnJoinRequest, PendingKey } from "../../shared/machines.ts";
 import type { RelayPairingRequest } from "../../shared/protocol.ts";
-import { decideOwnJoin, decideRelayPairing, openConfirmPage } from "../lib/api.ts";
+import { declinePendingKey, decideOwnJoin, decideRelayPairing, openConfirmPage } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { inFocusTrap } from "../lib/useFocusTrap.ts";
 import { failureText } from "./RelayPanel.tsx";
@@ -17,8 +17,9 @@ import { failureText } from "./RelayPanel.tsx";
  */
 export type DecidedPrompt = RelayPairingRequest & { readonly own_window?: "join" };
 /**
- * A key a QR or code pairing waits with on this PC's screen (its fingerprint in `digits`): never decided here. Its one
- * button has this PC open its confirm page on its desktop, which decides it with its own same-user check.
+ * A key a QR or code pairing waits with on this PC's screen (its fingerprint in `digits`): never approved here. Its
+ * button has this PC open its confirm page on its desktop, which approves it with its own same-user check; Decline only
+ * narrows, as the waiting list's always did (/api/devices/pending/decline).
  */
 export type KeyPrompt = RelayPairingRequest & { readonly own_window: "key" };
 export type PromptPairing = DecidedPrompt | KeyPrompt;
@@ -280,6 +281,10 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
                   setFailure(null);
                   openConfirmPage().catch(() => setFailure({ id: pairing.id, text: t("Run ovis confirm on this PC to open it.") }));
                 }}>{t("Confirm on this PC")}</button>
+                <button type="button" className="btn" onClick={() => {
+                  setFailure(null);
+                  declinePendingKey(pairing.id).catch((error: unknown) => setFailure({ id: pairing.id, text: failureText(error instanceof Error ? error : new Error(String(error))) }));
+                }}>{t("Decline")}</button>
               </div>
             ) : (
               <div className="device-paired-actions">

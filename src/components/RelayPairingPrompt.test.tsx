@@ -541,7 +541,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(decided).toEqual([["/api/relay/join", { id: "j1", decision: "decline" }], ["/api/relay/join", { id: "j1", decision: "approve" }]]);
   });
 
-  it("shows this PC's own window a key a QR or code pairing waits with, beside its fingerprint, with one button that has the PC open its confirm page", async () => {
+  it("shows this PC's own window a key a QR or code pairing waits with, beside its fingerprint, with a button that has the PC open its confirm page and Decline", async () => {
     const key = { id: "a".repeat(32), label: "Pixel 9", fingerprint: "K7QF-29XM", via: "relay" as const, redeemed_at: new Date(AT).toISOString(), slots: { used: 1, of: 3 } };
     const [prompt] = prompts(await show(pendingKeyPrompts([key])));
     expect(sentence(prompt!)).toContain("Pixel 9");
@@ -549,9 +549,11 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(prompt!.findAll((node) => node.props["data-testid"] === "relay-pairing-left")).toHaveLength(0);
     // nothing here decides it: the confirm page does, which checks the user behind the connection
     expect(prompt!.findAll((found) => found.props["data-testid"] === "relay-pairing-check")).toHaveLength(0);
-    expect(prompt!.findAllByType("button").map(text)).toEqual(["Confirm on this PC"]);
+    expect(prompt!.findAllByType("button").map(text)).toEqual(["Confirm on this PC", "Decline"]);
     await act(async () => { prompt!.findAllByType("button")[0]!.props.onClick(); });
-    expect(decided).toEqual([["/api/account/confirm-page", null]]);
+    // refusing only narrows: it goes the way the PC's waiting list always declined a key
+    await act(async () => { prompt!.findAllByType("button")[1]!.props.onClick(); });
+    expect(decided).toEqual([["/api/account/confirm-page", null], ["/api/devices/pending/decline", { id: "a".repeat(32) }]]);
   });
 
   it("still approves and declines through decideRelayPairing", async () => {
