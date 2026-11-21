@@ -4,7 +4,7 @@ import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "..
 import type { ServerContext } from "../dispatch.ts";
 import { RELAY_CONTROLS } from "../dispatch-routes.ts";
 import { updateRequestAllowed } from "../update-api.ts";
-import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError } from "./service.ts";
+import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetRegistryUnavailableError } from "./service.ts";
 
 /**
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
@@ -185,6 +185,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (error instanceof PairingFinishingError) return jsonResponse({ error: { code: error.code, message: error.message } }, 409, { "cache-control": "no-store", "retry-after": String(error.retryAfter) });
     // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named
     if (error instanceof NoAccountNamedError) return fail(error.code, error.message, 409);
+    if (error instanceof ResetRegistryUnavailableError) return fail(error.code, error.message, 503);
     // such a code lets a device in only on its account's word, which a PC with no account service cannot ask for
     if (error instanceof AccountServiceOffError) return fail(error.code, error.message, 409);
     // a machine makes a code for an account only: its command line says how a device is added there

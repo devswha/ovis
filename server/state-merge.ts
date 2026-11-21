@@ -99,7 +99,7 @@ const earliest = (values: (string | null | undefined)[]): string | null =>
  * a freeze in force, so a row only the other dir holds is no import now and stays in that dir's file; and
  * `dropConflictingKeys`, so a row whose key differs between the two copies is dropped rather than given either key.
  */
-export interface MergeRules { readonly holdImports?: boolean; readonly dropConflictingKeys?: boolean; readonly onDropped?: (device: StoredDevice) => void; readonly sharedLegacyIdentity?: string }
+export interface MergeRules { readonly boundAccount?: string | null; readonly holdImports?: boolean; readonly dropConflictingKeys?: boolean; readonly onDropped?: (device: StoredDevice) => void; readonly sharedLegacyIdentity?: string }
 
 const credentialFingerprint = (identity: string, row: StoredDevice): string =>
   createHash("sha256").update(text([identity, row.id, row.relay_public_key, row.token_hash])).digest("base64url");
@@ -119,13 +119,21 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
   const myIds = new Set(mine.map((device) => device.id));
   const devices: StoredDevice[] = [];
   const held: StoredDevice[] = [];
-  for (const device of mine) {
+  for (const original of mine) {
     // revoked through the other dir since the last merge
-    if (other !== null && !incomplete.other && bases.other?.has(device.id) && !theirIds.has(device.id)) continue;
-    const twin = theirs.find((candidate) => candidate.id === device.id);
+    if (other !== null && !incomplete.other && bases.other?.has(original.id) && !theirIds.has(original.id)) continue;
+    const twin = theirs.find((candidate) => candidate.id === original.id);
     if (!twin) {
-      devices.push(device);
+      devices.push(original);
       continue;
+    }
+    let device = original;
+    // The other folder can still contain the settled pairing after this folder's link was cleared.
+    // Require the same credential: the mere absence of a binding does not turn a member into a paired row.
+    if (rules.boundAccount !== undefined && original.account !== undefined && original.account !== rules.boundAccount &&
+      twin.account === undefined && original.token_hash === twin.token_hash && original.relay_public_key === twin.relay_public_key) {
+      const { account: _account, linked_at: _linked, account_add: _add, member_approved_in: _member, joined_by: _joined, ...paired } = original;
+      device = paired;
     }
     if (rules.dropConflictingKeys && twin.relay_public_key !== device.relay_public_key) { rules.onDropped?.(device); continue; }
     const history = {
@@ -142,12 +150,16 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
     if (twin.token_hash !== device.token_hash) console.error(`Paired device ${device.id} has another credential in the other state dir; the one in use is kept`);
     // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
     // the later link wins: an unlinked copy, or one linked earlier, takes the other's account key
-    const takes = twin.account !== undefined && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""));
+    const staleMembership = rules.boundAccount !== undefined && twin.account !== undefined && twin.account !== rules.boundAccount;
+    const takes = twin.account !== undefined && !staleMembership
+      && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""));
     // how the row joined is merged apart from the account and key: a link on the device's own word (any mark but a
     // vouched one, `null` included) is kept whichever copy holds it and whichever account the row takes, as no later
     // link undoes it. Otherwise the kept copy's mark, or, where both copies are in that account, the other's when the
     // kept one has none: a vouched mark goes with its own account only. Only a missing mark is none
-    const { joined_by: own, origin: ownOrigin, ...rest } = device;
+    const { joined_by: own, origin: ownOrigin, account_add: ownAdd, ...rest } = device;
+    const add = [ownAdd, twin.account_add].find(record => record !== undefined &&
+      (rules.boundAccount === undefined || (rules.boundAccount !== null && isObject(record) && record["account"] === rules.boundAccount)));
     // this dir keeps its own origin for the key it admitted; only a copy that carries another origin, or another key,
     // takes it away: a copy with none erases nothing, and the sibling's never comes here (P22, T27 in 2d). Main never
     // writes an origin, so this holds with the release flag off too
@@ -156,7 +168,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
     // a key this dir never held is no row of its own here: its one-time legacy pass never stamps it (T50)
     const notOwnKey = mergedKey !== device.relay_public_key;
     const keptMark = takes ? twin.joined_by : own;
-    const otherMark = takes ? own : twin.joined_by;
+    const otherMark = takes ? own : staleMembership ? undefined : twin.joined_by;
     const marks = [keptMark, otherMark].filter((mark) => mark !== undefined);
     const word = marks.findIndex((mark) => !VOUCHED.has(mark));
     const joinedBy = word >= 0 ? marks[word] : device.account !== undefined && device.account === twin.account ? marks[0] : keptMark;
@@ -168,7 +180,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
       ...(notOwnKey ? { imported: true as const } : {}),
       ...history,
       // the signed add behind the row, kept from either copy (/api/account/status lists it)
-      ...(device.account_add === undefined && twin.account_add !== undefined ? { account_add: twin.account_add } : {}),
+      ...(add === undefined ? {} : { account_add: add }),
       ...(takes
         ? { relay_public_key: twin.relay_public_key, account: twin.account, ...(twin.added_by === undefined ? {} : { added_by: twin.added_by }), ...(twin.linked_at === undefined ? {} : { linked_at: twin.linked_at }), ...(twin.link_moved_key === undefined ? {} : { link_moved_key: twin.link_moved_key }) } : {}),
     });

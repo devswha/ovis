@@ -8,12 +8,12 @@ import "./DevicesPanel.css";
 import { ADDRESS_PC_FAILURES, type AddressPcFailure, type Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
 import { indexedAccountStore, type AccountSession } from "../lib/account/store.ts";
-import { pcAccountStatus } from "../lib/account/join.ts";
+import { pcAccountStatus, type PcAccountStatus } from "../lib/account/join.ts";
 import { listOfferedPc } from "../lib/account/addThisPc.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_POLL_MS, ACCOUNT_QR_WATCH_EVENT, accountQrFindings, accountQrNoticeWaiting, accountQrPending, addedBy, holdAccountQrNotice, resetAccountQrWatch, stopAccountQrWatch, takeAccountQrNotice, watchEndedAccountQr, type AccountQrBaseline, type AccountQrStray } from "../lib/accountQrWatch.ts";
-import { addAddressPc, ApiError, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, revokeDevice, startPairing, type RelayOffer, type SshCandidate, type TailnetPc } from "../lib/api.ts";
+import { addAddressPc, ApiError, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, revokeDevice, startPairing, type RelayOffer, type SshCandidate } from "../lib/api.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
@@ -98,7 +98,7 @@ export interface RelayAccount {
 }
 
 export interface ConnectPhoneDialogProps {
-  pcAddFromAccount?: boolean;
+  pcAddFromAccount?: PcAccountStatus["pcAddFromAccount"];
   onAccountSetup?: () => void;
   plan: PhonePlan;
   pairUrl: string | null;
@@ -246,14 +246,14 @@ export function useFoundPcs(machines: readonly Machine[], enabled = true) {
   // the server keeps its list from this window (owner_only): one line above the field says where it can be seen
   const [withheld, setWithheld] = useState(false);
   const [reads, setReads] = useState(0);
-  const [tailnetPeers, setTailnetPeers] = useState<ReadonlyMap<string, TailnetPc>>(new Map());
+  const [outdated, setOutdated] = useState<ReadonlySet<string>>(new Set());
   const [tailnetRead, setTailnetRead] = useState(false);
   useEffect(() => {
     if (!enabled) return;
     let live = true;
     setTailnetRead(false);
     findTailnetPcs().then(({ pcs }) => {
-      if (live) setTailnetPeers(new Map(pcs.map(pc => [new URL(pc.url).hostname.toLowerCase(), pc])));
+      if (live) setOutdated(new Set(pcs.filter(pc => pc.outdated).map(pc => new URL(pc.url).hostname.toLowerCase())));
     }, () => undefined).finally(() => { if (live) setTailnetRead(true); });
     return () => { live = false; };
   }, [reads, enabled]);
@@ -278,7 +278,7 @@ export function useFoundPcs(machines: readonly Machine[], enabled = true) {
   // a found PC is Added only as Add would add it: its own address, on ssh's default port and herdr's default session
   const stateOf = (pc: SshCandidate): FoundPcState =>
     machines.some(({ target }) => target?.destination === pc.destination && (target.port ?? 22) === 22 && target.session === undefined) ? "added"
-    : pc.tailnet !== undefined && tailnetPeers.get(pc.tailnet.toLowerCase())?.outdated ? "outdated"
+    : pc.tailnet !== undefined && outdated.has(pc.tailnet.toLowerCase()) ? "outdated"
     // until the Tailscale PCs' Ovis is known (it asks each PC, a few seconds), one of them waits, so an older one is not added
     : pc.tailnet !== undefined && !tailnetRead ? "waiting"
     : "open";
@@ -584,8 +584,8 @@ function CommandToCopy({ command }: { command: string }) {
  * The Ovis relay, the owner's on a direct page. With an account, either state ends in AccountQr: the relay's QR code
  * behind a press for a PC in no account, and for a PC that is in one how a device is added instead, with no QR code.
  */
-export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBySignIn, account, phone, active = true, onPairingHeld, onRevokedAll, machines = [], onConnectMachine, pcAddFromAccount = false, onAccountSetup }: {
-  pcAddFromAccount?: boolean | undefined; onAccountSetup?: (() => void) | undefined;
+export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBySignIn, account, phone, active = true, onPairingHeld, onRevokedAll, machines = [], onConnectMachine, pcAddFromAccount, onAccountSetup }: {
+  pcAddFromAccount?: PcAccountStatus["pcAddFromAccount"]; onAccountSetup?: (() => void) | undefined;
   relay: RelayState; closesGate: boolean; signedIn: boolean; joinBySignIn: boolean; account: RelayAccount | null; phone: boolean;
   accountId?: string | null;
   active?: boolean;
@@ -595,7 +595,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
 }) {
   const t = useT();
   const [showAccountPcs, setShowAccountPcs] = useState(false);
-  const accountAdd = pcAddFromAccount && onConnectMachine ? (
+  const accountAdd = pcAddFromAccount === true && onConnectMachine ? (
     showAccountPcs && signedIn && joinBySignIn ? <RelayAccountPcs machines={machines} onConnectMachine={onConnectMachine} /> :
       <div className="connect-found" data-testid="pc-add-source-bound">
         <p className="settings-hint">{t("This PC is in an account. Add PCs from your account.")}</p>
@@ -646,6 +646,13 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
     </div>
   );
   const switchFailure = switchError !== null && <p className="settings-hint relay-error" role="alert">{switchError}</p>;
+  if (pcAddFromAccount === "unavailable") return (
+    <>
+      <p className="settings-hint" role="status">{t("Can't add a PC right now. Try again in a moment.")}</p>
+      {relaySwitch}
+      {switchFailure}
+    </>
+  );
   if (account === null) return (
     <>
       {accountAdd}
@@ -667,7 +674,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
         {!showAccountPcs && accountAdd}
-        <RelaySignIn service={account.service} boundPc={pcAddFromAccount || pcIn !== null} onOpenAccount={account.onOpen} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(); }} />
+        <RelaySignIn service={account.service} boundPc={pcAddFromAccount === true || pcIn !== null} onOpenAccount={account.onOpen} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(); }} />
       </div>
       {qr(true)}
     </>

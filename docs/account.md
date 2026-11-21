@@ -848,7 +848,10 @@ digits as before, and its notice says what to do if nobody added it. A PC bound 
 account as soon as a snapshot read finds the account no longer lists it. Before recording the
 `unlisted` clear, the PC ends account-only rows and removes membership from credentials whose
 recorded origin proves they paired here. Those pairings keep their keys and roles, including
-after an offline restart. An imported or invalid origin does not qualify. Unlisting does not
+after an offline restart from either state folder. A pairing by digits counts as local only when
+this PC approved the current key; one approved by an account member device does not qualify.
+The sibling's old membership or signed add does not restore the cleared binding. An imported or
+invalid origin does not qualify. Unlisting does not
 lift a lock, block, freeze, Revoke or tombstone.
 
 A wrong number ends that comparison; the person starts again from **Add** on the dashboard. A device without an account
@@ -861,6 +864,12 @@ If this PC cannot read its account state, it refuses a PC add rather than assumi
 outside an account. Try again in a moment. If the refusal persists, run `ovis recover` in a
 terminal on this PC to inspect its local state. Do not delete its account files to retry:
 they also record which devices must stay out.
+
+The target-bound refusal is part of the **PC-add protocol**, not proof that every
+client with a pairing code is a PC. On a bound non-Linux target, older clients and
+clients that do not identify a PC add can still use legacy code pairing. Full
+PC-to-PC key proof remains a follow-up. This limitation does not change the source
+PC's refusal or the Tailscale tab's SSH connection.
 
 **Add a connection → Ovis relay** on a PC (A) whose page is signed in, with A in that account, lists
 the account's other PCs: **Connect** for one already in A's machine list,

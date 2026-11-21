@@ -39,6 +39,11 @@ export class NoAccountNamedError extends Error {
   }
 }
 
+export class ResetRegistryUnavailableError extends Error {
+  readonly code = "gate_unavailable";
+  constructor() { super("Cannot reset the relay identity while this PC's paired device registry is unreadable."); }
+}
+
 /**
  * The account service is turned off on this PC (OVIS_ACCOUNT_SERVICE_URL=off), so no code is made that puts it in an
  * account: a device that pairs with one is let in only on its account's word (server/account/records.ts applyLink).
@@ -623,6 +628,7 @@ export class RelayService {
     if (!services || this.shuttingDown) throw new Error("Relay service is not available.");
     if (services.serveOnly) { this.blocked = "serve_only"; return this.status(); }
     // Close old admissions before revoking or replacing the key they authenticated against.
+    if (services.devices.error !== null) throw new ResetRegistryUnavailableError();
     if (this.resetting) throw new Error("Relay identity reset is in progress.");
     this.resetting = true;
     try {

@@ -456,6 +456,8 @@ export class ApiError extends Error {
 export const routeMissing = (error: unknown): boolean => error instanceof ApiError && error.status === 404 && error.code === "not_found";
 
 const LOCALIZED_ERRORS: Readonly<Record<string, () => string>> = {
+  pc_add_source_bound: () => t("This PC is in an account. Add PCs from your account."),
+  pc_add_target_bound: () => t("That PC is in an account. Add it from that account."),
   pc_add_account_unavailable: () => t("Can't add a PC right now. Try again in a moment."),
   remote_response_too_large: () => t("The other PC's answer was larger than this app accepts"),
   remote_response_invalid: () => t("The other PC's answer could not be read"),

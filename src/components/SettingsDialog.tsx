@@ -63,7 +63,7 @@ import { AccountSection, accountServiceHere, type AccountState } from "./Account
 import { shellAccountServiceOf } from "../lib/account/service.ts";
 import { AccountPcRows, NoAccountPcHint, removePcFromAccount } from "./AccountPcs.tsx";
 import { DRAWER_QUERY, leavePcList, pcListExit, removablePc, STATE_WORD } from "./MachineSidebar.tsx";
-import { pcAccountStatus } from "../lib/account/join.ts";
+import { AccountPcError, pcAccountStatus, type PcAccountStatus } from "../lib/account/join.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
@@ -1220,13 +1220,15 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   // a new device joins by signing in only to a PC in the account this browser is signed in to (docs/account.md
   // "Joining through the account")
   const [pcAccount, setPcAccount] = useState<string | null>(null);
-  const [pcAddFromAccount, setPcAddFromAccount] = useState(false);
+  const [pcAddFromAccount, setPcAddFromAccount] = useState<PcAccountStatus["pcAddFromAccount"]>();
   useEffect(() => {
-    if (!connecting && account.account === null) { setPcAccount(null); setPcAddFromAccount(false); return; }
+    if (!connecting && account.account === null) { setPcAccount(null); setPcAddFromAccount(undefined); return; }
     let live = true;
     pcAccountStatus(apiFetch).then((status) => {
-      if (live) { setPcAccount(status.account); setPcAddFromAccount(status.pcAddFromAccount === true); }
-    }, () => { if (live) { setPcAccount(null); setPcAddFromAccount(false); } });
+      if (live) { setPcAccount(status.account); setPcAddFromAccount(status.pcAddFromAccount); }
+    }, (error: unknown) => {
+      if (live) { setPcAccount(null); setPcAddFromAccount(error instanceof AccountPcError && error.code === "strict" ? "unavailable" : undefined); }
+    });
     return () => { live = false; };
   }, [account.account, connecting]);
   const joinBySignIn = account.account !== null && pcAccount === account.account && relay.status?.phase === "online";

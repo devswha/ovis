@@ -317,7 +317,10 @@ export function createServer(
   const pcIdentity = ownIdentity === undefined || otherIdentity === undefined || ownIdentity === otherIdentity ? ownIdentity ?? otherIdentity : undefined;
   const sharedLegacyIdentity = pcIdentity !== undefined && (ownBinding === undefined || otherBinding === undefined || ownBinding === otherBinding)
     ? pcIdentity : undefined;
-  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, sharedLegacyIdentity, onDropped: (device) => conflicts.push(device) } : {}) : null;
+  // Before the first migration, the legacy rows themselves establish the PC's account. A recorded clear is never fresh.
+  const bindingRule = pcAccount && pcAccount.strict === null && (!pcAccount.migrating || pcAccount.clears().length > 0)
+    ? { boundAccount: pcAccount.account() } : {};
+  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { ...bindingRule, holdImports: closure, dropConflictingKeys: true, sharedLegacyIdentity, onDropped: (device) => conflicts.push(device) } : {}) : null;
   // With no merge this start (a sibling now of another identity, or none given), only credentials an earlier merge
   // witnessed stay Step 1 credentials; a merge that ran decides alone, so its deletions still veto.
   const siblingLegacyCredential = merge ? merge.legacyCredential : opensAll && !untouched ? recordedLegacyCredential(stateDir) : undefined;
