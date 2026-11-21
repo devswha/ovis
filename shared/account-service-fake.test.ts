@@ -35,6 +35,33 @@ async function pull(service: FakeAccountService, machine: ReturnType<typeof pc>,
 }
 
 describe("the fake account service", () => {
+  test("PCR-1 compat: a device code's sign-in ends only its own pending listing, logging nothing; everything else is 403", async () => {
+    const service = new FakeAccountService();
+    const put = (token: string, machine: ReturnType<typeof pc>) => service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, {
+      method: "PUT", body: JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.test" }), headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    }));
+    const remove = async (token: string, machine: ReturnType<typeof pc>) => {
+      const answer = await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } }));
+      return answer.status === 204 ? 204 : `${answer.status} ${((await answer.json()) as { error?: { code?: string } }).error?.code}`;
+    };
+    const cli = service.issueToken("acct_1", { device: true });
+    const mine = pc();
+    expect((await put(cli, mine)).status).toBe(200);
+    // another device code's sign-in, then the lister itself, which can list it again
+    expect(await remove(service.issueToken("acct_1", { device: true }), mine)).toBe("403 own_sign_in_required");
+    expect(await remove(cli, mine)).toBe(204);
+    expect(service.pcs("acct_1")).toEqual([]);
+    expect((await put(cli, mine)).status).toBe(200);
+    // confirmed or admitted since: no longer its own to end
+    for (const after of [{ listed_by_device: false }, { admitted_at: new Date().toISOString() }, { listed_by_session: undefined }] as Partial<FakePc>[]) {
+      const machine = pc();
+      expect((await put(cli, machine)).status).toBe(200);
+      Object.assign(service.pcs("acct_1").find((entry) => entry.server_id === machine.serverId)!, after);
+      expect(await remove(cli, machine)).toBe("403 own_sign_in_required");
+    }
+    expect(await remove(cli, pc())).toBe("403 own_sign_in_required");
+  });
+
   test("a record a client queues reaches each listed PC once it proves its key, and an ack clears it", async () => {
     const service = new FakeAccountService();
     const token = service.issueToken("acct_1");

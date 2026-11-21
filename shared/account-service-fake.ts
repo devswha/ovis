@@ -70,7 +70,9 @@ export interface FakePc { server_id: string; label: string; public_key: string; 
   /** PCL-1: listed by a sign-in that was no app's own (a device code) and not confirmed since, as the service's `listed_by_device` */
   listed_by_device?: boolean;
   /** listed by a device code while Step 2 was on: until confirmed or admitted it leaves the account never used (account#62) */
-  pending_under_step2?: boolean }
+  pending_under_step2?: boolean;
+  /** the sign-in (family) that wrote the listing, as the service's `listed_by_session` (account#63): upkeep never rewrites it */
+  listed_by_session?: string }
 /** How long a PC added in one press stays new to the account's other devices. */
 export const PC_NEW_MS = 24 * 60 * 60_000;
 /** One-press PC adds one account may make per rolling day; past it 429 `pc_add_cap`. */
@@ -571,7 +573,7 @@ export class FakeAccountService {
       const unconfirmed = new URL(request.url).searchParams.get("include") === "unconfirmed";
       // null while step 2 is off for the account, and once passed
       const keyAt = this.keyRegisteredAt.get(session.family);
-      return json({ pcs: [...directory.values()].filter((entry) => unconfirmed || !this.opensAll || entry.listed_by_device !== true).map(({ exempt, listed_by_device, pending_under_step2: _pending, ...entry }) => ({
+      return json({ pcs: [...directory.values()].filter((entry) => unconfirmed || !this.opensAll || entry.listed_by_device !== true).map(({ exempt, listed_by_device, pending_under_step2: _pending, listed_by_session: _lister, ...entry }) => ({
         ...entry,
         unconfirmed: this.opensAll && listed_by_device === true,
         new_until: this.opensAll && entry.new_until != null && Date.parse(entry.new_until) > this.now() ? entry.new_until : null,
@@ -647,7 +649,8 @@ export class FakeAccountService {
       const entry: FakePc = { server_id: pc, label: body.label, public_key: body.public_key as string, relay: body.relay, added_at: before?.added_at ?? this.iso(), last_seen_at: before?.last_seen_at ?? null,
         ...(before?.new_until == null ? {} : { new_until: before.new_until, admitted_at: before.admitted_at ?? null, exempt: before.exempt ?? false }),
         listed_by_device: before === undefined ? !own : before.listed_by_device === true && !confirming,
-        pending_under_step2: before === undefined ? !own && this.opensAll : before.pending_under_step2 === true };
+        pending_under_step2: before === undefined ? !own && this.opensAll : before.pending_under_step2 === true,
+        ...(before === undefined ? { listed_by_session: session.family } : before.listed_by_session === undefined ? {} : { listed_by_session: before.listed_by_session }) };
       // a confirm makes the PC one the account's devices open, as the admit does: new to them for PC_NEW_MS (C3). It
       // writes no admission: the row it confirms is what makes the account used from then on
       if (confirming) {
@@ -657,12 +660,21 @@ export class FakeAccountService {
       directory.set(pc, entry);
       if (proven) this.pcLeaves.delete(box(pc, account));
       if (fresh || confirming) this.ring(account, session.family);
-      const { exempt: _exempt, listed_by_device, pending_under_step2: _pending, ...shown } = entry;
+      const { exempt: _exempt, listed_by_device, pending_under_step2: _pending, listed_by_session: _lister, ...shown } = entry;
       return json({ pc: { ...shown, unconfirmed: this.opensAll && listed_by_device === true } });
     }
     if (pc !== undefined && request.method === "DELETE") {
-      // PCR-1: removing unbinds the PC and cuts the account's devices off it, so it asks what deleting the account asks
-      if (this.deviceFamilies.has(session.family)) return problem(403, "own_sign_in_required", "Sign in on this device to remove a PC");
+      // PCR-1: removing unbinds the PC and cuts the account's devices off it, so it asks what deleting the account asks. The
+      // compat ruling's one exception: a device code's sign-in ends its own pending listing (written by it, never confirmed
+      // or admitted), as an installed CLI renews its card; that listing was never a member, so it leaves the account unused
+      if (this.deviceFamilies.has(session.family)) {
+        const own = directory.get(pc);
+        if (own === undefined || own.listed_by_session !== session.family || own.listed_by_device !== true || own.admitted_at != null) {
+          return problem(403, "own_sign_in_required", "Sign in on this device to remove a PC");
+        }
+        directory.delete(pc);
+        return new Response(null, { status: 204 });
+      }
       if (!recent) return problem(403, "reauth_required", "Sign in again first");
       const removed = directory.get(pc);
       directory.delete(pc);
