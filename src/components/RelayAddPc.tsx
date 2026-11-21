@@ -4,13 +4,41 @@ import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } fr
 import { ChevronLeft, ChevronRight, Globe, QrCode, SquareTerminal, type LucideIcon } from "lucide-react";
 
 import { useT, type Translate } from "../lib/i18n.ts";
-import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
+import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.ts";
 import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 import { SheepMascot } from "./SheepMascot.tsx";
 
 /** The phone app's QR scanner (@capacitor/barcode-scanner, app/package.json) and its SSH screen (Android's OvisSsh). */
 const SCANNER = "CapacitorBarcodeScanner";
 const SSH = "OvisSsh";
+
+const SSH_TARGET = /^(?:ssh:\/\/)?([^\s@/:]+)@([^\s@/:[\]]+|\[[0-9a-f:.]+\])(?::(\d{1,5}))?\/?$/i;
+
+/**
+ * An SSH login typed where an address goes, `user@host` or `user@host:port` (or `ssh://` with them), as the app's own
+ * Direct field reads it (app/web/shell.js `directTarget`): its text as `user@host[:port]`, or null for anything else.
+ */
+export function sshTarget(text: string): string | null {
+  const found = SSH_TARGET.exec(text.trim());
+  if (found === null) return null;
+  const port = found[3] === undefined ? 22 : Number(found[3]);
+  if (port < 1 || port > 65535) return null;
+  return `${found[1]}@${found[2]}${port === 22 ? "" : `:${port}`}`;
+}
+
+/**
+ * Whether this page can hand SSH to the phone app: a PC page (the hosted app's included) never adds an SSH PC itself
+ * (OvisSsh answers only the app's own pages), so it asks the app to open its own connect screen with the login filled
+ * in (HerdrShell openSshSetup), where the person adds it. An app without that, and a browser, have no SSH here.
+ */
+export function sshHandoff(): boolean {
+  return hasNativePlugin(SSH) && hasNativeMethod("HerdrShell", "openSshSetup");
+}
+
+/** Opens the app's own SSH screen, `target` (`user@host[:port]`) filled in, or empty to type one there. */
+export function openSshSetup(target: string): Promise<unknown> {
+  return callNative("HerdrShell", "openSshSetup", { target });
+}
 
 /**
  * An address typed as people write it: `my-pc.tailnet.ts.net`, `192.168.0.12:7421` or a whole URL. A bare IPv4
@@ -141,15 +169,20 @@ export function useAddressOpen() {
  * A PC's address in one field (`label` names it) and its submit button, then what opening it ended on; `open`: the
  * opener of a screen that has other ways to open a PC beside it, which then shows what opening ended on itself.
  */
-export function AddressForm({ label, placeholder, submit: submitLabel, labelShown = false, autoFocus = false, open }: {
+export function AddressForm({ label, placeholder, submit: submitLabel, labelShown = false, autoFocus = false, open, ssh = false }: {
   readonly label: string; readonly placeholder: string; readonly submit: string; readonly labelShown?: boolean; readonly autoFocus?: boolean; readonly open?: AddressOpen;
+  /** an SSH login typed here goes to the phone app's own SSH screen (sshHandoff) */
+  readonly ssh?: boolean;
 }) {
   const fieldId = useId();
   const own = useAddressOpen();
-  const { error, take } = open ?? own;
+  const { error, setError, failed, take } = open ?? own;
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    take(addressOf((event.currentTarget.elements.namedItem("address") as HTMLInputElement).value));
+    const typed = (event.currentTarget.elements.namedItem("address") as HTMLInputElement).value;
+    const login = ssh ? sshTarget(typed) : null;
+    if (login !== null) { setError(null); openSshSetup(login).catch(failed); return; }
+    take(addressOf(typed));
   };
   return (
     <>
@@ -198,8 +231,8 @@ export function RelayAddPc({ onBack, devices, qr }: {
           <div className="relay-add-ways">
             <Way icon={QrCode} title={t("Scan a QR code")} sub={t("The QR on the PC's screen")} action="add-qr" onClick={scan} />
             <Way icon={Globe} title={t("Enter an address")} sub="Tailscale · Wi-Fi" action="add-address" onClick={() => go("address")} />
-            {/* only where the phone app can reach a PC over SSH itself: a page without it draws no way it cannot take */}
-            {hasNativePlugin(SSH) && <Way icon={SquareTerminal} title="SSH" sub="user@host" action="add-ssh" onClick={() => { setError(null); callNative(SSH, "add").catch(failed); }} />}
+            {/* only where the phone app can take SSH to its own screen: a page without it draws no way it cannot take */}
+            {sshHandoff() && <Way icon={SquareTerminal} title="SSH" sub="user@host" action="add-ssh" onClick={() => { setError(null); openSshSetup("").catch(failed); }} />}
           </div>
           {devices.length > 0 && <SavedPcs devices={devices} />}
         </>

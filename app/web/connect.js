@@ -441,3 +441,18 @@ async function openAppLink() {
 }
 
 void openAppLink();
+
+// SSH asked for on a PC's page (the hosted app's Direct tab, HerdrShell openSshSetup): only the app's own pages add an
+// SSH PC, so it comes here, on Direct with the login filled in, and goes to the SSH setup screen as typed here would
+async function openSshSetupAsked() {
+  let asked;
+  try { asked = await shell("takeSshSetup"); }
+  catch { return; }
+  if (!asked?.asked) return;
+  pick("direct");
+  input.value = asked.target;
+  if (directTarget(asked.target).ssh) await connectDirect(asked.target);
+  else input.focus();
+}
+
+void openSshSetupAsked();

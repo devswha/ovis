@@ -8,7 +8,7 @@ import { tailnetHost } from "../lib/phone.ts";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 import { NewPcNotices } from "./NewPcNotices.tsx";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
-import { AddressForm, canScanQr, SavedPcs, scanQr, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
+import { AddressForm, canScanQr, SavedPcs, scanQr, sshHandoff, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
 
 type ConnectWay = "relay" | "tailscale" | "direct";
 const CONNECT_WAYS: readonly ConnectWay[] = ["relay", "tailscale", "direct"];
@@ -121,13 +121,17 @@ function TailscalePanel() {
   );
 }
 
-/** The Direct tab: a PC's address on this network in one field, and its QR scan where the phone app can scan. */
+/**
+ * The Direct tab: a PC's address on this network in one field, and its QR scan where the phone app can scan. In the phone
+ * app the field takes SSH's user@host too, which opens the app's own SSH screen with it filled in (sshHandoff).
+ */
 function DirectPanel() {
   const t = useT();
   const open = useAddressOpen();
+  const ssh = sshHandoff();
   return (
     <div className="connect-start-panel" data-tab-panel="direct">
-      <AddressForm open={open} labelShown label={t("PC address")} placeholder="192.168.0.10:7317" submit={t("Connect")} />
+      <AddressForm open={open} labelShown ssh={ssh} label={ssh ? t("Address or SSH") : t("PC address")} placeholder={ssh ? "192.168.0.10:7317 · user@host" : "192.168.0.10:7317"} submit={t("Connect")} />
       {canScanQr() && <ScanWay open={open} failed={open.failed} />}
       <OpenError open={open} />
     </div>

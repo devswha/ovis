@@ -8,7 +8,7 @@ interface CapacitorBridge {
   getPlatform?: () => string;
   nativePromise?: (plugin: string, method: string, options?: Record<string, unknown>) => Promise<unknown>;
   /** the app's native plugins, announced to the page before its first script runs */
-  PluginHeaders?: ReadonlyArray<{ name?: unknown }>;
+  PluginHeaders?: ReadonlyArray<{ name?: unknown; methods?: ReadonlyArray<{ name?: unknown }> }>;
 }
 
 export const PUSH_PLUGIN = "OvisPush";
@@ -36,6 +36,11 @@ export function inAndroidApp(): boolean {
  */
 export function hasNativePlugin(name: string): boolean {
   return inNativeApp() && (bridge()?.PluginHeaders ?? []).some((header) => header.name === name);
+}
+
+/** Whether the app's plugin `name` has `method`: an app built before the method was added has the plugin without it. */
+export function hasNativeMethod(name: string, method: string): boolean {
+  return inNativeApp() && (bridge()?.PluginHeaders ?? []).some((header) => header.name === name && (header.methods ?? []).some((each) => each.name === method));
 }
 
 /** Calls `method` of the app's plugin `plugin`; a refusal rejects with the plugin's `code` on the error. */

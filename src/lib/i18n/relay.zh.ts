@@ -119,6 +119,7 @@ export const RELAY_ZH: Record<string, string> = {
   "Turn on Tailscale to connect": "打开 Tailscale 才能连接",
   "Open Tailscale": "打开 Tailscale",
   "PCs on Tailscale": "Tailscale 上的电脑",
+  "Address or SSH": "地址或 SSH",
   "Scan a QR code": "扫描二维码",
   "The QR on the PC's screen": "PC 屏幕上的二维码",
   "Enter an address": "输入地址",

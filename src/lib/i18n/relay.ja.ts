@@ -119,6 +119,7 @@ export const RELAY_JA: Record<string, string> = {
   "Turn on Tailscale to connect": "接続するには Tailscale をオンにしてください",
   "Open Tailscale": "Tailscale を開く",
   "PCs on Tailscale": "Tailscale 上の PC",
+  "Address or SSH": "アドレスまたは SSH",
   "Scan a QR code": "QR を読み取る",
   "The QR on the PC's screen": "PC の画面の QR",
   "Enter an address": "アドレスを入力",

@@ -158,6 +158,38 @@ public class HerdrShellPlugin extends Plugin {
         call.resolve();
     }
 
+    /**
+     * From any page of the app, a PC's (the hosted app's) included: the app's own connect screen, on Direct with
+     * `target` (an SSH login, user@host[:port], or empty) in its field. Nothing is added here, and no PC page is given
+     * OvisSsh: the connect screen, an app page, takes the login to the SSH setup screen, where the person adds the PC.
+     */
+    @PluginMethod
+    public void openSshSetup(PluginCall call) {
+        String target = call.getString("target", "");
+        if (target == null || target.length() > 300) {
+            call.reject("That is not an SSH login.");
+            return;
+        }
+        PCStore.sshSetup = target;
+        PCStore.setCurrent(getContext(), null);
+        call.resolve();
+        reopen();
+    }
+
+    /** The connect screen's alone: the SSH login a page asked it to open with (openSshSetup), taken once. */
+    @PluginMethod
+    public void takeSshSetup(PluginCall call) {
+        String target = null;
+        if (showingConnectScreen()) {
+            target = PCStore.sshSetup;
+            PCStore.sshSetup = null;
+        }
+        JSObject result = new JSObject();
+        result.put("asked", target != null);
+        result.put("target", target == null ? "" : target);
+        call.resolve(result);
+    }
+
     @PluginMethod
     public void disconnect(PluginCall call) {
         PCStore.setCurrent(getContext(), null);

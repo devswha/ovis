@@ -615,6 +615,13 @@ relay, no account and no port open but SSH. A user guide is [ssh-from-phone.md](
 the iOS plan is [ios-ssh-plan.md](ios-ssh-plan.md). Nothing in `server/` or `shared/` changes: the PC
 runs the Ovis it already has.
 
+Only the app's own pages add an SSH PC (`OvisSshPlugin.fromAppPage`); a PC's page, the hosted app's included,
+never gets that. The hosted app's Direct tab takes `user@host` in the phone app all the same: it calls
+`HerdrShell.openSshSetup`, which opens the connect screen on Direct with that login filled in
+(`PCStore.sshSetup`, taken once with `takeSshSetup`, which only the connect screen answers), and the connect
+screen takes it to the SSH setup screen as a login typed there would. An app without that method, and a
+browser, offer no SSH on the hosted page.
+
 How a page gets there (`app/android/app/src/main/java/sh/ovis/app/Ssh*.java`, `OvisSshPlugin`):
 
 - Each SSH PC is saved under a loopback origin of its own on the phone,

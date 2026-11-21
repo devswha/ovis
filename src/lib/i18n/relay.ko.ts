@@ -119,6 +119,7 @@ export const RELAY_KO: Record<string, string> = {
   "Turn on Tailscale to connect": "Tailscale을 켜야 연결할 수 있어요",
   "Open Tailscale": "Tailscale 열기",
   "PCs on Tailscale": "Tailscale의 PC",
+  "Address or SSH": "주소 또는 SSH",
   "Scan a QR code": "QR 찍기",
   "The QR on the PC's screen": "PC 화면의 QR",
   "Enter an address": "주소 입력",

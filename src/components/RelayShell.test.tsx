@@ -454,6 +454,42 @@ describe("the hosted front page", () => {
       }
     });
 
+    it("hands SSH from the Direct tab to the phone app's own SSH screen, and offers no SSH in a browser", async () => {
+      const called: string[] = [];
+      const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
+      const directField = () => renderer!.root.find((node) => node.type === "input" && node.props.name === "address");
+      const submitDirect = async (typed: string) => {
+        const form = renderer!.root.find((node) => node.type === "form");
+        await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: typed }) } } }); });
+      };
+      await mount(shown);
+      await act(async () => { tab("direct").props.onClick(); });
+      expect(directField().props.placeholder).toBe("192.168.0.10:7317");
+      expect(textOf(renderer!.root.find((node) => node.type === "label"))).toBe("PC address");
+      await act(async () => { renderer!.unmount(); });
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "HerdrShell", methods: [{ name: "open" }, { name: "openSshSetup" }] }, { name: "OvisSsh", methods: [{ name: "add" }] }],
+        nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
+          called.push(`${plugin}.${method}${typeof options.target === "string" ? ` ${options.target}` : ""}`);
+          return {};
+        },
+      } });
+      try {
+        await mount(shown);
+        await act(async () => { tab("direct").props.onClick(); });
+        expect(textOf(renderer!.root.find((node) => node.type === "label"))).toBe("Address or SSH");
+        await submitDirect("pi@192.168.0.20:2222");
+        expect(called).toEqual(["HerdrShell.openSshSetup pi@192.168.0.20:2222"]);
+        // the hosted page never adds an SSH PC itself: the app's own page does, after the person confirms there
+        expect(called.some((line) => line.startsWith("OvisSsh."))).toBe(false);
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
     it("takes Pair with a code from Add a PC opened by its address to the code field alone, signed out", async () => {
       (window.location as { hash?: string }).hash = "#add";
       const shown = { ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, addEntry: true };
