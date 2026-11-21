@@ -2204,8 +2204,9 @@ button {
   white-space: nowrap;
 }
 
+/* a reconnect is not an error: the header names it in the crumb's own neutral colour */
 .context-connection.is-reconnecting {
-  color: var(--status-reconnecting);
+  color: var(--text-dim);
 }
 
 .context-connection.is-connected {

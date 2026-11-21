@@ -3,59 +3,73 @@ import { headerConnection, NO_TRACK, stepConnection, type ConnectionFacts, type 
 
 const live: ConnectionFacts = { scope: "a:local", reportedBy: "a:local", connected: true, connectedBefore: true, outputStopped: false };
 
-function lines(sequence: ConnectionFacts[]): (string | null)[] {
+/** `"1s"` is the reconnect lasting RECONNECTING_SHOWN_AFTER_MS: the hook's timer marks the loss shown */
+function lines(sequence: (ConnectionFacts | "1s")[]): (string | null)[] {
   let track: ConnectionTrack = NO_TRACK;
-  return sequence.map((facts) => {
-    track = stepConnection(track, facts);
+  let facts = live;
+  return sequence.map((step) => {
+    if (step === "1s") track = track.lostOn === null ? track : { ...track, shown: true };
+    else { facts = step; track = stepConnection(track, facts); }
     return headerConnection(facts, track);
   });
 }
+const shownLoss = (scope = "a:local"): ConnectionTrack => ({ lostOn: scope, recoveredOn: null, shown: true });
 
 describe("headerConnection", () => {
   it("says nothing while the PC is connected: the crumb has the line", () => {
     expect(headerConnection(live, NO_TRACK)).toBeNull();
   });
 
-  it("says Reconnecting once a connection this page had is lost", () => {
-    expect(headerConnection({ ...live, connected: false }, NO_TRACK)).toBe("reconnecting");
+  it("says Reconnecting once a connection this page had has been lost for a second", () => {
+    expect(headerConnection({ ...live, connected: false }, { ...shownLoss(), shown: false })).toBeNull();
+    expect(headerConnection({ ...live, connected: false }, shownLoss())).toBe("reconnecting");
   });
 
   it("promises no reconnect for output stopped by a stall: nothing retries, the chip says Disconnected", () => {
-    expect(headerConnection({ ...live, connected: false, outputStopped: true }, NO_TRACK)).toBeNull();
+    expect(headerConnection({ ...live, connected: false, outputStopped: true }, shownLoss())).toBeNull();
   });
 
   it("leaves the first connection to the chip: a pane opening is not a reconnect", () => {
-    expect(headerConnection({ ...live, connected: false, connectedBefore: false }, NO_TRACK)).toBeNull();
+    expect(headerConnection({ ...live, connected: false, connectedBefore: false }, shownLoss())).toBeNull();
   });
 
   it("says Connected while the scope it came back on is the one shown", () => {
-    expect(headerConnection(live, { lostOn: null, recoveredOn: "a:local" })).toBe("connected");
-    expect(headerConnection({ ...live, connected: false }, { lostOn: null, recoveredOn: "a:local" })).toBe("reconnecting");
+    expect(headerConnection(live, { lostOn: null, recoveredOn: "a:local", shown: false })).toBe("connected");
+    expect(headerConnection({ ...live, connected: false }, { lostOn: null, recoveredOn: "a:local", shown: false })).toBeNull();
   });
 
   it("keeps each PC's recovery to that PC", () => {
-    expect(headerConnection({ ...live, scope: "a:devbox", reportedBy: "a:devbox" }, { lostOn: null, recoveredOn: "a:local" })).toBeNull();
+    expect(headerConnection({ ...live, scope: "a:devbox", reportedBy: "a:devbox" }, { lostOn: null, recoveredOn: "a:local", shown: false })).toBeNull();
   });
 });
 
 describe("the line over time", () => {
-  it("goes Reconnecting, then Connected, once the same connection is back", () => {
-    expect(lines([live, { ...live, connected: false }, live])).toEqual([null, "reconnecting", "connected"]);
+  it("goes Reconnecting a second into a loss, then Connected, once the same connection is back", () => {
+    expect(lines([live, { ...live, connected: false }, "1s", live])).toEqual([null, null, "reconnecting", "connected"]);
+  });
+
+  it("names nothing for a reconnect over within a second, neither the loss nor its return", () => {
+    expect(lines([live, { ...live, connected: false }, live])).toEqual([null, null, null]);
+  });
+
+  it("keeps the loss's second running while it stays lost", () => {
+    const lostHere = { ...live, connected: false };
+    expect(lines([live, lostHere, lostHere, "1s", lostHere])).toEqual([null, null, null, "reconnecting", "reconnecting"]);
   });
 
   it("does not say Connected after an output stall: that connection was never said to be reconnecting", () => {
-    expect(lines([live, { ...live, connected: false, outputStopped: true }, live])).toEqual([null, null, null]);
+    expect(lines([live, { ...live, connected: false, outputStopped: true }, "1s", live])).toEqual([null, null, null, null]);
   });
 
   it("resets on a switch to another PC: its first connection is not a return", () => {
     const lostHere = { ...live, connected: false };
     const switched = { ...live, scope: "a:devbox", reportedBy: "a:local", connected: false, connectedBefore: false };
     const devboxUp = { ...live, scope: "a:devbox", reportedBy: "a:devbox" };
-    expect(lines([live, lostHere, switched, devboxUp])).toEqual([null, "reconnecting", null, null]);
+    expect(lines([live, lostHere, "1s", switched, devboxUp])).toEqual([null, null, "reconnecting", null, null]);
   });
 
   it("says Connected the render the connection is back, before the effect moves the track: the crumb never flashes", () => {
-    let track = stepConnection(stepConnection(NO_TRACK, live), { ...live, connected: false });
+    let track: ConnectionTrack = { ...stepConnection(stepConnection(NO_TRACK, live), { ...live, connected: false }), shown: true };
     expect(headerConnection(live, track)).toBe("connected");
     track = stepConnection(track, live);
     expect(headerConnection(live, track)).toBe("connected");
@@ -65,6 +79,6 @@ describe("the line over time", () => {
     const aLost = { ...live, connected: false };
     const bActiveStale = { ...aLost, scope: "b:local" };
     const bReports = { ...live, scope: "b:local", reportedBy: "b:local" };
-    expect(lines([live, aLost, bActiveStale, bReports])).toEqual([null, "reconnecting", null, null]);
+    expect(lines([live, aLost, "1s", bActiveStale, bReports])).toEqual([null, null, "reconnecting", null, null]);
   });
 });

@@ -34,6 +34,14 @@ export interface Transport {
   resourceUrl(path: string, signal?: AbortSignal): string | Promise<string>;
 }
 
+/**
+ * A request the relay transport could not carry because its carrier is down while it reconnects: the PC never
+ * saw it, so it says nothing about the PC. Still a TypeError, as a failed fetch is.
+ */
+export class CarrierDownError extends TypeError {
+  constructor() { super("Relay carrier is disconnected"); }
+}
+
 const nativeReads = new Map<AbortController, string>();
 
 function readMachine(pathname: string): string {

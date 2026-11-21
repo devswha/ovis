@@ -4,6 +4,7 @@ import { LIMITS_V1, REQUEST_HEADERS } from "../../../shared/relay-mux.ts";
 import { isTailnetCarrier, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
+import { CarrierDownError } from "../transport.ts";
 import { openRelayChannel, RelayNewSessionsRefusedError, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
 import { AccountOpenUnsupportedError, DirectCarrierUnusableError, openRelayChannelWithFallback, probeDirect } from "../../../shared/relay-channel.ts";
 import { openRefusalOf } from "../account/openPc.ts";
@@ -220,7 +221,7 @@ export class RelayTransport implements Transport {
         this.endUpgrade();
         this.channel = undefined;
         this.routeChanged();
-        this.failWaitingHttp(new TypeError("Relay carrier is disconnected"));
+        this.failWaitingHttp(new CarrierDownError());
         if (!switching) this.options.onClose?.(error);
         if (switching) this.switchingDirect = true;
         if (switching) void this.connect().then(() => {
@@ -499,7 +500,7 @@ export class RelayTransport implements Transport {
   }
 
   private mux() {
-    if (this.stopped || !this.channel?.mux.active) throw new TypeError("Relay carrier is disconnected");
+    if (this.stopped || !this.channel?.mux.active) throw new CarrierDownError();
     return this.channel.mux;
   }
 
@@ -543,7 +544,7 @@ export class RelayTransport implements Transport {
     // The request belongs to the carrier up when it was made: if that one is gone before it is sent, it fails
     // and is never sent on a later one (nothing typed is sent automatically after a disconnect).
     const mux = this.mux();
-    const connected = (): void => { if (this.stopped || !mux.active) throw new TypeError("Relay carrier is disconnected"); };
+    const connected = (): void => { if (this.stopped || !mux.active) throw new CarrierDownError(); };
     // Firefox has no Request.body (undefined, where a request without one has null): its body is buffered below,
     // so one over the PC's request limit is refused before Request copies it, when its size is known
     const buffered = new Request("https://relay.ovis.invalid/").body === undefined;

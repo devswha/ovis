@@ -538,8 +538,10 @@ export function App() {
 
 
   const { bell, alertsOffDot } = alertsBell({ t, alertsOn, notifications, pushOn, enableNotifications, disableNotifications });
-  const connWord = t(connected ? "live" : outputStopped ? "disconnected" : connectedBefore ? "reconnecting" : "connecting");
   const headerConnection = useHeaderConnection({ scope: `${split ? split.active : soloSlot}:${selectedMachineId}`, reportedBy, connected, connectedBefore, outputStopped });
+  // a reconnect the header does not name yet (its first second) shows the connection as it was: nothing flashes
+  const chipConnected = connected || (connectedBefore && !outputStopped && headerConnection === null);
+  const connWord = t(chipConnected ? "live" : outputStopped ? "disconnected" : connectedBefore ? "reconnecting" : "connecting");
   const session = useSessionStats(selectedMachineId, selectedPane?.pane_id ?? null);
   const sessionLines = session === null ? null : sessionMenuLines(session);
   const sessionShort = session === null ? [] : [workedWords(session), sizeWords(session)].filter((part) => part !== null);
@@ -1095,10 +1097,10 @@ export function App() {
         )}
         <div className="header-meta">
           {!guideShown && !inbox.shown && <ConnectionChip
-            connected={connected}
+            connected={chipConnected}
             word={connWord}
             quiet={(headerConnection === "reconnecting" && note === null && ((crumb !== null && !stripInHeader) || (phoneTabRow && stripInHeader))) || statusBarShown}
-            title={[connected ? null : connWord, shownHerdr ? (shownHerdr.runtime === "herdr-core" ? t("herdr-core {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol }) : t("herdr {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol })) : null].filter((part) => part !== null).join(" · ") || undefined}
+            title={[chipConnected ? null : connWord, shownHerdr ? (shownHerdr.runtime === "herdr-core" ? t("herdr-core {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol }) : t("herdr {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol })) : null].filter((part) => part !== null).join(" · ") || undefined}
           />}
           {selectedMachineId !== "local"
             ? !targetHerdr && <span className="pill pill-offline">{t("herdr offline")}</span>
@@ -1356,8 +1358,8 @@ export function App() {
           pcLoad={pcLoadOn(settings, machines) ? <PcLoadStatus key={selectedMachine?.id ?? ""} machine={selectedMachine ?? null} /> : null}
           watching={viewOnly(selectedMachineId)}
           waiting={sessionTally.waiting} onNextWaiting={nextWaiting === null ? null : openNextWaiting}
-          connection={headerConnection ?? (connected ? "live" : "lost")}
-          connectionWord={headerConnection === "reconnecting" ? t("Reconnecting…") : connected ? t("Connected") : connWord} />}
+          connection={headerConnection ?? (chipConnected ? "live" : "lost")}
+          connectionWord={headerConnection === "reconnecting" ? t("Reconnecting…") : chipConnected ? t("Connected") : connWord} />}
         </div>
         </WebPanelContext.Provider>
         </OpenFileContext.Provider>

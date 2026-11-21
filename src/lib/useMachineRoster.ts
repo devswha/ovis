@@ -23,10 +23,14 @@ import { pruneWaitingSends } from "./sentWaiting.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import { displayPaneTitle } from "../components/Sidebar.tsx";
 import { useHeaderConnection, type HeaderConnection } from "./headerConnection.ts";
+import { CarrierDownError } from "./transport.ts";
+import { t } from "./i18n.ts";
 import type { usePreferencesSync } from "./preferencesSync.ts";
 import type { useAlertSignals } from "./useAlertSignals.ts";
 
 const POLL_MS = 5000;
+/** A roster read that failed only because the relay carrier is reconnecting stays quiet this long before the card. */
+export const CARRIER_GRACE_MS = 10_000;
 const STREAM_BACKSTOP_MS = 30_000;
 type RosterStreamUpdate = "opened" | "lost" | "closed" | Machine[];
 
@@ -128,6 +132,13 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
   const stream = useRef({ open: false, localConnected: false });
   const polling = useRef<((readNow: boolean) => void) | null>(null);
   const [link, setLink] = useState<RosterLink>({ open: false, before: false });
+  // reads failed on a reconnecting carrier: the header says Reconnecting, and the card waits CARRIER_GRACE_MS from
+  // the first of them (`timer` null once the card is shown); the carrier's return reads again at once
+  const carrierDown = useRef<{ timer: number | null } | null>(null);
+  const carrierBack = useCallback(() => {
+    if (carrierDown.current?.timer != null) window.clearTimeout(carrierDown.current.timer);
+    carrierDown.current = null;
+  }, []);
   const rosterConnection: HeaderConnection = useHeaderConnection({ scope: "roster", reportedBy: "roster", connected: link.open, connectedBefore: link.before, outputStopped: false });
   const onRosterStream = useCallback((update: RosterStreamUpdate) => {
     setLink((previous) => rosterLinkAfter(previous, update));
@@ -140,8 +151,9 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
     else if (update === "opened") stream.current = { open: true, localConnected: false };
     else stream.current = { open: false, localConnected: false };
     const slow = stream.current.open && stream.current.localConnected;
+    const reread = update === "opened" && carrierDown.current !== null;
     // Repeated pushed rosters must not postpone the backstop.
-    if (previous !== slow) polling.current?.(!slow && lockedRef.current !== true);
+    if (previous !== slow || reread) polling.current?.((!slow || reread) && lockedRef.current !== true);
   }, []);
   const healthFailingRef = useRef(healthFailing);
   useEffect(() => {
@@ -177,6 +189,7 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
         rosterIn();
         stateWatch.read(asked);
         setMachineRosterLoaded(true);
+        carrierBack();
         setError(null); setLocked(false);
       }, full ? (next) => {
         // A PC whose own messages keep overtaking its reads would never recover: after RECOVERY_DROPS such
@@ -203,9 +216,16 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
     }
     catch (err) {
       if (err instanceof ApiError && err.status === 401) { setLocked(true); return; }
+      if (err instanceof CarrierDownError) {
+        carrierDown.current ??= { timer: window.setTimeout(() => {
+          if (carrierDown.current) carrierDown.current.timer = null;
+          setError(t("Can't reach the PC. Check your connection, then try again."));
+        }, CARRIER_GRACE_MS) };
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [rosterIn, reorderCoordinator]);
+  }, [rosterIn, reorderCoordinator, carrierBack]);
   const load = useCallback(() => read(false), [read]);
   loadRef.current = load;
 
@@ -261,7 +281,8 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
 
   useEffect(() => () => {
     if (refetchTimer.current !== null) window.clearTimeout(refetchTimer.current);
-  }, []);
+    carrierBack();
+  }, [carrierBack]);
   return { snapshotRequests, recovery, reorderCoordinator, load, scheduleRefetch, onRosterStream, rosterConnection };
 }
 
