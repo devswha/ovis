@@ -1,9 +1,9 @@
 import { afterEach, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeviceStore } from "./devices.ts";
-import { TAILNET_NODES_FILE, TailnetNodes, tailnetNodeGate } from "./tailnet-nodes.ts";
+import { mergeTailnetNodes, TAILNET_NODES_FILE, TAILNET_PENDING_FILE, TailnetNodes, tailnetNodeGate } from "./tailnet-nodes.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -39,3 +39,23 @@ for (const repair of ["rebuilt", "restored"] as const) {
     expect(first.access.level).toBe("none");
   });
 }
+
+it("a sibling folder that starts first takes in the other folder's pending blocks, read-only", async () => {
+  const a = mkdtempSync(join(tmpdir(), "astra-rebuild-a-"));
+  const b = mkdtempSync(join(tmpdir(), "astra-rebuild-b-"));
+  dirs.push(a, b);
+  const first = start(a);
+  const paired = first.rows.pair(first.rows.startPairing().code, "Phone", "drive", Date.now(), [], false)!;
+  const row = first.rows.match(paired.token)!;
+  first.rows.noteTailnetNode(row.id, phone.id);
+  writeFileSync(join(a, TAILNET_NODES_FILE), "not json", { mode: 0o600 });
+  expect(start(a).rows.revoke(row.id)).toBe(true);
+  writeFileSync(join(a, TAILNET_NODES_FILE), JSON.stringify({ v: 1, nodes: [] }), { mode: 0o600 });
+  expect(mergeTailnetNodes(b, a)).toBeNull();
+  const nodes = new TailnetNodes(b, null, Date.now, a);
+  expect(nodes.problem).toBeNull();
+  const first_ = await tailnetNodeGate({ level: "full", via: "tailscale", role: "drive", login: phone.login },
+    { address: "100.64.0.9", owner: phone.login, nodes, rows: new DeviceStore(b), whois: async () => phone });
+  expect(first_.access.level).toBe("none");
+  expect(existsSync(join(a, TAILNET_PENDING_FILE))).toBe(true);
+});

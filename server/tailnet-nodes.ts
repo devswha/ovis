@@ -125,8 +125,11 @@ export class TailnetNodes {
   private asking: (TailnetNodePrompt & { readonly at: number }) | null = null;
   private readonly declined = new Map<string, number>();
 
-  /** `blocked`: a merge that could not be made, which keeps every tailnet grant shut like an unreadable file */
-  constructor(stateDir: string, blocked: string | null = null, private readonly now: () => number = Date.now) {
+  /**
+   * `blocked`: a merge that could not be made, which keeps every tailnet grant shut like an unreadable file.
+   * `sibling`: the state dir merged with this one, whose pending blocks are taken in too, read only: that dir drops them.
+   */
+  constructor(stateDir: string, blocked: string | null = null, private readonly now: () => number = Date.now, sibling: string | null = null) {
     this.path = join(stateDir, TAILNET_NODES_FILE);
     this.pendingPath = join(stateDir, TAILNET_PENDING_FILE);
     const read = readNodes(this.path);
@@ -137,11 +140,13 @@ export class TailnetNodes {
     // the removals made while the list could not be read are blocked now, before any request is served (index.ts
     // builds this before it listens); they are dropped only once they stand in the list
     if (this.failure === null) {
-      const pending = readDenials(this.pendingPath);
-      if (pending === null) this.failure = `Cannot read ${this.pendingPath}: no Tailscale login is let in until it is restored or fixed.`;
-      else if (pending.length > 0) {
-        this.takeDenials(pending);
-        if (this.failure === null) rmSync(this.pendingPath, { force: true });
+      const paths = [this.pendingPath, ...sibling === null ? [] : [join(sibling, TAILNET_PENDING_FILE)]];
+      const [own, other = []] = paths.map(readDenials);
+      const unread = [own, other].findIndex((denials) => denials === null);
+      if (unread >= 0) this.failure = `Cannot read ${paths[unread]}: no Tailscale login is let in until it is restored or fixed.`;
+      else if (own!.length + other!.length > 0) {
+        this.takeDenials([...own!, ...other!]);
+        if (this.failure === null && own!.length > 0) rmSync(this.pendingPath, { force: true });
       }
     }
     if (this.failure !== null) console.error(this.failure);

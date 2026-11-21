@@ -342,7 +342,7 @@ export function createServer(
     try { tailnetMerge = mergeTailnetNodes(stateDir, sibling); }
     catch (error) { tailnetMerge = `cannot merge the tailnet nodes of ${sibling}: ${error instanceof Error ? error.message : String(error)}`; }
   }
-  const tailnetNodes = new TailnetNodes(stateDir, tailnetMerge);
+  const tailnetNodes = new TailnetNodes(stateDir, tailnetMerge, Date.now, sibling && !untouched ? sibling : null);
   const removals = opensAll ? RemovalEvidence.open(stateDir, safetyLog) : null;
   // the journal's first entry makes the safety log too, so a journal never stands without its log (P24)
   const journal = opensAll ? DeviceJournal.open(stateDir, () => safetyLog?.ensureFile()) : null;
