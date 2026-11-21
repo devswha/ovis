@@ -524,10 +524,17 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (order.length === 0) return;
     const loaded = entries, asking: RelayShellState = { kind: "connecting", name: order[0]?.name ?? null };
     show(asking);
-    const pc = await reachable(order);
+    // a navigation in this document while the checks run (another fragment, Back) is the person's: no PC is left for then
+    let moved = false;
+    const move = (): void => { moved = true; };
+    window.addEventListener("hashchange", move);
+    window.addEventListener("popstate", move);
+    let pc: string | null;
+    try { pc = await reachable(order); }
+    finally { window.removeEventListener("hashchange", move); window.removeEventListener("popstate", move); }
     // a Cancel meanwhile owns the page
     if (entries !== loaded || shown !== asking) return;
-    if (pc !== null) { leaveFor(pc); return; }
+    if (pc !== null && !moved) { leaveFor(pc); return; }
     await showFront();
   };
   /** when this page last asked the other PCs whether one is on, after its own PC went away */

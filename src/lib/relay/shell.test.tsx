@@ -1055,6 +1055,29 @@ describe("the hosted shell's front page", () => {
       expect(went).toEqual([`/s/${a}/`]);
     });
 
+    it("leaves for no PC when the page moved to another fragment during Check again's checks", async () => {
+      const a = "a".repeat(32);
+      let answer: (() => void) | undefined;
+      let held = false;
+      const went: string[] = [];
+      launch();
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs(a)), navigate: (path) => { went.push(path); },
+        checkPc: async () => {
+          if (!held) return { kind: "offline", reason: "pc" };
+          await new Promise<void>((resolve) => { answer = resolve; });
+          return { kind: "answered", route: "relay", relay: AP, rttMs: 20 };
+        } }));
+      expect(last().state).toMatchObject({ kind: "list", noneOnline: true });
+      held = true;
+      last().onFindPc?.();
+      await until(() => answer !== undefined, "Check again's check");
+      Object.assign(window.location, { href: "https://app.ovis.sh/#settings", hash: "#settings" });
+      window.dispatchEvent(new Event("hashchange"));
+      answer!();
+      await until(() => went.length > 0 || last().state.kind !== "connecting", "the check's end");
+      expect(went).toEqual([]);
+    });
+
     it("says no PC is online when a launch that went on finds every saved PC tried", async () => {
       const a = "a".repeat(32);
       browser.sessionStore.set("ovis-launch-account", "1");
