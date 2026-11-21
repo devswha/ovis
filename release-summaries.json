@@ -7,10 +7,10 @@
         "Set OVIS_ACCOUNT_OPENS_ALL=1 on a PC to open it by signing in once."
       ],
       "improved": [
-        "app.ovis.sh and the phone apps open your PC, not a list of PCs.",
+        "app.ovis.sh and the phone apps open your last PC, not the overview.",
         "Signing in on the PC's own page goes straight to your provider.",
-        "Adding a PC over Tailscale or SSH opens its own Ovis, no list.",
-        "Phone pairing opens on the Ovis relay, with a QR code in one press.",
+        "A PC with one Ovis, added over Tailscale or SSH, skips the list.",
+        "Pairing a phone now starts on the Ovis relay.",
         "Settings' Account section is compact: one row, icon sign-in chips."
       ],
       "fixed": [
@@ -25,10 +25,10 @@
         "PC에 OVIS_ACCOUNT_OPENS_ALL=1을 설정하면 로그인 한 번으로 그 PC가 열려요."
       ],
       "improved": [
-        "app.ovis.sh와 휴대폰 앱이 PC 목록 대신 내 PC를 바로 열어요.",
+        "app.ovis.sh와 휴대폰 앱이 개요 대신 마지막으로 쓴 PC를 열어요.",
         "PC 자체 화면에서 로그인하면 바로 로그인 서비스로 넘어가요.",
-        "Tailscale이나 SSH로 PC를 추가하면 목록 없이 그 PC의 Ovis가 열려요.",
-        "휴대폰 연결이 Ovis 릴레이로 열리고, 한 번 누르면 QR 코드가 떠요.",
+        "Ovis가 하나인 PC는 Tailscale·SSH로 추가할 때 목록 없이 바로 연결돼요.",
+        "휴대폰 연결이 이제 Ovis 릴레이에서 시작해요.",
         "설정의 계정 섹션이 한 줄과 아이콘 로그인 버튼으로 간결해졌어요."
       ],
       "fixed": [
@@ -43,10 +43,10 @@
         "PC で OVIS_ACCOUNT_OPENS_ALL=1 にすると、一度のサインインでその PC が開きます。"
       ],
       "improved": [
-        "app.ovis.sh とスマホアプリは PC 一覧ではなく自分の PC を開きます。",
+        "app.ovis.sh とスマホアプリは概要ではなく最後に使った PC を開きます。",
         "PC 自身の画面でのサインインは、そのままプロバイダへ進みます。",
-        "Tailscale や SSH での PC 追加は、一覧なしでその PC の Ovis を開きます。",
-        "スマホの接続は Ovis リレーで開き、1 回押すと QR コードが出ます。",
+        "Ovis が 1 つの PC は、Tailscale や SSH で追加すると一覧なしでつながります。",
+        "スマホの接続は Ovis リレーから始まるようになりました。",
         "設定のアカウント欄が 1 行とアイコンのサインインボタンにまとまりました。"
       ],
       "fixed": [
@@ -61,10 +61,10 @@
         "在电脑上设置 OVIS_ACCOUNT_OPENS_ALL=1，登录一次即可打开这台电脑。"
       ],
       "improved": [
-        "app.ovis.sh 和手机应用直接打开你的电脑，而不是电脑列表。",
+        "app.ovis.sh 和手机应用打开你上次使用的电脑，而不是概览。",
         "在电脑自己的页面登录会直接跳到登录服务。",
-        "通过 Tailscale 或 SSH 添加电脑会直接打开它的 Ovis，无需列表。",
-        "手机配对从 Ovis 中继打开，按一下即显示二维码。",
+        "只有一个 Ovis 的电脑，通过 Tailscale 或 SSH 添加时无需列表直接连接。",
+        "手机配对现在从 Ovis 中继开始。",
         "设置中的账户部分更紧凑：一行信息加图标登录按钮。"
       ],
       "fixed": [
