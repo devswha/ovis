@@ -3,7 +3,7 @@
     "en": {
       "new": [
         "Sign in once and your account's PCs open from any of your devices.",
-        "A device new to a PC waits a 10-second check, except your first one.",
+        "A device new to a PC usually waits through a 10-second check.",
         "Your older devices get a notice, with Not me to shut a new one out.",
         "PCs that are not in an account work as before.",
         "To turn it off on a PC, set OVIS_ACCOUNT_OPENS_ALL=0 and restart."
@@ -21,7 +21,7 @@
     "ko": {
       "new": [
         "로그인 한 번이면 계정의 PC를 내 어느 기기에서든 열 수 있어요.",
-        "PC에 처음 들어오는 기기는 10초 확인을 거쳐요. 첫 기기는 예외예요.",
+        "PC에 처음 들어오는 기기는 보통 10초 확인을 거쳐요.",
         "먼저 쓰던 기기에 알림이 오고, '내가 아니에요'로 막을 수 있어요.",
         "계정에 없는 PC는 예전처럼 동작해요.",
         "끄려면 PC에 OVIS_ACCOUNT_OPENS_ALL=0을 설정하고 다시 시작하세요."
@@ -39,7 +39,7 @@
     "ja": {
       "new": [
         "一度サインインすれば、アカウントの PC をどの端末からでも開けます。",
-        "PC に初めて来る端末は 10 秒の確認を経ます（最初の 1 台を除く）。",
+        "PC に初めて来る端末は、ふつう 10 秒の確認を経ます。",
         "先に使っていた端末に通知が届き、「自分ではない」で締め出せます。",
         "アカウントに入っていない PC はこれまでどおり動きます。",
         "オフにするには PC で OVIS_ACCOUNT_OPENS_ALL=0 にして再起動します。"
@@ -57,7 +57,7 @@
     "zh": {
       "new": [
         "登录一次，就能在你的任何设备上打开账户里的电脑。",
-        "首次访问电脑的设备需经 10 秒确认，你的第一台设备除外。",
+        "首次访问电脑的设备，通常需要经过 10 秒确认。",
         "你之前的设备会收到通知，可用“不是我”将其拒之门外。",
         "不在账户中的电脑照旧工作。",
         "要关闭此功能，在电脑上设置 OVIS_ACCOUNT_OPENS_ALL=0 并重启。"
