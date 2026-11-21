@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { root, runScript } from "./shell-workflow-rules.ts";
 
 type Job = { if?: string; needs?: string | string[]; steps?: { name?: string; run?: string }[] };
@@ -37,6 +37,8 @@ describe("a pull request's reach into the browser jobs", () => {
     ["the worker folder a browser script copies", [["telemetry/src/worker.ts"]]],
     ["the attributes that decide how every script is checked out", [[".gitattributes"]]],
     ["a folder the list does not name", [["plugins/new/index.ts"]]],
+    ["a test file in a folder a browser script takes in whole", [["scripts/skill-menu-cases/codex-helper.test.ts"], ["public/render.html/example.test.ts"], ["public/demo-transport.js/smoke.test.ts"]]],
+    ["a test file outside the folders unit tests live in", [[".env-cache.test.ts"], ["shared/copy.test.tsx"], ["app/electron/src/tabs.test.ts"], ["site/demo/transport.test.ts"]]],
     ["a folder's own name, which is no path inside it", [["tui"]]],
     ["a name git quotes", [["\"docs/\\303\\251.md\""]]],
     ["one reaching path among others that do not", [["tui/src/main.zig", "changelog.d/fix.md", "src/lib/api.ts"]]],
@@ -64,28 +66,41 @@ describe("a pull request's reach into the browser jobs", () => {
     expect(result.stdout).toBe("browser=true\n");
   });
 
-  const NAMED_NOT_READ: Record<string, string> = {
-    "scripts/conventions.test.ts": "scripts/demo-server.ts names it in a comment",
+  const NAMED_NOT_READ: Record<string, string[]> = {
+    "scripts/conventions.test.ts": ["scripts/demo-server.ts"],
   };
 
   it("leaves out no path that a browser job's script names", () => {
     const lane = [...readFileSync(join(root, "scripts/ci-browser.sh"), "utf8").matchAll(/scripts\/[A-Za-z0-9_-]+\.ts/g)].map((match) => match[0]);
     const sources = [...new Set([...lane, "vite.config.ts", "scripts/build-cache.ts", "scripts/ci-browser-parallel.ts", "scripts/ci-browser.sh", "scripts/demo-server.ts", "scripts/test-herdr.ts", "scripts/test-shell.ts", "scripts/ci-chromium.sh", "scripts/ci-ffmpeg.sh", "scripts/check.ts"])].filter((file) => existsSync(join(root, file)));
     expect(lane.length).toBeGreaterThan(100);
-    const named = new Map<string, string>();
+    const named = new Map<string, Set<string>>();
+    const name = (literal: string, file: string): void => {
+      const path = literal.replace(/^(\.\.?\/)+/, "").replace(/^\//, "").replace(/\/$/, "");
+      for (const candidate of [path, `${dirname(file)}/${path}`]) {
+        if (path === "" || path === "." || path === ".." || !existsSync(join(root, candidate))) continue;
+        const key = statSync(join(root, candidate)).isDirectory() ? `${candidate}/x` : candidate;
+        (named.get(key) ?? named.set(key, new Set()).get(key)!).add(file);
+      }
+    };
+    const LITERAL = /["'`]([A-Za-z0-9_.@/-]{1,120})["'`]/g;
     for (const file of sources) {
-      for (const match of readFileSync(join(root, file), "utf8").matchAll(/["'`]([A-Za-z0-9_.@/-]{2,120})["'`]/g)) {
-        const name = match[1]!.replace(/^(\.\.?\/)+/, "").replace(/^\//, "").replace(/\/$/, "");
-        if (name === "" || name === "." || name === ".." || !existsSync(join(root, name))) continue;
-        named.set(statSync(join(root, name)).isDirectory() ? `${name}/x` : name, file);
+      const text = readFileSync(join(root, file), "utf8");
+      for (const match of text.matchAll(LITERAL)) name(match[1]!, file);
+      for (const call of text.matchAll(/\b(?:join|resolve)\(([^()]*)\)/g)) {
+        const parts = [...call[1]!.matchAll(LITERAL)].map((match) => match[1]!);
+        for (let from = 0; from < parts.length; from++) for (let to = from + 2; to <= parts.length; to++) name(parts.slice(from, to).join("/"), file);
       }
     }
+    expect(named.has("scripts/fixtures/file-preview.webm"), "a path built from parts is read too").toBe(true);
     const paths = [...named.keys()];
     const result = spawnSync("bash", ["-c", "while IFS= read -r path; do printf '%s\\n' \"$path\" | bash \"$0\" | grep -q browser=false && echo \"$path\"; done; true", join(root, "scripts/ci-browser-reach.sh")], { input: paths.map((path) => `${path}\n`).join(""), encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
     const leftOut = result.stdout.split("\n").filter((path) => path !== "");
-    expect(leftOut.filter((path) => !(path in NAMED_NOT_READ)).map((path) => `${path} (named in ${named.get(path)})`), "A browser job's script names a path that scripts/ci-browser-reach.sh leaves out, so a pull request changing only that path would skip the job that reads it. Take the path out of the script's list, or, when the script only names it and never reads it, list it in NAMED_NOT_READ here with where.").toEqual([]);
-    expect(Object.keys(NAMED_NOT_READ).filter((path) => !leftOut.includes(path)), "These are no longer named by a browser job's script or no longer left out: remove them from NAMED_NOT_READ.").toEqual([]);
+    const unexplained = leftOut.flatMap((path) => [...named.get(path)!].filter((file) => !(NAMED_NOT_READ[path] ?? []).includes(file)).map((file) => `${path} (named in ${file})`));
+    expect(unexplained, "A browser job's script names a path that scripts/ci-browser-reach.sh leaves out, so a pull request changing only that path would skip the job that reads it. Take the path out of the script's list, or, when that script only names it and never reads it, list the script under the path in NAMED_NOT_READ here.").toEqual([]);
+    const stale = Object.entries(NAMED_NOT_READ).flatMap(([path, files]) => files.filter((file) => !leftOut.includes(path) || !named.get(path)!.has(file)).map((file) => `${path}: ${file}`));
+    expect(stale, "These scripts no longer name these paths, or the paths are no longer left out: remove them from NAMED_NOT_READ.").toEqual([]);
   });
 });
 
