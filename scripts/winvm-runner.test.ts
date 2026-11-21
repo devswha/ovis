@@ -113,8 +113,12 @@ describe.skipIf(process.platform === "win32")("winvm-runner.sh", () => {
     const { run, lines, vmCalls, leaseHeld } = setup({ services: 1 });
     const result = run();
     expect(result.status).toBe(0);
-    // the snapshot's other runner service is stopped before each reset, which brings it back
-    expect(vmCalls()).toEqual(["fence 0 0", "winvm reset", "winvm start", "fence 0 0", "winvm reset", "winvm start", "winvm release"]);
+    // the snapshot's other runner service is stopped before each reset, which brings it back, and again right after the
+    // reset, before this runner registers: it stays stopped for the round
+    expect(vmCalls()).toEqual(["fence 0 0", "winvm reset", "winvm start", "fence 0 0", "fence 0 0", "winvm reset", "winvm start", "winvm release"]);
+    const calls = lines("calls");
+    const registered = calls.findIndex((call) => call.includes("Invoke-InSession"));
+    expect(calls.slice(calls.indexOf("winvm start"), registered).some((call) => call.startsWith("fence "))).toBe(true);
     const marks = lines("marks").map((line) => line.slice("mark ".length));
     const offered = marks.findIndex((mark) => /^[1-9]\d{9}$/.test(mark));
     expect(offered).toBeGreaterThanOrEqual(0);

@@ -8,7 +8,8 @@
 #      snapshot are stopped, each once it is not in a job, and a job of this runner still running counts too) and only
 #      on its answer "FENCE 0 0", `winvm reset` and `winvm start`: every job starts from the snapshot. Without that
 #      answer it resets nothing and tries again later. A fence that stopped a service has touched the VM;
-#   3. copies the newest actions/runner package and this folder's winvm-*.ps1 into the VM, and registers one ephemeral
+#   3. fences the VM again, as the reset started those services again: they stay stopped for the round. Then copies the
+#      newest actions/runner package and this folder's winvm-*.ps1 into the VM, and registers one ephemeral
 #      runner (labels self-hosted, self-hosted-ovis-win) in the VM's desktop session through Invoke-InSession, as the
 #      Windows checks need; the registration token goes over ssh's stdin into a file the VM script deletes;
 #   4. while that runner listens and no other runner in the VM is in a job, writes the Unix time into the repository
@@ -196,6 +197,12 @@ round() {
     sleep 3
   done
   (( desktop )) || { log "winvm's desktop session did not come up"; return 1; }
+  # the reset started the other repositories' runner services again: fenced for the whole round, so none takes a job
+  # between an offer and this runner's job (the hook would wait for it and fail the required check)
+  if ! fence_vm 3600 stop; then
+    stopping || log "winvm's other runners were not fenced after the reset; not registering, trying again later"
+    return 1
+  fi
   vm "New-Item -ItemType Directory -Force -Path '$VM_DIR' | Out-Null" || { log "ssh winvm failed"; return 1; }
   scp -q -o BatchMode=yes "$CACHE/actions-runner-win-x64-$version.zip" "$HERE/winvm-runner.ps1" "$HERE/winvm-job-started.ps1" "$HERE/winvm-fence.ps1" \
     "winvm:${VM_DIR//\\//}/" 2>/dev/null || { log "copying into winvm failed"; return 1; }

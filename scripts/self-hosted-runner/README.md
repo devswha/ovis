@@ -799,7 +799,9 @@ unit runs):
    `winvm start` (about 2 minutes, which starts those services again): every job starts from the
    snapshot. A VM that does not answer, or a job still running after an hour, is never reset: the
    round gives up and tries again later. A fence that stopped a service has changed the VM, so from
-   then on the stop resets it or keeps the lease (step 5).
+   then on the stop resets it or keeps the lease (step 5). Right after the reset it fences again,
+   so those services stay stopped for the whole round: none takes a job between an offer and this
+   runner's job, which the hook would then wait for (the lease already keeps the VM this round's).
 3. It copies the newest `actions/runner` package (cached on the PC), `winvm-runner.ps1`,
    `winvm-job-started.ps1` and `winvm-fence.ps1` into `C:\ProgramData\winvm\ovis-runner`, hands a registration token
    over ssh's stdin to a file the VM script reads and deletes (it reaches `config.cmd` in
@@ -839,7 +841,8 @@ nearest ancestor of that name that started before the hook; while none is found 
 fails, the hook kills nothing and blocks, trying again every 5 seconds, so no further step of
 the job runs. A job it allows then runs `winvm-fence.ps1` until it answers `FENCE 0 0`: every
 other runner service is stopped, one in a job as soon as that job ends, so none takes a job
-beside ours (the next reset starts them again). After three minutes without that the job fails
+beside ours (the next reset starts them again; the launcher already stopped them after its reset,
+so this only matters when one was started by hand). After three minutes without that the job fails
 and says to re-run all jobs of the run, whose new route takes `windows-latest`. The fence reads
 the workers again right before each service's stop, so a service that took a job while another
 stopped keeps it; one that takes a job in the milliseconds between that read and its stop is
