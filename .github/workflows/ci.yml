@@ -328,6 +328,8 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ]; then base=$LAST_GREEN; else base=$(git cat-file -p HEAD | awk '/^parent /{print $2; exit}'); fi
           git fetch --no-tags --depth=1 origin "$base"
           echo "RATCHET_BASE=$base" >> "$GITHUB_ENV"
+      - name: Fetch the previous release for the upgrade matrix
+        run: git fetch --no-tags --depth=1 origin refs/tags/v0.5.7:refs/tags/v0.5.7
       - run: bun run check fast
       - name: Release guards
         env:
