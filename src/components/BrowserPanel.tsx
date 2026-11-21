@@ -52,6 +52,15 @@ export function BrowserPanel({ tab, onOpened, onClose, panelStart, covered = fal
     };
   }, [id, aside]);
 
+  // an agent's tab the person holds goes back to the agent when they leave it (the view closed, another tab shown, the
+  // panel gone): an agent never waits on a tab nobody is looking at
+  const holding = useRef(false);
+  holding.current = tab?.profile === "agent" && tab.held;
+  useEffect(() => {
+    if (id === null) return;
+    return () => { if (holding.current) holdBrowserTab(id, false); };
+  }, [id]);
+
   // which address form an answer from main belongs to: a new tab's form left (closed, or another tab shown) drops its answer
   const form = useRef(0);
   useEffect(() => { form.current += 1; }, [tab?.id]);

@@ -162,6 +162,16 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   await holder.getByText("에이전트가 쓰는 중", { exact: true }).waitFor();
   assert.equal(await side.count(), 0, `${tag}: the open tab takes the panel's place`);
 
+  // control taken, then the view left: the agent gets its tab back, not left waiting on a tab nobody looks at
+  await holder.getByRole("button", { name: "제어 가져오기", exact: true }).click();
+  await holder.getByText("내가 제어 중 · 에이전트는 멈춤", { exact: true }).waitFor();
+  await calls(page);
+  await page.locator(".browser-panel").getByRole("button", { name: "닫기", exact: true }).click();
+  await side.waitFor();
+  assert.deepEqual((await calls(page)).filter(([name]) => name === "hold"), [["hold", 1, false]], `${tag}: leaving a held tab gives it back`);
+  await side.getByRole("button", { name: "Notion 로그인 열기", exact: true }).click();
+  await holder.getByText("에이전트가 쓰는 중", { exact: true }).waitFor();
+
   await group.getByRole("button", { name: "새 탭", exact: true }).click();
   const typed = page.getByRole("textbox", { name: "주소", exact: true });
   await page.getByText("주소를 입력하면 내 탭으로 열립니다.", { exact: false }).waitFor();
