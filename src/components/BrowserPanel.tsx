@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type Reac
 import { ArrowLeft, ArrowRight, Bot, Globe, RotateCw, X } from "lucide-react";
 import { useT } from "../lib/i18n.ts";
 import { goBrowserTab, hideBrowserTab, holdBrowserTab, navigateBrowserTab, openBrowserTab, showBrowserTab, typedAddress, type DesktopBrowserTab } from "../lib/desktopBrowser.ts";
+import { useFloatingOver } from "../lib/floatingOver.ts";
 import "./FileViewer.css";
 import "./BrowserPanel.css";
 
@@ -26,10 +27,13 @@ export function BrowserPanel({ tab, onOpened, onClose, panelStart, covered = fal
   const [refused, setRefused] = useState(false);
   const id = tab?.id ?? null;
   const steered = tab !== null && (tab.profile === "mine" || tab.held);
+  // a menu, the toast or a notice over the tab's place: it steps aside too, or they would fall under it
+  const floated = useFloatingOver(body, id !== null && !covered);
+  const aside = covered || floated;
 
   useLayoutEffect(() => {
     const place = body.current;
-    if (id === null || covered || place === null) {
+    if (id === null || aside || place === null) {
       hideBrowserTab();
       return;
     }
@@ -46,7 +50,7 @@ export function BrowserPanel({ tab, onOpened, onClose, panelStart, covered = fal
       window.removeEventListener("resize", show);
       hideBrowserTab();
     };
-  }, [id, covered]);
+  }, [id, aside]);
 
   // which address form an answer from main belongs to: a new tab's form left (closed, or another tab shown) drops its answer
   const form = useRef(0);

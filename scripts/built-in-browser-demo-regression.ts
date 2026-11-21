@@ -123,6 +123,27 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   assert.deepEqual((await calls(page)).filter(([name]) => name === "navigate" || name === "open"), [], `${tag}: Enter in a watched tab's address asks nothing`);
   assert.equal(await page.locator(".browser-panel [aria-invalid=true]").count(), 0, `${tag}: and says nothing is refused`);
 
+  // a menu or the toast over the tab's place: the tab steps aside while it is there, and comes back after; one elsewhere leaves it
+  const float = (left: number) => page.evaluate((x) => {
+    const node = document.createElement("div");
+    node.className = "menu";
+    node.id = "floating-probe";
+    Object.assign(node.style, { position: "fixed", left: `${x}px`, top: "300px", width: "160px", height: "120px", background: "white" });
+    document.body.append(node);
+  }, left);
+  const unfloat = () => page.evaluate(() => document.getElementById("floating-probe")?.remove());
+  await calls(page);
+  await float(80);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  assert.deepEqual((await calls(page)).filter(([name]) => name === "hide"), [], `${tag}: a menu beside the tab leaves it drawn`);
+  await unfloat();
+  await float(body.x + 40);
+  await page.waitForFunction(() => (window as unknown as { __browser: { calls: Call[] } }).__browser.calls.some(([name]) => name === "hide"));
+  await calls(page);
+  await unfloat();
+  await page.waitForFunction(() => (window as unknown as { __browser: { calls: Call[] } }).__browser.calls.some(([name]) => name === "show"));
+  assert.equal((await calls(page)).filter(([name]) => name === "show").at(-1)?.[1], 1, `${tag}: the tab comes back once the menu is gone`);
+
   await holder.getByRole("button", { name: "제어 가져오기", exact: true }).click();
   await holder.getByText("내가 제어 중 · 에이전트는 멈춤", { exact: true }).waitFor();
   assert.deepEqual((await calls(page)).filter(([name]) => name === "hold"), [["hold", 1, true]], `${tag}: taking control asks the app once`);
