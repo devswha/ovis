@@ -92,6 +92,8 @@ const BASE: Record<string, string> = {
   "Your sign-in ended. Sign in again to see every PC of your account.": "로그인이 끝났습니다. 계정의 PC를 모두 보려면 다시 로그인하세요.",
   "The account service could not be reached. The PCs this device is paired with still work.": "계정 서비스에 연결할 수 없습니다. 이 기기와 연결된 PC는 그대로 쓸 수 있습니다.",
   "Add a new device?": "새 기기를 추가할까요?",
+  "Pair this PC?": "이 PC를 연결할까요?",
+  "This PC could not be verified.": "이 PC를 확인할 수 없어요.",
   "Check the number, then approve": "숫자를 확인한 뒤 승인하세요",
   "Through {pc} · joins your {n} PCs": "{pc}에서 온 요청 · PC {n}대에 추가됩니다",
   "Pick the number on {device}": "{device} 화면의 숫자를 고르세요",

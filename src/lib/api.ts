@@ -377,10 +377,10 @@ export async function decideOwnJoin(id: string, decision: "approve" | "decline")
 }
 
 /** POST /api/relay/pairing: the owner's answer to a phone waiting with the same digits (`relay-pairings` events). */
-export async function decideRelayPairing(id: string, decision: "approve" | "decline", digits?: string): Promise<void> {
+export async function decideRelayPairing(id: string, decision: "approve" | "decline", answer?: string | { proven_server_id: string; pc_label: string }): Promise<void> {
   const url = "/api/relay/pairing";
   // an account member approving through the relay names the digits it picked (docs/account.md, "Who may admit a device")
-  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision, ...(digits === undefined ? {} : { digits }) }) });
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision, ...(typeof answer === "string" ? { digits: answer } : answer) }) });
   if (!response.ok) throw await errorFrom(url, response);
 }
 

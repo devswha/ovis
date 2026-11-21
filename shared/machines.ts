@@ -437,7 +437,7 @@ export interface RemotePairingRequest {
   id: string;
   label: string;
   intent: PairingIntent;
-  choices: [string, string, string];
+  choices: [] | [string, string, string];
   expires_at: string;
   /** the new device's key (P-256 SPKI, base64url) from PAIR_REQUEST, bound by its commitment and the digits: what the approver signs an `add` for */
   key: string;
@@ -447,6 +447,8 @@ export interface RemotePairingRequest {
    * the admission as for an account join. Absent from an older server, or when false.
    */
   vouched?: true;
+  /** Derived by the receiving PC only after the joining server answered its channel-bound challenge. */
+  proven_server_id?: string;
 }
 
 export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "machine-message"; machine_id: string; message: ServerMessage }

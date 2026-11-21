@@ -39,6 +39,7 @@ import { warmSshAddresses } from "./ssh-address.ts";
 import { readMoveOffer } from "./remote-move.ts";
 
 import { TargetAccountPcError, type RelaySocket } from "../shared/relay-channel.ts";
+import { savedIdentityReader } from "./relay/identity.ts";
 import { newRouteProbes, openRelayPcTunnel, RelayPcKey, RelayPcOutdated, RelayPcRefused, relayPcLabel, removeRelayPcKey, vouchedSupport, type RelayPcTunnel, type RouteProbes, type VouchedSupport } from "./relay-pc.ts";
 import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { deriveServerId } from "../shared/relay-server-proof.ts";
@@ -2402,12 +2403,11 @@ export class MachineManager {
   private readonly pairing = new Set<string>();
 
   /**
-   * Add a connection → Ovis relay → Add, once the page posted its admission: compares digits with that PC through
-   * the relay, as another PC of the account vouched for (PAIR_INTENT_VOUCHED), `onDigits` told them for the page to
-   * show, and adds it as addRelay does once a member of the account approved it there. `signal` ends the comparison,
+   * After the page posts its admission, prove this server’s identity over the pinned relay channel.
+   * Tell the page when a member can allow this join; add the PC only after the member allows it. `signal` ends the comparison,
    * and nothing is written: no key, no PC (the key stays in memory for the next Add of that PC).
    */
-  async pairAccountPc(ticket: unknown, onDigits: (digits: string) => void, signal: AbortSignal): Promise<Machine> {
+  async pairAccountPc(ticket: unknown, onWaiting: () => void, signal: AbortSignal): Promise<Machine> {
     if (this.stopped) throw new Error("Server stopping");
     const held = typeof ticket === "string" ? this.accountPcTickets.get(ticket) : undefined;
     if (held !== undefined) this.accountPcTickets.delete(ticket as string);
@@ -2436,8 +2436,10 @@ export class MachineManager {
     held.running = { comparison, done: new Promise<void>((resolve) => { ended = resolve; }) };
     this.pairing.add(id);
     try {
+      const identity = savedIdentityReader(this.stateDir)();
+      if (!identity) throw new RelayPcRefused("This PC has no server identity");
       tunnel = await openRelayPcTunnel(offer, key, { ...this.tunnelOptions(runtime, runtime.generation), pairing: {
-        compare: async (digits) => { shown = true; onDigits(digits); }, signal: comparison.signal,
+        identity, waiting: () => { shown = true; onWaiting(); }, signal: comparison.signal,
       } });
     } catch (error) {
       removeRelayPcKey(keyPath);

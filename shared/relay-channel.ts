@@ -6,7 +6,7 @@ import { PENDING_MS, pairFingerprint, signPairProof } from "./pair-fingerprint.t
 import { channelBinding, openClientSecureChannel } from "./relay-e2ee.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
-import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, PC_CODE_ACCOUNT_ONLY, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_PC_PROOF, PAIR_SAS_FEATURE, PC_CODE_ACCOUNT_ONLY, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
 import { hintedRelay } from "./relay-regions.ts";
 import { MuxEngine, MUX_SETUP_MS } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
@@ -134,6 +134,7 @@ export interface RelayChannelOptions {
    * `vouched`: a PC's server pairing with another PC of its account (PAIR_INTENT_VOUCHED).
    */
   readonly intent?: "pc" | "account" | "vouched";
+  readonly pcProof?: { readonly publicKey: string; answer(frame: string, binding: string): string | null; waiting(): void };
   readonly pcCodeAdd?: boolean;
   /**
    * A comparison only: told what the PC selected in its answer to HELLO, before PAIR_REQUEST goes out. A throw
@@ -214,10 +215,10 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
   socket.binaryType = "arraybuffer";
   return new Promise<RelayChannel>((resolve, reject) => {
     let phase: "assigned" | "handshake" | "welcome" | "pair" | "auth" | "ready" | "closed" = "assigned";
-    const comparing = offer.code === undefined && device.device_id === null && options.compare !== undefined;
+    const comparing = offer.code === undefined && device.device_id === null && (options.compare !== undefined || options.intent === "vouched");
     // an older PC selects none of these; a comparison names what it asks for, so the PC's prompt can say it
     const offered: readonly string[] = comparing
-      ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : options.intent === "vouched" ? PAIR_INTENT_VOUCHED : PAIR_INTENT_PC]
+      ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : options.intent === "vouched" ? PAIR_INTENT_VOUCHED : PAIR_INTENT_PC, ...(options.intent === "vouched" ? [PAIR_PC_PROOF] : [])]
       : [ACCOUNT_FEATURE, ...options.accountOpensAll === true ? [ACCOUNT_OPENS_ALL_FEATURE] : [], ...options.keyProof !== undefined && offer.code !== undefined ? [KEY_PROOF_FEATURE] : [],
         ...options.pcCodeAdd && offer.code !== undefined ? [PC_CODE_ACCOUNT_ONLY] : []];
     const hinted: readonly string[] = [RELAY_HINTS, ...options.offerDirect ? [DIRECT_CARRIER, ...options.offerTailnet ? [DIRECT_TAILNET] : []] : []];
@@ -313,7 +314,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           expect(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS, () => new RelayAdmissionTimeoutError("auth"));
           mux?.extendSetup(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS);
           await send({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
-            payload: { label: device.label, public_key: device.public_spki, commitment: toBase64Url(pairCommitment(binding, device.public_spki, phoneNonce)) } });
+            payload: { label: device.label, public_key: device.public_spki, commitment: toBase64Url(pairCommitment(binding, device.public_spki, phoneNonce)), ...(options.pcProof ? { server_key: options.pcProof.publicKey } : {}) } });
         } else if (offer.code !== undefined) {
           if (options.pcCodeAdd && frame.payload.features.includes(PC_CODE_ACCOUNT_ONLY)) throw new TargetAccountPcError();
           await send({ type: FrameType.PAIR, flags: 0, stream_id: 0,
@@ -330,6 +331,15 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       if (phase === "pair" && frame.type === FrameType.PAIR_CHALLENGE && binding && phoneNonce) {
         challenge = bytes;
         phase = "auth";
+        if (options.intent === "vouched") {
+          const proof = frame.payload.server_challenge && options.pcProof?.answer(frame.payload.server_challenge, toBase64Url(binding));
+          if (!options.pcProof || !proof || !server.features?.includes(PAIR_PC_PROOF)) throw new MuxProtocolError("auth_failed", "Missing PC identity proof");
+          await send({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(phoneNonce), server_proof: proof } });
+          confirmed = true;
+          await send({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+          options.pcProof.waiting();
+          return;
+        }
         const digits = pairDigits(binding, device.public_spki, phoneNonce, fromBase64Url(frame.payload.nonce));
         await send({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(phoneNonce) } });
         // never awaited here: the PC's refusal or timeout must still come through while the person looks

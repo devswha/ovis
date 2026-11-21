@@ -261,7 +261,7 @@ One rule for every way in: a pairing code, comparing digits, and joining through
 hears of every change as `remote-pairings` on its event stream; each entry also carries `key`, the
 new device's P-256 key from its `PAIR_REQUEST`, bound by the commitment and the digits, and
 `vouched: true` for another PC of the account ([Adding a PC of your account](#adding-a-pc-of-your-account)). That member
-answers with `POST /api/relay/pairing` `{ "id", "decision", "digits" }`; `digits` is required to
+answers with `POST /api/relay/pairing` `{ "id", "decision", "digits" }` (except for a proven PC below); `digits` is required to
 approve, and a wrong pick answers 409 `wrong_digits` and ends the request. An approval answers
 `{ "ok": true, "device_id" }`: the id the new device's row takes once its person confirms too,
 `accountDeviceId(server_id, key)`, as every row a comparison makes.
@@ -466,6 +466,7 @@ A client offers features in `HELLO`; a PC that supports them selects them in `WE
 | `pair-intent-pc` | this comparison pairs this PC only |
 | `pair-intent-account` | this comparison adds the device to the account |
 | `pair-intent-pc-vouched` | another PC of the account pairs with this PC only, vouched for by an admission ([Adding a PC of your account](#adding-a-pc-of-your-account)) |
+| `pair-pc-proof` | required with the vouched intent for a member tap; B can journal the join and verify A’s server identity in this SAS session |
 
 A client offering `pair-sas` offers at most one intent; a PC selects an intent only together with
 `pair-sas`, and only the one offered. A `HELLO` with more than one intent ends with `protocol_error`. A
@@ -910,7 +911,7 @@ does the relay work, and the page only vouches for it:
 
 1. `POST /api/machines/relay/account/check` `{ "pcs": [{ "server_id", "server_public_key", "relay", "name" }] }`
    (at most 32) answers each PC's `state`: `ready`, `outdated` or `offline`. A's server opens a relay
-   channel to each, offers `pair-sas` with `pair-intent-pc-vouched`, reads the PC's answer to `HELLO`
+   channel to each, offers `pair-sas` with `pair-intent-pc-vouched` and `pair-pc-proof`, reads the PC's answer to `HELLO`
    and closes before `PAIR_REQUEST`: nothing is counted there and no key is kept.
 2. **Add**: `POST /api/machines/relay/account/start` `{ "pc" }` checks the entry (its `server_id`
    must derive from `server_public_key`, its relay a `wss:` origin, not A itself, not already added),
@@ -921,20 +922,19 @@ does the relay work, and the page only vouches for it:
    already read its admission, and B reads the account's admissions at most once every 10 seconds.
 3. The page posts an admission naming that `key` at B (`POST /v1/admissions`, as a signed-in device
    that joins does): the account service has seen a device signed in to this account ask.
-4. `POST /api/machines/relay/account/pair` `{ "ticket" }` compares digits with B through the relay
-   with `pair-intent-pc-vouched`, and answers newline-delimited JSON: `{ "digits" }` once B took the
-   request (the page shows them under "Approve on another device of your account"), then
+4. `POST /api/machines/relay/account/pair` `{ "ticket" }` proves A’s identity to B through the relay.
+   It answers newline-delimited JSON: `{ "waiting": true }` after A sends its proof, then
    `{ "machine" }` once B admitted A and A saved it as `POST /api/machines/relay` does, or
    `{ "error": { "code", "message" } }`. Closing the request (Cancel, closing the sheet) ends the
    comparison on B and keeps nothing: the key is written only on B's `AUTH_OK`. A ticket is good for
    one comparison, for 10 minutes, and one comparison runs per key: another window's Add of B while
    one runs gets 409 `account_pc_busy`, so B is asked once. A cancel that lands in the moment between B's `AUTH_OK` and A
    saving the PC leaves B a row for a key A dropped: nobody can sign in with it, B lists it as
-   "Ovis on <host>" (announced as every admission is), and **Revoke** on B removes it.
+   the name the member checked (announced as every admission is), and **Revoke** on B removes it.
 
 These routes are A's owner's, from a device that drives A: a window direct to A, or a device paired
 with A over the relay (the hosted shell at app.ovis.sh and the phone app reach A only that way). The
-admission comes from that device's own account sign-in, and a member still picks the digits on B. A
+admission comes from that device's own account sign-in, and a member still allows the named PC on B. A
 Portal visitor and an open LAN window get 403 `owner_only`, a watching device `read_only`, so none
 of them can have A pair itself with a PC they name.
 
@@ -944,23 +944,29 @@ A passes the same routes of a PC it lists on to it (`POST /api/machines/<B's id>
 `read_only`, as it refuses every other write that comes through A. A device adds PCs to B by
 connecting to B itself.
 
-No person checks A's side of the comparison:
-A dials B by B's own key, checked against B's id, so a relay cannot stand in for B. B's side is the
-one a member checks, by picking the digits A's page shows.
+A pins B’s relay key as before. In the negotiated vouched session A includes its X25519 public key
+(hex `server_key`) alongside the per-pair P-256 key and SAS commitment in `PAIR_REQUEST`. B derives
+the source server ID from the X25519 key and reserves the only vouched slot on B. Its
+`PAIR_CHALLENGE.server_challenge` is a fresh serialized `server_challenge`. A answers in
+`PAIR_REVEAL.server_proof` with the existing X25519/HMAC server proof, under role `vouched-pc`,
+derived source ID, and the base64url Noise channel binding as `connection_id`. B consumes its
+expected answer on the first reveal and separately verifies the SAS commitment. Neither a replay nor
+a key supplied without proof produces a prompt. A confirms its side automatically; no digits appear.
 
-On B, `pair-intent-pc-vouched` is taken only under the gates of [joining through the
-account](#who-may-admit-a-device), whether or not B's pairing window is open: B belongs to an
-account, its mailbox holds an admission at most 10 minutes old naming exactly the key of this
-`PAIR_REQUEST`, and B has a drive account member to approve; it shares the 5 joins a minute.
-Anything else is refused before any prompt and not counted. The comparison is shown only to the
-account's members through the relay (`remote-pairings`, digits picked out of three), never to B's own
-windows, as **pair this PC** (`intent: "pc"`) naming A's server ("Ovis on <host>"), marked
-`vouched: true`, so the approver's app signs nothing for it (no `add`, no introduction) but still
-shows who is asking (Who is asking, from `GET /v1/admissions`) and approves only when the account
-service lists the admission for that key at B, as for an account join; signed out, it approves none.
-An approver from before the mark reads a plain request for B alone and signs nothing either. B's row is `added_by` the approver,
-with no `account`. Its failures (declined, a wrong pick, no answer in time) count on a path of their
-own. An older B selects no such intent: A says to update Ovis there and sends nothing more.
+B checks its account, current member standing, key denials, and a fresh admission naming this
+P-256 key at B. A verified request counts towards the shared five joins per minute. Its
+`remote-pairings` entry has `intent: "pc"`, `vouched: true`, `choices: []`, and the
+`proven_server_id`; neither this ID nor the displayed name is taken from the admission. The
+member’s app uses its own authenticated `GET /v1/pcs` and local completed pairing in that account:
+the listed key, local pinned key, and proven ID must agree, and the service must have seen this PC
+pull this account’s mailbox (a valid `last_seen_at`). A new (`new_until`), unconfirmed,
+introduction-only, missing or unreadable listing offers **Deny** only. **Allow** re-reads the
+listing and admission under the same sign-in, then posts `{id, decision: "approve", proven_server_id,
+pc_label}` to B. The label is the name the member saw in the directory. The live member’s answer
+applies only to that pending request and identity. No account add is signed. B journals the WATCH
+row before publishing its usual paired-device notification; **Revoke** removes it. An older A,
+B without proof support or the journal, or a digit answer from an older approver cannot admit a PC
+this way. All other comparison paths still require their original digits.
 
 ### Introductions
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { AccountMailbox } from "../../../server/account/mailbox.ts";
 import { rotateRelayIdentity } from "../../../server/relay/identity.ts";
 import type { RelayIdentity } from "../../../server/relay/identity.ts";
@@ -723,19 +723,32 @@ describe("approving a device that asks to join the account", () => {
     expect(admitted).toBe(false);
   });
 
-  it("approves another PC of the account vouched for only on that PC: its admission checked, nothing signed", async () => {
-    const { service, X } = await setUp();
-    const desk = await accountKey();
-    await service.postAdmission(X, "Ovis on Desk", desk.public_spki, "linux");
-    const shown = vouchedAdmission(await service.recentAdmissions(), X, desk.public_spki, Date.now())!;
+  it.each(["listed", "different ID", "unlisted", "unconfirmed", "incomplete pairing", "new", "introduction", "directory unavailable"] as const)("vouched tap checks the member's own completed PC: %s", async scenario => {
+    const { service, X, mac } = await setUp();
+    const a = pc();
+    const paired = new MemoryDeviceStore();
+    const key = await accountKey();
+    const saved = { server_id: a.identity.server_id, server_public_key: a.identity.public_key, relay: "wss://relay.example", device_id: "checked", label: "local", ...key, account: ACCOUNT };
+    await paired.update(X, () => ({ ...saved, server_id: X }));
+    await paired.update(saved.server_id, () => ({ ...saved, ...(scenario === "introduction" ? { introduced_at: Date.now() } : {}),
+      account_enrollment: { account: ACCOUNT, state: scenario === "incomplete pairing" ? "pending" : "complete" } }));
+    if (scenario !== "unlisted") await service.putPc(saved.server_id, { label: "Directory PC", relay: saved.relay, public_key: Buffer.from(importPublicKey(saved.server_public_key)).toString("hex") });
+    const listed = await service.listPcs();
+    const directory = spyOn(service, "listPcs");
+    if (scenario === "directory unavailable") directory.mockRejectedValue(new Error("offline"));
+    else directory.mockResolvedValue(listed.map(pc => ({ ...pc, last_seen_at: scenario === "unconfirmed" ? null : new Date().toISOString(),
+      new_until: scenario === "new" ? new Date(Date.now() + 60_000).toISOString() : null })));
     const decisions: string[] = [];
-    let admitted = false;
-    await approveJoin({
-      request: { id: "r1", label: "Ovis on Desk", intent: "pc", vouched: true, choices: ["111111", "222222", "333333"], expires_at: "", key: desk.public_spki },
-      digits: "222222", through: X, service, shown, decide: async (decision, digits) => { decisions.push(`${decision}:${digits}`); }, admit: async () => { admitted = true; },
-    });
-    expect(decisions).toEqual(["approve:222222"]);
-    expect(admitted).toBe(false);
+    try {
+      const outcome = approveJoin({
+        request: { id: "r1", label: "Asker label", intent: "pc", vouched: true, choices: [], expires_at: "", key: mac.public_spki, proven_server_id: scenario === "different ID" ? deriveServerId(generateKeyPair().publicKey) : saved.server_id },
+        through: X, service, pc: { account: ACCOUNT, accountKey: key.public_spki, paired }, shownPc: "Directory PC",
+        shown: vouchedAdmission(await service.recentAdmissions(), X, mac.public_spki, Date.now()) ?? null,
+        decide: async (decision, digits) => { decisions.push(decision + ":" + String(digits)); }, admit: async () => { throw new Error("vouched joins never sign an add"); },
+      });
+      if (scenario === "listed") { await outcome; expect(decisions).toEqual(["approve:undefined"]); }
+      else { await expect(outcome).rejects.toThrow(); expect(decisions).not.toContain("approve:undefined"); }
+    } finally { directory.mockRestore(); }
   });
 
   it("approves a request for this PC only without adding the device to the account", async () => {

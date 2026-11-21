@@ -345,22 +345,23 @@ export class AccountMailbox {
    * current account and relay identity. A miss pulls again, at most once every 10 seconds, so refused
    * requests cannot make the PC call the service at will.
    */
+  currentAdmission(key: string): boolean {
+    const account = this.options.devices.account();
+    const identity = this.options.identity();
+    if (account === null || !identity) return false;
+    const at = this.admissions.get(scope(account, identity.server_id, key));
+    const now = Date.now();
+    return at !== undefined && now - at < ADMISSION_TTL_MS && at <= now + 60_000;
+  }
+
   async admitted(key: string): Promise<boolean> {
-    const fresh = () => {
-      const account = this.options.devices.account();
-      const identity = this.options.identity();
-      if (account === null || !identity) return false;
-      const at = this.admissions.get(scope(account, identity.server_id, key));
-      const now = Date.now();
-      return at !== undefined && now - at < ADMISSION_TTL_MS && at <= now + 60_000;
-    };
-    if (fresh()) return true;
+    if (this.currentAdmission(key)) return true;
     if (this.pulling) await this.pulling;
     else if (Date.now() - this.lastAskedPull >= ASKED_PULL_MS) {
       this.lastAskedPull = Date.now();
       await this.pull();
     }
-    return fresh();
+    return this.currentAdmission(key);
   }
 
   /** The account service is turned off on purpose: nothing can be asked of it, so nothing waits for its word. */

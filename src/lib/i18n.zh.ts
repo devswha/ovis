@@ -96,6 +96,8 @@ const BASE: Record<string, string> = {
   "Your sign-in ended. Sign in again to see every PC of your account.": "登录已失效。请重新登录以查看账户中的所有 PC。",
   "The account service could not be reached. The PCs this device is paired with still work.": "无法连接账户服务。已与此设备配对的 PC 仍可正常使用。",
   "Add a new device?": "要添加新设备吗？",
+  "Pair this PC?": "要配对此电脑吗？",
+  "This PC could not be verified.": "无法验证此电脑。",
   "Check the number, then approve": "核对数字后再批准",
   "Through {pc} · joins your {n} PCs": "经由 {pc} · 将加入你的 {n} 台 PC",
   "Pick the number on {device}": "选择 {device} 上显示的数字",

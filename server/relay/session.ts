@@ -2,9 +2,10 @@ import { randomBytes } from "node:crypto";
 import { channelBinding } from "../../shared/relay-e2ee.ts";
 import type { SecureChannel } from "../../shared/relay-e2ee.ts";
 import { commitmentHolds, fromBase64Url, PAIR_APPROVAL_MS, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
+import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "../../shared/relay-server-proof.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_PC_PROOF, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, PairApprover, SessionError } from "../../shared/relay-mux.ts";
 import { PC_CODE_ACCOUNT_ONLY } from "../../shared/relay-mux.ts";
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
@@ -122,6 +123,8 @@ export class RelaySession {
   /** This session's channel binding, when the phone offered pairing by comparing digits and this PC selected it. */
   private sasBinding: Uint8Array | undefined;
   private intent: "pc" | "account" | "vouched" = "pc";
+  private proofNegotiated = false;
+  private proofChallenge?: { readonly id: string; readonly expected: string; readonly frame: string };
   private welcomed = false;
   private sas: {
     label: string; publicKey: string; commitment: Uint8Array; pcNonce: Uint8Array; expiresAt: number;
@@ -354,6 +357,8 @@ export class RelaySession {
         if (intents.length > 1) { this.close("protocol_error"); return; }
         const selected = [...this.sasBinding ? [PAIR_SAS_FEATURE, ...intents] : [], ...frame.payload.features.includes(ACCOUNT_FEATURE) ? [ACCOUNT_FEATURE] : [],
           ...this.keyProof && this.options.services.keyProofPairings !== undefined && !this.options.signInOnly ? [KEY_PROOF_FEATURE] : []];
+        this.proofNegotiated = !!this.sasBinding && intents[0] === PAIR_INTENT_VOUCHED && this.options.services.devices.opensAll() && frame.payload.features.includes(PAIR_PC_PROOF);
+        if (this.proofNegotiated) selected.push(PAIR_PC_PROOF);
         if (this.pcCodeAdd && this.options.services.devices.accountPolicyActive()) selected.push(PC_CODE_ACCOUNT_ONLY);
         this.authReceipts = this.options.services.devices.accountPolicyActive() && frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE);
         if (this.authReceipts) selected.push(ACCOUNT_OPENS_ALL_FEATURE);
@@ -429,6 +434,12 @@ export class RelaySession {
         // nobody asked for a link lately: refused before any prompt, and not counted, since no person was asked,
         // unless it is an account join the account service has seen (accountJoin, docs/account.md design 5.3).
         // Another PC of the account's server is taken only that way, window or not: its admission is its whole invitation
+        if (this.intent === "vouched") {
+          const key = proofKey(frame.payload.server_key);
+          if (!this.proofNegotiated || !key || !this.options.services.relay.approvals.reserveVouched(this.sessionId)) { this.close("auth_failed"); return; }
+          const id = deriveServerId(key);
+          this.proofChallenge = { id, ...serverChallenge(key, { server_id: id, role: "vouched-pc", connection_id: toBase64Url(this.sasBinding) }) };
+        }
         let membersOnly = false;
         let firstJoin = false;
         // taken under the PC's own add-me screen: this comparison stays the PC's to decide, whenever its digits show
@@ -453,12 +464,15 @@ export class RelaySession {
         this.mux.extendSetup(PAIR_APPROVAL_MS + 1_000);
         // a first join waits on this PC's own screen: the phone is told which PC to press Allow on
         this.mux.sendSession({ type: FrameType.PAIR_CHALLENGE, flags: 0, stream_id: 0,
-          payload: { nonce: toBase64Url(this.sas.pcNonce), ...(firstJoin ? { approve_on: APPROVER_OF[this.options.services.options.platform ?? process.platform] ?? "pc" } : {}) } });
+          payload: { nonce: toBase64Url(this.sas.pcNonce), ...(this.proofChallenge ? { server_challenge: this.proofChallenge.frame } : {}), ...(firstJoin ? { approve_on: APPROVER_OF[this.options.services.options.platform ?? process.platform] ?? "pc" } : {}) } });
         return;
       }
       case FrameType.PAIR_REVEAL: {
         const sas = this.sas;
         if (this.state !== "pair-commit" || !sas || !this.sasBinding) { this.close("protocol_error"); return; }
+        const proof = this.proofChallenge;
+        delete this.proofChallenge;
+        if (this.intent === "vouched" && (!proof || !verifyServerProof(frame.payload.server_proof, proof.expected))) { this.close("auth_failed"); return; }
         const phoneNonce = fromBase64Url(frame.payload.nonce);
         if (!commitmentHolds(sas.commitment, this.sasBinding, sas.publicKey, phoneNonce)) { this.close("auth_failed"); return; }
         // the window it was taken under was closed while this phone held its reveal: no prompt after a close
@@ -466,11 +480,12 @@ export class RelaySession {
         if (!sas.membersOnly && this.options.services.relay.approvals.closes !== sas.closes) { this.close("auth_failed"); return; }
         // a pause that began while this phone held its reveal still keeps its prompt off the owner's screen
         this.options.services.devices.assertRelayPairing(this.path);
-        const asked = this.options.services.relay.approvals.ask(sas.label,
+        if (proof && (!this.vouchedEligible(sas.publicKey) || !this.options.services.relay.approvals.takeAccountJoin())) { this.close("auth_failed"); return; }
+        const asked = this.options.services.relay.approvals.ask(proof?.id ?? sas.label,
           pairDigits(this.sasBinding, sas.publicKey, phoneNonce, sas.pcNonce), sas.expiresAt,
           // a PC vouched for is asked as "pair this PC": it joins this PC alone, and the approver's app signs nothing for it;
           // marked vouched, so that app shows who is asking and checks the admission, as for an account join
-          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", firstJoin: sas.firstJoin });
+          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", ...(proof ? { provenServerId: proof.id } : {}), firstJoin: sas.firstJoin });
         if (!asked) { this.close("auth_failed"); return; }
         this.state = "pair-wait";
         sas.withdraw = asked.withdraw;
@@ -478,6 +493,7 @@ export class RelaySession {
           if (this.sas !== sas || this.state !== "pair-wait") return;
           if (!decision.approved) { this.close("auth_failed"); return; }
           sas.approved = true;
+          if (decision.pcLabel) sas.label = decision.pcLabel;
           sas.approvedBy = decision.by?.id;
           // an approver revoked or given another role before the phone confirms takes the approval with it, for good
           if (decision.by) sas.stopApprover = this.options.services.devices.onRevoke(decision.by.id, () => { if (this.pairing) this.close("auth_failed"); });
@@ -516,6 +532,7 @@ export class RelaySession {
     // only a pairing approved on this PC itself does
     const id = accountDeviceId(this.options.serverId, sas.publicKey);
     const { devices, accountMailbox } = this.options.services;
+    if (this.intent === "vouched" && (!sas.approvedBy || !this.vouchedEligible(sas.publicKey))) { this.close("auth_failed"); return; }
     if (sas.approvedBy !== undefined) {
       const gates = accountMailbox.gates();
       const approverKey = devices.relayKeyOf(sas.approvedBy);
@@ -538,6 +555,8 @@ export class RelaySession {
 
   /** Once per comparison: one that made no device counts against relay pairing (server/devices.ts), unless admitNewDevice refused it. */
   private endPairing(counted: boolean): void {
+    this.options.services.relay.approvals.releaseVouched(this.sessionId);
+    delete this.proofChallenge;
     const sas = this.sas;
     if (!sas || sas.ended) return;
     sas.ended = true;
@@ -545,7 +564,14 @@ export class RelaySession {
     sas.stopRevokeAll?.();
     sas.stopApprover?.();
     sas.withdraw?.();
-    if (!counted) this.options.services.devices.noteRelayFailure(this.path);
+    if (!counted && (this.intent !== "vouched" || sas.withdraw)) this.options.services.devices.noteRelayFailure(this.path);
+  }
+
+  /** A plain tap never promotes an existing row, bypasses a denial, or outlives its exact admission. */
+  private vouchedEligible(key: string): boolean {
+    const { devices, accountMailbox, accountRows } = this.options.services;
+    return devices.hasAccountApprover() && devices.accountError === null && devices.admits(key) && !devices.isTombstoned(key)
+      && !devices.hasKey(key) && !accountRows?.rowsByKey(key).length && !accountMailbox.gates().held(key) && accountMailbox.currentAdmission(key);
   }
 
   /**
@@ -568,7 +594,7 @@ export class RelaySession {
     // decided again once admitted: a member who joined meanwhile approves it as ever
     const joined = allowed();
     // counted only once admitted, so refused strangers cannot spend the PC's joins
-    return joined !== null && relay.approvals.takeAccountJoin() ? joined : null;
+    return joined !== null && (this.intent === "vouched" || relay.approvals.takeAccountJoin()) ? joined : null;
   }
 
   /**

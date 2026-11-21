@@ -337,7 +337,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             const line = (value: unknown): void => { try { controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`)); } catch {} };
-            void manager.pairAccountPc(body.ticket, (digits) => line({ digits }), request.signal)
+            void manager.pairAccountPc(body.ticket, () => line({ waiting: true }), request.signal)
               .then((machine) => line({ machine }), (error: unknown) => {
                 if (error instanceof AccountPcError) line({ error: { code: `account_pc_${error.failure}`, message: error.message } });
                 else line({ error: { code: "internal_error", message: error instanceof Error ? error.message : String(error) } });

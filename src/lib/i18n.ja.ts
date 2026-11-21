@@ -94,6 +94,8 @@ const BASE: Record<string, string> = {
   "Your sign-in ended. Sign in again to see every PC of your account.": "サインインが終了しました。アカウントのすべての PC を表示するには、もう一度サインインしてください。",
   "The account service could not be reached. The PCs this device is paired with still work.": "アカウントサービスに接続できません。このデバイスとペアリング済みの PC はそのまま使えます。",
   "Add a new device?": "新しいデバイスを追加しますか？",
+  "Pair this PC?": "このPCをペアリングしますか？",
+  "This PC could not be verified.": "このPCを確認できませんでした。",
   "Check the number, then approve": "番号を確かめてから承認してください",
   "Through {pc} · joins your {n} PCs": "{pc} 経由 · {n} 台の PC に参加します",
   "Pick the number on {device}": "{device} に表示されている数字を選んでください",
