@@ -11,7 +11,7 @@ import { sameSignIn, SignedOutError } from "../account/service.ts";
 import type { AccountProvider, AccountSession, PendingPairing } from "../account/store.ts";
 import { SIGN_IN_MS, signInReturn } from "../account/signin.ts";
 import { inNativeApp } from "../nativeApp.ts";
-import { deviceLabel } from "../phone.ts";
+import { thisDeviceLabel } from "../phone.ts";
 import { registerPendingPush } from "../push.ts";
 import { alertPrefs, loadSettings, SettingsProvider } from "../settings.ts";
 import { readAlertFilters, withAlertFilters } from "../alertFilters.ts";
@@ -156,7 +156,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const open = mount.open ?? openRelayTransport;
   const navigate = mount.navigate ?? ((path: string) => window.location.assign(path));
   const replace = mount.replace ?? mount.navigate ?? ((path: string) => window.location.replace(path));
-  const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
+  const label = mount.label ?? thisDeviceLabel();
   let entry = shellEntry(mount.entryUrl);
   // bumped by every link this page takes after it loaded, and by Cancel or Back: a step of the page's own load that
   // waited meanwhile is stale and does nothing

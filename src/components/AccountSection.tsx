@@ -23,7 +23,7 @@ import { postKept, refusalShown, unsentBlocks, type UnsentBlocks } from "../lib/
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
-import { deviceLabel, deviceOs } from "../lib/phone.ts";
+import { deviceOs, thisDeviceLabel } from "../lib/phone.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark, providerChoice } from "./AccountPcs.tsx";
 import { AccountHead, ManageAccountSheet } from "./AccountHead.tsx";
@@ -1118,7 +1118,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     setView({ kind: "device-code", provider, userCode: null, verificationUri: "", verificationUriComplete: null });
     startedProvider.current = null;
     return (async () => {
-      const requester = { label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
+      const requester = { label: thisDeviceLabel(), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
       const started = provider === "ovis"
         ? await startLinkPageSignIn({ service: pcServiceOrigin, store, requester }, offer?.device[0] ?? "github")
         : await startDeviceSignIn({ service: pcServiceOrigin, store, provider, requester });

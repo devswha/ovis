@@ -15,7 +15,7 @@ import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAga
 import type { LeaveOutcome } from "../account/hostedSignIn.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable, SignInNotWanted } from "../account/native.ts";
-import { deviceLabel, deviceOs } from "../phone.ts";
+import { deviceOs, thisDeviceLabel } from "../phone.ts";
 import { t } from "../i18n.ts";
 import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
 import { indexedDeviceStore, type SavedDevice, type EnrollmentState, type RelayDevice, type RelayDeviceStore } from "./device.ts";
@@ -77,7 +77,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const providers = mount.accountProviders ?? accountProvidersOf(document);
   const account = mount.accountStore === undefined && mount.accountFetch === undefined ? indexedAccountService
     : new AccountService({ store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
-  const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
+  const label = mount.label ?? thisDeviceLabel();
   const open = mount.open ?? openRelayTransport;
   const forgotten = new Map<string, number>();
   const running = new Map<Promise<unknown>, string>();

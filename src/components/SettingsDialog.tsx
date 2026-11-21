@@ -45,7 +45,7 @@ import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, w
 import { alertFiltersChanged, updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
 import { alertMeWhenChips } from "./AlertChips.tsx";
 import { fetchMachines, fetchRemoteAccess, requestRelayOffer, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
-import { isLoopbackHost, phonePlan, tailnetHost, tailscalePlan } from "../lib/phone.ts";
+import { isLoopbackHost, labelDevice, phonePlan, tailnetHost, tailscalePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
 import type { HealthAuth, PluginActions, RemoteAccess } from "../../shared/protocol.ts";
 import type { SecurityFacts } from "../lib/useAccess.ts";
@@ -1196,10 +1196,10 @@ function AccessFacts({ facts }: { facts: SecurityFacts }) {
 const MOVED_GROUPS: Readonly<Record<string, string>> = { phone: "devices", remote: "devices", portal: "devices", "chat-more": "conversation" };
 
 function deviceKind(label: string, t: ReturnType<typeof useT>): string | null {
-  const named = /^(iPhone|iPad|Android|Mac|Windows|Chromebook|Linux|Device)( · (Edge|Firefox|Chrome|Safari))?$/.exec(label);
-  if (named === null) return null;
-  if (named[1] === "iPhone" || named[1] === "Android") return t("Phone");
-  if (named[1] === "iPad") return t("Tablet");
+  const device = labelDevice(label);
+  if (device === null) return null;
+  if (device === "iPhone" || device === "Android") return t("Phone");
+  if (device === "iPad") return t("Tablet");
   return t("Browser");
 }
 

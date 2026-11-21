@@ -109,6 +109,7 @@ const BASE: Record<string, string> = {
   "The name and system are what the device says. The place is where its network connects from.": "名称和系统是设备自己报告的；位置是其网络的接入地点。",
   "This device asked again with other details. Check them, then pick the number again.": "该设备用不同的信息再次发起请求。请先核对，再重新选择数字。",
   "Device": "设备",
+  "Ovis app ({device})": "Ovis 应用 ({device})",
   "The sign-in was refused.": "登录被拒绝。",
   "This sign-in already belongs to another Ovis account. Nothing was changed.": "此登录已属于另一个 Ovis 账户，未做任何更改。",
   "Deny": "拒绝",

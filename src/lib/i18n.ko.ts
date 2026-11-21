@@ -105,6 +105,7 @@ const BASE: Record<string, string> = {
   "The name and system are what the device says. The place is where its network connects from.": "이름과 시스템은 기기가 스스로 알린 값이고, 위치는 그 기기 네트워크가 접속한 곳이에요.",
   "This device asked again with other details. Check them, then pick the number again.": "기기가 다른 정보로 다시 요청했어요. 바뀐 정보를 확인한 뒤 숫자를 다시 고르세요.",
   "Device": "기기",
+  "Ovis app ({device})": "Ovis 앱 ({device})",
   "The sign-in was refused.": "로그인이 거절됐어요.",
   "This sign-in already belongs to another Ovis account. Nothing was changed.": "이 로그인은 이미 다른 Ovis 계정에 연결돼 있어요. 아무것도 바뀌지 않았어요.",
   "Deny": "거부",

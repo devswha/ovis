@@ -107,6 +107,7 @@ const BASE: Record<string, string> = {
   "The name and system are what the device says. The place is where its network connects from.": "名前とシステムはデバイスの自己申告です。場所はそのネットワークの接続元です。",
   "This device asked again with other details. Check them, then pick the number again.": "デバイスが別の情報で再度リクエストしました。内容を確認してから、もう一度番号を選んでください。",
   "Device": "デバイス",
+  "Ovis app ({device})": "Ovis アプリ ({device})",
   "The sign-in was refused.": "サインインが拒否されました。",
   "This sign-in already belongs to another Ovis account. Nothing was changed.": "このサインインはすでに別の Ovis アカウントで使われています。何も変更されていません。",
   "Deny": "拒否",

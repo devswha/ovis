@@ -3,7 +3,7 @@ import "./AccessGate.css";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import { ApiError, authenticate, pairDevice } from "../lib/api.ts";
-import { deviceLabel } from "../lib/phone.ts";
+import { thisDeviceLabel } from "../lib/phone.ts";
 import type { AccessRefusal } from "../../shared/protocol.ts";
 import { useT } from "../lib/i18n.ts";
 import { changePc, inNativeApp } from "../lib/nativeApp.ts";
@@ -68,7 +68,7 @@ function PairingGate({ reason, initialCode, consumePairCode, pairingUnconfirmed,
     setSubmitting("code");
     setError(null);
     try {
-      await pairDevice(value, deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0));
+      await pairDevice(value, thisDeviceLabel());
       onPaired?.();
       onUnlocked();
     } catch (err) {
