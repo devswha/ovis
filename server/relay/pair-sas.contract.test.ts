@@ -902,8 +902,10 @@ test("refused requests do not spend the PC's account joins", async () => {
 
 const vouched = (f: Fixture, admitKey?: (key: string) => Promise<unknown>) => askToJoin(f, admitKey, PAIR_INTENT_VOUCHED, { keys: generateKeyPair() });
 
-test("a legacy vouched PC without server proof is refused even with a fresh admission", async () => {
+test("a legacy vouched PC without server proof is not given the intent, so it reads this PC as outdated, and is refused even with a fresh admission", async () => {
   const { f, admit } = await joinFixture(Date.now, true);
+  // a 0.5.9 PC offers the intent without pair-pc-proof, and calls a PC that does not select the intent outdated
+  expect((await (await direct(f)).p.hello([PAIR_SAS_FEATURE, PAIR_INTENT_VOUCHED])).features).toEqual([PAIR_SAS_FEATURE]);
   expect((await askToJoin(f, key => admit(key), PAIR_INTENT_VOUCHED)).refused).toBe("auth_failed");
   expect(f.app.context.services.relay.approvals.remoteList()).toEqual([]);
 });
@@ -938,8 +940,8 @@ test("a server proof accepted in one vouched session cannot be replayed in anoth
 
 test("a PC vouched for is selected only alongside pair-sas, and alone among the intents", async () => {
   const f = fixture();
-  expect((await (await direct(f)).p.hello([PAIR_SAS_FEATURE, PAIR_INTENT_VOUCHED])).features).toEqual([PAIR_SAS_FEATURE, PAIR_INTENT_VOUCHED]);
-  expect((await (await direct(f)).p.hello([PAIR_INTENT_VOUCHED])).features).toEqual([]);
+  expect((await (await direct(f)).p.hello([PAIR_SAS_FEATURE, PAIR_INTENT_VOUCHED, "pair-pc-proof"])).features).toEqual([PAIR_SAS_FEATURE, PAIR_INTENT_VOUCHED]);
+  expect((await (await direct(f)).p.hello([PAIR_INTENT_VOUCHED, "pair-pc-proof"])).features).toEqual([]);
   const { p } = await direct(f);
   await p.send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
     payload: { protocol: "ovis-mux", versions: [1], features: [PAIR_SAS_FEATURE, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED], required_features: [] } });

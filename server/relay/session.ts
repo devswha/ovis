@@ -355,7 +355,10 @@ export class RelaySession {
         // an intent is selected only with pair-sas, and only the one offered (docs/account.md, "Negotiation")
         const intents = frame.payload.features.filter((f) => f === PAIR_INTENT_PC || f === PAIR_INTENT_ACCOUNT || f === PAIR_INTENT_VOUCHED);
         if (intents.length > 1) { this.close("protocol_error"); return; }
-        const selected = [...this.sasBinding ? [PAIR_SAS_FEATURE, ...intents] : [], ...frame.payload.features.includes(ACCOUNT_FEATURE) ? [ACCOUNT_FEATURE] : [],
+        // the vouched intent is selected only with pair-pc-proof offered: an older PC that offers it alone reads the
+        // missing intent as this PC being outdated (its "update Ovis on that PC"), and its PAIR_REQUEST is still refused
+        const offered = intents[0] === PAIR_INTENT_VOUCHED && !frame.payload.features.includes(PAIR_PC_PROOF) ? [] : intents;
+        const selected = [...this.sasBinding ? [PAIR_SAS_FEATURE, ...offered] : [], ...frame.payload.features.includes(ACCOUNT_FEATURE) ? [ACCOUNT_FEATURE] : [],
           ...this.keyProof && this.options.services.keyProofPairings !== undefined && !this.options.signInOnly ? [KEY_PROOF_FEATURE] : []];
         this.proofNegotiated = !!this.sasBinding && intents[0] === PAIR_INTENT_VOUCHED && this.options.services.devices.opensAll() && frame.payload.features.includes(PAIR_PC_PROOF);
         if (this.proofNegotiated) selected.push(PAIR_PC_PROOF);
