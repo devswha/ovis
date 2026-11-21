@@ -530,8 +530,19 @@ export class SshConnection {
     if (!this.multiplexed) throw new Error("Forwarding a socket needs a multiplexed SSH connection");
     if (/[\s:]/.test(remotePath) || !remotePath.startsWith("/")) throw new Error("Invalid remote socket path");
     const local = join(this.makeDir(), `fwd-${randomBytes(8).toString("hex")}.sock`);
-    await this.exec([this.client.ssh, "-F", "none", "-S", this.control, "-O", "forward", "-L", `${local}:${remotePath}`, this.target.destination]);
+    this.socketForwards.set(local, remotePath);
+    try { await this.exec([this.client.ssh, "-F", "none", "-S", this.control, "-O", "forward", "-L", `${local}:${remotePath}`, this.target.destination]); }
+    catch (error) { await this.closeSocketForward(local); throw error; }
     return local;
+  }
+  private socketForwards = new Map<string, string>();
+  /** Ends a forward forwardSocket opened: the master stops listening there, and the local socket file goes. */
+  async closeSocketForward(local: string): Promise<void> {
+    const remote = this.socketForwards.get(local);
+    if (remote === undefined) return;
+    this.socketForwards.delete(local);
+    try { if (!this.closed && this.master !== null && this.master.exitCode === null) await this.exec([this.client.ssh, "-F", "none", "-S", this.control, "-O", "cancel", "-L", `${local}:${remote}`, this.target.destination]); }
+    finally { rmSync(local, { force: true }); }
   }
   private async exec(args: string[], input?: Uint8Array | StreamInput, timeout = 30_000, maxOutput?: number): Promise<string> {
     const stream = input !== undefined && !(input instanceof Uint8Array) ? input : undefined;
