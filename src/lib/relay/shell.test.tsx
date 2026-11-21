@@ -257,6 +257,33 @@ describe("the hosted shell's front page", () => {
     } finally { setPcNewness(null); }
   });
 
+  it("#16, C3 pin 1: a PC page whose read of the account's PCs fails keeps its sessions held (fail closed) until a read answers", async () => {
+    const { server_id, server_public_key } = keyFor();
+    const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const saved: RelayDevice = { server_id, server_public_key, relay: AP, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" };
+    class Admitted extends RelayTransport {
+      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+    }
+    let apps = 0, reads = 0;
+    setPcNewness(null);
+    localStorage.removeItem(`ovis-new-pc:${server_id}`);
+    try {
+      await mountRelayShell(mountFor({
+        entryUrl: `https://app.ovis.sh/s/${server_id}/`, store: deviceStore([saved]), shellVersion: "1.0.0",
+        open: async (offer) => new Admitted(offer),
+        renderApp: () => { apps++; return { render() {}, unmount() {} }; },
+        pendingPush: { get: async () => undefined, clear: async () => {} },
+        ...await registeredSignIn(),
+        accountFetch: async (input) => { if (new URL(String(input)).pathname !== "/v1/pcs") return new Response(null, { status: 404 }); reads++; return new Response(null, { status: 503 }); },
+      }));
+      await until(() => apps === 1, "the app");
+      for (let round = 0; round < 50 && reads === 0; round++) await settleSigned();
+      for (let round = 0; round < 10; round++) await settleSigned();
+      expect(reads).toBeGreaterThan(0);
+      expect(pcHeld()).toBe(true);
+    } finally { setPcNewness(null); }
+  });
+
   // the account service's provider list landing while a PC that turned this phone away is still being cleaned up draws
   // nothing: the app is gone, and the screen it left behind (Connecting) is not the one to bring back
   it("draws no stale screen when the provider list lands while a revoked PC's failure is still being read", async () => {

@@ -20,6 +20,8 @@ let browser: EventTarget;
 let service: FakeAccountService;
 let store: ReturnType<typeof memoryAccountStore>;
 let restore: () => void;
+/** the fake account service's clock: a test moves it on instead of waiting */
+let clock = Date.now();
 let expired = false;
 let rejectDelete = false;
 /** what GET /v1/pcs answers instead of the fake, when set */
@@ -42,7 +44,8 @@ beforeEach(async () => {
     Object.defineProperty(globalThis, key, { value, configurable: true });
   }
   store = memoryAccountStore();
-  service = new FakeAccountService();
+  clock = Date.now();
+  service = new FakeAccountService(() => clock);
   service.opensAll = true;
   const token = service.issueToken(ACCOUNT, { twoStep: true });
   const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
@@ -119,7 +122,7 @@ it("#16 gate B2: a browser that signs in again to remove the PC (a new, later si
   const first = await mount();
   expect(first.findAllByProps({ role: "status" })).toHaveLength(1);
   // Sign in again leaves the page and comes back with a fresh sign-in, made after the PC was added
-  await Bun.sleep(5);
+  clock += 60_000;
   const again = service.issueToken(ACCOUNT, { twoStep: true });
   await store.update("session", (current) => current === undefined ? undefined : { ...current, access_token: again, sign_in_id: "notice-test-again" });
   const back = await mount();

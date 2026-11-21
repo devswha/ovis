@@ -837,7 +837,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    */
   const newnessOf = (serverId: string): PcNewness => {
     const view = account.enabled && accountRead ? account.state : null;
-    if (view?.kind === "signed-in" && view.pcs !== null) {
+    // only a read that answered says how new it is: the rows a failed read keeps carry no window
+    if (view?.kind === "signed-in" && view.pcs !== null && view.error === null) {
       const row = view.pcs.find((pc) => pc.server_id === serverId);
       const known: { readonly until: number } | null = row === undefined || !isNewAccountPc(row, Date.now()) ? null
         // a window that does not parse may still be open: held for the longest a window lasts
@@ -857,7 +858,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const newness = newnessOf(attempt.offer.server_id);
     if (newness !== null || attempt.accountless === true || !account.enabled) return newness;
     const view = account.state;
-    return !accountRead || view?.kind === "signing-in" || (view?.kind === "signed-in" && view.pcs === null && view.error === null) ? "unknown" : null;
+    // signed in, it is held until a read of the account's PCs answers: one that fails holds it still (fail closed)
+    return !accountRead || view?.kind === "signing-in" || (view?.kind === "signed-in" && (view.pcs === null || view.error !== null)) ? "unknown" : null;
   };
   /** the account read the opened PC asked for to learn how new it is (enterApp) */
   let newnessRead: Promise<void> = Promise.resolve();
@@ -868,7 +870,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the PC before the read landed), it is held until they are read, which this asks for
     const held = heldOf(attempt);
     setPcNewness(held);
-    if (held === "unknown") newnessRead = account.load(null).then(() => setPcNewness(heldOf(attempt)), () => setPcNewness(null));
+    if (held === "unknown") newnessRead = account.load(null).then(() => setPcNewness(heldOf(attempt)), () => undefined);
     rememberPc(attempt.offer.server_id);
     keepLaunchTried([]);
     // opened here: a PC an introduction alone saved is now one this device chose, which a later launch may reopen
