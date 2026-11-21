@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import type { ReactElement } from "react";
 import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
@@ -332,57 +332,91 @@ describe("a link that opens the hosted shell on a provider's sign-in (#sign-in=<
   });
 
   describe("on a PC's own page this device has no pairing for (the QR code of a PC in an account)", () => {
-    const pcId = (): string => deriveServerId(generateKeyPair().publicKey);
+    /** an account PC this device has no pairing for, seen `seenAgo` ms ago: one it may join */
+    const accountPc = (label: string, seenAgo: number) => {
+      const pair = generateKeyPair();
+      return { server_id: deriveServerId(pair.publicKey), label, added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: new Date(Date.now() - seenAgo).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: "wss://relay.ovis.sh" };
+    };
+    /** the account service, its directory answered with `pcs` */
+    const listing = (fake: FakeAccountService, pcs: readonly object[]) => (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if (url.pathname === "/v1/pcs" && (init?.method ?? "GET") === "GET") return Response.json({ pcs });
+      return fake.fetch(input as string, init);
+    }) as typeof fetch;
 
-    it("signed out, starts the link's sign-in, and the front page it comes back to goes on to that PC's page, once", async () => {
+    it("signed out, starts the link's sign-in, and its return goes on to that PC's page, not to the PC a launch would open", async () => {
       const fake = service();
+      // the other PC was seen last: a plain sign-in's launch would open it
+      const other = accountPc("Other", 60_000), scanned = accountPc("Scanned", 10 * 60_000);
+      const fetchPcs = listing(fake, [other, scanned]);
       const accountStore = memoryAccountStore();
       const signIns: string[] = [];
-      const id = pcId();
-      await load(addressBar(`${ORIGIN}/s/${id}/#sign-in=google`), fake, accountStore, signIns);
+      await load(addressBar(`${ORIGIN}/s/${scanned.server_id}/#sign-in=google`), fake, accountStore, signIns, fetchPcs);
       await until(() => signIns.length === 1);
       expect(await providerOf(accountStore, signIns[0]!)).toBe("google");
       const went: string[] = [];
-      const back = await returnOf(fake, signIns[0]!);
-      await load(addressBar(back), fake, accountStore, [], fake.fetch as typeof fetch, { navigate: (path) => { went.push(path); } });
-      expect(went).toEqual([`/s/${id}/`]);
-      // the note went with that one return: a later sign-in that comes back to the front page stays there
+      await load(addressBar(await returnOf(fake, signIns[0]!)), fake, accountStore, [], fetchPcs, { navigate: (path) => { went.push(path); } });
+      expect(went).toEqual([`/s/${scanned.server_id}/`]);
+      // the PC went with that one sign-in: a later one that comes back to the front page launches as before
       const later: string[] = [];
-      await load(addressBar(`${ORIGIN}/#sign-in=github`), fake, memoryAccountStore(), later);
+      const store = memoryAccountStore();
+      await load(addressBar(`${ORIGIN}/#sign-in=github`), fake, store, later, fetchPcs);
       await until(() => later.length === 1);
       const elsewhere: string[] = [];
-      await load(addressBar(await returnOf(fake, later[0]!)), fake, memoryAccountStore(), [], fake.fetch as typeof fetch, { navigate: (path) => { elsewhere.push(path); } });
-      expect(elsewhere.filter((path) => path.startsWith("/s/"))).toEqual([]);
+      await load(addressBar(await returnOf(fake, later[0]!)), fake, store, [], fetchPcs, { navigate: (path) => { elsewhere.push(path); } });
+      expect(elsewhere.filter((path) => path === `/s/${scanned.server_id}/`)).toEqual([]);
     });
 
     it("signed out with no provider named, draws the sign-in, and a sign-in pressed there comes back to that PC too", async () => {
       const fake = service();
+      const scanned = accountPc("Scanned", 60_000);
+      const fetchPcs = listing(fake, [scanned]);
       const accountStore = memoryAccountStore();
       const signIns: string[] = [];
       const drawn: RelayShellProps[] = [];
-      const id = pcId();
-      await load(addressBar(`${ORIGIN}/s/${id}/`), fake, accountStore, signIns, fake.fetch as typeof fetch, { drawn });
+      await load(addressBar(`${ORIGIN}/s/${scanned.server_id}/`), fake, accountStore, signIns, fetchPcs, { drawn });
       const last = drawn.at(-1)!;
       expect(last.state).toMatchObject({ kind: "empty", account: { kind: "signed-out" } });
       expect(signIns).toEqual([]);
       last.onSignIn!("github");
       await until(() => signIns.length === 1);
       const went: string[] = [];
-      await load(addressBar(await returnOf(fake, signIns[0]!)), fake, accountStore, [], fake.fetch as typeof fetch, { navigate: (path) => { went.push(path); } });
-      expect(went).toEqual([`/s/${id}/`]);
+      await load(addressBar(await returnOf(fake, signIns[0]!)), fake, accountStore, [], fetchPcs, { navigate: (path) => { went.push(path); } });
+      expect(went).toEqual([`/s/${scanned.server_id}/`]);
     });
 
-    it("a sign-in refused at the provider stays on the front page, which says why", async () => {
+    it("a sign-in refused at the provider stays on the front page", async () => {
       const fake = service();
+      const scanned = accountPc("Scanned", 60_000);
       const accountStore = memoryAccountStore();
       const signIns: string[] = [];
-      const id = pcId();
-      await load(addressBar(`${ORIGIN}/s/${id}/#sign-in=github`), fake, accountStore, signIns);
+      await load(addressBar(`${ORIGIN}/s/${scanned.server_id}/#sign-in=github`), fake, accountStore, signIns, listing(fake, [scanned]));
       await until(() => signIns.length === 1);
       const state = new URL(signIns[0]!).searchParams.get("state") ?? "";
       const went: string[] = [];
-      await load(addressBar(`${ORIGIN}/#error=access_denied&state=${state}`), fake, accountStore, [], fake.fetch as typeof fetch, { navigate: (path) => { went.push(path); } });
+      await load(addressBar(`${ORIGIN}/#error=access_denied&state=${state}`), fake, accountStore, [], listing(fake, [scanned]), { navigate: (path) => { went.push(path); } });
       expect(went).toEqual([]);
+    });
+
+    it("a sign-in that finishes on the page itself (the phone app's sheet) joins that PC once the account's PCs are read", async () => {
+      const fake = service();
+      const other = accountPc("Other", 60_000), scanned = accountPc("Scanned", 10 * 60_000);
+      const fetchPcs = listing(fake, [other, scanned]);
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, PluginHeaders: [{ name: "OvisAuth" }],
+        nativePromise: async (_plugin: string, method: string, options: { url: string }) => {
+          if (method !== "authenticate") return {};
+          return { url: (await fake.fetch(options.url)).headers.get("location") ?? "" };
+        },
+      } });
+      // the app's own sheet trades its code with the page's fetch: the fake account service answers it
+      const trade = spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetchPcs, { preconnect: globalThis.fetch.preconnect }));
+      try {
+        const went: string[] = [];
+        await load(addressBar(`${ORIGIN}/s/${scanned.server_id}/#sign-in=github`), fake, memoryAccountStore(), [], fetchPcs, { navigate: (path) => { went.push(path); changed(); } });
+        await until(() => went.length > 0);
+        expect(went).toEqual([expect.stringMatching(new RegExp(`^/s/${scanned.server_id}/#offer=`))]);
+      } finally { trade.mockRestore(); }
     });
   });
 });

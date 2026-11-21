@@ -45,7 +45,7 @@ import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, w
 import { alertFiltersChanged, updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
 import { alertMeWhenChips } from "./AlertChips.tsx";
 import { fetchMachines, fetchRemoteAccess, requestRelayOffer, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
-import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
+import { isLoopbackHost, phonePlan, tailnetHost, tailscalePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
 import type { HealthAuth, PluginActions, RemoteAccess } from "../../shared/protocol.ts";
 import type { SecurityFacts } from "../lib/useAccess.ts";
@@ -1226,6 +1226,8 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   useEffect(() => { loadAccess(); }, [loadAccess]);
   const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext, shell: inRelayShell() }, access ?? null);
   const pairUrl = plan.kind === "here" || plan.kind === "served" ? plan.url : isLoopbackHost(window.location.hostname) ? null : window.location.origin;
+  // the Tailscale tab's own address: this page's where it is open at one, else what Tailscale serves, never a proxy's
+  const tailscale = plan.kind === "here" && tailnetHost(window.location.hostname) ? plan : tailscalePlan(access ?? null);
   const wakeLockProblem = !window.isSecureContext ? t("Needs HTTPS or localhost.") : !("wakeLock" in navigator) ? t("This browser can't keep the screen on.") : null;
   const relay = useRelay();
   const relayReadOnly = auth?.role === "watch" || auth?.via === "portal";
@@ -1359,7 +1361,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       </SettingsFold>
 
       {connecting && (
-        <ConnectPhoneDialog plan={plan} pairUrl={pairUrl}
+        <ConnectPhoneDialog plan={plan} tailscale={tailscale} pairUrl={pairUrl}
           relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"}
           signedIn={account.signedIn} accountId={account.account} provider={account.provider} joinBySignIn={joinBySignIn}
           pcAddFromAccount={pcAddFromAccount} onAccountSetup={openAccount}

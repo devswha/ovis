@@ -23,7 +23,7 @@ import { takeEntryUrl, watchNavigation } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
 import { holdWaitMs } from "./joinHold.ts";
-import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest, keepSignInPc, takeSignInPc } from "./shellState.ts";
+import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
@@ -263,10 +263,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (read) accountRead = true;
     if (read && (account.state?.kind !== "signed-in" || account.state.pcs !== null)) unanswered = false;
     // the sign-in a PC's own page asks for stays its screen; signed in on this page (the phone app's sheet, another tab),
-    // the page goes on to join that PC as its load would have
-    if (unpaired !== null && unpaired === entries && app === null && shown?.kind === "empty") {
-      if (account.state?.kind === "signed-in") { unpaired = null; void openUnpaired(entries); }
-      else show({ kind: "empty", account: withRefusal(account.state) });
+    // the page goes on to join that PC as its load would have, once the account's PCs are read (the join is one of them)
+    if (unpaired !== null && unpaired === entries && app === null && (shown?.kind === "empty" || shown?.kind === "connecting")) {
+      const view = account.state;
+      if (view?.kind !== "signed-in") show({ kind: "empty", account: withRefusal(view) });
+      else if (view.pcs === null && view.error === null) show({ kind: "connecting", name: null });
+      else { unpaired = null; void openUnpaired(entries); }
       return;
     }
     if (signInFor !== null && shown?.kind === "failed" && shown.failure === "sign-in-first") {
@@ -949,12 +951,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const unmoved = (): boolean => !navigatedSinceEntry() && entries === 0;
   const stillWanted = async (): Promise<boolean> => unmoved() && await account.stored() === undefined && unmoved();
   /**
-   * A sign-in started for this PC's own page: a browser's comes back on the front page alone, which sends it back here
-   * (keepSignInPc); the phone app's sheet comes back to this page.
+   * A sign-in started for this PC's own page: a browser's comes back on the front page alone, which its pending record
+   * sends back here once it succeeded (load's `toPc`); the phone app's sheet comes back to this page.
    */
   const signInForPc = (provider: AccountProvider, wanted?: () => boolean | Promise<boolean>): void => {
-    if (entry.serverId !== null) keepSignInPc(entry.serverId);
-    account.signIn(provider, undefined, wanted);
+    account.signIn(provider, undefined, wanted, entry.serverId ?? undefined);
   };
   /**
    * `#sign-in=<provider>` (boot took it off the address, so a reload or Back starts nothing): that provider's sign-in
@@ -1027,12 +1028,20 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // A newer navigation meanwhile (another PC's link, Back) keeps the sign-in but drops this pairing's screen and handoff
   const loaded = entries;
   let returning: PendingPairing | undefined;
+  // the PC whose own page started the sign-in this load returns from: its connecting screen keeps this page from launching
+  let returningPc: string | undefined;
   if (left) return;
   await account.load(account.enabled ? signInReturn(new URL(mount.entryUrl).hash) : null, (kept) => {
     if (entries !== loaded) return;
     returning = kept;
     show({ kind: "failed", failure: "sign-in-first", name: kept.offer.name ?? null, detail: null, server_id: kept.offer.server_id, account: account.state });
   }, (outcome) => {
+    // a PC's own page started it: signed in by this very sign-in, that page goes on and joins the PC, as soon as it is
+    // traded and before any launch of this front page; refused, the front page says why
+    if (returningPc !== undefined) {
+      if (outcome?.refused === null && entries === loaded && !navigatedSinceEntry()) { left = true; navigate(serverScopePath(returningPc)); }
+      return;
+    }
     // then the PC's own page goes on with it, as after a scan, never this front page: a PC opens on its page (its worker,
     // its reloads, its Back), and the account service sends a browser back here alone. It goes as soon as the sign-in is
     // traded: the directory read after it waits on the account service, and the PC's confirm reads the account itself
@@ -1042,13 +1051,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     keepPairingReturn({ server_id: offer.server_id, offer: offerDigest(offer), at, refused: outcome?.refused ?? null, provider: outcome?.provider ?? null, sent: Date.now() });
     const link = new URL(encodeOffer(offer, window.location.origin));
     navigate(link.pathname + link.hash);
+  }, (serverId) => {
+    if (entries !== loaded || !/^[0-9a-f]{32}$/.test(serverId)) return;
+    returningPc = serverId;
+    show({ kind: "connecting", name: null });
   });
-  // a sign-in a PC's own page started (signInForPc) came back here, the one address a browser returns to: signed in,
-  // that page goes on and joins the PC instead of this page's launch. Taken on every load, so none waits for a later one
-  const forPc = takeSignInPc(SIGN_IN_MS);
-  if (returning === undefined && forPc !== null && signInReturn(entryHash) !== null && account.state?.kind === "signed-in" && frontUp() && entries === loaded && !navigatedSinceEntry()) {
-    left = true;
-    navigate(serverScopePath(forPc));
+  if (returningPc !== undefined) {
+    if (!left && entries === loaded) await showFront();
     return;
   }
   // a sign-in that came back signed in (not refused or cancelled, whose reason the sign-in screen says)
