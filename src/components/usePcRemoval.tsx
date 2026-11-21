@@ -31,6 +31,8 @@ type Asked = {
 export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed: (serverId: string) => void | Promise<void>): {
   readonly remove: (session: AccountSession, serverId: string) => Promise<boolean>;
   readonly prompt: ReactNode;
+  /** the PC \`prompt\` speaks of, for a surface that draws one row per PC; null with no prompt */
+  readonly promptFor: string | null;
 } {
   const t = useT();
   const here = useSignInAgainHere();
@@ -79,5 +81,5 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
       {asked.step === "signing-in" && asked.link !== null && <ExternalLink kind="sign-in" className="btn" href={asked.link}>{t("Open the sign-in page")}</ExternalLink>}
     </span>
   );
-  return { remove, prompt };
+  return { remove, prompt, promptFor: asked?.serverId ?? null };
 }

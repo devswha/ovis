@@ -5,6 +5,7 @@ import { create, type ReactTestInstance, type ReactTestRenderer } from "react-te
 import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
 import { generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
+import { keepShellAccount } from "../lib/account/hostedSignIn.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
 import { memoryAccountStore, memoryLock, type AccountStore } from "../lib/account/store.ts";
@@ -138,6 +139,37 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
     await listedByItsOwner(mac, "hasang-MacBookPro");
     await mount();
     expect(buttons()).toEqual(["Allow", "Decline"]);
+  });
+
+  it("PCR-1: Decline from a sign-in older than ten minutes declines nothing and says to sign in again", async () => {
+    now -= 11 * MINUTE;
+    await signIn();
+    now += 11 * MINUTE;
+    await listedByItsOwner(mac, "hasang-MacBookPro");
+    await mount();
+    await press("Decline");
+    expect(text()).toContain("Sign in again to remove it: your sign-in is more than ten minutes old.");
+    expect(fake.pcs(ACCOUNT).map((pc) => pc.server_id)).toEqual([DESK, MAC]);
+    expect(buttons()).toEqual(["Allow", "Decline"]);
+  });
+
+  it("PCR-1: Sign in again after a refused Decline signs in fresh in place and declines that request", async () => {
+    now -= 11 * MINUTE;
+    await signIn();
+    now += 11 * MINUTE;
+    await listedByItsOwner(mac, "hasang-MacBookPro");
+    keepShellAccount({ signOut() {}, signOutEverywhere: async () => null, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null,
+      freshSignIn: async () => { await signIn(); return (await store.get("session")) ?? null; } });
+    try {
+      await mount();
+      await press("Decline");
+      await press("Sign in again");
+      expect(fake.requests.filter((line) => line === `DELETE /v1/pcs/${MAC}`)).toHaveLength(2);
+      expect(fake.pcs(ACCOUNT).map((pc) => pc.server_id)).toEqual([DESK]);
+      expect(buttons()).toEqual([]);
+    } finally {
+      keepShellAccount(null);
+    }
   });
 
   it("asks nothing for a PC paired here, one whose request is over ten minutes old, or one that already joined", async () => {

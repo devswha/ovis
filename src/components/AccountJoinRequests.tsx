@@ -6,6 +6,7 @@ import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { indexedDeviceStore, type RelayDevice } from "../lib/relay/device.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
+import { usePcRemoval } from "./usePcRemoval.tsx";
 
 import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
@@ -36,6 +37,11 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
   const [denied, setDenied] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  // a Decline is a removal (PCR-1): one the service wants a fresh own sign-in for says so, with Sign in again, in its card
+  const removal = usePcRemoval(service, (serverId) => {
+    setDenied((prior) => new Set([...prior, serverId]));
+    window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+  });
   useEffect(() => {
     let version = 0;
     const read = async (): Promise<void> => {
@@ -77,14 +83,11 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
     setBusy(pc.server_id);
     setFailed(null);
     try {
-      await service.forSignIn(asking.session).deletePc(pc.server_id);
+      await removal.remove(asking.session, pc.server_id);
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       setFailed(pc.server_id);
-      return;
     } finally { setBusy(null); }
-    setDenied((prior) => new Set([...prior, pc.server_id]));
-    window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
   };
   return asking.pcs.filter((pc) => !denied.has(pc.server_id)).map((pc) => (
     <div key={pc.server_id} className="update-notice is-paired device-notice" role="status" data-join-request={pc.server_id}>
@@ -92,6 +95,7 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
       <span className="device-notice-text">
         <span>{t("\"{name}\" asks to join your account", { name: pc.name })}</span>
         {failed === pc.server_id && <span className="account-error" role="alert">{t("The request could not be declined. Try again.")}</span>}
+        {removal.promptFor === pc.server_id && removal.prompt}
       </span>
       <div className="device-paired-actions">
         <button type="button" className="btn" disabled={busy !== null} onClick={() => open(pc.server_id)}>{t("Allow")}</button>
