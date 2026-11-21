@@ -377,8 +377,15 @@ describe("the loop", () => {
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
-    const outcome = async (prefix: string, reads: Uint8Array[], zoomed = false) => {
-      const run = await Run.start(zoomed ? { core: oneTab(3, true) } : { fixture: demo });
+    // where each run starts: the demo; a zoomed tab of three panes; one pane with sixty rows, most of them history
+    const history = Array.from({ length: 60 }, (_, n) => `https://example.org/${n}`).join("\r\n") + "\r";
+    const starts = {
+      demo: () => ({ fixture: demo }),
+      zoomed: () => ({ core: oneTab(3, true) }),
+      history: () => ({ fixture: { build: (core: FakeHcCore) => void place(core, { space: "w", spaceName: "w", tab: "t", tabName: "t" }, history) } }),
+    };
+    const outcome = async (prefix: string, reads: Uint8Array[], start: keyof typeof starts = "demo") => {
+      const run = await Run.start(starts[start]());
       try {
         await run.live();
         if (prefix !== "\x02") run.loop.dispatch({ type: "keys", keys: { prefix }, at: run.clock.current });
@@ -409,6 +416,11 @@ describe("the loop", () => {
         return named({
           ended, focus: model.focus, mode: model.mode.name, panes: model.world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.id))).sort(), zoomed: layout?.workspaces.flatMap((workspace) => workspace.tabs.map((tab) => tab.zoomed)) ?? [],
           clips: clipsOf(run),
+          // where each pane's view rests in its history: copy mode gives back the offset it was entered at
+          tops: Object.fromEntries(before.map((terminal) => {
+            const shown = run.loop.panes.view(terminal)?.emulator?.history();
+            return [terminal, shown?.ok ? shown.value.viewportTop : null];
+          })),
           overlays: model.overlays.map((overlay) => ("field" in overlay ? `${overlay.kind}:${overlay.field.graphemes.join("|")}` : overlay.kind)),
           received: Object.fromEntries(before.map((terminal) => [terminal, sentTo(run, terminal)])),
         });
@@ -424,19 +436,22 @@ describe("the loop", () => {
     // the third variant: a zoomed tab, where the workspace picker's moves and directional focus move the shared zoom
     // to the pane the focus goes to (zoom_follow) and the last move wins; a zoom, a close and text typed among the moves,
     // so a command and text meet a zoom write still under way, read with them or apart
-    const variants: [prefix: string, zoomed: boolean, runs: number, tokens: string[]][] = [
-      ["\x02", false, 10, [...ACTIONS.map((action) => "\x02" + action), ...TEXT]],
-      ["-", false, 10, [...ACTIONS.map((action) => "-" + action), ...TEXT]],
-      ["\x02", true, 30, ["\x02w", "\x02l", "\x02h", "\x02z", "\x02x", "l", "h", "a", "Z", "\r"]],
+    // the fourth: copy mode over a pane with history, left and entered again in one read with a printable prefix, moved,
+    // scrolled, searched, selected and yanked, its hints chosen, and text after it: the view it gives back is compared
+    const variants: [prefix: string, start: keyof typeof starts, runs: number, tokens: string[]][] = [
+      ["\x02", "demo", 10, [...ACTIONS.map((action) => "\x02" + action), ...TEXT]],
+      ["-", "demo", 10, [...ACTIONS.map((action) => "-" + action), ...TEXT]],
+      ["\x02", "zoomed", 30, ["\x02w", "\x02l", "\x02h", "\x02z", "\x02x", "l", "h", "a", "Z", "\r"]],
+      ["-", "history", 30, ["-[", "q", "g", "k", "j", "f", "1", "v", "y", "/", "e", "\r", "Z"]],
     ];
-    for (const [prefix, zoomed, runs, tokens] of variants) {
+    for (const [prefix, start, runs, tokens] of variants) {
       for (let n = 0; n < runs; n++) {
         const text = Array.from({ length: 3 + Math.floor(random() * 4) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
         const bytes = new TextEncoder().encode(text);
-        const joined = compared(await outcome(prefix, [bytes], zoomed));
-        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)), zoomed)) }).toEqual({ text, outcome: joined });
+        const joined = compared(await outcome(prefix, [bytes], start));
+        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)), start)) }).toEqual({ text, outcome: joined });
         for (let cut = 1; cut < bytes.length; cut++) {
-          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)], zoomed)) }).toEqual({ text, cut, outcome: joined });
+          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)], start)) }).toEqual({ text, cut, outcome: joined });
         }
       }
     }
@@ -446,9 +461,24 @@ describe("the loop", () => {
     // and a close or a zoom right after a move, with text after it: the command waits for the zoom write, never refused
     for (const pinned of ["\x02wll\rZ", "\x02l\x02lZ", "\x02ll\x02lh", "\x02lab\x02hcd", "\x02l\x02xZ", "\x02l\x02zZ"]) {
       const gate = new TextEncoder().encode(pinned);
-      const whole = compared(await outcome("\x02", [gate], true));
-      expect({ pinned, outcome: compared(await outcome("\x02", [...gate].map((byte) => Uint8Array.of(byte)), true)) }).toEqual({ pinned, outcome: whole });
-      for (let cut = 1; cut < gate.length; cut++) expect({ pinned, cut, outcome: compared(await outcome("\x02", [gate.slice(0, cut), gate.slice(cut)], true)) }).toEqual({ pinned, cut, outcome: whole });
+      const whole = compared(await outcome("\x02", [gate], "zoomed"));
+      expect({ pinned, outcome: compared(await outcome("\x02", [...gate].map((byte) => Uint8Array.of(byte)), "zoomed")) }).toEqual({ pinned, outcome: whole });
+      for (let cut = 1; cut < gate.length; cut++) expect({ pinned, cut, outcome: compared(await outcome("\x02", [gate.slice(0, cut), gate.slice(cut)], "zoomed")) }).toEqual({ pinned, cut, outcome: whole });
+    }
+    // the gate's copy case: with a printable prefix, copy mode entered and moved to the oldest row, then left, entered
+    // again, a hint chosen, and text after it in one read: the first session gives its view back before the second one
+    // starts, as when read apart (the same hint copied, the view back where it was entered)
+    // what copy mode must give back: the view before it was entered, and the hint the first label numbers at that view
+    const rested = await outcome("-", [], "history");
+    const atBottom = await outcome("-", [new TextEncoder().encode("-[f1")], "history");
+    expect(atBottom.clips).toHaveLength(1);
+    for (const pinned of ["-[gq-[f1", "-[gq-[f1Z", "-[gqZ"]) {
+      const gate = new TextEncoder().encode(pinned);
+      const seen = await outcome("-", [gate], "history");
+      expect({ pinned, tops: seen.tops, clips: seen.clips }).toEqual({ pinned, tops: rested.tops, clips: pinned.includes("f1") ? atBottom.clips : [] });
+      const whole = compared(seen);
+      expect({ pinned, outcome: compared(await outcome("-", [...gate].map((byte) => Uint8Array.of(byte)), "history")) }).toEqual({ pinned, outcome: whole });
+      for (let cut = 1; cut < gate.length; cut++) expect({ pinned, cut, outcome: compared(await outcome("-", [gate.slice(0, cut), gate.slice(cut)], "history")) }).toEqual({ pinned, cut, outcome: whole });
     }
   }, SOAK_MS);
 

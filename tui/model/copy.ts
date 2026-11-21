@@ -15,7 +15,9 @@ export type CopyCommand =
   | { readonly kind: "step"; readonly toward: "older" | "newer" }
   | { readonly kind: "hints" }
   | { readonly kind: "pick"; readonly digit: number }
-  | { readonly kind: "yank" };
+  | { readonly kind: "yank" }
+  /** copy mode ended (a key, a copy, a focus change, a resize): its view is given back now, in input order */
+  | { readonly kind: "leave" };
 
 export type CopyMode = { readonly name: "copy"; readonly pane: string } & (
   | { readonly phase: "browse" | "hints" }

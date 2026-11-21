@@ -56,9 +56,10 @@ export class CopyView {
   /** An inactive main screen keeps its viewport, but Ghostty can scroll only the active screen. */
   private readonly mainOffsets = new WeakMap<Emulator, number>();
 
-  retain(pane: string | null): void {
+  /** Ends the session: the scroll offset copy mode was entered at comes back, and a search's marks go. */
+  private leave(): void {
     const s = this.session;
-    if (!s || s.pane === pane) return;
+    if (!s) return;
     this.session = null;
     const modes = value(s.emulator.modes());
     if (s.searchFresh) s.emulator.search("");
@@ -97,6 +98,10 @@ export class CopyView {
   run(effect: Extract<Effect, { type: "copy" }>, view: PaneView | undefined, scene: PaneScene | undefined):
     { readonly close: boolean; readonly text?: string; readonly unavailable?: true } {
     const { pane, command } = effect;
+    if (command.kind === "leave") {
+      this.leave();
+      return { close: false };
+    }
     if (command.kind === "enter") {
       const emulator = view?.emulator, size = view?.actual;
       const history = emulator && value(emulator.history());

@@ -413,12 +413,12 @@ export function startLoop(options: LoopOptions): Loop {
 
   /**
    * Whether `event`, read now, must wait for the zoom-follow writes and the pictures they bring: what it does at once (through the pure state core)
-   * sends something to a pane, takes the pointer, or starts a layout action other than a further move. The rest of a
+   * sends something to a pane, takes the pointer, works copy mode on a pane, or starts a layout action other than a further move. The rest of a
    * read it hands back behind a move is not looked at here: it comes back through `userInput` and is weighed there, at
    * its own place in the input, as the same bytes read apart would be.
    */
   function waitsForWrites(event: ModelEvent): boolean {
-    return reduce(state, event).effects.some((effect) => effect.type === "pane" || effect.type === "mouse" ||
+    return reduce(state, event).effects.some((effect) => effect.type === "pane" || effect.type === "mouse" || effect.type === "copy" ||
       (effect.type === "run" && effect.action !== "zoom_follow"));
   }
 
@@ -459,7 +459,6 @@ export function startLoop(options: LoopOptions): Loop {
     const step = reduce(state, event);
     state = step.state;
     for (const effect of step.effects) perform(effect);
-    copyView.retain(state.mode.name === "copy" ? state.mode.pane : null);
     if (state !== before) {
       const unsaved = options.views?.keep(state) ?? null;
       if (unsaved !== null) dispatch({ type: "notice", code: "view_unsaved", data: { reason: unsaved }, at: clock.now() });
@@ -475,7 +474,7 @@ export function startLoop(options: LoopOptions): Loop {
       case "copy": {
         // a copy command reads the pane as it is now, not as the last frame drew it: what one read holds (a scroll, hint
         // mode, a label) acts as it does read apart, with a frame between each
-        const spot = shape?.spots.find((spot) => spot.pane === effect.pane && !spot.covered);
+        const spot = effect.command.kind === "leave" ? undefined : shape?.spots.find((spot) => spot.pane === effect.pane && !spot.covered);
         const answer = copyView.run(effect, panes.view(effect.pane), painter && spot ? sceneNow(painter.styles, spot) : drawn.get(effect.pane));
         if (answer.text !== undefined) writeCopy(answer.text);
         if (answer.close) dispatch({ type: "copy_closed", pane: effect.pane });

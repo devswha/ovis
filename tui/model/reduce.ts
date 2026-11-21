@@ -596,6 +596,10 @@ function settleZoom(acc: Acc, current: boolean): void {
 }
 
 function setMode(acc: Acc, mode: ModeState): void {
+  const was = acc.s.mode;
+  // copy mode ends on the screen in the order of the input that ended it: the scroll offset it was entered at comes back
+  // before anything later in the same read (text for the pane, copy mode entered again) meets the pane
+  if (was.name === "copy" && !(mode.name === "copy" && mode.pane === was.pane)) acc.effects.push({ type: "copy", pane: was.pane, command: { kind: "leave" } });
   acc.s = { ...acc.s, mode };
 }
 
@@ -624,7 +628,10 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction | CopyAction>
     case "lock":
       if (s.locked) acc.s = { ...s, locked: false };
       else if (unlockChords(s.keymap).length === 0) notice(acc, "lock_unbound", {}, at);
-      else acc.s = { ...s, locked: true, overlays: [], mode: { name: "terminal" } };
+      else {
+        acc.s = { ...s, locked: true, overlays: [] };
+        setMode(acc, { name: "terminal" });
+      }
       return;
     case "menu":
       acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", entries: menuEntries(s.world, s.focus), cursor: 0 }] };
