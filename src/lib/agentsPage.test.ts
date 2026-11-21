@@ -89,6 +89,13 @@ describe("Antigravity API key mode", () => {
     expect(agentSignIn(entry, true)).toEqual({ state: { kind: "gemini-api-key" }, offerSignIn: false });
   });
 
+  it("keeps an API key account row under the agent when key mode is configured", () => {
+    const apiKeyUsage: ProviderUsage = { id: "antigravity", key: "antigravity:gemini-api-key", account: null, plan: null, windows: [], problem: null, checked_at: null, auth_mode: "gemini-api-key" };
+    const entry = pageRow(configured, [apiKeyUsage]);
+    expect(agentSignIn(entry, true)).toEqual({ state: { kind: "gemini-api-key" }, offerSignIn: false });
+    expect(entry.accounts).toEqual([apiKeyUsage]);
+  });
+
   it("keeps the missing command when auth mode is omitted", () => {
     const entry = pageRow(older, [], [{ provider: "antigravity", command: "secret-tool" }]);
     expect(entry.missing).toBe("secret-tool");

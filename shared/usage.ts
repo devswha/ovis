@@ -99,6 +99,8 @@ export interface ProviderUsage {
    * on (POST /api/usage/statusline) can stand in. Absent otherwise.
    */
   readonly statusline_offer?: true;
+  /** Configured CLI authentication mode, when known. Antigravity set to use a Gemini API key reports "gemini-api-key". */
+  readonly auth_mode?: "gemini-api-key";
 }
 
 /** GET and POST /api/usage/statusline: whether Claude's limits are read from its status line on this PC. */
@@ -109,7 +111,7 @@ export interface StatuslineState {
   readonly supported: boolean;
 }
 
-/** GET /api/usage: only providers a CLI on this PC is signed in to are listed, once per account. */
+/** GET /api/usage: only providers a CLI on this PC is signed in to (or configured with an API key) are listed, once per account. */
 export interface UsageReport {
   /**
    * The PC's clock, which the times are on (ISO time). A page ages a record by it: the record's age as the PC saw it

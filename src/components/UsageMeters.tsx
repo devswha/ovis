@@ -115,7 +115,11 @@ function Provider({ usage, now, count, onLocalLogin, onFollow, watching }: { usa
           </div>
         );
       })()}
-      {usage.windows.length === 0 && !usage.credits && !usage.resets && !problem && <p className="usage-note">{t("No limits reported")}</p>}
+      {usage.windows.length === 0 && !usage.credits && !usage.resets && !problem && (
+        <p className="usage-note">
+          {usage.auth_mode === "gemini-api-key" ? t("Set to use a Gemini API key") : t("No limits reported")}
+        </p>
+      )}
     </section>
   );
 }

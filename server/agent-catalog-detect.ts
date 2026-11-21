@@ -28,7 +28,7 @@ const isExecutableFile = (path: string): boolean => {
   } catch { return false; }
 };
 
-async function antigravityAuthMode(home: string, appDataDir: string | undefined): Promise<AgentInstallState["auth_mode"]> {
+export async function antigravityAuthMode(home: string, appDataDir: string | undefined): Promise<AgentInstallState["auth_mode"]> {
   const path = join(appDataDir || join(home, ".gemini", "antigravity-cli"), "settings.json");
   try {
     const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);

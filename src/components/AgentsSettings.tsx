@@ -195,7 +195,7 @@ function ProviderAccounts({ id, providers, removed, onLocalLogin, onFollow }: { 
       // read, as an old record once the tool stopped.
       const recordOnly = !isSignIn(usage);
       const age = usage.recorded ? [...(usage.recorded.stale ? [t("Old record")] : []), lastSeen(usage.checked_at)] : [];
-      const status = recordOnly ? age.join(" · ") : usage.problem === null ? t("Signed in") : {
+      const status = usage.auth_mode === "gemini-api-key" ? t("Set to use a Gemini API key") : recordOnly ? age.join(" · ") : usage.problem === null ? t("Signed in") : {
         expired: t("Expired"), failed: t("Failed"), rate_limited: t("Failed"), locked: t("Failed"),
       }[usage.problem];
       const limit = glanceWindow(usage, settings.usageGlance);

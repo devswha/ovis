@@ -663,6 +663,7 @@ const BASE: Record<string, string> = {
   "Browser": "浏览器",
   "Reload page": "重新加载页面",
   "Stop": "停止",
+  "Set to use a Gemini API key": "已设置为使用 Gemini API 密钥",
 };
 
 export const ZH_PARTS: Record<string, Record<string, string>> = {

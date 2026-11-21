@@ -658,6 +658,7 @@ const BASE: Record<string, string> = {
   "Browser": "ブラウザー",
   "Reload page": "ページを再読み込み",
   "Stop": "停止",
+  "Set to use a Gemini API key": "Gemini API キーを使う設定になっています",
 };
 
 export const JA_PARTS: Record<string, Record<string, string>> = {

@@ -955,6 +955,34 @@ describe("providers", () => {
     expect((requests[0]!.init.headers as Record<string, string>)["authorization"]).toBe("Bearer custom");
   });
 
+  it("reports Antigravity in Gemini API key mode without reading quotas or requiring secret-tool", async () => {
+    absent.add("secret-tool");
+    write(join(home, ".gemini", "antigravity-cli", "settings.json"), { modelProvider: "gemini" });
+    const service = new UsageService(context("linux"), only("antigravity"));
+    const report = await service.report();
+    expect(report.missing_commands).toBeUndefined();
+    expect(report.providers).toEqual([{
+      id: "antigravity",
+      key: "antigravity:gemini-api-key",
+      account: null,
+      plan: null,
+      windows: [],
+      problem: null,
+      checked_at: null,
+      auth_mode: "gemini-api-key",
+    }]);
+    expect(requests).toHaveLength(0);
+    expect(commandCalls).toHaveLength(0);
+  });
+
+  it("reads Antigravity Gemini API key mode from ANTIGRAVITY_APP_DATA_DIR", async () => {
+    const dir = join(home, "agy-custom");
+    write(join(dir, "settings.json"), { modelProvider: "gemini" });
+    const report = await new UsageService({ ...context("linux"), env: { ANTIGRAVITY_APP_DATA_DIR: dir } }, only("antigravity")).report();
+    expect(report.missing_commands).toBeUndefined();
+    expect(report.providers).toMatchObject([{ id: "antigravity", key: "antigravity:gemini-api-key", auth_mode: "gemini-api-key" }]);
+  });
+
   it("reads OpenCode Go usage windows from ~/.local/share/opencode/auth.json", async () => {
     write(join(home, ".local", "share", "opencode", "auth.json"), {
       "opencode-go": { type: "api", key: "oc_sk_test" },

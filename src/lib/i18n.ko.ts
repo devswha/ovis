@@ -656,6 +656,7 @@ const BASE: Record<string, string> = {
   "Browser": "브라우저",
   "Reload page": "페이지 새로고침",
   "Stop": "중지",
+  "Set to use a Gemini API key": "Gemini API 키를 사용하도록 설정됨",
 };
 
 export const KO_PARTS: Record<string, Record<string, string>> = {

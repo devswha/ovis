@@ -21,6 +21,7 @@ import { closeSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSy
 import { open, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { antigravityAuthMode } from "./agent-catalog-detect.ts";
 import { readStatusline, type StatuslinePayload } from "./statusline.ts";
 import { installStatusline, removeStatusline, StatuslineInstallError, statuslineInstallState, type StatuslineInstallState } from "./statusline-install.ts";
 import type { ProviderUsage, UsageCredits, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
@@ -72,6 +73,7 @@ interface SignIn {
   cliOnly?: boolean;
   /** Copilot: named editor accounts to match when an older CLI cannot identify its token */
   editorAccounts?: string[];
+  auth_mode?: "gemini-api-key";
 }
 
 type Found = { source: string; home?: CredentialHome } & (SignIn | { locked: true; account?: Account | null });
@@ -85,7 +87,7 @@ interface Reading {
   resets?: UsageResets | null;
   credits?: UsageCredits | null;
   account?: Account | null;
-  checkedAt?: number;
+  checkedAt?: number | null;
 }
 
 export interface UsageProvider {
@@ -94,7 +96,7 @@ export interface UsageProvider {
   /** A token-free reading matched to this sign-in; checked before endpoint expiry/backoff gates. */
   readLocal?(ctx: UsageContext, signIn: SignIn): Reading | null;
   read(ctx: UsageContext, signIn: SignIn): Promise<Reading | null>;
-  missingCommand?(ctx: UsageContext): string | null;
+  missingCommand?(ctx: UsageContext): Promise<string | null> | string | null;
   /**
    * The tools on this PC that keep a record of this provider's limits for a sign-in of their own (usage-recorded.ts):
    * read for what they recorded, never for that sign-in.
@@ -733,6 +735,15 @@ async function antigravityCliWindows(ctx: UsageContext): Promise<UsageWindow[]> 
 const antigravity: UsageProvider = {
   id: "antigravity",
   async signIns(ctx) {
+    if (await antigravityAuthMode(ctx.home, ctx.env["ANTIGRAVITY_APP_DATA_DIR"]) === "gemini-api-key") {
+      return [{
+        source: "settings",
+        token: "",
+        expiresAt: null,
+        account: { id: "gemini-api-key", label: null },
+        auth_mode: "gemini-api-key",
+      }];
+    }
     const dir = ctx.env["ANTIGRAVITY_APP_DATA_DIR"] || join(ctx.home, ".gemini", "antigravity-cli");
     const file = antigravitySignIn(readText(join(dir, "antigravity-oauth-token")));
     const keychain = ctx.platform === "linux"
@@ -741,8 +752,15 @@ const antigravity: UsageProvider = {
     return keychainOrFile(keychain, file, "keychain");
   },
   // Linux: the CLI keeps its sign-in in the Secret Service keyring, read here only through secret-tool
-  missingCommand: (ctx) => ctx.platform === "linux" && !ctx.has("secret-tool") ? "secret-tool" : null,
+  async missingCommand(ctx) {
+    if (ctx.platform !== "linux" || ctx.has("secret-tool")) return null;
+    if (await antigravityAuthMode(ctx.home, ctx.env["ANTIGRAVITY_APP_DATA_DIR"]) === "gemini-api-key") return null;
+    return "secret-tool";
+  },
   async read(ctx, signIn) {
+    if (signIn.auth_mode === "gemini-api-key") {
+      return { plan: null, windows: [], checkedAt: null };
+    }
     const init: RequestInit = {
       method: "POST",
       headers: { authorization: `Bearer ${signIn.token}`, accept: "application/json", "content-type": "application/json", "user-agent": "antigravity" },
@@ -1105,7 +1123,11 @@ export class UsageService {
 
   private async collect(refresh: boolean): Promise<UsageReport> {
     const now = this.ctx.now();
-    const missing = new Map(this.providers.flatMap((provider) => { const command = provider.missingCommand?.(this.ctx) ?? null; return command === null ? [] : [[provider.id, command] as const]; }));
+    const missingEntries = await Promise.all(this.providers.map(async (provider) => {
+      const command = (await provider.missingCommand?.(this.ctx)) ?? null;
+      return command === null ? [] : [[provider.id, command] as const];
+    }));
+    const missing = new Map(missingEntries.flat());
     const skipped = this.skipped();
     // an account shown again is looked up and read anew now, its provider's last search no longer standing for it;
     // the provider's other accounts keep their readings, so one still hidden is not read for it
@@ -1209,7 +1231,7 @@ export class UsageService {
       // a hidden account with no reading kept (evicted, or never read by this server) is listed unread, never read
       const as = hiddenAs(signIn);
       if (as !== undefined) {
-        return [source, { usage: { id: provider.id, key: as.key, account: as.account, plan: "locked" in signIn ? null : signIn.plan ?? null, windows: [], problem: null, checked_at: null }, readAt: now, nextAt: now, holder: holderOf(signIn) }];
+        return [source, { usage: { id: provider.id, key: as.key, account: as.account, plan: "locked" in signIn ? null : signIn.plan ?? null, windows: [], problem: null, checked_at: null, ...("auth_mode" in signIn && signIn.auth_mode ? { auth_mode: signIn.auth_mode } : {}) }, readAt: now, nextAt: now, holder: holderOf(signIn) }];
       }
       return [source, await this.read(provider, signIn, hidden ? null : entry?.usage ?? null, now)];
     }));
@@ -1254,6 +1276,7 @@ export class UsageService {
     const keep = (problem: UsageProblem, plan: string | null, wait: number) => settle({
       id: provider.id, ...(kept ? { key: kept.key, account: kept.account } : identity(null)),
       plan: kept?.plan ?? plan, windows: kept?.windows ?? [], ...extras(kept ?? {}), problem, checked_at: kept?.checked_at ?? null,
+      ...("auth_mode" in found && found.auth_mode ? { auth_mode: found.auth_mode } : {}),
     }, wait);
     if ("locked" in found) return keep("locked", null, FRESH_MS);
     const signIn: SignIn = found;
@@ -1274,7 +1297,8 @@ export class UsageService {
       const reading = await provider.read(this.ctx, signIn);
       if (reading === null) return settle(null, FRESH_MS);
       return settle({
-        id: provider.id, ...identity(reading.account), plan: reading.plan ?? signIn.plan ?? null, windows: reading.windows, ...extras(reading), problem: null, checked_at: new Date(now).toISOString(),
+        id: provider.id, ...identity(reading.account), plan: reading.plan ?? signIn.plan ?? null, windows: reading.windows, ...extras(reading), problem: null, checked_at: reading.checkedAt === null ? null : new Date(reading.checkedAt ?? now).toISOString(),
+        ...(signIn.auth_mode ? { auth_mode: signIn.auth_mode } : {}),
       }, FRESH_MS);
     } catch (error) {
       const wait = Math.max(RETRY_MS, error instanceof UsageHttpError ? error.retryAfterMs ?? FRESH_MS : 0);

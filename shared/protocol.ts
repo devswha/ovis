@@ -522,7 +522,7 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         endpoint in a URL or a list); 404 subscription_not_found alike for an unknown one, another owner's
  *         and one whose keys do not match, so nothing is enumerated; 403 status_unavailable to the open LAN, which
  *         signs in as no device and so owns no record (asked before any subscription is looked at)
- *  GET    /api/usage[?refresh=1]         -> UsageReport (plan limits of the AI subscriptions signed in on this PC)
+ *  GET    /api/usage[?refresh=1]         -> UsageReport (plan limits of the AI subscriptions signed in on this PC; an Antigravity configured for a Gemini API key reports auth_mode "gemini-api-key" with no quota windows)
  *  DELETE /api/usage/accounts { account } -> 204 (removed from Ovis, CLI sign-in untouched) | 404 account_not_found
  *  POST   /api/usage/accounts { account } -> 204 (a removed account listed again)
  *  Errors: non-2xx with { error: { code, message } }
