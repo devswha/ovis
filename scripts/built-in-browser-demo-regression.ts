@@ -119,6 +119,9 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   assert.equal(shown[1], 1);
   for (const key of ["x", "y", "width", "height"] as const) assert.ok(Math.abs(bounds[key] - body[key]) < 1, `${tag}: the tab is drawn over the panel's body (${key})`);
   await shot(page, "agent-tab");
+  await address.press("Enter");
+  assert.deepEqual((await calls(page)).filter(([name]) => name === "navigate" || name === "open"), [], `${tag}: Enter in a watched tab's address asks nothing`);
+  assert.equal(await page.locator(".browser-panel [aria-invalid=true]").count(), 0, `${tag}: and says nothing is refused`);
 
   await holder.getByRole("button", { name: "제어 가져오기", exact: true }).click();
   await holder.getByText("내가 제어 중 · 에이전트는 멈춤", { exact: true }).waitFor();

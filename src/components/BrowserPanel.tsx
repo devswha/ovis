@@ -55,6 +55,8 @@ export function BrowserPanel({ tab, onOpened, onClose, panelStart, covered = fal
 
   const go = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    // an agent's tab is only watched until taken: Enter in its read-only address does nothing
+    if (tab !== null && !steered) return;
     const address = typedAddress(new FormData(event.currentTarget).get("address")?.toString() ?? "");
     if (address === null) {
       setRefused(true);

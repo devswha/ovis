@@ -19,6 +19,14 @@ import { hostForm } from "./browserState.ts";
 export const BROWSER_PROFILES = ["mine", "agent"] as const;
 export type BrowserProfile = (typeof BROWSER_PROFILES)[number];
 export const MAX_BROWSER_TABS = 8;
+/** a 320 px wide picture of a page as it is drawn, or null when it has none or does not answer in time */
+async function capture(contents: WebContents): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((done) => { timer = setTimeout(() => done(null), PICTURE_MS); });
+  const image = await Promise.race([contents.capturePage(undefined, { stayHidden: true }).catch(() => null), late]).finally(() => clearTimeout(timer));
+  return image === null || image.isEmpty() ? null : image.resize({ width: 320 }).toDataURL();
+}
+
 /** whether `bounds` overlap any screen */
 function onScreen(bounds: { x: number; y: number; width: number; height: number }): boolean {
   return screen.getAllDisplays().some(({ bounds: area }) => bounds.x < area.x + area.width && bounds.x + bounds.width > area.x && bounds.y < area.y + area.height && bounds.y + bounds.height > area.y);
@@ -26,10 +34,8 @@ function onScreen(bounds: { x: number; y: number; width: number; height: number 
 
 /** how many frames, this far apart, a tab brought to the top of the stage gets to paint before its picture is given up */
 const STAGE_FRAMES = 8;
-/** how long a picture may take before it is given up */
-const PICTURE_MS = 2000;
-/** frames a second a staged page paints at: enough for a picture every few seconds, little for a video nobody watches */
-const STAGE_FRAME_RATE = 4;
+/** how long one capture may take before it is given up (one that never answers would hold every later picture) */
+const PICTURE_MS = 1000;
 const STAGE_FRAME_MS = 50;
 const AGENT_OPEN_MS = 30_000;
 /** a download larger than this is cancelled, and a profile keeps at most MAX_DOWNLOADS from one start of the app */
@@ -106,8 +112,6 @@ export class BrowserTabs {
   /** the picture being taken, which the next one waits for, and each tab's picture asked for and not yet taken */
   private pictures: Promise<void> = Promise.resolve();
   private waitingPictures = new Map<number, Promise<string | null>>();
-  /** staged tabs already resized once to get a surface: a page is not resized again for each picture */
-  private nudged = new Set<number>();
   /** the sessions this BrowserTabs has guarded: webRequest and permission handlers replace the previous ones */
   private guarded = new Set<Session>();
 
@@ -174,7 +178,6 @@ export class BrowserTabs {
     view.setBounds({ x: 0, y: 0, width: 1280, height: 800 });
     const tab: Tab = { id: this.nextId++, profile, owner: profile === "agent" ? owner : null, view, allowed: null, title: "", held: false };
     this.tabs.set(tab.id, tab);
-    this.backstage(tab);
     this.watch(tab);
     void view.webContents.loadURL(url).catch(() => {});
     return tab.id;
@@ -209,7 +212,6 @@ export class BrowserTabs {
     const x = Math.max(0, Math.round(bounds.x * zoom)), y = Math.max(0, Math.round(bounds.y * zoom));
     tab.view.setBounds({ x, y, width: Math.max(0, Math.min(Math.round(bounds.width * zoom), width - x)), height: Math.max(0, Math.min(Math.round(bounds.height * zoom), height - y)) });
     if (this.stage && !this.stage.isDestroyed()) this.stage.contentView.removeChildView(tab.view);
-    tab.view.webContents.setFrameRate(60);
     // a window made anew (the old one closed) holds no view yet
     if (!window.contentView.children.includes(tab.view)) window.contentView.addChildView(tab.view);
     this.shown = id;
@@ -220,17 +222,19 @@ export class BrowserTabs {
     this.shown = null;
     const window = this.window();
     if (tab && window && !window.isDestroyed()) window.contentView.removeChildView(tab.view);
-    if (tab) this.backstage(tab);
   }
 
-  /** a picture of the tab as PNG data, or null while it is not drawn (not shown, and no stage to draw it on) */
+  /**
+   * A picture of the tab as PNG data, or null when it cannot be drawn. A tab nobody looks at paints nothing, so it is put
+   * on the stage (an off-screen window) only while its picture is taken, and taken off again: it costs nothing between
+   * pictures.
+   */
   thumbnail(id: number): Promise<string | null> {
     // one picture of a tab asked for while another is waiting is that one
     const waiting = this.waitingPictures.get(id);
     if (waiting) return waiting;
-    // one picture at a time (a staged tab is put on top to be taken, so two at once would cover each other), and none
-    // waits on another for long: a capture that never answers gives up after PICTURE_MS
-    const taken = this.pictures.then(() => Promise.race([this.takePicture(id), new Promise<null>((done) => setTimeout(() => done(null), PICTURE_MS))]));
+    // one picture at a time: two tabs on the stage at once would cover each other
+    const taken = this.pictures.then(() => this.takePicture(id));
     this.waitingPictures.set(id, taken);
     this.pictures = taken.then(() => undefined, () => undefined);
     void taken.finally(() => this.waitingPictures.delete(id));
@@ -239,39 +243,32 @@ export class BrowserTabs {
 
   private async takePicture(id: number): Promise<string | null> {
     const tab = this.tabs.get(id);
-    // a tab neither shown nor on a stage paints nothing (and a picture of it may never come back)
-    if (!tab || tab.allowed === null || (this.shown !== id && !this.onStage(tab))) return null;
-    // On the stage the tabs lie on one another: the one asked for goes on top. A view that has not been resized
-    // since it was put there has no surface to draw on yet, so it is resized by a pixel and back once, then taken
-    // as soon as its compositor has a frame of it (a few frames at most).
-    const staged = this.onStage(tab);
-    if (staged) this.stage?.contentView.addChildView(tab.view);
-    for (let attempt = 0; attempt < (staged ? STAGE_FRAMES : 1); attempt++) {
-      if (tab.view.webContents.isDestroyed()) return null;
-      const image = await tab.view.webContents.capturePage(undefined, { stayHidden: true }).catch(() => null);
-      if (image !== null && !image.isEmpty()) return image.resize({ width: 320 }).toDataURL();
-      // a tab shown meanwhile is placed by show() and never resized here; on the stage it always gets the stage's
-      // whole size back, whatever another picture of it did in between
-      const nudge = attempt === 0 && this.onStage(tab) && !this.nudged.has(id);
-      if (nudge) { this.nudged.add(id); this.fitStage(tab, -1); }
-      await new Promise((next) => setTimeout(next, STAGE_FRAME_MS));
-      if (nudge && this.onStage(tab)) this.fitStage(tab);
-      if (!this.onStage(tab) && this.shown !== id) return null;
-    }
-    return null;
-  }
-
-  /** puts a tab nobody looks at on the stage, laid out at the stage's (a desktop window's) size */
-  private backstage(tab: Tab): void {
+    if (!tab || tab.allowed === null) return null;
+    if (this.shown === id) return capture(tab.view.webContents);
     const stage = this.stageWindow();
-    if (stage === null || stage.contentView.children.includes(tab.view)) return;
+    if (stage === null) return null;
     stage.contentView.addChildView(tab.view);
-    this.fitStage(tab);
-    this.nudged.delete(tab.id);
-    tab.view.webContents.setFrameRate(STAGE_FRAME_RATE);
+    try {
+      // a view just put in a window has no surface to draw on until it is resized: a pixel shorter, then the
+      // stage's whole size, then taken as soon as its compositor has a frame of it (a few frames at most)
+      this.fitStage(tab, -1);
+      for (let attempt = 0; attempt < STAGE_FRAMES; attempt++) {
+        await new Promise((next) => setTimeout(next, STAGE_FRAME_MS));
+        // shown or closed meanwhile: show() has placed it, or it is gone
+        if (!this.onStage(tab) || tab.view.webContents.isDestroyed()) return null;
+        if (attempt === 0) this.fitStage(tab);
+        else {
+          const picture = await capture(tab.view.webContents);
+          if (picture !== null) return picture;
+        }
+      }
+      return null;
+    } finally {
+      if (this.onStage(tab)) this.stage?.contentView.removeChildView(tab.view);
+    }
   }
 
-  /** sizes a staged tab to the whole stage, `less` pixels shorter */
+  /** sizes a tab on the stage to the whole stage, `less` pixels shorter */
   private fitStage(tab: Tab, less = 0): void {
     const [width = 1280, height = 800] = this.stage?.getContentSize() ?? [];
     tab.view.setBounds({ x: 0, y: 0, width, height: height + less });
@@ -279,7 +276,7 @@ export class BrowserTabs {
 
   private onStage(tab: Tab): boolean {
     const stage = this.stage;
-    return !this.noStage && stage !== null && !stage.isDestroyed() && stage.contentView.children.includes(tab.view);
+    return stage !== null && !stage.isDestroyed() && stage.contentView.children.includes(tab.view);
   }
 
   private stageWindow(): BrowserWindow | null {
@@ -304,9 +301,8 @@ export class BrowserTabs {
   }
 
   /**
-   * Gives up the stage for good: its tabs paint only while shown, and have no picture otherwise. The window is hidden,
-   * not destroyed, with its tabs left in it until each is shown or closed (a view whose window went away under it takes
-   * the app down when asked for a picture); closeAll destroys it.
+   * Gives up the stage for good: tabs nobody looks at have no picture from then on. The window is hidden, not destroyed
+   * (a picture being taken may still hold a tab in it); closeAll destroys it.
    */
   private dropStage(): void {
     this.noStage = true;

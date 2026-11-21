@@ -88,6 +88,13 @@ void app.whenReady().then(async () => {
   // a tab nobody has shown still has a picture for the right panel, under a newer one too
   const cover = await tab(`${A}/blank`, "mine");
   result["hiddenThumbnail"] = (await tabs.thumbnail(waitingTab.id))?.startsWith("data:image/png") ?? false;
+  // shown, hidden again, then pictured: it is on the stage only while its picture is taken
+  tabs.show(cover.id, { x: 0, y: 0, width: 400, height: 300 });
+  tabs.hide();
+  result["afterShown"] = {
+    picture: (await tabs.thumbnail(cover.id))?.startsWith("data:image/png") ?? false,
+    staged: BrowserWindow.getAllWindows().some((found) => !found.isFocusable() && found.contentView.children.length > 0),
+  };
   tabs.close(cover.id);
   // a window manager that puts the stage on a screen: the stage is given up (after its move), the app lives on
   const stage = BrowserWindow.getAllWindows().find((found) => !found.isFocusable());
