@@ -971,7 +971,7 @@ export function App() {
           >
             {markInDrawer ? <OvisMark width="22" height="22" /> : drawerOpen ? <X /> : <Menu />}
           </button>}
-          {!inMode && wideScreen && !sidebarCollapsed && settings.sidebarRows !== "two" && <button type="button" className="icon-button new-workspace-button" disabled={auth?.role === "watch" || selectedMachine?.state !== "connected"} aria-label={t("New workspace")} title={auth?.role === "watch" ? `${t("New workspace")} · ${t("View only")}` : t("New workspace")} onClick={() => { actions.counted?.("new_workspace", "button"); actions.openNewSession(); }}>
+          {!inMode && wideScreen && !sidebarCollapsed && settings.sidebarRows !== "two" && <button type="button" className="icon-button new-workspace-button" disabled={viewOnly(selectedMachineId) || selectedMachine?.state !== "connected"} aria-label={t("New workspace")} title={viewOnly(selectedMachineId) ? `${t("New workspace")} · ${t("View only")}` : t("New workspace")} onClick={() => { actions.counted?.("new_workspace", "button"); actions.openNewSession(); }}>
             <Plus aria-hidden="true" />
           </button>}
           {!inMode && <button type="button" className="icon-button palette-button" aria-label={t("Command palette")} title={shortcutTitle(t("Command palette"), "palette")} onClick={() => openPalette()}>
@@ -1012,7 +1012,7 @@ export function App() {
             </PanePressContext.Provider>
             </RenderBoundary>
             {phoneTabRow && headerConnection !== null && <span className={`header-tabs-connection is-${headerConnection}`}>{t(headerConnection === "connected" ? "Connected" : "Reconnecting…")}</span>}
-            {phoneTabRow && auth?.role === "watch" && <span className="header-tabs-watch" title={t("View only")}><Eye aria-hidden="true" /><span className="visually-hidden">{t("View only")}</span></span>}
+            {phoneTabRow && viewOnly(selectedMachineId) && <span className="header-tabs-watch" title={t("View only")}><Eye aria-hidden="true" /><span className="visually-hidden">{t("View only")}</span></span>}
             {phoneTabRow && <button type="button" className="icon-button header-tabs-sheet" aria-label={t("Tabs of {workspace}", { workspace: selectedWorkspace.label })}
               title={t("Tabs of {workspace}", { workspace: selectedWorkspace.label })} aria-haspopup="dialog" aria-expanded={tabSheet !== null} onClick={(event) => toggleTabSheet(event.currentTarget)}>
               {workspaceTabCount > 1 && <span className="header-tabs-count" aria-hidden="true">{workspaceTabCount}</span>}
@@ -1036,7 +1036,7 @@ export function App() {
               </button>}
             </div>
             <div className={`context-sub${headerConnection === null ? "" : ` context-connection is-${headerConnection}`}`}>
-              {auth?.role === "watch" && !statusBarShown && <><span className="context-watch">{t("View only")}</span><span className="context-sep" aria-hidden="true">·</span></>}
+              {viewOnly(selectedMachineId) && !statusBarShown && <><span className="context-watch">{t("View only")}</span><span className="context-sep" aria-hidden="true">·</span></>}
               {headerConnection !== null ? <span>{t(headerConnection === "connected" ? "Connected" : "Reconnecting…")}</span> : <>
                 {crumb.showMachine && <><span className="machine-context-name">{crumb.machine}</span><span className="context-sep" aria-hidden="true">›</span></>}
                 <span>{crumb.workspace}</span>
@@ -1182,7 +1182,7 @@ export function App() {
         {guideShown ? null :
         <div ref={paneAreaRef} className={`pane-split${paneSplit ? " is-split" : ""}${inbox.shown ? " is-under-inbox" : ""}`} onDragEnterCapture={paneDragOver} onDragOverCapture={paneDragOver} onDragLeave={paneDragLeave} onDropCapture={paneDrop}>
           {inboxWide && <ThreadTop note={<HeaderNote note={herdrPrefixWaiting ? t("herdr prefix: press a key") : note} />}
-            thread={!inbox.shown && selectedPane !== null && note === null ? { machines, activity, machineId: selectedMachineId, pane: selectedPane, connection: headerConnection, watching: auth?.role === "watch", severalPcs: sidebarMachines.length > 1 } : null}
+            thread={!inbox.shown && selectedPane !== null && note === null ? { machines, activity, machineId: selectedMachineId, pane: selectedPane, connection: headerConnection, watching: viewOnly(selectedMachineId), severalPcs: sidebarMachines.length > 1 } : null}
             controls={!inbox.shown && selectedPane !== null ? <>
               <LensToggle view={view} peek={terminalPeek !== null} terminalAttach={terminalAttach} thread round
                 title={(label) => shortcutTitle(label, "toggle-view")} onToggle={() => actions.toggleView("header")} />
@@ -1283,7 +1283,7 @@ export function App() {
                     renderPane={(item, itemActive, herdrSplit) => <OpenFileContext.Provider value={item ? (path) => openFile({ path, paneId: item.pane_id, machineId }) : null}>
                       <PaneTerminal
                         presentationKey={paneContentKey(machine, item, item ? lensOf(item) : slotView)}
-                        deviceWatching={auth?.role === "watch"}
+                        deviceWatching={viewOnly(machineId)}
                         finishEpoch={machine?.snapshot?.finish_epoch}
                         finishId={item?.finish_id}
                         title={item ? displayPaneTitle(item) : active ? selectedTitle : null}
