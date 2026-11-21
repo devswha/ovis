@@ -6065,8 +6065,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   starts pairing at once on `/s/<id>/` (`start` -> `connecting` -> `compare`) without a second
   "Pair with {name}?" step; "Pair with {name}?" with **Pair** remains only for pairing links and QR
   codes opened from outside the dashboard (or when `sessionStorage` is blocked). **Add a
-  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs → Account, sign
-  in, then choose Add this PC to my account. It then shows here.") and leads to the QR and code
+  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs → Add a connection →
+  Ovis relay, sign in, then choose Add this PC to my account. It then shows here.") and leads to the QR and code
   modal sheet (`PairQrDialog`, over the scrimmed inert dashboard), whose QR and code screens name
   only the current path ("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay
   and scan the QR code." and "On the PC, open Settings → Devices and PCs → Add a connection → Ovis

@@ -68,8 +68,11 @@ export function sameNameRelayDevice(devices: readonly PairedDevice[], label: str
 
 export const relayOffered = (relay: RelayState): boolean => !relay.unsupported && relay.status !== null && !inRelayShell();
 
-/** the relay's state is still being read on a page that may offer it: the tab may come, so nothing is drawn in its stead */
-export const relayPending = (relay: RelayState): boolean => !relay.unsupported && relay.status === null && !inRelayShell();
+/**
+ * the relay's first state is still on its way on a page that may offer it: the tab may come, so nothing is drawn in its
+ * stead. A read that failed is no longer pending, so a relay that never answers leaves the account card in place.
+ */
+export const relayPending = (relay: RelayState): boolean => !relay.unsupported && relay.status === null && !relay.readFailed && !inRelayShell();
 
 const relayOn = (relay: RelayState): boolean => relay.status !== null && relay.status.blocked === null && relay.status.phase !== "off";
 

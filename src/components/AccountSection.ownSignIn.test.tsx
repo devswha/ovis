@@ -157,7 +157,7 @@ describe("signing in on the PC's own window", () => {
 describe("the relay tab reopened already signed in", () => {
   const ACCOUNT = "acct_first";
   const status = (phase: "online" | "off"): RelayStatus => ({ phase, relay: "wss://relay.ovis.example", app: "https://app.ovis.example", sessions: 0, blocked: null, error: null });
-  const relayOf = (phase: "online" | "off"): RelayState => ({ status: status(phase), unsupported: false, pending: false, request: async () => status("online"), reread: () => {} });
+  const relayOf = (phase: "online" | "off"): RelayState => ({ status: status(phase), unsupported: false, readFailed: false, pending: false, request: async () => status("online"), reread: () => {} });
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
   let state: { relay: "online" | "off"; pcAccount: string | null; enrolling: boolean };

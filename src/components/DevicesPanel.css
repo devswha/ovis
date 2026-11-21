@@ -55,10 +55,18 @@
   overflow-wrap: anywhere;
 }
 
-/* this PC's name stands alone on its row (no ID line): it is as tall as Check now beside it, centred */
+/* this PC's name stands alone on its row (no ID line): it takes the row's height, so Check now beside it is never
+   the taller of the two (a finger-sized button on a phone included), and sits centred in it */
+.devices-row.my-device-self {
+  align-items: stretch;
+}
+
 .my-device-self .devices-name {
-  min-height: calc(var(--control-h) - var(--space-2));
   justify-content: center;
+}
+
+.my-device-self .my-device-check {
+  align-self: center;
 }
 
 .my-device-check .btn {

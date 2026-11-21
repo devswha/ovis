@@ -13,7 +13,7 @@ import { RelayTab } from "./ConnectPhoneDialog.tsx";
 
 const SERVICE = "https://account.ovis.example";
 const ONLINE: RelayStatus = { phase: "online", relay: "wss://relay.ovis.example", app: "https://app.ovis.example", sessions: 0, blocked: null, error: null };
-const relay: RelayState = { status: ONLINE, unsupported: false, pending: false, request: async () => ONLINE, reread: () => {} };
+const relay: RelayState = { status: ONLINE, unsupported: false, readFailed: false, pending: false, request: async () => ONLINE, reread: () => {} };
 
 interface FakeTab { opener: unknown; closed: boolean; location: { href: string }; close(): void }
 

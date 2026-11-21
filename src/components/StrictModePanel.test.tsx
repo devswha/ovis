@@ -115,6 +115,11 @@ describe("the strict-mode row", () => {
     expect(shown).toContain("Linux");
   });
 
+  it("P11: a locked PC that cannot confirm on its screen offers no switch either, since it would refuse the unlock", async () => {
+    const { buttons } = await mount({ ...locked, confirm: "unsupported" });
+    expect(buttons).toEqual([]);
+  });
+
   it("P12: a PC in no account offers no strict mode and says it needs an account", async () => {
     const { shown, buttons } = await mount({ bound: false, confirm: "available", locked: null, strict: false });
     expect(buttons).toEqual([]);

@@ -119,7 +119,8 @@ export function StrictModePanel({ state, local, status = null, onTurnOn, onTurnO
     ...(ends.length > 0 ? [t("Turning it on ends: {list}.", { list: ends.join(", ") })] : []),
     t("It does not cover anyone signed in to this computer as you, and cannot stop an older Ovis installed by hand."),
   ].join(" ");
-  const switchable = local && !unbound && !unsupported;
+  // no switch where this PC's screen cannot confirm it: the PC refuses both ways there (no_screen_proof)
+  const switchable = local && !unbound && state.confirm !== "unsupported";
   return (
     <>
       <SettingsRow label={t("Strict mode (Linux)")} description={description}>

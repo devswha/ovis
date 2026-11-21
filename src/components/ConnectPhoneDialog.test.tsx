@@ -29,7 +29,18 @@ const SERVER_ID = "0123456789abcdef0123456789abcdef";
 const APP = "https://app.ovis.example";
 const OFFER_URL = encodeOffer({ v: 1, server_id: SERVER_ID, server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.ovis.example", code: "482913", name: "Workstation" }, APP);
 const ONLINE: RelayStatus = { phase: "online", relay: "wss://relay.ovis.example", app: APP, sessions: 0, blocked: null, error: null };
-const relayState = (status: RelayStatus = ONLINE): RelayState => ({ status, unsupported: false, pending: false, request: async () => status, reread: () => {} });
+const relayState = (status: RelayStatus = ONLINE): RelayState => ({ status, unsupported: false, readFailed: false, pending: false, request: async () => status, reread: () => {} });
+
+describe("relayPending", () => {
+  it("is pending only until the relay's first state comes or its read fails, so a relay that never answers hides nothing", async () => {
+    const { relayPending } = await import("./ConnectPhoneDialog.tsx");
+    const unread = { ...relayState(), status: null };
+    expect(relayPending(unread)).toBe(true);
+    expect(relayPending({ ...unread, readFailed: true })).toBe(false);
+    expect(relayPending({ ...unread, unsupported: true })).toBe(false);
+    expect(relayPending(relayState())).toBe(false);
+  });
+});
 
 describe("Connect a phone on a phone", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
