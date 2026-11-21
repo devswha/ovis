@@ -23,7 +23,7 @@ import { takeEntryUrl, watchNavigation } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
 import { holdWaitMs } from "./joinHold.ts";
-import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
+import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest, keepSignInPc, takeSignInPc } from "./shellState.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
@@ -251,6 +251,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // the sign-in each confirm that names an account was drawn for (kept off the rendered state: it holds the tokens)
   const drawnFor = new WeakMap<RelayShellState, AccountSession>();
   let signingIn = false;
+  // the load whose PC's own page asks for a sign-in before it joins that PC (openUnpaired): its screen until then
+  let unpaired: number | null = null;
   const accountChanged = async (): Promise<void> => {
     // a sign-in that finished on this page (the phone app's own sheet) goes on as the launch it interrupted, as a
     // browser's return to the page does
@@ -260,6 +262,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const read = account.state?.kind !== "signing-in";
     if (read) accountRead = true;
     if (read && (account.state?.kind !== "signed-in" || account.state.pcs !== null)) unanswered = false;
+    // the sign-in a PC's own page asks for stays its screen; signed in on this page (the phone app's sheet, another tab),
+    // the page goes on to join that PC as its load would have
+    if (unpaired !== null && unpaired === entries && app === null && shown?.kind === "empty") {
+      if (account.state?.kind === "signed-in") { unpaired = null; void openUnpaired(entries); }
+      else show({ kind: "empty", account: withRefusal(account.state) });
+      return;
+    }
     if (signInFor !== null && shown?.kind === "failed" && shown.failure === "sign-in-first") {
       const kept = signInFor;
       if (account.state?.kind === "signed-in" || codeLapsed(kept.offer)) resumePairing(kept);
@@ -361,7 +370,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       directoryRelays: account.directory, sheetJoin,
       // a join a PC's own page started for itself stands alone: no list is drawn behind it (the tabs open the list)
       ...(sheetJoin?.alone ? {} : { continuedAccount: sheetJoin ? account.state : null }), observedVersions: observedVersions(),
-      ...(account.enabled ? { onSignIn: signInFirst ? signInToPair : account.signIn, accountProviders: offered ?? account.providers, onJoin: joinPc, onSignOut: account.signOut, onLeave: account.leave, onDeleteAccount: account.deleteAccount, ...(account.signedInAs?.sign_in_id === undefined ? {} : { accountSignIn: account.signedInAs.sign_in_id }), onRefreshAccount: () => account.refreshNow() } : {}),
+      ...(account.enabled ? { onSignIn: signInFirst ? signInToPair : unpaired !== null ? signInForPc : account.signIn, accountProviders: offered ?? account.providers, onJoin: joinPc, onSignOut: account.signOut, onLeave: account.leave, onDeleteAccount: account.deleteAccount, ...(account.signedInAs?.sign_in_id === undefined ? {} : { accountSignIn: account.signedInAs.sign_in_id }), onRefreshAccount: () => account.refreshNow() } : {}),
     })))); account.armRefresh();
   };
   const showFront = async (): Promise<void> => {
@@ -937,32 +946,66 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // read, not taken: this load may itself be reloaded or interrupted before the PC opens, and the load after it must
   // find them too.
   const deviceOnly = deviceOnlyPc(), namedSignIn = confirmedSignIn();
+  const unmoved = (): boolean => !navigatedSinceEntry() && entries === 0;
+  const stillWanted = async (): Promise<boolean> => unmoved() && await account.stored() === undefined && unmoved();
+  /**
+   * A sign-in started for this PC's own page: a browser's comes back on the front page alone, which sends it back here
+   * (keepSignInPc); the phone app's sheet comes back to this page.
+   */
+  const signInForPc = (provider: AccountProvider, wanted?: () => boolean | Promise<boolean>): void => {
+    if (entry.serverId !== null) keepSignInPc(entry.serverId);
+    account.signIn(provider, undefined, wanted);
+  };
+  /**
+   * `#sign-in=<provider>` (boot took it off the address, so a reload or Back starts nothing): that provider's sign-in
+   * starts once, exactly as a press of its button on this page would. Nothing starts for a provider the account service
+   * did not name, on a page signed in (in any tab: the stored session is read right before), or once the page moved
+   * since its load (a link, an offer, Back), which is asked again right before the page leaves for the provider.
+   */
+  const entrySignIn = async (start: (provider: AccountProvider, wanted: () => Promise<boolean>) => void): Promise<void> => {
+    const asked = account.enabled ? signInEntry(entryHash) : null;
+    if (asked === null || !unmoved() || account.state?.kind === "signed-in") return;
+    const provider = (await account.listed()).find((id) => id === asked);
+    // asked before it starts, and again once its pending record is written, right before the page leaves for the provider
+    if (provider !== undefined && await stillWanted()) start(provider, stillWanted);
+  };
+  /**
+   * A PC's own page that this device has no pairing for: a PC of the account that needs this device approved joins
+   * right here, on a screen of its own, and never the list (which only the tabs open). Signed out, the page asks for a
+   * sign-in first (its link may name the provider: the QR code a PC in an account shows on Add a connection), and
+   * joins once signed in.
+   */
+  const openUnpaired = async (loaded: number): Promise<void> => {
+    if (entry.serverId === null) return;
+    const joinable = await accountPcToJoin(entry.serverId);
+    if (entries !== loaded) return;
+    const openKey = account.openKey;
+    // a PC added in one press is new to the account for 24 hours: on its own page, a PC this device never paired with
+    // by hand opens only on a press meanwhile (security-triage, condition 3); once that has passed it opens as before.
+    // A launch never comes here: it reopens only a pairing made on this device by hand.
+    // a join card a launch put up and nobody pressed yet asks again on a reload: it never opens the PC by itself
+    // a PC new in the account that no device is in yet takes the number its own screen shows, as the dashboard's Add
+    // does; any other asks a device already in to approve. The account's own way in, refused, falls back the same way
+    const fresh = joinable !== undefined && newPcs([joinable], Date.now()).length > 0;
+    if (joinable?.join && joinable.accountOpen && openKey !== null && !isNewAccountPc(joinable, Date.now()) && !launchJoinFor(joinable.server_id)) {
+      await connect({ offer: { v: 1, server_id: joinable.server_id, ...joinable.join, name: joinable.name }, code: false, paired: true, accountOpen: openKey, ...(fresh ? { freshPc: true as const } : {}) });
+    } else if (joinable !== undefined) {
+      joinPc(joinable, { sheet: fresh ? "new" : "join", alone: true, ...(fresh ? { typed: true } : {}) });
+    } else if (account.enabled && account.state?.kind === "signed-out") {
+      unpaired = loaded;
+      show({ kind: "empty", account: account.state });
+      await entrySignIn(signInForPc);
+    }
+    else show({ kind: "empty" });
+  };
+
   if (arrived()) return;
   if (entry.serverId !== null) {
     const loaded = entries;
     const saved = await store.get(entry.serverId);
     // a link taken meanwhile owns the page: this load's own entry is not opened, joined or drawn over it
     if (entries !== loaded) return;
-    if (saved === undefined) {
-      // a PC's own page that this device has no pairing for: a PC of the account that needs this device approved joins
-      // right here, on a screen of its own, and never the list (which only the tabs open)
-      const joinable = await accountPcToJoin(entry.serverId);
-      if (entries !== loaded) return;
-      const openKey = account.openKey;
-      // a PC added in one press is new to the account for 24 hours: on its own page, a PC this device never paired with
-      // by hand opens only on a press meanwhile (security-triage, condition 3); once that has passed it opens as before.
-      // A launch never comes here: it reopens only a pairing made on this device by hand.
-      // a join card a launch put up and nobody pressed yet asks again on a reload: it never opens the PC by itself
-      // a PC new in the account that no device is in yet takes the number its own screen shows, as the dashboard's Add
-      // does; any other asks a device already in to approve. The account's own way in, refused, falls back the same way
-      const fresh = joinable !== undefined && newPcs([joinable], Date.now()).length > 0;
-      if (joinable?.join && joinable.accountOpen && openKey !== null && !isNewAccountPc(joinable, Date.now()) && !launchJoinFor(joinable.server_id)) {
-        await connect({ offer: { v: 1, server_id: joinable.server_id, ...joinable.join, name: joinable.name }, code: false, paired: true, accountOpen: openKey, ...(fresh ? { freshPc: true as const } : {}) });
-      } else if (joinable !== undefined) {
-        joinPc(joinable, { sheet: fresh ? "new" : "join", alone: true, ...(fresh ? { typed: true } : {}) });
-      }
-      else show({ kind: "empty" });
-    }
+    if (saved === undefined) await openUnpaired(loaded);
     // a key saved from a forged link (an earlier build saved before admission): Forget removes it
     else if (forgedOffer(offerOf(saved))) show({ kind: "failed", failure: "identity-changed", name: saved.name ?? null, detail: null, mismatch: keyMismatch(saved.server_id, [{ key: saved.server_public_key, from: "saved" }]) });
     else {
@@ -1000,18 +1043,15 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const link = new URL(encodeOffer(offer, window.location.origin));
     navigate(link.pathname + link.hash);
   });
+  // a sign-in a PC's own page started (signInForPc) came back here, the one address a browser returns to: signed in,
+  // that page goes on and joins the PC instead of this page's launch. Taken on every load, so none waits for a later one
+  const forPc = takeSignInPc(SIGN_IN_MS);
+  if (returning === undefined && forPc !== null && signInReturn(entryHash) !== null && account.state?.kind === "signed-in" && frontUp() && entries === loaded && !navigatedSinceEntry()) {
+    left = true;
+    navigate(serverScopePath(forPc));
+    return;
+  }
   // a sign-in that came back signed in (not refused or cancelled, whose reason the sign-in screen says)
   if (returning === undefined && signInReturn(entryHash) !== null && account.state?.kind === "signed-in" && frontUp()) { launching = signedInNow = true; await showFront(); signedInNow = false; }
-  // `#sign-in=<provider>` (boot took it off the address, so a reload or Back starts nothing): that provider's sign-in
-  // starts once, exactly as a press of its button on this page would. Nothing starts for a provider the account service
-  // did not name, on a page signed in (in any tab: the stored session is read right before), or once the page moved
-  // since its load (a link, an offer, Back), which is asked again right before the page leaves for the provider
-  const asked = account.enabled && returning === undefined ? signInEntry(new URL(mount.entryUrl).hash) : null;
-  const unmoved = (): boolean => !navigatedSinceEntry() && entries === 0;
-  const stillWanted = async (): Promise<boolean> => unmoved() && await account.stored() === undefined && unmoved();
-  if (asked !== null && unmoved() && account.state?.kind !== "signed-in") {
-    const provider = (await account.listed()).find((id) => id === asked);
-    // asked before it starts, and again once its pending record is written, right before the page leaves for the provider
-    if (provider !== undefined && await stillWanted()) account.signIn(provider, undefined, stillWanted);
-  }
+  if (returning === undefined) await entrySignIn((provider, wanted) => account.signIn(provider, undefined, wanted));
 }

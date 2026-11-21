@@ -190,15 +190,18 @@ final class PCStore {
     }
 
     /**
-     * Whether an app link is one to pair from: the PC's scope alone or with its pairing offer, which
-     * the connect screen checks as it does a scanned QR code (app/web/shell.js relayLink). Any other
+     * Whether an app link is one to pair from: the PC's scope alone, with its pairing offer, or with a
+     * provider's sign-in (the QR code a PC in an account shows: sign in, then join it), which the
+     * connect screen checks as it does a scanned QR code (app/web/shell.js relayLink). Any other
      * fragment or query is a view of the PC (a file, a pane), which opens only a PC already saved.
      */
     static boolean pairingLink(String link) {
         URI uri = URI.create(link);
         String fragment = uri.getRawFragment();
-        return uri.getRawQuery() == null && (fragment == null || fragment.isEmpty() || fragment.startsWith("offer="));
+        return uri.getRawQuery() == null && (fragment == null || fragment.isEmpty() || fragment.startsWith("offer=") || SIGN_IN.matcher(fragment).matches());
     }
+
+    private static final Pattern SIGN_IN = Pattern.compile("sign-in=[a-z]{1,32}");
 
     static volatile String failure;
 

@@ -44,6 +44,14 @@ describe("relay pairing links", () => {
     expect(link(scope)).toEqual({ url: scope, scope, name: undefined });
   });
 
+  it("opens a PC's page that asks for a provider's sign-in first, with that fragment kept, and no other fragment", () => {
+    const scope = `https://app.ovis.sh/s/${SERVER_ID}/`;
+    expect(link(`${scope}#sign-in=github`)).toEqual({ url: `${scope}#sign-in=github`, scope, name: undefined });
+    for (const text of [`${scope}#sign-in=`, `${scope}#sign-in=github&pane=w1`, `${scope}#sign-in=GitHub`]) {
+      expect([text, link(text)]).toEqual([text, { error: "not-a-pc" }]);
+    }
+  });
+
   it("refuses an offer on any other origin", () => {
     const fragment = encodeOffer(offer, APP_ORIGIN).split("#")[1];
     for (const text of [

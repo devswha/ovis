@@ -537,6 +537,9 @@ public class PCStoreTest {
         String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
         assertTrue(PCStore.pairingLink(scope));
         assertTrue(PCStore.pairingLink(scope + "#offer=eyJ2IjoxfQ"));
+        assertTrue(PCStore.pairingLink(scope + "#sign-in=github"));
+        assertFalse(PCStore.pairingLink(scope + "#sign-in=github&read=a.md"));
+        assertFalse(PCStore.pairingLink(scope + "#sign-in="));
         assertFalse(PCStore.pairingLink(scope + "#read=%2Fhome%2Fa.md&machine=local"));
         assertFalse(PCStore.pairingLink(scope + "#machine=local&pane=w1%3Ap1"));
         assertFalse(PCStore.pairingLink(scope + "?pane=w1%3Ap1"));
