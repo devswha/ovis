@@ -5,6 +5,8 @@ import { jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import { sameOrigin } from "../machine-security.ts";
 import { parseIntroducedPcs } from "./introductions.ts";
 import { ACCOUNT_HELD_MAX } from "./holds.ts";
+import { AccountAddError } from "../machines.ts";
+import { pressOnce } from "./one-press.ts";
 import { applyAccountRecords, applyEnrollment, applyLink, type LinkRefusal } from "./records.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
@@ -77,29 +79,31 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (peer.kind === "relay") return fail("owner_only", "Add this PC to your account on this PC itself.", 403);
       const account = body.account;
       if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
-      // the account the owner's browser is signed in to must be the one named for this PC, which a press never sets
-      if (context.services.relay.savedRelayAccount() !== account) return fail("account_mismatch", "This PC was set up for another account. Sign in to that one, or add this PC again.", 409);
-      if (devices.account() !== null) return fail("in_account", "This PC is already in an account", 409);
-      // a Revoke all, a reset or a denial while the service answers raises this: the press then binds nothing (PADD-1)
-      const generation = devices.gen();
-      // a relay identity reset meanwhile makes this another PC to the account service: its answer was for the old one
-      const identity = context.services.relay.currentIdentity()?.server_id ?? null;
-      let admitted: Awaited<ReturnType<typeof context.services.accountMailbox.admission>>;
-      try { admitted = await context.services.accountMailbox.admission(account); }
-      catch (error) { return fail("account_unavailable", error instanceof Error ? error.message : String(error), 503); }
-      if (admitted === null) return fail("no_admission", "The account service did not admit this PC in one press", 404);
-      // the service's word counts only for the account named here (G1)
-      if (admitted.account !== account) return fail("account_mismatch", "The account service answered for another account", 502);
-      // what the PC was named for, or its account, may have changed while the service answered: decided again now
-      if (context.services.relay.savedRelayAccount() !== account) return fail("account_mismatch", "This PC was set up for another account. Sign in to that one, or add this PC again.", 409);
-      if (devices.account() !== null) return fail("in_account", "This PC is already in an account", 409);
-      if ((context.services.relay.currentIdentity()?.server_id ?? null) !== identity) return fail("identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409);
-      if (devices.gen() !== generation) return fail("revoked", "Every device was revoked on this PC while it was being added. Add it again.", 409);
-      devices.bindByService(account);
-      await context.services.accountMailbox.readSnapshot();
-      // the account may have stopped listing this PC during that first read: then it is in no account, and says so
-      if (devices.account() !== account) return fail("not_listed", "The account removed this PC while it was being added", 409);
-      return reply({ account });
+      const pressed = await pressOnce(context.services, account);
+      return "refused" in pressed ? fail(pressed.refused.code, pressed.refused.message, pressed.refused.status) : reply(pressed);
+    }
+    case "/api/account/ssh-add": {
+      if (!devices.opensAll()) return fail("not_found", "Unknown account action", 404);
+      setRequestRoute(pathname);
+      // only this PC's owner here vouches for another PC with this PC's account (dispatch.ts ownWindow refuses the rest)
+      if (peer.kind === "relay") return fail("owner_only", "Add another PC to your account from this PC itself.", 403);
+      // the account comes from this PC's own binding, never from the request
+      const account = devices.account();
+      if (account === null || devices.accountError !== null) return fail("not_in_account", "Add another PC to your account from a PC that is in it.", 409);
+      const { job_id: jobId, server_id: target } = body;
+      if (typeof jobId !== "string" || typeof target !== "string") return fail("invalid_body", "Name the setup job and the PC it reached", 400);
+      if (target === context.services.relay.currentIdentity()?.server_id) return fail("self", "That is this PC.", 409);
+      const machines = context.services.core.machines;
+      if (!machines) return fail("not_found", "This PC adds no other PCs", 404);
+      let taken: { account: string };
+      try { taken = await machines.accountTake(jobId, target, account); }
+      catch (error) {
+        if (!(error instanceof AccountAddError)) throw error;
+        return fail(error.code, error.message, error.code === "job_not_found" ? 404 : 409);
+      }
+      // this PC left or changed its account while that PC took it: that PC is in the account named then, and says so
+      if (devices.account() !== taken.account) return fail("account_changed", "This PC's account changed while the other PC was being added.", 409);
+      return reply({ account: taken.account, server_id: target });
     }
     case "/api/account/introduce": {
       setRequestRoute(pathname);
