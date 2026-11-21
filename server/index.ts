@@ -580,7 +580,12 @@ export function createServer(
     try { return openConfirmListener(localConfirms, { stateDir }); }
     catch (error) { console.error(`The local confirm page did not open: ${error instanceof Error ? error.message : String(error)}`); return null; }
   };
-  let confirmListener = devices.accountPolicyActive() ? openConfirms() : null;
+  // Leaving an account does not end its denials. While one stands, the PC's screen still approves exact keys.
+  let confirmListener = devices.screenApprovalActive() ? openConfirms() : null;
+  const syncConfirmListener = () => {
+    if (devices.screenApprovalActive()) confirmListener ??= openConfirms();
+    else { confirmListener?.stop(); confirmListener = null; }
+  };
   const desktopOwner = localConfirms && options.desktopOwner ? desktopOwnerChannel(localConfirms, options.desktopOwner) : null;
   // devices that redeemed a code and proved their key, waiting for this PC's screen (server/account/pending.ts)
   const pendingRedemptions = localConfirms ? new PendingRedemptions({
@@ -597,10 +602,11 @@ export function createServer(
   devices.onKeyRemoved((key, cause) => pendingRedemptions?.dropKey(key, cause));
   const askScreen = localConfirms && keyProofPairings ? (entry: PendingRedemption) => askScreenForKey(localConfirms, keyProofPairings, entry) : undefined;
   const stopBindingWatch = pcAccount?.onBindingChange(() => {
-    confirmListener?.stop();
-    for (const entry of localConfirms?.pending() ?? []) localConfirms?.withdraw(entry.id);
+    for (const entry of localConfirms?.pending() ?? []) {
+      if (entry.action.kind !== "unlock") localConfirms?.withdraw(entry.id);
+    }
     for (const entry of pendingRedemptions?.list() ?? []) pendingRedemptions?.decline(entry.id);
-    confirmListener = devices.accountPolicyActive() ? openConfirms() : null;
+    syncConfirmListener();
   });
   // `ovis recover` (server/account/recovery.ts): this PC's user, at its terminal or over SSH, on a socket no route reaches.
   // Each release and undo is journalled per row before it takes effect; whether the log can be read is asked live
@@ -633,6 +639,7 @@ export function createServer(
     unlock: (lockId) => {
       const lock = safetyLog.state().locks.find((entry) => entry.record.id === lockId);
       safetyLog.appendUnlock(lockId, lock === undefined ? null : { account: lock.record.account });
+      syncConfirmListener();
     },
     removalsPending: () => devices.pendingLockRemovals().length > 0,
   } }) : undefined;
@@ -662,11 +669,11 @@ export function createServer(
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
     options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
-    get localConfirms() { return devices.accountPolicyActive() ? localConfirms : undefined; },
-    get pendingRedemptions() { return devices.accountPolicyActive() ? pendingRedemptions : undefined; },
-    get keyProofPairings() { return devices.accountPolicyActive() ? keyProofPairings : undefined; },
-    get askScreenForKey() { return devices.accountPolicyActive() ? askScreen : undefined; },
-    get lockRoutes() { return devices.accountPolicyActive() ? lockHandler : undefined; },
+    get localConfirms() { return devices.screenApprovalActive() ? localConfirms : undefined; },
+    get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
+    get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },
+    get askScreenForKey() { return devices.screenApprovalActive() ? askScreen : undefined; },
+    get lockRoutes() { return devices.screenApprovalActive() ? lockHandler : undefined; },
     get portalStartupResult() { return portalStartupResult; },
   };
   ovisRelay.resume(services, server.port ?? DEFAULT_PORT);

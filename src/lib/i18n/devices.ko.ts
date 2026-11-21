@@ -11,7 +11,6 @@ export const DEVICES_KO: Record<string, string> = {
   "This PC is in your account.": "이 PC는 내 계정에 있습니다.",
   "The PCs of this Tailscale login.": "이 Tailscale 로그인에 연결된 PC입니다.",
   "This PC is in an account. Add PCs from your account.": "이 PC는 계정에 연결돼 있어요. 계정에서 PC를 추가하세요.",
-  "That PC is in an account. Add it from that account.": "그 PC는 계정에 연결돼 있어요. 그 계정에서 추가하세요.",
   "This PC joined a different account.": "이 PC가 다른 계정에 연결됐어요.",
   "Add from account": "계정에서 추가",
   "Anyone who can reach {host} on your network can type into every pane: no access token is set and no device is paired yet.": "같은 네트워크에서 {host}에 닿을 수 있는 사람은 누구나 모든 패널에 입력할 수 있습니다. 접속 토큰이 설정되지 않았고, 아직 페어링된 기기도 없습니다.",

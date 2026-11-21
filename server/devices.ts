@@ -1034,7 +1034,9 @@ export class DeviceStore {
     if (this.safety === null || this.pc === null || pending === null || pending.id !== confirm.codeId || reserved === undefined || this.codeOver(pending, now)) return null;
     if (confirm.source === "recover" && (this.isTombstoned(confirm.key) || this.safety.inForce.blocks.some(entry => entry.record.target === confirm.key)
       || this.safety.inForce.freezes.some(entry => entry.record.target === confirm.key))) return null;
-    const recovery = confirm.source === "recover" ? Object.freeze(this.safety.inForce.freezes.map(({ record }) => record.id)) : undefined;
+    const recovery = confirm.source === "recover" ? Object.freeze([...new Set([
+      ...this.safety.inForce.blocks, ...this.safety.inForce.freezes,
+    ].map(({ record }) => record.id))]) : undefined;
     const proof: ConfirmProof = { codeId: confirm.codeId, key: confirm.key, source: confirm.source,
       ...(recovery ? { recoveredOver: recovery } : {}) };
     MINTED_PROOFS.add(Object.freeze(proof));
@@ -1086,7 +1088,7 @@ export class DeviceStore {
 
   private approvedOver(row: StoredDevice, id: string): boolean {
     return !row.imported && !row.invalid_origin && (row.origin?.from === "pc"
-      || (row.origin?.from === "recover" && row.recovered_over?.includes(id) === true));
+      || (row.origin?.from === "recover" && row.recovered_over?.some(known => known === id || `f:${known}` === id) === true));
   }
 
   /** An owner's approval belongs to the exact row retained here, not to a new grant for the same key. */
@@ -1402,6 +1404,12 @@ export class DeviceStore {
 
   /** Unbound PCs pair as in Step 1. Unreadable account state is never proof of being unbound. */
   accountPolicyActive(): boolean { return this.opensAll() && (this.account() !== null || this.accountError !== null); }
+
+  /** A standing denial still needs this PC's approval path after it leaves its account. */
+  screenApprovalActive(): boolean {
+    const state = this.safety?.inForce;
+    return this.accountPolicyActive() || (state !== undefined && (state.locked || state.blocks.length > 0 || state.freezes.length > 0));
+  }
 
   /**
    * One press (docs/account.md): binds this PC, in no account, to `account` on the account service's word for it. Only
@@ -2372,7 +2380,11 @@ export class DeviceStore {
    * key new to this PC (isNewKey).
    */
   pairRelay(code: string, label: string, publicKey: string, now = Date.now(), admit?: () => boolean): { device: DeviceMatch } | null {
-    const pairingHere = this.pending?.remote === false;
+    // On an ordinary accountless PC a driving phone may start a new pairing over this PC's local Revoke.
+    // This is not a screen confirmation: it never overrides a lock, an account removal, or a freeze.
+    const starter = this.pending?.startedBy;
+    const pairingHere = this.pending?.remote === false || (this.pending?.remote === true && this.pending.waiting === undefined &&
+      starter != null && !this.screenApprovalActive() && this.canHoldCode(starter) && this.isTombstoned(publicKey));
     if (!this.admits(publicKey, undefined, { pairingHere })) return null;
     this.assertRelayPairing("code", now);
     // a code made for a PC in no account makes no device: the one that pairs with it waits to link
@@ -3521,7 +3533,7 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
     for (const cookie of cookies) answer.headers.append("set-cookie", cookie);
     return answer;
   }
-  const orderedRevoke = store.opensAll() && access.level === "full" && !store.canRevokeAsPc(access);
+  const orderedRevoke = store.accountPolicyActive() && access.level === "full" && !store.canRevokeAsPc(access);
   if (pathname === "/api/devices") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");

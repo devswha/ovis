@@ -13,7 +13,7 @@ import { listOfferedPc } from "../lib/account/addThisPc.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_POLL_MS, ACCOUNT_QR_WATCH_EVENT, accountQrFindings, accountQrNoticeWaiting, accountQrPending, addedBy, holdAccountQrNotice, resetAccountQrWatch, stopAccountQrWatch, takeAccountQrNotice, watchEndedAccountQr, type AccountQrBaseline, type AccountQrStray } from "../lib/accountQrWatch.ts";
-import { addAddressPc, addTailnetPc, ApiError, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, revokeDevice, startPairing, type RelayOffer, type SshCandidate, type TailnetPc } from "../lib/api.ts";
+import { addAddressPc, ApiError, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, revokeDevice, startPairing, type RelayOffer, type SshCandidate, type TailnetPc } from "../lib/api.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
@@ -197,7 +197,7 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
           )}
           {opened.current.has("tailscale") && tabs.includes("tailscale") && (
             <div className="connect-tab" data-tab-panel="tailscale" hidden={tab !== "tailscale"}>
-              <TailscaleTab found={found} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} onSourceBound={() => setChosen("relay")} />
+              <TailscaleTab found={found} onAddPc={onAddPc!} />
             </div>
           )}
           {opened.current.has("direct") && tabs.includes("direct") && (
@@ -283,7 +283,7 @@ export function useFoundPcs(machines: readonly Machine[], enabled = true) {
     : pc.tailnet !== undefined && !tailnetRead ? "waiting"
     : "open";
   const retry = () => { setFound(null); setReads((count) => count + 1); };
-  return { found, unread, failed, withheld, stateOf, retry, tailnetPeers };
+  return { found, unread, failed, withheld, stateOf, retry };
 }
 
 /** The found list's failure with Try again, or where a list this window is refused can be seen. */
@@ -302,26 +302,10 @@ function FoundPcsTrouble({ failed, withheld, retry }: { failed: boolean; withhel
   );
 }
 
-/**
- * A discovered Ovis with an online relay supports one-tap PC add. All other eligible hosts use SSH.
- */
-export function TailscaleTab({ found: { found, unread, failed, withheld, stateOf, retry, tailnetPeers }, onAddPc, onConnectMachine, onSourceBound }: {
-  found: FoundPcs; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine?: (machine: Machine) => void; onSourceBound?: () => void;
+export function TailscaleTab({ found: { found, unread, failed, withheld, stateOf, retry }, onAddPc }: {
+  found: FoundPcs; onAddPc: (preset?: AddPcPreset) => void;
 }) {
   const t = useT();
-  const [adding, setAdding] = useState<string | null>(null);
-  const [failure, setFailure] = useState<{ url: string; text: string; bound: boolean } | null>(null);
-  const connect = async (pc: SshCandidate, peer?: TailnetPc) => {
-    if (peer?.relay !== "online") { onAddPc({ destination: pc.destination, name: pc.name }); return; }
-    if (adding !== null) return;
-    setAdding(peer.url); setFailure(null);
-    try { const { machine } = await addTailnetPc(peer.url); onConnectMachine?.(machine); }
-    catch (error) {
-      if (error instanceof ApiError && error.code === "pc_add_source_bound" && onSourceBound) { onSourceBound(); return; }
-      const bound = error instanceof ApiError && error.code === "pc_add_target_bound";
-      setFailure({ url: peer.url, bound, text: bound ? t("That PC is in an account. Add it from that account.") : failureText(error) });
-    } finally { setAdding(null); }
-  };
   const pcs = found?.filter((pc) => pc.source === "tailscale" || pc.tailnet !== undefined) ?? null;
   return (
     <>
@@ -332,16 +316,13 @@ export function TailscaleTab({ found: { found, unread, failed, withheld, stateOf
             <ul className="connect-found-list">
               {pcs.map((pc) => {
                 const state = stateOf(pc);
-                const peer = tailnetPeers.get((pc.tailnet ?? pc.destination).toLowerCase());
-                const refusal = peer && failure?.url === peer.url ? failure : null;
                 return (
                   <li key={`${pc.source}:${pc.destination}`} className="connect-found-row">
                     <span className="connect-found-name">{pc.name}</span>
                     <span className="connect-found-detail">{pc.tailnet ?? pc.detail ?? pc.destination}</span>
                     {state === "added" ? <span className="connect-found-added"><Check aria-hidden="true" />{t("Added")}</span>
                       : state === "outdated" ? <span className="settings-hint">{t("Update Ovis on that PC to 0.5 first.")}</span>
-                      : !refusal?.bound && <button type="button" className="btn" disabled={state === "waiting" || adding !== null} aria-label={`${t("Connect")} ${pc.name}`} onClick={() => void connect(pc, peer)}>{t("Connect")}</button>}
-                    {refusal && <p className="settings-hint" role="status">{refusal.text}</p>}
+                      : <button type="button" className="btn" disabled={state === "waiting"} aria-label={`${t("Connect")} ${pc.name}`} onClick={() => onAddPc({ destination: pc.destination, name: pc.name })}>{t("Connect")}</button>}
                   </li>
                 );
               })}
@@ -1149,7 +1130,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
           {signedIn && <p ref={heading} className="settings-label" id={id} tabIndex={-1}>{here === "mine" ? t("This PC is in your account.") : t("Sign in to this PC's account.")}</p>}
           {here === "mine" && enrolling && <p className="settings-description connect-account-qr-warning" role="status">{t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")}</p>}
           {here === "other" && <p className="settings-description connect-account-qr-warning">{t("If that account is not yours, revoke every device (More settings → Devices and access): this PC then leaves it.")}</p>}
-          {signedIn && !online && <>{relayControls}{relayState}</>}
+          {!online && <>{relayControls}{relayState}</>}
         </>
       ) : (
         <>

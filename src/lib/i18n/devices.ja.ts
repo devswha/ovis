@@ -11,7 +11,6 @@ export const DEVICES_JA: Record<string, string> = {
   "This PC is in your account.": "この PC はあなたのアカウントに接続されています。",
   "The PCs of this Tailscale login.": "この Tailscale ログインの PC です。",
   "This PC is in an account. Add PCs from your account.": "この PC はアカウントに接続されています。PC はアカウントから追加してください。",
-  "That PC is in an account. Add it from that account.": "その PC はアカウントに接続されています。そのアカウントから追加してください。",
   "This PC joined a different account.": "この PC は別のアカウントに接続されました。",
   "Add from account": "アカウントから追加",
   "Anyone who can reach {host} on your network can type into every pane: no access token is set and no device is paired yet.": "同じネットワークで {host} に届く人なら誰でも、すべてのペインに入力できます。アクセストークンは設定されておらず、ペアリング済みのデバイスもまだありません。",

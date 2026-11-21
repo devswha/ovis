@@ -1,5 +1,5 @@
 import { MACHINE_DIRECT_CARRIER_ENABLED, MachineCodeForAccountError } from "../machine-profile.ts";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { DeviceConnection } from "../../shared/access.ts";
@@ -13,7 +13,7 @@ import type { RequestServices } from "../dispatch.ts";
 import { isJsonObject } from "../http.ts";
 import { writePrivateState } from "../private-state.ts";
 import { DEFAULT_ACCOUNT_SERVICE } from "../static.ts";
-import { loadRelayIdentity, relayIdentityPath, RelayIdentityError, rotateRelayIdentity, savedServerId } from "./identity.ts";
+import { loadRelayIdentity, RelayIdentityError, rotateRelayIdentity, savedIdentityReader, savedServerId } from "./identity.ts";
 import type { RelayIdentity } from "./identity.ts";
 import { SignedInSessions } from "./admissions.ts";
 import { DirectCarrier } from "./direct.ts";
@@ -150,6 +150,7 @@ export class RelayService {
   private services: RequestServices | undefined;
   private port = 0;
   private identity: RelayIdentity | undefined;
+  private readonly readSavedIdentity: () => RelayIdentity | undefined;
   private saved: string | null | undefined;
   private enabled = false;
   private shuttingDown = false;
@@ -172,6 +173,7 @@ export class RelayService {
   private directOn: boolean | undefined;
 
   constructor(private readonly options: RelayServiceOptions) {
+    this.readSavedIdentity = savedIdentityReader(options.stateDir);
     // the pairing window outlives a restart (pairing-approvals.ts), so it is read from this PC's state
     this.approvals = new RelayPairingApprovals({ path: join(options.stateDir, "relay", "pairing-window.json") });
     const named = options.relay ?? process.env["OVIS_RELAY_URL"];
@@ -193,13 +195,7 @@ export class RelayService {
   }
 
   currentIdentity(): RelayIdentity | undefined {
-    if (this.identity) return this.identity;
-    // one already on disk (the relay off since a restart) still names the PC; none is ever made here
-    if (!existsSync(relayIdentityPath(this.options.stateDir))) return undefined;
-    try { return loadRelayIdentity(this.options.stateDir); } catch (error) {
-      if (error instanceof RelayIdentityError) return undefined;
-      throw error;
-    }
+    return this.link ? this.identity : this.readSavedIdentity();
   }
 
 

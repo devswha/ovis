@@ -854,6 +854,11 @@ leads to **Add a PC**.
 
 ### Adding a PC of your account
 
+If this PC cannot read its account state, it refuses a PC add rather than assuming it is
+outside an account. Try again in a moment. If the refusal persists, run `ovis recover` in a
+terminal on this PC to inspect its local state. Do not delete its account files to retry:
+they also record which devices must stay out.
+
 **Add a connection → Ovis relay** on a PC (A) whose page is signed in, with A in that account, lists
 the account's other PCs: **Connect** for one already in A's machine list,
 **Add** for one that would pair, and "Update Ovis on that PC" or "Offline" with no button. **Add**

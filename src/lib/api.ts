@@ -455,7 +455,8 @@ export class ApiError extends Error {
 
 export const routeMissing = (error: unknown): boolean => error instanceof ApiError && error.status === 404 && error.code === "not_found";
 
-const UNUSABLE_ANSWER: Readonly<Record<string, () => string>> = {
+const LOCALIZED_ERRORS: Readonly<Record<string, () => string>> = {
+  pc_add_account_unavailable: () => t("Can't add a PC right now. Try again in a moment."),
   remote_response_too_large: () => t("The other PC's answer was larger than this app accepts"),
   remote_response_invalid: () => t("The other PC's answer could not be read"),
 };
@@ -469,7 +470,7 @@ export async function errorFrom(url: string, response: Response): Promise<ApiErr
     if (body.error?.code) code = body.error.code;
   } catch {
   }
-  if (code !== null && Object.hasOwn(UNUSABLE_ANSWER, code)) detail = UNUSABLE_ANSWER[code]!();
+  if (code !== null && Object.hasOwn(LOCALIZED_ERRORS, code)) detail = LOCALIZED_ERRORS[code]!();
   const retryAfter = response.headers.get("retry-after");
   const seconds = retryAfter !== null && /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : null;
   return new ApiError(url, response.status, detail, code, seconds === null ? null : seconds * 1000);
@@ -483,7 +484,7 @@ async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export async function fetchSystem(machineId = "local", signal?: AbortSignal): Promise<SystemReport> {
   const report = parseSystemReport(await getJson<unknown>(machinePath(machineId, "system"), { cache: "no-store", ...(signal ? { signal } : {}) }));
-  if (report === null) throw new ApiError(machinePath(machineId, "system"), 502, UNUSABLE_ANSWER["remote_response_invalid"]!(), "remote_response_invalid");
+  if (report === null) throw new ApiError(machinePath(machineId, "system"), 502, LOCALIZED_ERRORS["remote_response_invalid"]!(), "remote_response_invalid");
   return report;
 }
 
@@ -1471,7 +1472,6 @@ export const findSshCandidates = () => machineRequest<{ pcs: SshCandidate[] }>("
 /** A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts); `outdated`: older than 0.5. */
 export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean }
 export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
-export const addTailnetPc = (url: string) => machineRequest<{ machine: Machine }>("/tailnet", "POST", { url });
 /** POST /api/machines/address: pairs with another PC's Ovis at that https address by the six-digit code it shows, and adds it. */
 export const addAddressPc = (address: string, code: string) => machineRequest<{ machine: Machine }>("/address", "POST", { address, code });
 /** Another PC of the account as the page read it from the account's directory: its key checked against its id here too. */

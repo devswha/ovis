@@ -366,9 +366,11 @@ export class PcAccountState {
 
   private write(doc: PcDoc): void {
     if (this.problem !== null) throw new Error(this.strict!);
-    const before = this.doc.binding?.bind_id;
+    // The provisional first-link write and its rollback both represent no committed binding.
+    const committedId = (binding: AccountBinding | null) => binding?.pending ? undefined : binding?.bind_id;
+    const before = committedId(this.doc.binding);
     writePrivateState(this.path, doc);
     this.doc = doc;
-    if (before !== doc.binding?.bind_id) for (const listener of this.bindingListeners) listener();
+    if (before !== committedId(doc.binding)) for (const listener of this.bindingListeners) listener();
   }
 }

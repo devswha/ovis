@@ -200,7 +200,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (options.profile === "machine" && relayPeer === undefined && ctx.ownerSocket !== true) return machineTcpAnswer(request, pathname);
   // an act waiting for this PC's screen is answered there alone (server/account/local-confirm.ts): every caller of a
   // route gets the same refusal, before anything about it is decided
-  if (ctx.services.localConfirms !== undefined && /^\/api\/account\/local-confirm(?:\/|$)/.test(pathname)) {
+  if (/^\/api\/account\/local-confirm(?:\/|$)/.test(pathname) && ctx.services.localConfirms !== undefined) {
     setRequestRoute("/api/account/local-confirm");
     return jsonResponse({ error: { code: "local_required", message: "Confirm this on this PC's own screen." } }, 403);
   }
@@ -282,7 +282,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // (on a PC with an access token, that window comes in with the token: the same window, loopback and not forwarded)
   const ownWindow = access.level === "full" && (access.via === "local" || (access.via === "token" && loopback && !forwarded));
   // a lock or unlock is asked only from this PC's own window: any other is told so, before any other refusal (S36-1)
-  if (ctx.services.lockRoutes !== undefined && !ownWindow && request.method === "POST" && (pathname === "/api/account/lock" || pathname === "/api/account/unlock")) {
+  if (!ownWindow && request.method === "POST" && (pathname === "/api/account/lock" || pathname === "/api/account/unlock") && ctx.services.lockRoutes !== undefined) {
     setRequestRoute(pathname);
     return jsonResponse({ error: { code: "local_required", message: "Turn the lock on or off on this PC's own screen." } }, 403, { "cache-control": "no-store" });
   }
@@ -514,7 +514,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       const endsWith = deviceId ? (close: () => void) => devices.onRevoke(deviceId, close) : openAccess ? (close: () => void) => devices.endWithGate(close) : portalRecheckMs !== undefined ? (close: () => void) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined;
       // and with a lock, when what let it in is a grant the lock refuses
       const ends = untilLock === undefined ? endsWith : (close: () => void) => { const stops = [untilLock(close), endsWith?.(close)]; return () => { for (const stop of stops) stop?.(); }; };
-      const response = await handleMachineRequest(request, machines, ends, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget, ownerAccess(access), ctx.services.safetyLog !== null, devices.accountPolicyActive());
+      const response = await handleMachineRequest(request, machines, ends, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget, ownerAccess(access), ctx.services.safetyLog !== null, devices);
       response.headers.set("cache-control", "no-store");
       if (issuedKey !== null && response.ok) response.headers.append("set-cookie", streamCookie(issuedKey, isSecureRequest(request)));
       return response;
@@ -620,8 +620,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/portal" || pathname.startsWith("/api/portal/")) {
     return handlePortalRequest(request, pathname, options.portal, { port: ctx.port ?? DEFAULT_PORT, ...portalGuards() });
   }
-  if (ctx.services.lockRoutes !== undefined && (pathname === "/api/account/lock" || pathname === "/api/account/unlock")) {
-    return ctx.services.lockRoutes(request, pathname, access, ownWindow);
+  if (pathname === "/api/account/lock" || pathname === "/api/account/unlock") {
+    const lockRoutes = ctx.services.lockRoutes;
+    if (lockRoutes !== undefined) return lockRoutes(request, pathname, access, ownWindow);
   }
   if (pathname.startsWith("/api/account/")) return handleAccountRequest(request, pathname, ctx, access);
   if (pathname === "/api/relay" || pathname.startsWith("/api/relay/")) {
@@ -674,7 +675,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
 
   if (pathname === "/api/health") {
     setRequestRoute(pathname);
-    const own = ctx.services.lockRoutes !== undefined && ownWindow ? { own_window: true as const } : {};
+    const own = ownWindow && ctx.services.lockRoutes !== undefined ? { own_window: true as const } : {};
     const auth: HealthAuth = access.level === "full"
       ? { required: false, authenticated: true, via: access.via, role: access.role, ...(access.via === "token" && bearerMatches(request, token) ? { bearer: true as const } : {}), ...(access.portal ? { portal: access.portal } : {}), ...own }
       // a window refused at the door of a locked PC is told the PC is locked, never offered a pairing it cannot use (T47, N4)
