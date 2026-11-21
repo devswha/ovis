@@ -585,6 +585,8 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     const netStart = answered(tailnet, "/api/devices/pair/start");
     await net.openTab("tailscale");
     await netStart;
+    // the answer arrives before React draws the code: wait for the QR itself, then count it
+    await net.tailscaleTab.locator(".connect-phone-scan [role='img']").first().waitFor();
     assert.equal(await net.tailscaleTab.locator(".connect-phone-scan [role='img']").count(), 1, "the Tailscale tab's phone QR code carries the Tailscale address");
     assert.equal((await tailnetRelay()).phase, "off", "opening the sheet turns nothing on");
     await net.openTab("relay");
