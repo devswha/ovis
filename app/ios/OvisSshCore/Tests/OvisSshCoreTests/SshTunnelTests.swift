@@ -356,6 +356,29 @@ final class SshTunnelTests: XCTestCase {
         }
     }
 
+    func testAPortAnotherListenerHoldsIsNeverLetThroughNorGivenAGate() async throws {
+        let store = SshPcs(prefs: MemoryPrefs(), sealer: TestSealer())
+        let tunnels = SshTunnels(store: store)
+        let stranger = try await ServerBootstrap(group: SshConnection.group).bind(host: "127.0.0.1", port: 0).get()
+        defer { stranger.close(promise: nil) }
+        let taken = try XCTUnwrap(stranger.localAddress?.port)
+        let free = try await Self.freePort()
+        for (port, host) in [(taken, "taken"), (free, "free")] {
+            var pc = SshPcs.Pc()
+            pc.origin = "http://127.0.0.1:\(port)"
+            pc.host = host
+            pc.user = "me"
+            try store.put(try store.withNewGate(pc))
+        }
+        let held = await tunnels.listenAll()
+        XCTAssertEqual(held, [free])
+        do {
+            try await tunnels.open(try XCTUnwrap(store.get("http://127.0.0.1:\(taken)")))
+            XCTFail("a port another listener holds was opened, and would have been given its gate")
+        } catch {}
+        await tunnels.closeFor("http://127.0.0.1:\(free)")
+    }
+
     func testAClosedTunnelsPortIsFreeForTheNextAtOnce() async throws {
         await tunnel.close()
         tunnel = makeTunnel()

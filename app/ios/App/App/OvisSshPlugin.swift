@@ -28,13 +28,20 @@ enum OvisSsh {
     /// picture a PC's page shows included, which no navigation rule sees). Made again as SSH PCs come and go.
     private static var rules: (ports: Set<Int>, list: WKContentRuleList)?
 
+    /// The rule for the next web view: every saved SSH PC listens first, and only the ports this app holds now are let
+    /// through; a port another app took stays blocked, and its PC opens nothing.
     @MainActor
     static func loopbackRules() async -> WKContentRuleList? {
-        let ports = tunnels.ports()
-        if ports.isEmpty { return nil }
+        let ports = await tunnels.listenAll()
         if let rules, rules.ports == ports { return rules.list }
         // WebKit's rule patterns have no alternation: each case is a rule of its own, and a URL always has "/" after its host
-        var json: [[String: Any]] = ["127\\.0\\.0\\.1", "localhost"].map { host in ["trigger": ["url-filter": "^[a-z]+://\(host)[:/]"], "action": ["type": "block"]] }
+        // web schemes only: the app's own pages are capacitor://localhost, which must load
+        var json: [[String: Any]] = []
+        for host in ["127\\.0\\.0\\.1", "localhost"] {
+            for scheme in ["https?", "wss?"] {
+                json.append(["trigger": ["url-filter": "^\(scheme)://\(host)[:/]"], "action": ["type": "block"]])
+            }
+        }
         for port in ports.sorted() {
             for scheme in ["http", "ws"] {
                 json.append(["trigger": ["url-filter": "^\(scheme)://127\\.0\\.0\\.1:\(port)/"], "action": ["type": "ignore-previous-rules"]])
@@ -337,6 +344,8 @@ public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
             PCStore.forget(pc.origin)
             await OvisSsh.dropGate(origin: pc.origin, name: SshTunnel.cookieName(port: pc.localPort))
             call.resolve(answer)
+            // the web view's loopback rule still lets the removed PC's port through: a new one leaves it out
+            HerdrBridgeViewController.reopen()
         }
     }
 

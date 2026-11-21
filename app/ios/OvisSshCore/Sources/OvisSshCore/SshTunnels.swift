@@ -15,6 +15,14 @@ public final class SshTunnels: @unchecked Sendable {
     /// The ports the saved SSH PCs listen on.
     public func ports() -> Set<Int> { Set(store.list().map(\.localPort)) }
 
+    /// Makes every saved SSH PC listen, and gives the ports this app holds now: only those may be loaded, as one another
+    /// app took first would get every PC's gate (cookies do not separate ports).
+    public func listenAll() async -> Set<Int> {
+        var held = Set<Int>()
+        for pc in store.list() where (try? await open(pc)) != nil { held.insert(pc.localPort) }
+        return held
+    }
+
     /// The tunnel for `pc`, listening: kept while the PC's saved way in stays the same. Throws when another app holds
     /// the address: the PC must not open then, as the page that answers there would be that app's.
     @discardableResult
@@ -102,13 +110,17 @@ public final class SshTunnels: @unchecked Sendable {
 
     private func all() -> [SshTunnel] { lock.locked { tunnels.values.map(\.tunnel) } }
 
-    /// The app came back: each tunnel listens again where iOS took its socket, and checks its connection.
-    public func wakeAll() {
-        for tunnel in all() {
-            Task {
-                try? await tunnel.listen()
-                await tunnel.wake()
+    /// The app came back: each tunnel listens again where iOS took its socket, and checks its connection. `lost` hears
+    /// when one could not take its port back (another app holds it now), so the web view is built again without it.
+    public func wakeAll(lost: @escaping @Sendable () -> Void = {}) {
+        let tunnels = all()
+        Task {
+            var failed = false
+            for tunnel in tunnels {
+                do { try await tunnel.listen() } catch { failed = true }
             }
+            if failed { lost() }
+            for tunnel in tunnels { Task { await tunnel.wake() } }
         }
     }
 
