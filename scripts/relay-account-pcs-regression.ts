@@ -123,12 +123,13 @@ function remotePrompt(): Promise<RemotePairingRequest> {
   return bounded(found.promise, 30_000).finally(stop);
 }
 
-async function signedInWindow(browser: Browser, pageErrors: string[]): Promise<{ context: BrowserContext; page: Page }> {
+async function accountWindow(browser: Browser, pageErrors: string[], relation: "mine" | "other" | "signed-out" = "mine"): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   cleanup.push(() => context.close());
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
   await context.route("**/api/access", (route) => route.fulfill({ json: { port: 0, tailscale: { state: "missing", dns_name: null, serving_url: null, serve_command: null, serve_url: null } } }));
-  await context.route("**/api/account/status*", (route) => route.fulfill({ json: { account: ACCOUNT, members: 1, unlinked: [], removals: [], adds: [], blocked: [], enrolling: false, mailbox: { last_pull_at: null, error: null } } }));
+  await context.route("**/api/account/status*", (route) => route.fulfill({ json: { account: relation === "other" ? "acct_other_pc" : ACCOUNT, pc_add_from_account: true,
+    members: 1, unlinked: [], removals: [], adds: [], blocked: [], enrolling: false, mailbox: { last_pull_at: null, error: null } } }));
   await context.route(`${ACCOUNT_SERVICE}/**`, async (route) => {
     const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, PUT, DELETE" };
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
@@ -140,7 +141,7 @@ async function signedInWindow(browser: Browser, pageErrors: string[]): Promise<{
   page.setDefaultTimeout(20_000);
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.goto(origin, { waitUntil: "domcontentloaded" });
-  await page.evaluate(({ url, account, accessToken }) => new Promise<void>((resolve, reject) => {
+  if (relation !== "signed-out") await page.evaluate(({ url, account, accessToken }) => new Promise<void>((resolve, reject) => {
     const request = indexedDB.open("ovis-account", 1);
     request.onupgradeneeded = () => { request.result.createObjectStore("account"); };
     request.onerror = () => reject(request.error);
@@ -162,9 +163,11 @@ async function openRelayTab(page: Page) {
   await page.locator('.settings-dialog [data-section="devices"]').getByRole("button", { name: "Add a connection", exact: true }).click();
   const sheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
   await sheet.locator('.connect-tabs [data-tab="relay"]').click();
-  const desk = sheet.locator('[data-tab-panel="relay"] .relay-account-pc').filter({ has: page.locator(".connect-found-name", { hasText: /^Desk$/ }) });
-  await desk.waitFor();
-  return desk;
+  const tab = sheet.locator('[data-tab-panel="relay"]');
+  await tab.getByText("This PC is in an account. Add PCs from your account.", { exact: true }).waitFor();
+  assert.ok(!(await tab.innerText()).includes("acct_"), "no raw account ID");
+  assert.equal(await tab.getByText(/This PC shows a QR code only|This browser is not signed in, so it cannot tell|To add a device, sign in to this PC's account/).count(), 0);
+  return tab;
 }
 
 /** a PC of the account the sidebar lists under its own because it is not in this app yet */
@@ -191,7 +194,7 @@ let code = 0;
 try {
   const pageErrors: string[] = [];
 
-  const adding = await signedInWindow(browser, pageErrors);
+  const adding = await accountWindow(browser, pageErrors);
   // signed in, with nothing opened: the sidebar lists the account's PCs that are not in this app yet
   const away = accountRow(adding.page, "Away");
   await away.getByText("Switched off", { exact: true }).waitFor({ timeout: 30_000 });
@@ -220,13 +223,32 @@ try {
   assert.equal(listed.machines.filter((machine) => machine.kind === "relay" && machine.name === "Desk").length, 1, "A added Desk once");
   await shot(adding.page, "after-add");
 
-  const connecting = await signedInWindow(browser, pageErrors);
+  const connecting = await accountWindow(browser, pageErrors);
   assert.equal(await connecting.page.locator('.machine-title[aria-current="true"][title="Desk"]').count(), 0, "a new window starts on another PC");
-  const added = await openRelayTab(connecting.page);
+  const mine = await openRelayTab(connecting.page);
+  await mine.getByRole("button", { name: "Add from account", exact: true }).click();
+  const added = mine.locator(".relay-account-pc").filter({ has: connecting.page.locator(".connect-found-name", { hasText: /^Desk$/ }) });
   await added.locator(".connect-found-detail", { hasText: /^In this app$/ }).waitFor();
   await added.getByRole("button", { name: "Connect", exact: true }).click();
   await opened(connecting.page, "Desk");
   await shot(connecting.page, "after-connect");
+
+  for (const relation of ["other", "signed-out"] as const) {
+    const { page } = await accountWindow(browser, pageErrors, relation);
+    const tab = await openRelayTab(page);
+    await tab.getByText("Sign in to this PC's account.", { exact: true }).waitFor();
+    await tab.getByRole("button", { name: "Add from account", exact: true }).click();
+    if (relation === "signed-out") {
+      const signIn = tab.getByTestId("connect-signin");
+      const first = signIn.getByRole("button").first();
+      await first.waitFor();
+      assert.equal(await first.isEnabled(), true);
+      assert.equal(await first.evaluate(el => document.activeElement === el), true);
+    } else {
+      await page.locator(".connect-phone-dialog").waitFor({ state: "detached" });
+      await page.locator('.settings-dialog [data-section="account"] button:focus').waitFor();
+    }
+  }
 
   assert.deepEqual(pageErrors, [], "no page error");
   console.log("PASS the account's PCs: the sidebar lists those not in this app yet with nothing opened, Switched off with Check again for one that does not answer, and its Add pairs once a member approves; Add a connection → Ovis relay's Connect opens one already added; both select it in the sidebar with no SSH setup dialog");

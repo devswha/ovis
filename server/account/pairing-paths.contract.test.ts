@@ -28,6 +28,22 @@ test("Linux relay phone pairing switches with this PC's binding, without restart
 });
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
 
+test("on an unbound PC a driving phone's fresh code may re-pair a locally revoked phone", async () => {
+  const f = await pc();
+  const keeper = await phone(), returning = await phone();
+  const owner = await pair(f, await f.startedCode(), keeper);
+  const old = await pair(f, await f.startedCode(), returning);
+  if ("error" in owner || "error" in old) throw new Error("Could not pair fixture phones");
+  expect((await f.local(`/api/devices/${old.id}`, { method: "DELETE", headers: { "x-herdr-machine": "1" }, body: {} })).status).toBe(204);
+  expect(f.devices.isTombstoned(returning.spki)).toBe(true);
+  const fresh = f.devices.startPairing(Date.now(), { remote: true, startedBy: owner.id, memberRequired: false, ownPc: false, by: owner.id });
+  const admitted = await pair(f, fresh.code, returning);
+  if ("error" in admitted) throw new Error(`Fresh pairing was refused: ${admitted.error}`);
+  expect(admitted.id).not.toBe(old.id);
+  expect(f.devices.originOf(admitted.id)?.from).toBe("remote");
+  expect(f.devices.isTombstoned(returning.spki)).toBe(false);
+});
+
 async function pc(options: Parameters<typeof pairingPc>[0] = {}): Promise<Pc> {
   const made = await pairingPc(options);
   pcs.push(made);

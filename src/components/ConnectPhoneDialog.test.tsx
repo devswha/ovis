@@ -513,7 +513,7 @@ describe("Connect a phone on a phone", () => {
   const flushReads = async () => { for (let flush = 0; flush < 3; flush += 1) await act(async () => {}); };
   // the dialog reads the found PCs once for both tabs (useFoundPcs)
   function Tailscale({ machines, onAddPc }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void }) {
-    return <TailscaleTab found={useFoundPcs(machines)} onAddPc={onAddPc} onConnectMachine={() => {}} />;
+    return <TailscaleTab found={useFoundPcs(machines)} onAddPc={onAddPc} />;
   }
   function Direct({ machines, onAddPc, onConnectMachine }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
     return <DirectTab found={useFoundPcs(machines)} machines={machines} onAddPc={onAddPc} onConnectMachine={onConnectMachine} />;
@@ -540,17 +540,14 @@ describe("Connect a phone on a phone", () => {
     expect(text(renderer!.root)).toContain("Added");
   });
 
-  it("a target-bound Tailnet one-tap shows that PC's line with no button or SSH fallback", async () => {
+  it("Connect opens SSH even when the Tailscale PC has an online account-bound relay", async () => {
     targetBound = true; tailnetOutdated = false;
     const ssh = mock(() => {});
     await mount(<Tailscale machines={[]} onAddPc={ssh} />);
     await flushReads();
     await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect winvm" }).props.onClick(); });
     await flushReads();
-    const row = renderer!.root.findAll(node => node.type === "li" && text(node).includes("winvm"))[0];
-    expect(row && text(row)).toContain("That PC is in an account. Add it from that account.");
-    expect(row?.findAllByType("button")).toHaveLength(0);
-    expect(ssh).not.toHaveBeenCalled();
+    expect(ssh).toHaveBeenCalledWith({ destination: "winvm.tail.ts.net", name: "winvm" });
   });
 
   it("holds a Tailscale PC's Connect until its Ovis is known, so an older one is not added meanwhile", async () => {
@@ -1103,12 +1100,12 @@ describe("the relay tab's QR code behind a press", () => {
     });
   }
 
-  it("a signed-out browser on a bound PC offers sign-in, not relay controls or a code", async () => {
+  it("a signed-out browser on a bound PC offers sign-in and the offline relay switch, not a code", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ signedIn: false, relay: relayState({ ...ONLINE, phase: "off" }) });
     expect(text(renderer!.root)).toContain("Sign in to this PC's account.");
-    expect(section().findAllByProps({ label: "Ovis relay", checked: false })).toHaveLength(0);
-    expect(buttons()).toEqual([]);
+    expect(section().findAllByProps({ label: "Ovis relay", checked: false })).toHaveLength(1);
+    expect(minted()).toEqual([]);
     expect(text(section())).not.toContain("this PC can show its QR code");
   });
 

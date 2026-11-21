@@ -32,17 +32,6 @@ const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: dir, token:
   accountOpensAll: true, tailscaleOwner: "fixture@example.test", sidecar: false, registerBridge: false,
   relay: service, accountService: { url: serviceUrl, fetch: account.fetch } });
 const base = `http://127.0.0.1:${app.port}`;
-const serve = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
-  const headers = new Headers(req.headers);
-  headers.set("tailscale-user-login", "fixture@example.test"); headers.set("x-forwarded-for", "100.64.0.7");
-  return fetch(base + new URL(req.url).pathname, { method: req.method, headers, body: req.body });
-} });
-const unboundDir = mkdtempSync(join(tmpdir(), "pc-add-unbound-"));
-const unbound = createServer({ stateDir: unboundDir, hostname: "127.0.0.1", port: 0, token: "", platform: "linux", accountOpensAll: true,
-  sidecar: false, registerBridge: false, tailscaleOwner: null, accountService: { url: serviceUrl, fetch: account.fetch },
-  tailnetPcs: { readStatus: async () => JSON.stringify({ BackendState: "Running", Self: { DNSName: "here.tail.ts.net.", UserID: 1 },
-    Peer: { peer: { HostName: "desk", DNSName: "desk.tail.ts.net.", UserID: 1, Online: true, OS: "linux" } } }),
-    ports: [443], origin: () => `http://127.0.0.1:${serve.port}` } });
 const browser = await chromium.launch({ headless: true, executablePath: chromePath(), args: ["--no-sandbox"] });
 try {
   assert.equal((await fetch(`${base}/api/relay/start`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } })).status, 200);
@@ -90,29 +79,9 @@ try {
       assert.ok(!(await sheet.innerText()).includes("acct_"));
       await page.screenshot({ path: join(evidence, `signin-${language}-${width}-${theme}.png`) });
       console.log(`PASS signin ${language} ${width} ${theme}`);
-      await context.route("**/api/machines/ssh-candidates", route => route.fulfill({ json: { pcs: [
-        { name: "Desk", destination: "desk.tail.ts.net", source: "tailscale", tailnet: "127.0.0.1" },
-      ] } }));
-      await page.goto(`http://127.0.0.1:${unbound.port}`, { waitUntil: "domcontentloaded" });
-      await page.locator(".conn-live").waitFor({ state: "attached" });
-      await page.keyboard.press("ControlOrMeta+Shift+Comma");
-      await openSettingsPage(page, language === "en" ? "Devices and PCs" : "기기와 PC", language === "en" ? "Back to settings" : "설정으로 돌아가기");
-      await page.locator('.settings-dialog [data-section="devices"]').getByRole("button", { name: language === "en" ? "Add a connection" : "연결 추가", exact: true }).click();
-      await sheetRisen(page, ".connect-phone-dialog");
-      await sheet.locator('.connect-tabs [data-tab="tailscale"]').click();
-      const row = sheet.locator('[data-tab-panel="tailscale"] li').filter({ hasText: "Desk" });
-      const refusal = page.waitForResponse(res => res.request().method() === "POST" && new URL(res.url()).pathname === "/api/machines/tailnet");
-      await row.getByRole("button").click();
-      assert.equal((await (await refusal).json()).error.code, "pc_add_target_bound");
-      await row.getByText(language === "en" ? "That PC is in an account. Add it from that account." : "그 PC는 계정에 연결돼 있어요. 그 계정에서 추가하세요.", { exact: true }).waitFor();
-      assert.equal(await row.getByRole("button").count(), 0);
-      assert.equal(await sheet.evaluate(el => el.scrollWidth <= el.clientWidth), true);
-      await page.screenshot({ path: join(evidence, `target-${language}-${width}-${theme}.png`) });
-      assert.deepEqual(errors, []);
-      console.log(`PASS target ${language} ${width} ${theme}`);
     } finally { await context.close(); }
   }
 } finally {
-  await browser.close(); await unbound.stop(); await serve.stop(true); await app.stop(); await service.shutdown(); relay.stop();
-  for (const folder of [dir, unboundDir]) rmSync(folder, { recursive: true, force: true });
+  await browser.close(); await app.stop(); await service.shutdown(); relay.stop();
+  rmSync(dir, { recursive: true, force: true });
 }

@@ -150,7 +150,8 @@ async function waitingDevice(made: Pc) {
   return { paired, waiting: listed.pending.find((entry) => entry.fingerprint === paired.fingerprint)! };
 }
 
-test.if(unix).each(["new", "existing"] as const)("recovery of a %s key passes only the ordinary block present at admission", async history => {
+for (const later of ["different block", "different freeze", "same freeze", "targeted freeze"] as const)
+test.if(unix).each(["new", "existing"] as const)(`recovery of a %s key is scoped to its admission: ${later}`, async history => {
   const account = "acct_1";
   const member = await memberRow(account);
   const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true, platform: "linux" } });
@@ -165,8 +166,9 @@ test.if(unix).each(["new", "existing"] as const)("recovery of a %s key passes on
     const record = await signSafetyRecord({ v: 1, kind: "block", account, signer: member.key.spki, signer_no: 1,
       target: other.spki, target_no: 2, nonce: newRecordId(), signed_at: new Date().toISOString() }, member.key.keys.privateKey);
     expect(log.append({ got: "handed", record, asof: { signer_no: 0, target_no: 0, joined: 0, after: 0, signer_removed: false } }).outcome).toBe("applied");
+    return record;
   };
-  await block();
+  const original = await block();
   await firstPairingRead(made);
   if (old) expect(made.devices.catchingUp(old.device.id)).toBe(true);
   const pending = await proveKey(made, made.devices.startPairing().code, {}, key);
@@ -185,8 +187,12 @@ test.if(unix).each(["new", "existing"] as const)("recovery of a %s key passes on
   const immediately = await status();
   await firstPairingRead(made);
   const afterRead = await status();
-  await block();
-  expect([immediately, afterRead, await status()]).toEqual([200, 200, 401]);
+  if (later === "different block") await block();
+  else expect(log.append({ got: "snapshot", record: { v: 1, kind: "freeze", account, signer: "service", signature: "",
+    id: `f:${later === "different freeze" ? "a".repeat(64) : original.id}`, signed_at: original.signed_at,
+    target: later === "targeted freeze" ? key.spki : original.target, after: 1 } }).outcome).toBe("applied");
+  await firstPairingRead(made);
+  expect([immediately, afterRead, await status()]).toEqual([200, 200, later === "same freeze" ? 200 : 401]);
 });
 
 test.if(unix)("recover --admit cannot undo a local Revoke of the exact waiting key", async () => {

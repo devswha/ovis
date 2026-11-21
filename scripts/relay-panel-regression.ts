@@ -376,6 +376,9 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await sheet.isVisible(), true, "the sheet stays open to say which account the PC joined");
     assert.deepEqual(await joined.getByRole("button").allInnerTexts(), ["Done", "Not me: revoke every device"], "the account is this browser's own: Done, then Not me");
     await joined.getByRole("button", { name: "Done", exact: true }).click();
+    // The transient join notice and the settled panel now use the same heading.
+    // Wait for the notice (and its still-live revoke action) to leave before checking the settled view.
+    await joined.waitFor({ state: "detached" });
     await accountQr.getByText("This PC is in your account.", { exact: true }).waitFor();
     assert.ok(!(await accountQr.innerText()).includes("(fixture)"), "the tab does not expose an account id");
     assert.equal(await accountQr.getAttribute("data-account"), "mine", "the part says the PC is in this browser's account");

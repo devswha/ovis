@@ -69,9 +69,18 @@ export async function defaultStep2BrowserQa({ createServer }: RelayServerTree): 
         await page.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
         await page.goto(`http://127.0.0.1:${app.port}`);
         await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
+        const lockState = () => page.waitForResponse(response => new URL(response.url()).pathname === "/api/account/lock" && response.request().method() === "GET");
+        const unbound = lockState();
         await openSettingsPage(page, "Devices and PCs");
-        await page.getByText("Strict mode needs this PC signed in to an Ovis account.", { exact: true }).waitFor();
-        console.log("default Step 2: the PC's Devices settings show its strict-mode account requirement");
+        assert.ok((await unbound).status() >= 400);
+        assert.equal(await page.locator(".strict-mode").count(), 0);
+        assert.equal(await page.getByText("Strict mode needs this PC signed in to an Ovis account.", { exact: true }).count(), 0);
+        app.context.services.devices.bindByService("acct_browser_qa");
+        await page.reload();
+        await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
+        await openSettingsPage(page, "Devices and PCs");
+        await page.getByRole("button", { name: "Turn on strict mode", exact: true }).waitFor();
+        console.log("default Step 2: only the bound PC offers to turn on strict mode");
       } finally { await closeMarked(browser); }
     } finally { await app.stop(); }
   } finally {

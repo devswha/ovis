@@ -1,11 +1,12 @@
 import { afterEach, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBunRelay } from "../relay/bun.ts";
 import type { HerdrIdentity, Machine, MachineEvent, PcUpdateAll } from "../shared/machines.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { createServer } from "./index.ts";
+import { handleRequest } from "./dispatch.ts";
 import { bindTestPc, expectPcAddRefused, pcAddCases, type PcAddMode } from "./pc-add-policy.test-helpers.ts";
 import { RelayService } from "./relay/service.ts";
 import { newRouteProbes, openRelayPcTunnel, RelayPcKey } from "./relay-pc.ts";
@@ -32,9 +33,9 @@ const LAN = "10.99.0.1";
 const TAILNET = "100.64.0.7";
 const listener = { port: 0 };
 
-// The shared transport fixture uses legacy offers; exercise the Step 2 refusal explicitly.
+// An unspecified mode follows the shipped default, on both PCs.
 async function twoPcs(options: { direct?: { reachable: (dial: number, host: string) => boolean; held?: (dial: number) => Promise<void> | undefined; named?: (port: number) => readonly string[] }; updates?: UpdateService; accountOpensAll?: boolean; mode?: PcAddMode; platform?: NodeJS.Platform } = {}) {
-  const opensAll = options.mode ? options.mode !== "off" : options.accountOpensAll ?? false;
+  const opensAll = options.mode ? options.mode !== "off" : options.accountOpensAll;
   const relay = startBunRelay({ port: 0, limiters: {
     perAddress: { async limit() { return { success: true }; } },
     global: { async limit() { return { success: true }; } },
@@ -106,6 +107,23 @@ async function twoPcs(options: { direct?: { reachable: (dial: number, host: stri
 }
 
 const findRelayPc = (base: string, code: string) => postRelay(base, { code }, "/code");
+
+it("unreadable account evidence refuses a PC add without claiming the unbound source is in an account", async () => {
+  const { aState, startA, link, b } = await twoPcs({ mode: "unbound", platform: "linux" });
+  writeFileSync(join(aState, "account-tombstones.json"), "unreadable", { mode: 0o600 });
+  const a = startA();
+  expect(a.app.context.services.devices.account()).toBeNull();
+  expect(a.app.context.services.devices.accountError).not.toBeNull();
+  const publicRequest = await addRelayPc(a.base, link);
+  expect([publicRequest.status, await errorCode(publicRequest)]).toEqual([403, "strict"]);
+  // Exercise the already-authorized handler separately. Dispatch must not reveal account details to a blocked caller.
+  const response = await handleRequest(new Request(`${a.base}/api/machines/relay`, { method: "POST",
+    headers: { host: new URL(a.base).host, origin: a.base, "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1" },
+    body: JSON.stringify({ link }) }), { ...a.app.context, ownerSocket: true, requestIP: () => ({ address: "127.0.0.1" }), timeout() {} });
+  expect(b.context.services.devices.list(null).filter(row => row.via_relay)).toEqual([]);
+  expect(response?.status).toBe(409);
+  expect(await response?.json()).toMatchObject({ error: { code: "pc_add_account_unavailable", message: "Can't add a PC right now. Try again in a moment." } });
+});
 
 const errorCode = async (response: Response) => (await response.json() as { error: { code: string } }).error.code;
 

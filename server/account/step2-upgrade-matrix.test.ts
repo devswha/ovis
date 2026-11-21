@@ -47,6 +47,31 @@ function pairBrowser(app: ReturnType<typeof createServer>, label: string, now: n
 
 const localPhone = (...args: Parameters<typeof pairBrowser>) => pairBrowser(...args).token;
 
+test.skipIf(!available)("an unbound upgraded PC keeps its paired driving phone's revoke authority", async () => {
+  const stateDir = mkdtempSync(join(root, "unbound-revoke-"));
+  const released = startRelease(stateDir);
+  const now = Date.now();
+  const older = pairBrowser(released, "Older phone", now - 1000);
+  expect(await credentialStatus(released.port, older.token)).toBe(200);
+  const owner = pairBrowser(released, "Driving phone", now);
+  try { expect(await credentialStatus(released.port, owner.token)).toBe(200); }
+  finally { await released.stop(); }
+  const app = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "matrix-owner", sidecar: false, tailscaleOwner: null, accountService: { url: "off" } });
+  try {
+    const base = `http://127.0.0.1:${app.port}`;
+    const headers = { authorization: `Device ${owner.token}`, origin: base, "x-forwarded-for": "100.64.0.9", "x-herdr-machine": "1" };
+    const list = await fetch(`${base}/api/devices`, { headers });
+    expect(list.status).toBe(200);
+    const body = await list.json() as { devices: { id: string; remote_revoke?: string }[]; revoke_all?: string };
+    expect(body.revoke_all).toBeUndefined();
+    expect(body.devices.find(row => row.id === older.device.id)).not.toHaveProperty("remote_revoke");
+    expect((await fetch(`${base}/api/devices/${older.device.id}`, { method: "DELETE", headers })).status).toBe(204);
+    expect(await credentialStatus(app.port, older.token)).toBe(401);
+    expect((await fetch(`${base}/api/devices/revoke-all`, { method: "POST", headers })).status).toBe(200);
+    expect(await credentialStatus(app.port, owner.token)).toBe(401);
+  } finally { await app.stop(); }
+});
+
 test.skipIf(!available).each(cells)("boot=%s folders=%s clock=%s history=%s", async (boot, folder, clock, history) => {
   const stateDir = mkdtempSync(join(root, "cell-"));
   const active = join(stateDir, "active");

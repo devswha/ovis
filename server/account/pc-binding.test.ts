@@ -8,6 +8,8 @@ import { DeviceStore, type StoredDevice } from "../devices.ts";
 import { relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { ADMISSION_FILE } from "./admission-order.ts";
 import { PcAccountState } from "./pc-binding.ts";
+import { PendingRedemptions } from "./pending.ts";
+import { signPairProof } from "../../shared/pair-fingerprint.ts";
 
 const SERVER_ID = "0123456789abcdef0123456789abcdef";
 const ACCOUNT = "acct_1";
@@ -23,6 +25,37 @@ function stateDir(): string {
   dirs.push(dir);
   return dir;
 }
+
+test("a rolled-back first link does not publish a binding change or cancel another pending pairing", async () => {
+  const dir = stateDir();
+  const binding = PcAccountState.open(dir);
+  const devices = new DeviceStore(dir, null, null, { pc: binding });
+  const key = await accountKey(), waitingKey = await accountKey();
+  const row = devices.pairRelay(devices.startPairing().code, "First link", key.spki);
+  if (!row) throw new Error("First link fixture did not pair");
+  const pending = new PendingRedemptions({ serverId: SERVER_ID, journalDrop() {} });
+  const { challenge } = pending.name("123456", "Other phone", waitingKey.spki, "relay");
+  const entry = await pending.prove(challenge, await signPairProof(SERVER_ID, challenge, waitingKey.spki, waitingKey.keys.privateKey));
+  if (!entry) throw new Error("Unrelated proven key did not enter the pending queue");
+  const changes: (string | null)[] = [];
+  const stop = binding.onBindingChange(() => {
+    changes.push(binding.account());
+    for (const item of pending.list()) pending.decline(item.id);
+  });
+  try {
+    rmSync(join(dir, "devices.json"));
+    mkdirSync(join(dir, "devices.json"));
+    expect(() => devices.linkAccountKey(row.device.id, key.spki, key.spki, ACCOUNT)).toThrow();
+    expect(pcFile(dir).binding).toBeNull();
+    expect({ changes, pending: pending.list().map(item => item.id) }).toEqual({ changes: [], pending: [entry.id] });
+    binding.bind(ACCOUNT, key.spki).commit();
+    expect(changes).toEqual([ACCOUNT]);
+    expect(pending.list()).toEqual([]);
+    expect(binding.clear("left_on_pc", "pc")).toBe(true);
+    binding.bindByService(ACCOUNT);
+    expect(changes).toEqual([ACCOUNT, null, ACCOUNT]);
+  } finally { stop(); }
+});
 
 async function accountKey() {
   const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);

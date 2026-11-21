@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ConversationMonitor } from "./conversation-monitor.ts";
+import { FakeAccountService } from "../shared/account-service-fake.ts";
+import { ACCOUNT, registerSnapshotPc } from "./account/listed-pc.test-helpers.ts";
 import { createServer } from "./index.ts";
 import { AgentDetector, catalogLocator } from "./agent-catalog-detect.ts";
 import * as appModule from "./index.ts";
@@ -4282,9 +4284,13 @@ describe("pairing and identity", () => {
     expect(await auth()).toMatchObject({ authenticated: true, via: "local" });
   });
 
-  it.each([false, true])("revokes every device with the correct owner boundary and cookie cleanup (Step 2: %s)", async accountOpensAll => {
+  it.each([[false, false], [true, false], [true, true]] as const)("revokes every device with the correct owner boundary and cookie cleanup (Step 2: %s, bound: %s)", async (accountOpensAll, bound) => {
     const stateDir = mkdtempSync(join(tmpdir(), "herdr-revoke-all-mode-"));
-    const server = createServer({ port: 0, stateDir, tailscaleOwner: OWNER, accountOpensAll });
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    if (bound) await registerSnapshotPc(service, { stateDir });
+    const server = createServer({ port: 0, stateDir, tailscaleOwner: OWNER, accountOpensAll,
+      accountService: { url: "https://account.test", fetch: service.fetch } });
     const base = () => `http://127.0.0.1:${server.port}`;
     const auth = async (headers: Record<string, string> = {}) =>
       ((await (await fetch(`${base()}/api/health?scope=bridge`, { headers })).json()) as { auth: HealthAuth }).auth;
@@ -4299,16 +4305,20 @@ describe("pairing and identity", () => {
       };
       const phone = await pair("Phone");
       const tablet = await pair("Tablet");
+      if (bound) {
+        server.context.services.devices.bindByService(ACCOUNT);
+        expect(await server.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+      }
       const asDevice = await fetch(`${base()}/api/devices/revoke-all`, { method: "DELETE", headers: guard });
       expect([asDevice.status, ((await asDevice.json()) as ApiError).error.code]).toEqual([400, "method_not_allowed"]);
       expect((await fetch(`${base()}/api/devices/revoke-all`, { method: "POST" })).status).toBe(403);
       const deviceReply = await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: { ...guard, ...proxied(), cookie: tablet } });
-      if (accountOpensAll) {
+      if (bound) {
         expect(deviceReply.status).toBe(403);
         expect(((await deviceReply.json()) as ApiError).error.code).toBe("local_required");
         expect(await auth({ ...proxied(), cookie: tablet })).toMatchObject({ authenticated: true, via: "device" });
       }
-      const revoked = accountOpensAll
+      const revoked = bound
         ? await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: guard })
         : deviceReply;
       expect(revoked.status).toBe(200);

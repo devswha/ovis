@@ -11,6 +11,8 @@ import { MachineRelay } from "./machine-relay.ts";
 import { MachineManager } from "./machines.ts";
 import { startFakePushService } from "./push.fake.ts";
 import { createServer } from "./index.ts";
+import { FakeAccountService } from "../shared/account-service-fake.ts";
+import { ACCOUNT, registerSnapshotPc } from "./account/listed-pc.test-helpers.ts";
 import { workspaceCreate, workspaceClose } from "./herdr/client.ts";
 import type { DevicePairedEvent, DevicesRevokedAll, MachineEvent, ServerMessage } from "../shared/protocol.ts";
 
@@ -38,11 +40,9 @@ it.each([false, true])("pairs a relay device, authenticates its key, and dispatc
       expect(health?.status).toBe(200);
       expect(await health?.json()).toMatchObject({ auth: { via: "relay", role }, security: { observed_ingress: "relay", pairing_gate: "closed" } });
       const listing = await handleRequest(new Request("https://relay.ovis.invalid/api/devices"), ctx);
-      expect(await listing?.json()).toEqual({
-        devices: [expect.objectContaining({ id: device.id, role, current: true, via_relay: true,
-          ...(accountOpensAll ? { remote_revoke: role === "drive" ? "allowed" : "read_only" } : {}) })],
-        ...(accountOpensAll ? { revoke_all: "local_only" } : {}),
-      });
+      const roster = await listing?.json() as { devices: { remote_revoke?: string }[] };
+      expect(roster).toEqual({ devices: [expect.objectContaining({ id: device.id, role, current: true, via_relay: true })] });
+      expect(roster.devices[0]).not.toHaveProperty("remote_revoke");
       if (role === "watch") {
         const mutation = await handleRequest(new Request("https://relay.ovis.invalid/api/preferences", { method: "PUT", headers: guard, body: "{}" }), ctx);
         expect(mutation?.status).toBe(403);
@@ -355,7 +355,11 @@ it.each([false, true])("revoking every device closes each paired client's stream
   const seed = new DeviceStore(root);
   const watch = seed.pair(seed.startPairing().code, "Watch", "watch")!;
   seed.match(watch.token);
-  const options = { port: 0, stateDir: root, token: "test-revoke-all", tailscaleOwner: OWNER, accountOpensAll } as const;
+  const service = new FakeAccountService();
+  service.opensAll = true;
+  if (accountOpensAll) await registerSnapshotPc(service, { stateDir: root });
+  const options = { port: 0, stateDir: root, token: "test-revoke-all", tailscaleOwner: OWNER, accountOpensAll,
+    accountService: { url: "https://account.test", fetch: service.fetch } } as const;
   let server = createServer(options);
   let base = `http://127.0.0.1:${server.port}`;
   const admin = { ...guard, authorization: "Bearer test-revoke-all" };
@@ -418,9 +422,11 @@ it.each([false, true])("revoking every device closes each paired client's stream
     expect(a.socket.readyState).toBe(WebSocket.OPEN);
     for (const cookie of [cookieA, cookieB, cookieC, cookieD, watchCookie]) expect((await fetch(`${base}/api/session`, { headers: { ...stranger, cookie } })).status).toBe(200);
 
-    // Step 2 reserves the global removal to the PC; Step 1 also lets a paired driver invoke it.
+    // Only a bound Step 2 PC reserves global removal to the PC.
     const driver = { ...guard, ...stranger, cookie: cookieD };
     if (accountOpensAll) {
+      server.context.services.devices.bindByService(ACCOUNT);
+      expect(await server.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
       const refused = await revokeAll(driver);
       expect(refused.status).toBe(403);
       expect(await refused.json()).toMatchObject({ error: { code: "local_required" } });
