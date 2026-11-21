@@ -552,3 +552,64 @@ describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
     expect(parseSnapshotPage((await read(service, pc(), {})).body).devices.filter((device) => device.eligible).map((device) => device.no)).toEqual([olderNo, newestNo, laterNo]);
   });
 });
+describe("the fake's first-PC exemption, as the account service has it (account#62)", () => {
+  const put = (service: FakeAccountService, token: string, machine: ReturnType<typeof pc>, extra: Record<string, unknown> = {}) => service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, {
+    method: "PUT", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({ label: "PC", public_key: machine.publicKey, relay: "wss://relay.example", ...extra }),
+  }));
+  const admit = async (service: FakeAccountService, token: string, machine: ReturnType<typeof pc>) => {
+    const response = await service.fetch(post(`/v1/pcs/${machine.serverId}/admit`, {}, token));
+    return response.ok ? "admitted" : (await response.json() as { error: { code: string } }).error.code;
+  };
+  const fresh = () => { const service = new FakeAccountService(); service.opensAll = true; return service; };
+
+  test("a phone signed in first, with no two-step, leaves the first PC's one press exempt", async () => {
+    const service = fresh();
+    const phone = service.issueToken("acct_1");
+    service.registerSessionKey(phone, (await client()).spki, "Phone");
+    const desk = pc();
+    const owner = service.issueToken("acct_1");
+    expect((await put(service, owner, desk)).ok).toBe(true);
+    expect(await admit(service, owner, desk)).toBe("admitted");
+  });
+
+  test("a device code's pending listing under Step 2 leaves the account never used; a removal or a confirmed PC does not", async () => {
+    const service = fresh();
+    const typed = service.issueToken("acct_1", { device: true });
+    expect((await put(service, typed, pc())).ok).toBe(true);
+    const desk = pc();
+    const owner = service.issueToken("acct_1");
+    expect((await put(service, owner, desk)).ok).toBe(true);
+    expect(await admit(service, owner, desk)).toBe("admitted");
+
+    const removed = fresh();
+    const removing = removed.issueToken("acct_1");
+    const gone = pc();
+    expect((await put(removed, removing, gone)).ok).toBe(true);
+    await removed.fetch(new Request(`${BASE}/v1/pcs/${gone.serverId}`, { method: "DELETE", headers: { authorization: `Bearer ${removing}` } }));
+    const next = pc();
+    expect((await put(removed, removing, next)).ok).toBe(true);
+    expect(await admit(removed, removing, next)).toBe("two_step_required");
+  });
+
+  test("devices count once the account has a PC, and always for a confirm", async () => {
+    const service = fresh();
+    const phone = service.issueToken("acct_1");
+    service.registerSessionKey(phone, (await client()).spki, "Phone");
+    const typed = service.issueToken("acct_1", { device: true });
+    const laptop = pc();
+    expect((await put(service, typed, laptop)).ok).toBe(true);
+    // the confirm writes no exempt admission, so a phone's key keeps it from passing without two-step
+    const confirming = await put(service, service.issueToken("acct_1"), laptop, { confirm: true });
+    expect(confirming.status).toBe(403);
+    expect((await confirming.json() as { error: { code: string } }).error.code).toBe("two_step_required");
+    const desk = pc();
+    const owner = service.issueToken("acct_1");
+    expect((await put(service, owner, desk)).ok).toBe(true);
+    expect(await admit(service, owner, desk)).toBe("admitted");
+    const second = pc();
+    const again = service.issueToken("acct_1");
+    expect((await put(service, again, second)).ok).toBe(true);
+    expect(await admit(service, again, second)).toBe("two_step_required");
+  });
+});
