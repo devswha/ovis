@@ -239,7 +239,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         installed here, at which version, read from its version flag's stdout when the flag exits
  *         0 (5 s limit, longer where the entry sets detect.version_timeout_ms; kept until the
  *         executable file changes; a flag that fails, version_error "failed", or hangs, "timeout", is
- *         asked again after a minute, and such an agent does not run: agentRuns). Read only,
+ *         asked again after a minute, and such an agent does not run: agentRuns). An installed
+ *         Antigravity may report state.auth_mode "gemini-api-key" from its settings. Read only,
  *         no-store; a watch device may read it. A remote PC
  *         from before the endpoint answers 404 through /api/machines/<id>/agent-catalog)
  *  POST   /api/agent-catalog/install { agent, alternative? } -> { pane_id, workspace_id, command,

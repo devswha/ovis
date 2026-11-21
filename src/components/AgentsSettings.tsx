@@ -7,7 +7,7 @@ import type { AgentIntegration, CLIProxyStatus, ProviderUsage, UsageProviderId }
 import type { UsageLoginRequest } from "../../shared/usage-login.ts";
 
 type FollowedSignIn = Extract<UsageLoginRequest, { provider: "claude" | "codex" }>;
-import { agentsPage, signInState, type AgentsPageRow } from "../lib/agentsPage.ts";
+import { agentSignIn, agentsPage, type AgentsPageRow, type SignInState } from "../lib/agentsPage.ts";
 import { CLAUDE_EFFORTS, CLAUDE_LAUNCH_MODES, CODEX_EFFORTS, CODEX_LAUNCH_MODES, launchChoiceFault, modelDraftAfterSync, modelSuggestions, type ClaudeLaunchMode, type CodexLaunchMode } from "../lib/agentLaunchMode.ts";
 import { ApiError, cliProxyRequest, fetchAgentCatalog } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
@@ -230,9 +230,9 @@ function ProviderAccounts({ id, providers, removed, onLocalLogin, onFollow }: { 
   </>;
 }
 
-function stateLine(entry: AgentsPageRow, read: boolean, t: Translate): { text: string; tone: "ok" | "warn" | "none" | "dim" } {
-  const state = signInState(entry.provider, entry.accounts, read, entry.missing);
+function stateLine(state: SignInState, t: Translate): { text: string; tone: "ok" | "warn" | "none" | "dim" } {
   switch (state.kind) {
+    case "gemini-api-key": return { text: t("Set to use a Gemini API key"), tone: "dim" };
     case "unknown": return { text: t("Installed"), tone: "dim" };
     case "none": return { text: t("Not signed in"), tone: "none" };
     case "unreadable": return { text: t("Sign-in unreadable: {command} is not installed", { command: state.command }), tone: "warn" };
@@ -259,14 +259,15 @@ function AgentItem({ entry, open, onToggle, allProviders, removed, read, limitsO
 }) {
   const t = useT();
   const { agent, provider, accounts } = entry;
-  const line = stateLine(entry, read, t);
+  const signInStatus = agentSignIn(entry, read);
+  const line = stateLine(signInStatus.state, t);
   const again = read && !watching ? accounts.filter(canSignInAgain) : [];
   // an account another tool recorded is listed here, but the agent itself is still to be signed in
   const signedIn = accounts.filter(isSignIn);
   const detailsId = `agents-details-${agent.id}`;
   const action = open || watching || !read || provider === null || (entry.missing !== null && signedIn.length === 0) ? null
     : again.length === 1 ? <UsageSignInAgain usage={again[0]!} onStarted={onLocalLogin} onFollow={onFollow} />
-      : signedIn.length === 0 ? <button type="button" className="btn agents-row-action" aria-label={t("Sign in to {agent}", { agent: agent.name })} onClick={() => provider === "claude" || provider === "codex" ? onFollow({ provider, default: true }) : onAddAccount(provider)}><KeyRound aria-hidden="true" /><span className="agents-row-action-label">{t("Sign in")}</span></button>
+      : signInStatus.offerSignIn ? <button type="button" className="btn agents-row-action" aria-label={t("Sign in to {agent}", { agent: agent.name })} onClick={() => provider === "claude" || provider === "codex" ? onFollow({ provider, default: true }) : onAddAccount(provider)}><KeyRound aria-hidden="true" /><span className="agents-row-action-label">{t("Sign in")}</span></button>
         : null;
   const signIn = agent.sign_in;
   const { settings } = useSettings();

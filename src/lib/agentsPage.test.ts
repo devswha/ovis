@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 
 import { AGENT_CATALOG, catalogRow, type AgentInstallState } from "../../shared/agent-catalog.ts";
-import type { AgentIntegration, ProviderUsage } from "../../shared/protocol.ts";
-import { agentsPage, signInState } from "./agentsPage.ts";
+import type { AgentIntegration, MissingCommand, ProviderUsage } from "../../shared/protocol.ts";
+import { agentSignIn, agentsPage, signInState } from "./agentsPage.ts";
 
 const missing: AgentInstallState = { installed: false, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null };
 const found = (version: string): AgentInstallState => ({ installed: true, binary: "/usr/bin/x", on_path: true, version, version_error: null, meets_min_version: true });
@@ -55,6 +55,44 @@ describe("agentsPage", () => {
     const page = agentsPage({ agents, providers: [], integrations, accountsHere: true });
     expect(page.rows.map((entry) => entry.integration?.target ?? null)).toEqual(["claude", "codex", null, "antigravity_cli"]);
     expect(page.otherIntegrations.map((entry) => entry.target)).toEqual(["droid", "pi"]);
+  });
+});
+
+describe("Antigravity API key mode", () => {
+  const configured = row("agy", { ...found("1.5.14"), auth_mode: "gemini-api-key" });
+  const older = row("agy", found("1.5.14"));
+  const pageRow = (agent: typeof configured, providers: ProviderUsage[] = [], missing: readonly MissingCommand[] = []) =>
+    agentsPage({ agents: [agent], providers, missing, integrations: [], accountsHere: true }).rows[0]!;
+
+  it.each([false, true])("reports key mode and suppresses sign-in when plan limits are %s", (read) => {
+    const entry = pageRow(configured);
+    expect(agentSignIn(entry, read)).toEqual({ state: { kind: "gemini-api-key" }, offerSignIn: false });
+    expect(entry.accounts).toEqual([]);
+  });
+
+  it("keeps existing sign-in behavior when the catalog omits auth mode", () => {
+    const entry = pageRow(older);
+    expect(agentSignIn(entry, false)).toEqual({ state: { kind: "unknown" }, offerSignIn: false });
+    expect(agentSignIn(entry, true)).toEqual({ state: { kind: "none" }, offerSignIn: true });
+  });
+
+  it("keeps an OAuth account under the agent when key mode is configured", () => {
+    const oauth = account("antigravity", "antigravity:oauth");
+    const entry = pageRow(configured, [oauth]);
+    expect(agentSignIn(entry, true)).toEqual({ state: { kind: "gemini-api-key" }, offerSignIn: false });
+    expect(entry.accounts).toEqual([oauth]);
+  });
+
+  it("drops the missing command when key mode is configured", () => {
+    const entry = pageRow(configured, [], [{ provider: "antigravity", command: "secret-tool" }]);
+    expect(entry.missing).toBeNull();
+    expect(agentSignIn(entry, true)).toEqual({ state: { kind: "gemini-api-key" }, offerSignIn: false });
+  });
+
+  it("keeps the missing command when auth mode is omitted", () => {
+    const entry = pageRow(older, [], [{ provider: "antigravity", command: "secret-tool" }]);
+    expect(entry.missing).toBe("secret-tool");
+    expect(agentSignIn(entry, true)).toEqual({ state: { kind: "unreadable", command: "secret-tool" }, offerSignIn: false });
   });
 });
 

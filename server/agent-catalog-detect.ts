@@ -1,4 +1,5 @@
 import { accessSync, constants, statSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { meetsMinVersion, parseVersion, type AgentCatalogEntry, type AgentInstallState, type CatalogPlatform } from "../shared/agent-catalog.ts";
@@ -6,6 +7,7 @@ import { defaultAgentPathProbe, loginShell, shellCommandLine, type LoginPathProb
 
 export const VERSION_TIMEOUT_MS = 5_000;
 const VERSION_OUTPUT_BYTES = 4096;
+const ANTIGRAVITY_SETTINGS_BYTES = 1024 * 1024;
 const PARALLEL_RUNS = 4;
 const EXIT_GRACE_MS = 200;
 /** How long a timed-out read stands before it is tried again: it may have been a slow first start (an npm shim's cold cache). */
@@ -25,6 +27,31 @@ const isExecutableFile = (path: string): boolean => {
     return statSync(path).isFile();
   } catch { return false; }
 };
+
+async function antigravityAuthMode(home: string, appDataDir: string | undefined): Promise<AgentInstallState["auth_mode"]> {
+  const path = join(appDataDir || join(home, ".gemini", "antigravity-cli"), "settings.json");
+  try {
+    const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.size > ANTIGRAVITY_SETTINGS_BYTES) return undefined;
+      const buffer = Buffer.alloc(ANTIGRAVITY_SETTINGS_BYTES + 1);
+      let size = 0;
+      while (size < buffer.length) {
+        const { bytesRead } = await file.read(buffer, size, buffer.length - size, null);
+        if (bytesRead === 0) break;
+        size += bytesRead;
+      }
+      if (size > ANTIGRAVITY_SETTINGS_BYTES) return undefined;
+      const settings = JSON.parse(buffer.toString("utf8", 0, size)) as { modelProvider?: unknown } | null;
+      return settings?.modelProvider === "gemini" ? "gemini-api-key" : undefined;
+    } finally {
+      await file.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Finds a catalog binary on this server's PATH, then on the PATH its user's login shell sets.
@@ -306,6 +333,7 @@ export class AgentDetector {
       // the agent's own folder first (npm's global folder holds its node), then the PATH it was found on
       const path = [dirname(executable), this.#locate.searchPath?.() ?? process.env["PATH"] ?? ""].filter((part) => part !== "").join(delimiter);
       const { version, error } = await this.#version(executable, fingerprint, entry.detect.version_args, entry.detect.version_timeout_ms ?? this.#timeoutMs, path);
+      const authMode = entry.id === "agy" ? await antigravityAuthMode(this.#home, this.#env["ANTIGRAVITY_APP_DATA_DIR"]) : undefined;
       return {
         installed: true,
         binary,
@@ -313,6 +341,7 @@ export class AgentDetector {
         version,
         version_error: error,
         meets_min_version: entry.min_version === null || version === null ? null : meetsMinVersion(version, entry.min_version.version),
+        ...(authMode === undefined ? {} : { auth_mode: authMode }),
       };
     }
     return missing;

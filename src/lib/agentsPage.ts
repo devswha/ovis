@@ -43,7 +43,8 @@ export function agentsPage({ agents, providers, missing = [], integrations, acco
     if (provider !== null) claimed.add(provider);
     return {
       agent, provider, accounts: provider === null ? [] : providers.filter((usage) => usage.id === provider),
-      missing: missing.find((entry) => entry.provider === provider)?.command ?? null, integration: integrationFor(agent, integrations),
+      missing: agent.state.auth_mode === "gemini-api-key" ? null : missing.find((entry) => entry.provider === provider)?.command ?? null,
+      integration: integrationFor(agent, integrations),
     };
   });
   return {
@@ -58,11 +59,18 @@ export function agentsPage({ agents, providers, missing = [], integrations, acco
 }
 
 export type SignInState =
+  | { kind: "gemini-api-key" }
   | { kind: "unknown" }
   | { kind: "none" }
   | { kind: "unreadable"; command: string }
   | { kind: "signed-in"; count: number; account: string | null }
   | { kind: "problem"; count: number; problems: number };
+
+export function agentSignIn(entry: AgentsPageRow, read: boolean): { state: SignInState; offerSignIn: boolean } {
+  if (entry.agent.state.auth_mode === "gemini-api-key") return { state: { kind: "gemini-api-key" }, offerSignIn: false };
+  const state = signInState(entry.provider, entry.accounts, read, entry.missing);
+  return { state, offerSignIn: state.kind === "none" };
+}
 
 export function signInState(provider: UsageProviderId | null, accounts: readonly ProviderUsage[], read: boolean, missing: string | null = null): SignInState {
   if (provider === null || !read) return { kind: "unknown" };
