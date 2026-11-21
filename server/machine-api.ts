@@ -535,8 +535,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         } catch (error) { return transportFailure(id, path, error); }
       }
       if (accountPc) {
-        // passed on as it comes, never held: `pair` is a stream of lines whose first, the digits to compare, the person
-        // needs while that PC waits for a member's approval, up to 180 s there (dispatch.ts); held 200 s here
+        // passed on as it comes, never held: `pair` is a stream of lines whose first, `waiting`, tells the person to approve
+        // on another device while that PC waits for a member's approval, up to 180 s there (dispatch.ts); held 200 s here
         try {
           const response = await fetch(`${endpoint.url}/api/${path}`, { method: "POST", headers, body: request.body, redirect: "error",
             signal: AbortSignal.any([request.signal, AbortSignal.timeout(path.endsWith("/pair") ? 200_000 : 75_000)]) });

@@ -178,12 +178,11 @@ describe("the account's PCs in the sidebar", () => {
     expect(groups().map(([name]) => name)).toEqual(["PC Old box", "PC Away"]);
   });
 
-  it("adds a PC as the relay tab does and hands it over, showing no digits: the approval is asked on the account's devices", async () => {
+  it("adds a PC as the relay tab does and hands it over, Connecting… while a member approves on the account's devices", async () => {
     const opened: Machine[] = [];
     await mount((machine) => opened.push(machine));
-    await act(async () => { pairLines!.enqueue(line({ digits: "123456" })); });
+    await act(async () => { pairLines!.enqueue(line({ waiting: true })); });
     expect(admitted).toEqual([DESK.server_id]);
-    expect(text(renderer!.root)).not.toContain("123");
     expect(text(row("Desk"))).toContain("Connecting…");
     await act(async () => { pairLines!.enqueue(line({ machine: desk })); pairLines!.close(); });
     await settle();
@@ -309,7 +308,7 @@ describe("the account's PCs in the sidebar", () => {
 
   it("keeps a pairing under way when the window comes back, and starts no second one", async () => {
     await mount();
-    await act(async () => { pairLines!.enqueue(line({ digits: "123456" })); });
+    await act(async () => { pairLines!.enqueue(line({ waiting: true })); });
     const checks = requests.filter((request) => request.path.endsWith("/check")).length;
     await comeBack();
     expect(requests.filter((request) => request.path.endsWith("/check"))).toHaveLength(checks);

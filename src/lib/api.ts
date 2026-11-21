@@ -1497,11 +1497,11 @@ export const checkAccountPcs = (pcs: readonly AccountPcEntry[]) => machineReques
 /** POST /api/machines/relay/account/start: the key this PC would hold for that PC, for the admission to name; ApiError `account_pc_outdated` for an older one. */
 export const startAccountPc = (pc: AccountPcEntry) => machineRequest<{ ticket: string; key: string; label: string }>("/relay/account/start", "POST", { pc });
 /**
- * POST /api/machines/relay/account/pair: compares digits with that PC through the relay, `onDigits` told them once that
- * PC took the request, and resolves with the PC once a member of the account approved it there. Aborting `signal`
- * cancels it on this PC's server too. ApiError `account_pc_<failure>` otherwise.
+ * POST /api/machines/relay/account/pair: asks that PC through the relay, `onWaiting` told once that PC took the request
+ * and waits for a member of the account to approve it on another device, and resolves with the PC once one did. Aborting
+ * `signal` cancels it on this PC's server too. ApiError `account_pc_<failure>` otherwise.
  */
-export async function pairAccountPc(ticket: string, onDigits: (digits: string) => void, signal: AbortSignal): Promise<Machine> {
+export async function pairAccountPc(ticket: string, onWaiting: () => void, signal: AbortSignal): Promise<Machine> {
   const url = "/api/machines/relay/account/pair";
   const response = await apiFetch(url, { method: "POST", signal, headers: { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1" }, body: JSON.stringify({ ticket }) });
   if (!response.ok || response.body === null) throw await errorFrom(url, response);
@@ -1512,9 +1512,9 @@ export async function pairAccountPc(ticket: string, onDigits: (digits: string) =
     if (chunk.done) throw new ApiError(url, 502, "The answer ended early", null);
     buffer += chunk.value;
     for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
-      const line = JSON.parse(buffer.slice(0, end)) as { digits?: string; machine?: Machine; error?: { code: string; message: string } };
+      const line = JSON.parse(buffer.slice(0, end)) as { waiting?: true; machine?: Machine; error?: { code: string; message: string } };
       buffer = buffer.slice(end + 1);
-      if (typeof line.digits === "string") onDigits(line.digits);
+      if (line.waiting === true) onWaiting();
       if (line.machine) { void reader.cancel(); return line.machine; }
       if (line.error) { void reader.cancel(); throw new ApiError(url, 409, line.error.message, line.error.code); }
     }

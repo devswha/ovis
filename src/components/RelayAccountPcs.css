@@ -15,11 +15,3 @@
     margin-inline-start: auto;
   }
 }
-
-.relay-account-digits {
-  color: var(--text-strong);
-  font-family: var(--font-mono);
-  font-size: var(--fs-lg);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.08em;
-}

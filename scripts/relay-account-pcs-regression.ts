@@ -213,7 +213,6 @@ try {
   const source = savedServerId(aState);
   assert.ok(source && request.proven_server_id === source, "B asks only about the proven source PC");
   assert.deepEqual(request.choices, []);
-  assert.equal(await deskRow.locator(".relay-account-digits").count(), 0);
   assert.equal(await approve(request.id, source), 200, "B's member approves that PC");
   await opened(adding.page, "Desk");
   await deskRow.waitFor({ state: "detached" });

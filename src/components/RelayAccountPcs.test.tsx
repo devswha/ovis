@@ -8,7 +8,7 @@ import { RelayAccountPcs, type AccountPcsSource } from "./RelayAccountPcs.tsx";
 
 // Add a connection → Ovis relay, signed in with this PC in the account: this PC first, then the account's other PCs, each
 // with Open (already in this app), Add (it would pair) or what keeps it from pairing; Add posts the admission naming the key this
-// PC's server made, shows the digits while a member approves elsewhere, and opens the PC once it is added.
+// PC's server made, says to approve on another device once that PC waits for a member, and opens the PC once it is added.
 const pc = (id: string, name: string): AccountPcEntry => ({ server_id: id.repeat(32).slice(0, 32), server_public_key: "key", relay: "wss://relay.ovis.example", name });
 const OWN = pc("0", "This PC");
 const DESK = pc("d", "Desk");
@@ -105,16 +105,16 @@ describe("the account's PCs in the relay tab", () => {
     expect(connected).toEqual([lab]);
   });
 
-  it("adds a PC: the admission names the key this PC's server made, the digits show while a member approves, then it opens", async () => {
+  it("adds a PC: the admission names the key this PC's server made, it says where to approve once that PC waits, then it opens", async () => {
     const connected: Machine[] = [];
     await mount((machine) => connected.push(machine));
     await act(async () => { button("Add Desk").props.onClick(); });
     expect(requests.find((request) => request.path.endsWith("/start"))?.body).toEqual({ pc: DESK });
     expect(admitted).toEqual([[DESK.server_id, "Ovis on here", "a-key"]]);
     expect(requests.find((request) => request.path.endsWith("/pair"))?.body).toEqual({ ticket: "ticket-1" });
-    await line({ digits: "123456" });
-    const waiting = renderer!.root.findByProps({ className: "relay-account-wait" });
-    expect(text(waiting)).toBe("Approve on another device of your account123 456");
+    expect(text(renderer!.root.findByProps({ className: "relay-account-wait" }))).toBe("Asking Desk…");
+    await line({ waiting: true });
+    expect(text(renderer!.root.findByProps({ className: "relay-account-wait" }))).toBe("Approve on another device of your account");
     expect(rows()[0]).toEqual(["Desk", "Online", "Cancel"]);
     await line({ machine: added });
     expect(connected).toEqual([added]);
@@ -123,7 +123,7 @@ describe("the account's PCs in the relay tab", () => {
   it("says why a PC was not added, and marks an older one", async () => {
     await mount();
     await act(async () => { button("Add Desk").props.onClick(); });
-    await line({ digits: "123456" });
+    await line({ waiting: true });
     await line({ error: { code: "account_pc_declined", message: "That PC was not approved. Nothing was added." } });
     expect(renderer!.root.findAll((node) => node.props.role === "alert").map(text)).toEqual(["That PC was not approved. Nothing was added."]);
     expect(renderer!.root.findAllByProps({ className: "relay-account-wait" })).toEqual([]);
@@ -132,7 +132,7 @@ describe("the account's PCs in the relay tab", () => {
   it("cancels the comparison on this PC's server when the sheet closes while it waits", async () => {
     await mount();
     await act(async () => { button("Add Desk").props.onClick(); });
-    await line({ digits: "123456" });
+    await line({ waiting: true });
     const signal = requests.find((request) => request.path.endsWith("/pair"))!.signal!;
     expect(signal.aborted).toBe(false);
     await act(async () => { renderer!.unmount(); });
