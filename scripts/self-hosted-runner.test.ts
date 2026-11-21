@@ -224,7 +224,9 @@ function launchRunner(options: RunnerOptions) {
   const { tempDir, args, env, logPath } = prepared;
   const stdout = openSync(join(tempDir, "stdout"), "w");
   const stderr = openSync(join(tempDir, "stderr"), "w");
-  const child = Bun.spawn(["bash", ...args], { env, stdout, stderr });
+  // its own process group, so stop() reaches the slot loops too, and nothing else
+  const child = spawn("bash", args, { env, stdio: ["ignore", stdout, stderr], detached: true });
+  const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
   const calls = () => (existsSync(logPath) ? readFileSync(logPath, "utf8") : "");
   const stderrText = () => (existsSync(join(tempDir, "stderr")) ? readFileSync(join(tempDir, "stderr"), "utf8") : "");
   const until = async (pattern: RegExp, what: string, source: () => string = calls) => {
@@ -239,12 +241,16 @@ function launchRunner(options: RunnerOptions) {
     calls,
     stderr: stderrText,
     until,
-    ended: () => Promise.race([child.exited, Bun.sleep(LOADED_BOUND_MS).then(() => "still running" as const)]),
+    ended: () => Promise.race([exited, Bun.sleep(LOADED_BOUND_MS).then(() => "still running" as const)]),
     async stop() {
-      child.kill("SIGKILL");
-      await child.exited;
-      // its slot loops outlive a SIGKILL of the launcher (no EXIT trap runs): they would poll fixtures deleted below
-      spawnSync("pkill", ["-KILL", "-f", tempDir]);
+      // the whole group: its slot loops outlive a SIGKILL of the launcher alone (no EXIT trap runs) and would
+      // poll the fixtures deleted below
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+      await exited;
       closeSync(stdout);
       closeSync(stderr);
       rmSync(tempDir, { recursive: true, force: true });
