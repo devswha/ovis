@@ -115,6 +115,8 @@ export interface ConnectPhoneDialogProps {
   /** what Tailscale alone offers a phone (tailscalePlan), for the Tailscale tab; `plan` when omitted */
   tailscale?: PhonePlan;
   pairUrl: string | null;
+  /** this page's own address when a phone could open it (not loopback, not the hosted shell): Direct's QR code; `pairUrl` when omitted */
+  pageUrl?: string | null;
   relay: RelayState;
   /** a watching device or a Portal visitor: it reads, and starts nothing */
   readOnly: boolean;
@@ -146,7 +148,7 @@ export interface ConnectPhoneDialogProps {
   onClose: () => void;
 }
 
-export function ConnectPhoneDialog({ plan, tailscale = plan, pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ plan, tailscale = plan, pairUrl, pageUrl = pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -187,9 +189,9 @@ export function ConnectPhoneDialog({ plan, tailscale = plan, pairUrl, relay, rea
   const local = localWays({ plan, readOnly, canPair, portal });
   const tailnet = localWays({ plan: tailscale, readOnly, canPair, portal: null });
   // a phone on the same Wi-Fi opens Portal's address where it runs, else this page's own when it is no Tailscale one
-  const directUrl = portal?.phase === "running" && portal.url !== null ? portal.url : pairUrl !== null && pairUrl !== tailnet.address ? pairUrl : null;
+  const directUrl = portal?.phase === "running" && portal.url !== null ? portal.url : pageUrl !== null && pageUrl !== tailnet.address ? pageUrl : null;
   // one pairing code for both tabs that show one: the PC keeps one pending code, so a second would end the first
-  const sharedCode = useRef<PairingCode | null>(null);
+  const sharedCode = useRef<SharedCode>({ code: null, asking: false });
 
   return createPortal(
     <SettingsQuery.Provider value={[]}>
@@ -1272,6 +1274,9 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
   );
 }
 
+/** the code views of one dialog share (CodeRoute `shared`): the last one made or announced, and whether one is being asked for */
+interface SharedCode { code: PairingCode | null; asking: boolean }
+
 /** the newest code request of any opening: the server keeps one pending code, so an older answer is a dead code */
 let latestPairRequest = 0;
 
@@ -1279,7 +1284,7 @@ let latestPairRequest = 0;
  * `shared`: the code another view of this dialog shows already. A view that starts takes it while it is good instead of
  * asking for another, which would end it (the PC keeps one pending code) after it was copied or scanned there.
  */
-export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact = false }: { pairUrl: string | null; startAtOnce: boolean; shared?: MutableRefObject<PairingCode | null>; phone?: boolean; compact?: boolean }) {
+export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact = false }: { pairUrl: string | null; startAtOnce: boolean; shared?: MutableRefObject<SharedCode>; phone?: boolean; compact?: boolean }) {
   const t = useT();
   const [code, setCode] = useState<PairingCode | null>(null);
   const [left, setLeft] = useState("");
@@ -1297,7 +1302,7 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
       // a QR code shown alone (the relay tab's) is never shown here as digits; the PC's one pending code is now that
       // one, so the code this showed is gone
       const next = detail.qrOnly === true ? null : detail;
-      if (shared) shared.current = next;
+      if (shared) shared.current = { code: next, asking: false };
       setCode(next);
     };
     window.addEventListener(PAIRING_CODE_EVENT, onCode);
@@ -1322,15 +1327,16 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
     setBusy(true);
     setError(null);
     const request = ++latestPairRequest;
+    if (shared) shared.current = { ...shared.current, asking: true };
     try {
       const fresh = await startPairing();
       // a dialog closed and opened again asked after this one: its answer is the code that pairs, not this one
       if (request !== latestPairRequest) return;
-      if (shared) shared.current = fresh;
+      if (shared) shared.current = { code: fresh, asking: false };
       setCode(fresh);
       announcing.current = true;
       try { announcePairingCode(fresh); } finally { announcing.current = false; }
-    } catch (reason) { setError(failureText(reason)); }
+    } catch (reason) { setError(failureText(reason)); if (shared) shared.current = { ...shared.current, asking: false }; }
     finally {
       requesting.current = false;
       setBusy(false);
@@ -1342,7 +1348,9 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
     if (!startAtOnce || started.current) return;
     started.current = true;
     const held = shared?.current;
-    if (held && Date.parse(held.expires_at) > Date.now()) { setCode(held); return; }
+    // another view's code is good, or on its way (its announcement brings it here): no second code ends it
+    if (held?.asking) return;
+    if (held?.code && Date.parse(held.code.expires_at) > Date.now()) { setCode(held.code); return; }
     void pair();
   }, [startAtOnce, shared]);
 

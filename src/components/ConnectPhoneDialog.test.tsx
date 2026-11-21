@@ -501,6 +501,31 @@ describe("Connect a phone on a phone", () => {
     expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913", "https://desk.example.com/?pair=482913"]);
   });
 
+  it("on a plain-http LAN page with Tailscale serving it, Direct shows this page's address, and a tab opened while the first code is asked for asks for none", async () => {
+    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
+    const pageEvents = new EventTarget();
+    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
+    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
+    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
+    const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
+    const starts = () => requests.filter((path) => path === "/api/devices/pair/start").length;
+    let release = (): void => {};
+    pairStarts.push({ code: "135792", gate: new Promise<void>((resolve) => { release = resolve; }) });
+    await act(async () => {
+      renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} pageUrl="http://192.168.0.12:7317" relay={relayState()} readOnly={false} closesGate={false} canPair
+        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
+    });
+    await until(() => starts() === 1, "the Tailscale tab's code asked for");
+    // Direct opens while that code is on its way: it waits for it rather than ask for a second, which would end it
+    await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    await act(async () => { release(); });
+    await until(() => qrCodes().length === 2, "both tabs' QR codes");
+    expect(starts()).toBe(1);
+    expect(qrCodes().map((qr) => String(qr.props.value))).toEqual(["https://workstation.example.ts.net/?pair=135792", "http://192.168.0.12:7317/?pair=135792"]);
+  });
+
   it("offers only the ways this window can use: the relay to its owner on a direct page, Tailscale and an address where PCs are added from", () => {
     const off = relayState({ ...ONLINE, phase: "off" });
     expect(connectTabs({ sshOffered: true, relay: off, readOnly: false })).toEqual(["relay", "tailscale", "direct"]);

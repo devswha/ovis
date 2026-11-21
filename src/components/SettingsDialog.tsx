@@ -1358,7 +1358,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       </SettingsFold>
 
       {connecting && (
-        <ConnectPhoneDialog plan={plan} tailscale={tailscale} pairUrl={pairUrl}
+        <ConnectPhoneDialog plan={plan} tailscale={tailscale} pairUrl={pairUrl} pageUrl={isLoopbackHost(window.location.hostname) ? null : window.location.origin}
           relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"}
           signedIn={account.signedIn} accountId={account.account} provider={account.provider} joinBySignIn={joinBySignIn}
           pcAddFromAccount={pcAddFromAccount} onAccountSetup={openAccount}
