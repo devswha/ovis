@@ -46,6 +46,8 @@ export interface PendingSignIn {
    * front page alone, which goes on to that page once this very sign-in succeeded
    */
   readonly pc?: string;
+  /** the account whose sign-out of every device asked for this sign-in again: its return signs them out, for that account only */
+  readonly sign_out_everywhere?: string;
 }
 
 /** A scanned offer waiting on a sign-in; `at`: when the code was scanned, which bounds how long it is tried. */

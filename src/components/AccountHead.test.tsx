@@ -57,7 +57,7 @@ async function render(): Promise<void> {
   await act(async () => { renderer = create(<SettingsProvider><Page /></SettingsProvider>); });
 }
 
-const actions = (signOut: () => void) => ({ signOut, leave: jest.fn(), deleteAccount: async () => null });
+const actions = (signOut: () => void) => ({ signOut, leave: jest.fn(), deleteAccount: async () => null, signOutEverywhere: async () => null });
 
 const buttons = (): ReactTestInstance[] => renderer?.root.findAll((node) => node.type === "button") ?? [];
 

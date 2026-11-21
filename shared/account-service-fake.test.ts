@@ -325,6 +325,25 @@ describe("signing in to the fake account service", () => {
     expect(service.deleted("acct_head")).toBe(false);
   });
 
+  test("signing out every device ends each sign-in of the account, the caller's and device codes' included, from a fresh own sign-in only", async () => {
+    let now = 0;
+    const service = new FakeAccountService(() => now);
+    const all = (access: string) => service.fetch(post("/v1/signout/all", {}, access));
+    const caller = service.issueToken("acct_all");
+    const browser = service.issueToken("acct_all");
+    const typed = service.issueToken("acct_all", { device: true });
+    const other = service.issueToken("acct_other");
+    const refusal = async (response: Response) => [response.status, ((await response.json()) as { error: { code: string } }).error.code];
+    expect(await refusal(await all(typed))).toEqual([403, "web_sign_in_required"]);
+    now += 11 * 60_000;
+    const fresh = service.issueToken("acct_all");
+    expect(await refusal(await all(caller))).toEqual([403, "reauth_required"]);
+    for (const access of [caller, browser, typed]) expect((await pcs(service, access)).status).toBe(200);
+    expect((await all(fresh)).status).toBe(204);
+    for (const access of [fresh, caller, browser, typed]) expect((await pcs(service, access)).status).toBe(401);
+    expect((await pcs(service, other)).status).toBe(200);
+  });
+
   test("a device sign-in started with a challenge says so, and redeems only with its verifier", async () => {
     let now = 0;
     const service = new FakeAccountService(() => now);

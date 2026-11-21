@@ -163,8 +163,40 @@ describe("Manage account's devices and PCs", () => {
   });
 
   type Leave = () => Promise<{ readonly left: boolean; readonly message: string | null }>;
-  const hosted = (leave: Leave) => ({ provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null });
+  type Everywhere = () => Promise<string | null>;
+  const hosted = (leave: Leave, signOutEverywhere: Everywhere = async () => null) => ({ provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null, signOutEverywhere });
   const group = (signIn: ReturnType<typeof hosted> | null) => createElement(SettingsProvider, { children: createElement(HostedAccountGroup, { signIn }) });
+  const openSheet = async (signIn: ReturnType<typeof hosted>): Promise<ReactTestInstance> => {
+    await act(async () => {
+      renderer = create(group(signIn), {
+        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
+      });
+    });
+    await act(async () => { action(renderer!.root, "manage-account").props.onClick(); });
+    return renderer!.root;
+  };
+
+  it("signs every device out from Manage account after one short confirm that says PCs stay", async () => {
+    let asked = 0;
+    const root = await openSheet(hosted(async () => ({ left: true, message: null }), async () => { asked++; return null; }));
+    expect(textOf(action(root, "sign-out-everywhere"))).toBe("Sign out every device");
+    await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+    expect(asked).toBe(0);
+    expect(textOf(root.find((node) => node.props["data-testid"] === "sign-out-everywhere-says"))).toBe("Every browser and app will need to sign in again. Your PCs stay.");
+    expect(action(root, "sign-out-everywhere").props["data-confirm"]).toBe("sign-out-everywhere");
+    await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+    expect(asked).toBe(1);
+  });
+
+  it("keeps the sheet up with the reason when every device could not be signed out", async () => {
+    const root = await openSheet(hosted(async () => ({ left: true, message: null }), async () => "Could not sign out every device. Try again."));
+    await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+    await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+    expect(sheets(root)).toHaveLength(1);
+    expect(root.findAll((node) => node.props.role === "alert").map(textOf)).toContain("Could not sign out every device. Try again.");
+    expect(textOf(action(root, "sign-out-everywhere"))).toBe("Sign out every device");
+  });
+
   const leaveFromSheet = async (leave: Leave): Promise<ReactTestInstance> => {
     await act(async () => {
       renderer = create(group(hosted(leave)), {
@@ -222,7 +254,7 @@ describe("Manage account's devices and PCs", () => {
 
   it("keeps the signed-in start screen's account in its ⋮ menu: who is signed in, Manage account and Sign out, and no link under the tabs", async () => {
     let signedOut = 0;
-    keepShellAccount({ signOut: () => { signedOut += 1; }, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null });
+    keepShellAccount({ signOut: () => { signedOut += 1; }, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null, signOutEverywhere: async () => null });
     try {
       const root = await startScreen();
       expect(root.findAll((node) => node.type === "button" && node.props["data-action"] === "manage-account")).toHaveLength(0);
@@ -239,7 +271,7 @@ describe("Manage account's devices and PCs", () => {
 
   it("opens Manage account from the signed-in start screen with no PC open, and removes an offline PC through the account service", async () => {
     const none = () => {};
-    keepShellAccount({ signOut: none, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null });
+    keepShellAccount({ signOut: none, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null, signOutEverywhere: async () => null });
     try {
       const root = await startScreen();
       await act(async () => { action(root, "account-menu").props.onClick(); });

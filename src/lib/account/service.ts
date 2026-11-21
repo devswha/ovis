@@ -563,6 +563,21 @@ export class AccountService {
     await this.call("DELETE", "/v1/account", undefined, undefined, undefined, 204);
   }
 
+  /**
+   * Signs every device out of the account (POST /v1/signout/all): each sign-in of it ends at the service, this one's
+   * included, so this sign-in is forgotten here too, unless another took its place meanwhile. Its PCs and device keys
+   * stay, and so do its unsent blocks: a later sign-in to the account sends them (S32-1). Like deleting the account it
+   * wants an own sign-in made in the last ten minutes (403 `reauth_required`, `web_sign_in_required`).
+   */
+  async signOutEverywhere(): Promise<void> {
+    const ended = this.options.signIn ?? await this.session();
+    if (ended === undefined) throw new SignedOutError();
+    // only the documented 204 ended them: any other success leaves this sign-in as it was
+    await this.call("POST", "/v1/signout/all", {}, undefined, undefined, 204);
+    await this.options.store.update("session", (current) => current !== undefined && sameSignIn(current, ended) ? undefined : current);
+    if (this.options.store === indexedAccountStore) globalThis.window?.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+  }
+
   async postRecord(serverIds: readonly string[], record: AccountRecord): Promise<number> {
     if (serverIds.length === 0) return 0;
     const body = await this.call("POST", "/v1/records", { server_ids: serverIds, record });

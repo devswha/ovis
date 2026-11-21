@@ -14,12 +14,14 @@ export interface LeaveOutcome {
 
 /**
  * The mounted hosted shell's account actions (accountController): Sign out, this device leaving the account, and
- * Delete account, which answers why it did not delete (null once it did, or when the delete was called off).
+ * Delete account, which answers why it did not delete (null once it did, or when the delete was called off), and Sign
+ * out every device, which answers the same way.
  */
 export interface ShellAccount {
   readonly signOut: () => void;
   readonly leave: () => Promise<LeaveOutcome>;
   readonly deleteAccount: () => Promise<string | null>;
+  readonly signOutEverywhere: () => Promise<string | null>;
   /** a fresh own sign-in with `provider`, whose return comes back to the PC page that asked for it */
   readonly signInAgain?: (provider: AccountProvider) => void;
 }

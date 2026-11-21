@@ -331,13 +331,19 @@ export class FakeAccountService {
     }
   }
 
-  private erase(account: string): void {
+  /** POST /v1/signout/all: every sign-in of the account ends, codes not yet redeemed included; its PCs and device keys stay. */
+  private signOutEverywhere(account: string): void {
     for (const held of [...this.tokens.values()]) if (held.account === account) this.revokeFamily(held.family);
     for (const [token, refresh] of this.refreshTokens) if (refresh.account === account) { this.revokedFamilies.add(refresh.family); this.refreshTokens.delete(token); }
-    for (const [provider, signsInTo] of this.signIns) if (signsInTo === account) this.signIns.delete(provider);
     for (const [family, push] of this.pushes) if (push.account === account) this.pushes.delete(family);
     for (const [token, link] of this.linkTokens) if (link.account === account) this.linkTokens.delete(token);
     for (const [code, held] of this.codes) if (held.account === account) this.codes.delete(code);
+    for (const [code, waiting] of this.deviceSignIns) if (waiting.account === account) this.deviceSignIns.delete(code);
+  }
+
+  private erase(account: string): void {
+    this.signOutEverywhere(account);
+    for (const [provider, signsInTo] of this.signIns) if (signsInTo === account) this.signIns.delete(provider);
     for (const key of [...this.mailboxes.keys()]) if (key.endsWith(`\0${account}`)) this.mailboxes.delete(key);
     for (const key of [...this.counters.keys()]) if (key.endsWith(`:${account}`)) this.counters.delete(key);
     for (const list of [this.admissionList, this.quietList]) for (let index = list.length - 1; index >= 0; index--) if (list[index]?.account === account) list.splice(index, 1);
@@ -511,6 +517,14 @@ export class FakeAccountService {
     const recent = this.now() - (this.signedInAt.get(session.family) ?? Number.NEGATIVE_INFINITY) <= REAUTH_MS;
     if ((path === "/v1/identities/link" && request.method === "POST") || (path.startsWith("/v1/identities/") && request.method === "DELETE")) {
       if (!recent) return problem(403, "reauth_required", "Sign in again first");
+    }
+    if (path === "/v1/signout/all" && request.method === "POST") {
+      // as deleting the account: a device code's sign-in never signs the account's owner out, and only a recent one does
+      if (this.deviceFamilies.has(session.family)) return problem(403, "web_sign_in_required", "Sign in on this device first");
+      if (!recent) return problem(403, "reauth_required", "Sign in again first");
+      this.ring(account, session.family);
+      this.signOutEverywhere(account);
+      return new Response(null, { status: 204 });
     }
     if (path === "/v1/account" && request.method === "DELETE") {
       // a device code can be typed for someone else's PC: its sign-in must not end the account

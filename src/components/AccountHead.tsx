@@ -75,7 +75,8 @@ export function ManageAccountSheet({ onClose, children }: { onClose: () => void;
 }
 
 /**
- * Manage account for the hosted sign-in: the account's devices and PCs, then Delete account, asked twice. `pcHere`:
+ * Manage account for the hosted sign-in: the account's devices and PCs, then Sign out every device and Delete account,
+ * each asked twice. Signing every device out signs this one out too, so the sheet then closes with the sign-in. `pcHere`:
  * a PC is open on this page to read the devices from (the start screen has none, so only this device's own row shows).
  * A leave that left PCs keeping this device names them here, after the sign-in it left is gone; with neither, it closes.
  * The leave clears the stored sign-in before it has named them, so the sheet waits for its outcome before closing.
@@ -84,6 +85,8 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
   const t = useT();
   const [deleting, setDeleting] = useState<"asked" | "out" | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [everywhere, setEverywhere] = useState<"asked" | "out" | null>(null);
+  const [everywhereError, setEverywhereError] = useState<string | null>(null);
   const [leaveNote, setLeaveNote] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
   const gone = signIn === null && leaveNote === null && !leaving;
@@ -102,10 +105,24 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
     setDeleting("out");
     void from.deleteAccount().then(setDeleteError, () => setDeleteError(t("The account could not be deleted. Try again."))).finally(() => setDeleting(null));
   };
+  const signOutEverywhere = (from: HostedSignIn): void => {
+    if (everywhere !== "asked") { setEverywhere("asked"); setEverywhereError(null); return; }
+    setEverywhere("out");
+    void from.signOutEverywhere().then(setEverywhereError, () => setEverywhereError(t("Could not sign out every device. Try again."))).finally(() => setEverywhere(null));
+  };
   return (
     <ManageAccountSheet onClose={onClose}>
       {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} onLeave={() => leave(signIn)} />}
       {leaveNote !== null && <p className="settings-condition" role="alert">{leaveNote}</p>}
+      {signIn !== null && <div className="settings-item account-sign-out-everywhere">
+        {everywhere === "asked" && <p className="settings-description" role="status" data-testid="sign-out-everywhere-says">{t("Every browser and app will need to sign in again. Your PCs stay.")}</p>}
+        <div className="account-delete-actions">
+          <button type="button" className={everywhere === "asked" ? "btn btn-danger" : "btn"} data-action="sign-out-everywhere" data-confirm={everywhere === "asked" ? "sign-out-everywhere" : undefined}
+            disabled={everywhere === "out"} aria-busy={everywhere === "out" ? "true" : undefined} onClick={() => signOutEverywhere(signIn)}>{everywhere === "asked" ? t("Sign out every device?") : t("Sign out every device")}</button>
+          {everywhere === "asked" && <button type="button" className="btn btn-ghost" onClick={() => setEverywhere(null)}>{t("Cancel")}</button>}
+        </div>
+        {everywhereError !== null && <p className="settings-condition" role="alert">{everywhereError}</p>}
+      </div>}
       {signIn !== null && <div className="settings-item account-delete">
         {deleting === "asked" && <p className="settings-description" role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</p>}
         <div className="account-delete-actions">

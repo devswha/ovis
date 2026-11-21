@@ -47,7 +47,7 @@ const wait = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((r
   const timer = setTimeout(() => { signal?.removeEventListener("abort", stop); resolve(); }, ms);
   signal?.addEventListener("abort", stop, { once: true });
 });
-/** A sign-in again, made to delete an account, landed in another account: nothing is deleted. */
+/** A sign-in again, made to delete an account or sign every device out, landed in another account: nothing is done. */
 class AnotherAccountError extends Error {
   constructor() { super("The sign-in is for another account"); this.name = "AnotherAccountError"; }
 }
@@ -99,8 +99,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let generation = 0;
   let leaving = false;
   /**
-   * The delete pressed for (deleteAccount), until it ends: a sign-out, a sign-in or a leave ends it, and every step of
-   * it after a wait (the sign-in again, the second delete, what is drawn) goes on only while it is still this one.
+   * The delete or the sign-out of every device pressed for (deleteAccount, signOutEverywhere), until it ends: a sign-out,
+   * a sign-in or a leave ends it, and every step of it after a wait (the sign-in again, the second request, what is
+   * drawn) goes on only while it is still this one.
    */
   let deletion: object | undefined;
   let reading: { readonly epoch: number; readonly read: Promise<void> } | undefined;
@@ -254,6 +255,66 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     }).finally(() => { leaving = false; });
   };
 
+  /**
+   * The phone app's sign-in again in place, for an action that wants a sign-in from the last ten minutes: with the method
+   * `from` used, and stored in its place only while `from` is still the stored sign-in and `current()` holds, and only
+   * for the same account. `refused`: the refusal that asked for it, thrown again once the action was called off.
+   */
+  const signInAgainInPlace = async (from: AccountSession, service: string, current: () => boolean, refused: unknown): Promise<AccountSession> => {
+    // a sign-in another tab stored since is not signed over: the view reads it instead
+    const stored = await account.session();
+    if (stored === undefined || !sameSignIn(stored, from)) throw new SignedOutError();
+    // the sheet's sign-in is not stored by the sheet: only below, once the action is still on and its sign-in still the
+    // one stored, so a sign-out or another sign-in while the sheet was open is neither undone nor acted on
+    const again = await nativeSignIn(from.provider, { store: holdingSessionStore(accountStore), service });
+    if (!current()) throw refused;
+    if (again.account !== from.account) throw new AnotherAccountError();
+    if (!await installSignInAgain(accountStore, from, again, current)) throw new SignedOutError();
+    // a sign-out that landed as the store answered: it ends the sign-in just stored, and the action does not follow
+    if (!current()) throw refused;
+    return again;
+  };
+  /** Every sign-in of `session`'s account ends at the service, this device's too: the signed-out page says so. */
+  const signedOutEverywhere = async (session: AccountSession): Promise<void> => {
+    await account.forSignIn(session).signOutEverywhere();
+    for (const serverId of running.values()) cancelEnrollment(serverId);
+    invalidate();
+    accountView = { kind: "signed-out", error: null, notice: t("Every device was signed out.") };
+    await changed();
+  };
+  /**
+   * Signs every browser and app out of the account (Manage account), this device included; its PCs stay. The service
+   * wants a sign-in from the last ten minutes: the phone app signs in again in place and goes on, and a browser signs in
+   * again by its redirect, whose return goes on (load) when it comes back for the same account. Answers why nothing was
+   * signed out, or null. `pc`: the PC whose own page asked, which a browser's sign-in again returns to.
+   */
+  const signOutEverywhere = (pc?: string): Promise<string | null> => {
+    if (deletion !== undefined || leaving) return Promise.resolve(null);
+    const mine = {};
+    deletion = mine;
+    const epoch = ++generation;
+    const current = (): boolean => deletion === mine && epoch === generation;
+    // the sign-in the view on screen speaks of, not the one stored now (as deleteAccount)
+    const from = accountView?.kind === "signed-in" ? shownFor : undefined;
+    return (async (): Promise<string | null> => {
+      if (from === undefined) throw new SignedOutError();
+      try { await signedOutEverywhere(from); }
+      catch (error) {
+        if (!(error instanceof AccountServiceError && error.code === "reauth_required") || accountService === null || !current()) throw error;
+        if (nativeSignInAvailable()) await signedOutEverywhere(await signInAgainInPlace(from, accountService, current, error));
+        else signIn(from.provider, undefined, undefined, pc, from.account);
+      }
+      return null;
+    })().catch(async (error: unknown): Promise<string | null> => {
+      if (!current()) return null;
+      console.warn("Ovis: every device was not signed out", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+      if (error instanceof SignedOutError || error instanceof AnotherAccountError) await refresh(true);
+      if (error instanceof SignedOutError) return null;
+      if (error instanceof AnotherAccountError) return t("You signed in to another account. No device was signed out.");
+      return t("Could not sign out every device. Try again.");
+    }).finally(() => { if (deletion === mine) deletion = undefined; });
+  };
+
   const deleteFailure = (error: unknown): string => {
     if (error instanceof AccountServiceError && error.code === "reauth_required") return t("To delete your account, sign out, sign in again, then delete it within ten minutes.");
     if (error instanceof AccountServiceError && error.code === "subscription_active") return t("Cancel your subscription first, then delete the account.");
@@ -279,18 +340,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       try { await deleteAccountOf({ service: account, accountStore, session }); }
       catch (error) {
         if (!(error instanceof AccountServiceError && error.code === "reauth_required") || accountService === null || !nativeSignInAvailable() || !current()) throw error;
-        // a sign-in another tab stored since is not signed over: the view reads it instead
-        const stored = await account.session();
-        if (stored === undefined || !sameSignIn(stored, session)) throw new SignedOutError();
-        // the sheet's sign-in is not stored by the sheet: only below, once this delete is still on and its sign-in still
-        // the one stored, so a sign-out or another sign-in while the sheet was open is neither undone nor deleted
-        const again = await nativeSignIn(session.provider, { store: holdingSessionStore(accountStore), service: accountService });
-        if (!current()) throw error;
-        if (again.account !== session.account) throw new AnotherAccountError();
-        if (!await installSignInAgain(accountStore, session, again, current)) throw new SignedOutError();
-        // a sign-out that landed as the store answered: it ends the sign-in just stored, and no delete follows
-        if (!current()) throw error;
-        await deleteAccountOf({ service: account, accountStore, session: again });
+        await deleteAccountOf({ service: account, accountStore, session: await signInAgainInPlace(session, accountService, current, error) });
       }
     }).then(async () => {
       if (!current()) return;
@@ -333,7 +383,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   /** `pairing`: a web sign-in leaves the page, so the pairing it is for waits in its pending record (load hands it back) */
   /** `wanted`: asked again right before the page leaves for the provider (after its pending record is written); false leaves the sign-in unstarted */
   /** `pc`: the PC whose own page this is: a web sign-in's return goes back to it (load's `toPc`) */
-  const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean | Promise<boolean>, pc?: string): void => {
+  /** `everywhere`: the account whose sign-out of every device waits on this web sign-in (signOutEverywhere) */
+  const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean | Promise<boolean>, pc?: string, everywhere?: string): void => {
     if (accountService === null) return;
     if (accountView?.kind === "signing-in") return;
     deletion = undefined;
@@ -349,7 +400,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     // the app's sheet) leaves for the provider (the link entry, shell.tsx)
     const started = nativeSignInAvailable()
       ? (wanted === undefined ? native() : Promise.resolve(wanted()).then((go) => go ? native() : unwanted()))
-      : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...(pairing ? { pairing } : {}), ...(pc ? { pc } : {}) })
+      : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...(pairing ? { pairing } : {}), ...(pc ? { pc } : {}), ...(everywhere ? { signOutEverywhere: everywhere } : {}) })
         .then(async (url) => wanted === undefined || await wanted() ? leave(url) : unwanted());
     started.catch(async (error: unknown) => {
       console.warn("Ovis: the sign-in did not start", error);
@@ -376,7 +427,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       try {
         const session = await redeemSignIn(pending, returned, { store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
         if (pending?.pairing) outcome = { refused: null, provider: pending.provider };
-        else {
+        else if (pending?.sign_out_everywhere === session.account && await signedOutEverywhere(session).then(() => true, (error: unknown) => {
+          // still signed in, with a fresh sign-in now: pressing again in Manage account goes through
+          console.warn("Ovis: every device was not signed out after the sign-in again", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+          return false;
+        })) {
+          if (pending.pc !== undefined) outcome = { refused: null, provider: pending.provider };
+        } else {
           registrationJustTried = session;
           await registerSignIn(session);
           if (pending?.pc !== undefined) outcome = { refused: null, provider: pending.provider };
@@ -703,5 +760,5 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const listedNow = (): Promise<readonly AccountProvider[]> => answered().then((said) => said.listed);
   return { get state() { return accountView; }, get directory() { return directory; },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
-    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, prepare, enroll, cancelEnrollment, armRefresh };
+    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, signOutEverywhere, prepare, enroll, cancelEnrollment, armRefresh };
 }
