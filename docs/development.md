@@ -1507,8 +1507,6 @@ practice. Force pushes and branch deletion are disabled. Human approvals are opt
 project; external contributions still need maintainer review. CodeRabbit is advisory, not a required
 check. It reviews a pull request once when it opens and not on later pushes; after a later
 commit that changes behaviour, comment `@coderabbitai review` on the final head and wait for it.
-Which PRs wait for a review, and what stands in when CodeRabbit skips one, is in
-[AGENTS.md](../AGENTS.md) (Maintainer workflow).
 Release tags must not be moved or deleted. These GitHub settings are separate from files
 in the checkout.
 
