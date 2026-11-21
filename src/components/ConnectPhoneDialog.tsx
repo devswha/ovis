@@ -53,9 +53,6 @@ export const TAILSCALE_POLL_MS = 3000;
 /** the command that lets this Linux user run `tailscale serve` without root, shown only after Tailscale refused it for want of it */
 const TAILSCALE_OPERATOR = "sudo tailscale set --operator=$USER";
 
-/** the guide's way to open a PC from outside: Portal, Cloudflare Tunnel or a reverse proxy */
-const OUTSIDE_HELP = "https://github.com/devswha/ovis/blob/main/docs/guide.md#behind-a-reverse-proxy";
-
 /** an address the direct tab takes for another PC's Ovis rather than SSH: any http(s) scheme, as a browser reads `https:host` too */
 const OVIS_ADDRESS = /^https?:/i;
 
@@ -127,6 +124,8 @@ export interface ConnectPhoneDialogProps {
   tailscale?: PhonePlan;
   /** the platform this PC's server reports (RemoteAccess.platform): which Tailscale download and app this PC takes */
   platform?: string | undefined;
+  /** the address a phone on this PC's own network opens (RemoteAccess.lan_url): Direct's QR code where this page is no such address */
+  lanUrl?: string | null | undefined;
   pairUrl: string | null;
   /** this page's own address when a phone could open it (not loopback, not the hosted shell): Direct's QR code; `pairUrl` when omitted */
   pageUrl?: string | null;
@@ -161,7 +160,7 @@ export interface ConnectPhoneDialogProps {
   onClose: () => void;
 }
 
-export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, pairUrl, pageUrl = pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, lanUrl: givenLanUrl = null, pairUrl, pageUrl = pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -186,6 +185,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   const plan = fresh !== null && tailscaleStepKind(givenPlan) ? tailscalePlan(fresh) : givenPlan;
   const tailscale = fresh !== null && tailscaleStepKind(givenTailscale) ? tailscalePlan(fresh) : givenTailscale;
   const platform = fresh?.platform ?? givenPlatform;
+  const lanUrl = fresh?.lan_url !== undefined ? fresh.lan_url : givenLanUrl;
   const tabs = connectTabs({ sshOffered: onAddPc !== null && !readOnly && !inRelayShell(), relay, readOnly });
   const hasAccount = account !== null;
   // until a tab is picked, the opening one follows the tabs as they arrive (the relay's state comes a moment later)
@@ -206,8 +206,9 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   const { status: portal } = usePortal();
   const local = localWays({ plan, readOnly, canPair, portal });
   const tailnet = localWays({ plan: tailscale, readOnly, canPair, portal: null });
-  // a phone on the same Wi-Fi opens Portal's address where it runs, else this page's own when it is no Tailscale one
-  const directUrl = portal?.phase === "running" && portal.url !== null ? portal.url : pageUrl !== null && pageUrl !== tailnet.address ? pageUrl : null;
+  // a phone on the same Wi-Fi opens Portal's address where it runs, else this page's own when it is no Tailscale one, else
+  // the address this PC answers at on its own network (lan_url)
+  const directUrl = portal?.phase === "running" && portal.url !== null ? portal.url : pageUrl !== null && pageUrl !== tailnet.address ? pageUrl : lanUrl;
   // one pairing code for both tabs that show one: the PC keeps one pending code, so a second would end the first
   const sharedCode = useRef<SharedCode>({ code: null, asking: false, waiting: new Set() });
   useTailscaleWatch(!waiting && ((tab === "tailscale" && tailnet.tailscaleStep !== null) || (tab === null && local.tailscaleStep !== null)), setFresh);
@@ -242,7 +243,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
           {opened.current.has("direct") && tabs.includes("direct") && (
             <div className="connect-tab" data-tab-panel="direct" hidden={tab !== "direct"}>
               <DirectTab found={found} machines={machines} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} />
-              {local.code && <PhoneScan><CodeRoute pairUrl={directUrl} startAtOnce={tab === "direct"} shared={sharedCode} phone={phone} compact /></PhoneScan>}
+              {local.code && <PhoneScan codeOnly={directUrl === null}><CodeRoute pairUrl={directUrl} startAtOnce={tab === "direct"} shared={sharedCode} phone={phone} compact /></PhoneScan>}
               {local.portal && <section className="connect-section" aria-label="Portal"><PortalPanel readOnly={readOnly} addressQr={!local.code || directUrl !== portal?.url} /></section>}
             </div>
           )}
@@ -433,7 +434,7 @@ export function DirectTab({ found: { found, failed, withheld, stateOf, retry }, 
   return (
     <>
       <form className="connect-ssh-form" onSubmit={add}>
-        <label className="settings-label" htmlFor={`${id}-address`}>{t("Address or SSH")}</label>
+        <label className="settings-label" htmlFor={`${id}-address`}>{t("Add another PC from this one")}</label>
         <div className="connect-ssh-field">
           <input id={`${id}-address`} className="input" type="text" value={typed} placeholder="user@host, desk.tailnet.ts.net, https://…" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-describedby={address === "" ? undefined : `${id}-kind`} onChange={(event) => {
             // a code typed for one PC is never sent to another
@@ -469,7 +470,6 @@ export function DirectTab({ found: { found, failed, withheld, stateOf, retry }, 
       )}
       {found === null && <p className="settings-hint" role="status">{t("Looking for PCs…")}</p>}
       <FoundPcsTrouble failed={failed} withheld={withheld} retry={retry} />
-      <ExternalLink kind="link" className="settings-hint connect-outside-help" href={OUTSIDE_HELP}>{t("Open a PC from outside with Portal or Cloudflare (guide)")}</ExternalLink>
     </>
   );
 }
@@ -503,11 +503,12 @@ export function localWays({ plan, readOnly, canPair, portal }: { plan: PhonePlan
 }
 
 /** What a phone scans on each way's tab, under that way's own part: the QR code and the code it carries, or the step that gives this PC an address a phone opens. */
-function PhoneScan({ children }: { children: ReactNode }) {
+function PhoneScan({ children, codeOnly = false }: { children: ReactNode; codeOnly?: boolean }) {
   const t = useT();
   return (
     <section className="connect-phone-scan" aria-label={t("Phone")} data-testid="connect-phone-scan">
-      <p className="settings-label connect-phone-scan-title"><Smartphone aria-hidden="true" />{t("Scan it with the Ovis app on your phone")}</p>
+      {/* a code with no address a phone opens is typed, not scanned */}
+      <p className="settings-label connect-phone-scan-title"><Smartphone aria-hidden="true" />{codeOnly ? t("Pairing code") : t("Scan it with the Ovis app on your phone")}</p>
       {children}
     </section>
   );

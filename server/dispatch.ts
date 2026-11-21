@@ -17,6 +17,7 @@ import { handlePreferencesRequest, type PreferenceStore } from "./preferences.ts
 import { handleSeenRequest, type SeenStore } from "./seen.ts";
 import { openTailscaleApp, remoteAccess, serveTailscale, tailscaleBinary } from "./tailscale.ts";
 import { TAILSCALE_CONTROLS } from "./dispatch-routes.ts";
+import { lanUrl, privateLanAddresses } from "./lan-https.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute, wordedHeaders, wordHerdrFailures } from "./http.ts";
 import { requestOrigin, serveStatic } from "./static.ts";
 import { compressResponse } from "./compress.ts";
@@ -311,6 +312,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // a Tailscale change (serve Ovis on the tailnet, open the app) is asked only from this PC's own window: any other
   // caller, a relayed or account-joined one included, is told so before anything is read or run
   const tailscaleControl = pathname === TAILSCALE_CONTROLS.serve || pathname === TAILSCALE_CONTROLS.open;
+  const lanUrlHere = () => lanUrl({ hostname, port: ctx.port ?? DEFAULT_PORT, lanHttps: options.lanHttps, addresses: privateLanAddresses() });
   if (tailscaleControl && !ownWindow) {
     setRequestRoute(pathname);
     return jsonResponse({ error: { code: "local_required", message: "Set up Tailscale on this PC's own screen." } }, 403, { "cache-control": "no-store" });
@@ -908,7 +910,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       return refuse(opened.code, "This PC has no Tailscale app to open.", 409);
     }
     const served = await serveTailscale(ctx.port ?? DEFAULT_PORT, undefined, tailscaleCli(ctx));
-    if (served.ok) return jsonResponse({ ...served.access, relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
+    if (served.ok) return jsonResponse({ ...served.access, lan_url: lanUrlHere(), relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
     // the CLI's own words go to this PC's log only, never to the page
     if (served.detail !== undefined) console.warn(`tailscale serve refused: ${served.detail}`);
     return refuse(served.code, "Tailscale did not serve Ovis here.", 409, served.operator === true ? { operator: true } : {});
@@ -917,7 +919,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/access") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
-    return jsonResponse({ ...await remoteAccess(ctx.port ?? DEFAULT_PORT, undefined, tailscaleCli(ctx)), relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
+    return jsonResponse({ ...await remoteAccess(ctx.port ?? DEFAULT_PORT, undefined, tailscaleCli(ctx)), lan_url: lanUrlHere(), relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
   }
 
   if (pathname === "/api/session") {

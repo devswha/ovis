@@ -64,6 +64,24 @@ export function privateLanAddresses(): string[] {
 }
 
 /**
+ * The address a phone on this PC's own network opens, from what already listens there: the LAN HTTPS listener while it is
+ * configured (OVIS_LAN_HTTPS_PORT), else the main listener where it is bound to a private address or every interface
+ * (HOST). Null where this PC answers on no LAN address (loopback or tailnet only, or no private interface address):
+ * nothing here opens one. `addresses` is this PC's private IPv4 addresses, `privateLanAddresses()`, the first the one used.
+ */
+export function lanUrl({ hostname, port, lanHttps, addresses }: { hostname: string; port: number; lanHttps: LanHttpsConfig | undefined; addresses: readonly string[] }): string | null {
+  const first = addresses[0];
+  if (lanHttps !== undefined) {
+    const host = lanHttps.host !== undefined && lanHttps.host !== "0.0.0.0" ? lanHttps.host : first;
+    return host === undefined ? null : `https://${host}:${lanHttps.port}`;
+  }
+  const bound = hostname.trim().replace(/^\[(.*)\]$/, "$1");
+  if (privateLanPeer(bound)) return `http://${bound}:${port}`;
+  if ((bound === "0.0.0.0" || bound === "::" || bound === "") && first !== undefined) return `http://${first}:${port}`;
+  return null;
+}
+
+/**
  * The certificate to serve: the operator's files as they are, or the self-signed one kept in
  * `<stateDir>/lan-https`, made again when it does not load, has run out or does not name one of
  * `addresses` (the PC moved to another network).

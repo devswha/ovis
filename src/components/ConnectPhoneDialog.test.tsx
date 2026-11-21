@@ -658,6 +658,44 @@ describe("Connect a phone on a phone", () => {
     });
   });
 
+  describe("Direct: a same-Wi-Fi QR code where this PC answers on its network, never a bare code under Scan", () => {
+    const mountDirect = async (lanUrl: string | null) => {
+      Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
+      const pageEvents = new EventTarget();
+      Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
+      descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
+      Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
+      const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
+      const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
+      // this PC's own window on loopback: its page is no address a phone opens
+      await act(async () => {
+        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} lanUrl={lanUrl} pairUrl={served.url} pageUrl={null} relay={relayState()} readOnly={false} closesGate={false} canPair
+          signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
+      });
+      await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
+      for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+      return () => renderer!.root.findByProps({ "data-tab-panel": "direct" });
+    };
+
+    it("shows the QR code of this PC's same-Wi-Fi address with the pairing code, the code under it, under a plain label and no outside link", async () => {
+      const panel = await mountDirect("http://192.168.0.12:7317");
+      await until(() => panel().findAllByType(QrCode).length === 1, "Direct's QR code");
+      expect(panel().findAllByType(QrCode).map((qr) => String(qr.props.value))).toEqual(["http://192.168.0.12:7317/?pair=482913"]);
+      expect(text(panel())).toContain("Scan it with the Ovis app on your phone");
+      expect(text(panel())).toContain("482 913");
+      expect(panel().findAll((node) => node.type === "label").map(text)[0]).toBe("Add another PC from this one");
+      expect(panel().findAll((node) => node.type === "a").map(text)).toEqual([]);
+    });
+
+    it("with no address a phone opens, names the code a pairing code to type, not one to scan", async () => {
+      const panel = await mountDirect(null);
+      await until(() => text(panel()).includes("482 913"), "Direct's code");
+      expect(panel().findAllByType(QrCode)).toEqual([]);
+      expect(text(panel())).not.toContain("Scan it with the Ovis app on your phone");
+      expect(text(panel().findByProps({ "data-testid": "connect-phone-scan" }))).toContain("Pairing code");
+    });
+  });
+
   it("offers only the ways this window can use: the relay to its owner on a direct page, Tailscale and an address where PCs are added from", () => {
     const off = relayState({ ...ONLINE, phase: "off" });
     expect(connectTabs({ sshOffered: true, relay: off, readOnly: false })).toEqual(["relay", "tailscale", "direct"]);
@@ -936,7 +974,7 @@ describe("Connect a phone on a phone", () => {
     expect(connected).toEqual([]);
   });
 
-  it("offers the ssh config hosts and the PCs saved in herdr one press each, and the guide for opening a PC from outside", async () => {
+  it("offers the ssh config hosts and the PCs saved in herdr one press each, and no outside guide link (the docs keep it)", async () => {
     const added: (AddPcPreset | undefined)[] = [];
     const connected: string[] = [];
     const machines = [ssh("build-box", { herdr_profile_id: "p1", action_required: "connect" })];
@@ -948,7 +986,7 @@ describe("Connect a phone on a phone", () => {
     expect(added).toEqual([{ destination: "nuc12", name: "nuc12" }]);
     await act(async () => { button("build-box").props.onClick(); });
     expect(connected).toEqual(["build-box"]);
-    expect(renderer!.root.findByType("a").props.href).toBe("https://github.com/devswha/ovis/blob/main/docs/guide.md#behind-a-reverse-proxy");
+    expect(renderer!.root.findAllByType("a")).toEqual([]);
   });
 
   it("in Direct, says an added host is added and an older-Ovis Tailscale host needs an update, in words, and offers neither", async () => {

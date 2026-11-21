@@ -770,7 +770,7 @@ try {
     await connectSheet.locator('.connect-tabs [data-tab="direct"]').click();
     const sshAdd = connectSheet.locator(".connect-ssh-form").getByRole("button", { name: "Connect", exact: true });
     assert.equal(await sshAdd.isDisabled(), true, "Connect waits for an address");
-    await connectSheet.getByLabel("Address or SSH", { exact: true }).fill("qa@pc.invalid");
+    await connectSheet.getByLabel("Add another PC from this one", { exact: true }).fill("qa@pc.invalid");
     await sshAdd.click();
     await page.getByRole("dialog", { name: "Add PC", exact: true }).waitFor();
     assert.equal(await page.getByRole("dialog", { name: "Add PC", exact: true }).getByLabel("SSH alias or user@address", { exact: true }).inputValue(), "qa@pc.invalid", "Add PC opens with the typed address");

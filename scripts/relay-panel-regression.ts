@@ -276,7 +276,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await ui.openTab("tailscale");
     assert.equal(await sheet.locator('[data-tab-panel="relay"]').isHidden(), true, "Tailscale takes the relay tab's place");
     await ui.openTab("direct");
-    await sheet.getByLabel("Address or SSH", { exact: true }).waitFor();
+    await sheet.getByLabel("Add another PC from this one", { exact: true }).waitFor();
 
     await ui.openTab("relay");
     const signInButton = relayTab.getByTestId("connect-signin").getByRole("button", { name: "Sign in to Ovis", exact: true });
