@@ -50,8 +50,16 @@ public final class SshTunnels: @unchecked Sendable {
     /// Connects to `pc` with what was saved when it was added: its host key, and its key. Never asks anything.
     public static func dial(_ store: SshPcs, _ pc: SshPcs.Pc) async throws -> SshTunnelLink {
         guard pc.hasHostKey else { throw SshFailure("host-key-unknown", "The host key is not confirmed") }
-        let key = try store.signInKey(pc)
-        let connection = try await SshConnection.open(host: pc.host, port: pc.port, check: .init(expectedAlgorithm: pc.hostKeyAlgorithm, expectedKey: pc.hostKey), user: pc.user, key: key)
+        let check = SshConnection.HostKeyCheck(expectedAlgorithm: pc.hostKeyAlgorithm, expectedKey: pc.hostKey)
+        let connection: SshConnection
+        if pc.auth == "tailscale" {
+            // nobody is on the setup screen to open a check link: the error page shows it, and Try again signs in again
+            connection = try await SshConnection.openTailscale(host: pc.host, port: pc.port, check: check, user: pc.user, waitSeconds: SshConnection.signInSeconds) { banner in
+                SshConnection.checkLink(banner).map { SshFailure("tailscale-check", "Tailscale SSH asks to approve this phone again", command: $0) }
+            }
+        } else {
+            connection = try await SshConnection.open(host: pc.host, port: pc.port, check: check, user: pc.user, key: try store.signInKey(pc))
+        }
         do {
             return SshConnectionLink(connection, port: try await SshLink.ovisPort(connection))
         } catch {

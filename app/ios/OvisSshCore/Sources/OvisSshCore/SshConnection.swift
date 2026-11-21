@@ -41,7 +41,7 @@ public final class SshConnection: @unchecked Sendable {
 
     /// How a connection signs in: once, with a key or a password; a second offer means the first was refused.
     private final class SignIn: NIOSSHClientUserAuthenticationDelegate, @unchecked Sendable {
-        enum Way { case key(NIOSSHPrivateKey), password(String) }
+        enum Way { case key(NIOSSHPrivateKey), password(String), tailscale }
         let user: String
         let way: Way
         private var offered = false
@@ -54,7 +54,13 @@ public final class SshConnection: @unchecked Sendable {
 
         func nextAuthenticationType(availableMethods: NIOSSHAvailableUserAuthenticationMethods, nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>) {
             if offered {
-                nextChallengePromise.fail(SshFailure("auth", { if case .password = way { return "The machine refused that password" } else { return "The machine refused the key" } }()))
+                let why: String
+                switch way {
+                case .password: why = "The machine refused that password"
+                case .key: why = "The machine refused the key"
+                case .tailscale: why = "The machine did not let this phone in without a key (Tailscale SSH is off there, or its policy does not allow this login)"
+                }
+                nextChallengePromise.fail(SshFailure("auth", why))
                 return
             }
             offered = true
@@ -67,6 +73,9 @@ public final class SshConnection: @unchecked Sendable {
                     return
                 }
                 nextChallengePromise.succeed(NIOSSHUserAuthenticationOffer(username: user, serviceName: "", offer: .password(.init(password: password))))
+            case .tailscale:
+                // Tailscale SSH lets a login of the tailnet in with no key: the "none" method, held while it asks for a check
+                nextChallengePromise.succeed(NIOSSHUserAuthenticationOffer(username: user, serviceName: "", offer: .none))
             }
         }
     }
@@ -78,6 +87,8 @@ public final class SshConnection: @unchecked Sendable {
         private let lock = NSLock()
         private var done = false
         var failure: Error?
+        /// Hears each sign-in banner (Tailscale SSH's check link comes as one); a failure it returns ends the sign-in.
+        var banner: (@Sendable (String) -> SshFailure?)?
 
         init(signedIn: EventLoopPromise<Void>) { self.signedIn = signedIn }
 
@@ -92,6 +103,11 @@ public final class SshConnection: @unchecked Sendable {
 
         func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
             if event is UserAuthSuccessEvent { finish(.success(())) }
+            if let shown = event as? NIOUserAuthBannerEvent, let stop = banner?(shown.message) {
+                failure = stop
+                finish(.failure(stop))
+                context.close(promise: nil)
+            }
             context.fireUserInboundEventTriggered(event)
         }
 
@@ -131,14 +147,31 @@ public final class SshConnection: @unchecked Sendable {
         try await open(host: host, port: port, check: check, signIn: SignIn(user: user, way: .password(password)))
     }
 
+    /// Signs in with Tailscale SSH, no key: `banner` hears what the PC says while it waits (its check link, which the
+    /// person opens to approve this phone), and may end the wait with a failure; it waits up to `waitSeconds`.
+    public static func openTailscale(host: String, port: Int, check: HostKeyCheck, user: String, waitSeconds: Int64,
+                                     banner: @escaping @Sendable (String) -> SshFailure?) async throws -> SshConnection {
+        try await open(host: host, port: port, check: check, signIn: SignIn(user: user, way: .tailscale), waitSeconds: waitSeconds, banner: banner)
+    }
+
+    /// The check link in a Tailscale SSH banner ("To authenticate, visit: https://login.tailscale.com/a/…"), or nil.
+    public static func checkLink(_ banner: String) -> String? {
+        guard let range = banner.range(of: "https://login\\.tailscale\\.com/[A-Za-z0-9/_?=&%.-]+", options: .regularExpression) else { return nil }
+        var link = String(banner[range])
+        while link.hasSuffix(".") { link.removeLast() }
+        return link
+    }
+
     /// Only reads the PC's host key, refused before anything is sent: `check` then holds the key to show.
     public static func readHostKey(host: String, port: Int, check: HostKeyCheck) async throws {
         _ = try await open(host: host, port: port, check: check, signIn: SignIn(user: "ovis", way: .password("")))
     }
 
-    private static func open(host: String, port: Int, check: HostKeyCheck, signIn: SignIn) async throws -> SshConnection {
+    private static func open(host: String, port: Int, check: HostKeyCheck, signIn: SignIn, waitSeconds: Int64 = signInSeconds,
+                             banner: (@Sendable (String) -> SshFailure?)? = nil) async throws -> SshConnection {
         let signedIn = group.next().makePromise(of: Void.self)
         let watch = Watch(signedIn: signedIn)
+        watch.banner = banner
         let bootstrap = ClientBootstrap(group: group)
             .connectTimeout(.seconds(10))
             .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
@@ -157,7 +190,7 @@ public final class SshConnection: @unchecked Sendable {
             watch.finish(.failure(error))
             throw unreachable(error)
         }
-        let deadline = channel.eventLoop.scheduleTask(in: .seconds(15 + signInSeconds)) {
+        let deadline = channel.eventLoop.scheduleTask(in: .seconds(15 + waitSeconds)) {
             watch.finish(.failure(SshFailure("timeout", "The machine did not answer in time")))
             channel.close(promise: nil)
         }

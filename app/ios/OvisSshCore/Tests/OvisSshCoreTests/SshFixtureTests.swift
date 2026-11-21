@@ -78,6 +78,53 @@ final class SshFixtureTests: XCTestCase {
         }
     }
 
+    /// The fixture's sshd shows a banner with a Tailscale check link (its Banner file) and takes no "none" sign-in.
+    func testATailscaleCheckLinkReachesTheScreenAndANoneSignInRefusedIsAuth() async throws {
+        let f = try fixture()
+        let check = try await confirmed(f)
+        do {
+            _ = try await SshConnection.openTailscale(host: f.host, port: f.port, check: check, user: f.user, waitSeconds: 10) { banner in
+                SshConnection.checkLink(banner).map { SshFailure("tailscale-check", "approve", command: $0) }
+            }
+            XCTFail("a sign-in with no key went on")
+        } catch let failure as SshFailure {
+            XCTAssertEqual(failure.kind, "tailscale-check")
+            XCTAssertEqual(failure.command, "https://login.tailscale.com/a/fixture123")
+        }
+        let heard = Holder<[String]>()
+        do {
+            _ = try await SshConnection.openTailscale(host: f.host, port: f.port, check: check, user: f.user, waitSeconds: 10) { banner in
+                heard.value = (heard.value ?? []) + [banner]
+                return nil
+            }
+            XCTFail("a sign-in with no key went on")
+        } catch let failure as SshFailure {
+            XCTAssertEqual(failure.kind, "auth")
+        }
+        XCTAssertEqual(heard.value?.compactMap(SshConnection.checkLink), ["https://login.tailscale.com/a/fixture123"])
+    }
+
+    /// Against a real Tailscale SSH server, when OVIS_TAILSCALE_SSH names one (`host:user`, a PC of this Mac's tailnet
+    /// running `tailscale up --ssh`): no key goes in, and either it signs in or it hands over its check link.
+    func testARealTailscaleSshSignsInWithNoKeyOrHandsOverItsCheckLink() async throws {
+        guard let spec = ProcessInfo.processInfo.environment["OVIS_TAILSCALE_SSH"] else { throw XCTSkip("OVIS_TAILSCALE_SSH is not set") }
+        let parts = spec.split(separator: ":").map(String.init)
+        let first = SshConnection.HostKeyCheck()
+        _ = try? await SshConnection.readHostKey(host: parts[0], port: 22, check: first)
+        let seen = try XCTUnwrap(first.seenKey)
+        let check = SshConnection.HostKeyCheck(expectedAlgorithm: first.seenAlgorithm, expectedKey: SshHostKeys.encode(seen))
+        do {
+            let connection = try await SshConnection.openTailscale(host: parts[0], port: 22, check: check, user: parts[1], waitSeconds: 20) { banner in
+                SshConnection.checkLink(banner).map { SshFailure("tailscale-check", "approve", command: $0) }
+            }
+            defer { connection.close() }
+            let said = try await connection.run("echo tailscale-ssh-ok", timeout: 10)
+            XCTAssertEqual(said, "tailscale-ssh-ok\n")
+        } catch let failure as SshFailure where failure.kind == "tailscale-check" {
+            XCTAssertNotNil(failure.command.flatMap(SshConnection.checkLink))
+        }
+    }
+
     func testNothingAnswersOnAClosedPort() async throws {
         let f = try fixture()
         do {

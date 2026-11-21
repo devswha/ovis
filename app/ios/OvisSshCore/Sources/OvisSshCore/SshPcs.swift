@@ -33,7 +33,7 @@ public final class SshPcs {
         public var user = ""
         public var hostKeyAlgorithm = ""
         public var hostKey = ""
-        /// "phone-key" or "imported"
+        /// "phone-key", "imported" or "tailscale" (Tailscale SSH, no key)
         public var auth = "phone-key"
         /// sealed, "" unless auth is "imported"
         public var importedKey = ""

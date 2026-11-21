@@ -8,6 +8,11 @@ enum SshWords {
     static var korean: Bool { Locale.preferredLanguages.first?.lowercased().hasPrefix("ko") ?? false }
 
     private static let table: [String: (String, String)] = [
+        "ssh_method_tailscale": ("Tailscale SSH: no key (the PC runs Tailscale SSH)", "Tailscale SSH: 키 없이(PC에서 Tailscale SSH가 켜져 있을 때)"),
+        "ssh_tailscale_note": ("Nothing to add on the PC: Tailscale lets this phone in as your Tailscale login, if that PC runs Tailscale SSH and its policy allows it. Tailscale may ask you to approve it once in the browser.", "PC에 넣을 것이 없어요. 그 PC에서 Tailscale SSH가 켜져 있고 정책이 허락하면, Tailscale이 이 휴대폰을 내 Tailscale 계정으로 들여보내요. 브라우저에서 한 번 승인하라고 할 수 있어요."),
+        "ssh_tailscale_check": ("Tailscale SSH asks you to approve this phone. Open the link, approve, and the phone goes on by itself:\n\n%1$@", "Tailscale SSH가 이 휴대폰을 승인하라고 해요. 링크를 열어 승인하면 휴대폰이 알아서 이어가요:\n\n%1$@"),
+        "ssh_open_link": ("Open the link", "링크 열기"),
+        "ssh_fail_auth_tailscale": ("%1$@ did not let this phone in without a key. Check that Tailscale SSH is on there (tailscale up --ssh) and that its policy allows your login, or sign in another way.", "%1$@이(가) 키 없이 이 휴대폰을 들여보내지 않았어요. 그쪽에서 Tailscale SSH가 켜져 있는지(tailscale up --ssh), 정책이 내 계정을 허락하는지 확인하거나, 다른 방법으로 로그인하세요."),
         "ssh_add_title": ("Add a PC over SSH", "SSH로 PC 추가"),
         "ssh_edit_title": ("Set up %1$@ again", "%1$@ 다시 설정"),
         "ssh_add_note": ("For a machine you already reach over SSH. The phone connects straight to it: no relay, no account, no port but SSH.", "이미 SSH로 접속하는 기기용입니다. 휴대폰이 그 기기에 바로 연결합니다. 릴레이도 계정도 없고, SSH 말고는 포트를 열지 않습니다."),
@@ -94,6 +99,7 @@ enum SshWords {
         case "auth":
             if how == "password" { return text("ssh_fail_auth_password", place) }
             if how == "imported" { return text("ssh_fail_auth_pasted", place, publicLine ?? "") }
+            if how == "tailscale" { return text("ssh_fail_auth_tailscale", place) }
             return text("ssh_fail_auth_phone", place)
         case "key-missing": return text("ssh_fail_key_missing")
         case "key-public": return text("ssh_fail_key_public")

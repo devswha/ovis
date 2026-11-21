@@ -255,6 +255,8 @@ describe("an SSH PC under Manage", () => {
     expect(pasted.address).toBe("me@studio.lan:2222");
     expect(pasted.how).toContain("rsa 3072");
     expect(pasted.how).not.toBe(details.how);
+    const tailscale = sshDetails({ ...pc, auth: "tailscale" });
+    expect([details.how, pasted.how]).not.toContain(tailscale.how);
   });
 
   it("is not confirmed once its host key was forgotten", () => {

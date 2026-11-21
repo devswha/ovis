@@ -74,7 +74,9 @@ export function sshDetails(pc) {
   const address = `${pc.user}@${pc.host}${pc.port === 22 ? "" : `:${pc.port}`}`;
   const how = pc.auth === "imported"
     ? t(`Signs in with a pasted ${pc.keyType ? `${pc.keyType} ` : ""}key`, `붙여 넣은 ${pc.keyType ? `${pc.keyType} ` : ""}키로 로그인`)
-    : t("Signs in with this phone's key", "이 휴대폰의 키로 로그인");
+    : pc.auth === "tailscale"
+      ? t("Signs in with Tailscale SSH, no key", "Tailscale SSH로 키 없이 로그인")
+      : t("Signs in with this phone's key", "이 휴대폰의 키로 로그인");
   const hostKey = pc.fingerprint
     ? t(`Host key ${pc.hostKeyAlgorithm} ${pc.fingerprint}`, `호스트 키 ${pc.hostKeyAlgorithm} ${pc.fingerprint}`)
     : t("Host key forgotten: Set up again shows the key it has now, to check and confirm.", "호스트 키를 지웠습니다: 다시 설정에서 지금의 키를 보고 확인하세요.");

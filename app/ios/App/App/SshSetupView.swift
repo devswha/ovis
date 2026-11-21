@@ -11,7 +11,7 @@ import UIKit
 /// there is none and the person agrees, then checked to answer as Ovis; then the PC opens.
 @MainActor
 final class SshSetupModel: ObservableObject {
-    enum Method: String { case phoneKey = "phone-key", password, imported }
+    enum Method: String { case phoneKey = "phone-key", password, imported, tailscale }
 
     struct Question: Identifiable {
         let id = UUID()
@@ -36,6 +36,8 @@ final class SshSetupModel: ObservableObject {
     @Published var status = ""
     @Published var working = false
     @Published var question: Question?
+    /// Tailscale SSH's check link while it waits for the person to approve this phone
+    @Published var checkLink: String?
     var finished: ((Bool) -> Void)?
     var close: (() -> Void)?
     /// What the screen is doing, for a UI test: "connecting", "confirm-host", "signing-in", "looking", "confirm-install", "installing", "done", "failed:<kind>".
@@ -54,12 +56,23 @@ final class SshSetupModel: ObservableObject {
                 method = .imported
                 advanced = true
             }
+            if editing.auth == "tailscale" { method = .tailscale }
         } else {
             self.host = host ?? ""
             self.user = user ?? ""
             if let port { self.port = String(port) }
+            // a PC at a tailnet address most likely runs Tailscale SSH: no key to add there
+            if Self.tailnet(self.host) { method = .tailscale }
         }
         showPhoneKey(renew: false)
+    }
+
+    /// A MagicDNS name or a Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48).
+    static func tailnet(_ host: String) -> Bool {
+        let name = host.lowercased()
+        if name.hasSuffix(".ts.net") || name.hasPrefix("fd7a:115c:a1e0:") { return true }
+        let parts = name.split(separator: ".").compactMap { Int($0) }
+        return parts.count == 4 && parts[0] == 100 && (64...127).contains(parts[1])
     }
 
     var title: String { editing.map { SshWords.text("ssh_edit_title", $0.label) } ?? SshWords.text("ssh_add_title") }
@@ -208,7 +221,20 @@ final class SshSetupModel: ObservableObject {
             say(SshWords.text("ssh_signing_in", account), working: true)
             tell("signing-in")
             var saveAs = how
-            if how == "password" {
+            if how == "tailscale" {
+                // the person approves this phone in the browser if Tailscale asks: up to ten minutes
+                let made = try await SshConnection.openTailscale(host: address, port: sshPort, check: check(), user: account, waitSeconds: 600) { banner in
+                    if let link = SshConnection.checkLink(banner) {
+                        Task { @MainActor in
+                            self.checkLink = link
+                            self.say(SshWords.text("ssh_tailscale_check", link), working: true)
+                        }
+                    }
+                    return nil
+                }
+                checkLink = nil
+                connection = made
+            } else if how == "password" {
                 let made = try await SshConnection.open(host: address, port: sshPort, check: check(), user: account, password: secret)
                 active = made
                 connection = made
@@ -243,7 +269,7 @@ final class SshSetupModel: ObservableObject {
             if saveAs == "imported", let pasted {
                 try store.sealImported(&pc, pem: secret, passphrase: secretPassphrase, keyType: pasted.label)
             } else {
-                pc.auth = "phone-key"
+                pc.auth = saveAs == "tailscale" ? "tailscale" : "phone-key"
                 pc.importedKey = ""
                 pc.importedPassphrase = ""
                 pc.keyType = ""
@@ -259,6 +285,7 @@ final class SshSetupModel: ObservableObject {
             end(true)
             close?()
         } catch {
+            checkLink = nil
             let failure = SshFailure.from(error)
             // this phone's key could no longer be read: a new one is made and shown, as this screen registers it anyway
             if failure.kind == "key-lost" { showPhoneKey(renew: true) }
@@ -306,6 +333,7 @@ struct SshSetupView: View {
                     .disabled(model.editing != nil)
 
                 Text(SshWords.text("ssh_method_label")).foregroundColor(Self.text).padding(.top, 12)
+                choice(.tailscale, "ssh_method_tailscale", id: "ssh_method_tailscale")
                 choice(.phoneKey, "ssh_method_phone", id: "ssh_method_phone")
                 choice(.password, "ssh_method_password", id: "ssh_method_password")
                 if model.advanced {
@@ -315,6 +343,8 @@ struct SshSetupView: View {
                 }
 
                 switch model.method {
+                case .tailscale:
+                    note(SshWords.text("ssh_tailscale_note"))
                 case .phoneKey:
                     note(SshWords.text("ssh_phone_key_note"))
                     Text(model.keyLine).font(.system(size: 12, design: .monospaced)).foregroundColor(Self.text).textSelection(.enabled)
@@ -344,6 +374,10 @@ struct SshSetupView: View {
                     Text(model.status).foregroundColor(Self.text).textSelection(.enabled).accessibilityIdentifier("ssh_status")
                 }
                 .padding(.vertical, 10)
+                if let link = model.checkLink, let url = URL(string: link) {
+                    Button(SshWords.text("ssh_open_link")) { UIApplication.shared.open(url) }
+                        .buttonStyle(Plain(primary: true)).accessibilityIdentifier("ssh_open_link")
+                }
 
                 HStack(spacing: 12) {
                     Button(SshWords.text("ssh_connect")) { model.start() }

@@ -31,6 +31,13 @@ final class SshHostKeysTests: XCTestCase {
         }
     }
 
+    func testReadsTailscaleSshsCheckLinkAndNothingElse() {
+        XCTAssertEqual(SshConnection.checkLink("# Tailscale SSH requires an additional check.\n# To authenticate, visit: https://login.tailscale.com/a/l130ea4b830eaf8\n"), "https://login.tailscale.com/a/l130ea4b830eaf8")
+        XCTAssertEqual(SshConnection.checkLink("visit: https://login.tailscale.com/a/abc123."), "https://login.tailscale.com/a/abc123")
+        XCTAssertNil(SshConnection.checkLink("visit: https://login.tailscale.com.evil.example/a/abc"))
+        XCTAssertNil(SshConnection.checkLink("Welcome to the box"))
+    }
+
     func testOnlyTheHostKeyAndKeyFailuresStopReconnecting() {
         for kind in ["host-key-changed", "host-key-unknown", "auth", "key-unreadable", "key-lost"] { XCTAssertTrue(SshFailure(kind, "").stops, kind) }
         for kind in ["unreachable", "timeout", "no-ovis", "not-started", "internal", "cancelled"] { XCTAssertFalse(SshFailure(kind, "").stops, kind) }
