@@ -50,18 +50,19 @@ export function AccountManageLists({ account, watching, onLeave }: { readonly ac
 
 function AccountDevices({ account, onLeave }: { readonly account: string; readonly onLeave?: () => Promise<void> }) {
   const t = useT();
-  const [devices, setDevices] = useState<PairedDevice[] | null>(null);
+  // "failed": the PC did not answer, which says nothing of the account's devices
+  const [devices, setDevices] = useState<PairedDevice[] | "failed" | null>(null);
   const [key, setKey] = useState<string | null>(null);
   const [asked, setAsked] = useState<PairedDevice | "self" | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const read = useCallback(() => fetchDevices().then(setDevices, () => setDevices([])), []);
+  const read = useCallback(() => fetchDevices().then(setDevices, () => setDevices("failed")), []);
   useEffect(() => {
     void read();
     let live = true;
     indexedAccountStore.key().then((own) => { if (live) setKey(own.public_spki); }, () => undefined);
     return () => { live = false; };
   }, [read]);
-  const others = devices === null ? null : devices.filter((device) => offersAccountRemove(devices, device, account, key));
+  const others = devices === null || devices === "failed" ? devices : devices.filter((device) => offersAccountRemove(devices, device, account, key));
 
   /** A device of the account, gone from every PC of it: at once on this PC, from the mailbox on the others. */
   const disconnect = async (device: PairedDevice): Promise<void> => {
@@ -94,6 +95,7 @@ function AccountDevices({ account, onLeave }: { readonly account: string; readon
           </li>
         )}
         {others === null ? <li className="account-manage-row account-manage-dim" role="status">{t("Loading…")}</li>
+          : others === "failed" ? <li className="account-manage-row account-manage-dim" role="alert">{t("Devices could not be loaded.")}</li>
           : others.map((device) => (
             <li key={device.id} className="account-manage-row" data-device-id={device.id}>
               <StatusDot state={device.connection ? "ready" : "offline"} />
@@ -126,9 +128,9 @@ function AccountDevices({ account, onLeave }: { readonly account: string; readon
 function AccountPcs({ account, watching }: { readonly account: string; readonly watching: boolean }) {
   const t = useT();
   const service = useMemo(() => new AccountService({ store: indexedAccountStore }), []);
-  const [pcs, setPcs] = useState<readonly DirectoryPc[] | null>(null);
+  const [pcs, setPcs] = useState<readonly DirectoryPc[] | "failed" | null>(null);
   const [asked, setAsked] = useState<DirectoryPc | null>(null);
-  const read = useCallback(() => service.listPcs().then(setPcs, () => setPcs([])), [service]);
+  const read = useCallback(() => service.listPcs().then(setPcs, () => setPcs("failed")), [service]);
   useEffect(() => {
     void read();
     const changed = () => { void read(); };
@@ -141,6 +143,7 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
       <h3 className="account-manage-h">{t("PCs")}</h3>
       <ul className="account-manage-list" data-testid="account-pcs">
         {pcs === null ? <li className="account-manage-row account-manage-dim" role="status">{t("Loading…")}</li>
+          : pcs === "failed" ? <li className="account-manage-row account-manage-dim" role="alert">{t("PCs could not be loaded.")}</li>
           : pcs.map((pc) => {
             const off = offlinePc(pc, now);
             return (

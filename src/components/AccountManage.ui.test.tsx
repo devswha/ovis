@@ -19,14 +19,15 @@ let devices: PairedDevice[] = [];
 let pcs: Service.DirectoryPc[] = [];
 const calls: string[] = [];
 let deleteFails = false;
+let readsFail = false;
 
 // the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-await mock.module("../lib/api.ts", () => ({ ...Api, fetchDevices: async () => devices }));
+await mock.module("../lib/api.ts", () => ({ ...Api, fetchDevices: async () => { if (readsFail) throw new Error("503 from the PC"); return devices; } }));
 await mock.module("../lib/account/leave.ts", () => ({ ...Leave, removeFromAccount: async (options: { key: string }) => { calls.push(`disconnect ${options.key}`); return { remove: {}, unconfirmed: [], queued: [] }; } }));
 await mock.module("../lib/account/store.ts", () => ({ ...Store, indexedAccountStore: { ...Store.indexedAccountStore, key: async () => ({ public_spki: MY_KEY }) } }));
 class FakeService {
-  async listPcs() { return pcs; }
+  async listPcs() { if (readsFail) throw new Error("503 from the service"); return pcs; }
   async session() { return { account: "acct" }; }
   forSignIn() { return { deletePc: async (id: string) => { if (deleteFails) throw new Error("502 from the service"); calls.push(`remove ${id}`); } }; }
 }
@@ -46,6 +47,7 @@ describe("Manage account's devices and PCs", () => {
     console.warn = () => {};
     calls.length = 0;
     deleteFails = false;
+    readsFail = false;
     devices = [
       device("me", { current: true, account: "acct", account_key: MY_KEY, connection: { route: "relay", rtt_ms: 9 } as PairedDevice["connection"] }),
       device("Lost phone", { account: "acct", account_key: "phone-key" }),
@@ -130,6 +132,13 @@ describe("Manage account's devices and PCs", () => {
     await act(async () => { action(root, "remove-pc").props.onClick(); });
     await act(async () => { await press(root, "Remove"); });
     expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("Dead box could not be removed. Try again.");
+  });
+
+  it("says the lists could not be read rather than show an empty account", async () => {
+    readsFail = true;
+    const root = await mount();
+    expect(rows(root, "account-devices")).toEqual(["Devices could not be loaded."]);
+    expect(rows(root, "account-pcs")).toEqual(["PCs could not be loaded."]);
   });
 
   it("offers a watching device no PC removal", async () => {
