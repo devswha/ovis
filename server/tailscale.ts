@@ -1,10 +1,12 @@
 /**
- * What Tailscale on this PC can already do for a phone, read-only: `tailscale status --json` and
- * `tailscale serve status --json`, never `serve`, `up` or anything else that changes the tailnet.
- * The Settings → Phone panel turns the answer into the address that already works, or the one
- * command the user still has to run on this PC.
+ * What Tailscale on this PC can already do for a phone: `tailscale status --json` and
+ * `tailscale serve status --json`. The Settings → Phone panel turns the answer into the address that already works.
+ * Two changes are made, each only when this PC's own window asks (dispatch.ts): `serveTailscale` runs the one
+ * `tailscale serve` for this server's port on a free allowed HTTPS port, and `openTailscaleApp` opens the Tailscale
+ * app so its owner can turn it on and sign in. Nothing runs `up`, and no serve config for another port is touched.
  */
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { RemoteAccess, TailscaleAccess } from "../shared/protocol.ts";
 import { addressesNode } from "./access.ts";
 
@@ -70,9 +72,14 @@ export function httpsPorts(value: string | undefined): readonly number[] {
 }
 
 export function parseTailscale(output: TailscaleOutput | null, port: number, candidates: readonly number[] = HTTPS_PORTS): TailscaleAccess {
-  if (output === null) return NONE;
+  return readServe(output, port, candidates).access;
+}
+
+/** `parseTailscale`'s answer and the free allowed HTTPS port its command names (null when it names none). */
+function readServe(output: TailscaleOutput | null, port: number, candidates: readonly number[]): { access: TailscaleAccess; free: number | null } {
+  if (output === null) return { access: NONE, free: null };
   const status = parseJson<StatusJson>(output.status);
-  if (status === null || status.BackendState !== "Running") return { ...NONE, state: "stopped" };
+  if (status === null || status.BackendState !== "Running") return { access: { ...NONE, state: "stopped" }, free: null };
   const dns = parseNodeName(output.status);
   const serve = parseJson<ServeJson>(output.serve);
   const taken = new Set(Object.keys(serve?.TCP ?? {}).map(Number).filter(Number.isFinite));
@@ -87,11 +94,14 @@ export function parseTailscale(output: TailscaleOutput | null, port: number, can
   }
   const free = servingUrl === null ? candidates.find((candidate) => !taken.has(candidate)) ?? null : null;
   return {
-    state: "running",
-    dns_name: dns,
-    serving_url: servingUrl,
-    serve_command: free === null ? null : `tailscale serve --bg --https=${free} http://127.0.0.1:${port}`,
-    serve_url: free === null || dns === null ? null : httpsUrl(dns, free),
+    free,
+    access: {
+      state: "running",
+      dns_name: dns,
+      serving_url: servingUrl,
+      serve_command: free === null ? null : `tailscale serve --bg --https=${free} http://127.0.0.1:${port}`,
+      serve_url: free === null || dns === null ? null : httpsUrl(dns, free),
+    },
   };
 }
 
@@ -118,8 +128,77 @@ export async function readTailscale(binary: string | null = tailscaleBinary()): 
   return { status, serve };
 }
 
-export async function remoteAccess(port: number, candidates: readonly number[] = httpsPorts(process.env[HTTPS_PORT_VARIABLE])): Promise<RemoteAccess> {
-  return { port, tailscale: parseTailscale(await readTailscale(), port, candidates) };
+export async function remoteAccess(port: number, candidates: readonly number[] = httpsPorts(process.env[HTTPS_PORT_VARIABLE]), binary: string | null = tailscaleBinary()): Promise<RemoteAccess> {
+  return { port, platform: process.platform, tailscale: parseTailscale(await readTailscale(binary), port, candidates) };
+}
+
+const SERVE_TIMEOUT_MS = 15_000;
+
+export type TailscaleChange =
+  | { readonly ok: true; readonly access: RemoteAccess }
+  | {
+    readonly ok: false;
+    readonly code: "tailscale_missing" | "tailscale_not_running" | "tailscale_no_port" | "tailscale_serve_refused" | "tailscale_app_unavailable";
+    /** the first line the CLI wrote, for the server's log only */
+    readonly detail?: string;
+    /** Linux refused for want of operator rights: `sudo tailscale set --operator=$USER` once lets this user serve */
+    readonly operator?: boolean;
+  };
+
+const firstLine = (text: string): string => text.split(/\r?\n/).map((line) => line.trim()).find((line) => line !== "") ?? "";
+
+/**
+ * Serves this server on the tailnet: reads Tailscale again and, only while it runs and serves nothing for `port`,
+ * runs `<tailscale> serve --bg --https=<free> http://127.0.0.1:<port>` on the first free port `candidates` allows
+ * (never another), as an argument array with no shell and a deadline, then reads again and answers what it serves.
+ * Already served, it answers at once and runs nothing.
+ */
+export async function serveTailscale(port: number, candidates: readonly number[] = httpsPorts(process.env[HTTPS_PORT_VARIABLE]),
+  binary: string | null = tailscaleBinary(), platform: NodeJS.Platform = process.platform): Promise<TailscaleChange> {
+  if (binary === null) return { ok: false, code: "tailscale_missing" };
+  const before = readServe(await readTailscale(binary), port, candidates);
+  if (before.access.state !== "running") return { ok: false, code: "tailscale_not_running" };
+  if (before.access.serving_url !== null) return { ok: true, access: { port, platform, tailscale: before.access } };
+  if (before.free === null) return { ok: false, code: "tailscale_no_port" };
+  const proc = Bun.spawn([binary, "serve", "--bg", `--https=${before.free}`, `http://127.0.0.1:${port}`], { windowsHide: true, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => proc.kill(), SERVE_TIMEOUT_MS);
+  let code: number;
+  let said: string;
+  try {
+    const [out, err, exit] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    code = exit;
+    said = firstLine(err) || firstLine(out);
+  } finally {
+    clearTimeout(timer);
+  }
+  const refused = (detail: string): TailscaleChange => ({
+    ok: false, code: "tailscale_serve_refused", detail,
+    operator: platform === "linux" && /access denied|permission|operator|root/i.test(detail),
+  });
+  if (code !== 0) return refused(said || `exit ${code}`);
+  const after = parseTailscale(await readTailscale(binary), port, candidates);
+  if (after.serving_url === null) return refused(said || "serve ran but serves no address for this port");
+  return { ok: true, access: { port, platform, tailscale: after } };
+}
+
+/** How this PC opens its Tailscale app, as an argument array; null where it has none to open (Linux has no app of Tailscale's). */
+export function tailscaleAppCommand(platform: NodeJS.Platform, env: Record<string, string | undefined> = process.env, exists: (path: string) => boolean = existsSync): string[] | null {
+  if (platform === "darwin") return ["open", "-a", "Tailscale"];
+  if (platform !== "win32") return null;
+  const gui = join(env["ProgramFiles"] ?? "C:\\Program Files", "Tailscale", "tailscale-ipn.exe");
+  return exists(gui) ? [gui] : null;
+}
+
+/** Opens the Tailscale app on this PC, where it has one, and does not wait for it: its owner turns it on and signs in there. */
+export function openTailscaleApp(platform: NodeJS.Platform = process.platform): { ok: true } | { ok: false; code: "tailscale_app_unavailable"; detail?: string } {
+  const command = tailscaleAppCommand(platform);
+  if (command === null) return { ok: false, code: "tailscale_app_unavailable" };
+  try {
+    Bun.spawn(command, { windowsHide: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, code: "tailscale_app_unavailable", detail: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /** A tagged node belongs to no person: its `User` entry is the node itself, named by its MagicDNS name. */

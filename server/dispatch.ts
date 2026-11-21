@@ -15,7 +15,8 @@ import { bindScope, cameThroughProxy, decideAccess, decideMachineAccess, forward
 import { type DeviceStore, handleDeviceRequest, newStreamKey, streamCookie, streamKeys, type DeviceMatch } from "./devices.ts";
 import { handlePreferencesRequest, type PreferenceStore } from "./preferences.ts";
 import { handleSeenRequest, type SeenStore } from "./seen.ts";
-import { remoteAccess } from "./tailscale.ts";
+import { openTailscaleApp, remoteAccess, serveTailscale, tailscaleBinary } from "./tailscale.ts";
+import { TAILSCALE_CONTROLS } from "./dispatch-routes.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute, wordedHeaders, wordHerdrFailures } from "./http.ts";
 import { requestOrigin, serveStatic } from "./static.ts";
 import { compressResponse } from "./compress.ts";
@@ -151,6 +152,8 @@ export interface RequestServices {
    * answer (R8). False when no page listens or there is no desktop to open it on.
    */
   readonly openConfirmPage?: () => boolean;
+  /** the tailscale CLI /api/access reads and POST /api/access/tailscale/serve runs; unset, the one this PC has */
+  readonly tailscaleBinary?: string | null | undefined;
   /** puts a waiting key on this PC's screen */
   readonly askScreenForKey?: (entry: PendingRedemption) => void;
   /** /api/account/lock and /unlock (server/account/lock-routes.ts); only with the release flag */
@@ -182,6 +185,9 @@ export interface ServerContext {
    */
   readonly lanHttps?: boolean;
 }
+
+/** the tailscale CLI this server reads and, for its own window, runs: the one it was handed (tests), else this PC's */
+const tailscaleCli = (ctx: ServerContext): string | null => ctx.services.tailscaleBinary !== undefined ? ctx.services.tailscaleBinary : tailscaleBinary();
 
 const OTHER_MACHINE_FILES = /^\/api\/(?:fs\/|pane\/(?:files|docs|image)$|workspace\/(?:diff\/|git\/|directories$|pr(?:$|\/)))/;
 
@@ -301,6 +307,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return refuse("invalid_origin", "Open it from this app", 403);
     return ctx.services.openConfirmPage() ? new Response(null, { status: 204, headers: { "cache-control": "no-store" } })
       : refuse("confirm_page_unavailable", "The confirm page could not be opened here. Run ovis confirm on this PC.", 409);
+  }
+  // a Tailscale change (serve Ovis on the tailnet, open the app) is asked only from this PC's own window: any other
+  // caller, a relayed or account-joined one included, is told so before anything is read or run
+  const tailscaleControl = pathname === TAILSCALE_CONTROLS.serve || pathname === TAILSCALE_CONTROLS.open;
+  if (tailscaleControl && !ownWindow) {
+    setRequestRoute(pathname);
+    return jsonResponse({ error: { code: "local_required", message: "Set up Tailscale on this PC's own screen." } }, 403, { "cache-control": "no-store" });
   }
   const askingTheScreen = ownWindow
     && ((pathname === "/api/account/lock" && request.method === "GET") || (pathname === "/api/account/unlock" && request.method === "POST"));
@@ -631,7 +644,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     // the bridge token cannot read /api/access: where this server answers comes with its update status (#2191)
     const where = bridgeAuthorized ? async () => {
       const port = ctx.port ?? DEFAULT_PORT;
-      const serving = await remoteAccess(port).then((access) => access.tailscale.serving_url, () => null);
+      const serving = await remoteAccess(port, undefined, tailscaleCli(ctx)).then((access) => access.tailscale.serving_url, () => null);
       return { port, serving_url: serving };
     } : undefined;
     return handleUpdateRequest(request, pathname, options.updates, where);
@@ -882,10 +895,29 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return jsonResponse(readHerdrUi(options.herdrConfigPath), 200, { "cache-control": "no-store" });
   }
 
+  if (tailscaleControl) {
+    setRequestRoute(pathname);
+    const refuse = (code: string, message: string, status: number, extra: Record<string, unknown> = {}) =>
+      jsonResponse({ error: { code, message, ...extra } }, status, { "cache-control": "no-store" });
+    if (request.method !== "POST") return refuse("method_not_allowed", "use POST", 405);
+    if (request.headers.get("x-herdr-machine") !== "1") return refuse("invalid_origin", "Use controls from this app", 403);
+    if (pathname === TAILSCALE_CONTROLS.open) {
+      const opened = openTailscaleApp();
+      if (opened.ok) return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+      if (opened.detail !== undefined) console.warn(`Tailscale app did not open: ${opened.detail}`);
+      return refuse(opened.code, "This PC has no Tailscale app to open.", 409);
+    }
+    const served = await serveTailscale(ctx.port ?? DEFAULT_PORT, undefined, tailscaleCli(ctx));
+    if (served.ok) return jsonResponse({ ...served.access, relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
+    // the CLI's own words go to this PC's log only, never to the page
+    if (served.detail !== undefined) console.warn(`tailscale serve refused: ${served.detail}`);
+    return refuse(served.code, "Tailscale did not serve Ovis here.", 409, served.operator === true ? { operator: true } : {});
+  }
+
   if (pathname === "/api/access") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
-    return jsonResponse({ ...await remoteAccess(ctx.port ?? DEFAULT_PORT), relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
+    return jsonResponse({ ...await remoteAccess(ctx.port ?? DEFAULT_PORT, undefined, tailscaleCli(ctx)), relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
   }
 
   if (pathname === "/api/session") {

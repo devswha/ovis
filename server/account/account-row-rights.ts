@@ -2,7 +2,7 @@
  * Dispatcher policy for an account-joined row on this PC. Row Revoke uses the PC's admission order;
  * signed records, including a signed remove, are independently authorized by their handler.
  */
-import { DISPATCH_READS, LOCAL_DRIVE_POSTS, RELAY_CONTROLS } from "../dispatch-routes.ts";
+import { DISPATCH_READS, LOCAL_DRIVE_POSTS, RELAY_CONTROLS, TAILSCALE_CONTROLS } from "../dispatch-routes.ts";
 
 export interface AccountCaller {
   readonly rowId: string;
@@ -108,12 +108,13 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
 };
 
 /**
- * These exact mutations already refuse an account-joined principal in their handler. /api/account/confirm-page answers
- * this PC's own window alone (dispatch.ts ownWindow), which a relayed principal never is.
+ * These exact mutations already refuse an account-joined principal in their handler. /api/account/confirm-page and the
+ * Tailscale controls answer this PC's own window alone (dispatch.ts ownWindow), which a relayed principal never is.
  */
 export function accountRouteGuard(method: string, pathname: string): boolean {
   return method === "POST" && (pathname === "/api/account/introduce" || pathname === "/api/account/confirm-page"
-    || Object.values(RELAY_CONTROLS).some(path => path === pathname));
+    || Object.values(RELAY_CONTROLS).some(path => path === pathname)
+    || Object.values(TAILSCALE_CONTROLS).some(path => path === pathname));
 }
 
 /** Null means unregistered, never permission. GET needs the separate explicit read list. */

@@ -175,6 +175,8 @@ export function createServer(
     tailscaleServeOnly?: boolean;
     /** the tailnet identity behind the access check; unset, the tailscale CLI says. Tests pass one with their own status reader. */
     tailnet?: TailnetIdentitySource;
+    /** the tailscale CLI the own window's Tailscale controls run; unset, the one this PC has (tailscaleBinary). Tests pass a fake. */
+    tailscaleBinary?: string | null;
     codexHome?: string;
     grokHome?: string;
     /** Muse Code's data directory; defaults to XDG_DATA_HOME/muse or ~/.local/share/muse. Tests use an isolated store. */
@@ -678,6 +680,7 @@ export function createServer(
     get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
     get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },
     get askScreenForKey() { return devices.screenApprovalActive() ? askScreen : undefined; },
+    tailscaleBinary: options.tailscaleBinary,
     get openConfirmPage() {
       if (!devices.screenApprovalActive()) return undefined;
       return () => confirmListener !== null && (options.openBrowser ?? openOnDesktop)(`http://127.0.0.1:${confirmListener.port}/`);

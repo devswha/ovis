@@ -5,7 +5,8 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 
 import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
-import type { PairedDevice, PortalStatus, RelayStatus } from "../../shared/protocol.ts";
+import type { PairedDevice, PortalStatus, RelayStatus, RemoteAccess, TailscaleAccess } from "../../shared/protocol.ts";
+import type { PhonePlan } from "../lib/phone.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
 import { pcAccountStatus, type PcAccountStatus } from "../lib/account/join.ts";
@@ -20,7 +21,7 @@ import { RelayAccountPcs } from "./RelayAccountPcs.tsx";
 
 // the confirmation before Revoke all is a portal on document.body, which this renderer has none of
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, ConnectPhoneDialog, connectTabs, localWays, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, signInLink, TailscaleTab, DirectTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
+const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, ConnectPhoneDialog, connectTabs, TAILSCALE_POLL_MS, localWays, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, signInLink, TailscaleTab, DirectTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
 const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
 const { announcePairingCode, QR_CODE_ENDED_CHANNEL, useRelay } = await import("../lib/useRelay.ts");
 const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrFindings, accountQrNoticeWaiting, addedBy, accountQrPending, resetAccountQrWatch, unvouched } = await import("../lib/accountQrWatch.ts");
@@ -72,8 +73,15 @@ describe("Connect a phone on a phone", () => {
   let offersOut: number;
   /** the next POSTs of /api/relay/offer, each held on its way to the PC until its gate opens (none: the PC gets it at once) */
   let offerRoads: Promise<void>[];
+  /** what GET /api/access answers now, and the answers of the own window's Tailscale controls */
+  let accessNow: RemoteAccess;
+  let serveReply: () => Response;
+  let openReply: () => Response;
 
   beforeEach(() => {
+    accessNow = tailscaleAccess({ state: "stopped" });
+    serveReply = () => Response.json({ error: { code: "tailscale_serve_refused", message: "refused" } }, { status: 409 });
+    openReply = () => new Response(null, { status: 204 });
     pending = "482913";
     pairStarts = [];
     offersAsked = [];
@@ -155,6 +163,9 @@ describe("Connect a phone on a phone", () => {
         if (addressAnswer !== undefined) return Response.json(addressAnswer, { status: 201 });
         return Response.json({ machine: { id: "desk", name: "desk.tail.ts.net", kind: "address", address: "https://desk.tail.ts.net:7317", enabled: true, state: "connecting", error: null, snapshot: null } }, { status: 201 });
       }
+      if (path === "/api/access") return Response.json(accessNow);
+      if (path === "/api/access/tailscale/serve") return serveReply();
+      if (path === "/api/access/tailscale/open") return openReply();
       if (path === "/api/relay/code") { pending = "777111"; pendingOwn = false; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID }); }
       return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
     };
@@ -550,6 +561,101 @@ describe("Connect a phone on a phone", () => {
     // the request it waited on failed: nothing will announce a code, so the waiting tab asks itself
     await until(() => starts() === 2, "the waiting tab's own request");
     await until(() => qrCodes().some((qr) => String(qr.props.value) === "http://192.168.0.12:7317/?pair=246810"), "the waiting tab's QR code");
+  });
+
+  describe("the Tailscale tab's step, one press each and never a terminal step until a serve is refused", () => {
+    /** the intervals the page set, the Tailscale watch's among them; any other runs as usual */
+    let polls: { tick: () => void; cleared: boolean }[];
+    const mountStep = async (step: PhonePlan, platform: string) => {
+      polls = [];
+      const realInterval = globalThis.setInterval, realClear = globalThis.clearInterval;
+      Object.assign(window, {
+        matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} },
+        setInterval: (tick: () => void, ms: number) => {
+          if (ms !== TAILSCALE_POLL_MS) return realInterval(tick, ms);
+          polls.push({ tick, cleared: false });
+          return -polls.length;
+        },
+        clearInterval: (id: number) => { if (id < 0) polls[-id - 1]!.cleared = true; else realClear(id); },
+      });
+      const pageEvents = new EventTarget();
+      Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
+      descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
+      Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
+      const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
+      await act(async () => {
+        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={step} tailscale={step} platform={platform} pairUrl={null} relay={relayState()} readOnly={false} closesGate={false} canPair
+          signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
+      });
+      for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+      expect(renderer!.root.findByProps({ "data-tab": "tailscale" }).props["aria-pressed"]).toBe(true);
+    };
+    const panel = () => renderer!.root.findByProps({ "data-tab-panel": "tailscale" });
+    /** no command is on screen: `tailscale up`, a serve command or the operator one */
+    const commands = () => panel().findAll((node) => node.type === "code").map(text);
+    const served = (url: string): RemoteAccess => tailscaleAccess({ state: "running", serving_url: url });
+    const command: PhonePlan = { kind: "command", command: "tailscale serve --bg --https=8443 http://127.0.0.1:7317", url: "https://workstation.example.ts.net:8443" };
+    const asked = (path: string) => requests.filter((request) => request === path).length;
+
+    it("Open with Tailscale has the PC serve itself, and the tab shows the phone QR of the served address", async () => {
+      serveReply = () => Response.json(served("https://workstation.example.ts.net:8443"));
+      await mountStep(command, "darwin");
+      expect([commands(), qrCodes()]).toEqual([[], []]);
+      await act(async () => { button("Open with Tailscale").props.onClick(); });
+      await until(() => qrCodes().length === 1, "the served address's QR code");
+      expect(asked("/api/access/tailscale/serve")).toBe(1);
+      expect(qrCodes().map((qr) => String(qr.props.value))).toEqual(["https://workstation.example.ts.net:8443/?pair=482913"]);
+      expect(commands()).toEqual([]);
+      // served: nothing reads Tailscale again
+      expect(polls.every((poll) => poll.cleared)).toBe(true);
+    });
+
+    it("a refused serve shows one line and the command as the way left, with the operator command where Linux refused for want of it", async () => {
+      serveReply = () => Response.json({ error: { code: "tailscale_serve_refused", message: "refused", operator: true } }, { status: 409 });
+      await mountStep(command, "linux");
+      await act(async () => { button("Open with Tailscale").props.onClick(); });
+      await until(() => panel().findAllByProps({ "data-testid": "tailscale-serve-refused" }).length === 1, "the refusal");
+      expect(commands()).toEqual([command.kind === "command" ? command.command : "", "sudo tailscale set --operator=$USER"]);
+      expect(qrCodes()).toEqual([]);
+      serveReply = () => Response.json({ error: { code: "tailscale_serve_refused", message: "refused" } }, { status: 409 });
+      await act(async () => { button("Open with Tailscale").props.onClick(); });
+      await until(() => commands().length === 1, "the refusal without the operator command");
+    });
+
+    it("with no Tailscale, links to its download for this PC's platform and shows no command", async () => {
+      await mountStep({ kind: "missing" }, "win32");
+      const link = panel().findAll((node) => node.type === "a" && text(node).trim() === "Get Tailscale");
+      expect(link.map((node) => node.props.href)).toEqual(["https://tailscale.com/download/windows"]);
+      expect(commands()).toEqual([]);
+    });
+
+    it("with Tailscale off, Open Tailscale opens the app, and the tab moves on by itself once Tailscale is on, then to the QR in one press", async () => {
+      await mountStep({ kind: "stopped" }, "darwin");
+      expect(commands()).toEqual([]);
+      await act(async () => { button("Open Tailscale").props.onClick(); });
+      await until(() => asked("/api/access/tailscale/open") === 1, "the app opened");
+      expect(polls.filter((poll) => !poll.cleared)).toHaveLength(1);
+      accessNow = tailscaleAccess({ state: "running", serve_command: command.kind === "command" ? command.command : null, serve_url: "https://workstation.example.ts.net:8443" });
+      await act(async () => { polls.find((poll) => !poll.cleared)!.tick(); });
+      await until(() => buttons().includes("Open with Tailscale"), "the serve step");
+      expect(commands()).toEqual([]);
+      serveReply = () => Response.json(served("https://workstation.example.ts.net:8443"));
+      await act(async () => { button("Open with Tailscale").props.onClick(); });
+      await until(() => qrCodes().length === 1, "the QR code");
+      // closing the dialog stops the watch
+      await act(async () => { renderer!.unmount(); });
+      renderer = undefined;
+      expect(polls.every((poll) => poll.cleared)).toBe(true);
+    });
+
+    it("on Linux, with Tailscale off, says in one line to turn it on, with no button or command, and reads again when the window comes back", async () => {
+      await mountStep({ kind: "stopped" }, "linux");
+      expect(text(panel())).toContain("Turn on Tailscale and sign in.");
+      expect([buttons().includes("Open Tailscale"), commands()]).toEqual([false, []]);
+      accessNow = tailscaleAccess({ state: "running", serve_command: "tailscale serve --bg --https=443 http://127.0.0.1:7317", serve_url: "https://workstation.example.ts.net" });
+      await act(async () => { window.dispatchEvent(new Event("focus")); });
+      await until(() => buttons().includes("Open with Tailscale"), "the serve step after focus");
+    });
   });
 
   it("offers only the ways this window can use: the relay to its owner on a direct page, Tailscale and an address where PCs are added from", () => {
@@ -2183,3 +2289,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(unvouched(list, new Set(["a", "s", "c"]), ACCOUNT_ID)).toEqual([]);
   });
 });
+
+function tailscaleAccess(tailscale: Partial<TailscaleAccess> & Pick<TailscaleAccess, "state">): RemoteAccess {
+  return { port: 7317, platform: "darwin", tailscale: { dns_name: "workstation.example.ts.net", serving_url: null, serve_command: null, serve_url: null, ...tailscale } };
+}

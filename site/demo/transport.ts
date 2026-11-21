@@ -1223,6 +1223,9 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   }
   if (path === "/api/portal/start" || path === "/api/portal/stop" || path === "/api/portal/invite") return error("portal_unsupported", "The demo opens no public address.", 409);
   if (path === "/api/herdr-ui") return json({ copy_on_select: true, keys: resolveHerdrKeys(undefined) }, 200, { "cache-control": "no-store" });
+  // the own window's Tailscale controls: the demo serves at once, and has the app "opened" (its /api/access then says what it says)
+  if (path === "/api/access/tailscale/serve") return json({ port: 7317, platform: "darwin", relay: demoRelayStatus(), tailscale: { state: "running", dns_name: "workstation.example.ts.net", serving_url: "https://workstation.example.ts.net", serve_command: null, serve_url: null } });
+  if (path === "/api/access/tailscale/open") return new Response(null, { status: 204 });
   if (path === "/api/access") {
     const tailscale = new URLSearchParams(location.search).get("demo_tailscale");
     if (tailscale === "missing") return json({ port: 7317, relay: demoRelayStatus(), tailscale: { state: "missing", dns_name: null, serving_url: null, serve_command: null, serve_url: null } });

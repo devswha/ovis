@@ -269,7 +269,7 @@ const BASE: Record<string, string> = {
   "{n} ms": "{n} ms",
   "Check now": "지금 확인",
   "Run this once on this PC.": "이 PC에서 한 번 실행해요.",
-  "Tailscale isn't installed.": "Tailscale이 설치되어 있지 않아요.",
+  "Tailscale isn't installed.": "Tailscale이 없어요.",
   "Check again": "다시 확인",
   "The block did not go through yet.": "차단이 아직 전달되지 않았어요.",
   "The block was refused. Block it again from this device.": "차단이 거절됐어요. 이 기기에서 다시 막아 주세요.",

@@ -153,6 +153,21 @@ export function fetchRemoteAccess(): Promise<RemoteAccess> {
   return getJson<RemoteAccess>("/api/access");
 }
 
+export type TailscaleServed = { ok: true; access: RemoteAccess } | { ok: false; code: string | null; operator: boolean };
+
+/** Has this PC's server run `tailscale serve` for itself (this PC's own window only): the access it then has, or its refusal. */
+export async function serveOnTailscale(): Promise<TailscaleServed> {
+  const response = await apiFetch("/api/access/tailscale/serve", { method: "POST", headers: { "x-herdr-machine": "1" } });
+  if (response.ok) return { ok: true, access: await response.json() as RemoteAccess };
+  const body = await response.json().catch(() => null) as { error?: { code?: string; operator?: boolean } } | null;
+  return { ok: false, code: body?.error?.code ?? null, operator: body?.error?.operator === true };
+}
+
+/** Opens the Tailscale app on this PC (this PC's own window only); false where it has none or it did not open. */
+export async function openTailscaleApp(): Promise<boolean> {
+  return (await apiFetch("/api/access/tailscale/open", { method: "POST", headers: { "x-herdr-machine": "1" } })).ok;
+}
+
 export function fetchUsage(refresh = false): Promise<UsageReport> {
   return getJson<UsageReport>(refresh ? "/api/usage?refresh=1" : "/api/usage");
 }

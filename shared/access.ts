@@ -189,6 +189,8 @@ export type AccountPairingState =
 export interface RemoteAccess {
   /** the port this server listens on; the tailscale command names it */
   readonly port: number;
+  /** the server's `process.platform` (darwin, win32, linux...): which Tailscale download and app this PC takes; older servers omit it */
+  readonly platform?: string;
   readonly tailscale: TailscaleAccess;
 }
 

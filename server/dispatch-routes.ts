@@ -11,6 +11,9 @@ export const RELAY_CONTROLS = {
   direct: "/api/relay/direct", pairing: "/api/relay/pairing", join: "/api/relay/join",
 } as const;
 
+/** The Tailscale changes this PC's own window alone may ask for (dispatch.ts ownWindow): serve Ovis on the tailnet, open the app. */
+export const TAILSCALE_CONTROLS = { serve: "/api/access/tailscale/serve", open: "/api/access/tailscale/open" } as const;
+
 // P5: driving the terminal on this PC, not administering its relay or other PCs.
 export const LOCAL_DRIVE_POSTS: readonly string[] = [
   "pane/input", "pane/keys", "pane/find", "pane/scroll", "pane/rename", "pane/close", "pane/image",
@@ -34,6 +37,7 @@ export const DISPATCH_MUTATIONS = {
     "/api/updates/install", "/api/updates/check", "/api/updates/cancel", "/api/herdr/update",
     "/api/account/lock", "/api/account/unlock", "/api/account/forget", "/api/account/confirm", "/api/account/confirm-page", "/api/account/leave",
     "/api/auth", "/api/portal/start", "/api/portal/stop", "/api/portal/invite",
+    ...Object.values(TAILSCALE_CONTROLS),
   ],
   PUT: ["/api/alerts/webhook", "/api/fs/text", "/api/preferences", "/api/cliproxy", "/api/voice/config"],
   PATCH: ["/api/devices/:id"],

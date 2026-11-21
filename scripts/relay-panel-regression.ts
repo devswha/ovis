@@ -448,7 +448,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     // this loopback page with no Tailscale has no address a phone can open: the Tailscale tab's phone part offers the step
     // that makes one, and Direct's code stands alone, with no QR box
     await ui.openTab("tailscale");
-    await tailscaleTab.getByTestId("connect-phone-scan").getByRole("link", { name: "Install Tailscale", exact: true }).waitFor();
+    await tailscaleTab.getByTestId("connect-phone-scan").getByRole("link", { name: "Get Tailscale", exact: true }).waitFor();
     assert.equal(await tailscaleTab.getByText("The phone needs the Tailscale app turned on too.", { exact: true }).count(), 1, "it says the phone needs Tailscale too");
     assert.equal(await tailscaleCode.count(), 0, "no Tailscale address: no code under it either");
     const codeStart = pairStart();

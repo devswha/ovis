@@ -14,17 +14,17 @@ import { decodeOffer } from "../../shared/relay-offer.ts";
 import { AccountService } from "../lib/account/service.ts";
 import type { AddConnectionTab } from "../lib/addConnectionRequest.ts";
 import { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_POLL_MS, ACCOUNT_QR_WATCH_EVENT, accountQrFindings, accountQrNoticeWaiting, accountQrPending, addedBy, holdAccountQrNotice, resetAccountQrWatch, stopAccountQrWatch, takeAccountQrNotice, watchEndedAccountQr, type AccountQrBaseline, type AccountQrStray } from "../lib/accountQrWatch.ts";
-import { addAddressPc, ApiError, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, revokeDevice, startPairing, type RelayOffer, type SshCandidate } from "../lib/api.ts";
+import { addAddressPc, ApiError, endPairing, fetchDevices, fetchRemoteAccess, findSshCandidates, findTailnetPcs, openTailscaleApp, requestRelayOffer, revokeAllDevices, revokeDevice, serveOnTailscale, startPairing, type RelayOffer, type SshCandidate } from "../lib/api.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
-import type { PhonePlan } from "../lib/phone.ts";
+import { tailscalePlan, type PhonePlan } from "../lib/phone.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { announcePairingCode, announceQrCodeEnded, DEVICES_CHANGED_EVENT, inRelayShell, PAIRING_CODE_EVENT, tellOtherWindowsQrCodeEnded, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
-import type { PairedDevice, PairingCode, PortalStatus } from "../../shared/protocol.ts";
+import type { PairedDevice, PairingCode, PortalStatus, RemoteAccess } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
 import { AddThisPc, useSignInAgainHere, type SignedInHere } from "./AccountSection.tsx";
@@ -46,6 +46,12 @@ import { ExternalLink } from "../lib/externalLink.ts";
 export type ConnectTab = AddConnectionTab;
 
 const TAILSCALE_DOWNLOAD = "https://tailscale.com/download";
+/** Tailscale's download page for the platform this PC's server reports (RemoteAccess.platform) */
+const TAILSCALE_DOWNLOADS: Readonly<Record<string, string>> = { darwin: `${TAILSCALE_DOWNLOAD}/mac`, win32: `${TAILSCALE_DOWNLOAD}/windows`, linux: `${TAILSCALE_DOWNLOAD}/linux` };
+/** how often an open Tailscale step reads this PC's Tailscale again, so it moves on by itself once Tailscale is on */
+export const TAILSCALE_POLL_MS = 3000;
+/** the command that lets this Linux user run `tailscale serve` without root, shown only after Tailscale refused it for want of it */
+const TAILSCALE_OPERATOR = "sudo tailscale set --operator=$USER";
 
 /** the guide's way to open a PC from outside: Portal, Cloudflare Tunnel or a reverse proxy */
 const OUTSIDE_HELP = "https://github.com/devswha/ovis/blob/main/docs/guide.md#behind-a-reverse-proxy";
@@ -119,6 +125,8 @@ export interface ConnectPhoneDialogProps {
   plan: PhonePlan;
   /** what Tailscale alone offers a phone (tailscalePlan), for the Tailscale tab; `plan` when omitted */
   tailscale?: PhonePlan;
+  /** the platform this PC's server reports (RemoteAccess.platform): which Tailscale download and app this PC takes */
+  platform?: string | undefined;
   pairUrl: string | null;
   /** this page's own address when a phone could open it (not loopback, not the hosted shell): Direct's QR code; `pairUrl` when omitted */
   pageUrl?: string | null;
@@ -153,7 +161,7 @@ export interface ConnectPhoneDialogProps {
   onClose: () => void;
 }
 
-export function ConnectPhoneDialog({ asked = null, plan, tailscale = plan, pairUrl, pageUrl = pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, pairUrl, pageUrl = pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -173,6 +181,11 @@ export function ConnectPhoneDialog({ asked = null, plan, tailscale = plan, pairU
   }, [onClose, surface]);
 
   const phone = useMediaQuery(PHONE_QUERY);
+  // what this PC's Tailscale says now, read again while a Tailscale step is up (useTailscaleWatch) or after a serve
+  const [fresh, setFresh] = useState<RemoteAccess | null>(null);
+  const plan = fresh !== null && tailscaleStepKind(givenPlan) ? tailscalePlan(fresh) : givenPlan;
+  const tailscale = fresh !== null && tailscaleStepKind(givenTailscale) ? tailscalePlan(fresh) : givenTailscale;
+  const platform = fresh?.platform ?? givenPlatform;
   const tabs = connectTabs({ sshOffered: onAddPc !== null && !readOnly && !inRelayShell(), relay, readOnly });
   const hasAccount = account !== null;
   // until a tab is picked, the opening one follows the tabs as they arrive (the relay's state comes a moment later)
@@ -197,6 +210,7 @@ export function ConnectPhoneDialog({ asked = null, plan, tailscale = plan, pairU
   const directUrl = portal?.phase === "running" && portal.url !== null ? portal.url : pageUrl !== null && pageUrl !== tailnet.address ? pageUrl : null;
   // one pairing code for both tabs that show one: the PC keeps one pending code, so a second would end the first
   const sharedCode = useRef<SharedCode>({ code: null, asking: false, waiting: new Set() });
+  useTailscaleWatch(!waiting && ((tab === "tailscale" && tailnet.tailscaleStep !== null) || (tab === null && local.tailscaleStep !== null)), setFresh);
 
   return createPortal(
     <SettingsQuery.Provider value={[]}>
@@ -213,14 +227,14 @@ export function ConnectPhoneDialog({ asked = null, plan, tailscale = plan, pairU
             </div>
           )}
           {waiting && <p className="settings-hint" role="status" data-testid="connect-pending">{t("Loading…")}</p>}
-          {tab === null && !waiting && <LocalWay plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} phone={phone} />}
+          {tab === null && !waiting && <LocalWay plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} phone={phone} platform={platform} onAccess={setFresh} />}
           {opened.current.has("tailscale") && tabs.includes("tailscale") && (
             <div className="connect-tab" data-tab-panel="tailscale" hidden={tab !== "tailscale"}>
               <TailscaleTab found={found} onAddPc={onAddPc!} />
               <PhoneScan>
                 {tailnet.address !== null ? (
                   tailnet.code ? <CodeRoute pairUrl={tailnet.address} startAtOnce={tab === "tailscale"} shared={sharedCode} phone={phone} compact /> : <PhonePanel url={tailnet.address} phone={phone} />
-                ) : tailnet.tailscaleStep !== null ? <TailscaleStep step={tailnet.tailscaleStep} /> : null}
+                ) : tailnet.tailscaleStep !== null ? <TailscaleStep step={tailnet.tailscaleStep} platform={platform} onAccess={setFresh} /> : null}
                 {(tailscale.kind === "served" || tailnet.tailscaleStep !== null) && <p className="settings-hint">{t("The phone needs the Tailscale app turned on too.")}</p>}
               </PhoneScan>
             </div>
@@ -500,7 +514,7 @@ function PhoneScan({ children }: { children: ReactNode }) {
 }
 
 /** With no way to add a PC on this page (a phone's page, the hosted shell, a device that only watches), what pairs a device without signing in. */
-function LocalWay({ plan, pairUrl, readOnly, local, phone }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; local: LocalWays; phone: boolean }) {
+function LocalWay({ plan, pairUrl, readOnly, local, phone, platform, onAccess }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; local: LocalWays; phone: boolean; platform: string | undefined; onAccess: (access: RemoteAccess) => void }) {
   const t = useT();
   if (!local.any) return <p className="settings-description">{t("Open Ovis on the PC itself to add a connection.")}</p>;
   const needsTailscale = <p className="settings-hint">{t("The phone needs the Tailscale app turned on too.")}</p>;
@@ -518,7 +532,7 @@ function LocalWay({ plan, pairUrl, readOnly, local, phone }: { plan: PhonePlan; 
       {local.tailscaleStep !== null && (
         <section className="connect-section" aria-label="Tailscale" data-tailscale={local.tailscaleStep.kind}>
           <p className="settings-label">Tailscale</p>
-          <TailscaleStep step={local.tailscaleStep} />
+          <TailscaleStep step={local.tailscaleStep} platform={platform} onAccess={onAccess} />
           {needsTailscale}
         </section>
       )}
@@ -540,30 +554,80 @@ function LocalWay({ plan, pairUrl, readOnly, local, phone }: { plan: PhonePlan; 
   );
 }
 
+const tailscaleStepKind = (plan: PhonePlan): boolean => plan.kind === "missing" || plan.kind === "stopped" || plan.kind === "command";
+
 /**
- * The one Tailscale step that would give a phone an address, behind a press: install it, sign in, or serve Ovis on the
- * tailnet with the command this PC's server worked out (`serve_command`, the setup guide's own).
+ * While `active` (a Tailscale step is on screen), reads this PC's Tailscale again every TAILSCALE_POLL_MS and whenever
+ * the window comes back to the front, so turning Tailscale on or signing in moves the step on with nothing else to do.
+ * It stops when the step is gone or the dialog closes.
  */
-function TailscaleStep({ step }: { step: NonNullable<LocalWays["tailscaleStep"]> }) {
+function useTailscaleWatch(active: boolean, onAccess: (access: RemoteAccess) => void) {
+  useEffect(() => {
+    if (!active) return;
+    let live = true;
+    const read = () => { fetchRemoteAccess().then((access) => { if (live) onAccess(access); }, () => undefined); };
+    const timer = window.setInterval(read, TAILSCALE_POLL_MS);
+    window.addEventListener("focus", read);
+    return () => { live = false; window.clearInterval(timer); window.removeEventListener("focus", read); };
+  }, [active, onAccess]);
+}
+
+/**
+ * The one Tailscale step that would give a phone an address, each one press with no terminal: get Tailscale (its
+ * download for this PC's platform), open the Tailscale app to turn it on and sign in (macOS and Windows; Linux has no
+ * app, so one line says so), or have this PC's server serve Ovis on the tailnet. Only a serve Tailscale refused shows
+ * the command, as the way left.
+ */
+function TailscaleStep({ step, platform, onAccess }: { step: NonNullable<LocalWays["tailscaleStep"]>; platform: string | undefined; onAccess: (access: RemoteAccess) => void }) {
   const t = useT();
-  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [refused, setRefused] = useState<{ operator: boolean } | null>(null);
+  const [noApp, setNoApp] = useState(false);
   if (step.kind === "missing") return (
     <>
       <p className="settings-description">{t("Tailscale isn't installed.")}</p>
-      <div className="phone-actions"><ExternalLink kind="link" className="btn" href={TAILSCALE_DOWNLOAD}>{t("Install Tailscale")}</ExternalLink></div>
+      <div className="phone-actions"><ExternalLink kind="link" className="btn" href={TAILSCALE_DOWNLOADS[platform ?? ""] ?? TAILSCALE_DOWNLOAD}>{t("Get Tailscale")}</ExternalLink></div>
     </>
   );
-  const signIn = step.kind === "stopped";
+  if (step.kind === "stopped") {
+    if (noApp || (platform !== "darwin" && platform !== "win32")) return <p className="settings-description">{t("Turn on Tailscale and sign in.")}</p>;
+    const open = () => {
+      setBusy(true);
+      void openTailscaleApp().catch(() => false).then((opened) => { setBusy(false); if (!opened) setNoApp(true); });
+    };
+    return (
+      <>
+        <p className="settings-description">{t("Tailscale on this PC is off or not signed in.")}</p>
+        <div className="phone-actions"><button type="button" className="btn" disabled={busy} onClick={open}>{t("Open Tailscale")}</button></div>
+      </>
+    );
+  }
+  const serve = () => {
+    setBusy(true);
+    setRefused(null);
+    void serveOnTailscale().catch(() => ({ ok: false as const, code: null, operator: false })).then((answer) => {
+      setBusy(false);
+      if (answer.ok) onAccess(answer.access);
+      else setRefused({ operator: answer.operator });
+    });
+  };
   return (
     <>
-      <p className="settings-description">{signIn ? t("Tailscale on this PC is off or not signed in.") : t("Tailscale is on, but Ovis is not open at a Tailscale address yet.")}</p>
-      {open ? (
-        <>
-          <p className="settings-description">{signIn ? t("Sign in from the Tailscale app on this PC, or run this:") : t("Run this once on this PC.")}</p>
-          <CommandToCopy command={signIn ? "tailscale up" : step.command} />
-        </>
-      ) : (
-        <div className="phone-actions"><button type="button" className="btn" onClick={() => setOpen(true)}>{signIn ? t("Sign in to Tailscale") : t("Open with Tailscale")}</button></div>
+      <p className="settings-description">{t("Tailscale is on, but Ovis is not open at a Tailscale address yet.")}</p>
+      <div className="phone-actions">
+        <button type="button" className="btn" disabled={busy} aria-busy={busy} onClick={serve}>{busy ? t("Opening…") : t("Open with Tailscale")}</button>
+      </div>
+      {refused !== null && (
+        <div data-testid="tailscale-serve-refused">
+          <p className="settings-description" role="status">{t("Tailscale didn't allow it. Run this once on this PC:")}</p>
+          <CommandToCopy command={step.command} />
+          {refused.operator && (
+            <>
+              <p className="settings-hint">{t("Or allow it once, then press Open with Tailscale again:")}</p>
+              <CommandToCopy command={TAILSCALE_OPERATOR} />
+            </>
+          )}
+        </div>
       )}
     </>
   );
