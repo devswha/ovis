@@ -1,8 +1,9 @@
 name: Desktop app check
 # A pull request that changes the desktop app runs the app's unit tests, its type check and its build on
-# Linux x64 and Windows x64: the two systems whose tests differ (children.test.ts has Windows-only cases)
-# and two of the three packagers. The macOS and Linux arm64 builds are desktop.yml's: every day on main,
-# at a release, and for a pull request that changes desktop.yml itself.
+# Linux x64 and Windows x64: children.test.ts has Windows-only cases, and these are two of the three
+# packagers. No test is macOS-only, but the ones that read the host (a live process's start through its
+# own ps) run on a Mac only in desktop.yml, as the macOS and Linux arm64 builds do: every day on main, for
+# a pull request that changes desktop.yml itself, and from Actions. A release builds without the tests.
 on:
   pull_request:
     paths:
