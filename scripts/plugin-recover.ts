@@ -142,12 +142,15 @@ export interface LogoutIo extends RecoverIo {
   label: string;
   /** the PC's account and its member count (`GET /api/account/status`); null when Ovis does not answer */
   account(): Promise<{ readonly account: string | null; readonly members: number } | null>;
+  /** takes this PC off `account`'s list at the account service, by its own proof; false where that did not happen */
+  leave(account: string): Promise<boolean>;
 }
 
 /**
  * `ovis logout`: this PC leaves its Ovis account. The PC's account is cleared only with every row (docs/account.md,
  * "Revoke all"; server/account/pc-binding.ts), so this is Revoke all, said as leaving the account and asked for with a
- * typed yes at a terminal. The account service still lists the PC until it is removed in the app.
+ * typed yes at a terminal. Only once that went through is the PC taken off the account's list (`leave`); a service
+ * from before that route keeps listing it, and the command says to remove it in the app.
  */
 export async function runLogout(io: LogoutIo): Promise<number> {
   if (io.platform === "win32") {
@@ -168,7 +171,8 @@ export async function runLogout(io: LogoutIo): Promise<number> {
     return 1;
   }
   io.out(`This PC (${terminalText(io.label)}) is in Ovis account ${terminalText(state.account)}, with ${state.members} device${state.members === 1 ? "" : "s"} of it.\n`
-    + "Leaving revokes every device paired with this PC, as Revoke all does, those paired with a code too.\n");
+    + "Leaving cuts off every device that uses this PC: your account's devices, and also every device paired with a code.\n"
+    + "All of them are revoked (Revoke all) and must be paired again with ovis login or ovis pair.\n");
   if ((await io.ask("Leave the account? Type yes: ")).trim() !== "yes") {
     io.out("Nothing was changed.\n");
     return 1;
@@ -181,9 +185,10 @@ export async function runLogout(io: LogoutIo): Promise<number> {
   const answer = reply as { revoked?: unknown; error?: unknown } | null;
   if (typeof answer?.error === "string") { io.out(`Could not leave the account: ${terminalText(answer.error)}\n`); return 1; }
   if (typeof answer?.revoked !== "number") { io.out("Ovis did not return a recovery result.\n"); return 1; }
+  const unlisted = await io.leave(state.account);
   io.out([
     `Left. This PC is in no account; ${answer.revoked} device${answer.revoked === 1 ? " was" : "s were"} revoked.`,
-    "Your account may still list this PC: remove it in the Ovis app (Settings → Devices and PCs → Manage account).",
+    unlisted ? "Taken off your account's list of PCs." : "Your account may still list this PC: remove it in the Ovis app (Settings → Devices and PCs → Manage account).",
     "To join again: ovis login",
     "",
   ].join("\n"));

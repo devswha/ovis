@@ -261,7 +261,7 @@ describe("ovis logout", () => {
 
   test("Revoke all, after a typed yes at a terminal, said as leaving the account", async () => {
     const at = io({ answers: ["yes"] });
-    expect(await runLogout({ ...at.value, label: "desk", account: inAccount })).toBe(0);
+    expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async () => false })).toBe(0);
     expect(at.sent).toEqual([{ act: "revoke_all" }]);
     expect(at.prompts).toEqual(["Leave the account? Type yes: "]);
     expect(at.text()).toContain("This PC (desk) is in Ovis account acct_1, with 2 devices of it.");
@@ -270,36 +270,55 @@ describe("ovis logout", () => {
 
   test.each(["y", "", "YES please"])("%j is not yes: nothing is sent", async (answer) => {
     const at = io({ answers: [answer] });
-    expect(await runLogout({ ...at.value, label: "desk", account: inAccount })).toBe(1);
+    expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
     expect(at.sent).toEqual([]);
     expect(at.text()).toContain("Nothing was changed.");
   });
 
   test("without a terminal nothing is asked or sent", async () => {
     const at = io({ terminal: false });
-    expect(await runLogout({ ...at.value, label: "desk", account: inAccount })).toBe(1);
+    expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
     expect([at.sent, at.prompts]).toEqual([[], []]);
+  });
+
+  test("takes the PC off the account's list after the local leave, and says when that did not happen", async () => {
+    const left: string[] = [];
+    const at = io({ answers: ["yes"] });
+    expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async (account) => { left.push(account); return at.sent.length === 1; } })).toBe(0);
+    expect(left).toEqual(["acct_1"]);
+    expect(at.text()).toContain("Taken off your account's list of PCs.");
+    const kept = io({ answers: ["yes"] });
+    expect(await runLogout({ ...kept.value, label: "desk", account: inAccount, leave: async () => false })).toBe(0);
+    expect(kept.text()).toContain("Your account may still list this PC");
+  });
+
+  test("leaves the list only once the local leave went through", async () => {
+    const left: string[] = [];
+    for (const at of [io({ answers: ["no"] }), io({ answers: ["yes"], writeError: "log_unreadable" })]) {
+      await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async (account) => { left.push(account); return true; } });
+    }
+    expect(left).toEqual([]);
   });
 
   test("a PC in no account has nothing to leave", async () => {
     const at = io();
-    expect(await runLogout({ ...at.value, label: "desk", account: async () => ({ account: null, members: 0 }) })).toBe(0);
+    expect(await runLogout({ ...at.value, label: "desk", account: async () => ({ account: null, members: 0 }), leave: async () => false })).toBe(0);
     expect(at.text()).toBe("This PC is in no Ovis account.\n");
     expect(at.sent).toEqual([]);
   });
 
   test("a refusal and an unanswered socket are failures", async () => {
     const refused = io({ answers: ["yes"], writeError: "log_unreadable" });
-    expect(await runLogout({ ...refused.value, label: "desk", account: inAccount })).toBe(1);
+    expect(await runLogout({ ...refused.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
     expect(refused.text()).toContain("Could not leave the account: log_unreadable");
     const away = io({ answers: ["yes"], unreachable: true });
-    expect(await runLogout({ ...away.value, label: "desk", account: inAccount })).toBe(1);
+    expect(await runLogout({ ...away.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
     expect(away.text()).toContain("recovery socket");
   });
 
   test("Windows is sent to the app's Revoke all", async () => {
     const at = io({ platform: "win32" });
-    expect(await runLogout({ ...at.value, label: "desk", account: inAccount })).toBe(1);
+    expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
     expect(at.sent).toEqual([]);
   });
 });

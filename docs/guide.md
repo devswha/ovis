@@ -157,7 +157,7 @@ Its terminals are its own. The app starts a herdr-core of its own (the session `
 ```bash
 ovis           # at a terminal: the terminal screen (ovis tui) where it can run, else the help
 ovis login     # add this PC to your Ovis account (also: ovis add)
-ovis logout    # take this PC out of its account (Revoke all, after a typed yes)
+ovis logout    # take this PC out of its account: Revoke all (code-paired devices too), after a typed yes
 ovis pair      # a pairing code (--relay: the relay's code, renewed until Ctrl+C)
 ovis approve   # approve or decline the devices that wait to pair
 ovis status    # whether the app runs, where, its account and its version

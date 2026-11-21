@@ -6,6 +6,10 @@
   `link --code`, `pair --approve`) keep working.
 - Plain `ovis` at a terminal opens the terminal screen where it can run, else prints the help;
   in a script it is still `ovis status`.
+- `ovis login` is laid out as `codex login` is: 1/2 Sign in (the browser opens on a desktop; over SSH
+  or with `--no-browser`, the address and code to type), 2/2 Let this PC in, and how to check or undo it.
+- `ovis logout` says plainly that it cuts off every device of the PC, code-paired ones too, and takes
+  the PC off the account's list of PCs with the PC's own proof.
 - On Windows, the installer puts an `ovis` command on your PATH.
 
 ### Fixed

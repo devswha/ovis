@@ -1312,7 +1312,31 @@ async function recover(args: readonly string[]): Promise<number> {
 /** `ovis logout` (scripts/plugin-recover.ts runLogout): Revoke all over the same recovery socket, after a typed yes. */
 async function logout(): Promise<number> {
   const { runLogout } = await import("./plugin-recover.ts");
-  return await withRecoveryIo((io) => runLogout({ ...io, label: hostname(), account: async () => (await health()) ? await accountOf() : null }));
+  return await withRecoveryIo((io) => runLogout({ ...io, label: hostname(), account: async () => (await health()) ? await accountOf() : null, leave: leaveListing }));
+}
+
+/**
+ * Takes this PC off `account`'s list at the account service (POST /v1/pcs/{server_id}/leave), by the proof only the PC
+ * itself makes (POST /api/account/pc-proof): no sign-in is needed, and for 30 days only the PC's own `ovis login` lists
+ * it again. False where it did not happen: a service from before that route, the service off or away.
+ */
+async function leaveListing(account: string): Promise<boolean> {
+  const service = accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE);
+  if (service === null) return false;
+  try {
+    const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: serverOrigin() };
+    if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
+    const proved = await serverFetch("/api/account/pc-proof", { method: "POST", headers, body: "{}", signal: AbortSignal.timeout(15_000) });
+    if (!proved.ok) return false;
+    const proof = await proved.json() as { server_id?: unknown; challenge_id?: unknown; proof?: unknown };
+    if (typeof proof.server_id !== "string" || !/^[0-9a-f]{32}$/.test(proof.server_id) || typeof proof.challenge_id !== "string" || typeof proof.proof !== "string") return false;
+    // never followed: a redirect would carry the proof to another origin
+    const left = await fetch(`${service}/v1/pcs/${proof.server_id}/leave`, {
+      method: "POST", redirect: "error", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify({ server_id: proof.server_id, account, challenge_id: proof.challenge_id, proof: proof.proof }),
+    });
+    return left.status === 204;
+  } catch { return false; }
 }
 
 async function withRecoveryIo(run: (io: import("./plugin-recover.ts").RecoverIo) => Promise<number>): Promise<number> {

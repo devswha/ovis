@@ -935,11 +935,12 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     const left = remaining(Math.max(0, card.until - now()));
     const code = qr(card.url).replace(/\n+$/, "").split("\n");
     const width = Math.max(...code.map((row) => row.length));
-    const head = ["Scan this QR code with a device that is signed in to this Ovis account. It adds this PC to the account; there is no number to type.", ...!tied && !joining.plain ? [OLDER_PC] : [], ""];
+    const head = ["2/2  Let this PC in", "", "Scan this QR code with a device that is signed in to this Ovis account. It adds this PC to the account; there is no number to type.", ...!tied && !joining.plain ? [OLDER_PC] : [], ""];
     const tail = [
       ...card.typed !== null
         ? [`Code to type: ${card.typed}   (works once, expires in ${left})`, `Or, on that device, open ${appHost(options, card.url)}, choose Pair with a code and type it.`]
         : [`No code to type this time (${card.refused}). The QR code expires in ${left}.`],
+      `No device in the account yet? Open ${appHost(options, card.url)} on your phone, sign in, then scan.`,
       `That device then shows an ID: pair only if it matches this PC's ID, every group: ${groups(card.serverId)}`,
       "Anyone who can read this screen can pair with this PC while the code is shown.",
       `${minted < MAX_CODES ? "A new one comes when this one runs out. " : ""}Press Ctrl+C to stop.`,
@@ -1344,7 +1345,7 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           }
         }
         if (added && joined.enrolling !== true && strays.length === 0) {
-          say(`This PC is in your account (${shortId(joining.signedIn)})${label === null ? "" : `, added by ${label}`}: every device of your account can use it.\n`);
+          say(`This PC is in your account (${shortId(joining.signedIn)})${label === null ? "" : `, added by ${label}`}: every device of your account can use it.\n${loginClosing(options)}`);
           return unremoved ? 1 : 0;
         }
       } catch (error) {
@@ -1480,28 +1481,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   const requester = { label: hostname(), os: accountOsOfPlatform(process.platform) };
   const startOptions = { service: options.accountService, store, lock, fetch: serviceFetch, now, wait, requester };
   const signIn = offer !== null && offer.page.length > 0 ? await startLinkPageSignIn(startOptions, offer.device[0] ?? "github") : await startDeviceSignIn({ ...startOptions, provider: forced ?? offer?.device[0] ?? "github" });
-  const provider = signIn.provider;
-  out((provider === "ovis"
-    ? [
-      "",
-      "Sign in to your Ovis account:",
-      `open ${signIn.verificationUri} on any device and enter the code: ${signIn.userCode}`,
-      ...(signIn.verificationUriComplete === null ? [] : ["or scan this QR code with the phone's camera:", qr(signIn.verificationUriComplete)]),
-      // a test copy of the service may ask for another sign-in there
-      options.accountService === DEFAULT_ACCOUNT_SERVICE ? "Then continue with GitHub or Google there. Waiting for the sign-in…" : "Then sign in there. Waiting for the sign-in…",
-      "",
-    ]
-    : [
-      "",
-      `Sign in to your Ovis account with ${provider === "github" ? "GitHub" : "Google"}:`,
-      `open ${signIn.verificationUri} on any device and enter the code: ${signIn.userCode}`,
-      "Waiting for the sign-in…",
-      "",
-    ]).join("\n"));
-  // codex login's way: on a desktop the page opens by itself, with the code filled in where the service gives one; the
-  // lines above stay for a sign-in on another device
-  const page = signIn.verificationUriComplete ?? signIn.verificationUri;
-  if (options.openBrowser?.(page) === true) out(`Opened ${page} in your browser. Check that it shows the code ${signIn.userCode}.\n\n`);
+  out(signInSteps(signIn, { ...options, label: requester.label, expiresIn: remaining(Math.max(0, signIn.expiresAt - now())) }));
   await signIn.finish(signal);
   const service = new AccountService({ store, lock, fetch: serviceFetch, now });
   const session = await service.session();
@@ -1530,7 +1510,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     }
     const name = first.entry.label;
     if (!mode.approve) {
-      out(preview ? `This PC is listed in that account as ${name}.\n` : `Signed in. This PC is listed in your account as ${name}.\n`);
+      out(`${STEP_INDENT}${preview ? `This PC is listed in that account as ${name}.` : `Signed in. This PC is listed in your account as ${name}.`}\n`);
       return await addByQr(options, api, {
         signedIn, status, plain: mode.print || options.isTty !== true,
         unlist: () => { pending.listing = null; return service.deletePc(first.serverId).then(() => true, () => false); },
@@ -1547,7 +1527,9 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     let added = false;
     let away = false;
     out([
-      `Signed in. This PC is listed in your account as ${name}.`,
+      `${STEP_INDENT}Signed in. This PC is listed in your account as ${name}.`,
+      "",
+      "2/2  Approve the device that adds this PC",
       `On a device already signed in to this account (the Ovis app or ${appHost(options, options.app ?? "https://app.ovis.sh")}), choose Add on ${name}.`,
       "If it shows Join there instead, choose Join, then Ask to join or Type the number.",
       "Its request shows here to approve. Press Ctrl+C to stop.",
@@ -1625,7 +1607,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         const joined = await status();
         if (joined.account !== null && joined.account !== signedIn) return await elsewhere(joined.account);
         if (joined.account !== null && joined.enrolling !== true) {
-          say(`This PC is in your account (${shortId(joined.account)}): every device of your account can use it.\n`);
+          say(`This PC is in your account (${shortId(joined.account)}): every device of your account can use it.\n${loginClosing(options)}`);
           return 0;
         }
         added = joined.account !== null;
@@ -1695,6 +1677,46 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   }
 }
 
+const STEP_INDENT = "     ";
+const step = (lines: readonly string[]): string[] => lines.map((line) => line === "" ? "" : STEP_INDENT + line);
+
+/**
+ * Step 1 of `ovis login`, laid out as `codex login` is: on a desktop the sign-in page opens by itself, with the code
+ * filled in where the service gives one, and the address stays on screen for another device; anywhere else (SSH,
+ * --no-browser, no desktop) the address and the code to type are the screen, with a QR code of the filled-in page.
+ */
+function signInSteps(
+  signIn: { readonly provider: string; readonly verificationUri: string; readonly verificationUriComplete: string | null; readonly userCode: string },
+  options: LinkOptions & { readonly label: string; readonly expiresIn: string },
+): string {
+  const page = signIn.verificationUriComplete ?? signIn.verificationUri;
+  // a test copy of the service may ask for another sign-in there
+  const there = signIn.provider !== "ovis" ? `Sign in with ${signIn.provider === "github" ? "GitHub" : "Google"} there.`
+    : options.accountService === DEFAULT_ACCOUNT_SERVICE ? "Then continue with GitHub or Google there." : "Then sign in there.";
+  const opened = options.openBrowser?.(page) === true;
+  // the QR code keeps the left edge: a scanner needs its quiet zone, not an indent
+  const body = opened
+    ? step([
+      "Opening your browser at:",
+      `  ${page}`,
+      `Check that the page shows the code ${signIn.userCode}, then continue there.`,
+      `No browser here? Open ${signIn.verificationUri} on any device and enter that code.`,
+      "",
+      `Waiting for the sign-in… (expires in ${options.expiresIn}, Ctrl+C to cancel)`,
+    ])
+    : [
+      ...step([`1. On any device, open: ${signIn.verificationUri}`, `2. Enter this code: ${signIn.userCode}   (expires in ${options.expiresIn})`]),
+      ...signIn.verificationUriComplete === null ? [] : [...step(["Or scan this to open the page with the code filled in:"]), qr(signIn.verificationUriComplete).replace(/\n+$/, "")],
+      ...step([there, "", `Enter the code only if you started ${cli(options)} login yourself.`, "Waiting for the sign-in… (Ctrl+C to cancel)"]),
+    ];
+  return ["", `Add this PC (${options.label}) to your Ovis account`, "", "1/2  Sign in", ...body, ""].join("\n");
+}
+
+/** What `ovis login` ends with once this PC is in the account. */
+export function loginClosing(options: LinkOptions): string {
+  return `The sign-in was only for this and ends with it; nothing of it is kept on this PC.\nCheck: ${cli(options)} status      Undo: ${cli(options)} logout\n`;
+}
+
 export async function link(args: readonly string[], options: LinkOptions): Promise<number> {
   let host: string;
   try { host = new URL(options.origin).host; } catch { host = ""; }
@@ -1710,7 +1732,11 @@ export async function link(args: readonly string[], options: LinkOptions): Promi
     if (options.signal.aborted) { options.out("Stopped.\n"); return 1; }
     // the account's list refused this PC for want of room (409 directory_full): its code alone says nothing to a person
     const full = error instanceof AccountServiceError && error.code === "directory_full";
-    options.out(`Could not link this PC: ${full ? `Your account holds as many PCs as it can. Remove one in the Ovis app, then run ${cli(options)} add again.` : error instanceof Error ? error.message : String(error)}\n`);
+    // 409 pc_left: this PC left that account with ovis logout, and its own proof did not come with the listing
+    const left = error instanceof AccountServiceError && error.code === "pc_left";
+    options.out(`Could not link this PC: ${full ? `Your account holds as many PCs as it can. Remove one in the Ovis app, then run ${cli(options)} add again.`
+      : left ? `This PC left that account (${cli(options)} logout), and the Ovis running on it did not prove it is this PC, which listing it again takes. Update Ovis on this PC (Settings → Updates), then run ${cli(options)} login again.`
+      : error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
 }
