@@ -462,6 +462,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   }
   // one press binds this PC to an account: only this PC's own window may ask it (security-triage), never another
   // device on the LAN, through the relay or with the access token from elsewhere
+  // so does vouching for another PC with this PC's account over SSH (docs/account.md, "Adding a PC over SSH")
+  if (pathname === "/api/account/ssh-add" && !ownWindow) {
+    setRequestRoute("owner-refusal");
+    return jsonResponse({ error: { code: "owner_only", message: "Add another PC to your account from this PC itself." } }, 403);
+  }
   // so does this PC's own proof for its listing, which lists it again after `ovis logout` left the account
   if ((pathname === "/api/account/one-press" || pathname === "/api/account/pc-proof") && !ownWindow) {
     setRequestRoute("owner-refusal");

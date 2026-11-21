@@ -5,7 +5,7 @@ import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
 import { basename, join, posix } from "node:path";
 import { version } from "../package.json";
-import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
+import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type AccountAddTarget, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, HerdrPane } from "../shared/protocol.ts";
 import type { PushService } from "./push.ts";
 import { alertStatus } from "../shared/notify-policy.ts";
@@ -46,6 +46,7 @@ import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { deriveServerId } from "../shared/relay-server-proof.ts";
 import { validateOffer } from "../shared/relay-offer.ts";
 import type { HcMachine, MachineBridge } from "./herdr-core/machine-bridge.ts";
+import { askRecoverySocket } from "./account/recovery.ts";
 import { addressBootId, addressOrigin, AddressPcError, AddressPcRefused, checkAddressTarget, loadAddressPcToken, openAddressPcForward, pairAddressPc, removeAddressPcToken, saveAddressPcToken, type AddressPcForward } from "./address-pc.ts";
 
 /** a PC keeps the six-digit code in its offer for 10 minutes at most (server/devices.ts) */
@@ -137,7 +138,37 @@ interface JobState {
   offeredRevision?: string;
   stageStartedAt: number;
   finished: Promise<void>;
+  /**
+   * An account add over SSH (docs/account.md, "Adding a PC over SSH"): the owner's recovery socket of the PC's own Ovis as
+   * its registration names it, then that socket forwarded over this job's connection and the PC it answered for. Only
+   * that connection, while its PC keeps the generation it had then, takes the add (accountTake).
+   */
+  accountAdd?: { remoteSocket?: string; reached?: { socket: string; ssh: SshConnection; generation: number; serverId: string } };
 }
+
+/** Why an account add over SSH could not finish (accountTake). */
+export class AccountAddError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "AccountAddError";
+  }
+}
+
+/** A PC's own word on itself for an account add, kept only when its ID is its key's and its relay is a wss origin. */
+export function accountAddTarget(value: unknown): AccountAddTarget | null {
+  if (value === null || typeof value !== "object") return null;
+  const { server_id, public_key, relay, label, account } = value as Record<string, unknown>;
+  if (typeof server_id !== "string" || !SERVER_ID_PATTERN.test(server_id) || typeof public_key !== "string" || typeof relay !== "string" || !isWssOrigin(relay)) return null;
+  if (typeof label !== "string" || label.length > 48 || (account !== null && (typeof account !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(account)))) return null;
+  let key: Uint8Array;
+  try { key = importPublicKey(public_key); } catch { return null; }
+  return deriveServerId(key) === server_id ? { server_id, public_key, relay, label, account } : null;
+}
+
+export const ACCOUNT_ADD_BRIDGE_ONLY = "That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.";
+export const ACCOUNT_ADD_NO_OVIS = "Ovis is not running on that PC. Install it there, then add it to your account.";
+export const ACCOUNT_ADD_WINDOWS = "Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.";
+const ACCOUNT_ADD_OLD_OVIS = "That PC's Ovis is too old to be added over SSH. Update it there, then try again.";
 const DEFAULT_SETTINGS: MachineSettings = { auto_update_bridges: true };
 /** an update asked for one release while the PC offers another by now: nothing of it is installed */
 const CHANGED_OFFER = "That PC offers another release now than the one shown. Look at it again, then update.";
@@ -1076,6 +1107,11 @@ export class MachineManager {
     if (waiting && !request.update_remote && sameSshSession(target, waiting.public.target) && target.identity_file === waiting.public.target.identity_file) return waiting.public;
     if ([...this.jobs.values()].filter((j) => !["connected", "failed", "cancelled"].includes(j.public.phase)).length >= SETUP_JOBS_AT_ONCE) throw (request.update_remote ? new PcUpdateRefused(JOBS_FULL) : new Error(JOBS_FULL));
     if (request.machine_id && !existing) throw new Error("PC not found");
+    const accountAdd = request.account_add === true;
+    if (accountAdd && (request.update_remote || options.auto || options.fromInstall || options.keysOnly)) throw new Error("An account add is its own setup, asked in its dialog");
+    if (accountAdd && (target.herdr_socket || target.start_new_herdr)) throw new Error("An account add connects to that PC's own Ovis, not to a herdr session");
+    // the owner's socket is forwarded over a multiplexed connection, which this app has on Linux and macOS only
+    if (accountAdd && process.platform === "win32") throw new Error("Adding a PC to your account over SSH from Windows is not supported yet.");
     if (existing?.machine.kind === "relay") throw new Error(RELAY_PC_UPDATES);
     if (existing?.machine.kind === "address") throw new Error(ADDRESS_PC_UPDATES);
     if (existing?.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
@@ -1099,6 +1135,7 @@ export class MachineManager {
     const job: JobState = { update: request.update_remote === true, auto, public: { id, machine_id: machineId, target, phase: "connecting", step: "Connecting with SSH keys and ssh-agent…", challenge: null, installations: [], error: null, ssh_output: null, progress: null }, abort: new AbortController(), timer: setTimeout(() => this.cancelJob(id, true), 600_000), stageStartedAt: Date.now(), finished: Promise.resolve() };
     if (options.expectedRevision) job.expectedRevision = options.expectedRevision;
     if (options.fromInstall) job.fromInstall = true;
+    if (accountAdd) job.accountAdd = {};
     if (job.update && existing) { job.runtime = existing; existing.machine.update_error = null; }
     if (job.update && existing && !auto) existing.updateCancelled = false;
     job.timer.unref();
@@ -1108,7 +1145,9 @@ export class MachineManager {
     this.disconnect(runtime);
     runtime.triedAt = this.now();
     if (moving) runtime.move = {};
-    const ssh = new SshConnection(target, this.sshDir, join(this.sshDir, machineId));
+    // an account add vouches with the user's own keys alone: never a password, nor this app's reconnect key
+    const ssh = new SshConnection(target, this.sshDir, accountAdd ? undefined : join(this.sshDir, machineId));
+    ssh.publicKeyOnly = accountAdd;
     job.ssh = ssh;
     runtime.ssh = ssh;
     runtime.abort = job.abort;
@@ -1128,6 +1167,8 @@ export class MachineManager {
         reached = true;
         this.stage(job, "checking", "Checking the remote environment…");
         await this.prepare(runtime, job);
+        if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
+        if (job.accountAdd) job.public.account_add = await this.inspectForAccount(job, ssh, generation);
         if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
         runtime.machine.enabled = true;
         if (!switchingSession) this.machines.set(machineId, runtime);
@@ -1207,6 +1248,38 @@ export class MachineManager {
       }
     })();
     return job.public;
+  }
+  /**
+   * Reads, over this job's connection, what the PC's own Ovis says of itself for an account add (its owner's recovery
+   * socket, forwarded into this connection's private folder): its public relay fields, checked here, and its account.
+   */
+  private async inspectForAccount(job: JobState, ssh: SshConnection, generation: number): Promise<AccountAddTarget> {
+    const remote = job.accountAdd?.remoteSocket;
+    if (remote === undefined) throw new MachineActionRequired(ACCOUNT_ADD_OLD_OVIS, "setup");
+    const socket = await ssh.forwardSocket(remote);
+    const answer = await askRecoverySocket(socket, { act: "account_add_inspect" }) as Record<string, unknown> | null;
+    if (answer !== null && typeof answer === "object" && typeof answer.error === "string") throw new MachineActionRequired(answer.error, "setup");
+    const fields = accountAddTarget(answer);
+    if (fields === null) throw new MachineActionRequired("That PC's Ovis answered with something this app cannot use. Update Ovis there, then try again.", "setup");
+    job.accountAdd!.reached = { socket, ssh, generation, serverId: fields.server_id };
+    return fields;
+  }
+  /**
+   * The take of an account add (POST /api/account/ssh-add): tells the PC that job reached the account to join, `account`,
+   * which the caller derives from this PC's own binding. Only while the job's connection stands, its PC has not
+   * reconnected since, and the PC it answered for is `serverId`. The PC takes the admission on its own proof.
+   */
+  async accountTake(jobId: string, serverId: string, account: string): Promise<{ account: string }> {
+    const job = this.jobs.get(jobId);
+    const reached = job?.accountAdd?.reached;
+    if (!job || !reached || job.public.phase !== "connected") throw new AccountAddError("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again.");
+    if (reached.serverId !== serverId) throw new AccountAddError("identity_changed", "That PC is not the one this add reached. Connect to it again.");
+    const runtime = this.machines.get(job.public.machine_id);
+    if (!runtime || runtime.ssh !== reached.ssh || runtime.generation !== reached.generation || !reached.ssh.connected()) throw new AccountAddError("disconnected", "The SSH connection to that PC ended. Connect to it again.");
+    const answer = await askRecoverySocket(reached.socket, { act: "account_add_take", account, server_id: serverId }) as Record<string, unknown> | null;
+    if (answer !== null && typeof answer === "object" && typeof answer.error === "string") throw new AccountAddError(typeof answer.code === "string" ? answer.code : "refused", answer.error);
+    if (answer === null || typeof answer !== "object" || answer.account !== account) throw new AccountAddError("account_mismatch", "That PC answered for another account");
+    return { account };
   }
   private stage(job: JobState, phase: SetupJob["phase"], step: string): void {
     if (job.abort.signal.aborted) throw new Error("Setup cancelled");
@@ -1291,6 +1364,8 @@ export class MachineManager {
       if (runtime.generation === generation && !moving) runtime.machine.remote_ovis = left;
     };
     const { host, inspection } = await detectHost(ssh, session, target.herdr_socket);
+    // the owner's socket an account add needs is POSIX only (server/account/recovery.ts); a Windows PC adds itself by its number
+    if (job?.accountAdd && host.kind !== "posix") throw new MachineActionRequired(ACCOUNT_ADD_WINDOWS, "setup");
     if (job) job.defaultSocket = !session && !!target.herdr_socket && inspection.expectedSocket === inspection.defaultSocket;
     // the account's herdr sessions by the confined rule (server/herdr-discovery.ts), for when no Ovis there lists them
     // listedHere: that PC could list them: only this app's runtime there applies the rule (without one, none are listed)
@@ -1334,7 +1409,8 @@ export class MachineManager {
     // Unasked, it is offered only in a setup the user started: a reconnect (or an update that asks nobody) of a PC saved
     // without an Ovis chosen connects as before, whatever runs beside it (its herdr may answer with no bridge in front yet)
     const asked = !!job && !job.auto;
-    const adding = asked && !job.fromInstall && !this.machines.has(runtime.machine.id);
+    // an account add looks for that PC's own Ovis whether or not the PC was added here before
+    const adding = asked && !job.fromInstall && (job.accountAdd !== undefined || !this.machines.has(runtime.machine.id));
     if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr && (target.own_ovis || asked && candidates.length > 0 && (adding || !await servedAlready()))) {
       const found: FoundOvis[] = [];
       const sessions = new Map<string, FoundHerdrSession>();
@@ -1429,6 +1505,13 @@ export class MachineManager {
       descriptor = undefined;
     }
     if (target.own_ovis && !descriptor) throw await ownOvisGone();
+    // an account add lands only on that PC's own Ovis: never on a bridge this app runs there, nor one it would install
+    // or start in its place (nothing below installs or starts anything for it)
+    if (job?.accountAdd && descriptor?.managed_remote !== false) {
+      throw descriptor !== undefined || inspection.descriptors.some((d) => d.managed_remote === true)
+        ? new MachineActionRequired(ACCOUNT_ADD_BRIDGE_ONLY, "setup")
+        : new MachineActionRequired(ACCOUNT_ADD_NO_OVIS, "install_ovis");
+    }
     // The PC's own Ovis is away (#2047): the PC waits for it, as for a PC that cannot be reached, and nothing of this
     // app's is installed or started in its place, by a reconnect or by an update that asks nobody. Only a setup the
     // user reviews in its dialog may start this app's bridge there.
@@ -1485,7 +1568,8 @@ export class MachineManager {
     if (!descriptor && !hasBundle) installs.push(host.bundleDescription);
     if (!descriptor && !herdrPath) installs.push(host.installHerdr ? `herdr 0.9.3 through its own installer (${HERDR_INSTALL_CMD})` : "Bundled herdr 0.9.3 (existing installations are preserved)");
     if (!descriptor && job) installs.push("Start the loopback bridge and, only if absent, the herdr daemon");
-    if (ssh.usedSecret) installs.push("Register a dedicated SSH public key for automatic reconnection");
+    // an account add enrolls no key of this app's on that PC
+    if (ssh.usedSecret && !job?.accountAdd) installs.push("Register a dedicated SSH public key for automatic reconnection");
     if (installs.length) {
       if (!job) throw new MachineActionRequired("Remote setup needs approval. Use Reconnect / setup on this PC.", "setup");
       job.public.installations = installs;
@@ -1497,7 +1581,7 @@ export class MachineManager {
       job.installationApproved = update || !descriptor;
       if (update || !descriptor && !hasBundle) { this.stage(job, "installing", `Installing verified ${platform} bundle…`); await host.installBundle(ssh, platform, job.abort.signal, { cacheDir: join(this.stateDir, "bundles"), owner: installLockOwner(this.stateDir, target), onProgress: (stage, done, total) => this.progress(job, stage, done, total) }); }
       if (!descriptor && !herdrPath && host.installHerdr) { this.stage(job, "installing", "Installing herdr with its own installer…"); herdrPath = await host.installHerdr(ssh); }
-      if (ssh.usedSecret) {
+      if (ssh.usedSecret && !job.accountAdd) {
         this.stage(job, "installing", "Registering the app SSH key…");
         const path = join(this.sshDir, runtime.machine.id);
         if (!existsSync(path)) {
@@ -1627,6 +1711,11 @@ export class MachineManager {
     if (verified.identity.pid !== descriptor.pid) throw new Error("Bridge process verification failed; ownership was not changed");
     if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
     learnServer(verified.identity, true);
+    if (job?.accountAdd) {
+      // proved over its own credential just now: the process registered there is that PC's own Ovis, not a bridge
+      if (verified.identity.managed_remote !== false || descriptor.managed_remote !== false) throw new MachineActionRequired(ACCOUNT_ADD_BRIDGE_ONLY, "setup");
+      job.accountAdd.remoteSocket = descriptor.recover_socket;
+    }
     runtime.endpoint = verified.endpoint;
     if (moving) runtime.move!.herdr = verified.identity.herdr; else runtime.machine.herdr = verified.identity.herdr;
     if (job) job.public.runtime = verified.identity.herdr.runtime ?? "herdr";

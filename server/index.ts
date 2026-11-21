@@ -641,6 +641,7 @@ export function createServer(
   }) : undefined;
   const recoverySocket = recoveryReleases && journal && safetyLog ? openPcRecovery({
     stateDir, devices, pcAccount, journal, safetyLog, releases: recoveryReleases, pending: pendingRedemptions, pairings: keyProofPairings,
+    relay: ovisRelay, accountMailbox,
   }) : null;
   // the lock is written only after this PC's screen approves it, then the rows it does not let in end (T46)
   const lockSignal = safetyLog ? new LockSignal() : undefined;
@@ -753,7 +754,7 @@ export function createServer(
   // the app's SSH tunnel reaches a bridge on the PC's 127.0.0.1 only (#1960)
   const target = options.registerBridge ? relayTarget(hostname) : null;
   const relay = target ? loopbackRelay(target, server.port ?? 0) : null;
-  const registration = options.registerBridge ? registerBridge(relay?.port ?? server.port ?? 0, bridgeToken) : null;
+  const registration = options.registerBridge ? registerBridge(relay?.port ?? server.port ?? 0, bridgeToken, recoverySocket ? { recoverSocket: recoverySocket.path } : {}) : null;
 
   const releaseOpenCodeNative = holdOpenCodeNative();
   const releaseFilePool = holdFilePool();

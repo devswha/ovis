@@ -304,7 +304,8 @@ export interface HerdrCoreFacts {
 }
 export interface FoundHerdrSession { socket_path: string; session?: string; label: string }
 export interface FoundOvis { socket_path: string; runtime: "herdr-core" }
-export type MachineAction = "connect" | "update_bridge" | "setup" | "bridge_conflict" | "windows_login" | "windows_start_failed" | "choose_herdr";
+/** `install_ovis`: an account add over SSH found no Ovis of that PC's own there; installing Ovis there (PcInstallJob) is the way on */
+export type MachineAction = "connect" | "update_bridge" | "setup" | "bridge_conflict" | "windows_login" | "windows_start_failed" | "choose_herdr" | "install_ovis";
 /** `ovis`: the PC's own Ovis updates itself (Machine.remote_ovis); absent for a bridge this app installs */
 export interface MachineUpdate {
   /** what cancels it: DELETE /api/machines/:id/update (any update), or a setup job's cancel; empty while `queued` */
@@ -331,7 +332,13 @@ export interface MachineSettings {
    */
   set_aside?: string[];
 }
-export interface SetupRequest extends SshTarget { name?: string; machine_id?: string; update_remote?: boolean; start_new_herdr?: boolean }
+/**
+ * `account_add`: the setup also adds that PC to this PC's account (docs/account.md, "Adding a PC over SSH"): public-key SSH
+ * only, a host key known or confirmed here, and that PC's own Ovis only, never a bridge this app starts.
+ */
+export interface SetupRequest extends SshTarget { name?: string; machine_id?: string; update_remote?: boolean; start_new_herdr?: boolean; account_add?: boolean }
+/** What a PC's own Ovis told an account add over SSH of itself: its public relay fields, and the account it is in. */
+export interface AccountAddTarget { server_id: string; public_key: string; relay: string; label: string; account: string | null }
 export type SetupPhase = "connecting" | "authentication" | "checking" | "approval" | "installing" | "starting" | "connected" | "failed" | "cancelled";
 export interface SetupChallenge { id: string; kind: "host_key" | "secret"; prompt: string }
 export interface SetupJob {
@@ -362,6 +369,8 @@ export interface SetupJob {
   progress?: SetupProgress | null;
   /** the PC's own Ovis, when it is older than this app (Machine.remote_ovis): a first connect has no PC to carry it */
   remote_ovis?: RemoteOvis | null;
+  /** an account add's connected job: the PC it reached, for the window to list and admit (POST /api/account/ssh-add next) */
+  account_add?: AccountAddTarget;
 }
 export type SetupAction = { action: "answer"; challenge_id: string; answer: string } | { action: "approve" } | { action: "cancel" } | { action: "start_headless" };
 /**
