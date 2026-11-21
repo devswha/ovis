@@ -10,6 +10,7 @@ import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, decodeFrame, DIRECT_CARRIER
 import { hintedRelay } from "./relay-regions.ts";
 import { MuxEngine, MUX_SETUP_MS } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
+import type { PairApprover } from "./relay-mux.ts";
 import { isWssOrigin, SERVER_ID_PATTERN } from "./relay-offer.ts";
 import type { RelayOffer } from "./relay-offer.ts";
 import { relayFallback } from "./relay-regions.ts";
@@ -119,9 +120,10 @@ export interface RelayChannelOptions {
   /**
    * A new device with no pairing code pairs by comparing digits (shared/relay-pair-sas.ts): this
    * shows them, and resolves once the person says the PC shows the same. Without it such a device
-   * cannot pair. The PC's owner still has to approve it there.
+   * cannot pair. The PC's owner still has to approve it there. `approveOn`: the PC itself approves it on its own screen
+   * (a first join), named by its system; absent when a device of the account may.
    */
-  readonly compare?: (digits: string) => Promise<void>;
+  readonly compare?: (digits: string, approveOn?: PairApprover) => Promise<void>;
   /**
    * A signed-in client's account key: a new pairing signs in with it instead of a key of its own
    * for this PC, so the row it gets is the account's to link (docs/account.md, rule 2).
@@ -331,7 +333,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         const digits = pairDigits(binding, device.public_spki, phoneNonce, fromBase64Url(frame.payload.nonce));
         await send({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(phoneNonce) } });
         // never awaited here: the PC's refusal or timeout must still come through while the person looks
-        void options.compare?.(digits).then(() => {
+        void options.compare?.(digits, frame.payload.approve_on).then(() => {
           if (phase !== "auth") return;
           confirmed = true;
           return send({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });

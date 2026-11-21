@@ -32,7 +32,7 @@ export const DISPATCH_MUTATIONS = {
     "/api/push/subscribe", "/api/push/status", "/api/push/test", "/api/runtime",
     "/api/runtime/move", "/api/runtime/move/install", "/api/runtime/move/stop", "/api/runtime/move/stop-all",
     "/api/updates/install", "/api/updates/check", "/api/updates/cancel", "/api/herdr/update",
-    "/api/account/lock", "/api/account/unlock", "/api/account/forget", "/api/account/confirm", "/api/account/leave",
+    "/api/account/lock", "/api/account/unlock", "/api/account/forget", "/api/account/confirm", "/api/account/confirm-page", "/api/account/leave",
     "/api/auth", "/api/portal/start", "/api/portal/stop", "/api/portal/invite",
   ],
   PUT: ["/api/alerts/webhook", "/api/fs/text", "/api/preferences", "/api/cliproxy", "/api/voice/config"],

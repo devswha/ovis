@@ -394,13 +394,15 @@ export interface DevicePairedEvent {
 export type PairingIntent = "pc" | "account";
 /**
  * An account join taken outside the pairing window, as this PC's own window lists it (GET /api/relay/joins): never its
- * digits, which the owner types from the new device's screen (POST /api/relay/join).
+ * digits, which the owner types from the new device's screen (POST /api/relay/join). `digits`: a first join, asked while
+ * the PC had no member to approve it, which the owner compares and allows or declines by a tap there.
  */
 export interface OwnJoinRequest {
   id: string;
   label: string;
   asked_at: string;
   left_ms: number;
+  digits?: string;
 }
 /**
  * A phone asking to pair through the relay by comparing digits (docs/relay.md): the six digits its

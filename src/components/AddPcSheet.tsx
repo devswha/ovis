@@ -13,6 +13,7 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { SHEET_QUERY, useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { approveOnLine } from "./approveOnLine.ts";
 import { relayFailureText } from "./relayFailureText.ts";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import { JoinWait } from "./JoinWait.tsx";
@@ -207,6 +208,17 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
         actions = onRetry ? pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary data-action="retry" onClick={onRetry}>{t("Try again")}</button>) : done;
         break;
       case "approving":
+        // a first join: the PC compares this number beside its Allow, so it stays on screen with the one line
+        if (state.kind === "compare" && state.approveOn !== undefined) {
+          body = (
+            <div role="status">
+              <p className="relay-shell-digits" aria-label={state.digits.split("").join(" ")}>{`${state.digits.slice(0, 3)} ${state.digits.slice(3)}`}</p>
+              <p className="relay-shell-copy">{approveOnLine(t, state.approveOn)}</p>
+            </div>
+          );
+          actions = cancel;
+          break;
+        }
         body = (
           <div className="relay-shell-wait" role="status">
             <div className="boot-spinner" aria-hidden="true" />
@@ -246,11 +258,12 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
           {state.kind === "compare" && (
             <div className="modal-body add-pc-body">
               <p className="relay-shell-digits" aria-label={state.digits.split("").join(" ")}>{`${state.digits.slice(0, 3)} ${state.digits.slice(3)}`}</p>
-              <p className="relay-shell-copy">{t("Approve it if the PC shows the same number.")}</p>
+              <p className="relay-shell-copy">{state.approveOn === undefined ? t("Approve it if the PC shows the same number.") : approveOnLine(t, state.approveOn)}</p>
             </div>
           )}
           <footer className="modal-footer add-pc-footer">{asking ? pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={onPair}>{t("Ask to join")}</button>) : cancel}</footer>
-          {state.kind === "compare" && (
+          {/* a first join is the PC's alone to approve: no other way to point at */}
+          {state.kind === "compare" && state.approveOn === undefined && (
             <details className="add-pc-other">
               <summary>{t("Another way")}</summary>
               <p className="relay-shell-detail">{withCommand(t("In the PC's terminal: ovis pair --approve"), APPROVE_COMMAND)}</p>
@@ -264,9 +277,11 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
   }
 
   const failureKind = state.kind === "failed" ? state.failure : null;
+  // a first join waits on the PC alone: the number and its one line, no steps or subtitle about who else approves
+  const waitsOnPc = phase === "approving" && state.kind === "compare" && state.approveOn !== undefined;
   const stepNumber = phase === null || pc === null ? null : activeStepIndex(mode === "new" ? "new" : "join", phase, failureKind) + 1;
   const statuses = phase === null || pc === null ? [] : addPcSteps(mode === "new" ? "new" : "join", phase, failureKind);
-  const steps = phase === null || pc === null ? null : (mode === "new" ? [
+  const steps = phase === null || pc === null || waitsOnPc ? null : (mode === "new" ? [
     [t("{name} signed in", { name }), t("It asked to join your account")],
     [t("Type the number {name} shows", { name }), t("Proves you are looking at that PC")],
     [t("Approve on {name}", { name }), t("The PC decides who gets in, not the account")],
@@ -280,12 +295,12 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
 
   return createPortal(
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-      <div ref={surface} className="modal add-pc-sheet" lang={locale} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-sub`} tabIndex={-1} data-add-pc-mode={mode} {...(phase === null ? {} : { "data-add-pc-phase": phase })}>
+      <div ref={surface} className="modal add-pc-sheet" lang={locale} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} {...(waitsOnPc ? {} : { "aria-describedby": `${id}-sub` })} tabIndex={-1} data-add-pc-mode={mode} {...(phase === null ? {} : { "data-add-pc-phase": phase })}>
         <header className="modal-header add-pc-head">
           {/* the thin bars alone say where it stands; the step's number is the bars' own, for a screen reader */}
           {steps && <div className="add-pc-bars" {...(stepNumber === null ? { "aria-hidden": true } : { role: "progressbar", "aria-label": title, "aria-valuemin": 1, "aria-valuemax": 4, "aria-valuenow": stepNumber, "aria-valuetext": t("Step {n} of {total}", { n: stepNumber, total: 4 }) })}>{steps.map(({ status }, step) => <span key={step} data-bar={status} />)}</div>}
           <h2 className="modal-title" id={`${id}-title`}>{title}</h2>
-          <p className="add-pc-sub" id={`${id}-sub`}>{sub}</p>
+          {!waitsOnPc && <p className="add-pc-sub" id={`${id}-sub`}>{sub}</p>}
         </header>
         <div className="modal-body add-pc-body">
           {body}

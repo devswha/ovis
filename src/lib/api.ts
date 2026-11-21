@@ -359,7 +359,7 @@ export function closeRelayLink(windowId?: string): Promise<{ readonly ok: true }
   return getJson<{ readonly ok: true }>("/api/relay/link/close", { method: "POST", headers: { "x-herdr-update": "1", ...(windowId === undefined ? {} : { "x-ovis-window": windowId }) } });
 }
 
-/** GET /api/relay/joins: account joins waiting for this PC's own window, without their digits (403 `own_window_required` elsewhere). */
+/** GET /api/relay/joins: account joins waiting for this PC's own window, without their digits but a first join's (403 `own_window_required` elsewhere). */
 export async function fetchOwnJoins(): Promise<OwnJoinRequest[]> {
   return (await getJson<{ readonly joins: OwnJoinRequest[] }>("/api/relay/joins")).joins;
 }
@@ -369,11 +369,25 @@ export async function approveOwnJoin(id: string, digits: string): Promise<void> 
   await getJson<{ readonly ok: true }>("/api/relay/join", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, digits }) });
 }
 
+/** POST /api/relay/join: Allow or Decline of a first join on this PC's own window, its digits compared there. */
+export async function decideOwnJoin(id: string, decision: "approve" | "decline"): Promise<void> {
+  const url = "/api/relay/join";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision }) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
 /** POST /api/relay/pairing: the owner's answer to a phone waiting with the same digits (`relay-pairings` events). */
 export async function decideRelayPairing(id: string, decision: "approve" | "decline", digits?: string): Promise<void> {
   const url = "/api/relay/pairing";
   // an account member approving through the relay names the digits it picked (docs/account.md, "Who may admit a device")
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision, ...(digits === undefined ? {} : { digits }) }) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** POST /api/account/confirm-page: opens this PC's confirm page on its own desktop (own window only; 409 when it cannot). */
+export async function openConfirmPage(): Promise<void> {
+  const url = "/api/account/confirm-page";
+  const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-machine": "1" } });
   if (!response.ok) throw await errorFrom(url, response);
 }
 

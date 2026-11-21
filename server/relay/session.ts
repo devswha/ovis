@@ -5,7 +5,7 @@ import { commitmentHolds, fromBase64Url, PAIR_APPROVAL_MS, pairDigits, randomPai
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
 import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
-import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
+import type { HeaderList, PairApprover, SessionError } from "../../shared/relay-mux.ts";
 import { PC_CODE_ACCOUNT_ONLY } from "../../shared/relay-mux.ts";
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import { PairingRateLimitedError, type DeviceMatch, type PairingPath } from "../devices.ts";
@@ -19,6 +19,9 @@ import type { RequestServices, ServerContext } from "../dispatch.ts";
 import { jsonResponse } from "../http.ts";
 import type { EventStreamBudget } from "../machine-api.ts";
 import { VirtualSocket, type RelaySocketHandlers } from "./virtual-socket.ts";
+
+/** The PC a first join waits on, as the phone names it (PAIR_CHALLENGE `approve_on`); any other system is a PC. */
+const APPROVER_OF: Partial<Record<NodeJS.Platform, PairApprover>> = { darwin: "mac", win32: "windows", linux: "linux" };
 
 export const RELAY_ORIGIN = "https://relay.ovis.invalid";
 const SOURCE_LIMIT = 3 * 1024 * 1024;
@@ -122,7 +125,7 @@ export class RelaySession {
   private welcomed = false;
   private sas: {
     label: string; publicKey: string; commitment: Uint8Array; pcNonce: Uint8Array; expiresAt: number;
-    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; ended: boolean; membersOnly: boolean; localOnly: boolean; closes: number; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
+    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; ended: boolean; membersOnly: boolean; localOnly: boolean; firstJoin: boolean; closes: number; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
   } | undefined;
   private device: DeviceMatch | undefined;
   /** The key this session's device signed in or paired with: a `link` must start from it (docs/account.md). */
@@ -427,25 +430,30 @@ export class RelaySession {
         // unless it is an account join the account service has seen (accountJoin, docs/account.md design 5.3).
         // Another PC of the account's server is taken only that way, window or not: its admission is its whole invitation
         let membersOnly = false;
+        let firstJoin = false;
         // taken under the PC's own add-me screen: this comparison stays the PC's to decide, whenever its digits show
         const localOnly = this.options.services.relay.approvals.localOnlyOpen();
         if (this.intent === "vouched" || !this.options.services.relay.approvals.windowOpen()) {
           this.state = "verifying";
-          if (!await this.accountJoin(frame.payload.public_key)) { this.close("auth_failed"); return; }
+          const joined = await this.accountJoin(frame.payload.public_key);
+          if (joined === null) { this.close("auth_failed"); return; }
           if (!this.mux.active) return;
           membersOnly = true;
+          firstJoin = joined === "first";
         }
         this.options.services.devices.assertRelayPairing(this.path);
         this.state = "pair-commit";
         this.sas = {
           label: frame.payload.label, publicKey: frame.payload.public_key, commitment: fromBase64Url(frame.payload.commitment),
-          pcNonce: randomPairNonce(), expiresAt: Date.now() + PAIR_APPROVAL_MS, phoneConfirmed: false, approved: false, ended: false, membersOnly, localOnly, closes: this.options.services.relay.approvals.closes,
+          pcNonce: randomPairNonce(), expiresAt: Date.now() + PAIR_APPROVAL_MS, phoneConfirmed: false, approved: false, ended: false, membersOnly, localOnly, firstJoin, closes: this.options.services.relay.approvals.closes,
         };
         this.sas.cancelDeadline = this.clock.setTimeout(() => { if (this.pairing) this.close("timeout"); }, PAIR_APPROVAL_MS);
         // revoking every device also ends a comparison under way, even one the owner already approved
         this.sas.stopRevokeAll = this.options.services.devices.onRevokeAll(() => { if (this.pairing) this.close("auth_failed"); });
         this.mux.extendSetup(PAIR_APPROVAL_MS + 1_000);
-        this.mux.sendSession({ type: FrameType.PAIR_CHALLENGE, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(this.sas.pcNonce) } });
+        // a first join waits on this PC's own screen: the phone is told which PC to press Allow on
+        this.mux.sendSession({ type: FrameType.PAIR_CHALLENGE, flags: 0, stream_id: 0,
+          payload: { nonce: toBase64Url(this.sas.pcNonce), ...(firstJoin ? { approve_on: APPROVER_OF[this.options.services.options.platform ?? process.platform] ?? "pc" } : {}) } });
         return;
       }
       case FrameType.PAIR_REVEAL: {
@@ -462,7 +470,7 @@ export class RelaySession {
           pairDigits(this.sasBinding, sas.publicKey, phoneNonce, sas.pcNonce), sas.expiresAt,
           // a PC vouched for is asked as "pair this PC": it joins this PC alone, and the approver's app signs nothing for it;
           // marked vouched, so that app shows who is asking and checks the admission, as for an account join
-          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched" });
+          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", firstJoin: sas.firstJoin });
         if (!asked) { this.close("auth_failed"); return; }
         this.state = "pair-wait";
         sas.withdraw = asked.withdraw;
@@ -544,16 +552,23 @@ export class RelaySession {
    * An account join outside the pairing window (docs/account.md, design 5.3), or another PC of the account
    * vouched for: only with the account or vouched intent, on a PC in an account with a member to approve, for a
    * key the account service has a fresh admission for, at most 5 a minute between them. Never counted as a
-   * failed pairing: nobody was asked.
+   * failed pairing: nobody was asked. On a PC with no member yet (added in one press), an account join is a first
+   * join, which this PC's own window alone allows; a PC vouched for still needs a member.
    */
-  private async accountJoin(key: string): Promise<boolean> {
+  private async accountJoin(key: string): Promise<"members" | "first" | null> {
     const { devices, relay, accountMailbox } = this.options.services;
-    const allowed = () => (this.intent === "account" || this.intent === "vouched") && devices.account() !== null && devices.hasAccountApprover();
-    if (!allowed()) return false;
+    const allowed = (): "members" | "first" | null => {
+      if ((this.intent !== "account" && this.intent !== "vouched") || devices.account() === null) return null;
+      if (devices.hasAccountApprover()) return "members";
+      return this.intent === "account" ? "first" : null;
+    };
+    if (allowed() === null) return null;
     this.mux.extendSetup(PAIR_APPROVAL_MS + 1_000);
-    if (!await accountMailbox.admitted(key) || !allowed()) return false;
+    if (!await accountMailbox.admitted(key)) return null;
+    // decided again once admitted: a member who joined meanwhile approves it as ever
+    const joined = allowed();
     // counted only once admitted, so refused strangers cannot spend the PC's joins
-    return relay.approvals.takeAccountJoin();
+    return joined !== null && relay.approvals.takeAccountJoin() ? joined : null;
   }
 
   /**

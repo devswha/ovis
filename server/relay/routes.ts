@@ -147,8 +147,15 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (!own) return fail("own_window_required", "Approve an account join in this PC's own window.", 403);
         const body = await readJsonObject(request);
         if (body instanceof Response) return body;
+        // a first join (no member could approve it) is allowed or declined by a tap, its digits compared on this screen
+        if (typeof body.id === "string" && (body.decision === "approve" || body.decision === "decline")) {
+          const tapped = service.approvals.decideOwn(body.id, body.decision === "approve");
+          if (tapped === "gone") return fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);
+          if (tapped === "typed_only") return fail("digits_required", "Type the six digits the new device shows.", 409);
+          return reply({ ok: true });
+        }
         if (typeof body.id !== "string" || typeof body.digits !== "string" || !/^[0-9]{6}$/.test(body.digits)) {
-          return fail("invalid_relay_join", "Send the join's id and the six digits the new device shows.", 400);
+          return fail("invalid_relay_join", "Send the join's id and the six digits the new device shows, or a decision of approve or decline for a first join.", 400);
         }
         const outcome = service.approvals.decideTyped(body.id, body.digits);
         if (outcome === "gone") return fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);

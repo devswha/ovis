@@ -53,6 +53,13 @@ export const PAIR_INTENT_ACCOUNT = "pair-intent-account";
  * account's members as "pair this PC", and it makes a plain row there, never an account member.
  */
 export const PAIR_INTENT_VOUCHED = "pair-intent-pc-vouched";
+/**
+ * Which PC a comparison waits on when the PC itself approves it on its own screen (an account join on a PC with no
+ * member, docs/account.md design 5.3), named by its system so the phone can say where to press. A value a phone does
+ * not know reads as "pc", so a later PC can name another.
+ */
+export const PAIR_APPROVERS = ["mac", "windows", "linux", "pc"] as const;
+export type PairApprover = typeof PAIR_APPROVERS[number];
 export const LARGE_WS_MESSAGES = "large-ws-messages";
 /**
  * A phone without it refuses a
@@ -145,7 +152,7 @@ type Payloads = {
   readonly 0x09: bigint;
   readonly 0x0a: { readonly code: string; readonly label: string; readonly public_key: string };
   readonly 0x0b: { readonly label: string; readonly public_key: string; readonly commitment: string };
-  readonly 0x0c: { readonly nonce: string };
+  readonly 0x0c: { readonly nonce: string; readonly approve_on?: PairApprover };
   readonly 0x0d: { readonly nonce: string };
   readonly 0x0e: { readonly confirmed: true };
   readonly 0x10: { readonly device_id: string; readonly method: Method; readonly target: string; readonly headers: HeaderList; readonly body: "none" | "stream" };
@@ -421,7 +428,10 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
     }
     case FrameType.PAIR_REQUEST:
       return { ...common, type, payload: { label: pairLabel(v.label), public_key: p256Spki(v.public_key), commitment: base64url(v.commitment, 32) } };
-    case FrameType.PAIR_CHALLENGE: case FrameType.PAIR_REVEAL:
+    case FrameType.PAIR_CHALLENGE:
+      return { ...common, type, payload: { nonce: base64url(v.nonce, 32),
+        ...(v.approve_on === undefined ? {} : { approve_on: PAIR_APPROVERS.find((approver) => approver === v.approve_on) ?? "pc" }) } };
+    case FrameType.PAIR_REVEAL:
       return { ...common, type, payload: { nonce: base64url(v.nonce, 32) } };
     case FrameType.KEY_CHALLENGE:
       return { ...common, type, payload: { challenge: base64url(v.challenge, 32) } };

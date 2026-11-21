@@ -276,13 +276,23 @@ it, only when all of these hold:
 2. that account's mailbox, pulled with the PC's server proof, holds an admission at most 10 minutes
    old naming exactly the key of this `PAIR_REQUEST`: the account service has seen this device
    signed in to the same account;
-3. the PC has at least one drive account member to approve it.
+3. the PC has at least one drive account member to approve it, or it has none yet (a first join).
 
 Such a comparison is shown to the account's members through the relay (`remote-pairings`, digits
 picked out of three, as always) and, so a one-PC owner is never stuck, to this PC's own window only
 (`GET /api/relay/joins`, its screen, loopback and not forwarded): listed there without its digits and
 without a pop-up, and approved only by the owner typing the six digits the new device shows
 (`POST /api/relay/join`); one wrong entry ends that join. It is never approved by itself.
+
+A first join (a PC added in one press, its owner's first phone) has nobody else to approve it: this PC's
+own window alone shows it, as a card with the digits to compare and Allow / Decline (`POST /api/relay/join`
+with a `decision`), and no member that joins meanwhile may decide it. Its `PAIR_CHALLENGE` carries
+`approve_on` (`mac`, `windows`, `linux` or `pc`), so the phone says which PC to press Allow on. A PC vouched
+for still needs a member. A key that a QR or code pairing waits with on this PC's screen shows in the same place in
+the PC's own window, with its fingerprint and one button, Confirm on this PC (`POST /api/account/confirm-page`, own
+window only): the server opens the local confirm page in a browser on this PC's desktop, as `ovis confirm` does, so
+the page's port stays in no answer. The page, with its same-user check, or the desktop app still decides it; no route
+of the server approves it. With no desktop to open it on, the window says to run `ovis confirm`.
 Anything else is refused before any prompt and not counted as a failed pairing. A PC takes at most 5
 such joins a minute; refused requests do not count toward them. A request whose admission the PC has
 not seen yet makes it pull its mailbox, at most once every 10 seconds, so a device that asks right

@@ -146,6 +146,11 @@ export interface RequestServices {
   readonly pendingRedemptions?: PendingRedemptions;
   /** pairings that prove their key and wait for this PC's screen (server/account/key-proof.ts); Linux with the flag only */
   readonly keyProofPairings?: KeyProofPairings;
+  /**
+   * Opens this PC's local confirm page in a browser on its own desktop, as `ovis confirm` does, so its port stays in no
+   * answer (R8). False when no page listens or there is no desktop to open it on.
+   */
+  readonly openConfirmPage?: () => boolean;
   /** puts a waiting key on this PC's screen */
   readonly askScreenForKey?: (entry: PendingRedemption) => void;
   /** /api/account/lock and /unlock (server/account/lock-routes.ts); only with the release flag */
@@ -285,6 +290,17 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (!ownWindow && request.method === "POST" && (pathname === "/api/account/lock" || pathname === "/api/account/unlock") && ctx.services.lockRoutes !== undefined) {
     setRequestRoute(pathname);
     return jsonResponse({ error: { code: "local_required", message: "Turn the lock on or off on this PC's own screen." } }, 403, { "cache-control": "no-store" });
+  }
+  // a key that waits for this PC's screen: its own window may have the confirm page opened, which decides it with its
+  // own same-user check; any other window is told so (the page's port is never sent, R8)
+  if (pathname === "/api/account/confirm-page" && ctx.services.openConfirmPage !== undefined) {
+    setRequestRoute(pathname);
+    const refuse = (code: string, message: string, status: number) => jsonResponse({ error: { code, message } }, status, { "cache-control": "no-store" });
+    if (request.method !== "POST") return refuse("method_not_allowed", "use POST", 405);
+    if (!ownWindow) return refuse("local_required", "Open the confirm page on this PC's own screen.", 403);
+    if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return refuse("invalid_origin", "Open it from this app", 403);
+    return ctx.services.openConfirmPage() ? new Response(null, { status: 204, headers: { "cache-control": "no-store" } })
+      : refuse("confirm_page_unavailable", "The confirm page could not be opened here. Run ovis confirm on this PC.", 409);
   }
   const askingTheScreen = ownWindow
     && ((pathname === "/api/account/lock" && request.method === "GET") || (pathname === "/api/account/unlock" && request.method === "POST"));

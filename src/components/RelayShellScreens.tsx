@@ -13,6 +13,7 @@ import { AccountSignIn, CheckPcsButton, PcStatusLine } from "./AccountPcs.tsx";
 import { JoinWait } from "./JoinWait.tsx";
 import { KeyId } from "./KeyId.tsx";
 import { KeyFingerprintWait } from "./PendingKeys.tsx";
+import { approveOnLine } from "./approveOnLine.ts";
 import { relayFailureText } from "./relayFailureText.ts";
 import { CodeEntry, ReadyCheckpoint, type RelayShellProps } from "./RelayShell.tsx";
 import { RelayAddPc } from "./RelayAddPc.tsx";
@@ -287,13 +288,13 @@ export function RelayShellCardContent({ props, view, signInFirst, addingPc, setS
       {state.kind === "compare" && !(state.typed && !state.confirmed) && (
         <>
           <SheepMascot screen="waiting" size={56} badge />
-          <h1 className="relay-shell-title" ref={pressedTitle} tabIndex={-1}>{state.confirmed ? t("Approve on the PC if it shows the same number") : t("Does {name} show this number?", { name: pc })}</h1>
+          <h1 className="relay-shell-title" ref={pressedTitle} tabIndex={-1}>{state.approveOn !== undefined ? approveOnLine(t, state.approveOn) : state.confirmed ? t("Approve on the PC if it shows the same number") : t("Does {name} show this number?", { name: pc })}</h1>
           {!state.confirmed && <p className="relay-shell-copy">{t("If they match, approve this device on {name}.", { name: pc })}</p>}
           <div className="relay-step-cards">
             <div className="relay-step-card relay-step-number">
               {/* a typed comparison's digits are only on the PC's screen: the card keeps the 90 seconds line alone */}
               {!state.typed && <p className="relay-shell-digits" aria-label={state.digits.split("").join(" ")}>{`${state.digits.slice(0, 3)} ${state.digits.slice(3)}`}</p>}
-              {state.confirmed && <p className="relay-shell-detail">{t("Approve this device on {name} within 90 seconds to finish.", { name: pc })}</p>}
+              {state.confirmed && state.approveOn === undefined && <p className="relay-shell-detail">{t("Approve this device on {name} within 90 seconds to finish.", { name: pc })}</p>}
             </div>
           </div>
           <div className="relay-shell-actions">{!state.confirmed && <button type="button" className="btn btn-primary" onClick={() => onMatch()}>{t("The numbers match")}</button>}<button type="button" className="btn relay-step-quiet" onClick={onCancel}>{t("Cancel")}</button></div>
