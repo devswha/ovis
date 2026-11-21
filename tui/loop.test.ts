@@ -12,6 +12,7 @@ import { place } from "./testing/fixtures/fixture.ts";
 import { SCALE_LARGEST_TAB, SCALE_TERMINALS, SCALE_WORKSPACES, scale } from "./testing/fixtures/scale.ts";
 import { HeadlessHost } from "./testing/headless-host.ts";
 import { ManualClock, Run, type RunOptions } from "./testing/run.ts";
+import { ViewStore } from "./view-store.ts";
 
 /** every test drives the loop on the injected clock; only the socket's own turns are real */
 const TEST_MS = 120_000;
@@ -574,6 +575,39 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     await run.keys("ctrl+b,H");
     await run.advance(20);
     expect(run.loop.model().notices.map((notice) => [notice.code, notice.calm])).toEqual([["layout_unchanged", true]]);
+    return { run };
+  }],
+  ["the narrow one-pane view, another pane of its tab chosen in the menu", async () => {
+    const run = await start({ fixture: demo, cols: 45, rows: 30 });
+    await run.live();
+    await run.advance(1);
+    await run.keys("ctrl+b,enter,6");
+    await run.live();
+    expect(run.loop.panes.views().map((view) => view.terminal)).toEqual(["t2"]);
+    return { run };
+  }],
+  ["the menu open on a narrow screen", async () => {
+    const run = await start({ fixture: demo, cols: 45, rows: 30 });
+    await run.live();
+    await run.advance(1);
+    await run.keys("ctrl+b,enter,down,down");
+    expect([run.loop.report().mode.overlays, run.loop.model().overlays.at(-1)]).toEqual([["menu"], expect.objectContaining({ cursor: 2 })]);
+    return { run };
+  }],
+  ["a view kept by an earlier run restored", async () => {
+    const folder = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "loop-view-"));
+    const core = new FakeHcCore();
+    demo.build(core);
+    const first = await start({ core, views: new ViewStore(folder) });
+    await first.live();
+    await first.advance(1);
+    await first.keys("ctrl+b,n");
+    await first.close();
+    runs.splice(runs.indexOf(first), 1);
+    const run = await start({ core, views: new ViewStore(folder) });
+    await run.live();
+    rmSync(folder, { recursive: true, force: true });
+    expect(run.loop.panes.views().map((view) => view.terminal)).toEqual(["t3"]);
     return { run };
   }],
 ];

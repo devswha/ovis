@@ -35,6 +35,7 @@ import { PaneGrid } from "./view/grid.ts";
 import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
 import { layOut, paneScene, type ScreenShape } from "./view/screen.ts";
+import type { ViewStore } from "./view-store.ts";
 
 /** The caller's clock and its one timer: `arm` sets the timer for `at` (on the same clock) and answers its cancel. */
 export interface LoopClock {
@@ -57,6 +58,8 @@ export interface LoopOptions {
   session?: string;
   /** the folder the command was typed in, shown when the core has no workspaces */
   cwd?: string;
+  /** where the view is kept per core between runs; none: nothing is kept */
+  views?: ViewStore;
 }
 
 /**
@@ -240,6 +243,8 @@ export function startLoop(options: LoopOptions): Loop {
           if (link.state.kind === "Online" && link.state.epoch === epoch) {
             hello = info;
             world.setVersion(info.version);
+            if (options.views) guard(() => dispatch({ type: "restore", ...options.views!.open(info.core.id), at: clock.now() }));
+            arm();
           }
         }, () => {});
       }
@@ -329,6 +334,8 @@ export function startLoop(options: LoopOptions): Loop {
     state = step.state;
     for (const effect of step.effects) perform(effect);
     if (state !== before) {
+      const unsaved = options.views?.keep(state) ?? null;
+      if (unsaved !== null) dispatch({ type: "notice", code: "view_unsaved", data: { reason: unsaved }, at: clock.now() });
       reshow();
       owePass();
     }
@@ -424,6 +431,9 @@ export function startLoop(options: LoopOptions): Loop {
       case "close_overlay":
         dispatch({ type: "close_overlay", at: clock.now() });
         return;
+      case "choose":
+        dispatch({ type: "choose", entry: step.entry, at: clock.now() });
+        return;
     }
   }
 
@@ -467,7 +477,7 @@ export function startLoop(options: LoopOptions): Loop {
     const size = host.size();
     const view = world.view();
     const tab = focused(state.world, state.focus).tab;
-    shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed });
+    shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed, pane: focused(state.world, state.focus).pane?.id ?? null });
     const shown = shape.spots.map(({ pane, cells, covered }) => ({ terminal: pane, cols: cells.cols, rows: cells.rows, covered }));
     const key = JSON.stringify(shown);
     if (painter && key !== shownKey) {

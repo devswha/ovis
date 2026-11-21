@@ -5,7 +5,7 @@
  * pane the event goes to its program, in its own grid's cells, when the program asked for a mouse mode and shift
  * is not held; otherwise the wheel scrolls the pane's history here and a drag selects, and the release copies.
  * A program gets a drag and its release only if its press went there, it is focused, and the grab is still active.
- * Over an open overlay only its close control acts.
+ * Over an open overlay only its close control and its entries (the menu's) act.
  * The answer is a list of acts for the loop to perform; nothing here writes, sends or draws.
  */
 import type { LayoutNode, SplitDirection } from "../../server/herdr-core/layout-doc.ts";
@@ -48,7 +48,9 @@ export interface PointerScene {
 
 export type PointerAct =
   | { readonly kind: "select"; readonly target: Target }
-  | { readonly kind: "action"; readonly action: "toggle_sidebar" | "new_workspace" }
+  | { readonly kind: "action"; readonly action: "toggle_sidebar" | "new_workspace" | "menu" }
+  /** the top overlay's entry with this index was clicked */
+  | { readonly kind: "choose"; readonly entry: number }
   /** to the focused pane's program, in its grid's cells */
   | { readonly kind: "forward"; readonly pane: string; readonly event: MouseInput }
   /** show the pane's screen this many rows above its newest rows */
@@ -102,7 +104,10 @@ export class Pointer {
       if (event.action !== "press") return [];
       this.grab = NONE;
       const hit = event.button === "left" ? scene.hits?.at(event.col, event.row) : null;
-      return hit && "part" in hit && hit.part.startsWith("overlay:") && hit.id === "close" ? [{ kind: "close_overlay" }] : [];
+      if (!hit || !("part" in hit) || !hit.part.startsWith("overlay:")) return [];
+      if (hit.id === "close") return [{ kind: "close_overlay" }];
+      const [kind, entry] = splitId(hit.id);
+      return kind === "menu" && /^\d+$/.test(entry) ? [{ kind: "choose", entry: Number(entry) }] : [];
     }
     if (isWheel(event)) return this.wheel(event, scene);
     if (event.action === "press") return this.press(event, scene);
@@ -175,7 +180,7 @@ export class Pointer {
     const [kind, id] = splitId(hit.id);
     if (kind === "tab" || kind === "workspace") return [...dropped, { kind: "select", target: { kind, id } }];
     if (kind === "agent") return [...dropped, { kind: "select", target: { kind: "pane", id } }];
-    if (hit.id === "toggle_sidebar" || hit.id === "new_workspace") return [...dropped, { kind: "action", action: hit.id }];
+    if (hit.id === "toggle_sidebar" || hit.id === "new_workspace" || hit.id === "menu") return [...dropped, { kind: "action", action: hit.id }];
     const split = scene.splits.find((candidate) => candidate.id === hit.id);
     const path = split ? pathOf(split.id) : null;
     const name = split && path && scene.tab ? dividerAt(scene.tab.root, path) : null;

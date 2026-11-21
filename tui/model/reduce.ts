@@ -11,10 +11,12 @@ import type { HerdrAction } from "../../shared/herdr-keys.ts";
 import type { InputEvent } from "../input/decode.ts";
 import { CATALOGUE_BY_ID } from "./catalogue.ts";
 import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KEPT, setDeadline } from "./deadlines.ts";
-import type { Effect, KeyInput, MouseInput, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
+import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
 import { EMPTY_WORLD, exists, type Focus, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
-import { field, type Overlay, overlayInput, type OverlayInput, overlayTarget } from "./overlays.ts";
+import { keptCursor, menuEntries } from "./menu.ts";
+import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget } from "./overlays.ts";
+import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
 export type ModeState =
   | { readonly name: "terminal" }
@@ -48,6 +50,8 @@ export interface ModelState {
   readonly host: { readonly cols: number; readonly rows: number; readonly focused: boolean | null };
   readonly sidebarCollapsed: boolean;
   readonly following: Following | null;
+  /** the view kept from an earlier run, waiting for a world with something in it */
+  readonly restoring: SavedView | null;
 }
 
 /** Events that do not come from host input: the loop and the other modules send them. */
@@ -68,7 +72,11 @@ export type ScreenEvent =
   /** a notice from elsewhere (a failed layout write); `calm` for one that reports no failure */
   | { readonly type: "notice"; readonly code: string; readonly data?: Readonly<Record<string, string | number>>; readonly calm?: boolean; readonly at: number }
   /** focus the target once the world shows it (outside tab `away`): what a layout write made or moved; any other focus move drops it */
-  | { readonly type: "follow"; readonly target: Target; readonly away: string | null; readonly at: number };
+  | { readonly type: "follow"; readonly target: Target; readonly away: string | null; readonly at: number }
+  /** the top overlay's entry `entry` was clicked: the menu chooses it as Enter on it would */
+  | { readonly type: "choose"; readonly entry: number; readonly at: number }
+  /** the view an earlier run kept for this core (null: none), or why its file was not read */
+  | { readonly type: "restore"; readonly view: SavedView | null; readonly problem: ViewProblem | null; readonly at: number };
 
 export type ModelEvent = InputEvent | ScreenEvent;
 
@@ -80,7 +88,7 @@ export interface Step { readonly state: ModelState; readonly effects: readonly E
 export function initialState(keys: unknown): ModelState {
   return {
     mode: { name: "terminal" }, locked: false, armed: false, overlays: [], world: EMPTY_WORLD, focus: NO_FOCUS, keymap: buildKeymap(keys),
-    notices: [], nextNotice: 0, deadlines: NO_DEADLINES, host: { cols: 0, rows: 0, focused: null }, sidebarCollapsed: false, following: null,
+    notices: [], nextNotice: 0, deadlines: NO_DEADLINES, host: { cols: 0, rows: 0, focused: null }, sidebarCollapsed: false, following: null, restoring: null,
   };
 }
 
@@ -152,6 +160,18 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
     case "follow":
       acc.s = { ...acc.s, following: { target: event.target, away: event.away } };
       follow(acc);
+      break;
+    case "choose": {
+      const top = acc.s.overlays.at(-1);
+      if (top?.kind === "menu") answerOverlay(acc, menuChoice(top, event.entry), event.at);
+      break;
+    }
+    case "restore":
+      if (event.problem !== null) notice(acc, "view_unread", { reason: event.problem }, event.at, true);
+      if (event.view !== null) {
+        acc.s = { ...acc.s, restoring: event.view };
+        restore(acc, event.at);
+      }
       break;
     default:
       // an event of a kind the model does not know changes nothing
@@ -312,10 +332,29 @@ function toPane(acc: Acc, input: PaneInput): void {
 }
 
 function toOverlay(acc: Acc, input: OverlayInput): void {
+  answerOverlay(acc, overlayInput(acc.s.overlays.at(-1)!, input), input.event.at);
+}
+
+/** The top overlay replaced by its answer (or closed), its effects given, then what it chose done. */
+function answerOverlay(acc: Acc, answer: OverlayAnswer, at: number): void {
   const { overlays } = acc.s;
-  const answer = overlayInput(overlays[overlays.length - 1]!, input);
   acc.s = { ...acc.s, overlays: answer.overlay === null ? overlays.slice(0, -1) : [...overlays.slice(0, -1), answer.overlay] };
   acc.effects.push(...answer.effects);
+  if (answer.choice !== undefined) choose(acc, answer.choice, at);
+}
+
+function choose(acc: Acc, choice: OverlayChoice, at: number): void {
+  if (choice.kind === "select") select(acc, choice.target, at);
+  else runAction(acc, choice.action, null, at);
+}
+
+/** The kept view applied once the world has something in it; a saved place that is gone is said so. */
+function restore(acc: Acc, at: number): void {
+  const { restoring, world } = acc.s;
+  if (restoring === null || world.workspaces.length === 0) return;
+  const { focus, moved } = restoredFocus(restoring, world);
+  acc.s = { ...acc.s, focus, restoring: null, following: null };
+  if (moved) notice(acc, "view_moved", {}, at, true);
 }
 
 function mouse(acc: Acc, event: MouseInput): void {
@@ -383,7 +422,23 @@ function applyWorld(acc: Acc, world: World, at: number): void {
     : s.mode;
   acc.s = { ...s, world, focus, mode, overlays: s.overlays.filter((overlay) => !gone.includes(overlay)) };
   for (const overlay of gone) notice(acc, "target_gone", { overlay: overlay.kind }, at);
+  restore(acc, at);
   follow(acc);
+  refreshMenus(acc);
+}
+
+/** An open menu lists what exists now, its cursor kept on the entry it was on. */
+function refreshMenus(acc: Acc): void {
+  const { world, focus, overlays } = acc.s;
+  if (!overlays.some((overlay) => overlay.kind === "menu")) return;
+  acc.s = {
+    ...acc.s,
+    overlays: overlays.map((overlay) => {
+      if (overlay.kind !== "menu") return overlay;
+      const entries = menuEntries(world, focus);
+      return { ...overlay, entries, cursor: keptCursor(overlay.entries, overlay.cursor, entries) };
+    }),
+  };
 }
 
 /** The id of the tab holding pane `id`, or null. */
@@ -437,6 +492,9 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction>, index: numb
       if (s.locked) acc.s = { ...s, locked: false };
       else if (unlockChords(s.keymap).length === 0) notice(acc, "lock_unbound", {}, at);
       else acc.s = { ...s, locked: true, overlays: [], mode: { name: "terminal" } };
+      return;
+    case "menu":
+      acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", entries: menuEntries(s.world, s.focus), cursor: 0 }] };
       return;
     case "navigate_workspace_up":
     case "navigate_workspace_down": {

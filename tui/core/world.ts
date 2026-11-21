@@ -288,12 +288,13 @@ export class CoreWorld {
       number: workspace.number,
       status: rollupStatus(snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id).map((pane) => panes.get(pane.pane_id)?.status)),
     });
+    const agents = buildAgents(snapshot, panes);
     this.shown = {
       tabs,
       panes,
       tabStatuses,
       workspaceGroups: worktreeGroups(snapshot.workspaces).map(({ workspace, children }) => ({ ...workspaceRow(workspace), children: children.map(workspaceRow) })),
-      agents: buildAgents(snapshot, panes),
+      agents,
       ownsLayout: appDoc === null,
       world: {
         workspaces: snapshot.workspaces.map((workspace) => ({
@@ -308,6 +309,7 @@ export class CoreWorld {
             }),
           })),
         })),
+        agents: agents.map((agent) => agent.paneId),
       },
     };
     return this.shown;
