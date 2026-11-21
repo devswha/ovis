@@ -1,7 +1,7 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, directTarget, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, sshDetails, t, tabPcs } from "./shell.js";
+import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, directTarget, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, savedPcLabel, sshDetails, t, tabPcs } from "./shell.js";
 
 localize();
 followScheme();
@@ -256,10 +256,10 @@ for (const scan of document.querySelectorAll("[data-scan]")) scan.addEventListen
   }
 });
 
-const WAY_TAGS = { tailscale: () => "Tailscale", direct: () => t("Direct", "직접"), ssh: () => "SSH" };
+const WAY_TAGS = { relay: () => t("Relay", "릴레이"), tailscale: () => "Tailscale", direct: () => t("Direct", "직접"), ssh: () => "SSH", broken: () => t("Unreadable", "읽을 수 없음") };
 
 /**
- * A tab's own saved PCs (tabPcs: the Tailscale tab's at a tailnet address, Direct's at any other, none on the relay's):
+ * A tab's own saved PCs (tabPcs: the relay tab's paired over the relay, the Tailscale tab's at a tailnet address, Direct's at any other):
  * each a compact row of its name, the way it connects and, for the PC this screen was opened from, Connected; with
  * Connect, and Forget (an SSH PC's Manage, as its keys live on this phone).
  */
@@ -287,7 +287,7 @@ function renderPcs(tab, list, section, state) {
     }
     const address = document.createElement("span");
     address.className = "pc-address";
-    address.textContent = way === "ssh" ? sshDetails(sshPcs[origin]).address : new URL(origin).host;
+    address.textContent = way === "ssh" ? sshDetails(sshPcs[origin]).address : way === "broken" ? "" : new URL(origin).host;
     sub.append(address);
     text.append(title, sub);
     const connect = button(t("Connect", "연결"), () => void open(origin), "primary");
@@ -295,7 +295,8 @@ function renderPcs(tab, list, section, state) {
     if (way !== "ssh") {
       const forget = button(t("Forget", "지우기"), async () => { await shell("forget", { url: origin }); await load(); }, "forget");
       forget.setAttribute("aria-label", t(`Forget ${label}`, `${label} 지우기`));
-      item.append(text, connect, forget);
+      // an entry saved unreadable opens nothing: Forget alone
+      item.append(...(way === "broken" ? [text, forget] : [text, connect, forget]));
       return [item];
     }
     const manage = button(t("Manage", "관리"), () => {
@@ -418,7 +419,7 @@ function showBackToPc(state) {
   const back = document.getElementById("back-to-pc");
   back.hidden = state.choosing !== true;
   if (back.hidden) return;
-  const name = (state.names ?? {})[state.current] || new URL(state.current).hostname.split(".")[0];
+  const name = savedPcLabel(state.current, state.names ?? {}, sshPcs);
   back.textContent = `‹ ${name}`;
   back.setAttribute("aria-label", t(`Back to ${name}`, `${name} 화면으로 돌아가기`));
 }
@@ -438,6 +439,7 @@ async function load() {
     catch { /* an app without the plugin lists its PCs as before */ }
   }
   showBackToPc(state);
+  renderPcs("relay", document.getElementById("relay-pcs"), document.getElementById("relay-section"), state);
   const tailnet = renderPcs("tailscale", document.getElementById("tailnet"), document.getElementById("tailnet-section"), state);
   document.getElementById("tailnet-none").hidden = tailnet > 0;
   renderPcs("direct", document.getElementById("direct-pcs"), document.getElementById("direct-section"), state);

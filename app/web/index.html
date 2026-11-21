@@ -35,6 +35,11 @@
         <p class="note" data-ko="처음이면 계정이 바로 만들어져요">First time? Your account is made right away.</p>
       </div>
       <p class="note" data-ko="Tailscale · 직접 연결은 로그인 없이 돼요">Tailscale and Direct need no sign-in.</p>
+      <!-- the PCs this phone paired over the relay (a pairing link, ovis pair --relay), under the sign-in (connect.js renderPcs) -->
+      <section id="relay-section" hidden>
+        <h2 data-ko="릴레이로 연결한 PC">PCs paired over the relay</h2>
+        <ul id="relay-pcs" class="card list"></ul>
+      </section>
     </section>
     <section id="panel-tailscale" class="panel" role="tabpanel" aria-labelledby="tab-tailscale" hidden>
       <!-- Tailscale off on this phone (Android's HerdrShell tailscale): nothing else here would open, so one line and its app -->

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
-import { APP_ORIGIN, directTarget, homeHost, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, tabPcs, tailnetHost } from "../app/web/shell.js";
+import { APP_ORIGIN, directTarget, homeHost, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, savedPcLabel, tabPcs, tailnetHost } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
 
@@ -43,8 +43,16 @@ describe("each connect tab's saved PCs", () => {
   const names = { "http://100.101.12.7:7317": "home-server", "http://192.168.0.10:7317": "desk", [relayPc]: "Studio PC" };
   const ssh = { "http://127.0.0.1:41234": { label: "pi@nas" } };
 
-  it("lists none on the relay tab: the account's PCs come from its sign-in", () => {
-    expect(tabPcs(saved, "relay", names, ssh)).toEqual([]);
+  it("lists the PCs paired over the relay on the relay tab, under its sign-in, and not the app's own front page", () => {
+    expect(tabPcs(saved, "relay", names, ssh)).toEqual([{ origin: relayPc, label: "Studio PC", way: "relay" }]);
+  });
+
+  it("names a PC by its saved name, else what its address says: a relay PC by its id, never the app's host", () => {
+    expect(savedPcLabel(relayPc, {}, {})).toBe("0123456789ab");
+    expect(savedPcLabel("https://nas.tail1e211e.ts.net", {}, {})).toBe("nas");
+    expect(savedPcLabel("http://192.168.0.10:7317", {}, {})).toBe("192.168.0.10:7317");
+    expect(savedPcLabel("http://127.0.0.1:41234", {}, ssh)).toBe("pi@nas");
+    expect(savedPcLabel(relayPc, names, {})).toBe("Studio PC");
   });
 
   it("lists the PCs opened at a Tailscale address on the Tailscale tab, by their saved name or their host's first word", () => {
@@ -54,10 +62,11 @@ describe("each connect tab's saved PCs", () => {
     ]);
   });
 
-  it("lists the PCs opened at any other address, and those added over SSH, on the Direct tab", () => {
+  it("lists the PCs opened at any other address, and those added over SSH, on the Direct tab, and one saved unreadable to forget", () => {
     expect(tabPcs(saved, "direct", names, ssh)).toEqual([
       { origin: "http://192.168.0.10:7317", label: "desk", way: "direct" },
       { origin: "http://127.0.0.1:41234", label: "pi@nas", way: "ssh" },
+      { origin: "not an address", label: "not an address", way: "broken" },
     ]);
   });
 

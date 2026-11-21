@@ -206,22 +206,37 @@ export function directTarget(text) {
 }
 
 /**
- * The saved PCs a connect tab lists, each under the one tab of the way it connects: none on the relay tab (a PC on the
- * app's origin, whose account lists it after the sign-in), those at a Tailscale address on the Tailscale tab (a phone has
- * no list of its tailnet's machines, only the ones opened here), and every other address on Direct, an SSH PC's own
- * (way "ssh") among them. Each is `{ origin, label, way }`, by its saved name or else its host. `saved` and `names` as
- * HerdrShell's getState gives them, `ssh` the SSH PCs by origin (OvisSsh list).
+ * A saved PC's name in the lists and on the way back to it: its saved name, else what its address says (a relay PC's
+ * id, as its host is the app's; a Tailscale host's first word; an SSH login; the address).
+ */
+export function savedPcLabel(origin, names, ssh = {}) {
+  if (names[origin]) return names[origin];
+  if (ssh[origin]) return ssh[origin].label;
+  let url;
+  try { url = new URL(origin); } catch { return origin; }
+  const scope = /^\/s\/([0-9a-f]{32})\/?$/.exec(url.pathname);
+  if (scope) return scope[1].slice(0, 12);
+  return tailnetHost(url.hostname) ? url.hostname.split(".")[0] : url.host;
+}
+
+/**
+ * The saved PCs a connect tab lists, each under the one tab of the way it connects: the relay tab, under its sign-in,
+ * the PCs paired over the relay (a scope on the app's origin; the app's own front page is no PC), the Tailscale tab
+ * those at a Tailscale address (a phone has no list of its tailnet's machines, only the ones opened here), and Direct
+ * every other address, an SSH PC's own (way "ssh") among them, and an entry saved unreadable (way "broken"), there to be
+ * forgotten. Each is `{ origin, label, way }` (savedPcLabel). `saved` and `names` as HerdrShell's getState gives them,
+ * `ssh` the SSH PCs by origin (OvisSsh list).
  */
 export function tabPcs(saved, tab, names, ssh = {}, appOrigin = APP_ORIGIN) {
   const app = new URL(appOrigin).origin;
   return saved.flatMap((origin) => {
-    let url;
-    try { url = new URL(origin); } catch { return []; }
-    if (url.origin === app) return [];
-    const way = tailnetHost(url.hostname) ? "tailscale" : ssh[origin] ? "ssh" : "direct";
-    if ((way === "tailscale") !== (tab === "tailscale") || tab === "relay") return [];
-    const label = names[origin] || (way === "tailscale" ? url.hostname.split(".")[0] : way === "ssh" ? ssh[origin].label : url.host);
-    return [{ origin, label, way }];
+    let url = null;
+    try { url = new URL(origin); } catch { /* listed on Direct, to forget */ }
+    const way = url === null ? "broken"
+      : url.origin === app ? (/^\/s\/[0-9a-f]{32}\/?$/.test(url.pathname) ? "relay" : null)
+      : tailnetHost(url.hostname) ? "tailscale" : ssh[origin] ? "ssh" : "direct";
+    const home = way === "relay" || way === "tailscale" ? way : way === null ? null : "direct";
+    return home === tab ? [{ origin, label: savedPcLabel(origin, names, ssh), way }] : [];
   });
 }
 
