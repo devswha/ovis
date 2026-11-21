@@ -242,7 +242,6 @@ export const DEVICES_KO: Record<string, string> = {
   "Tailscale on this PC is off or not signed in.": "이 PC의 Tailscale이 꺼져 있거나 로그인돼 있지 않아요.",
   "Tailscale is on, but Ovis is not open at a Tailscale address yet.": "Tailscale은 켜져 있지만, Ovis가 아직 Tailscale 주소로 열려 있지 않아요.",
   "Turn on Tailscale and sign in.": "Tailscale을 켜고 로그인하세요.",
-  "Open Tailscale": "Tailscale 열기",
   "Open with Tailscale": "Tailscale로 열기",
   "Tailscale didn't allow it. Run this once on this PC:": "Tailscale이 허용하지 않았어요. 이 PC에서 한 번 실행하세요:",
   "Or allow it once, then press Open with Tailscale again:": "또는 한 번 허용한 뒤 [Tailscale로 열기]를 다시 누르세요:",

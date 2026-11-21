@@ -117,7 +117,6 @@ export const RELAY_ZH: Record<string, string> = {
   "Connect a PC": "连接电脑",
   "Turn on Ovis on the PC and sign in with the same account.": "在电脑上打开 Ovis，并用同一个账号登录",
   "Turn on Tailscale to connect": "打开 Tailscale 才能连接",
-  "Open Tailscale": "打开 Tailscale",
   "PCs on Tailscale": "Tailscale 上的电脑",
   "Address or SSH": "地址或 SSH",
   "Scan a QR code": "扫描二维码",

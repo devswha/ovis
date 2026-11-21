@@ -117,7 +117,6 @@ export const RELAY_JA: Record<string, string> = {
   "Connect a PC": "PC を接続",
   "Turn on Ovis on the PC and sign in with the same account.": "PC で Ovis を起動し、同じアカウントでサインインしてください",
   "Turn on Tailscale to connect": "接続するには Tailscale をオンにしてください",
-  "Open Tailscale": "Tailscale を開く",
   "PCs on Tailscale": "Tailscale 上の PC",
   "Address or SSH": "アドレスまたは SSH",
   "Scan a QR code": "QR を読み取る",

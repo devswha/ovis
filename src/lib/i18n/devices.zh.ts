@@ -242,7 +242,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "Tailscale on this PC is off or not signed in.": "这台电脑的 Tailscale 已关闭或未登录。",
   "Tailscale is on, but Ovis is not open at a Tailscale address yet.": "Tailscale 已开启，但 Ovis 还没有在 Tailscale 地址上打开。",
   "Turn on Tailscale and sign in.": "请打开 Tailscale 并登录。",
-  "Open Tailscale": "打开 Tailscale",
   "Open with Tailscale": "用 Tailscale 打开",
   "Tailscale didn't allow it. Run this once on this PC:": "Tailscale 未允许。请在这台电脑上运行一次：",
   "Or allow it once, then press Open with Tailscale again:": "或者先允许一次，然后再次点击“用 Tailscale 打开”：",

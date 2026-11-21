@@ -117,7 +117,6 @@ export const RELAY_KO: Record<string, string> = {
   "Connect a PC": "PC 연결",
   "Turn on Ovis on the PC and sign in with the same account.": "PC에서 Ovis를 켜고 같은 계정으로 로그인하세요",
   "Turn on Tailscale to connect": "Tailscale을 켜야 연결할 수 있어요",
-  "Open Tailscale": "Tailscale 열기",
   "PCs on Tailscale": "Tailscale의 PC",
   "Address or SSH": "주소 또는 SSH",
   "Scan a QR code": "QR 찍기",

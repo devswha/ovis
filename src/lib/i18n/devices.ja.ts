@@ -242,7 +242,6 @@ export const DEVICES_JA: Record<string, string> = {
   "Tailscale on this PC is off or not signed in.": "この PC の Tailscale がオフか、サインインしていません。",
   "Tailscale is on, but Ovis is not open at a Tailscale address yet.": "Tailscale はオンですが、Ovis はまだ Tailscale のアドレスで開かれていません。",
   "Turn on Tailscale and sign in.": "Tailscale をオンにしてサインインしてください。",
-  "Open Tailscale": "Tailscale を開く",
   "Open with Tailscale": "Tailscale で開く",
   "Tailscale didn't allow it. Run this once on this PC:": "Tailscale に許可されませんでした。この PC で一度実行してください:",
   "Or allow it once, then press Open with Tailscale again:": "または一度許可してから、もう一度「Tailscale で開く」を押してください:",
