@@ -277,6 +277,23 @@ describe("the loop", () => {
     for (const terminal of ["t1", "t2", "t3", "t4"]) expect(run.core.terminal(terminal).state).toBe("live");
   }, TEST_MS);
 
+  it("a detach never waits behind a layout write: with the core silent mid-close, the prefix and q leave within the quit bound", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    run.muted = true;
+    let ended = false;
+    void run.loop.done.then(() => { ended = true; });
+    // a close: its write waits on a core that answers nothing, and typing waits behind it
+    run.type("\x02x");
+    await run.advance(20);
+    run.type("\x02q");
+    await run.advance(QUIT_BOUND_MS + 100);
+    expect(ended).toBe(true);
+    expect(await run.loop.done).toEqual({ kind: "quit" });
+    expect(run.core.calls().filter(({ method }) => method === "terminal.kill" || method === "terminal.rm")).toEqual([]);
+  }, TEST_MS);
+
   it("quit detaches within its bound when the core never answers", async () => {
     const run = await start({ fixture: demo });
     await run.live();
