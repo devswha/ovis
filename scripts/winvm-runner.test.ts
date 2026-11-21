@@ -274,7 +274,7 @@ describe.skipIf(process.platform === "win32")("winvm-runner.sh", () => {
 
   it("refuses to run beside another copy", async () => {
     const { run, lines, lockFile } = setup();
-    const holder = spawn("flock", [lockFile, "-c", "echo locked; read"], { stdio: ["pipe", "pipe", "inherit"] });
+    const holder = spawn("flock", [lockFile, "-c", "echo locked; cat >/dev/null"], { stdio: ["pipe", "pipe", "inherit"] });
     await new Promise<void>((resolve) => holder.stdout.once("data", () => resolve()));
     try {
       const result = run();
