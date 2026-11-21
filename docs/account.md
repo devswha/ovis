@@ -280,9 +280,11 @@ it, only when all of these hold:
 
 Such a comparison is shown to the account's members through the relay (`remote-pairings`, digits
 picked out of three, as always) and, so a one-PC owner is never stuck, to this PC's own window only
-(`GET /api/relay/joins`, its screen, loopback and not forwarded): listed there without its digits and
-without a pop-up, and approved only by the owner typing the six digits the new device shows
-(`POST /api/relay/join`); one wrong entry ends that join. It is never approved by itself.
+(`GET /api/relay/joins`, its screen, loopback and not forwarded, refused while the PC is locked):
+without its digits, one join at a time on a card that window shows by itself, whose field never takes
+the focus on its own, and approved only by the owner typing the six digits the new device shows
+(`POST /api/relay/join`); one wrong entry ends that join. **Not now** only hides the card in that
+window: the join lapses at its own deadline. It is never approved by itself.
 
 A first join (a PC added in one press, its owner's first phone) has nobody else to approve it: this PC's
 own window alone shows it, as a card with the digits to compare and Allow / Decline (`POST /api/relay/join`

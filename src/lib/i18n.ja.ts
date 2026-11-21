@@ -582,6 +582,7 @@ const BASE: Record<string, string> = {
   "The numbers match": "数字が一致しています",
   "That is not the number {name} shows": "{name} に表示されている番号ではありません",
   "Number on {name}": "{name} の番号",
+  "Not now": "後で",
   "{name} shows six digits on its own screen now. Type them here, then approve on {name}.": "{name} の画面に6桁の番号が表示されています。ここに入力してから {name} で承認してください。",
   "Approve this device on {name} within 90 seconds to finish.": "90 秒以内に {name} でこのデバイスを承認すると完了します。",
   "Type the number {name} shows": "{name} に表示された番号を入力してください",

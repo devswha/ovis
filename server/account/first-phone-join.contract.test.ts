@@ -148,6 +148,28 @@ for (const [platform, os] of [["darwin", "mac"], ["win32", "windows"]] as const)
   });
 }
 
+test("#16: a members join waits in the PC's own window for the typed number, one wrong entry ends it, and a locked PC lists nothing", async () => {
+  const pc = await startedPc("darwin", [(await memberRow("acct_1")).row]);
+  await firstPairingRead(pc);
+  const device = await phone();
+  const waiting = ownJoinWaiting(pc);
+  const { next, digits } = await join(pc, device);
+  await waiting;
+  const listed = await http(pc, "/api/relay/joins", own);
+  expect(listed.body.joins).toEqual([expect.objectContaining({ label: "Android · Chrome" })]);
+  const wrong = digits === "000000" ? "111111" : "000000";
+  const typed = await http(pc, "/api/relay/join", own, { id: listed.body.joins![0]!.id, digits: wrong });
+  expect([typed.status, typed.body.error?.code]).toEqual([409, "wrong_digits"]);
+  expect(pc.app.context.services.relay.approvals.ownJoins()).toEqual([]);
+  const ended = await next(FrameType.AUTH_OK);
+  expect(ended.type === FrameType.SESSION_ERROR ? ended.payload.code : ended.type).toBe("auth_failed");
+  expect(pc.devices.hasKey(device.spki)).toBe(false);
+  pc.app.context.services.safetyLog!.appendLock({ account: "acct_1" });
+  const locked = await http(pc, "/api/relay/joins", own);
+  expect([locked.status, locked.body.error?.code]).toEqual([403, "locked"]);
+  expect((await http(pc, "/api/relay/join", own, { id: "x", digits: "123456" })).status).toBe(403);
+});
+
 test("a PC with an account member keeps the member's approval: its own window gets no digits to tap, and the member is asked", async () => {
   const pc = await startedPc("darwin", [(await memberRow("acct_1")).row]);
   await firstPairingRead(pc);

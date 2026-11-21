@@ -97,6 +97,7 @@ import { useAccountDeviceNotices } from "./components/AccountDeviceNotices.tsx";
 import { PendingKeys } from "./components/PendingKeys.tsx";
 import { RelayPairingPrompt } from "./components/RelayPairingPrompt.tsx";
 import { useOwnWindowPrompts } from "./lib/useOwnWindowPrompts.ts";
+import { OwnJoinCard } from "./components/OwnJoins.tsx";
 import { AccountApprovals } from "./components/AccountApprovals.tsx";
 import { TelemetryNotice } from "./components/TelemetryControls.tsx";
 import { FilesDialog } from "./components/FilesDialog.tsx";
@@ -272,7 +273,7 @@ export function App() {
   const pendingAccess = locked === true ? false : auth === null ? undefined : auth.authenticated && auth.role === "drive" && auth.via !== "open";
   const { pairedNotices, setPairedNotices, dismissPairedNotice, relayPairings, setRelayPairings, remotePairings, setRemotePairings, removedNotices, setRemovedNotices, dismissRemovedNotice, pendingKeys, setPendingKeys, clearPendingKeys } = usePairedNotices(pendingAccess, auth?.role === "watch");
   const ownWindow = ownWindowHere(health?.auth);
-  const prompts = useOwnWindowPrompts(relayPairings, pendingKeys, ownWindow);
+  const { prompts, joins: ownJoins, reread: rereadOwnJoins } = useOwnWindowPrompts(relayPairings, pendingKeys, ownWindow, locked === false);
   const updates = useUpdates(locked === false);
   const desktopUpdate = useDesktopUpdate();
   const { selectedPaneId, setSelectedPaneId, notificationViewTarget, setNotificationViewTarget, terminalPeek, setTerminalPeek, endPeek, pendingLink, linkLanded, setLinkLanded, rosterSeq, linkSince, selectionSince, rosterTick, setRosterTick, linkTick, setLinkTick } = useSelectionState({ initialLink });
@@ -1182,6 +1183,8 @@ export function App() {
         <InstallHint />
         {setupGuide.guide !== null && setupGuide.paused && <SetupGuideResume onResume={setupGuide.resume} />}
         {prompts.length > 0 && <RelayPairingPrompt pairings={prompts} />}
+        {/* an account join a member could approve too: this PC's own window asks for the number itself (OwnJoinCard) */}
+        {ownWindow && locked === false && <OwnJoinCard joins={ownJoins} onDecided={rereadOwnJoins} />}
         {remotePairings.length > 0 && <AccountApprovals pairings={remotePairings} />}
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         {deviceNotices}
