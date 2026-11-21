@@ -159,6 +159,12 @@ export class RelayTransport implements Transport {
   private generation = 0;
   private relay: string;
   private opening: Promise<void> | undefined;
+  /**
+   * The attempt `opening` runs: its own abort, and whether the page was hidden at any time since it began. Such an
+   * attempt may have been frozen with its socket still connecting: showing the page drops it (wake), and its failure
+   * says nothing of the relay, so it never falls back to the other one.
+   */
+  private attempt: { readonly abort: AbortController; hidden: boolean } | undefined;
   private stopped = false;
   private delay = 1000;
   private cancelRetry: (() => void) | undefined;
@@ -180,9 +186,19 @@ export class RelayTransport implements Transport {
   private switchingDirect = false;
   private readonly stopResources: () => void;
   private readonly wake = (): void => {
-    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      if (this.attempt) this.attempt.hidden = true;
+      return;
+    }
     if (!this.stopped && this.channel && !this.channel.carrierOpen) { this.channel.close(); return; }
     if (!this.stopped && this.channel && this.channel.direct === undefined) { this.probedAt = -Infinity; this.reprobe = this.upgrading; this.upgrade(this.channel); }
+    // its socket may still be connecting from before a freeze, and would fail only seconds from now: start again at once
+    if (!this.stopped && this.opening && this.attempt?.hidden) {
+      ++this.generation;
+      this.attempt.abort.abort();
+      this.attempt = undefined;
+      this.opening = undefined;
+    }
     if (this.stopped || this.channel || this.opening) return;
     this.cancelRetry?.();
     this.cancelRetry = undefined;
@@ -202,17 +218,24 @@ export class RelayTransport implements Transport {
   connect(): Promise<void> {
     if (this.opening) return this.opening;
     if (this.stopped || this.channel) return Promise.resolve();
-    this.opening = this.establish().finally(() => { this.opening = undefined; });
-    return this.opening;
+    const attempt = { abort: new AbortController(), hidden: globalThis.document?.visibilityState === "hidden" };
+    this.attempt = attempt;
+    const opening = this.establish(attempt).finally(() => {
+      if (this.opening !== opening) return;
+      this.opening = undefined;
+      this.attempt = undefined;
+    });
+    this.opening = opening;
+    return opening;
   }
 
-  private async establish(): Promise<void> {
+  private async establish(attempt: { readonly abort: AbortController; readonly hidden: boolean }): Promise<void> {
     const generation = ++this.generation;
     // A one-use pairing code must never be reused after admission.
     const { code, ...savedOffer } = this.offer;
     const offer = generation === 1 ? this.offer : savedOffer;
-    const options: RelayChannelOptions = {
-      ...this.options, signal: this.abort.signal,
+    const options: RelayChannelOptions & { readonly signal: AbortSignal } = {
+      ...this.options, signal: AbortSignal.any([this.abort.signal, attempt.abort.signal]),
       ...(generation === 1 ? {} : { pcAnswerMs: RECONNECT_PC_ANSWER_MS }),
       onClose: (error) => {
         if (generation !== this.generation || this.stopped) return;
@@ -231,7 +254,14 @@ export class RelayTransport implements Transport {
         else this.failed(error);
       },
     };
-    const { channel, relay } = await this.race(generation, offer, options);
+    let opened: { channel: RelayChannel; relay: string };
+    try { opened = await this.race(generation, offer, options, () => !attempt.hidden); }
+    catch (error) {
+      // dropped for a newer attempt (wake) or by close: its failure is no one's
+      if (generation !== this.generation) return;
+      throw error;
+    }
+    const { channel, relay } = opened;
     this.relay = relay;
     if (generation !== this.generation || this.stopped) { channel.close(); return; }
     if (!channel.mux.active) throw new TypeError("Relay carrier lost during admission");
@@ -255,10 +285,10 @@ export class RelayTransport implements Transport {
     }
   }
 
-  private race(generation: number, offer: RelayOffer, options: RelayChannelOptions): Promise<{ channel: RelayChannel; relay: string }> {
+  private race(generation: number, offer: RelayOffer, options: RelayChannelOptions & { readonly signal: AbortSignal }, mayFallBack: () => boolean): Promise<{ channel: RelayChannel; relay: string }> {
     const viaRelay = (signal: AbortSignal, onClose = options.onClose) => openRelayChannelWithFallback(offer,
-      { ...options, signal, onClose, offerDirect: this.options.directSocket !== undefined, offerTailnet: this.options.directTailnet?.() === true }, this.options.openChannel ?? openRelayChannel, this.relay);
-    if (!this.options.directSocket || (generation === 1 && this.offer.code !== undefined)) return viaRelay(this.abort.signal);
+      { ...options, signal, onClose, offerDirect: this.options.directSocket !== undefined, offerTailnet: this.options.directTailnet?.() === true }, this.options.openChannel ?? openRelayChannel, this.relay, mayFallBack);
+    if (!this.options.directSocket || (generation === 1 && this.offer.code !== undefined)) return viaRelay(options.signal);
     // a race the relay won by a hair would bring a switch the probe just earned back onto the relay, time after time
     const proven = this.switchingDirect;
     const headStartMs = proven ? undefined : DIRECT_HEAD_START_MS;
@@ -292,7 +322,7 @@ export class RelayTransport implements Transport {
       const startRelay = (): void => {
         if (relayStarted || settled) return;
         relayStarted = true;
-        viaRelay(AbortSignal.any([this.abort.signal, relayEnd.signal]), lost("relay")).then((result) => win("relay", result), (error: unknown) => {
+        viaRelay(AbortSignal.any([options.signal, relayEnd.signal]), lost("relay")).then((result) => win("relay", result), (error: unknown) => {
           relayFailure = { error };
           if (directDone || isFatalRelayError(error, this.options.accountOpensAll)) fail(error);
         });
@@ -308,7 +338,7 @@ export class RelayTransport implements Transport {
   }
 
   /** Only a refusal by the PC itself, after Noise proved it is the PC, is final there as it is through the relay. */
-  private async openDirect(offer: RelayOffer, options: RelayChannelOptions, ended: AbortSignal, proven = false): Promise<RelayChannel | undefined> {
+  private async openDirect(offer: RelayOffer, options: RelayChannelOptions & { readonly signal: AbortSignal }, ended: AbortSignal, proven = false): Promise<RelayChannel | undefined> {
     const socket = this.options.directSocket;
     if (!socket) return undefined;
     if (this.directCarriers === undefined) {
@@ -343,7 +373,7 @@ export class RelayTransport implements Transport {
           const attempt = new AbortController();
           attempts.set(direct, attempt);
           const timer = setTimeout(() => attempt.abort(), left / rounds);
-          const signal = AbortSignal.any([this.abort.signal, attempt.signal, ended]);
+          const signal = AbortSignal.any([options.signal, attempt.signal, ended]);
           const onClose = (error: Error): void => { if (kept === direct) options.onClose?.(error); };
           // the plugin counts a socket until its close is done (iOS: up to 5 s after asking): the lane's place frees only then
           const freed = deferred();

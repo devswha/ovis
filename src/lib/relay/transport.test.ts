@@ -32,7 +32,9 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
   const carriers: { open: boolean }[] = [];
   const callbacks: NonNullable<RelayChannelOptions["onClose"]>[] = [];
   const attempts = { count: 0, failures: 0, offline: 0, away: 0, unreachable, refusal: null as Error | null,
-    pcAnswerMs: [] as (number | undefined)[], relays: [] as string[], offered: [] as string[] };
+    pcAnswerMs: [] as (number | undefined)[], relays: [] as string[], offered: [] as string[],
+    /** attempts whose socket stays CONNECTING until aborted or failed through `stuck` (a page frozen mid-connect) */
+    hang: 0, stuck: [] as ((error: Error) => void)[] };
   const fatal: Error[] = [];
   const offer = { v: 1 as const, server_id: "0123456789abcdef0123456789abcdef",
     server_public_key: "", relay };
@@ -45,6 +47,13 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
       attempts.pcAnswerMs.push(config.pcAnswerMs);
       attempts.relays.push(config.carrier ?? channelOffer.relay);
       attempts.offered.push(channelOffer.relay);
+      if (attempts.hang > 0) {
+        attempts.hang--;
+        return new Promise<never>((_, reject) => {
+          attempts.stuck.push(reject);
+          config.signal?.addEventListener("abort", () => reject(new DOMException("Relay connection aborted", "AbortError")), { once: true });
+        });
+      }
       if (attempts.unreachable > 0) { attempts.unreachable--; throw new RelayUnreachableError(null, true); }
       if (attempts.refusal !== null) { const refusal = attempts.refusal; attempts.refusal = null; throw refusal; }
       if (attempts.failures > 0) { attempts.failures--; throw new TypeError("Network offline"); }
@@ -683,6 +692,55 @@ it("reconnects on online and visible-page events and removes wake listeners on c
   browser.dispatchEvent(new Event("online"));
   page.dispatchEvent(new Event("visibilitychange"));
   expect(f.attempts.count).toBe(3);
+});
+
+function page(visibilityState: "visible" | "hidden") {
+  const target = Object.assign(new EventTarget(), { visibilityState });
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: target });
+  cleanups.push(() => { if (descriptor) Object.defineProperty(globalThis, "document", descriptor); else Reflect.deleteProperty(globalThis, "document"); });
+  const turn = (state: "visible" | "hidden"): void => { target.visibilityState = state; target.dispatchEvent(new Event("visibilitychange")); };
+  return { target, hide: () => turn("hidden"), show: () => turn("visible") };
+}
+
+it("drops an attempt that began while the page was hidden and connects again at once when it is shown", async () => {
+  const shown = page("visible");
+  const regional = REGIONAL_RELAYS[0]!;
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) }, { relay: regional });
+  shown.hide();
+  f.attempts.hang = 1;
+  await f.drop();
+  // the backoff retry fires in the background, and the page is frozen with its socket still CONNECTING
+  f.clock.advance(1000);
+  expect(f.attempts.relays).toEqual([regional, regional]);
+  const resumedAt = f.clock.now();
+  shown.show();
+  expect(f.attempts.relays).toEqual([regional, regional, regional]);
+  expect(f.clock.now()).toBe(resumedAt);
+  await f.transport.connect();
+  expect((await f.transport.fetch("/api/health")).status).toBe(200);
+  expect(f.attempts.relays).not.toContain(GLOBAL_RELAY);
+  expect([f.clock.tasks.size, f.fatal]).toEqual([0, []]);
+});
+
+it("does not fall back to the other relay when an attempt that began before the page hid fails", async () => {
+  const shown = page("visible");
+  const regional = REGIONAL_RELAYS[0]!;
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) }, { relay: regional });
+  f.attempts.hang = 1;
+  await f.drop();
+  f.clock.advance(1000);
+  shown.hide();
+  // back on screen, the stale socket's error runs before the page's visibilitychange
+  shown.target.visibilityState = "visible";
+  f.attempts.stuck[0]!(new RelayUnreachableError(null, true));
+  await expect(f.transport.connect()).rejects.toBeInstanceOf(RelayUnreachableError);
+  expect(f.attempts.relays).toEqual([regional, regional]);
+  shown.show();
+  expect(f.attempts.relays).toEqual([regional, regional, regional]);
+  await f.transport.connect();
+  expect((await f.transport.fetch("/api/health")).status).toBe(200);
+  expect([f.clock.tasks.size, f.fatal]).toEqual([0, []]);
 });
 
 function referenceSse(text: string) {

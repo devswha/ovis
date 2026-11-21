@@ -585,16 +585,18 @@ export function orderDirectRoutes(carriers: readonly string[], worked?: string):
 /**
  * Opens through `first` (the offer's own relay by default) and, when the offer names one of Ovis's
  * regional relays and that attempt failed before the PC answered (so no pairing code was spent),
- * through the other of the offer's relay and the global one, which such a PC is always linked to.
+ * through the other of the offer's relay and the global one, which such a PC is always linked to. `mayFallBack` says,
+ * once the first attempt failed, whether that failure may speak for the relay (one frozen with the page does not).
  */
 export async function openRelayChannelWithFallback<O extends { readonly carrier?: string }>(
   offer: RelayOffer, options: O, open: (offer: RelayOffer, options: O) => Promise<RelayChannel>, first = offer.relay,
+  mayFallBack: () => boolean = () => true,
 ): Promise<{ channel: RelayChannel; relay: string }> {
   const attempt = async (relay: string) => ({ channel: await open(offer, relay === offer.relay ? options : { ...options, carrier: relay }), relay });
   try { return await attempt(first); }
   catch (error) {
     const fallback = relayFallback(offer.relay);
-    if (!fallback || !(error instanceof RelayUnreachableError || error instanceof RelayPcOfflineError)) throw error;
+    if (!fallback || !(error instanceof RelayUnreachableError || error instanceof RelayPcOfflineError) || !mayFallBack()) throw error;
     return attempt(first === fallback ? offer.relay : fallback);
   }
 }
