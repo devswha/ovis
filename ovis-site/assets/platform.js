@@ -61,22 +61,31 @@
     return undefined;
   }
 
+  // every desktop installer the download rows link, each through _redirects to releases/latest/download/
+  const INSTALLERS = ["Ovis-mac-arm64.dmg", "Ovis-mac-x64.dmg", "Ovis-win-x64.exe", "Ovis-linux-x64.deb", "Ovis-linux-arm64.deb", "Ovis-linux-x64.AppImage", "Ovis-linux-arm64.AppImage"];
+
   /**
    * The line under the download rows, from GitHub's latest release: the one the download links'
-   * releases/latest/download/ addresses (_redirects) hand out, so it never names a version whose
-   * files are not there. Anything else shows no line.
-   * @param {{ tag_name?: unknown, published_at?: unknown } | null} release the answer of GET /repos/devswha/ovis/releases/latest
+   * releases/latest/download/ addresses (_redirects) hand out. Only a release that holds every
+   * installer the rows link gets a line (mac-dmg.yml and windows-app.yml can make a release latest
+   * with only Ovis.dmg and Ovis.exe), so it never names a version whose files are not there.
+   * @param {{ tag_name?: unknown, published_at?: unknown, assets?: unknown } | null} release the answer of GET /repos/devswha/ovis/releases/latest
    * @returns {{ text: string, href: string } | undefined}
    */
   function releaseLine(release) {
-    const tag = release?.tag_name, published = release?.published_at;
+    const tag = release?.tag_name, published = release?.published_at, assets = release?.assets;
     if (typeof tag !== "string" || !/^v\d+\.\d+\.\d+$/.test(tag)) return undefined;
     if (typeof published !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(published)) return undefined;
+    const day = new Date(published);
+    if (Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== published.slice(0, 10)) return undefined;
+    // an upload that has not finished ("open") or failed ("starter") is listed too, as an empty file
+    const attached = new Set(Array.isArray(assets) ? assets.filter((asset) => asset?.state === "uploaded").map((asset) => asset.name) : []);
+    if (!INSTALLERS.every((name) => attached.has(name))) return undefined;
     return { text: `${tag} · ${published.slice(0, 10)}`, href: `https://github.com/devswha/ovis/releases/tag/${tag}` };
   }
 
   if (typeof module === "object" && module.exports) {
-    module.exports = { downloadPlatform, guessedCpuLabel, linuxArch, macArch, releaseLine };
+    module.exports = { INSTALLERS, downloadPlatform, guessedCpuLabel, linuxArch, macArch, releaseLine };
     return;
   }
 
