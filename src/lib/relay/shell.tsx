@@ -435,8 +435,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const order = left || launched || navigatedSinceEntry() || entries !== 0 ? null : launchOrder(devices, launching, signedInNow, launchResumed);
     // a launch with no saved PC answering goes on to the account's PCs this device is not in yet, once they are read
     // and so does a sign-in that finished on this page after the launch, which read no account yet
-    // and so does a load of the front page later in the tab with nothing saved here, unless the person chose the front page (#16)
-    if (order !== null || ((signedInNow || (launching && devices.length === 0 && !frontChosen())) && !accountTried && !left && !navigatedSinceEntry() && entries === 0)) accountLaunch = true;
+    // and so does a load of the front page later in the tab with nothing saved here, once its sign-in and the account's PCs
+    // are read, unless the person chose the front page (#16): a page still reading or signing in keeps drawing the front page
+    const readSignedIn = accountRead && account.state?.kind === "signed-in" && account.state.pcs !== null;
+    if (order !== null || ((signedInNow || (launching && devices.length === 0 && !frontChosen() && readSignedIn)) && !accountTried && !left && !navigatedSinceEntry() && entries === 0)) accountLaunch = true;
     if (order !== null && order.length > 0) {
       launched = true;
       const loaded = entries, asking: RelayShellState = { kind: "connecting", name: order[0]?.name ?? null };
