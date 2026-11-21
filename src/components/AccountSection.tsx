@@ -909,7 +909,8 @@ export interface AccountState {
 }
 
 /** the phone and Mac apps sign in their own way, never with a code from a PC's page */
-const pcServiceHere = (): string | null => desktopAccount() === null && !inNativeApp() && !inMacApp() ? pcAccountServiceOf(document, window.isSecureContext) : null;
+// read while rendering (usePcRemoval in the join requests), so also where a page is drawn with no document
+const pcServiceHere = (): string | null => desktopAccount() === null && !inNativeApp() && !inMacApp() && typeof document !== "undefined" ? pcAccountServiceOf(document, window.isSecureContext) : null;
 
 export const accountServiceHere = (): string | null => desktopAccount()?.service ?? pcServiceHere();
 
