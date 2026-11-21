@@ -3,6 +3,7 @@ import { act, createElement, StrictMode } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { RelayPairingRequest } from "../../shared/protocol.ts";
+import { translate } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { APPROVE_KEY_GUARD_MS, APPROVE_POINTER_GUARD_MS, INPUT_AGE_MAX_MS, RelayPairingPrompt, aroundDigits, deadlineOf, firstJoinPrompts, inputAge, pendingKeyPrompts, secondsLeft, takesFocus } from "./RelayPairingPrompt.tsx";
@@ -154,6 +155,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
     const [prompt] = prompts(await show([request()]));
     expect(sentence(prompt!)).toBe("Hako's iPhone wants to pair through the relay. Approve it only if its screen shows 725 403");
     expect(prompt!.props["data-local-only"]).toBeUndefined();
+    expect(prompt!.findAll((found) => found.props["data-testid"] === "relay-pairing-check")).toHaveLength(0);
     await act(async () => { renderer!.update(element([request({ local_only: false })])); });
     expect(sentence(prompts(renderer!.root)[0]!)).toContain("Approve it only if its screen shows");
   });
@@ -530,6 +532,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(sentence(prompt!)).toContain("Android · Chrome");
     expect(prompt!.findAllByType("strong").map(text)).toEqual(["725 403"]);
     expect(left(prompt!)).toBe("60 s left");
+    const checks = (node: ReactTestInstance) => node.findAll((found) => found.props["data-testid"] === "relay-pairing-check").map(text);
+    expect(checks(prompt!)).toEqual([` · ${translate("en", "Allow only if your phone shows this number")}`]);
     expect(prompt!.findAllByType("button").map(text)).toEqual(["Allow", "Decline"]);
     await act(async () => { prompt!.findAllByType("button")[1]!.props.onClick(KEY); });
     await act(async () => { jest.advanceTimersByTime(APPROVE_POINTER_GUARD_MS); });
@@ -544,6 +548,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(prompt!.findAllByType("strong").map(text)).toEqual(["K7QF-29XM"]);
     expect(prompt!.findAll((node) => node.props["data-testid"] === "relay-pairing-left")).toHaveLength(0);
     // nothing here decides it: the confirm page does, which checks the user behind the connection
+    expect(prompt!.findAll((found) => found.props["data-testid"] === "relay-pairing-check")).toHaveLength(0);
     expect(prompt!.findAllByType("button").map(text)).toEqual(["Confirm on this PC"]);
     await act(async () => { prompt!.findAllByType("button")[0]!.props.onClick(); });
     expect(decided).toEqual([["/api/account/confirm-page", null]]);

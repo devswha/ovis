@@ -478,6 +478,7 @@ const BASE: Record<string, string> = {
   "{n} s left": "{n}초 남음",
   "Decline": "거절",
   "Allow": "허용",
+  "Allow only if your phone shows this number": "폰에 같은 숫자가 보일 때만 허용하세요",
   "Confirm on this PC": "이 PC에서 확인",
   "Run ovis confirm on this PC to open it.": "이 PC 터미널에서 ovis confirm을 실행해 여세요.",
   "{name} wants to connect {digits}": "{name}에서 연결하려고 해요 {digits}",

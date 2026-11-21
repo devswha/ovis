@@ -485,6 +485,7 @@ const BASE: Record<string, string> = {
   "{n} s left": "剩余 {n} 秒",
   "Decline": "拒绝",
   "Allow": "允许",
+  "Allow only if your phone shows this number": "仅当手机显示相同数字时才允许",
   "Confirm on this PC": "在此 PC 上确认",
   "Run ovis confirm on this PC to open it.": "在此 PC 的终端运行 ovis confirm 打开它。",
   "{name} wants to connect {digits}": "{name} 想要连接 {digits}",

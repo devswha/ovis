@@ -269,6 +269,8 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
             <span>
               <span id={`${id}-${pairing.id}`}>{before}{digits}{after}</span>
               {left !== null && <span className="relay-pairing-left" aria-live="off" data-testid="relay-pairing-left"> {t("{n} s left", { n: left })}</span>}
+              {/* nobody else checks a first join's digits: the owner compares them with the phone here */}
+              {pairing.own_window === "join" && <span className="relay-pairing-left" data-testid="relay-pairing-check"> · {t("Allow only if your phone shows this number")}</span>}
               {failure?.id === pairing.id && <span className="relay-error" role="alert"> {failure.text}</span>}
             </span>
             {pairing.own_window === "key" ? (
