@@ -786,6 +786,8 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           await capture(page, `account-menu-${width}-${theme}`);
           await page.keyboard.press("Escape");
           await menu.waitFor({ state: "detached" });
+          // a phone's menu is a sheet with a history entry: its Escape goes back, and the next goto must not cut that short
+          await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
         }
       }
       assert.deepEqual([...A.errors, ...B.errors], [], "no page error on either device");
