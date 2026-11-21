@@ -62,7 +62,7 @@ beforeEach(async () => {
   const update = spyOn(indexedAccountStore, "update").mockImplementation(store.update);
   const send = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     if (rejectDelete && init?.method === "DELETE") return new Response(null, { status: 503 });
-    if (listed !== null && init?.method === "GET") return Response.json({ pcs: listed });
+    if (listed !== null && init?.method === "GET" && new URL(String(input instanceof Request ? input.url : input)).pathname === "/v1/pcs") return Response.json({ pcs: listed });
     if (expired && init?.method === "GET") return Response.json({ pcs: [
       { server_id: PC, label: "Desk", added_at: new Date(0).toISOString(), last_seen_at: null, new_until: new Date(1).toISOString() },
     ] });
@@ -101,6 +101,18 @@ it("A2: a new PC is announced in every window but the PC's own local window, a w
   expect((await mount(null)).findAllByProps({ role: "status" })).toHaveLength(1);
   // the PC's own local window added it
   expect((await mount(PC)).findAllByProps({ role: "status" })).toHaveLength(0);
+});
+
+it("#16: a device that signed in after a PC was added is not told of it as new, while one signed in before is", async () => {
+  const admittedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+  const newUntil = new Date(Date.now() + 23 * 60 * 60_000).toISOString();
+  listed = [{ server_id: PC, label: "Desk", added_at: admittedAt, last_seen_at: null, new_until: newUntil, admitted_at: admittedAt, admitted_before_you: false }];
+  // this sign-in (the fake's token, issued in beforeEach) came after the PC's admission
+  expect((await mount()).findAllByProps({ role: "status" })).toHaveLength(0);
+  // admitted after this sign-in: told
+  const later = new Date(Date.now() + 1_000).toISOString();
+  listed = [{ server_id: PC, label: "Desk", added_at: later, last_seen_at: null, new_until: newUntil, admitted_at: later, admitted_before_you: false }];
+  expect((await mount()).findAllByProps({ role: "status" })).toHaveLength(1);
 });
 
 it("A2: Not me deletes the PC once, clears the card, and refreshes the account list", async () => {

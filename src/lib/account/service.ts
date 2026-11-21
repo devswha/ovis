@@ -400,6 +400,13 @@ export class AccountService {
     return isRecord(body) && body.own_sign_in === true;
   }
 
+  /** When this sign-in was made (GET /v1/session `signed_in_at`, kept by every refresh), in ms; null when the service does not say. */
+  async signedInAt(signal?: AbortSignal): Promise<number | null> {
+    const body = await this.call("GET", "/v1/session", undefined, signal);
+    const at = isRecord(body) && typeof body.signed_in_at === "string" ? Date.parse(body.signed_in_at) : Number.NaN;
+    return Number.isFinite(at) ? at : null;
+  }
+
   /**
    * Lists a PC in the account's directory, with its relay key and relay so a new device can compare digits with it; with
    * the PC's own proof (ownPcProof) when the PC itself lists it, which alone lists it again after it left (409 `pc_left`).

@@ -872,7 +872,8 @@ again), with exactly the sign-in just made, never one another tab stored meanwhi
 leaves the plain wait, with no offer: the wait offers it once.
 
 The account's other devices are told: the service sends them its usual push, and at the top of the
-opened Ovis a notice names the new PC, with **I didn't add this**, which removes it from the
+opened Ovis a notice names the new PC (only on a device signed in before the PC was added, by the
+session's `signed_in_at`: a device that joins later finds it already in the account), with **I didn't add this**, which removes it from the
 account's list at once (`DELETE /v1/pcs/{server_id}`); its close button only hides it. The overview
 page shows neither: it lists the PC as any other, with no quick **Open** while it is new unless this
 device paired with it by hand (then **Open** is the person's own tap). A PC added under the first-PC

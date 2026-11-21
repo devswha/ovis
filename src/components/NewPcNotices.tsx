@@ -14,7 +14,10 @@ const REFRESH_MS = 60_000;
 const QUIET_REFRESH_MS = 5 * 60_000;
 const READ_TIMEOUT_MS = 10_000;
 
-/** a PC still in its 24 hours, or one added under the first-PC exemption before this device joined (told once, with no end) */
+/**
+ * a PC still in its 24 hours that was added after this device signed in (one already in the account when it joined is
+ * not new to it), or one added under the first-PC exemption before this device joined (told once, with no end)
+ */
 type NewPc = DirectoryPc;
 
 type Listing = { readonly session: AccountSession; readonly pcs: readonly NewPc[] };
@@ -36,6 +39,8 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
     let telling = false;
     /** when the list was last read: a focus or a page shown again reads it at most once a minute, unless a PC is told of */
     let readAt = Number.NEGATIVE_INFINITY;
+    /** when the sign-in read last was made (GET /v1/session), read once per sign-in; null when the service does not say */
+    let joined: { readonly sign_in_id: string | undefined; readonly at: number | null } | undefined;
     const read = async () => {
       readAt = Date.now();
       const mine = ++version;
@@ -48,11 +53,18 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         if (session === undefined) { setListing(null); return; }
         setListing((prior) => prior !== null && sameSignIn(prior.session, session) ? prior : null);
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]);
-        const pcs = await indexedAccountService.forSignIn(session).listPcs(signal);
+        const directory = indexedAccountService.forSignIn(session);
+        const [pcs, joinedAt] = await Promise.all([
+          directory.listPcs(signal),
+          joined !== undefined && joined.sign_in_id === session.sign_in_id ? joined.at : directory.signedInAt(signal),
+        ]);
+        joined = { sign_in_id: session.sign_in_id, at: joinedAt };
         const current = await indexedAccountService.session();
         if (mine !== version) return;
         const now = Date.now();
-        const told = pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now));
+        // a service that does not say when this device signed in leaves every new PC told, as before
+        const addedSinceJoin = (pc: NewPc): boolean => joinedAt === null || pc.admitted_at === null || !(Date.parse(pc.admitted_at) < joinedAt);
+        const told = pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now && addedSinceJoin(pc)));
         // a notice this device already closed is nothing left to tell
         telling = told.some((pc) => pc.server_id !== ownWindowOf && !newPcNoticeClosed(newPcNoticeKey(session.account, pc)));
         setListing(current !== undefined && sameSignIn(current, session) ? { session, pcs: told } : null);
