@@ -194,7 +194,7 @@ export function RelayShell(props: RelayShellProps) {
   const pc = name ?? t("this PC");
   const stateName = state.kind === "failed" ? state.failure : state.kind === "outdated" ? "pc-outdated" : state.kind === "forged" ? "identity-changed" : state.kind;
   const devices = state.kind === "list" ? state.devices : [];
-  const noneOnline = state.kind === "list" && state.noneOnline === true && props.onFindPc ? <NoPcOnline onCheck={props.onFindPc} /> : null;
+  const noneOnline = (state.kind === "list" || state.kind === "empty") && state.noneOnline === true && props.onFindPc ? <NoPcOnline onCheck={props.onFindPc} /> : null;
   // a pairing's sign-in reads on the plain page, with nothing around it; its other steps are on the step frame
   const plain = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined;
 

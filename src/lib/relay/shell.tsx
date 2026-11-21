@@ -32,8 +32,8 @@ import { keepShellSignOut } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
 import { refusalOf } from "./firstLink.ts";
 import { CHECK_GAP_MS, createPcSweep } from "./pcSweep.ts";
-import type { PcFinding } from "./pcStatus.ts";
-import { keepLaunchTried, lastFirst, launchTried, openablePcs } from "./pcPick.ts";
+import type { PcFinding, ProbeTarget } from "./pcStatus.ts";
+import { accountOpenablePcs, keepLaunchTried, lastFirst, launchTried, openablePcs } from "./pcPick.ts";
 import { PAGE_LEAVING_EVENT } from "../paneLifetime.ts";
 import { createUpdateFlow, loadObservedVersions, observedVersions, reloadPage, freshShellNext, forgetSavedPc } from "./updateFlow.ts";
 export type { RelayShellMount } from "./shellState.ts";
@@ -61,6 +61,9 @@ class PcForgotten extends Error {
 
 function rememberPc(serverId: string): void {
   try { localStorage.setItem(LAST_PC, serverId); } catch { /* a page without storage opens on the front page */ }
+}
+function lastPc(): string | null {
+  try { return localStorage.getItem(LAST_PC); } catch { return null; }
 }
 
 /**
@@ -125,7 +128,7 @@ function launchOrder(devices: readonly RelayDevice[], opens: boolean, signedIn =
     const tried = resumed ? launchTried() : [];
     if (!resumed) keepLaunchTried([]);
     // the PC opened last here was opened on this device; any other is one a person paired by hand here (openablePcs)
-    return lastFirst(openablePcs(devices).filter((device) => !tried.includes(device.server_id)), localStorage.getItem(LAST_PC)).slice(0, LAUNCH_PCS);
+    return lastFirst(openablePcs(devices).filter((device) => !tried.includes(device.server_id)), lastPc()).slice(0, LAUNCH_PCS);
   } catch { return null; }
 }
 
@@ -137,8 +140,7 @@ function launchOrder(devices: readonly RelayDevice[], opens: boolean, signedIn =
 function accountLaunchPc(pcs: readonly MyPc[], now: number): MyPc | null {
   // a PC new in the account (new_until) is never picked by itself: security-triage condition 3
   const open = pcs.filter((pc) => !pc.paired && pc.join !== undefined && pc.state !== "offline" && !isNewAccountPc(pc, now));
-  let last: string | null = null;
-  try { last = localStorage.getItem(LAST_PC); } catch { /* no storage: the most recent one */ }
+  const last = lastPc();
   const seen = (pc: MyPc): number => pc.last_seen_at === null ? 0 : Date.parse(pc.last_seen_at);
   return open.find((pc) => pc.server_id === last) ?? [...open].sort((a, b) => seen(b) - seen(a))[0] ?? null;
 }
@@ -416,6 +418,16 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (view?.kind === "signed-in") accountTried = true;
       // signed in and the directory not read yet: the launch waits for it on its card (accountChanged draws this again)
       accountLaunch = false; launchCard = null;
+      // an account PC this device may open by itself (accountOpenablePcs) goes as a saved one does, on its own page
+      const opens = lastFirst(accountTargets(devices, launchResumed ? launchTried() : []), lastPc()).slice(0, LAUNCH_PCS);
+      if (opens.length > 0) {
+        const loaded = entries, asking: RelayShellState = { kind: "connecting", name: opens[0]?.name ?? null };
+        show(asking);
+        const found = await reachable(opens);
+        if (entries !== loaded || shown !== asking) return;
+        if (found !== null && !navigatedSinceEntry()) { leaveFor(found); return; }
+        if (found === null) noneOnline = true;
+      }
       const pc = view?.kind === "signed-in" ? accountLaunchPc(view.pcs ?? [], Date.now()) : null;
       // its join card, waiting for the person's press: never the PC's bare page, which opens a PC the account lets this
       // device into by itself (security-triage condition 3: nothing this device did not choose opens without a press)
@@ -426,7 +438,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         left = true; joinPc(pc, { sheet: fresh ? "new" : "join", alone: true, ...(fresh ? { typed: true } : {}) }); return;
       }
     }
-    show(devices.length ? { kind: "list", devices, account: account.state, ...(noneOnline ? { noneOnline: true as const } : {}) } : { kind: "empty", account: account.state });
+    show({ ...(devices.length ? { kind: "list", devices } : { kind: "empty" }), account: account.state, ...(noneOnline ? { noneOnline: true as const } : {}) });
     if (devices.length && !checked) { checked = true; void sweep.check(); }
   };
   /**
@@ -435,7 +447,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    * the launch's wait is over all open that PC, whose page connects, retries and says why it cannot. Null when every
    * one was found off.
    */
-  const reachable = async (order: readonly RelayDevice[]): Promise<string | null> => {
+  const reachable = async (order: readonly ProbeTarget[]): Promise<string | null> => {
     const checks = checksOf(order, (now) => now.kind === "offline" && now.reason === "pc");
     let timer: ReturnType<typeof setTimeout> | undefined;
     // fixed wait: a PC whose check has not settled by then opens anyway, as the last PC always did
@@ -451,26 +463,36 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    * Each PC of `order` checked, after what is queued, and whether this check found it `so`. A check the relay turned away
    * puts back what the last one found, so only this check's own word counts.
    */
-  const checksOf = (order: readonly RelayDevice[], so: (now: PcFinding) => boolean): Promise<boolean>[] => order.map((pc) => {
+  const checksOf = (order: readonly ProbeTarget[], so: (now: PcFinding) => boolean): Promise<boolean>[] => order.map((pc) => {
     const before = sweep.status.get(pc.server_id), prior = before?.kind === "checking" ? before.previous : before;
-    return sweep.checkOne(pc.server_id, "back").then(() => {
+    return sweep.checkOne(pc.server_id, "back", pc).then(() => {
       const now = sweep.status.get(pc.server_id);
       return now !== undefined && now.kind !== "checking" && now !== prior && so(now);
     });
   });
   /** The first of `order` whose check finds it on (it answered), in that order; null when none did. */
-  const answering = async (order: readonly RelayDevice[]): Promise<string | null> => {
+  const answering = async (order: readonly ProbeTarget[]): Promise<string | null> => {
     for (const [index, on] of checksOf(order, (now) => now.kind === "answered").entries()) if (await on) return order[index]?.server_id ?? null;
     return null;
   };
+  /**
+   * The account's PCs, as last read, that this device may open by itself (accountOpenablePcs) and is not told to `skip`.
+   * Signed out, or the directory not read: none.
+   */
+  const accountTargets = (devices: readonly RelayDevice[], skip: readonly string[]): ProbeTarget[] => {
+    const view = account.state, signIn = account.signedInAs;
+    if (view?.kind !== "signed-in" || view.pcs === null || signIn === undefined) return [];
+    return accountOpenablePcs(view.pcs, { account: signIn.account, devices, now: Date.now() }).filter((pc) => !skip.includes(pc.server_id));
+  };
+  /** Every PC a launch may open, saved ones and the account's, the one opened last first. */
+  const candidates = (devices: readonly RelayDevice[]): ProbeTarget[] => lastFirst([...openablePcs(devices), ...accountTargets(devices, [])], lastPc());
+  // a PC of the account with no saved pairing opens on its own page through the account key (the page's load, below)
   const leaveFor = (serverId: string): void => { left = true; keepLaunchedPc(serverId); navigate(serverScopePath(serverId)); };
-  /** Check again on the front page that says no PC is online: the launch's pick once more, over every saved PC. */
+  /** Check again on the front page that says no PC is online: the launch's pick once more, over every PC it may open. */
   const findPc = async (): Promise<void> => {
     if (left || !frontUp()) return;
     keepLaunchTried([]);
-    let lastPc: string | null = null;
-    try { lastPc = localStorage.getItem(LAST_PC); } catch { /* no storage: the order they were saved in */ }
-    const order = lastFirst(openablePcs(await store.list()), lastPc).slice(0, LAUNCH_PCS);
+    const order = candidates(await store.list()).slice(0, LAUNCH_PCS);
     if (order.length === 0) return;
     const loaded = entries, asking: RelayShellState = { kind: "connecting", name: order[0]?.name ?? null };
     show(asking);
@@ -493,7 +515,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (Date.now() - awayCheckAt < CHECK_GAP_MS) return;
     awayCheckAt = Date.now();
     const here = last.offer.server_id;
-    const pc = await answering(openablePcs(await store.list()).filter((device) => device.server_id !== here).slice(0, LAUNCH_PCS));
+    // the account's PCs as they are now: this page's own read of them may be old, or was never made
+    if (account.enabled) await account.load(null);
+    const pc = await answering(candidates(await store.list()).filter((target) => target.server_id !== here).slice(0, LAUNCH_PCS));
     if (pc === null || app === null || transport !== from || from.route !== undefined || left) return;
     left = true;
     keepLaunchTried([here]);

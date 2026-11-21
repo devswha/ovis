@@ -46,6 +46,9 @@ export interface MyPc {
   readonly added_at: string | null;
   readonly invited_at?: string;
   readonly new_until?: string | null;
+  /** a PC this device is not paired with: when it was added in one press, and whether that was before this device joined */
+  readonly admitted_at?: string;
+  readonly admitted_before_you?: true;
   readonly listed: boolean;
   /** this device holds an admitted key for it, so it can open; whatever its state says */
   readonly paired: boolean;
@@ -84,7 +87,7 @@ export function myPcs(directory: readonly DirectoryPc[], paired: readonly RelayD
   }
   for (const pc of listed.values()) {
     const join = joinRoute(pc);
-    rows.push({ server_id: pc.server_id, name: pc.label, state: stateOf(pc.server_id, false, pc.last_seen_at), last_seen_at: pc.last_seen_at, added_at: pc.added_at, ...(pc.invited_at === undefined ? {} : { invited_at: pc.invited_at }), new_until: pc.new_until, listed: true, paired: false, linked: false, ...(join ? { join, ...(options.registered ? { accountOpen: true as const } : {}) } : {}) });
+    rows.push({ server_id: pc.server_id, name: pc.label, state: stateOf(pc.server_id, false, pc.last_seen_at), last_seen_at: pc.last_seen_at, added_at: pc.added_at, ...(pc.invited_at === undefined ? {} : { invited_at: pc.invited_at }), new_until: pc.new_until, ...(pc.admitted_at == null ? {} : { admitted_at: pc.admitted_at }), ...(pc.admitted_before_you ? { admitted_before_you: true as const } : {}), listed: true, paired: false, linked: false, ...(join ? { join, ...(options.registered ? { accountOpen: true as const } : {}) } : {}) });
   }
   return rows.sort((a, b) => ORDER[a.state] - ORDER[b.state] || a.name.localeCompare(b.name));
 }

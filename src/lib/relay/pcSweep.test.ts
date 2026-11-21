@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, jest } from "bun:test";
 import { createPcSweep } from "./pcSweep.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
-import type { PcFinding as Found } from "./pcStatus.ts";
+import type { PcFinding as Found, ProbeTarget } from "./pcStatus.ts";
 import { dashboardModel } from "./dashboard.ts";
 import { OFFLINE_AFTER_MS } from "../account/myPcs.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
@@ -45,7 +45,7 @@ function heldProbe() {
     waiting.set(count, gate);
     return gate.promise;
   };
-  const probe = async (device: RelayDevice): Promise<Found> => {
+  const probe = async (device: ProbeTarget): Promise<Found> => {
     checked.push(device.server_id);
     const result = Promise.withResolvers<Found>();
     pending.push(result);

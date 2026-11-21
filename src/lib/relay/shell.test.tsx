@@ -5,7 +5,7 @@ import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts"
 import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
-import { memoryAccountStore } from "../account/store.ts";
+import { memoryAccountStore, newKey } from "../account/store.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDevice, ShellDeviceStore } from "./device.ts";
 import { ACCOUNT_READ_WAIT_MS, ACCOUNT_STEPS_WAIT_MS, mountRelayShell, type RelayShellMount } from "./shell.tsx";
@@ -112,6 +112,21 @@ describe("the hosted shell's front page", () => {
   };
   // every saved PC answers its check, unless a test says which do not
   const answering = (off: readonly string[] = []): RelayShellMount["checkPc"] => async (device) => off.includes(device.server_id) ? { kind: "offline", reason: "pc" } : { kind: "answered", route: "relay", relay: AP, rttMs: 20 };
+  // an account PC this device has no pairing for, by default one it may open by itself: confirmed, past its new window
+  const accountRow = (over: Record<string, unknown> = {}) => {
+    const pair = generateKeyPair();
+    return { server_id: deriveServerId(pair.publicKey), label: "Desk", added_at: new Date(Date.now() - 2 * 864e5).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(),
+      public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP, new_until: null, ...over };
+  };
+  // signed in, with this sign-in's key registered: the account's PCs that trust its device list take this device by it
+  const registeredSignIn = async () => {
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000, sign_in_id: "launch-test" });
+    await accountStore.set("signin_key", { account: "acct-test", sign_in_id: "launch-test", no: 1, key: await newKey() });
+    return { accountStore, accountService: SERVICE, accountProviders: ["github" as const] };
+  };
+  const directoryOf = (rows: readonly unknown[]): NonNullable<RelayShellMount["accountFetch"]> => async (input) =>
+    new URL(String(input)).pathname === "/v1/pcs" ? Response.json({ pcs: rows }) : new Response(null, { status: 404 });
   const account = () => { const { state } = last(); if ((state.kind !== "list" && state.kind !== "empty") || state.account?.kind !== "signed-in") throw new Error(`not the signed-in front page: ${state.kind}`); return state.account; };
 
   it("starts a fresh typed challenge after wrong digits and ignores repeated pending submissions", async () => {
@@ -1373,12 +1388,60 @@ describe("the hosted shell's front page", () => {
       expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
     });
 
-    it("C3: a launch never opens a PC this device reaches only through the account, new or not, the list read failing or not", async () => {
+    it("C3: a launch never opens a PC this device reaches only through the account with no key it can check, the list read failing or not", async () => {
       // after a one-press add of PC X elsewhere, this device has no saved pairing for X: nothing makes one without a hand action here
       const account = "b".repeat(32);
       expect(await signedInLaunch(deviceStore([]), account, async (input) => new URL(String(input)).pathname === "/v1/pcs" ? Response.json({ pcs: [directoryRow(account, 3_600_000)] }) : new Response(null, { status: 404 }))).toEqual([]);
       expect(await signedInLaunch(deviceStore([]), account, async () => new Response(null, { status: 503 }))).toEqual([]);
       expect(last().state.kind).toBe("empty");
+    });
+
+    // security-triage ruling t13r (b): an account-only PC opens by itself only when its listing is confirmed, it is past its
+    // new window, it is not introduction-only, and no notice that it was added before this device joined is still open
+    const accountOnlyLaunch = async (row: ReturnType<typeof accountRow>, saved: RelayDevice[] = []) => {
+      launch();
+      const went: string[] = [], asked: string[] = [];
+      await mountRelayShell(mountFor({ store: deviceStore(saved), navigate: (path) => { went.push(path); }, ...await registeredSignIn(), accountFetch: directoryOf([row]),
+        checkPc: async (device) => { asked.push(device.server_id); return { kind: "answered", route: "relay", relay: AP, rttMs: 20 }; } }));
+      // the launch ends on a page it leaves for, or on the front page once the account's PCs are read
+      await until(() => went.length > 0 || (rendered.length > 0 && ["list", "empty"].includes(last().state.kind)), "the launch's end");
+      return { went, asked, bare: `/s/${row.server_id}/` };
+    };
+
+    it("t13r: a launch opens an account-only PC whose listing is confirmed and whose new window has passed, through its own page", async () => {
+      const row = accountRow({ new_until: new Date(Date.now() - 60_000).toISOString() });
+      const { went, asked } = await accountOnlyLaunch(row);
+      // its own page, which opens it through the account key: never the join card a press would need
+      expect([went, asked]).toEqual([[`/s/${row.server_id}/`], [row.server_id]]);
+      expect(browser.sessionStore.get("ovis-launched-pc")).toBe(row.server_id);
+    });
+
+    it.each([
+      ["its listing is unconfirmed (the PC never pulled this account's mailbox)", () => ({ row: accountRow({ last_seen_at: null }), saved: [] as RelayDevice[] })],
+      ["it is inside its new window", () => ({ row: accountRow({ new_until: new Date(Date.now() + 3_600_000).toISOString(), admitted_at: new Date().toISOString() }), saved: [] as RelayDevice[] })],
+    ])("C3: a launch never opens an account-only PC when %s", async (_case, make) => {
+      const { row, saved } = make();
+      const { went, asked, bare } = await accountOnlyLaunch(row, saved);
+      expect(asked).toEqual([]);
+      expect(went).not.toContain(bare);
+    });
+
+    it("C3: a launch never opens an account-listed PC that only an account introduction saved here", async () => {
+      const row = accountRow();
+      const [introduced] = await pcs(row.server_id);
+      const { went, asked, bare } = await accountOnlyLaunch(row, [{ ...introduced!, introduced_at: Date.now() }]);
+      expect([asked, went.includes(bare)]).toEqual([[], false]);
+    });
+
+    it("C3: a launch never opens an account-only PC added before this device joined while that notice is open here, and does once it is closed", async () => {
+      const admitted_at = new Date(Date.now() - 3 * 864e5).toISOString();
+      const row = accountRow({ admitted_at, admitted_before_you: true });
+      const open = await accountOnlyLaunch(row);
+      expect([open.asked, open.went.includes(open.bare)]).toEqual([[], false]);
+      localStorage.setItem(`ovis:new-pc:${JSON.stringify(["acct-test", row.server_id, admitted_at])}`, "1");
+      rendered.length = 0;
+      const closed = await accountOnlyLaunch(row);
+      expect(closed.went).toEqual([closed.bare]);
     });
 
     it("opens nothing after a refused or cancelled sign-in, whose reason the sign-in screen says", async () => {
@@ -1431,7 +1494,7 @@ describe("the hosted shell's front page", () => {
       override async fetch() { return Response.json({ managed: false }); }
     }
     /** this PC's page with its app open, and the PCs saved beside it */
-    const opened = async (others: readonly string[], checkPc: RelayShellMount["checkPc"], saved = (rows: RelayDevice[]) => rows) => {
+    const opened = async (others: readonly string[], checkPc: RelayShellMount["checkPc"], { saved = (rows: RelayDevice[]) => rows, mount = {} }: { saved?: (rows: RelayDevice[]) => RelayDevice[]; mount?: Partial<RelayShellMount> } = {}) => {
       const { server_id, server_public_key } = keyFor();
       const [mine, ...rest] = await pcs(server_id, ...others);
       const transport = new Admitted({ v: 1, server_id, server_public_key, relay: AP });
@@ -1441,7 +1504,7 @@ describe("the hosted shell's front page", () => {
       await mountRelayShell(mountFor({
         entryUrl: `https://app.ovis.sh/s/${server_id}/`, store: deviceStore(saved([{ ...mine!, server_public_key }, ...rest])), shellVersion: "1.0.0", checkPc,
         open: async (_offer, given) => { options = given; return transport; }, replace: (path) => { moves.push(path); },
-        renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} },
+        renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} }, ...mount,
       }));
       await until(() => apps === 1, "the app");
       const away = options?.onPcAway;
@@ -1465,10 +1528,21 @@ describe("the hosted shell's front page", () => {
     it("never moves to a PC that only an account introduction saved here", async () => {
       const asked: string[] = [];
       const page = await opened(["b".repeat(32)], async (device) => { asked.push(device.server_id); return { kind: "answered", route: "relay", relay: AP, rttMs: 20 }; },
-        ([mine, other]) => [mine!, { ...other!, introduced_at: Date.now() }]);
+        { saved: ([mine, other]) => [mine!, { ...other!, introduced_at: Date.now() }] });
       page.away();
       await drain();
       expect([asked, page.moves]).toEqual([[], []]);
+      page.transport.close();
+    });
+
+    it("moves to an account-only PC this device may open by itself, and never to one inside its new window", async () => {
+      const fresh = accountRow({ new_until: new Date(Date.now() + 3_600_000).toISOString(), admitted_at: new Date().toISOString() }), old = accountRow();
+      const asked: string[] = [];
+      const page = await opened([], async (device) => { asked.push(device.server_id); return { kind: "answered", route: "relay", relay: AP, rttMs: 20 }; },
+        { mount: { ...await registeredSignIn(), accountFetch: directoryOf([fresh, old]) } });
+      page.away();
+      await until(() => page.moves.length > 0, "the move");
+      expect([page.moves, asked]).toEqual([[`/s/${old.server_id}/`], [old.server_id]]);
       page.transport.close();
     });
 
