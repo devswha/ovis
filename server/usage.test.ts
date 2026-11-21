@@ -983,6 +983,88 @@ describe("providers", () => {
     expect(report.providers).toMatchObject([{ id: "antigravity", key: "antigravity:gemini-api-key", auth_mode: "gemini-api-key" }]);
   });
 
+  it("reports Gemini CLI in Gemini API key mode without network or commands", async () => {
+    write(join(home, ".gemini", "settings.json"), { security: { auth: { selectedType: "gemini-api-key" } } });
+    const service = new UsageService(context("linux"), only("gemini"));
+    const report = await service.report();
+    expect(report.missing_commands).toBeUndefined();
+    expect(report.providers).toEqual([{
+      id: "gemini",
+      key: "gemini:gemini-api-key",
+      account: null,
+      plan: null,
+      windows: [],
+      problem: null,
+      checked_at: null,
+      auth_mode: "gemini-api-key",
+    }]);
+    expect(requests).toHaveLength(0);
+    expect(commandCalls).toHaveLength(0);
+  });
+
+  it("reports Gemini CLI with other selectedType as a row with no auth_mode and no quota windows", async () => {
+    write(join(home, ".gemini", "settings.json"), { security: { auth: { selectedType: "oauth" } } });
+    const service = new UsageService(context("linux"), only("gemini"));
+    const report = await service.report();
+    expect(report.missing_commands).toBeUndefined();
+    expect(report.providers).toEqual([{
+      id: "gemini",
+      key: "gemini:oauth",
+      account: null,
+      plan: null,
+      windows: [],
+      problem: null,
+      checked_at: null,
+    }]);
+    expect(requests).toHaveLength(0);
+    expect(commandCalls).toHaveLength(0);
+  });
+
+  it("reads Gemini CLI settings from GEMINI_CLI_HOME", async () => {
+    const dir = join(home, "gemini-custom");
+    write(join(dir, ".gemini", "settings.json"), { security: { auth: { selectedType: "gemini-api-key" } } });
+    const report = await new UsageService({ ...context("linux"), env: { GEMINI_CLI_HOME: dir } }, only("gemini")).report();
+    expect(report.missing_commands).toBeUndefined();
+    expect(report.providers).toMatchObject([{ id: "gemini", key: "gemini:gemini-api-key", auth_mode: "gemini-api-key" }]);
+  });
+
+  it("omits Gemini CLI row when settings.json is missing", async () => {
+    const report = await new UsageService(context("linux"), only("gemini")).report();
+    expect(report.providers).toEqual([]);
+    expect(requests).toHaveLength(0);
+    expect(commandCalls).toHaveLength(0);
+  });
+
+  it.each([
+    { name: "empty selectedType", settings: { security: { auth: { selectedType: "" } } } },
+    { name: "whitespace selectedType", settings: { security: { auth: { selectedType: "   " } } } },
+    { name: "missing selectedType", settings: { security: { auth: {} } } },
+    { name: "non-string selectedType", settings: { security: { auth: { selectedType: 123 } } } },
+    { name: "empty settings object", settings: {} },
+  ])("omits Gemini CLI row when $name", async ({ settings }) => {
+    write(join(home, ".gemini", "settings.json"), settings);
+    const report = await new UsageService(context("linux"), only("gemini")).report();
+    expect(report.providers).toEqual([]);
+  });
+
+  it("omits Gemini CLI row when settings.json is unreadable or exceeds size limit", async () => {
+    write(join(home, ".gemini", "settings.json"), "{ invalid json");
+    expect((await new UsageService(context("linux"), only("gemini")).report()).providers).toEqual([]);
+
+    write(join(home, ".gemini", "settings.json"), JSON.stringify({ security: { auth: { selectedType: "gemini-api-key" } }, pad: "x".repeat(1024 * 1024 + 10) }));
+    expect((await new UsageService(context("linux"), only("gemini")).report()).providers).toEqual([]);
+  });
+
+  it("never reads credential files or starts commands for Gemini CLI", async () => {
+    write(join(home, ".gemini", "settings.json"), { security: { auth: { selectedType: "gemini-api-key" } } });
+    write(join(home, ".gemini", "gemini-credentials.json"), { secret: "should-not-be-read" });
+    write(join(home, ".gemini", "oauth_credentials.json"), { secret: "should-not-be-read" });
+    const report = await new UsageService(context("linux"), only("gemini")).report();
+    expect(report.providers).toHaveLength(1);
+    expect(requests).toHaveLength(0);
+    expect(commandCalls).toHaveLength(0);
+  });
+
   it("reads OpenCode Go usage windows from ~/.local/share/opencode/auth.json", async () => {
     write(join(home, ".local", "share", "opencode", "auth.json"), {
       "opencode-go": { type: "api", key: "oc_sk_test" },

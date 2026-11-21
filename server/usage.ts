@@ -17,7 +17,7 @@
 
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { closeSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -897,7 +897,64 @@ const opencode: UsageProvider = {
   },
 };
 
-export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode];
+const GEMINI_SETTINGS_BYTES = 1024 * 1024;
+
+async function geminiAuthSelectedType(home: string, geminiCliHome: string | undefined): Promise<string | undefined> {
+  const base = geminiCliHome && geminiCliHome.trim() !== "" ? geminiCliHome : home;
+  const path = join(base, ".gemini", "settings.json");
+  try {
+    const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.size > GEMINI_SETTINGS_BYTES) return undefined;
+      const buffer = Buffer.alloc(GEMINI_SETTINGS_BYTES + 1);
+      let size = 0;
+      while (size < buffer.length) {
+        const { bytesRead } = await file.read(buffer, size, buffer.length - size, null);
+        if (bytesRead === 0) break;
+        size += bytesRead;
+      }
+      if (size > GEMINI_SETTINGS_BYTES) return undefined;
+      const settings = JSON.parse(buffer.toString("utf8", 0, size)) as {
+        security?: { auth?: { selectedType?: unknown } };
+      } | null;
+      const selectedType = settings?.security?.auth?.selectedType;
+      return typeof selectedType === "string" && selectedType.trim() !== "" ? selectedType.trim() : undefined;
+    } finally {
+      await file.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+const gemini: UsageProvider = {
+  id: "gemini",
+  async signIns(ctx) {
+    const selectedType = await geminiAuthSelectedType(ctx.home, ctx.env["GEMINI_CLI_HOME"]);
+    if (!selectedType) return [];
+    if (selectedType === "gemini-api-key") {
+      return [{
+        source: "settings",
+        token: "",
+        expiresAt: null,
+        account: { id: "gemini-api-key", label: null },
+        auth_mode: "gemini-api-key",
+      }];
+    }
+    return [{
+      source: "settings",
+      token: "",
+      expiresAt: null,
+      account: { id: selectedType, label: null },
+    }];
+  },
+  async read() {
+    return { plan: null, windows: [], checkedAt: null };
+  },
+};
+
+export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode, gemini];
 
 /** Keychain services whose read hung (an access prompt nobody answered): not asked again. */
 const promptedServices = new Set<string>();

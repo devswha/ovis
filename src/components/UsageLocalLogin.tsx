@@ -50,7 +50,7 @@ export function UsageLocalLogin({ provider, onStarted, onFollowed }: { readonly 
     event.preventDefault();
     const name = new FormData(event.currentTarget).get("name");
     const id = provider.id;
-    if (id === "antigravity") return;
+    if (id === "antigravity" || id === "gemini") return;
     if ((id === "claude" || id === "codex") && typeof name !== "string") return;
     if (id === "claude" || id === "codex") { setFollowing({ provider: id, name: String(name) }); return; }
     setBusy(true); setError(null);

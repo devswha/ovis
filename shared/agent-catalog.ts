@@ -1000,9 +1000,8 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     packages: ["npm:@google/gemini-cli", "brew:gemini-cli"],
     sources: [{ url: "https://github.com/google-gemini/gemini-cli#-installation", checked: "2026-11-21" }],
     detect: { binaries: ["gemini"], version_args: ["--version"] },
-    // No usage provider: Ovis reads no Gemini CLI plan limits. Antigravity's provider is a different
-    // product's sign-in and does not cover it.
-    sign_in: { provider: null, command: null, in_agent: "/auth", api_keys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"], required: true },
+    // Reports its auth selectedType from ~/.gemini/settings.json (or GEMINI_CLI_HOME) with no quota windows.
+    sign_in: { provider: "gemini", command: null, in_agent: "/auth", api_keys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"], required: true },
     after_install: [],
     min_version: null,
   },

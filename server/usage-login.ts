@@ -25,6 +25,7 @@ const LOGIN = {
   grok: { cli: "grok", binaries: ["grok"], args: ["login"] },
   antigravity: { cli: "Antigravity CLI (agy)", binaries: ["agy"], args: null },
   opencode: { cli: "opencode", binaries: ["opencode"], args: ["auth", "login"] },
+  gemini: { cli: "Gemini CLI", binaries: ["gemini"], args: null },
 } as const;
 
 /**

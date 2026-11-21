@@ -56,6 +56,15 @@ describe("agentsPage", () => {
     expect(page.rows.map((entry) => entry.integration?.target ?? null)).toEqual(["claude", "codex", null, "antigravity_cli"]);
     expect(page.otherIntegrations.map((entry) => entry.target)).toEqual(["droid", "pi"]);
   });
+
+  it("associates Gemini CLI with gemini provider and accounts", () => {
+    const geminiUsage: ProviderUsage = { id: "gemini", key: "gemini:gemini-api-key", account: null, plan: null, windows: [], problem: null, checked_at: null, auth_mode: "gemini-api-key" };
+    const page = agentsPage({ agents: [row("gemini", found("0.1.0"))], providers: [geminiUsage], integrations: [], accountsHere: true });
+    expect(page.rows.map((entry) => entry.agent.id)).toEqual(["gemini"]);
+    expect(page.rows.map((entry) => entry.provider)).toEqual(["gemini"]);
+    expect(page.rows[0]!.accounts).toEqual([geminiUsage]);
+    expect(page.rows[0]!.missing).toBeNull();
+  });
 });
 
 describe("Antigravity API key mode", () => {
