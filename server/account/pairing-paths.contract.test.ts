@@ -22,8 +22,10 @@ test("Linux relay phone pairing switches with this PC's binding, without restart
   expect(f.devices.account()).toBe("acct_phone");
   expect(f.app.context.services.localConfirms).toBeDefined();
   expect(await pair(f, f.devices.startPairing().code, await phone())).toEqual({ error: "unsupported_version" });
-  expect(f.devices.clearAccountBinding("left_on_pc", "pc")).toBe(true);
+  expect(f.devices.clearAccountBinding("unlisted", "account")).toBe(true);
   expect(f.app.context.services.localConfirms).toBeUndefined();
+  expect(f.stored().find(row => row.id === first.id)).toMatchObject({ role: "drive", origin: { from: "remote", how: "code" } });
+  expect(f.stored().find(row => row.id === first.id)).not.toHaveProperty("account");
   expect(await pair(f, f.devices.startPairing().code, await phone())).not.toHaveProperty("error");
 });
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });

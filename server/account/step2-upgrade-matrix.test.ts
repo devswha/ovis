@@ -47,6 +47,32 @@ function pairBrowser(app: ReturnType<typeof createServer>, label: string, now: n
 
 const localPhone = (...args: Parameters<typeof pairBrowser>) => pairBrowser(...args).token;
 
+test.skipIf(!available).each(["token", "tailscale", "device"] as const)("an unbound upgraded PC lets its %s owner reset its relay identity", async via => {
+  const stateDir = mkdtempSync(join(root, "unbound-reset-"));
+  const released = startRelease(stateDir);
+  let token: string;
+  try {
+    token = localPhone(released, "Owner browser", Date.now());
+    expect(await credentialStatus(released.port, token)).toBe(200);
+  } finally { await released.stop(); }
+  const old = rotateRelayIdentity(stateDir);
+  const app = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: via === "token" ? "matrix-owner" : "",
+    sidecar: false, tailscaleOwner: "owner@example.com", accountService: { url: "off" } });
+  try {
+    const base = `http://127.0.0.1:${app.port}`;
+    const headers = new Headers({ origin: base, "x-herdr-update": "1" });
+    if (via === "token") headers.set("authorization", "Bearer matrix-owner");
+    else {
+      headers.set("x-forwarded-for", "100.64.0.9");
+      if (via === "device") headers.set("authorization", `Device ${token}`);
+      else headers.set("tailscale-user-login", "owner@example.com");
+    }
+    expect(await (await fetch(`${base}/api/health?scope=bridge`, { headers })).json()).toMatchObject({ auth: { via, role: "drive" } });
+    expect((await fetch(`${base}/api/relay/reset-identity`, { method: "POST", headers })).status).toBe(200);
+    expect(savedServerId(stateDir)).not.toBe(old.server_id);
+  } finally { await app.stop(); }
+});
+
 test.skipIf(!available)("an unbound upgraded PC keeps its paired driving phone's revoke authority", async () => {
   const stateDir = mkdtempSync(join(root, "unbound-revoke-"));
   const released = startRelease(stateDir);

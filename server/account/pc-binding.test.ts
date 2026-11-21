@@ -51,7 +51,7 @@ test("a rolled-back first link does not publish a binding change or cancel anoth
     binding.bind(ACCOUNT, key.spki).commit();
     expect(changes).toEqual([ACCOUNT]);
     expect(pending.list()).toEqual([]);
-    expect(binding.clear("left_on_pc", "pc")).toBe(true);
+    expect(binding.clear("unlisted", "account")).toBe(true);
     binding.bindByService(ACCOUNT);
     expect(changes).toEqual([ACCOUNT, null, ACCOUNT]);
   } finally { stop(); }
@@ -83,6 +83,31 @@ function memberRow(account: string): StoredDevice {
 }
 
 describe("the PC's account binding (account-pc.json)", () => {
+  test("unlisting retains only owned pairing origins and never retains an imported or invalid origin", () => {
+    const dir = stateDir();
+    const binding = PcAccountState.open(dir);
+    binding.migrate(null, true);
+    binding.bindByService(ACCOUNT);
+    const makeRow = (from: "legacy" | "pc" | "remote", how: "code" | "add" = "code", extra: Partial<StoredDevice> = {}) => {
+      const row = memberRow(ACCOUNT);
+      return { ...row, linked_at: row.created_at, origin: from === "legacy"
+        ? { from, how: "legacy" as const, at: row.created_at, admit_no: 0, by: null }
+        : binding.admit(from, how, null, Date.parse(row.created_at)), ...extra };
+    };
+    const keep = [makeRow("pc"), makeRow("legacy"), makeRow("remote", "code", { role: "watch" })];
+    const drop = [makeRow("pc", "code", { imported: true }), makeRow("legacy", "code", { invalid_origin: true }),
+      makeRow("remote", "add"), makeRow("remote", "code", { added_by: keep[0]!.id }), makeRow("remote", "code", { link_moved_key: true })];
+    writeFileSync(join(dir, "devices.json"), JSON.stringify({ gate_closed_at: keep[0]!.created_at, devices: [...keep, ...drop] }), { mode: 0o600 });
+    const devices = store(dir);
+    expect(devices.accountError).toBeNull();
+    const closed: string[] = [];
+    for (const row of drop) devices.onRevoke(row.id, () => closed.push(row.id));
+    expect(devices.clearAccountBinding("unlisted", "account")).toBe(true);
+    expect(closed.sort()).toEqual(drop.map(row => row.id).sort());
+    const rows = JSON.parse(readFileSync(join(dir, "devices.json"), "utf8")).devices as StoredDevice[];
+    expect(rows.map(d => [d.id, d.role, d.origin, d.account, d.linked_at])).toEqual(keep.map(d => [d.id, d.role, d.origin, undefined, undefined]));
+    expect(store(dir).accountError).toBeNull();
+  });
   test.each(["active", "sibling"] as const)("T48: a service opt-out in the %s folder persists in both folders of the same binding", side => {
     const active = stateDir();
     const sibling = stateDir();
@@ -172,9 +197,9 @@ describe("the PC's account binding (account-pc.json)", () => {
     expect(pcFile(dir).binding).toEqual({ account: ACCOUNT, bind_id: bindId });
 
     // a named clear at the PC: the binding goes, the clear is kept, and the file stays
-    devices.clearAccountBinding("left_on_pc", "pc");
+    devices.clearAccountBinding("unlisted", "account");
     expect(devices.account()).toBeNull();
-    expect(pcFile(dir)).toMatchObject({ binding: null, clears: [{ bind_id: bindId, reason: "left_on_pc", by: "pc" }] });
+    expect(pcFile(dir)).toMatchObject({ binding: null, clears: [{ bind_id: bindId, reason: "unlisted", by: "account" }] });
     // the next first link makes a new binding; the earlier clear is never cut
     await linked(devices, "acct_2");
     const rebound = pcFile(dir);
@@ -182,7 +207,7 @@ describe("the PC's account binding (account-pc.json)", () => {
     expect(rebound.binding?.bind_id).not.toBe(bindId);
     // Revoke all clears too
     devices.revokeAll();
-    expect(pcFile(dir).clears.map((clear) => clear.reason)).toEqual(["left_on_pc", "revoke_all"]);
+    expect(pcFile(dir).clears.map((clear) => clear.reason)).toEqual(["unlisted", "revoke_all"]);
     expect(store(dir).account()).toBeNull();
 
     // a relay identity reset clears it

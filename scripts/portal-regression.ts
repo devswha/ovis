@@ -150,7 +150,7 @@ try {
   assert.deepEqual(await ownerAuth(), tokenOwner, "an unbound token owner drives without a Step 2 lock hint");
   server.context.services.devices.bindByService("acct_portal_fixture");
   assert.deepEqual(await ownerAuth(), { ...tokenOwner, own_window: true }, "binding the same PC enables its own-window hint");
-  assert.equal(server.context.services.devices.clearAccountBinding("left_on_pc", "pc"), true);
+  assert.equal(server.context.services.devices.clearAccountBinding("unlisted", "account"), true);
   assert.deepEqual(await ownerAuth(), tokenOwner, "leaving the account restores the unbound portal fixture");
 
   await openPhoneSettings(ownerPage);

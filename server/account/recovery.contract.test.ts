@@ -150,7 +150,7 @@ async function waitingDevice(made: Pc) {
   return { paired, waiting: listed.pending.find((entry) => entry.fingerprint === paired.fingerprint)! };
 }
 
-for (const later of ["different block", "different freeze", "same freeze", "targeted freeze"] as const)
+for (const later of ["different block", "different freeze", "same freeze", "targeted freeze", "same block after freeze", "different block after freeze"] as const)
 test.if(unix).each(["new", "existing"] as const)(`recovery of a %s key is scoped to its admission: ${later}`, async history => {
   const account = "acct_1";
   const member = await memberRow(account);
@@ -161,14 +161,19 @@ test.if(unix).each(["new", "existing"] as const)(`recovery of a %s key is scoped
   if (history === "existing" && !old) throw new Error("Could not establish prior pairing");
   const log = made.app.context.services.safetyLog;
   if (!log) throw new Error("Missing safety log");
-  const block = async () => {
+  const makeBlock = async () => {
     const other = await phone();
-    const record = await signSafetyRecord({ v: 1, kind: "block", account, signer: member.key.spki, signer_no: 1,
+    return signSafetyRecord({ v: 1, kind: "block", account, signer: member.key.spki, signer_no: 1,
       target: other.spki, target_no: 2, nonce: newRecordId(), signed_at: new Date().toISOString() }, member.key.keys.privateKey);
-    expect(log.append({ got: "handed", record, asof: { signer_no: 0, target_no: 0, joined: 0, after: 0, signer_removed: false } }).outcome).toBe("applied");
-    return record;
   };
-  const original = await block();
+  const appendBlock = (record: Awaited<ReturnType<typeof makeBlock>>) => {
+    expect(log.append({ got: "handed", record, asof: { signer_no: 0, target_no: 0, joined: 0, after: 0, signer_removed: false } }).outcome).toBe("applied");
+  };
+  const original = await makeBlock();
+  if (later === "same block after freeze" || later === "different block after freeze") {
+    expect(log.append({ got: "snapshot", record: { v: 1, kind: "freeze", account, signer: "service", signature: "",
+      id: `f:${original.id}`, target: original.target, signed_at: original.signed_at, after: 1 } }).outcome).toBe("applied");
+  } else appendBlock(original);
   await firstPairingRead(made);
   if (old) expect(made.devices.catchingUp(old.device.id)).toBe(true);
   const pending = await proveKey(made, made.devices.startPairing().code, {}, key);
@@ -187,12 +192,13 @@ test.if(unix).each(["new", "existing"] as const)(`recovery of a %s key is scoped
   const immediately = await status();
   await firstPairingRead(made);
   const afterRead = await status();
-  if (later === "different block") await block();
+  if (later === "same block after freeze") appendBlock(original);
+  else if (later === "different block" || later === "different block after freeze") appendBlock(await makeBlock());
   else expect(log.append({ got: "snapshot", record: { v: 1, kind: "freeze", account, signer: "service", signature: "",
     id: `f:${later === "different freeze" ? "a".repeat(64) : original.id}`, signed_at: original.signed_at,
     target: later === "targeted freeze" ? key.spki : original.target, after: 1 } }).outcome).toBe("applied");
   await firstPairingRead(made);
-  expect([immediately, afterRead, await status()]).toEqual([200, 200, later === "same freeze" ? 200 : 401]);
+  expect([immediately, afterRead, await status()]).toEqual([200, 200, later === "same freeze" || later === "same block after freeze" ? 200 : 401]);
 });
 
 test.if(unix)("recover --admit cannot undo a local Revoke of the exact waiting key", async () => {

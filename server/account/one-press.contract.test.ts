@@ -13,7 +13,9 @@ import { accountDeviceId, exportAccountKey } from "../../shared/account-records.
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { handleRequest, type ServerContext } from "../dispatch.ts";
 import { createServer } from "../index.ts";
-import { pairingPc, setUpFor, type Pc } from "./pairing.test-helpers.ts";
+import { ask, linkRecord, pairingPc, phone, provingDevice, sendLink, setUpFor, vouchFor, type Pc } from "./pairing.test-helpers.ts";
+import { bounded, relayConnection } from "../relay/test-helpers.ts";
+import { FrameType } from "../../shared/relay-mux.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -152,22 +154,59 @@ test("a PC bound in one press keeps its account when the snapshot route answers 
   expect(f.devices.account()).toBe("acct_1");
 });
 
-test("a PC bound in one press that the account stops listing leaves the account at its next read", async () => {
-  const f = await pc();
+test.skipIf(process.platform !== "linux").each([false, true])("service unlisting keeps a locally paired linked phone through offline restart (locked: %s)", async locked => {
+  const screen = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = screen.writable.getWriter();
+  const f = await pc({ server: { desktopOwner: { input: screen.readable, write() {} } } });
   await setUpFor(f, "acct_1");
   await admitAt(f, "acct_1");
-  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-  const laptop = await exportAccountKey(keys.publicKey);
-  f.account.registerDevice("acct_1", laptop, "Laptop");
+  const laptop = await phone();
+  f.account.registerDevice("acct_1", laptop.spki, "Laptop");
   expect((await press(f, "acct_1")).status).toBe(200);
   const serverId = f.app.context.services.relay.currentIdentity()!.server_id;
-  expect(f.devices.has(accountDeviceId(serverId, laptop))).toBe(true);
+  const listedId = accountDeviceId(serverId, laptop.spki);
+  expect(f.devices.has(listedId)).toBe(true);
+  const pairing = await provingDevice(f, await f.offerCode());
+  await pairing.pending;
+  const confirm = f.app.context.services.localConfirms?.pending().find(e => e.action.kind === "approve_key");
+  if (!confirm) throw new Error("Missing local pairing approval");
+  const admitted = Promise.withResolvers<string>();
+  pairing.link.onFrame = frame => { if (frame.type === FrameType.AUTH_OK) admitted.resolve(frame.payload.device_id); };
+  await writer.write(new TextEncoder().encode(`${JSON.stringify({ approve: confirm.id })}\n`));
+  const id = await bounded(admitted.promise);
+  await vouchFor(f, "acct_1", pairing.device);
+  expect((await sendLink(pairing.link, await linkRecord(id, "acct_1", pairing.device))).status).toBe(200);
+  expect(f.stored().find(d => d.id === id)).toMatchObject({ account: "acct_1", origin: { from: "pc" } });
+  const lock = locked ? f.app.context.services.safetyLog!.appendLock({ account: "acct_1" }).id : null;
   const removed = await f.account.fetch(new Request(`https://account.test/v1/pcs/${serverId}`, { method: "DELETE", headers: { authorization: `Bearer ${f.account.issueToken("acct_1")}` } }));
   expect(removed.status).toBe(204);
   await f.app.context.services.accountMailbox.readSnapshot();
   expect(f.devices.account()).toBeNull();
-  expect(f.devices.has(accountDeviceId(serverId, laptop))).toBe(false);
-  expect(await f.status()).toMatchObject({ account: null });
+  expect(f.devices.has(listedId)).toBe(false);
+  const atClear = f.stored().find(d => d.id === id);
+  await f.app.context.services.relay.stop();
+  await f.app.stop();
+  const offline = createServer({ stateDir: f.stateDir, port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null,
+    registerBridge: false, sidecar: false, accountService: { url: "off" } });
+  const closes: (() => void)[] = [];
+  try {
+    const base = `http://127.0.0.1:${offline.port}`;
+    const local = await fetch(`${base}/api/devices`);
+    const signed = await relayConnection({ stateDir: f.stateDir, app: offline, closes, close() {} });
+    const pairedStatus = await signed.auth({ id, keys: pairing.device.keys, publicKey: pairing.device.spki })
+      .then(async () => (await ask(signed, "/api/devices")).status, () => 401);
+    expect({ pairedStatus, local: local.status, account: atClear?.account, linked: atClear?.linked_at,
+      stored: atClear?.id }).toEqual({ pairedStatus: 200, local: locked ? 403 : 200, account: undefined, linked: undefined, stored: id });
+    expect(offline.context.services.devices.accountError).toBeNull();
+    const listed = await relayConnection({ stateDir: f.stateDir, app: offline, closes, close() {} });
+    await expect(listed.auth({ id: listedId, keys: laptop.keys, publicKey: laptop.spki })).rejects.toThrow();
+    if (lock !== null) {
+      expect(await local.json()).toMatchObject({ error: { code: "locked" } });
+      expect(await (await fetch(`${base}/api/account/lock`)).json()).toMatchObject({ locked: lock, bound: false });
+      expect((await fetch(`${base}/api/account/unlock`, { method: "POST", headers: { origin: base, "x-herdr-machine": "1" },
+        body: JSON.stringify({ lock }) })).status).toBe(202);
+    }
+  } finally { for (const close of closes) close(); await offline.stop(); writer.releaseLock(); }
 });
 
 test("first-PC exemption: an account never used, signed in with Google whose two-step is unknown, adds its first PC in one press", async () => {

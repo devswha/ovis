@@ -117,7 +117,7 @@ test("S19: a log that cannot be read is stricter than locked: no window without 
 test("P11: a lock taken under the PC's account holds after that binding is cleared and the PC bound to another account", async () => {
   const made = await lockedPc();
   const binding = PcAccountState.open(made.stateDir);
-  binding.clear("left_on_pc", "pc");
+  binding.clear("identity_reset", "pc");
   binding.bind("acct_2", made.member.key.spki);
   expect((await made.local("/api/devices")).body.error?.code).toBe("locked");
 });
@@ -146,7 +146,7 @@ test("ordinary requests enforce the lock without looking up the lock or confirm 
   try {
     const lookups: string[] = [];
     const services = new Proxy(f.app.context.services, { get(target, key, receiver) {
-      if (key === "lockRoutes" || key === "localConfirms") lookups.push(key);
+      if (key === "lockRoutes" || key === "localConfirms" || key === "pendingRedemptions") lookups.push(key);
       return Reflect.get(target, key, receiver);
     } });
     const read = (path: string) => handleRequest(new Request(`http://127.0.0.1${path}`, { headers: { host: "127.0.0.1" } }),
@@ -249,9 +249,8 @@ test("T47/N4: on a PC with an access token, the owner's own window (loopback, th
   expect(forwarded.status).toBeGreaterThanOrEqual(400);
 });
 
-const clearReasons = ["left_on_pc", "unlisted", "identity_reset", "revoke_all"] as const satisfies readonly ClearReason[];
-for (const reason of ["left_on_pc", "unlisted"] as const) {
-  test.skipIf(process.platform !== "linux")(`a standing Not me after ${reason} accepts only a screen-confirmed phone`, async () => {
+const clearReasons = ["unlisted", "identity_reset", "revoke_all"] as const satisfies readonly ClearReason[];
+  test.skipIf(process.platform !== "linux")("a standing Not me after unlisting accepts only a screen-confirmed phone", async () => {
     const made = await screenedPc();
     await firstPairingRead(made);
     const { devices, safetyLog } = made.app.context.services;
@@ -261,7 +260,7 @@ for (const reason of ["left_on_pc", "unlisted"] as const) {
     expect(safetyLog?.append({ record: block, got: "handed", asof: { signer_no: 1, target_no: 2, joined: 0, after: 0, signer_removed: false } }).outcome).toBe("applied");
     expect(safetyLog?.append({ got: "snapshot", record: { kind: "freeze", v: 1, id: `f:${block.id}`, account: "acct_1",
       target: target.key.spki, after: 1, signed_at: block.signed_at, signer: "service", signature: "" } }).outcome).toBe("applied");
-    expect(devices.clearAccountBinding(reason, reason === "unlisted" ? "account" : "pc")).toBe(true);
+    expect(devices.clearAccountBinding("unlisted", "account")).toBe(true);
     expect(devices.pairRelay(devices.startPairing().code, "Target", target.key.spki)).toBeNull();
     expect((await made.local("/api/account/lock")).body.bound).toBe(false);
     const fresh = await provingDevice(made, devices.startPairing().code);
@@ -274,7 +273,6 @@ for (const reason of ["left_on_pc", "unlisted"] as const) {
     expect(safetyLog?.inForce.blocks.map(entry => entry.record.id)).toContain(block.id);
     expect(devices.pairRelay(devices.startPairing().code, "Still blocked", target.key.spki)).toBeNull();
   });
-}
 for (const reason of clearReasons) for (const channel of ["screen", "terminal"] as const) {
   test.skipIf(process.platform !== "linux")(`a standing lock remains owner-unlockable after ${reason} via ${channel}`, async () => {
     const made = await screenedPc(reason === "unlisted");

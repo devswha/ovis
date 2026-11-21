@@ -157,7 +157,7 @@ test.skipIf(!available).each([
 );
 
 async function rebind(pc: Awaited<ReturnType<typeof fixture>>, app: ReturnType<typeof createServer>, omitted: string) {
-  expect(app.context.services.devices.clearAccountBinding("left_on_pc", "pc")).toBe(true);
+  expect(app.context.services.devices.clearAccountBinding("unlisted", "account")).toBe(true);
   pc.omit(omitted);
   const base = `http://127.0.0.1:${app.port}`;
   const post = (path: string, body: object) => fetch(base + path, { method: "POST",
@@ -324,6 +324,10 @@ test.skipIf(!available).each(["signer", "target"] as const)(
       const { devices, accountMailbox } = app.context.services;
       expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
       await rebind(pc, app, missing === "signer" ? pc.owner.spki : pc.victim.spki);
+      // A new binding needs a fresh member link. Only the order pin is intentionally missing here.
+      const signer = devices.list(null).find(row => devices.relayKeyOf(row.id) === pc.owner.spki);
+      if (!signer) throw new Error("Missing original signer credential");
+      expect(devices.linkAccountKey(signer.id, pc.owner.spki, pc.owner.spki, ACCOUNT)).not.toBeNull();
       expect(await devices.applyBlock(pc.record, "mailbox")).toMatchObject({ outcome: "refused", reason: "unknown_target" });
       expect(devices.isTombstoned(pc.victim.spki)).toBe(false);
       expect(app.context.services.safetyLog?.waitingBlocks().map(entry => entry.record.id)).toContain(pc.record.id);
