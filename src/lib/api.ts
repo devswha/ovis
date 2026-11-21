@@ -369,6 +369,19 @@ export function requestRelayLink(options: { localOnly?: boolean } = {}): Promise
   return getJson<{ readonly url: string; readonly window_id?: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1", ...(options.localOnly ? { "x-ovis-local-only": "1" } : {}) } });
 }
 
+/**
+ * POST /api/relay/lan-join: this PC's own window shows the connect-a-phone block, so a phone on this Wi-Fi may ask to
+ * join for ten minutes. `address` (`<IPv4>:<port>`) is where it asks, null where this PC listens on no LAN address.
+ */
+export function openLanJoin(): Promise<{ readonly address: string | null; readonly window_id?: string }> {
+  return getJson<{ readonly address: string | null; readonly window_id?: string }>("/api/relay/lan-join", { method: "POST", headers: { "x-herdr-update": "1" } });
+}
+
+/** POST /api/relay/lan-join/close: the block was left; ends that window, and a join it was showing. */
+export function closeLanJoin(windowId: string): Promise<{ readonly ok: true }> {
+  return getJson<{ readonly ok: true }>("/api/relay/lan-join/close", { method: "POST", headers: { "x-herdr-update": "1", "x-ovis-window": windowId }, keepalive: true });
+}
+
 /** POST /api/relay/link/close: end the current pairing window, or only the named generation when supplied. */
 export function closeRelayLink(windowId?: string): Promise<{ readonly ok: true }> {
   return getJson<{ readonly ok: true }>("/api/relay/link/close", { method: "POST", headers: { "x-herdr-update": "1", ...(windowId === undefined ? {} : { "x-ovis-window": windowId }) } });

@@ -151,6 +151,15 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(sentence(compared!)).toBe("x\u0000{digits}{name} wants to pair through the relay. Approve it only if its screen shows 725 403");
   });
 
+  it("names a phone on this Wi-Fi with its address, asks to allow it only if the phone shows the number, and sends the decision here", async () => {
+    const [prompt] = prompts(await show([request({ lan_address: "192.168.1.23", label: "{address} $&" })]));
+    expect(sentence(prompt!)).toBe("{address} $& on this Wi-Fi (192.168.1.23) wants to connect 725 403");
+    expect(text(prompt!.find((found) => found.props["data-testid"] === "relay-pairing-check"))).toBe(" · Allow only if your phone shows this number");
+    expect(prompt!.findAllByType("button").map(text)).toEqual(["Allow", "Decline"]);
+    await act(async () => { prompt!.findAllByType("button")[1]!.props.onClick(); });
+    expect(decided).toEqual([["/api/relay/pairing", { id: "p1", decision: "decline" }]]);
+  });
+
   it("asks to compare the digits when the other device shows them", async () => {
     const [prompt] = prompts(await show([request()]));
     expect(sentence(prompt!)).toBe("Hako's iPhone wants to pair through the relay. Approve it only if its screen shows 725 403");

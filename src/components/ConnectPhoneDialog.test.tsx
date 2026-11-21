@@ -77,11 +77,16 @@ describe("Connect a phone on a phone", () => {
   let accessNow: RemoteAccess;
   let serveReply: () => Response;
   let openReply: () => Response;
+  /** what POST /api/relay/lan-join answers, and the windows POST /api/relay/lan-join/close named */
+  let lanJoinAnswer: { address: string | null; window_id?: string };
+  let lanJoinClosed: string[];
 
   beforeEach(() => {
     accessNow = tailscaleAccess({ state: "stopped" });
     serveReply = () => Response.json({ error: { code: "tailscale_serve_refused", message: "refused" } }, { status: 409 });
     openReply = () => new Response(null, { status: 204 });
+    lanJoinAnswer = { address: "192.168.0.12:7319", window_id: "a".repeat(32) };
+    lanJoinClosed = [];
     pending = "482913";
     pairStarts = [];
     offersAsked = [];
@@ -164,6 +169,8 @@ describe("Connect a phone on a phone", () => {
         return Response.json({ machine: { id: "desk", name: "desk.tail.ts.net", kind: "address", address: "https://desk.tail.ts.net:7317", enabled: true, state: "connecting", error: null, snapshot: null } }, { status: 201 });
       }
       if (path === "/api/access") return Response.json(accessNow);
+      if (path === "/api/relay/lan-join") return Response.json(lanJoinAnswer);
+      if (path === "/api/relay/lan-join/close") { lanJoinClosed.push(new Headers(init?.headers).get("x-ovis-window") ?? ""); return Response.json({ ok: true }); }
       if (path === "/api/access/tailscale/serve") return serveReply();
       if (path === "/api/access/tailscale/open") return openReply();
       if (path === "/api/relay/code") { pending = "777111"; pendingOwn = false; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID }); }
@@ -481,7 +488,7 @@ describe("Connect a phone on a phone", () => {
     expect(qrCodes()).toHaveLength(0);
   });
 
-  it("makes no pairing code while the relay's state is still read, then one for both local tabs, each at its own address", async () => {
+  it("makes no pairing code while the relay's state is still read, then one for the Tailscale tab alone: Direct asks for none", async () => {
     Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
     const pageEvents = new EventTarget();
     Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
@@ -508,59 +515,11 @@ describe("Connect a phone on a phone", () => {
     expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913"]);
     // Direct shows the same code at this page's own address, and asks for no second code, which would end the first
     await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
-    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
-    expect(starts()).toBe(1);
-    expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913", "https://desk.example.com/?pair=482913"]);
-  });
-
-  it("on a plain-http LAN page with Tailscale serving it, Direct shows this page's address, and a tab opened while the first code is asked for asks for none", async () => {
-    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
-    const pageEvents = new EventTarget();
-    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
-    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
-    const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
-    const starts = () => requests.filter((path) => path === "/api/devices/pair/start").length;
-    let release = (): void => {};
-    pairStarts.push({ code: "135792", gate: new Promise<void>((resolve) => { release = resolve; }) });
-    await act(async () => {
-      renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} pageUrl="http://192.168.0.12:7317" relay={relayState()} readOnly={false} closesGate={false} canPair
-        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
-    });
-    await until(() => starts() === 1, "the Tailscale tab's code asked for");
-    // Direct opens while that code is on its way: it waits for it rather than ask for a second, which would end it
-    await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
-    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
-    await act(async () => { release(); });
-    await until(() => qrCodes().length === 2, "both tabs' QR codes");
-    expect(starts()).toBe(1);
-    expect(qrCodes().map((qr) => String(qr.props.value))).toEqual(["https://workstation.example.ts.net/?pair=135792", "http://192.168.0.12:7317/?pair=135792"]);
-  });
-
-  it("a tab that waited on the first tab's code asks for its own when that request fails", async () => {
-    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
-    const pageEvents = new EventTarget();
-    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
-    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
-    const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
-    const starts = () => requests.filter((path) => path === "/api/devices/pair/start").length;
-    let refuse = (): void => {};
-    pairStarts.push({ code: "000000", gate: new Promise<void>((resolve) => { refuse = resolve; }), refused: true }, { code: "246810", gate: Promise.resolve() });
-    await act(async () => {
-      renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} pageUrl="http://192.168.0.12:7317" relay={relayState()} readOnly={false} closesGate={false} canPair
-        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
-    });
-    await until(() => starts() === 1, "the Tailscale tab's code asked for");
+    // Direct shows no code and no QR code: it names this PC's same-Wi-Fi address, and asks for no code
     await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     expect(starts()).toBe(1);
-    await act(async () => { refuse(); });
-    // the request it waited on failed: nothing will announce a code, so the waiting tab asks itself
-    await until(() => starts() === 2, "the waiting tab's own request");
-    await until(() => qrCodes().some((qr) => String(qr.props.value) === "http://192.168.0.12:7317/?pair=246810"), "the waiting tab's QR code");
+    expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913"]);
   });
 
   describe("the Tailscale tab's step, one press each and never a terminal step until a serve is refused", () => {
@@ -667,8 +626,8 @@ describe("Connect a phone on a phone", () => {
     });
   });
 
-  describe("Direct: a same-Wi-Fi QR code where this PC answers on its network, never a bare code under Scan", () => {
-    const mountDirect = async (lanUrl: string | null) => {
+  describe("Direct: this PC's same-Wi-Fi address in one line, no QR code and no code, and a phone there asks to join", () => {
+    const mountDirect = async () => {
       Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
       const pageEvents = new EventTarget();
       Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
@@ -676,9 +635,8 @@ describe("Connect a phone on a phone", () => {
       Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
       const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
       const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
-      // this PC's own window on loopback: its page is no address a phone opens
       await act(async () => {
-        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} lanUrl={lanUrl} pairUrl={served.url} pageUrl={null} relay={relayState()} readOnly={false} closesGate={false} canPair
+        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
           signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
       });
       await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
@@ -686,22 +644,24 @@ describe("Connect a phone on a phone", () => {
       return () => renderer!.root.findByProps({ "data-tab-panel": "direct" });
     };
 
-    it("shows the QR code of this PC's same-Wi-Fi address with the pairing code, the code under it, under a plain label and no outside link", async () => {
-      const panel = await mountDirect("http://192.168.0.12:7317");
-      await until(() => panel().findAllByType(QrCode).length === 1, "Direct's QR code");
-      expect(panel().findAllByType(QrCode).map((qr) => String(qr.props.value))).toEqual(["http://192.168.0.12:7317/?pair=482913"]);
-      expect(text(panel())).toContain("Scan it with the Ovis app on your phone");
-      expect(text(panel())).toContain("482 913");
-      expect(panel().findAll((node) => node.type === "label").map(text)[0]).toBe("Add another PC from this one");
-      expect(panel().findAll((node) => node.type === "a").map(text)).toEqual([]);
+    it("names the address a phone on this Wi-Fi connects to, opens the join window while shown and ends it when left", async () => {
+      const panel = await mountDirect();
+      await until(() => panel().findAllByProps({ "data-testid": "connect-lan-join" }).length === 1, "Direct's Wi-Fi line");
+      expect(text(panel().findByProps({ "data-testid": "connect-lan-join" }))).toBe("Same Wi-Fi address 192.168.0.12:7319Connect to this address from your phone, and this PC asks you to allow it");
+      expect(panel().findAllByType(QrCode)).toEqual([]);
+      expect(text(panel())).not.toContain("482 913");
+      expect(requests.filter((path) => path === "/api/relay/lan-join")).toHaveLength(1);
+      expect(requests).not.toContain("/api/relay/lan-join/close");
+      // another tab: the block is left, and the window with it
+      await act(async () => { renderer!.root.findByProps({ "data-tab": "tailscale" }).props.onClick(); });
+      expect(lanJoinClosed).toEqual(["a".repeat(32)]);
     });
 
-    it("with no address a phone opens, names the code a pairing code to type, not one to scan", async () => {
-      const panel = await mountDirect(null);
-      await until(() => text(panel()).includes("482 913"), "Direct's code");
-      expect(panel().findAllByType(QrCode)).toEqual([]);
-      expect(text(panel())).not.toContain("Scan it with the Ovis app on your phone");
-      expect(text(panel().findByProps({ "data-testid": "connect-phone-scan" }))).toContain("Pairing code");
+    it("says the Wi-Fi line is off where this PC listens on no LAN address", async () => {
+      lanJoinAnswer = { address: null };
+      const panel = await mountDirect();
+      await until(() => panel().findAllByProps({ "data-testid": "connect-lan-join" }).length === 1, "Direct's Wi-Fi line");
+      expect(text(panel().findByProps({ "data-testid": "connect-lan-join" }))).toBe("This PC's same Wi-Fi connection is off");
     });
   });
 

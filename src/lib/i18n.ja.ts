@@ -494,6 +494,7 @@ const BASE: Record<string, string> = {
   "{n} s left": "残り {n} 秒",
   "Decline": "拒否",
   "Allow": "許可",
+  "{name} on this Wi-Fi ({address}) wants to connect {digits}": "同じ Wi-Fi の {name}（{address}）が接続しようとしています {digits}",
   "Allow only if your phone shows this number": "スマホに同じ数字が表示されているときだけ許可してください",
   "Confirm on this PC": "この PC で確認",
   "Run ovis confirm on this PC to open it.": "この PC のターミナルで ovis confirm を実行して開いてください。",

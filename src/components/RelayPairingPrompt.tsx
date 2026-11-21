@@ -255,7 +255,10 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
         // a key's fingerprint is shown as the device shows it; digits in two halves
         const digits = <strong className="relay-pairing-digits">{pairing.own_window === "key" ? pairing.digits : `${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}`}</strong>;
         // the device this PC is added from shows an input, not digits (AddPcSheet): its person types this PC's there
-        const [before, after] = pairing.own_window !== undefined
+        const [before, after] = pairing.lan_address !== undefined
+          // the address comes from this PC's own socket, never from what the phone said
+          ? aroundDigits(t("{name} on this Wi-Fi ({address}) wants to connect {digits}").replace("{address}", () => pairing.lan_address ?? ""), pairing.label)
+          : pairing.own_window !== undefined
           ? aroundDigits(t("{name} wants to connect {digits}"), pairing.label)
           : pairing.local_only
           ? aroundDigits(t("{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here."), pairing.label)
@@ -271,7 +274,7 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
               <span id={`${id}-${pairing.id}`}>{before}{digits}{after}</span>
               {left !== null && <span className="relay-pairing-left" aria-live="off" data-testid="relay-pairing-left"> {t("{n} s left", { n: left })}</span>}
               {/* nobody else checks a first join's digits: the owner compares them with the phone here */}
-              {pairing.own_window === "join" && <span className="relay-pairing-left" data-testid="relay-pairing-check"> · {t("Allow only if your phone shows this number")}</span>}
+              {(pairing.own_window === "join" || pairing.lan_address !== undefined) && <span className="relay-pairing-left" data-testid="relay-pairing-check"> · {t("Allow only if your phone shows this number")}</span>}
               {failure?.id === pairing.id && <span className="relay-error" role="alert"> {failure.text}</span>}
             </span>
             {pairing.own_window === "key" ? (
@@ -291,7 +294,7 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
                 <button type="button" className="btn btn-primary" disabled={deciding !== null} aria-busy={deciding === "approve" ? true : undefined}
                   onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !event.repeat) pressed.current = { id: pairing.id, key: true, at: event.timeStamp }; }}
                   onPointerDown={(event) => { pressed.current = { id: pairing.id, key: false, at: event.timeStamp }; }}
-                  onClick={(event) => approve(pairing, event)}>{pairing.own_window === undefined ? t("Approve") : t("Allow")}</button>
+                  onClick={(event) => approve(pairing, event)}>{pairing.own_window === undefined && pairing.lan_address === undefined ? t("Approve") : t("Allow")}</button>
                 <button type="button" className="btn" disabled={deciding !== null} aria-busy={deciding === "decline" ? true : undefined} onClick={() => void decide(pairing, "decline")}>{t("Decline")}</button>
               </div>
             )}

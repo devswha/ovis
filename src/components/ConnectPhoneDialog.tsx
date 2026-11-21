@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type Dispatch, type FormEvent, type MutableRefObject, type ReactNode, type SetStateAction } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { Check, RefreshCw, Smartphone, X } from "lucide-react";
 
@@ -14,7 +14,7 @@ import { decodeOffer } from "../../shared/relay-offer.ts";
 import { AccountService } from "../lib/account/service.ts";
 import type { AddConnectionTab } from "../lib/addConnectionRequest.ts";
 import { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_POLL_MS, ACCOUNT_QR_WATCH_EVENT, accountQrFindings, accountQrNoticeWaiting, accountQrPending, addedBy, holdAccountQrNotice, resetAccountQrWatch, stopAccountQrWatch, takeAccountQrNotice, watchEndedAccountQr, type AccountQrBaseline, type AccountQrStray } from "../lib/accountQrWatch.ts";
-import { addAddressPc, ApiError, endPairing, fetchDevices, fetchRemoteAccess, findSshCandidates, findTailnetPcs, openTailscaleApp, requestRelayOffer, revokeAllDevices, revokeDevice, serveOnTailscale, startPairing, type RelayOffer, type SshCandidate } from "../lib/api.ts";
+import { addAddressPc, ApiError, closeLanJoin, endPairing, fetchDevices, fetchRemoteAccess, findSshCandidates, findTailnetPcs, openLanJoin, openTailscaleApp, requestRelayOffer, revokeAllDevices, revokeDevice, serveOnTailscale, startPairing, type RelayOffer, type SshCandidate } from "../lib/api.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
@@ -124,11 +124,7 @@ export interface ConnectPhoneDialogProps {
   tailscale?: PhonePlan;
   /** the platform this PC's server reports (RemoteAccess.platform): which Tailscale download and app this PC takes */
   platform?: string | undefined;
-  /** the address a phone on this PC's own network opens (RemoteAccess.lan_url): Direct's QR code where this page is no such address */
-  lanUrl?: string | null | undefined;
   pairUrl: string | null;
-  /** this page's own address when a phone could open it (not loopback, not the hosted shell): Direct's QR code; `pairUrl` when omitted */
-  pageUrl?: string | null;
   relay: RelayState;
   /** a watching device or a Portal visitor: it reads, and starts nothing */
   readOnly: boolean;
@@ -160,7 +156,7 @@ export interface ConnectPhoneDialogProps {
   onClose: () => void;
 }
 
-export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, lanUrl: givenLanUrl = null, pairUrl, pageUrl = pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -185,7 +181,6 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   const plan = fresh !== null && tailscaleStepKind(givenPlan) ? tailscalePlan(fresh) : givenPlan;
   const tailscale = fresh !== null && tailscaleStepKind(givenTailscale) ? tailscalePlan(fresh) : givenTailscale;
   const platform = fresh?.platform ?? givenPlatform;
-  const lanUrl = fresh?.lan_url !== undefined ? fresh.lan_url : givenLanUrl;
   const tabs = connectTabs({ sshOffered: onAddPc !== null && !readOnly && !inRelayShell(), relay, readOnly });
   const hasAccount = account !== null;
   // until a tab is picked, the opening one follows the tabs as they arrive (the relay's state comes a moment later)
@@ -206,11 +201,6 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   const { status: portal } = usePortal();
   const local = localWays({ plan, readOnly, canPair, portal });
   const tailnet = localWays({ plan: tailscale, readOnly, canPair, portal: null });
-  // a phone on the same Wi-Fi opens Portal's address where it runs, else this page's own when it is no Tailscale one, else
-  // the address this PC answers at on its own network (lan_url)
-  const directUrl = portal?.phase === "running" && portal.url !== null ? portal.url : pageUrl !== null && pageUrl !== tailnet.address ? pageUrl : lanUrl;
-  // one pairing code for both tabs that show one: the PC keeps one pending code, so a second would end the first
-  const sharedCode = useRef<SharedCode>({ code: null, asking: false, waiting: new Set() });
   useTailscaleWatch(!waiting && ((tab === "tailscale" && tailnet.tailscaleStep !== null) || (tab === null && local.tailscaleStep !== null)), setFresh);
 
   return createPortal(
@@ -234,7 +224,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
               <TailscaleTab found={found} onAddPc={onAddPc!} />
               <PhoneScan>
                 {tailnet.address !== null ? (
-                  tailnet.code ? <CodeRoute pairUrl={tailnet.address} startAtOnce={tab === "tailscale"} shared={sharedCode} phone={phone} compact /> : <PhonePanel url={tailnet.address} phone={phone} />
+                  tailnet.code ? <CodeRoute pairUrl={tailnet.address} startAtOnce={tab === "tailscale"} phone={phone} compact /> : <PhonePanel url={tailnet.address} phone={phone} />
                 ) : tailnet.tailscaleStep !== null ? <TailscaleStep step={tailnet.tailscaleStep} platform={platform} onAccess={setFresh} /> : null}
                 {(tailscale.kind === "served" || tailnet.tailscaleStep !== null) && <p className="settings-hint">{t("The phone needs the Tailscale app turned on too.")}</p>}
               </PhoneScan>
@@ -243,8 +233,8 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
           {opened.current.has("direct") && tabs.includes("direct") && (
             <div className="connect-tab" data-tab-panel="direct" hidden={tab !== "direct"}>
               <DirectTab found={found} machines={machines} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} />
-              {local.code && <PhoneScan codeOnly={directUrl === null}><CodeRoute pairUrl={directUrl} startAtOnce={tab === "direct"} shared={sharedCode} phone={phone} compact /></PhoneScan>}
-              {local.portal && <section className="connect-section" aria-label="Portal"><PortalPanel readOnly={readOnly} addressQr={!local.code || directUrl !== portal?.url} /></section>}
+              {local.code && tab === "direct" && <LanJoin />}
+              {local.portal && <section className="connect-section" aria-label="Portal"><PortalPanel readOnly={readOnly} addressQr /></section>}
             </div>
           )}
           {opened.current.has("relay") && tabs.includes("relay") && (
@@ -503,12 +493,44 @@ export function localWays({ plan, readOnly, canPair, portal }: { plan: PhonePlan
 }
 
 /** What a phone scans on each way's tab, under that way's own part: the QR code and the code it carries, or the step that gives this PC an address a phone opens. */
-function PhoneScan({ children, codeOnly = false }: { children: ReactNode; codeOnly?: boolean }) {
+/**
+ * Direct's phone block in this PC's own window: no QR code and no code. While it shows, a phone on this Wi-Fi may ask to
+ * join at the address it names (docs/relay.md, "Joining on the same Wi-Fi"), and this PC asks here before it lets it in;
+ * leaving the block ends that. A PC that listens on no LAN address (loopback only, the relay or direct connections off)
+ * says its Wi-Fi line is off.
+ */
+export function LanJoin() {
+  const t = useT();
+  const [address, setAddress] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    let left = false;
+    let window: string | undefined;
+    openLanJoin().then((opened) => {
+      window = opened.window_id;
+      if (left) { if (window !== undefined) void closeLanJoin(window).catch(() => {}); return; }
+      setAddress(opened.address);
+    }, () => { if (!left) setAddress(null); });
+    return () => {
+      left = true;
+      if (window !== undefined) void closeLanJoin(window).catch(() => {});
+    };
+  }, []);
+  if (address === undefined) return null;
+  return (
+    <section className="connect-phone-scan" aria-label={t("Phone")} data-testid="connect-lan-join">
+      <p className="settings-label connect-phone-scan-title"><Smartphone aria-hidden="true" />
+        {address === null ? t("This PC's same Wi-Fi connection is off") : <>{t("Same Wi-Fi address")} <code>{address}</code></>}
+      </p>
+      {address !== null && <p className="settings-hint">{t("Connect to this address from your phone, and this PC asks you to allow it")}</p>}
+    </section>
+  );
+}
+
+function PhoneScan({ children }: { children: ReactNode }) {
   const t = useT();
   return (
     <section className="connect-phone-scan" aria-label={t("Phone")} data-testid="connect-phone-scan">
-      {/* a code with no address a phone opens is typed, not scanned */}
-      <p className="settings-label connect-phone-scan-title"><Smartphone aria-hidden="true" />{codeOnly ? t("Pairing code") : t("Scan it with the Ovis app on your phone")}</p>
+      <p className="settings-label connect-phone-scan-title"><Smartphone aria-hidden="true" />{t("Scan it with the Ovis app on your phone")}</p>
       {children}
     </section>
   );
@@ -1336,33 +1358,10 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
   );
 }
 
-/**
- * the code views of one dialog share (CodeRoute `shared`): the last one made or announced, whether one is being asked
- * for, and the views waiting on that ask, told when it ends with no code so one of them asks itself
- */
-interface SharedCode { code: PairingCode | null; asking: boolean; readonly waiting: Set<() => void> }
-
-/**
- * The ask in `shared` ended: with `code`, its announcement reaches the waiting views; with none, the first waiting view
- * asks itself, and the others wait on that ask (two asks would end each other's code).
- */
-function askEnded(shared: MutableRefObject<SharedCode>, code: PairingCode | null): void {
-  shared.current = { ...shared.current, ...(code === null ? {} : { code }), asking: false };
-  if (code !== null) { shared.current.waiting.clear(); return; }
-  const [first] = shared.current.waiting;
-  if (first === undefined) return;
-  shared.current.waiting.delete(first);
-  first();
-}
-
 /** the newest code request of any opening: the server keeps one pending code, so an older answer is a dead code */
 let latestPairRequest = 0;
 
-/**
- * `shared`: the code another view of this dialog shows already. A view that starts takes it while it is good instead of
- * asking for another, which would end it (the PC keeps one pending code) after it was copied or scanned there.
- */
-export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact = false }: { pairUrl: string | null; startAtOnce: boolean; shared?: MutableRefObject<SharedCode>; phone?: boolean; compact?: boolean }) {
+export function CodeRoute({ pairUrl, startAtOnce, phone = false, compact = false }: { pairUrl: string | null; startAtOnce: boolean; phone?: boolean; compact?: boolean }) {
   const t = useT();
   const [code, setCode] = useState<PairingCode | null>(null);
   const [left, setLeft] = useState("");
@@ -1379,9 +1378,7 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
       const detail = (event as CustomEvent<AnnouncedCode>).detail;
       // a QR code shown alone (the relay tab's) is never shown here as digits; the PC's one pending code is now that
       // one, so the code this showed is gone
-      const next = detail.qrOnly === true ? null : detail;
-      if (shared) { shared.current.waiting.clear(); shared.current = { ...shared.current, code: next, asking: false }; }
-      setCode(next);
+      setCode(detail.qrOnly === true ? null : detail);
     };
     window.addEventListener(PAIRING_CODE_EVENT, onCode);
     return () => window.removeEventListener(PAIRING_CODE_EVENT, onCode);
@@ -1405,19 +1402,15 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
     setBusy(true);
     setError(null);
     const request = ++latestPairRequest;
-    if (shared) shared.current = { ...shared.current, asking: true };
     try {
       const fresh = await startPairing();
       // a dialog closed and opened again asked after this one: its answer is the code that pairs, not this one
       if (request !== latestPairRequest) return;
-      if (shared) askEnded(shared, fresh);
       setCode(fresh);
       announcing.current = true;
       try { announcePairingCode(fresh); } finally { announcing.current = false; }
     } catch (reason) {
       setError(failureText(reason));
-      // the views waiting on this ask get no announcement: told, one of them asks for its own code
-      if (shared) askEnded(shared, null);
     }
     finally {
       requesting.current = false;
@@ -1429,18 +1422,8 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
   useEffect(() => {
     if (!startAtOnce || started.current) return;
     started.current = true;
-    const held = shared?.current;
-    // another view's code is good, or on its way (its announcement brings it here): no second code ends it. If that ask
-    // fails, this view asks itself
-    if (held?.asking) {
-      const ask = (): void => { void pair(); };
-      held.waiting.add(ask);
-      // a view that goes before the ask ends asks nothing; one whose effect runs again waits again
-      return () => { held.waiting.delete(ask); started.current = false; };
-    }
-    if (held?.code && Date.parse(held.code.expires_at) > Date.now()) { setCode(held.code); return; }
     void pair();
-  }, [startAtOnce, shared]);
+  }, [startAtOnce]);
 
   const spaced = code ? `${code.code.slice(0, 3)} ${code.code.slice(3)}` : "";
   const qrValue = code && pairUrl ? `${pairUrl.replace(/\/$/, "")}/?pair=${code.code}` : null;
