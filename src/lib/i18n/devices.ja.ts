@@ -196,7 +196,6 @@ export const DEVICES_JA: Record<string, string> = {
   "The PCs this PC knows could not be read.": "この PC が知っている PC を読み込めませんでした。",
   "See the PCs this PC knows on this PC itself, or from a device paired with it directly.": "この PC が知っている PC の一覧は、この PC 自身か、この PC と直接ペアリングしたデバイスで表示できます。",
   "Add with a QR code": "QR コードで追加",
-  "If that account is not yours, revoke every device (More settings → Devices and access): this PC then leaves it.": "そのアカウントがあなたのものでなければ、すべてのデバイスを取り消してください（その他の設定 → デバイスとアクセス）。この PC はそのアカウントから外れます。",
   "Show a new code": "新しいコードを表示",
   "Sign in above first; then this PC can show its QR code.": "先に上でサインインしてください。その後、この PC は QR コードを表示できます。",
   "Added by {device}.": "追加したデバイス: {device}。",

@@ -196,7 +196,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "The PCs this PC knows could not be read.": "无法加载已保存的 SSH 连接列表。",
   "See the PCs this PC knows on this PC itself, or from a device paired with it directly.": "此 PC 已知的 PC 列表只能在此 PC 本机上，或在与它直接配对的设备上查看。",
   "Add with a QR code": "用二维码添加",
-  "If that account is not yours, revoke every device (More settings → Devices and access): this PC then leaves it.": "如果该账户不是你的，请撤销所有设备（更多设置 → 设备与访问）：这台电脑随即退出该账户。",
   "Show a new code": "显示新代码",
   "Sign in above first; then this PC can show its QR code.": "请先在上方登录，然后这台电脑才能显示二维码。",
   "Added by {device}.": "添加它的设备：{device}。",

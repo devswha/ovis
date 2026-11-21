@@ -808,20 +808,24 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     </>
   );
   const startFailure = switchError === null && startError !== null && <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: startError })}</p>;
+  const pcIn = pcAccount !== undefined ? pcAccount : joinBySignIn ? (signedIn ? accountId : null) : null;
+  // a sign-in to another account than the one this PC is in (a way in that account does not have makes a new account)
+  // is no sign-in to this PC: the tab stays its sign-in buttons, so the right one can be picked (owner #25)
+  const inThisAccount = signedIn && !(accountId !== null && pcIn !== null && accountId !== pcIn);
   const mine = signedIn ? accountId : null;
-  const pcIn = pcAccount !== undefined ? pcAccount : joinBySignIn ? mine : null;
-  const bare = signedIn && pcIn !== null && relay.status?.phase === "online";
+  const bare = inThisAccount && pcIn !== null && relay.status?.phase === "online";
   const qr = (ownSwitch: boolean) => (
     <AccountQr relay={relay} phone={phone} active={active} signedIn={signedIn} accountId={mine} provider={provider} serverId={machines.find((machine) => machine.kind === "local")?.server_id ?? null}
       pcAccount={pcIn} onPcAccount={setPcAccount} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll}
       first={bare} relayControls={ownSwitch ? <>{relaySwitch}{switchFailure}{startFailure}</> : null} />
   );
-  // signed out the tab is its sign-in buttons: the relay's own switch stays in More settings
-  if (!signedIn) return (
+  // signed out the tab is its sign-in buttons: the relay's own switch stays in More settings. Keyed by the account, so
+  // a sign-in that ended in another account shows the buttons again
+  if (!inThisAccount) return (
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
-        <RelaySignIn service={account.service} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(on && pcIn !== null && session.account === pcIn); }} />
+        <RelaySignIn key={accountId ?? ""} service={account.service} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(on && pcIn !== null && session.account === pcIn); }} />
       </div>
       {qr(false)}
     </>
@@ -1277,7 +1281,8 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
   const checkingLine = checking.length > 0 && <p className="settings-description" data-testid="connect-account-checking">{t("Checking a device that just paired: {devices}.", { devices: names(checking) })}</p>;
   const revokeEvery = <button type="button" className="btn btn-danger" onClick={() => setConfirming(true)}>{t("Not me: revoke every device")}</button>;
   const relayState = relay.status !== null && !(connecting && relayControls !== null) && <p className="settings-hint" role="status">{statusText(t, relay.status)}</p>;
-  const standingLabel = standing && signedIn;
+  // standing in another account than this page's, nothing is said: the tab above is its sign-in buttons (owner #25)
+  const standingLabel = standing && signedIn && here !== "other";
   const phoneLink = standing && online && serverId !== null && relay.status !== null ? signInLink(relay.status.app, serverId, here === "mine" ? provider : null) : null;
   const labelled = standing ? standingLabel : told || shown;
   return (
@@ -1286,7 +1291,6 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
         <>
           {standingLabel && <p ref={heading} className="settings-label" id={id} tabIndex={-1}>{here === "mine" ? t("This PC is in your account.") : t("Sign in to this PC's account.")}</p>}
           {here === "mine" && enrolling && <p className="settings-description connect-account-qr-warning" role="status">{t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")}</p>}
-          {here === "other" && <p className="settings-description connect-account-qr-warning">{t("If that account is not yours, revoke every device (More settings → Devices and access): this PC then leaves it.")}</p>}
           {!online && <>{relayControls}{relayState}</>}
           {phoneLink !== null && <PhoneScan><QrCode value={phoneLink} label={t("QR code that opens this PC in the Ovis app")} size={132} /></PhoneScan>}
         </>

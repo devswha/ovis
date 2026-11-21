@@ -469,8 +469,11 @@ describe("the relay tab's Sign in in the desktop app", () => {
   let fake: FakeAccountService;
   let opened: ReturnType<typeof Promise.withResolvers<string>>;
   let answer: ReturnType<typeof Promise.withResolvers<string>>;
+  /** the account this PC says it is in (/api/account/status) */
+  let pcAccountId: string | null;
 
   beforeEach(() => {
+    pcAccountId = null;
     fake = new FakeAccountService();
     fake.offerLinkPage(["google"]);
     opened = Promise.withResolvers<string>();
@@ -496,6 +499,7 @@ describe("the relay tab's Sign in in the desktop app", () => {
     } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7317");
+      if (url.pathname === "/api/account/status") return Response.json({ account: pcAccountId, unlinked: [] });
       if (url.origin !== SERVICE) return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
       return fake.fetch(input, init);
     };
@@ -519,7 +523,7 @@ describe("the relay tab's Sign in in the desktop app", () => {
     const button = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === label)[0]!;
     await act(async () => { button.props.onClick(); });
   };
-  const mount = async (onSignedIn: () => void = () => undefined) => {
+  const mount = async (onSignedIn: (home: boolean) => void = () => undefined) => {
     const account = { service: SERVICE, onOpen: () => undefined, onSignedIn };
     await act(async () => {
       renderer = create(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>,
@@ -537,6 +541,40 @@ describe("the relay tab's Sign in in the desktop app", () => {
     answer.resolve(await returned(await opened.promise));
     await act(async () => { await signedIn.promise; });
     expect((await indexedAccountStore.get("session"))?.provider).toBe("google");
+  });
+
+  // owner #25 (packaged Mac app): signing in again on a PC that is already in that account goes to the main screen
+  it("a sign-in through the app's loopback on a PC already in that account sends the page home", async () => {
+    pcAccountId = "acct_mine";
+    fake.signInAs("google", "acct_mine");
+    const home = Promise.withResolvers<boolean>();
+    await mount((goesHome) => home.resolve(goesHome));
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    await press("Continue with Google");
+    answer.resolve(await returned(await opened.promise));
+    expect(await home.promise).toBe(true);
+  });
+
+  // owner #25: a sign-in that lands in another account (an identity the PC's account does not have makes a new one)
+  // stays on the tab with the sign-in buttons alone, so the right one can be picked
+  it("a sign-in through the app's loopback that lands in another account stays, with the sign-in buttons alone", async () => {
+    pcAccountId = "acct_mine";
+    fake.signInAs("google", "acct_new");
+    const home = Promise.withResolvers<boolean>();
+    const account = { service: SERVICE, onOpen: () => undefined, onSignedIn: (goesHome: boolean) => home.resolve(goesHome) };
+    const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={signedIn ? "acct_new" : null} joinBySignIn={false} account={account} phone={false} machines={[{ id: "local", kind: "local", name: "Mac", server_id: "srv_mac" } as never]} pcAddFromAccount onConnectMachine={() => {}} /></SettingsProvider>;
+    await act(async () => { renderer = create(tab(false), { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) }); });
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    await press("Continue with Google");
+    answer.resolve(await returned(await opened.promise));
+    expect(await home.promise).toBe(false);
+    await act(async () => { renderer!.update(tab(true)); });
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    expect(buttons()).toContain("Continue with Google");
+    expect(buttons()).not.toContain("Add from account");
+    expect(text(renderer!.root)).not.toContain("Sign in to this PC's account.");
+    expect(text(renderer!.root)).not.toContain("If that account is not yours");
+    expect(text(renderer!.root)).not.toContain("This PC is in an account.");
   });
 
   it("keeps no sign-in that comes back after Cancel", async () => {

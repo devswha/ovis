@@ -196,7 +196,6 @@ export const DEVICES_KO: Record<string, string> = {
   "The PCs this PC knows could not be read.": "저장된 SSH 연결 목록을 불러오지 못했습니다.",
   "See the PCs this PC knows on this PC itself, or from a device paired with it directly.": "이 PC가 아는 PC 목록은 이 PC에서 직접, 또는 이 PC와 직접 페어링한 기기에서 볼 수 있습니다.",
   "Add with a QR code": "QR 코드로 추가",
-  "If that account is not yours, revoke every device (More settings → Devices and access): this PC then leaves it.": "그 계정이 내 계정이 아니라면 모든 기기를 폐기하세요(설정 더 보기 → 기기와 접속). 그러면 이 PC가 그 계정에서 나옵니다.",
   "Show a new code": "새 코드 표시",
   "Sign in above first; then this PC can show its QR code.": "먼저 위에서 로그인하세요. 그러면 이 PC가 QR 코드를 표시할 수 있습니다.",
   "Added by {device}.": "추가한 기기: {device}.",

@@ -134,7 +134,7 @@ async function accountWindow(browser: Browser, pageErrors: string[], relation: "
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
   await context.route("**/api/access", (route) => route.fulfill({ json: { port: 0, tailscale: { state: "missing", dns_name: null, serving_url: null, serve_command: null, serve_url: null } } }));
   // a signed-out window signs in on the link page, whose code this script approves at the fake service
-  if (relation === "signed-out") await context.route("**/api/health?scope=bridge", async (route) => {
+  if (relation !== "mine") await context.route("**/api/health?scope=bridge", async (route) => {
     const response = await route.fetch();
     const { own_window: _own, ...body } = await response.json() as Record<string, unknown>;
     await route.fulfill({ response, json: body });
@@ -240,7 +240,7 @@ try {
   for (const relation of ["other", "signed-out"] as const) {
     const { page } = await accountWindow(browser, pageErrors, relation);
     // a window signed out of this PC's account gets the sign-in alone, not the Add from account prompt
-    const tab = await openRelayTab(page, relation === "signed-out" ? "Sign in to Ovis" : undefined);
+    const tab = await openRelayTab(page, "Sign in to Ovis");
     if (relation === "signed-out") {
       // the sign-in alone: no line above it, no Add from account prompt beside it
       assert.equal(await tab.getByTestId("connect-signin").locator("p.settings-description, p.settings-hint").count(), 0);
@@ -261,10 +261,12 @@ try {
       await page.locator(".settings-dialog").waitFor({ state: "detached" });
       await shot(page, "signed-in-home");
     } else {
-      await tab.getByText("Sign in to this PC's account.", { exact: true }).waitFor();
-      await tab.getByRole("button", { name: "Add from account", exact: true }).click();
-      await page.locator(".connect-phone-dialog").waitFor({ state: "detached" });
-      await page.locator('.settings-dialog [data-section="account"] button:focus').waitFor();
+      // signed in to another account than this PC's (owner #25): the sign-in buttons alone, so the right one can be picked;
+      // no Add from account, no line about the account, no paragraph to act on
+      await tab.getByTestId("connect-signin").getByRole("button", { name: "Sign in to Ovis", exact: true }).waitFor();
+      assert.equal(await tab.getByRole("button", { name: "Add from account", exact: true }).count(), 0);
+      assert.equal(await tab.getByText(/Sign in to this PC's account\.|If that account is not yours|This PC is in an account\./).count(), 0);
+      await shot(page, "other-account");
     }
   }
 

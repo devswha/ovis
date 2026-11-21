@@ -1331,12 +1331,17 @@ describe("the relay tab's QR code behind a press", () => {
     expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Add from account")).toHaveLength(0);
   });
 
-  it("signed in to another account, a bound PC asks to add PCs from its account, and lists none", async () => {
+  // owner #25: a sign-in that ended in another account than the PC's is no sign-in to this PC: the tab is its sign-in
+  // buttons and the phone's QR code, with no prompt, no line about the account and no paragraph to act on
+  it("signed in to another account, a bound PC shows the sign-in buttons alone and the phone's QR code", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ pcAdd: true, accountId: "acct_mine_0000000000000" });
-    expect(text(renderer!.root)).toContain("This PC is in an account. Add PCs from your account.");
-    expect(text(renderer!.root)).not.toContain("Your account's PCs");
-    expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Add from account")).toHaveLength(1);
+    expect(text(renderer!.root)).not.toContain("This PC is in an account. Add PCs from your account.");
+    expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Add from account")).toHaveLength(0);
+    expect(text(renderer!.root)).not.toContain("Sign in to this PC's account.");
+    expect(text(renderer!.root)).not.toContain("If that account is not yours");
+    expect(renderer!.root.findAllByProps({ "data-testid": "connect-signin" })).toHaveLength(1);
+    expect(qrCodes().map((qr) => qr.props.value)).toEqual([signInLink(ONLINE.app, SERVER_ID, null)]);
   });
   const minted = () => requests.filter((path) => path === "/api/relay/code" || path === "/api/relay/offer" || path === "/api/devices/pair/start");
   it("for a PC in this page's account, shows the QR code that opens this PC in the Ovis app with this page's sign-in, and asks the PC for no code", async () => {
@@ -1468,7 +1473,7 @@ describe("the relay tab's QR code behind a press", () => {
   // instead the QR code that opens its page in the Ovis app (signInLink), which carries no code
   for (const [name, options, whose, heading] of [
     ["this browser signed in to the PC's account", { signedIn: true, joinBySignIn: true }, "mine", "This PC is in your account."],
-    ["this browser signed in to another account", { signedIn: true, accountId: "acct_mine_0000000000000" }, "other", "Sign in to this PC's account."],
+    ["this browser signed in to another account", { signedIn: true, accountId: "acct_mine_0000000000000" }, "other", null],
     ["this browser signed out", { signedIn: false }, "unknown", null],
   ] as const) {
     it(`on a PC already in an account, ${name}: only the QR code that opens it in the Ovis app, no button and no code asked of the PC`, async () => {
@@ -1480,7 +1485,9 @@ describe("the relay tab's QR code behind a press", () => {
       else expect(text(renderer!.root)).not.toContain("This PC is in an Ovis account.");
       expect(text(renderer!.root)).not.toContain("acct_");
       if (whose === "unknown") expect(text(section())).toBe("Scan it with the Ovis app on your phone");
-      expect(text(section()).includes("If that account is not yours, revoke every device (More settings → Devices and access)")).toBe(whose === "other");
+      // owner #25: no paragraph the person cannot act on, whoever's account it is
+      expect(text(section())).not.toContain("If that account is not yours");
+      expect(text(renderer!.root)).not.toContain("Sign in to this PC's account.");
       expect(text(section())).not.toContain("Add with a QR code");
       expect(text(renderer!.root)).not.toContain("On the new device, sign in to the same Ovis account.");
       expect(buttons()).toEqual([]);
