@@ -184,9 +184,22 @@ describe("Manage account's devices and PCs", () => {
     expect(sheets(root)).toHaveLength(1);
   });
 
-  it("names the PCs that kept this device in the sheet after a partial leave, once the sign-in is gone", async () => {
-    const root = await leaveFromSheet(async () => ({ left: true, message: "These PCs still have it, so revoke it on them: Desk" }));
+  it("names the PCs that kept this device in the sheet after a partial leave whose sign-in went before its outcome came", async () => {
+    // as leave.ts does: the stored sign-in is cleared (the hook reads null) while the leave still names the PCs
+    const outcome = Promise.withResolvers<{ left: boolean; message: string | null }>();
+    await act(async () => {
+      renderer = create(group(hosted(() => outcome.promise)), {
+        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
+      });
+    });
+    const root = renderer!.root;
+    await act(async () => { action(root, "manage-account").props.onClick(); });
+    await act(async () => { action(root, "leave-account").props.onClick(); });
+    let pressed: Promise<void> | undefined;
+    await act(async () => { pressed = press(root, "Disconnect"); });
     await act(async () => { renderer!.update(group(null)); });
+    expect(sheets(root)).toHaveLength(1);
+    await act(async () => { outcome.resolve({ left: true, message: "These PCs still have it, so revoke it on them: Desk" }); await pressed; });
     expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
     expect(sheets(root)).toHaveLength(1);
     expect(textOf(sheets(root)[0]!.find((node) => node.props.role === "alert"))).toBe("These PCs still have it, so revoke it on them: Desk");

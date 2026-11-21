@@ -78,19 +78,24 @@ export function ManageAccountSheet({ onClose, children }: { onClose: () => void;
  * Manage account for the hosted sign-in: the account's devices and PCs, then Delete account, asked twice. `pcHere`:
  * a PC is open on this page to read the devices from (the start screen has none, so only this device's own row shows).
  * A leave that left PCs keeping this device names them here, after the sign-in it left is gone; with neither, it closes.
+ * The leave clears the stored sign-in before it has named them, so the sheet waits for its outcome before closing.
  */
 function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: HostedSignIn | null; watching: boolean; pcHere: boolean; onClose: () => void }) {
   const t = useT();
   const [deleting, setDeleting] = useState<"asked" | "out" | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [leaveNote, setLeaveNote] = useState<string | null>(null);
-  const gone = signIn === null && leaveNote === null;
+  const [leaving, setLeaving] = useState(false);
+  const gone = signIn === null && leaveNote === null && !leaving;
   useEffect(() => { if (gone) onClose(); }, [gone, onClose]);
   if (gone) return null;
   const leave = async (from: HostedSignIn): Promise<void> => {
-    const { left, message } = await from.leave();
-    if (!left && message !== null) throw new Error(message);
-    if (message === null) onClose(); else setLeaveNote(message);
+    setLeaving(true);
+    try {
+      const { left, message } = await from.leave();
+      if (!left && message !== null) throw new Error(message);
+      if (message === null) onClose(); else setLeaveNote(message);
+    } finally { setLeaving(false); }
   };
   const remove = (from: HostedSignIn): void => {
     if (deleting !== "asked") { setDeleting("asked"); setDeleteError(null); return; }
