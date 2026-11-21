@@ -6,7 +6,7 @@ no account and no port open but SSH. Linux and macOS computers; Android for now 
 
 ## Add it
 
-1. On **Add a PC** (after signing in, or **Start without signing in**), tap **SSH**.
+1. On the **Direct** tab, type `user@host` in **Address or SSH** and tap **Connect**: the app's SSH screen opens with it filled in.
 2. Fill in the address (a host name or an IP your phone reaches: on the same Wi-Fi, or over
    Tailscale), the SSH port and your user name there.
 3. Choose how the phone signs in:

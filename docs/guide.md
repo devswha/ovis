@@ -519,7 +519,7 @@ A phone reaches the app on this PC in one of two ways. The **Ovis relay** needs 
 
 On an iPhone or iPad the app needs iOS 16 or later (Safari 16 or later on a Mac), and push alerts need iOS 16.4 or later.
 
-**The iPhone and Android apps open on the sign-in.** One button for each sign-in the account service offers (GitHub, Google, Apple), with **Start without signing in** below them. There is nothing to create first: the first sign-in makes your account ([Through an account](#through-an-account)). **Start without signing in** leads to **Add a PC**: **Scan a QR code** (the one on the PC's screen), **Enter an address** (the PC's Tailscale or Wi-Fi address) or, where the app can, **SSH**, with the PCs opened before under them.
+**The iPhone and Android apps open on three tabs: Ovis relay, Tailscale and Direct.** **Ovis relay** holds the sign-in, one button for each sign-in the account service offers (GitHub, Google, Apple). There is nothing to create first: the first sign-in makes your account ([Through an account](#through-an-account)). **Tailscale** takes the PC's Tailscale address and **Direct** its Wi-Fi address or, in the Android app, SSH's `user@host`; both offer **Scan a QR code** (the one on the PC's screen) where the app can scan.
 
 ### Through the Ovis relay
 
