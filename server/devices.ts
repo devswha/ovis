@@ -499,6 +499,7 @@ function describe(error: unknown): string {
 export const PENDING_PER_CODE = 5;
 /** How many tailnet nodes a row keeps: a phone's node changes only when it is set up again. */
 const TAILNET_NODES_PER_ROW = 8;
+const tailnetNodesOf = (rows: readonly StoredDevice[]): string[] => [...new Set(rows.flatMap((d) => d.tailnet_nodes ?? []))];
 
 export class DeviceStore {
   private devices: StoredDevice[] = [];
@@ -1217,7 +1218,7 @@ export class DeviceStore {
       const appended = safety.append({ record, got, asof });
       if (appended.outcome !== "applied") throw new Error(`Block log append did not apply: ${appended.outcome}`);
       receipt = appended;
-      evidence.addRemoval(record.target, record.account, { id: record.id, at: new Date().toISOString(), records: [record], drop: rowDrop(this.joinedRows?.rowsByKey(record.target)[0], "block") });
+      evidence.addRemoval(record.target, record.account, { id: record.id, at: new Date().toISOString(), records: [record], drop: rowDrop(this.joinedRows?.rowsByKey(record.target)[0], "block"), tailnetNodes: tailnetNodesOf(targets) });
       this.refreshTombstones();
     }, { genFirst: true });
     if (denied !== null) {
@@ -2812,7 +2813,11 @@ export class DeviceStore {
   }
 
   /** The nodes the owner's tailnet requests are checked against (tailnet-nodes.ts); none on a store that has none. */
-  attachTailnetNodes(nodes: TailnetNodes): void { this.tailnet = nodes; }
+  attachTailnetNodes(nodes: TailnetNodes): void {
+    this.tailnet = nodes;
+    // the nodes a durable denial names stay out across a restart, whether or not their own block landed
+    if (this.evidence !== null && this.evidence.strict === null) nodes.takeDenials(this.evidence.tailnetDenials());
+  }
   private tailnet: TailnetNodes | null = null;
 
   /** A row's credential arrived from the tailnet node `nodeId`: kept on the row, at its first use and each change. */
@@ -2859,13 +2864,13 @@ export class DeviceStore {
   }
 
   private keepOutNodesOf(rows: readonly StoredDevice[]): void {
-    const ids = [...new Set(rows.flatMap((d) => d.tailnet_nodes ?? []))];
-    this.keepOutTailnetNodes(ids.map((id) => ({ id })), rows[0]?.id ?? null);
+    this.keepOutTailnetNodes(tailnetNodesOf(rows).map((id) => ({ id })), rows[0]?.id ?? null);
   }
 
   /**
    * An account record's drop (a block, Not me included, or a member's remove) keeps the dropped rows' nodes out with it.
-   * Its deny is on disk already, so a node block that fails does not undo the drop: the list fails closed instead.
+   * Its deny already carries those nodes (removal evidence, `tailnet_nodes`), so a node block that fails here leaves the
+   * list closed for this run, and the next start blocks them from the deny (attachTailnetNodes).
    */
   private keepOutNodesOfRecordDrop(rows: readonly StoredDevice[]): void {
     try { this.keepOutNodesOf(rows); }
@@ -3394,7 +3399,7 @@ export class DeviceStore {
       let added = false;
       const denied = this.deny([key], () => {
         const drop = this.account() === account ? rowDrop(this.joinedRows?.rowsByKey(key)[0], "remove") : undefined;
-        added = this.evidence!.addRemoval(key, account, { id: record.id, at: new Date(now).toISOString(), drop, ...(record.signed ? { records: [record.signed] } : {}) });
+        added = this.evidence!.addRemoval(key, account, { id: record.id, at: new Date(now).toISOString(), drop, ...(record.signed ? { records: [record.signed] } : {}), tailnetNodes: tailnetNodesOf(this.devices.filter((d) => d.relay_public_key === key)) });
         this.refreshTombstones();
       });
       this.dropWaiting([key]);
@@ -3416,7 +3421,8 @@ export class DeviceStore {
     const newer = (d: StoredDevice) => d.relay_public_key === key && pairedHere(d) && this.later(d.created_at, record.issuedAt);
     if (this.devices.some(newer)) {
       const gone = this.devices.filter((d) => d.relay_public_key === key && !newer(d));
-      this.keepOutNodesOfRecordDrop(gone);
+      // no denial goes to disk before this drop: its nodes' block does, and one that fails drops nothing
+      this.keepOutNodesOf(gone);
       if (gone.length) this.drop(gone, record.by);
       return gone.length > 0;
     }

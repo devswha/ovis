@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import { SafetyLog } from "./account/safety-log.ts";
 import { bounded } from "./relay/test-helpers.ts";
 import { DeviceStore } from "./devices.ts";
 import { createServer } from "./index.ts";
+import { privateStateFs } from "./private-state.ts";
 import { handleTailnetNodeRequest, mergeTailnetNodes, TAILNET_NODES_FILE, tailnetNodeGate, TailnetNodes } from "./tailnet-nodes.ts";
 import { parseWhois, TailnetIdentitySource } from "./tailscale.ts";
 
@@ -230,6 +231,49 @@ describe("the tailnet node list", () => {
       expect([next.access, ended]).toEqual([{ level: "none", reason: "tailnet_blocked" }, [how]]);
       expect(journal.entries().filter((entry) => entry.kind === "tailnet").map(({ how: what, row }) => [what, row])).toEqual([["block", target.id]]);
     }
+  });
+
+  it("Not me with the node-list write failing still keeps the node out after a restart; a later Allow stands", async () => {
+    const dir = stateDir("record-restart");
+    const open = () => {
+      const log = SafetyLog.open(dir);
+      const store = new DeviceStore(dir, null, null, { safety: log, pc: PcAccountState.open(dir), removals: RemovalEvidence.open(dir, log), journal: DeviceJournal.open(dir, () => log.ensureFile()) });
+      const nodes = new TailnetNodes(dir);
+      store.attachTailnetNodes(nodes);
+      return { store, nodes };
+    };
+    const gate = (nodes: TailnetNodes, store: DeviceStore, address: string) => tailnetNodeGate({ level: "full", via: "tailscale", role: "drive", login: OWNER }, {
+      address, owner: OWNER, nodes, rows: store, whois: async (at) => parseWhois(whoisJson(at)),
+    }).then(({ access }) => access);
+    const first = open();
+    const key = async () => { const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]); return { keys, spki: await exportAccountKey(keys.publicKey) }; };
+    const member = async () => {
+      const k = await key();
+      const id = first.store.pairRelay(first.store.startPairing().code, "Phone", k.spki)!.device.id;
+      first.store.linkAccountKey(id, k.spki, k.spki, "acct_1");
+      return { ...k, id };
+    };
+    const signer = await member();
+    const target = await member();
+    first.store.noteTailnetNode(target.id, "nPhone1CNTRL");
+    const record = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 9, signer_no: 1, signer: signer.spki, signed_at: new Date().toISOString(), nonce: newRecordId() }, signer.keys.privateKey) as BlockRecord;
+    const rename = privateStateFs.renameSync;
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation(((from: string, to: string) => {
+      if (String(to).endsWith(TAILNET_NODES_FILE)) throw new Error("simulated EIO");
+      return rename(from, to);
+    }) as typeof rename);
+    try { expect(await first.store.applyBlock(record, "session")).toMatchObject({ outcome: "applied" }); }
+    finally { failing.mockRestore(); }
+    expect([first.store.has(target.id), first.nodes.problem !== null, await gate(first.nodes, first.store, "100.64.0.9")]).toEqual([false, true, { level: "none", reason: "tailnet_blocked" }]);
+
+    const restarted = open();
+    expect(restarted.nodes.problem).toBeNull();
+    expect(await gate(restarted.nodes, restarted.store, "100.64.0.9")).toEqual({ level: "none", reason: "tailnet_blocked" });
+    expect((await gate(restarted.nodes, restarted.store, "100.64.0.10")).level).toBe("full");
+
+    restarted.store.allowTailnetNode("nPhone1CNTRL");
+    const again = open();
+    expect((await gate(again.nodes, again.store, "100.64.0.9")).level).toBe("full");
   });
 
   it("journals a removal's block before the row goes, and an Allow", () => {

@@ -120,6 +120,25 @@ export class TailnetNodes {
 
   get problem(): string | null { return this.failure; }
 
+  /**
+   * The nodes the durable denials name (removal evidence: an account record's drop carries its rows' nodes), taken in
+   * at start: a node block that did not land with its drop is written now. An Allow written after a denial stands.
+   */
+  takeDenials(denials: readonly { readonly id: string; readonly at: string }[]): void {
+    if (this.failure !== null) return;
+    const latest = new Map<string, string>();
+    for (const { id, at } of denials) if (STABLE_NODE_ID.test(id) && time(at) >= time(latest.get(id) ?? null)) latest.set(id, at);
+    const due = [...latest].filter(([id, at]) => {
+      const kept = this.nodes.find((node) => node.id === id);
+      return kept === undefined || (!kept.blocked && time(kept.changed_at) < time(at));
+    });
+    if (due.length === 0) return;
+    const next = this.nodes.map((own) => { const at = due.find(([id]) => id === own.id)?.[1]; return at === undefined ? own : { ...own, blocked: true, changed_at: at }; });
+    for (const [id, at] of due) if (!next.some((own) => own.id === id)) next.push({ id, hostname: id, login: null, seen_at: null, blocked: true, changed_at: at });
+    try { this.write(trimmed(next)); }
+    catch (error) { this.failClosed(`The Tailscale devices a removal keeps out could not be written (${error instanceof Error ? error.message : String(error)}): no Tailscale login is let in until this PC restarts.`); }
+  }
+
   /** Every node is kept out from now on, and every live connection of one ends: a block that should stand did not land. */
   failClosed(reason: string): void {
     this.failure ??= reason;
