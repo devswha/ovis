@@ -226,6 +226,16 @@ describe("translate", () => {
     expect(translate("en", "{a} and {b}", { a: 1 })).toBe("1 and {b}");
   });
 
+  // a device's name (Android · Chrome, the Ovis app on iPhone) can end in any letter: its banner's Korean takes no
+  // 을(를)/이(가) after it, and says the connection was cut
+  it("the device-removed banners read in Korean without a doubled particle after the name", () => {
+    for (const key of ["{name} was removed from this PC at {time}.", "{name} was revoked on this PC at {time}.", "{name} was removed from this PC at {time}, by {by}."]) {
+      const line = translate("ko", key, { name: "Android · Chrome", time: "오전 05:58", by: "Desk" });
+      expect(line).not.toMatch(/\(를\)|\(을\)|\(가\)|\(이\)/);
+      expect(line).toContain("Android · Chrome의 연결");
+    }
+  });
+
   it("looks a key with a |context up as it is, and shows English or a missing entry as the part before the |", () => {
     expect(translate("en", "Ovis relay|relay switch")).toBe("Ovis relay");
     expect(translate("ko", "Ovis relay|relay switch")).toBe(KO["Ovis relay|relay switch"]!);
