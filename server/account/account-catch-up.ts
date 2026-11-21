@@ -62,7 +62,8 @@ export class AccountCatchUp {
       if (accountError !== null) throw new SnapshotWriteRefused(accountError);
       store?.expire();
       this.releases?.endAll();
-      this.gate?.wholeRead(this.devices.list(null).filter(row => !this.devices.admits(this.devices.relayKeyOf(row.id))).map(row => row.id));
+      this.gate?.wholeRead(this.devices.list(null).filter(row =>
+        !this.devices.admits(this.devices.relayKeyOf(row.id), undefined, { retainId: row.id })).map(row => row.id));
       this.options.pc?.setServiceStep2Off(false);
     } catch (error) {
       // A list write may already have changed some rows. They cannot serve on a partial read.
