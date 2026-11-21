@@ -101,6 +101,14 @@ describe("buildSnapshot", () => {
     expect(snapshot.tabs.map((t) => [t.tab_id, t.label])).toEqual([["s1t1", "1"], ["s1t2", "fix login"], ["ovis-tb", "3"]]);
   });
 
+  it("keeps an agent's name given through Ovis as a tab's name, with or without the app", () => {
+    const claude = (address: string, tab: string, name: string) => terminal(address, { status: { app: "claude-code", state: "idle" }, labels: { "herdr.space": "s1", "herdr.tab": tab, "ovis.tab": name } });
+    const given = [claude("t1", "ovis-ta", "Claude Code"), claude("t2", "ovis-tb", "claude")];
+    expect(buildSnapshot(given, null, "0.1.17").tabs.map((t) => t.label)).toEqual(["Claude Code", "claude"]);
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [{ id: "s1t1", name: "", root: block("t3") }] }] };
+    expect(buildSnapshot([terminal("t3"), ...given], layout, "0.1.14").tabs.map((t) => t.label)).toEqual(["1", "Claude Code", "claude"]);
+  });
+
   const named = (cwd: string, folder?: string) => buildSnapshot([terminal("t1", { cwd })], {
     spaces: [{ id: "s1", name: "", ...(folder === undefined ? {} : { folder }), tabs: [{ id: "s1t1", name: "", root: block("t1") }] }],
   }, "0.1.17").workspaces[0]!.label;

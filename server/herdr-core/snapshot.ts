@@ -202,7 +202,8 @@ function basename(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-interface ShownTab { id: string; label: string; terminals: HcTerminal[]; root: LayoutNode | null; kept: boolean }
+/** `appNamed`: the label is the Herdr app's name for the tab (its layout's, or a `where` label's), not one given through Ovis. */
+interface ShownTab { id: string; label: string; terminals: HcTerminal[]; root: LayoutNode | null; kept: boolean; appNamed?: boolean }
 
 const nameKey = (name: string): string => name.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 
@@ -210,7 +211,8 @@ const nameKey = (name: string): string => name.toLowerCase().replace(/[^\p{L}\p{
  * The Herdr app names a tab after its program until someone names it, and such a tab shows its agent's
  * session title (herdr-app defaults/mods/tabs/main.js): no name of its own here either. The app's program
  * names are its own ("Copilot", "oh-my-pi"), so the agent's id and catalog name are read without case
- * or punctuation.
+ * or punctuation. Only the app's names: one given through Ovis (`ovis.tab`) is a name someone gave, an
+ * agent's name typed as one included.
  */
 function namedAfterAgent(name: string, terminals: readonly HcTerminal[]): boolean {
   return terminals.some((terminal) => {
@@ -259,11 +261,11 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
       const held: HcTerminal[] = [];
       const tree = appTree(tab["root"], take, held);
       const tabName = tab["name"];
-      if (held.length === 0) { group.tabs.push({ id: tab["id"], label: typeof tabName === "string" ? tabName : "", terminals: [], root: null, kept: false }); continue; }
+      if (held.length === 0) { group.tabs.push({ id: tab["id"], label: typeof tabName === "string" ? tabName : "", terminals: [], root: null, kept: false, appNamed: true }); continue; }
       const first = held[0]!;
       const where = whereOf(first);
-      const name = typeof tabName === "string" && tabName ? tabName : where?.[1] || first.labels?.[TAB_NAME_LABEL] || "";
-      group.tabs.push({ id: tab["id"], label: namedAfterAgent(name, held) ? "" : name, terminals: held, root: tree && resolve(tree, LAYOUT_AREA), kept: false });
+      const appName = typeof tabName === "string" && tabName ? tabName : where?.[1] || "";
+      group.tabs.push({ id: tab["id"], label: appName || first.labels?.[TAB_NAME_LABEL] || "", terminals: held, root: tree && resolve(tree, LAYOUT_AREA), kept: false, appNamed: appName !== "" });
       if (!group.label) {
         const spaceName = space["name"];
         const folder = space["folder"];
@@ -295,19 +297,19 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
     let tabId = labeled && !(ids.has(labeled) && !group.tabs.some((candidate) => candidate.id === labeled)) ? labeled : `${spaceId}:${terminal.address}`;
     for (let n = 2; tabId !== labeled && ids.has(tabId) && !group.tabs.some((candidate) => candidate.id === tabId); n++) tabId = `${spaceId}:${terminal.address}:${n}`;
     const tab = group.tabs.find((candidate) => candidate.id === tabId);
-    if (tab) {
-      const name = tab.label || where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "";
-      tab.label = namedAfterAgent(name, [...tab.terminals, terminal]) ? "" : name;
+    if (tab && !tab.label) {
+      tab.label = where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "";
+      tab.appNamed = Boolean(where?.[1]);
     }
     if (tab) {
       tab.root = besides(tab.root, tab.terminals.length, terminal.address);
       tab.terminals.push(terminal);
     } else {
       ids.add(tabId);
-      const name = where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "";
-      group.tabs.push({ id: tabId, label: namedAfterAgent(name, [terminal]) ? "" : name, terminals: [terminal], root: null, kept: own && tabId === labeled });
+      group.tabs.push({ id: tabId, label: where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "", terminals: [terminal], root: null, kept: own && tabId === labeled, appNamed: Boolean(where?.[1]) });
     }
   }
+  for (const group of result) for (const tab of group.tabs) if (tab.appNamed && namedAfterAgent(tab.label, tab.terminals)) tab.label = "";
   const tabOf = new Map<string, { group: Group; tab: Group["tabs"][number] }>();
   for (const group of result) for (const tab of group.tabs) for (const terminal of tab.terminals) tabOf.set(terminal.address, { group, tab });
   const under = new Map<Group["tabs"][number], Group["tabs"][number]>();
