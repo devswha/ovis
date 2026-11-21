@@ -378,8 +378,9 @@ run one each. Rebuild the
 image with the toolchain (`--build`) before you add the label. The job goes to these slots only once the
 repository variable `CI_RUST_SELF_HOSTED` is `true`; unset (the default), empty or `false` keeps it on
 `ubuntu-24.04` as before the slots existed. Any other value fails Detect changes in the runs that read it,
-a same-repository pull request or a push to a branch; forks, `hosted_only` (the Release's) and manual runs
-stay hosted without reading it, so a typo never stops a release:
+a same-repository pull request or a push to a branch; forks, `hosted_only` (the Release's), manual runs and
+every run while `CI_SELF_HOSTED_LABELS` names the hosted image stay hosted without reading it, so a typo
+never stops a release:
 
 ```sh
 gh variable set CI_RUST_SELF_HOSTED --body true   # the Rust job on the Rust slots
@@ -421,7 +422,7 @@ changes then sends the job hosted:
 
 ```sh
 # after the heartbeat has aged (five minutes)
-gh run cancel <run id> && gh run watch <run id> >/dev/null; gh run rerun <run id>
+gh run cancel <run id> && gh run watch <run id> >/dev/null && gh run rerun <run id>
 ```
 
 On main a push run left so holds the next push's run behind it (one concurrency group), and a release
