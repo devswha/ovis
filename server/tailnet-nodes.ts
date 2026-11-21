@@ -14,7 +14,7 @@
  * digits to compare. Allow takes the node off the list (journalled); Decline keeps it. A node never seen before gets
  * in as it always did: keeping that one out is the tailnet admin's job.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { TAILNET_NODE_ROUTES, type TailnetNodePrompt, type TailnetNodeView, type TailnetNodesAnswer } from "../shared/tailnet-nodes.ts";
 import type { Access } from "./access.ts";
@@ -24,6 +24,8 @@ import { privateStateRefusal, writePrivateState } from "./private-state.ts";
 import { STABLE_NODE_ID, type TailnetNode } from "./tailscale.ts";
 
 export const TAILNET_NODES_FILE = "tailnet-nodes.json";
+/** the blocks of removals made while the list could not be read, taken in at the next start that can read it */
+export const TAILNET_PENDING_FILE = "tailnet-nodes.pending.json";
 /** how many nodes the file keeps: every blocked one, and the rest by when they were last seen */
 export const TAILNET_NODES_MAX = 128;
 /** how long a node's ask waits on the card before another blocked node may take its place */
@@ -59,6 +61,18 @@ function readNodes(path: string): StoredTailnetNode[] | null {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : null;
   }
   return isJsonObject(parsed) && parsed.v === 1 && Array.isArray(parsed.nodes) && parsed.nodes.every(isStoredNode) ? parsed.nodes : null;
+}
+
+/** Null for a file that exists and cannot be trusted or parsed; an absent file holds no denials. */
+function readDenials(path: string): { id: string; at: string }[] | null {
+  if (privateStateRefusal(path) !== null) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : null;
+  }
+  return isJsonObject(parsed) && parsed.v === 1 && Array.isArray(parsed.denials)
+    && parsed.denials.every((d) => isJsonObject(d) && typeof d.id === "string" && STABLE_NODE_ID.test(d.id) && typeof d.at === "string")
+    ? parsed.denials as { id: string; at: string }[] : null;
 }
 
 const time = (at: string | null) => at === null ? -Infinity : Date.parse(at);
@@ -102,9 +116,10 @@ export function mergeTailnetNodes(active: string, sibling: string): string | nul
 export class TailnetNodes {
   private nodes: StoredTailnetNode[] = [];
   private readonly path: string;
+  private readonly pendingPath: string;
   private failure: string | null = null;
-  /** the file itself could not be read: nothing is written over it, so no block can be saved this run */
-  readonly unreadable: boolean;
+  /** the file itself could not be read: nothing is written over it, and a block stands as a pending denial instead */
+  private readonly unreadable: boolean;
   /** the live connections and streams of each node, ended when it is blocked (DeviceStore.onRevoke does it for a row) */
   private readonly streams = new Map<string, Set<() => void>>();
   private asking: (TailnetNodePrompt & { readonly at: number }) | null = null;
@@ -113,11 +128,22 @@ export class TailnetNodes {
   /** `blocked`: a merge that could not be made, which keeps every tailnet grant shut like an unreadable file */
   constructor(stateDir: string, blocked: string | null = null, private readonly now: () => number = Date.now) {
     this.path = join(stateDir, TAILNET_NODES_FILE);
+    this.pendingPath = join(stateDir, TAILNET_PENDING_FILE);
     const read = readNodes(this.path);
     this.unreadable = read === null;
     if (read === null) this.failure = `Cannot read ${this.path}: no Tailscale login is let in until it is restored or fixed.`;
     else this.nodes = read;
     if (blocked !== null) this.failure ??= blocked;
+    // the removals made while the list could not be read are blocked now, before any request is served (index.ts
+    // builds this before it listens); they are dropped only once they stand in the list
+    if (this.failure === null) {
+      const pending = readDenials(this.pendingPath);
+      if (pending === null) this.failure = `Cannot read ${this.pendingPath}: no Tailscale login is let in until it is restored or fixed.`;
+      else if (pending.length > 0) {
+        this.takeDenials(pending);
+        if (this.failure === null) rmSync(this.pendingPath, { force: true });
+      }
+    }
     if (this.failure !== null) console.error(this.failure);
   }
 
@@ -207,8 +233,16 @@ export class TailnetNodes {
    * earlier write failed (fail closed for this run) a block is still written, so a retried removal can stand.
    */
   block(nodes: readonly { readonly id: string; readonly hostname?: string }[]): string[] {
-    if (this.unreadable) throw new Error(this.problem ?? `Cannot read ${this.path}`);
     const changedAt = new Date(this.now()).toISOString();
+    if (this.unreadable) {
+      // the list is never written over: the blocks stand as denials beside it, for the start that can read it again
+      if (nodes.length === 0) return [];
+      const pending = readDenials(this.pendingPath);
+      if (pending === null) throw new Error(`Cannot read ${this.pendingPath}`);
+      writePrivateState(this.pendingPath, { v: 1, denials: [...pending, ...nodes.map((node) => ({ id: node.id, at: changedAt }))] });
+      this.end(nodes.map((node) => node.id));
+      return nodes.map((node) => node.id);
+    }
     const fresh = nodes.filter((node) => !this.holds(node.id));
     if (nodes.length === 0) return [];
     // every node named is stamped, one already blocked too: this removal is newer than any Allow a sibling holds

@@ -2842,8 +2842,6 @@ export class DeviceStore {
   keepOutTailnetNodes(nodes: readonly { readonly id: string; readonly hostname?: string }[], row: string | null = null): string[] {
     const tailnet = this.tailnet;
     if (tailnet === null) return [];
-    // an unreadable list cannot be written over: every Tailscale login stays out until it is fixed, as before
-    if (tailnet.unreadable) return [];
     // only a saved block lets the removal go on: the fail-closed state after a failed write ends with this run
     const fresh = nodes.filter((node) => !tailnet.holds(node.id));
     if (nodes.length === 0) return [];
