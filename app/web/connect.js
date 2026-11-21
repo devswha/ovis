@@ -11,6 +11,7 @@ const input = document.getElementById("address");
 const byAddress = document.getElementById("by-address");
 const addressForm = document.getElementById("address-connect");
 const webInput = document.getElementById("web-address");
+const sshAdd = document.getElementById("ssh-add");
 const error = document.getElementById("error");
 const spinner = document.getElementById("spinner");
 const statusText = document.getElementById("status-text");
@@ -128,7 +129,8 @@ let tab = ACCOUNT_SIGN_IN ? "relay" : "tailscale";
 
 /** The field of the tab that is up, for an open that did not go: none on the relay's tab. */
 function focusField() {
-  if (tab === "ssh") (addressForm.hidden ? input : webInput).focus();
+  // the SSH field only where it is drawn (an app without OvisSsh hides it), the address field once Add by address opened it
+  if (tab === "ssh") (!addressForm.hidden ? webInput : sshAdd.hidden ? null : input)?.focus();
   else if (tab === "tailscale" && !tailnetInput.closest("[hidden]")) tailnetInput.focus();
 }
 
@@ -169,7 +171,7 @@ pick(tab);
 // without it (iOS, or an Android build before it) has no SSH to offer, so the SSH tab's field takes addresses alone
 // the plugins the app announces to the page before its first script runs (src/lib/nativeApp.ts, hasNativePlugin)
 const sshOffered = (window.Capacitor?.PluginHeaders ?? []).some((header) => header.name === "OvisSsh");
-document.getElementById("ssh-add").hidden = !sshOffered;
+sshAdd.hidden = !sshOffered;
 
 /** Add by address: the field for a PC's https address, behind its text link; open with `address` filled in. */
 function showAddressForm(shown, address = "") {

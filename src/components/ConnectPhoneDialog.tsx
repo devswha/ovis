@@ -486,7 +486,7 @@ function AddressPcForm({ id, initial, onConnectMachine }: { id: string; initial:
         <input ref={codeRef} id={`${id}-code`} className="input connect-address-code" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={7} placeholder="000000" required pattern="\d{3} ?\d{3}" spellCheck={false} disabled={adding || !secretAllowed} />
         <button type="submit" className="btn" disabled={address === "" || adding || !secretAllowed}>{t("Connect")}</button>
       </div>
-      <p className="settings-hint" data-address-kind="ovis">{t("Opens that PC's Ovis here. On that PC, open Settings → Devices and PCs → Add a connection → Ovis relay → Pair with a code, and type the six-digit code it shows. This PC can then drive that PC.")}</p>
+      <p className="settings-hint" data-address-kind="ovis">{t("Opens that PC's Ovis here. On that PC, open Settings → Devices and PCs → Add a connection → Pair with a code (under Ovis relay, or under SSH where it has no relay), and type the six-digit code it shows. This PC can then drive that PC.")}</p>
       {!secretAllowed && <p className="settings-hint">{t("Needs HTTPS or localhost.")}</p>}
       {failure !== null && <p className="settings-hint" role="alert">{failure}</p>}
     </form>

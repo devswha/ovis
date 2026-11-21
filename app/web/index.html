@@ -34,6 +34,8 @@
     </div>
         <p class="note" data-ko="처음이면 계정이 바로 만들어져요">First time? Your account is made right away.</p>
       </div>
+      <!-- the QR code a PC shows (its relay pairing, or its address): here, not under Tailscale, which hides its part while Tailscale is off -->
+      <button type="button" class="way" data-scan><span class="way-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 20h2M20 14v2" stroke-linecap="round"/></g></svg></span><span class="way-text"><span class="way-title" data-ko="PC 화면의 QR 찍기">Scan the QR on the PC's screen</span></span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <p class="note" data-ko="Tailscale · SSH는 로그인 없이 돼요">Tailscale and SSH need no sign-in.</p>
       <!-- the PCs this phone paired over the relay (a pairing link, ovis pair --relay), under the sign-in (connect.js renderPcs) -->
       <section id="relay-section" hidden>

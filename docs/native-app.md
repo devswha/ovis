@@ -179,7 +179,7 @@ What is there:
 - `app/web`: the app's own pages. `index.html` is Connect a PC, with the desktop's Add a connection
   tabs in its order, picked without a history entry (the phone's Back leaves the app): Ovis relay
   (the default; the sign-ins the account service names at `/v1/providers`, a press opens the hosted
-  app on that sign-in, `#sign-in=<provider>`), Tailscale (the PCs this phone opened at a Tailscale
+  app on that sign-in, `#sign-in=<provider>`, and Scan the QR on the PC's screen), Tailscale (the PCs this phone opened at a Tailscale
   address, with Connect, a Tailscale address and Scan a QR code; on Android, while no interface holds
   a Tailscale address, one line and Open Tailscale alone) and SSH (SSH's `user@host` first, which opens the SSH
   setup filled in, only in an app that announces the `OvisSsh` plugin; Add by address, a text link to a field

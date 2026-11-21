@@ -36,6 +36,15 @@ describe("the connect tabs", () => {
     expect(page).not.toContain("panel-direct");
   });
 
+  it("keep a scan of the PC's QR on the relay tab, outside what Tailscale turned off hides", () => {
+    const relay = panel("relay");
+    expect(relay).toMatch(/<button type="button" class="way" data-scan>[\s\S]*?data-ko="PC 화면의 QR 찍기">Scan the QR on the PC's screen</);
+    // only #tailscale-on goes hidden with Tailscale off (connect.js checkTailscale): a scan stays outside it
+    const tailscaleOn = page.slice(page.indexOf('<div id="tailscale-on">'), page.indexOf('id="panel-ssh"'));
+    const scans = [...page.matchAll(/data-scan>/g)].map((match) => match.index!);
+    expect(scans.some((at) => at < page.indexOf('<div id="tailscale-on">') || at > page.indexOf('<div id="tailscale-on">') + tailscaleOn.length)).toBe(true);
+  });
+
   it("put on SSH user@host first, Add by address as a text link to an https address's field, then the SSH PCs and the saved addresses", () => {
     const ssh = panel("ssh");
     const at = (needle: string) => ssh.indexOf(needle);
