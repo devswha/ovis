@@ -11,6 +11,7 @@ import { newRecordId, registerSigningBytes, type AccountRecord, type DeviceSafet
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
+import type { PcProofFields } from "./pcProof.ts";
 import type { AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock, indexedAccountStore } from "./store.ts";
 
@@ -393,8 +394,11 @@ export class AccountService {
     return isRecord(body) && body.own_sign_in === true;
   }
 
-  /** Lists a PC in the account's directory, with its relay key and relay so a new device can compare digits with it. */
-  async putPc(serverId: string, entry: { label: string; public_key: string; relay: string }, signal?: AbortSignal, again?: SendAgain): Promise<void> {
+  /**
+   * Lists a PC in the account's directory, with its relay key and relay so a new device can compare digits with it; with
+   * the PC's own proof (ownPcProof) when the PC itself lists it, which alone lists it again after it left (409 `pc_left`).
+   */
+  async putPc(serverId: string, entry: { label: string; public_key: string; relay: string } & PcProofFields, signal?: AbortSignal, again?: SendAgain): Promise<void> {
     await this.call("PUT", `/v1/pcs/${serverId}`, entry, signal, again);
   }
 

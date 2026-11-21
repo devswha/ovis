@@ -3,7 +3,7 @@ import nacl from "tweetnacl";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord, type AccountRecord } from "./account-records.ts";
 import { assembleSnapshot, parseSnapshotPage, type AccountSnapshotPage } from "./account-snapshot.ts";
-import { SNAPSHOT_PAGE, ACCESS_TOKEN_TTL_S, ADMISSION_TTL_MS, ACCOUNT_RING, ADMISSIONS_PER_WINDOW, DEVICE_POLL_S, DIRECTORY_MAX, FakeAccountService, isAllowedRedirect, MAILBOX_TTL_MS, WEB_REDIRECT, type FakePc } from "./account-service-fake.ts";
+import { SNAPSHOT_PAGE, ACCESS_TOKEN_TTL_S, ADMISSION_TTL_MS, ACCOUNT_RING, ADMISSIONS_PER_WINDOW, DEVICE_POLL_S, DIRECTORY_MAX, FakeAccountService, isAllowedRedirect, MAILBOX_TTL_MS, PC_LEFT_MS, WEB_REDIRECT, type FakePc } from "./account-service-fake.ts";
 import { answerServerChallenge, deriveServerId, serverChallenge, verifyServerProof, type ProofRoute } from "./relay-server-proof.ts";
 
 const BASE = "https://account.test";
@@ -630,5 +630,55 @@ describe("the fake's first-PC exemption, as the account service has it (account#
     const again = service.issueToken("acct_1");
     expect((await put(service, again, second)).ok).toBe(true);
     expect(await admit(service, again, second)).toBe("two_step_required");
+  });
+});
+
+describe("a PC's own leave (account#65)", () => {
+  async function proofOf(service: FakeAccountService, machine: ReturnType<typeof pc>) {
+    const challenge = await (await service.fetch(post("/v1/pc/challenge", { server_id: machine.serverId, public_key: machine.publicKey }))).json() as { challenge_id: string; frame: string };
+    return { challenge_id: challenge.challenge_id, proof: answerServerChallenge(challenge.frame, machine.keys.secretKey, { server_id: machine.serverId, role: "account", connection_id: challenge.challenge_id }) };
+  }
+  const put = (service: FakeAccountService, token: string, machine: ReturnType<typeof pc>, extra: Record<string, unknown> = {}) =>
+    service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "PUT", body: JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.ovis.sh", ...extra }), headers: { authorization: `Bearer ${token}` } }));
+  const listed = async (service: FakeAccountService, token: string) =>
+    ((await (await service.fetch(new Request(`${BASE}/v1/pcs`, { headers: { authorization: `Bearer ${token}` } }))).json()) as { pcs: { server_id: string }[] }).pcs.map((entry) => entry.server_id);
+
+  test("after a leave a PUT without the PC's proof answers 409 pc_left for 30 days; the PC's own proof lists it again and ends the mark", async () => {
+    let now = Date.parse("2026-11-21T00:00:00Z");
+    const service = new FakeAccountService(() => now);
+    const token = service.issueToken("acct_1");
+    const machine = pc();
+    expect((await put(service, token, machine)).status).toBe(200);
+
+    expect((await service.fetch(post(`/v1/pcs/${machine.serverId}/leave`, { server_id: machine.serverId, account: "acct_1", ...await proofOf(service, machine) }))).status).toBe(204);
+    expect(await listed(service, token)).toEqual([]);
+
+    const refused = await put(service, token, machine);
+    expect(refused.status).toBe(409);
+    expect((await refused.json() as { error: { code: string; left_at: string } }).error).toMatchObject({ code: "pc_left", left_at: new Date(now).toISOString() });
+    // another PC's proof lifts nothing, and a spent one is refused
+    const other = pc();
+    expect((await put(service, token, machine, await proofOf(service, other))).status).toBe(401);
+    const proof = await proofOf(service, machine);
+    expect((await put(service, token, machine, proof)).status).toBe(200);
+    expect(await listed(service, token)).toEqual([machine.serverId]);
+    expect((await put(service, token, machine, proof)).status).toBe(401);
+    // the mark is gone: upkeep needs no proof
+    expect((await put(service, token, machine)).status).toBe(200);
+
+    expect((await service.fetch(post(`/v1/pcs/${machine.serverId}/leave`, { server_id: machine.serverId, account: "acct_1", ...await proofOf(service, machine) }))).status).toBe(204);
+    now += PC_LEFT_MS;
+    expect((await put(service, token, machine)).status).toBe(200);
+  });
+
+  test("a leave needs the PC's own fresh proof for its own server_id", async () => {
+    const service = new FakeAccountService();
+    const token = service.issueToken("acct_1");
+    const [machine, other] = [pc(), pc()];
+    await put(service, token, machine);
+    expect((await service.fetch(post(`/v1/pcs/${machine.serverId}/leave`, { server_id: machine.serverId, account: "acct_1" }))).status).toBe(400);
+    expect((await service.fetch(post(`/v1/pcs/${machine.serverId}/leave`, { server_id: other.serverId, account: "acct_1", ...await proofOf(service, other) }))).status).toBe(400);
+    expect((await service.fetch(post(`/v1/pcs/${machine.serverId}/leave`, { server_id: machine.serverId, account: "acct_1", ...await proofOf(service, other) }))).status).toBe(401);
+    expect(await listed(service, token)).toEqual([machine.serverId]);
   });
 });

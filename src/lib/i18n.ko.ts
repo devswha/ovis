@@ -538,6 +538,7 @@ const BASE: Record<string, string> = {
   "Keep waiting": "계속 기다리기",
   "Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.": "아직 끝나지 않았습니다. 이 PC를 추가한 기기가 설정을 마무리하는 중입니다. 멈췄다면 그 기기에서 이 PC를 열고 다시 시도를 누르세요.",
   "This PC could not be listed in your account. Try again.": "이 PC를 계정에 올리지 못했습니다. 다시 시도하세요.",
+  "Sign in on this PC to add it again": "이 PC에서 다시 로그인해야 추가할 수 있어요",
   "This PC may not have been listed in your account. Try again.": "이 PC가 계정에 올라가지 않았을 수 있습니다. 다시 시도하세요.",
   "Turn on remote access through the Ovis relay above first.": "먼저 위에서 Ovis 릴레이를 통한 원격 접속을 켜세요.",
   "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "먼저 설정 → 기기와 PC에서 Ovis 릴레이를 통한 원격 접속을 켜세요.",

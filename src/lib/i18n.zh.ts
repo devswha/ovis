@@ -545,6 +545,7 @@ const BASE: Record<string, string> = {
   "Keep waiting": "继续等待",
   "Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.": "尚未完成：添加这台电脑的设备仍在设置中。如果它停止了，请在那台设备上打开这台电脑并选择“重试”。",
   "This PC could not be listed in your account. Try again.": "无法将此电脑列入你的账号。请重试。",
+  "Sign in on this PC to add it again": "请在这台电脑上重新登录后再添加",
   "This PC may not have been listed in your account. Try again.": "此电脑可能尚未列入你的账号。请重试。",
   "Turn on remote access through the Ovis relay above first.": "请先在上方开启通过 Ovis 中继的远程访问。",
   "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "请先在 设置 → 设备和电脑 中开启通过 Ovis 中继的远程访问。",

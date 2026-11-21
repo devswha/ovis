@@ -12,6 +12,7 @@ import { isLoopbackHost } from "../phone.ts";
 import { serverIdOfPath } from "../shellMode.ts";
 import { pcAccountStatus, within } from "./join.ts";
 import { NEW_PC_MS } from "./myPcs.ts";
+import { ownPcProof } from "./pcProof.ts";
 import { AccountServiceError, sameSignIn, type AccountService } from "./service.ts";
 import type { AccountSession } from "./store.ts";
 
@@ -71,6 +72,13 @@ async function openAddWindow(): Promise<{ readonly url: string; readonly windowI
   for (let seen: Promise<unknown> | null = null; seen !== closing;) { seen = closing; await seen; }
   const { url, window_id } = await requestRelayLink({ localOnly: true });
   return { url, windowId: typeof window_id === "string" && /^[0-9a-f]{32}$/.test(window_id) ? window_id : undefined };
+}
+
+/** A POST of `{}` to this PC's own API, as ownPcProof asks it: the answer's JSON, or a rejection naming the refusal. */
+async function postToThisPc(path: string): Promise<unknown> {
+  const answer = await apiFetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: "{}" });
+  if (!answer.ok) throw new Error(`${path} answered ${answer.status}`);
+  return await answer.json();
 }
 
 const WAITING_KEY = "ovis-add-pc-waiting";
@@ -232,8 +240,10 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   }
   if (!refreshed) {
     const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    // this PC's own proof, which alone lists it again after `ovis logout` left the account
+    const proof = await ownPcProof(offer.server_id, postToThisPc);
     running();
-    await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });
+    await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay, ...proof });
   }
   // the account this PC now asks its relay pass under (docs/relay.md, "Relay pass"); an older PC has no such route
   // (not for a wait or an attempt that ended while the entry was written: nobody waits for this PC under it)

@@ -70,6 +70,12 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (!context.services.relay.setRelayAccount(account)) return fail("invalid_account", "Name the account", 400);
       return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
     }
+    case "/api/account/pc-proof": {
+      setRequestRoute(pathname);
+      // this PC's own window or CLI alone (dispatch.ts ownWindow): the proof lists the PC again after its leave
+      try { return reply(await context.services.accountMailbox.listingProof()); }
+      catch (error) { return fail("account_unavailable", error instanceof Error ? error.message : String(error), 503); }
+    }
     case "/api/account/one-press": {
       if (!devices.opensAll()) return fail("not_found", "Unknown account action", 404);
       setRequestRoute(pathname);

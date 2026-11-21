@@ -43,6 +43,7 @@ test("a pass setup that never answers does not hold Add this PC either", async (
     asked.push(path);
     if (path === "/api/account/status") return Response.json({ account: null });
     if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: serverId, server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh") });
+    if (path === "/api/account/pc-proof") return Response.json({ error: { code: "not_found" } }, { status: 404 });
     return new Promise<Response>(() => {});
   };
   setTransport({ ...nativeTransport, fetch: answer });

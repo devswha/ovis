@@ -60,6 +60,8 @@ describe("AddThisPc", () => {
   let tab: Map<string, string>;
   let restore: (() => void)[];
   let puts: string[];
+  /** what the account service answers a PUT with instead of listing the PC; null: it lists it */
+  let putRefusal: AccountServiceError | null;
   /** the PCs the account lists, as GET /v1/pcs answers; null: none (the default, which no wait reads as a decline) */
   let listedNow: string[] | null;
   let relayRequest: ((path: string, init?: RequestInit) => Promise<Response>) | null;
@@ -70,7 +72,7 @@ describe("AddThisPc", () => {
     const mine = (): void => { if (bound !== undefined && (signedIn !== bound || (boundSignIn !== undefined && boundSignIn !== `r-${signInNo}`))) throw new SignedOutError(); };
     return {
       listPcs: async () => { mine(); await held.listPcs; return (listedNow ?? []).map((id) => ({ server_id: id, label: "desk", added_at: new Date(at).toISOString(), last_seen_at: null, public_key: null, relay: null, new_until: null, admitted_at: null, admitted_before_you: false })); },
-      putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); await held.putPc; },
+      putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); await held.putPc; if (putRefusal !== null) throw putRefusal; },
       deletePc: async () => { mine(); directory.push("deletePc"); },
       admitPc: async () => { mine(); admitted.push(signedIn ?? ""); if (!onePress.admits) throw new AccountServiceError(403, "two_step_required", "Set up two-step sign-in first"); return { account: signedIn, new_until: new Date(at + 86_400_000).toISOString() }; },
       session: async () => { await held.session; return signedIn === null ? undefined : { account: signedIn, refresh_token: `r-${signInNo}` }; },
@@ -93,6 +95,7 @@ describe("AddThisPc", () => {
     asked = [];
     directory = [];
     puts = [];
+    putRefusal = null;
     listedNow = null;
     relayRequest = null;
     held = { listPcs: null, putPc: null, session: null, link: null, start: null, close: null, press: null };
@@ -503,8 +506,10 @@ describe("AddThisPc", () => {
     expect(links()).toBe(5);
     expect(asked.filter((request) => request.path === "/api/relay/link").every((request) => request.localOnly)).toBe(true);
     expect(directory).toEqual(["putPc"]);
-    // (and the screen read once, before its offer, what this browser may do on the PC, then before every reopen which PC answers)
-    expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/health", "/api/relay/link", "/api/account/relay-account"]));
+    // (and the screen read once, before its offer, what this browser may do on the PC, then before every reopen which PC answers;
+    // the one listing asked the PC for its own proof)
+    expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/health", "/api/relay/link", "/api/account/pc-proof", "/api/account/relay-account"]));
+    expect(asked.filter((request) => request.path === "/api/account/pc-proof").length).toBe(1);
     expect(asked.filter((request) => request.path === "/api/health").length).toBe(5);
     expect(asked.filter((request) => request.path === "/api/account/relay-account").length).toBe(1);
   });
@@ -1259,6 +1264,16 @@ describe("AddThisPc", () => {
     await press(renderer, "Add this PC to my account");
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
     expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+  });
+
+  test("a PC that left the account (ovis logout) and gave no proof of its own here says to sign in on the PC", async () => {
+    putRefusal = new AccountServiceError(409, "pc_left", "This PC left the account; sign in on the PC to add it again");
+    const renderer = await mount(ACCOUNT);
+    await settle();
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    expect(words(renderer)).toContain("Sign in on this PC to add it again");
+    expect(words(renderer)).not.toContain("This PC could not be listed in your account. Try again.");
+    expect(tab.has(MARKER)).toBe(false);
   });
 
   test("a PC that stops answering while the sign-in lists it gives the button back", async () => {

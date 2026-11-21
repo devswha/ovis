@@ -649,7 +649,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (as !== null && error instanceof AddPcWaitOver) { setState({ kind: "offer" }); return; }
       const relayOff = error instanceof ApiError && error.code === "relay_off";
       if (as !== null && relayOff) { setState({ kind: "relay-off", account: as, error: null }); return; }
-      setState({ kind: "error", message: relayOff
+      // the PC left the account (`ovis logout`) and gave no proof of its own here: only a sign-in on the PC lists it again
+      const left = error instanceof AccountServiceError && error.code === "pc_left";
+      setState({ kind: "error", message: left ? t("Sign in on this PC to add it again") : relayOff
         ? relayAbove ? t("Turn on remote access through the Ovis relay above first.") : t("Turn on remote access through the Ovis relay in Settings → Devices and PCs first.")
         // its entry was already on the way to the directory when the screen gave up: it may be listed all the same
         : writing ? t("This PC may not have been listed in your account. Try again.") : t("This PC could not be listed in your account. Try again.") });

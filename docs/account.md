@@ -515,6 +515,13 @@ A device that waits to link reads one body, whatever the PC holds: `account` `nu
 `unlinked` its own id alone, every other list empty, `enrolling` and `blocked_all` false. No
 mailbox is read for it, and `fresh` is ignored.
 
+`POST /api/account/pc-proof` `{}`: `{ "server_id", "challenge_id", "proof" }`, this PC's own fresh
+answer to an account service challenge (`role` `account`, as for its mailbox), which Add this PC and
+`ovis login` send beside their `PUT /v1/pcs/{server_id}` at once: it is spent by that PUT and lapses
+after a minute. Only this PC's own window or CLI gets one (403 `owner_only` otherwise, as
+`one-press`); 503 `account_unavailable` when the service gave no challenge. The way back into an
+account after `ovis logout` is so a sign-in on the PC itself.
+
 `POST /api/account/relay-account` `{ "account" }`: the account this PC asks its relay pass under while it
 has no members ([relay.md](relay.md#relay-pass)): over a direct connection with drive access (the PC's own
 screen, after it listed the PC), or through the relay only from a drive account member of that same
@@ -1342,7 +1349,7 @@ Clients:
 | request | body | answer |
 |---|---|---|
 | `GET /v1/pcs` | | `{ "pcs": [{ "server_id", "label", "public_key", "relay", "added_at", "last_seen_at" }] }` |
-| `PUT /v1/pcs/{server_id}` | `{ "label", "public_key", "relay" }` | `{ "pc": … }`: adds or renames a PC in the directory. 400 `server_key_mismatch` unless `public_key` (X25519, 64 hex) gives `server_id` (`deriveServerId`), 400 `invalid_relay` unless `relay` is a `wss:` origin |
+| `PUT /v1/pcs/{server_id}` | `{ "label", "public_key", "relay", "challenge_id"?, "proof"? }` | `{ "pc": … }`: adds or renames a PC in the directory. 400 `server_key_mismatch` unless `public_key` (X25519, 64 hex) gives `server_id` (`deriveServerId`), 400 `invalid_relay` unless `relay` is a `wss:` origin. For 30 days after the PC left the account (`POST /v1/pcs/{server_id}/leave`, sent by `ovis logout` with the PC's proof), 409 `pc_left` with `left_at` unless the body carries the PC's own fresh proof (`/api/account/pc-proof`; 401 `proof_invalid` when it fails), which lists it again and ends the mark. The app then says **Sign in on this PC to add it again** |
 | `DELETE /v1/pcs/{server_id}` | | `204` |
 | `POST /v1/records` | `{ "server_ids": [...], "record" }` | `{ "queued": n }`: puts a signed record of the caller's account in that account's mailbox for each listed PC; the service checks only its shape and signature. 429 `mailbox_full` past 1000 records waiting for one PC |
 | `GET /v1/admissions` | | `{ "admissions": [{ "key", "label", "server_id", "at", "os", "country", "city" }] }`: this account's admissions of the last 10 minutes, with who is asking (below). Before it signs an `add` for a device a PC showed it, the approving client checks that PC and key are listed here |

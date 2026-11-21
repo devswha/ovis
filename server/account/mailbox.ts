@@ -692,15 +692,31 @@ export class AccountMailbox {
     return await response.json() as Record<string, unknown>;
   }
 
-  /** A PC route called with a fresh proof of this PC's relay key for the `account` role. */
-  private async proved(identity: RelayIdentity, path: string, body: Record<string, unknown>, gone = false): Promise<Record<string, unknown> | null> {
+  /** A fresh, single-use proof of this PC's relay key for the `account` role: a challenge of the account service, answered. */
+  private async prove(identity: RelayIdentity): Promise<{ challenge_id: string; proof: string }> {
     const challenge = (await this.call("/v1/pc/challenge", { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)) }))!;
     // Rollback exposes the original native property-read error for a JSON null response.
     if ((this.options.devices.opensAll() && challenge === null) || typeof challenge.challenge_id !== "string") throw new Error("The account service sent no challenge");
     const proof = answerServerChallenge(challenge.frame, importSecretKey(identity.secret_key),
       { server_id: identity.server_id, role: "account", connection_id: challenge.challenge_id });
     if (!proof) throw new Error("The account service sent a malformed challenge");
-    return await this.call(path, { server_id: identity.server_id, challenge_id: challenge.challenge_id, proof, ...body }, gone);
+    return { challenge_id: challenge.challenge_id, proof };
+  }
+
+  /** A PC route called with a fresh proof of this PC's relay key for the `account` role. */
+  private async proved(identity: RelayIdentity, path: string, body: Record<string, unknown>, gone = false): Promise<Record<string, unknown> | null> {
+    return await this.call(path, { server_id: identity.server_id, ...await this.prove(identity), ...body }, gone);
+  }
+
+  /**
+   * This PC's own proof for its listing (`PUT /v1/pcs/{server_id}` with `challenge_id` and `proof`): only a PUT that carries
+   * it lists the PC again within 30 days of its leave (`ovis logout`). Handed to this PC's own window or CLI alone
+   * (POST /api/account/pc-proof), which sends it at once: it is spent by that PUT and lapses after a minute.
+   */
+  async listingProof(): Promise<{ server_id: string; challenge_id: string; proof: string }> {
+    const identity = this.options.identity();
+    if (!identity) throw new Error("This PC has no relay identity");
+    return { server_id: identity.server_id, ...await this.prove(identity) };
   }
 
   /**

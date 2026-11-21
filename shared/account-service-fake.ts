@@ -14,6 +14,8 @@ import { isWssOrigin } from "./relay-offer.ts";
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./relay-server-proof.ts";
 
 export const CHALLENGE_TTL_MS = 60_000;
+/** How long a PC's own leave (POST /v1/pcs/{server_id}/leave) keeps a PUT without its proof from listing it again. */
+export const PC_LEFT_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAILBOX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAILBOX_PAGE = 100;
 export const MAILBOX_MAX = 1000;
@@ -130,6 +132,8 @@ export class FakeAccountService {
   private readonly directories = new Map<string, Map<string, FakePc>>();
   private readonly mailboxes = new Map<string, Mail[]>();
   private readonly challenges = new Map<string, { server_id: string; expected: string; expires: number }>();
+  /** box(server_id, account): when the PC left that account by its own proof */
+  private readonly pcLeaves = new Map<string, number>();
   private readonly admissionList: FakeAdmission[] = [];
   /** quiet admissions: only an app's own sign-in posts one, and only a PC the account lists reads them */
   private readonly quietList: FakeAdmission[] = [];
@@ -345,6 +349,7 @@ export class FakeAccountService {
     this.signOutEverywhere(account);
     for (const [provider, signsInTo] of this.signIns) if (signsInTo === account) this.signIns.delete(provider);
     for (const key of [...this.mailboxes.keys()]) if (key.endsWith(`\0${account}`)) this.mailboxes.delete(key);
+    for (const key of [...this.pcLeaves.keys()]) if (key.endsWith(`\0${account}`)) this.pcLeaves.delete(key);
     for (const key of [...this.counters.keys()]) if (key.endsWith(`:${account}`)) this.counters.delete(key);
     for (const list of [this.admissionList, this.quietList]) for (let index = list.length - 1; index >= 0; index--) if (list[index]?.account === account) list.splice(index, 1);
     this.identityList.delete(account);
@@ -440,6 +445,8 @@ export class FakeAccountService {
     this.requests.push(`${request.method} ${url.pathname}`);
     try {
       if (url.pathname.startsWith("/v1/pc/")) return await this.pc(request, url.pathname);
+      const leaving = /^\/v1\/pcs\/([0-9a-f]{32})\/leave$/.exec(url.pathname)?.[1];
+      if (leaving !== undefined && request.method === "POST") return await this.leave(request, leaving);
       const provider = /^\/v1\/signin\/([a-z]+)$/.exec(url.pathname)?.[1];
       if (provider !== undefined && request.method === "GET") return this.signIn(url, provider);
       if (url.pathname === "/v1/token" && request.method === "POST") return await this.token(request);
@@ -610,7 +617,7 @@ export class FakeAccountService {
     }
     const pc = /^\/v1\/pcs\/([0-9a-f]{32})$/.exec(path)?.[1];
     if (pc !== undefined && request.method === "PUT") {
-      const body = await request.json() as { label?: unknown; public_key?: unknown; relay?: unknown; confirm?: unknown };
+      const body = await request.json() as { label?: unknown; public_key?: unknown; relay?: unknown; confirm?: unknown; challenge_id?: unknown; proof?: unknown };
       // PCL-1: only an app's own sign-in may say "this is my PC"; a device code can be typed for someone else's PC
       const own = !this.deviceFamilies.has(session.family);
       const confirm = body.confirm === true;
@@ -620,12 +627,19 @@ export class FakeAccountService {
       const key = proofKey(body.public_key);
       if (!key || deriveServerId(key) !== pc) return problem(400, "server_key_mismatch", "That key does not give that server_id");
       if (typeof body.relay !== "string" || !isWssOrigin(body.relay)) return problem(400, "invalid_relay", "Give the relay's wss origin");
+      // the PC's own proof of this server_id, sent beside the entry when the PC itself lists it: it lists it again after its leave
+      const proven = body.challenge_id !== undefined || body.proof !== undefined;
+      if (proven && !this.takeProof({ server_id: pc, challenge_id: body.challenge_id, proof: body.proof })) return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
       // PCL-4: a confirm asks what the one-press admit asks of the sign-in: fresh, and two-step set unless the account was never used
       if (confirm) {
         if (this.now() - (this.signedInAt.get(session.family) ?? Number.NEGATIVE_INFINITY) > REAUTH_MS) return problem(403, "session_not_fresh", "Sign in again on this device first");
         if (this.twoStep.get(session.family) !== true && this.everUsed(account, pc, session.family, "confirm")) return problem(403, "two_step_required", "Two-step sign-in must be on for one press; add this PC with the number");
       }
       const fresh = !directory.has(pc);
+      const leftAt = this.pcLeaves.get(box(pc, account));
+      if (fresh && !proven && leftAt !== undefined && this.now() - leftAt < PC_LEFT_MS) {
+        return json({ error: { left_at: new Date(leftAt).toISOString(), code: "pc_left", message: "This PC left the account; sign in on the PC to add it again" } }, 409);
+      }
       if (fresh && directory.size >= DIRECTORY_MAX) return problem(409, "directory_full", "Remove a PC first");
       // a re-PUT (the nine-minute relist) keeps the PC's admission and its confirmation mark
       const before = directory.get(pc);
@@ -641,6 +655,7 @@ export class FakeAccountService {
         entry.new_until = new Date(this.now() + PC_NEW_MS).toISOString();
       }
       directory.set(pc, entry);
+      if (proven) this.pcLeaves.delete(box(pc, account));
       if (fresh || confirming) this.ring(account, session.family);
       const { exempt: _exempt, listed_by_device, pending_under_step2: _pending, ...shown } = entry;
       return json({ pc: { ...shown, unconfirmed: this.opensAll && listed_by_device === true } });
@@ -698,6 +713,43 @@ export class FakeAccountService {
     return problem(404, "not_found", "Unknown request");
   }
 
+  /** Spends the challenge `body` names and says whether `body.proof` answers it for `body.server_id`. */
+  private takeProof(body: { server_id: unknown; challenge_id: unknown; proof: unknown }): { server_id: string } | null {
+    const challenge = typeof body.challenge_id === "string" ? this.challenges.get(body.challenge_id) : undefined;
+    if (typeof body.challenge_id === "string") this.challenges.delete(body.challenge_id);
+    if (!challenge || challenge.server_id !== body.server_id || this.now() > challenge.expires || !verifyServerProof(body.proof, challenge.expected)) return null;
+    return { server_id: challenge.server_id };
+  }
+
+  /**
+   * The PC leaves an account by its own proof, with no bearer (`ovis logout`, account#65): as a DELETE /v1/pcs does, the
+   * listing and its untaken admission end; its mailbox and admissions for the account go; and for PC_LEFT_MS a PUT
+   * lists it again only with the PC's own proof. 204 whether or not the account listed it.
+   */
+  private async leave(request: Request, serverId: string): Promise<Response> {
+    const body = await request.json() as Record<string, unknown>;
+    if (body.server_id !== serverId || typeof body.account !== "string" || body.challenge_id === undefined || body.proof === undefined) {
+      return problem(400, "invalid_request", "Name this PC and the account it leaves");
+    }
+    if (!this.takeProof({ server_id: serverId, challenge_id: body.challenge_id, proof: body.proof })) return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
+    const account = body.account;
+    const key = box(serverId, account);
+    const directory = this.directories.get(account);
+    const removed = directory?.get(serverId);
+    directory?.delete(serverId);
+    this.pcAdmissions.delete(key);
+    this.mailboxes.delete(key);
+    for (const list of [this.admissionList, this.quietList]) {
+      for (let index = list.length - 1; index >= 0; index--) if (list[index]!.server_id === serverId && list[index]!.account === account) list.splice(index, 1);
+    }
+    if (!this.deletedAccounts.has(account)) this.pcLeaves.set(key, this.now());
+    if (removed !== undefined) {
+      if (!(this.opensAll && removed.listed_by_device === true)) this.usedAccounts.add(account);
+      this.ring(account, "");
+    }
+    return new Response(null, { status: 204 });
+  }
+
   private async pc(request: Request, path: string): Promise<Response> {
     if (request.method !== "POST") return problem(404, "not_found", "Unknown request");
     const body = await request.json() as Record<string, unknown>;
@@ -711,11 +763,8 @@ export class FakeAccountService {
     }
     if (path === "/v1/pc/mailbox" || (path === "/v1/pc/admission" && this.opensAll)
       || (path === "/v1/pc/snapshot" && (this.opensAll || this.reportsStep2Off))) {
-      const challenge = typeof body.challenge_id === "string" ? this.challenges.get(body.challenge_id) : undefined;
-      if (typeof body.challenge_id === "string") this.challenges.delete(body.challenge_id);
-      if (!challenge || challenge.server_id !== body.server_id || this.now() > challenge.expires || !verifyServerProof(body.proof, challenge.expected)) {
-        return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
-      }
+      const challenge = this.takeProof({ server_id: body.server_id, challenge_id: body.challenge_id, proof: body.proof });
+      if (!challenge) return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
       if (typeof body.account !== "string") return problem(400, "invalid_account", "Name the account this PC belongs to");
       if (path === "/v1/pc/admission") {
         // G1: only the named account's own admission, while that account lists the PC; any other account's is invisible

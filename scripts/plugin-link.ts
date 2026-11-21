@@ -34,6 +34,7 @@ import { DEFAULT_ACCOUNT_SERVICE } from "../shared/web-policy.ts";
 import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { startDeviceSignIn, startLinkPageSignIn } from "../src/lib/account/deviceSignIn.ts";
 import { NEW_PC_MS } from "../src/lib/account/myPcs.ts";
+import { ownPcProof } from "../src/lib/account/pcProof.ts";
 import { AccountService, AccountServiceError, DEVICE_PROVIDERS, offeredProviders, type DeviceProvider } from "../src/lib/account/service.ts";
 import { memoryAccountStore, memoryLock, type AccountProvider } from "../src/lib/account/store.ts";
 
@@ -779,14 +780,14 @@ async function listThisPc(api: Api, service: AccountService, now: () => number, 
   const listing = await openedListing(api);
   const listed = (await service.listPcs()).find((pc) => pc.server_id === listing.serverId);
   if (listed === undefined || now() - Date.parse(listed.added_at) < NEW_PC_MS - RELIST_MS) {
-    await service.putPc(listing.serverId, listing.entry);
+    await service.putPc(listing.serverId, { ...listing.entry, ...await ownPcProof(listing.serverId, (path) => api("POST", path)) });
     unlisted.listing = null;
     await nameRelayAccount(api, service);
     return listing;
   }
   unlisted.listing = listing;
   await service.deletePc(listing.serverId);
-  if (await putListing(service, listing)) unlisted.listing = null;
+  if (await putListing(api, service, listing)) unlisted.listing = null;
   await nameRelayAccount(api, service);
   return listing;
 }
@@ -809,8 +810,9 @@ async function nameRelayAccount(api: Api, service: AccountService): Promise<void
   if (session) await api("POST", "/api/account/relay-account", { body: { account: session.account } }).catch(() => undefined);
 }
 
-async function putListing(service: AccountService, listing: Listing): Promise<boolean> {
-  try { await service.putPc(listing.serverId, listing.entry); return true; } catch { return false; }
+/** Lists this PC with its own proof (ownPcProof), which alone lists it again after `ovis logout` left the account. */
+async function putListing(api: Api, service: AccountService, listing: Listing): Promise<boolean> {
+  try { await service.putPc(listing.serverId, { ...listing.entry, ...await ownPcProof(listing.serverId, (path) => api("POST", path)) }); return true; } catch { return false; }
 }
 
 const shortId = (account: string): string => plainLabel(account).slice(0, 12);
@@ -1521,7 +1523,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     const first = await listThisPc(api, service, now, pending);
     if (pending.listing !== null) out(unlisted);
     // a renewal's listing not put back yet goes back first: an account that does not list the PC gives it no pass
-    if (pending.listing !== null && await putListing(service, pending.listing)) { pending.listing = null; await nameRelayAccount(api, service); }
+    if (pending.listing !== null && await putListing(api, service, pending.listing)) { pending.listing = null; await nameRelayAccount(api, service); }
     try { await relayOnline(options, api); } catch (error) {
       if (!(error instanceof LocalError)) throw error;
       throw new LocalError(`This PC stays listed in your account, but its Ovis relay is not online yet (${error.message}) Run this again once it is.`);
@@ -1533,7 +1535,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         signedIn, status, plain: mode.print || options.isTty !== true,
         unlist: () => { pending.listing = null; return service.deletePc(first.serverId).then(() => true, () => false); },
         name: () => nameRelayAccount(api, service),
-        tend: async () => { if (pending.listing !== null && await putListing(service, pending.listing)) pending.listing = null; },
+        tend: async () => { if (pending.listing !== null && await putListing(api, service, pending.listing)) pending.listing = null; },
       });
     }
     let listedAt = now();
@@ -1632,7 +1634,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           say("Added. Bringing in your account's other devices…\n");
         }
         // a listing a renewal took away goes back, also once this PC is in the account: unlisted, it gets no relay pass
-        if (pending.listing !== null && now() < stopAt && await putListing(service, pending.listing)) pending.listing = null;
+        if (pending.listing !== null && now() < stopAt && await putListing(api, service, pending.listing)) pending.listing = null;
         if (!added && now() < stopAt) {
           const last = lastLooks();
           let opened = false;
@@ -1687,7 +1689,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       }
     }
   } finally {
-    if (pending.listing !== null && !await putListing(service, pending.listing)) out("This PC dropped out of your account's list; run link again to list it.\n");
+    if (pending.listing !== null && !await putListing(api, service, pending.listing)) out("This PC dropped out of your account's list; run link again to list it.\n");
     // the sign-in was only for this: it ends with it, and nothing of it stays on the PC
     await service.signOut().catch(() => out("The sign-in could not be ended at the account service; it ends by itself when it runs out.\n"));
   }
