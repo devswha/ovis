@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
+import { serialBrowserScripts } from "./ci-browser-parallel.ts";
 import { root, runScript } from "./shell-workflow-rules.ts";
 
 type Job = { if?: string; needs?: string | string[]; steps?: { name?: string; run?: string }[] };
@@ -71,14 +72,14 @@ describe("a pull request's reach into the browser jobs", () => {
   };
 
   it("leaves out no path that a browser job's script names", () => {
-    const lane = [...readFileSync(join(root, "scripts/ci-browser.sh"), "utf8").matchAll(/scripts\/[A-Za-z0-9_-]+\.ts/g)].map((match) => match[0]);
+    const lane = serialBrowserScripts();
     const sources = [...new Set([...lane, "vite.config.ts", "scripts/build-cache.ts", "scripts/ci-browser-parallel.ts", "scripts/ci-browser.sh", "scripts/demo-server.ts", "scripts/test-herdr.ts", "scripts/test-shell.ts", "scripts/ci-chromium.sh", "scripts/ci-ffmpeg.sh", "scripts/check.ts"])].filter((file) => existsSync(join(root, file)));
     expect(lane.length).toBeGreaterThan(100);
     const named = new Map<string, Set<string>>();
     const name = (literal: string, file: string): void => {
       const path = literal.replace(/^(\.\.?\/)+/, "").replace(/^\//, "").replace(/\/$/, "");
-      for (const candidate of [path, `${dirname(file)}/${path}`]) {
-        if (path === "" || path === "." || path === ".." || !existsSync(join(root, candidate))) continue;
+      for (const candidate of [path, `${dirname(file)}/${path}`].map((written) => posix.normalize(written))) {
+        if (path === "" || candidate === "." || candidate.startsWith("..") || !existsSync(join(root, candidate))) continue;
         const key = statSync(join(root, candidate)).isDirectory() ? `${candidate}/x` : candidate;
         (named.get(key) ?? named.set(key, new Set()).get(key)!).add(file);
       }
@@ -87,11 +88,15 @@ describe("a pull request's reach into the browser jobs", () => {
     for (const file of sources) {
       const text = readFileSync(join(root, file), "utf8");
       for (const match of text.matchAll(LITERAL)) name(match[1]!, file);
-      for (const call of text.matchAll(/\b(?:join|resolve)\(([^()]*)\)/g)) {
-        const parts = [...call[1]!.matchAll(LITERAL)].map((match) => match[1]!);
+      for (const call of text.matchAll(/\b(?:join|resolve)\(/g)) {
+        let depth = 1;
+        let end = call.index + call[0].length;
+        for (; depth > 0 && end < text.length; end++) depth += text[end] === "(" ? 1 : text[end] === ")" ? -1 : 0;
+        const parts = [...text.slice(call.index + call[0].length, end - 1).matchAll(LITERAL)].map((match) => match[1]!);
         for (let from = 0; from < parts.length; from++) for (let to = from + 2; to <= parts.length; to++) name(parts.slice(from, to).join("/"), file);
       }
     }
+    for (const script of lane) name(script, "scripts/ci-browser.sh");
     expect(named.has("scripts/fixtures/file-preview.webm"), "a path built from parts is read too").toBe(true);
     const paths = [...named.keys()];
     const result = spawnSync("bash", ["-c", "while IFS= read -r path; do printf '%s\\n' \"$path\" | bash \"$0\" | grep -q browser=false && echo \"$path\"; done; true", join(root, "scripts/ci-browser-reach.sh")], { input: paths.map((path) => `${path}\n`).join(""), encoding: "utf8" });
