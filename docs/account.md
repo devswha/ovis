@@ -674,9 +674,10 @@ typed and nothing is approved on the PC. Because the code admits whoever holds i
   an app link) or the phone's browser signs in to that account, comes back to the PC's page and
   asks to join the PC as any device of the account does. A device the PC does not know yet is
   approved once, by a drive member of the PC picking its digits ([Introductions](#introductions)).
-  A browser's sign-in comes back on the front page alone; the PC's ID waits for it in the tab's
-  session storage (`ovis-sign-in-pc`, for the sign-in's ten minutes), and the front page goes on to
-  that PC's page instead of its launch.
+  A browser's sign-in comes back on the front page alone; the PC's ID rides in that sign-in's own
+  pending record (`pc`, beside its PKCE state), and the front page goes on to that PC's page only
+  when that very sign-in succeeded, before any launch. A sign-in that ends on the page itself (the
+  app's sheet) joins once the account's PCs are read.
   The page reads the PC's account as the tab opens and again at the press, and
   the PC itself refuses the code (`409 in_account`), so a page that read it a moment too early
   shows no QR code either: the refusal makes it look at the PC at once, and the notice below
