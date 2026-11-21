@@ -130,7 +130,8 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
     if (rules.dropConflictingKeys && twin.relay_public_key !== device.relay_public_key) { rules.onDropped?.(device); continue; }
     const history = {
       role: device.role === "watch" || twin.role === "watch" ? "watch" : "drive",
-      created_at: earliest([device.created_at, twin.created_at])!,
+      // Step 2 uses a keyless cookie's own pairing time against a freeze. Never backdate it from its twin.
+      created_at: rules.dropConflictingKeys && device.relay_public_key === undefined ? device.created_at : earliest([device.created_at, twin.created_at])!,
       last_seen_at: [device.last_seen_at, twin.last_seen_at].filter((seen): seen is string => seen !== null).sort().at(-1) ?? null,
     } satisfies Pick<StoredDevice, "role" | "created_at" | "last_seen_at">;
     if (!rules.dropConflictingKeys && separateHeldTwins(device, twin)) {
@@ -344,6 +345,14 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     if (!rules.dropConflictingKeys && mineToo && separateHeldTwins(mineToo, copy)) return { ...copy, role: device.role };
     const kept = mineToo === undefined ? copy.origin : keptOrigin(copy, mineToo, device.relay_public_key);
     const other = { ...device, ...(kept === undefined ? {} : { origin: kept }), ...(copy.imported || copy.relay_public_key !== device.relay_public_key ? { imported: true as const } : {}) };
+    if (rules.dropConflictingKeys && device.relay_public_key === undefined) {
+      other.created_at = copy.created_at;
+      if (copy.token_hash !== device.token_hash) other.untrusted_created_at = copy.created_at;
+      else if (copy.untrusted_created_at === undefined) delete other.untrusted_created_at;
+      else other.untrusted_created_at = copy.untrusted_created_at;
+      if (copy.token_hash === device.token_hash && copy.off_pair_binding !== undefined) other.off_pair_binding = copy.off_pair_binding;
+      else delete other.off_pair_binding;
+    }
     if (!rules.dropConflictingKeys && mineToo) {
       if (Object.hasOwn(copy, "held")) other.held = copy.held;
       else delete other.held;

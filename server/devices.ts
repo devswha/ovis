@@ -202,6 +202,8 @@ export interface StoredDevice {
   origin?: RowOrigin;
   /** A clock-ahead legacy stamp has no authority, even after the clock catches up. */
   untrusted_created_at?: string;
+  /** Cookie paired locally during this binding's service opt-out. It has a normal admission number. */
+  off_pair_binding?: string;
   invalid_origin?: true;
   /** a copy a sibling merge brought into this dir with the release flag on: no row of this dir's own, never legacy (T50) */
   imported?: true;
@@ -352,6 +354,7 @@ export function readDeviceRegistry(path: string, opensAll = accountOpensAll()): 
       && (d.link_moved_key === undefined || typeof d.link_moved_key === "boolean")
       && (d.imported === undefined || d.imported === true)
       && (d.invalid_origin === undefined || d.invalid_origin === true)
+      && (d.off_pair_binding === undefined || (typeof d.off_pair_binding === "string" && /^[0-9a-f]{32}$/.test(d.off_pair_binding)))
       && (d.untrusted_created_at === undefined || typeof d.untrusted_created_at === "string")
       && (d.account_add === undefined || isJsonObject(d.account_add))
       && (!opensAll || (d.held === undefined || (typeof d.held === "string" && /^[0-9a-f]{32}$/.test(d.held)))
@@ -956,11 +959,10 @@ export class DeviceStore {
     // Only retaining a current list admission can use its age: a new pairing or readmission cannot inherit it.
     const listed = proof === "list" && key !== undefined ? this.joinedRows?.rowsByKey(key).find(candidate => candidate.state !== "expired") : undefined;
     if (listed) rows.push(this.joinedAsStored(listed));
-    return state.freezes.every(({ record, asof }) => {
+    return state.freezes.every(({ record, asof, targetOnlyCompanion }) => {
       if (key === record.target) return false;
       if (record.kind === "freeze") {
-        const no = key === undefined ? null : this.accountOrder?.no(key) ?? listed?.no;
-        return key !== undefined && no != null && this.accountOrder?.late(key) === false && no <= record.after;
+        return this.beforeServiceCutoff(key, record.after, targetOnlyCompanion && proof === "legacy_credential" ? options?.legacyRow : undefined);
       }
       return rows.length > 0 && rows.every((row) => !this.newerThanFreeze(row, asof));
     });
@@ -1058,14 +1060,26 @@ export class DeviceStore {
     if (asof?.target_only === true) return false;
     if (device.origin?.from === "pc") return false;
     if (asof?.joined == null) return true;
+    if (device.relay_public_key === undefined && (device.imported || device.untrusted_created_at !== undefined
+      || (device.origin?.from === "legacy" && device.origin.at !== device.created_at))) return true;
     const cutoff = { admit_no: asof.joined, ...(asof.legacy_created_at === undefined ? {} : { legacy_created_at: asof.legacy_created_at }) };
     return compareAdmissionPositions(admissionPosition(device), cutoff) !== "older";
   }
 
-  /** S22: local blocks freeze rows in place; service freezes have no local cutoff. */
+  /** The service cut is account order. Only a companion line permits a credential-only legacy exception. */
+  private beforeServiceCutoff(key: string | undefined, after: number, legacy?: StoredDevice): boolean {
+    const no = key === undefined ? null : this.accountOrder?.no(key) ?? this.joinedRows?.rowsByKey(key)[0]?.no;
+    if (no == null) return legacy !== undefined && this.isLegacyCredential(legacy);
+    return key !== undefined && this.accountOrder?.late(key) === false && no <= after;
+  }
+
   private frozen(device: StoredDevice): boolean {
-    const blocks = this.safety?.state().blocks ?? [];
-    return blocks.some((entry) => device.relay_public_key !== entry.record.target && this.newerThanFreeze(device, entry.asof));
+    const state = this.safety?.inForce;
+    if (!state) return false;
+    if (state.blocks.some(entry => device.relay_public_key !== entry.record.target && this.newerThanFreeze(device, entry.asof))) return true;
+    const key = device.relay_public_key;
+    return state.freezes.some(({ record, targetOnlyCompanion }) => targetOnlyCompanion && record.kind === "freeze"
+      && (key === record.target || !this.beforeServiceCutoff(key, record.after, device)));
   }
 
   /**
@@ -1129,20 +1143,19 @@ export class DeviceStore {
       const access = listed ? this.listedAccess(listed) : null;
       return access !== null && "ok" in access;
     };
-    const signers = denyByAccountOrder
+    const signers = legacyTarget && (got === "snapshot" || got === "mailbox")
       ? this.memberRows(record.signer, record.account).filter(row => !row.imported && !row.invalid_origin && row.held === undefined
         && admissionPosition(row) !== null && standing(row) && this.admissionAllowed(record.signer, "legacy_credential", { legacyRow: row }))
       : this.signingRows(record.signer, record.account);
-    if (signers.length === 0 && !(legacyTarget && this.memberRows(record.signer, record.account).length > 0)) return refused("signer_not_member");
+    if (signers.length === 0) return refused("signer_not_member");
     if (signers.some((d) => this.frozen(d))) return refused("frozen");
-    if (denyByAccountOrder && (signers.length === 0 || !order.registered(record.signer, record.account)
+    if (denyByAccountOrder && (!order.registered(record.signer, record.account)
       || order.late(record.signer) || pinnedSigner !== record.signer_no || pinnedTarget !== record.target_no
       || pinnedSigner >= pinnedTarget)) return refused("signer_not_older");
     if (legacyTarget && !denyByAccountOrder) {
       if (!safety.wait({ record, got, signer_removed: false })) return refused("record_invalid");
       return refused("unknown_target");
     }
-    if (signers.length === 0) return refused("signer_not_member");
     // a target this PC has no row of: the block waits, ends nobody, and is judged when its target is here (P19)
     if (allTargets.length === 0) {
       if (!safety.wait({ record, got, signer_removed: false })) return refused("record_invalid");
@@ -2086,15 +2099,20 @@ export class DeviceStore {
       lastSeenAt: row.last_signin_day };
   }
 
+  private isLegacyCredential(device: StoredDevice): boolean {
+    return !device.invalid_origin && (device.imported
+      ? this.siblingLegacyCredential?.(device) === true && !this.journal?.entries().some(entry => entry.row === device.id)
+      : device.origin?.from === "legacy" || this.legacyFromRegistry(device));
+  }
+
   /** Whether the devices.json row `id` waits for the first whole read (T41). */
   catchingUp(id: string, credential = true): boolean {
     const device = this.devices.find((d) => d.id === id);
     if (device === undefined) return false;
     // A Step-1 writer may have added a credential during rollback. It gets no admission order.
-    const legacy = credential && !device.invalid_origin && (device.imported
-      ? this.siblingLegacyCredential?.(device) === true && !this.journal?.entries().some(entry => entry.row === id)
-      : device.origin?.from === "legacy" || this.legacyFromRegistry(device));
-    return this.catchUp?.waits({ id, origin: device.origin }, legacy
+    const offPair = device.off_pair_binding !== undefined && !device.imported && device.relay_public_key === undefined
+      && this.pc?.binding()?.bind_id === device.off_pair_binding && this.pc.serviceStep2Off();
+    return this.catchUp?.waits({ id, origin: device.origin }, credential && (this.isLegacyCredential(device) || offPair)
       ? () => this.admissionAllowed(device.relay_public_key, "legacy_credential", { legacyRow: device }) : undefined) ?? false;
   }
 
@@ -2225,9 +2243,10 @@ export class DeviceStore {
     const token = randomBytes(32).toString("hex");
     const created_at = new Date(now).toISOString();
     // An owner-issued local code during service opt-out pairs a cookie, never a Step-2 key.
-    const legacy = this.pending?.ownPc === true && !this.pending.remote && this.pc?.serviceStep2Off() === true;
+    const offBinding = this.pending?.ownPc === true && !this.pending.remote && this.pc?.serviceStep2Off()
+      ? this.pc.binding()?.bind_id : undefined;
     const device: StoredDevice = { id: randomBytes(8).toString("hex"), label, role, token_hash: hash(token), created_at,
-      last_seen_at: null, ...(legacy ? { origin: legacyOrigin(created_at) } : {}) };
+      last_seen_at: null, ...(offBinding === undefined ? {} : { off_pair_binding: offBinding }) };
     if (!this.gated) {
       this.voidPending();
       this.unconfirmedFirstPairs.push({ device, expires: now + CODE_TTL_MS, origin });

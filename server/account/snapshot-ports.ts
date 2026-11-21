@@ -100,7 +100,10 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       fenceFreezes();
       for (const line of stage.snapshot.freezes) {
         const block = blocks.get(line.block);
-        if (!block || safetyLog.receipt(line.block) || devices.isTombstoned(block.signer)) continue;
+        if (!block || devices.isTombstoned(block.signer)) continue;
+        // An exact-key decision supplies no local cutoff for numbered rows; retain its service cutoff too.
+        if (safetyLog.receipt(line.block) && !safetyLog.inForce.blocks.some(entry =>
+          entry.record.id === line.block && entry.asof?.target_only === true)) continue;
         const id = `f:${line.block}`;
         if (safetyLog.receipt(id)) continue;
         const receipt = safetyLog.append({ got: "snapshot", record: { v: 1, kind: "freeze", id, account: block.account,
