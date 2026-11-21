@@ -225,6 +225,38 @@ describe("the hosted shell's front page", () => {
     } finally { setPcNewness(null); }
   });
 
+  it.each([
+    ["inside its 24 hours", 3_600_000, true],
+    ["past its 24 hours", -60_000, false],
+  ] as const)("#16, C3 pin 1: an approved device signed in again opens a PC %s with its sessions held until the account's PCs are read, then as they say: %p", async (_case, newFor, held) => {
+    const { server_id, server_public_key } = keyFor();
+    const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const saved: RelayDevice = { server_id, server_public_key, relay: AP, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" };
+    class Admitted extends RelayTransport {
+      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+    }
+    let apps = 0;
+    const directory = Promise.withResolvers<Response>();
+    setPcNewness(null);
+    // no window kept in this browser: the launch of its new sign-in opened the PC before the account's PCs were read
+    localStorage.removeItem(`ovis-new-pc:${server_id}`);
+    try {
+      await mountRelayShell(mountFor({
+        entryUrl: `https://app.ovis.sh/s/${server_id}/`, store: deviceStore([saved]), shellVersion: "1.0.0",
+        open: async (offer) => new Admitted(offer),
+        renderApp: () => { apps++; return { render() {}, unmount() {} }; },
+        pendingPush: { get: async () => undefined, clear: async () => {} },
+        ...await registeredSignIn(),
+        accountFetch: async (input) => new URL(String(input)).pathname === "/v1/pcs" ? directory.promise : new Response(null, { status: 404 }),
+      }));
+      await until(() => apps === 1, "the app");
+      expect(pcHeld()).toBe(true);
+      directory.resolve(Response.json({ pcs: [{ server_id, label: "Mac", added_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date().toISOString(), public_key: null, relay: null, new_until: new Date(Date.now() + newFor).toISOString(), admitted_at: new Date(Date.now() - 3_600_000).toISOString() }] }));
+      for (let round = 0; round < 50 && pcHeld() !== held; round++) await settleSigned();
+      expect(pcHeld()).toBe(held);
+    } finally { setPcNewness(null); }
+  });
+
   // the account service's provider list landing while a PC that turned this phone away is still being cleaned up draws
   // nothing: the app is gone, and the screen it left behind (Connecting) is not the one to bring back
   it("draws no stale screen when the provider list lands while a revoked PC's failure is still being read", async () => {

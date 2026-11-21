@@ -316,7 +316,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       else show({ ...shown, account: withRefusal(account.state) });
       return;
     }
-    if (app !== null && last !== null) setPcNewness(newnessOf(last.offer.server_id));
+    if (app !== null && last !== null) setPcNewness(heldOf(last));
     if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
     // a launch waiting on its card for the account's PCs goes on once they are read
     else if (frontUp() || (accountLaunch && app === null && !left && launchCard !== null && shown === launchCard)) { if (sheetJoin && shown) show(shown); else await showFront(); }
@@ -557,7 +557,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   /** Every PC a launch may open, saved ones and the account's, the one opened last first. */
   const candidates = (devices: readonly RelayDevice[]): ProbeTarget[] => lastFirst([...openablePcs(devices), ...accountTargets(devices, [])], lastPc());
   // a PC of the account with no saved pairing opens on its own page through the account key (the page's load, below)
-  const leaveFor = (serverId: string): void => { left = true; keepLaunchedPc(serverId); navigate(serverScopePath(serverId)); };
+  // its new window as this page read it goes with it (C3 pin 1, #16): the PC's page holds its sessions before it reads the
+  // account's PCs itself, an approved device signing in again included
+  const leaveFor = (serverId: string): void => { left = true; newnessOf(serverId); keepLaunchedPc(serverId); navigate(serverScopePath(serverId)); };
   /** Check again on the front page that says no PC is online: the launch's pick once more, over every PC it may open. */
   const findPc = async (): Promise<void> => {
     if (left || !frontUp()) return;
@@ -607,7 +609,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (account.enabled) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const late = new Promise<void>((resolve) => { timer = setTimeout(resolve, ACCOUNT_READ_WAIT_MS); });
-      try { await Promise.race([account.load(null), late]); }
+      // after the read the opened PC asked for (its newness, enterApp), which a load meanwhile would not wait for
+      try { await Promise.race([newnessRead.then(() => account.load(null)), late]); }
       finally { clearTimeout(timer); }
     }
     const pc = await answering(candidates(await store.list()).filter((target) => target.server_id !== here).slice(0, LAUNCH_PCS));
@@ -843,10 +846,27 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const until = keptNewPc(serverId);
     return until !== null && until > Date.now() ? { until } : null;
   };
+  /**
+   * What the opened PC's page holds (C3 pin 1, #16): its new window as read or kept, and "unknown" while a sign-in's PCs are
+   * not read yet with no window kept here (an approved device signing in again, opened before the read landed); nothing
+   * for a pairing that joins no account.
+   */
+  const heldOf = (attempt: Attempt): PcNewness => {
+    const newness = newnessOf(attempt.offer.server_id);
+    if (newness !== null || attempt.accountless === true || !account.enabled) return newness;
+    const view = account.state;
+    return !accountRead || view?.kind === "signing-in" || (view?.kind === "signed-in" && view.pcs === null && view.error === null) ? "unknown" : null;
+  };
+  /** the account read the opened PC asked for to learn how new it is (enterApp) */
+  let newnessRead: Promise<void> = Promise.resolve();
   const enterApp = (opened: RelayTransport, attempt: Attempt): void => {
     if (launchJoinFor(attempt.offer.server_id)) keepLaunchJoin(null);
-    // C3 pin 1 (#16): a PC new in the account opens with nothing of it selected (accountChanged reads it again)
-    setPcNewness(newnessOf(attempt.offer.server_id));
+    // C3 pin 1 (#16): a PC new in the account opens with nothing of it selected (accountChanged reads it again). Signed in
+    // with the account's PCs not read yet and no window kept here (an approved device signing in again, whose launch opened
+    // the PC before the read landed), it is held until they are read, which this asks for
+    const held = heldOf(attempt);
+    setPcNewness(held);
+    if (held === "unknown") newnessRead = account.load(null).then(() => setPcNewness(heldOf(attempt)), () => setPcNewness(null));
     rememberPc(attempt.offer.server_id);
     keepLaunchTried([]);
     // opened here: a PC an introduction alone saved is now one this device chose, which a later launch may reopen
