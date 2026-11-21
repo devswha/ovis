@@ -83,20 +83,21 @@ function memberRow(account: string): StoredDevice {
 }
 
 describe("the PC's account binding (account-pc.json)", () => {
-  test("unlisting retains only owned pairing origins and never retains an imported or invalid origin", () => {
+  test("unlisting retains only owned pairing origins and never retains an imported or invalid origin", async () => {
     const dir = stateDir();
     const binding = PcAccountState.open(dir);
     binding.migrate(null, true);
     binding.bindByService(ACCOUNT);
-    const makeRow = (from: "legacy" | "pc" | "remote", how: "code" | "add" = "code", extra: Partial<StoredDevice> = {}) => {
+    const makeRow = (from: "legacy" | "pc" | "remote", how: "code" | "digits" | "add" = "code", extra: Partial<StoredDevice> = {}, by: string | null = null) => {
       const row = memberRow(ACCOUNT);
       return { ...row, linked_at: row.created_at, origin: from === "legacy"
         ? { from, how: "legacy" as const, at: row.created_at, admit_no: 0, by: null }
-        : binding.admit(from, how, null, Date.parse(row.created_at)), ...extra };
+        : binding.admit(from, how, by, Date.parse(row.created_at)), ...extra };
     };
-    const keep = [makeRow("pc"), makeRow("legacy"), makeRow("remote", "code", { role: "watch" })];
+    const keep = [makeRow("pc"), makeRow("legacy"), makeRow("remote", "code", { role: "watch" }), makeRow("remote", "digits")];
     const drop = [makeRow("pc", "code", { imported: true }), makeRow("legacy", "code", { invalid_origin: true }),
-      makeRow("remote", "add"), makeRow("remote", "code", { added_by: keep[0]!.id }), makeRow("remote", "code", { link_moved_key: true })];
+      makeRow("remote", "add"), makeRow("remote", "code", { added_by: keep[0]!.id }), makeRow("remote", "code", { link_moved_key: true }),
+      makeRow("remote", "digits", {}, (await accountKey()).spki), makeRow("remote", "digits", { imported: true })];
     writeFileSync(join(dir, "devices.json"), JSON.stringify({ gate_closed_at: keep[0]!.created_at, devices: [...keep, ...drop] }), { mode: 0o600 });
     const devices = store(dir);
     expect(devices.accountError).toBeNull();

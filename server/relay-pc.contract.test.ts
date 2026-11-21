@@ -123,6 +123,10 @@ it("unreadable account evidence refuses a PC add without claiming the unbound so
   expect(b.context.services.devices.list(null).filter(row => row.via_relay)).toEqual([]);
   expect(response?.status).toBe(409);
   expect(await response?.json()).toMatchObject({ error: { code: "pc_add_account_unavailable", message: "Can't add a PC right now. Try again in a moment." } });
+  const status = await handleRequest(new Request(`${a.base}/api/account/status`, { headers: { host: new URL(a.base).host } }),
+    { ...a.app.context, ownerSocket: true, requestIP: () => ({ address: "127.0.0.1" }), timeout() {} });
+  expect(status?.status).toBe(200);
+  expect(await status?.json()).toMatchObject({ account: null, pc_add_from_account: "unavailable" });
 });
 
 const errorCode = async (response: Response) => (await response.json() as { error: { code: string } }).error.code;

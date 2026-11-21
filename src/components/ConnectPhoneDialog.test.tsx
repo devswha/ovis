@@ -8,6 +8,7 @@ import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import type { PairedDevice, PortalStatus, RelayStatus } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
+import { pcAccountStatus, type PcAccountStatus } from "../lib/account/join.ts";
 import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
 import type { RelayState } from "../lib/useRelay.ts";
 import type { Machine } from "../../shared/machines.ts";
@@ -38,7 +39,7 @@ describe("Connect a phone on a phone", () => {
   let shellMeta: boolean;
   let tailnetAnswer: Promise<void>;
   let tailnetOutdated: boolean;
-  let targetBound: boolean, tailnetRelay: string | null;
+  let tailnetRelay: string | null;
   let extraCandidates: object[];
   let candidatesRefused: string | null;
   /** the bodies of POST /api/machines/address, and whether the next one is refused as a wrong code */
@@ -74,7 +75,7 @@ describe("Connect a phone on a phone", () => {
     shellMeta = false;
     tailnetAnswer = Promise.resolve();
     tailnetOutdated = true;
-    targetBound = false; tailnetRelay = "online";
+    tailnetRelay = "online";
     extraCandidates = [];
     candidatesRefused = null;
     addressAsked = [];
@@ -126,9 +127,6 @@ describe("Connect a phone on a phone", () => {
         return Response.json({ code: held.code, expires_at });
       }
       if (path === "/api/machines/tailnet") {
-        if (init?.method === "POST") return targetBound
-          ? Response.json({ error: { code: "pc_add_target_bound", message: "That PC is in an account. Add it from that account." } }, { status: 409 })
-          : Response.json({ machine: { id: "winvm", name: "winvm", kind: "relay" } }, { status: 201 });
         await tailnetAnswer;
         return Response.json({ pcs: [{ name: "winvm", url: "https://winvm.tail.ts.net:8443", relay: tailnetRelay, outdated: tailnetOutdated }] });
       }
@@ -540,14 +538,16 @@ describe("Connect a phone on a phone", () => {
     expect(text(renderer!.root)).toContain("Added");
   });
 
-  it("Connect opens SSH even when the Tailscale PC has an online account-bound relay", async () => {
-    targetBound = true; tailnetOutdated = false;
+  it("Connect opens SSH without requesting a relay add even when the Tailscale peer is online", async () => {
+    tailnetOutdated = false;
     const ssh = mock(() => {});
     await mount(<Tailscale machines={[]} onAddPc={ssh} />);
     await flushReads();
+    requests.length = 0;
     await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect winvm" }).props.onClick(); });
     await flushReads();
     expect(ssh).toHaveBeenCalledWith({ destination: "winvm.tail.ts.net", name: "winvm" });
+    expect(requests).not.toContain("/api/machines/tailnet");
   });
 
   it("holds a Tailscale PC's Connect until its Ovis is known, so an older one is not added meanwhile", async () => {
@@ -941,11 +941,11 @@ describe("the relay tab's QR code behind a press", () => {
     descriptors.clear();
   });
 
-  interface TabOptions { signedIn?: boolean; accountId?: string | null; joinBySignIn?: boolean; relay?: RelayState; active?: boolean; pcAdd?: boolean }
-  const tab = ({ signedIn = true, accountId = signedIn ? ACCOUNT_ID : null, joinBySignIn = false, relay = relayState(), active = true, pcAdd = false }: TabOptions = {}) => (
+  interface TabOptions { signedIn?: boolean; accountId?: string | null; joinBySignIn?: boolean; relay?: RelayState; active?: boolean; pcAdd?: PcAccountStatus["pcAddFromAccount"] }
+  const tab = ({ signedIn = true, accountId = signedIn ? ACCOUNT_ID : null, joinBySignIn = false, relay = relayState(), active = true, pcAdd }: TabOptions = {}) => (
     <SettingsProvider>
       <RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={accountId} joinBySignIn={joinBySignIn} account={pcAdd ? { ...SERVICE, opensAll: () => true } : SERVICE} phone={false} active={active}
-        {...(pcAdd ? { onConnectMachine: () => {}, pcAddFromAccount: true } : {})}
+        {...(pcAdd ? { onConnectMachine: () => {}, pcAddFromAccount: pcAdd } : {})}
         onPairingHeld={(next) => { held.push(next); }} onRevokedAll={() => { revokedAll += 1; }} />
     </SettingsProvider>
   );
@@ -977,6 +977,15 @@ describe("the relay tab's QR code behind a press", () => {
     expect(renderer!.root.findAllByType(RelayAccountPcs)).toHaveLength(1);
   });
   const minted = () => requests.filter((path) => path === "/api/relay/code" || path === "/api/relay/offer" || path === "/api/devices/pair/start");
+  it("unreadable PC add state shows the retry line instead of either pairing path", async () => {
+    const status = await pcAccountStatus(async () => Response.json({ account: null, pc_add_from_account: "unavailable" }));
+    await mount({ pcAdd: status.pcAddFromAccount, joinBySignIn: true });
+    expect(text(renderer!.root)).toContain("Can't add a PC right now. Try again in a moment.");
+    expect(text(renderer!.root)).not.toContain("Add from account");
+    expect(text(renderer!.root)).not.toContain("Show the QR code");
+    expect(renderer!.root.findAllByType(RelayAccountPcs)).toHaveLength(0);
+    expect(minted()).toEqual([]);
+  });
   const count = (path: string) => requests.filter((request) => request === path).length;
 
   for (const [name, options] of [

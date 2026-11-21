@@ -250,29 +250,29 @@ test("T47/N4: on a PC with an access token, the owner's own window (loopback, th
 });
 
 const clearReasons = ["unlisted", "identity_reset", "revoke_all"] as const satisfies readonly ClearReason[];
-  test.skipIf(process.platform !== "linux")("a standing Not me after unlisting accepts only a screen-confirmed phone", async () => {
-    const made = await screenedPc();
-    await firstPairingRead(made);
-    const { devices, safetyLog } = made.app.context.services;
-    const target = await memberRow("acct_1");
-    const block = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", signer: made.member.key.spki, signer_no: 1,
-      target: target.key.spki, target_no: 2, signed_at: new Date().toISOString(), nonce: newRecordId() }, made.member.key.keys.privateKey);
-    expect(safetyLog?.append({ record: block, got: "handed", asof: { signer_no: 1, target_no: 2, joined: 0, after: 0, signer_removed: false } }).outcome).toBe("applied");
-    expect(safetyLog?.append({ got: "snapshot", record: { kind: "freeze", v: 1, id: `f:${block.id}`, account: "acct_1",
-      target: target.key.spki, after: 1, signed_at: block.signed_at, signer: "service", signature: "" } }).outcome).toBe("applied");
-    expect(devices.clearAccountBinding("unlisted", "account")).toBe(true);
-    expect(devices.pairRelay(devices.startPairing().code, "Target", target.key.spki)).toBeNull();
-    expect((await made.local("/api/account/lock")).body.bound).toBe(false);
-    const fresh = await provingDevice(made, devices.startPairing().code);
-    await fresh.pending;
-    const admitted = deferred<string>();
-    fresh.link.onFrame = frame => { if (frame.type === FrameType.AUTH_OK) admitted.resolve(frame.payload.device_id); };
-    made.approve("approve_key");
-    const id = await bounded(admitted.promise);
-    expect(await signIn(made, id, fresh.device)).toHaveProperty("role", "drive");
-    expect(safetyLog?.inForce.blocks.map(entry => entry.record.id)).toContain(block.id);
-    expect(devices.pairRelay(devices.startPairing().code, "Still blocked", target.key.spki)).toBeNull();
-  });
+test.skipIf(process.platform !== "linux")("a standing Not me after unlisting accepts only a screen-confirmed phone", async () => {
+  const made = await screenedPc();
+  await firstPairingRead(made);
+  const { devices, safetyLog } = made.app.context.services;
+  const target = await memberRow("acct_1");
+  const block = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", signer: made.member.key.spki, signer_no: 1,
+    target: target.key.spki, target_no: 2, signed_at: new Date().toISOString(), nonce: newRecordId() }, made.member.key.keys.privateKey);
+  expect(safetyLog?.append({ record: block, got: "handed", asof: { signer_no: 1, target_no: 2, joined: 0, after: 0, signer_removed: false } }).outcome).toBe("applied");
+  expect(safetyLog?.append({ got: "snapshot", record: { kind: "freeze", v: 1, id: `f:${block.id}`, account: "acct_1",
+    target: target.key.spki, after: 1, signed_at: block.signed_at, signer: "service", signature: "" } }).outcome).toBe("applied");
+  expect(devices.clearAccountBinding("unlisted", "account")).toBe(true);
+  expect(devices.pairRelay(devices.startPairing().code, "Target", target.key.spki)).toBeNull();
+  expect((await made.local("/api/account/lock")).body.bound).toBe(false);
+  const fresh = await provingDevice(made, devices.startPairing().code);
+  await fresh.pending;
+  const admitted = deferred<string>();
+  fresh.link.onFrame = frame => { if (frame.type === FrameType.AUTH_OK) admitted.resolve(frame.payload.device_id); };
+  made.approve("approve_key");
+  const id = await bounded(admitted.promise);
+  expect(await signIn(made, id, fresh.device)).toHaveProperty("role", "drive");
+  expect(safetyLog?.inForce.blocks.map(entry => entry.record.id)).toContain(block.id);
+  expect(devices.pairRelay(devices.startPairing().code, "Still blocked", target.key.spki)).toBeNull();
+});
 for (const reason of clearReasons) for (const channel of ["screen", "terminal"] as const) {
   test.skipIf(process.platform !== "linux")(`a standing lock remains owner-unlockable after ${reason} via ${channel}`, async () => {
     const made = await screenedPc(reason === "unlisted");

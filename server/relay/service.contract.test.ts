@@ -761,6 +761,23 @@ it("rejects CSRF before connecting or closing the device gate", async () => {
   expect(f.app.context.services.devices.gated).toBe(false);
 });
 
+it("a bound PC with an unreadable registry refuses identity reset before closing its relay or changing its binding", async () => {
+  const f = await fixture(false, {}, { accountOpensAll: true });
+  await f.start();
+  f.app.context.services.devices.bindByService("acct_fixture");
+  const binding = () => readFileSync(join(f.stateDir, "account-pc.json"), "utf8");
+  const identity = () => readFileSync(relayIdentityPath(f.stateDir), "utf8");
+  const before = [binding(), identity()];
+  const registry = join(f.stateDir, "devices.json");
+  writeFileSync(registry, "not JSON", { mode: 0o600 });
+  await f.restart();
+  expect(f.app.context.services.devices.error).not.toBeNull();
+  const priorPhase = f.service.status().phase;
+  const response = await f.request("/reset-identity", "POST");
+  expect([response.status, (await response.json()).error?.code, f.service.status().phase, binding() === before[0],
+    identity() === before[1], readFileSync(registry, "utf8") === "not JSON"]).toEqual([503, "gate_unavailable", priorPhase, true, true, true]);
+});
+
 it("rotates identity, closes old sessions, revokes only relay devices and reconnects", async () => {
   const f = await fixture();
   await f.start();

@@ -11,6 +11,20 @@ import { startFakePushService, type FakePushService } from "./push.fake.ts";
 import { createPushService, PUSH_EXTRA_KEYS } from "./push.ts";
 import { mergeRegistries, mergeSiblingState, recordedLegacyCredential, siblingStateDir } from "./state-merge.ts";
 
+it("settled sibling twins share membership and the signed add only for the reconciled binding", () => {
+  const plain: StoredDevice = { id: "a".repeat(16), role: "watch", label: "Phone", token_hash: "t", relay_public_key: "k",
+    created_at: "2026-11-15T00:00:00.000Z", last_seen_at: null };
+  const marked = { ...plain, account: "acct_old", account_add: { account: "acct_old" }, linked_at: plain.created_at, member_approved_in: "acct_old" };
+  for (const account of [null, "acct_new", "acct_old"]) for (const [a, b] of [[plain, marked], [marked, plain]] as const) {
+    const rules = { boundAccount: account, dropConflictingKeys: true };
+    const [row] = mergeRegistries({ devices: [a], gate_closed_at: null }, { devices: [b], gate_closed_at: null }, { own: null, other: null }, undefined, rules).devices;
+    expect(row?.token_hash).toBe(plain.token_hash);
+    expect([row?.account, row?.linked_at, row?.account_add]).toEqual(account === "acct_old"
+      ? [marked.account, marked.linked_at, marked.account_add] : [undefined, undefined, undefined]);
+    if (account !== "acct_old") expect(row?.member_approved_in).toBeUndefined();
+  }
+});
+
 const roots: string[] = [];
 const fakes: FakePushService[] = [];
 afterEach(() => {

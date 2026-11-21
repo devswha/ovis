@@ -157,14 +157,14 @@ async function accountWindow(browser: Browser, pageErrors: string[], relation: "
   return { context, page };
 }
 
-async function openRelayTab(page: Page) {
+async function openRelayTab(page: Page, expected = "This PC is in an account. Add PCs from your account.") {
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   await openSettingsPage(page, "Devices and PCs");
   await page.locator('.settings-dialog [data-section="devices"]').getByRole("button", { name: "Add a connection", exact: true }).click();
   const sheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
   await sheet.locator('.connect-tabs [data-tab="relay"]').click();
   const tab = sheet.locator('[data-tab-panel="relay"]');
-  await tab.getByText("This PC is in an account. Add PCs from your account.", { exact: true }).waitFor();
+  await tab.getByText(expected, { exact: true }).waitFor();
   assert.ok(!(await tab.innerText()).includes("acct_"), "no raw account ID");
   assert.equal(await tab.getByText(/This PC shows a QR code only|This browser is not signed in, so it cannot tell|To add a device, sign in to this PC's account/).count(), 0);
   return tab;
@@ -250,6 +250,15 @@ try {
     }
   }
 
+  for (const strict of [false, true]) {
+    const { page } = await accountWindow(browser, pageErrors, "signed-out");
+    await page.route("**/api/account/status*", route => route.fulfill(strict
+      ? { status: 403, json: { error: { code: "strict", message: "Unavailable" } } }
+      : { json: { account: null, pc_add_from_account: "unavailable" } }));
+    const tab = await openRelayTab(page, "Can't add a PC right now. Try again in a moment.");
+    assert.equal(await tab.getByRole("button", { name: /Add from account|Show the QR code/ }).count(), 0);
+    if (!strict) await shot(page, "unavailable");
+  }
   assert.deepEqual(pageErrors, [], "no page error");
   console.log("PASS the account's PCs: the sidebar lists those not in this app yet with nothing opened, Switched off with Check again for one that does not answer, and its Add pairs once a member approves; Add a connection → Ovis relay's Connect opens one already added; both select it in the sidebar with no SSH setup dialog");
 } catch (error) {
