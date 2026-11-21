@@ -160,7 +160,7 @@ it.each([false, true])("adds a PC of the account once a member there picked the 
 
   const registry = readDeviceRegistry(join(bState, "devices.json"));
   const row = registry.kind === "ok" ? registry.devices.find((device) => device.relay_public_key === started.body.key) : undefined;
-  expect(row).toMatchObject({ role: "drive", added_by: member.id });
+  expect(row).toMatchObject({ role: "watch", added_by: member.id });
   expect(row).not.toHaveProperty("account");
   expect(row).not.toHaveProperty("account_add");
   // nothing was signed for the account: no record waits for B or for any PC, and A never joined it
@@ -177,6 +177,33 @@ it.each([false, true])("adds a PC of the account once a member there picked the 
   cleanup.push(() => again.stop());
   const restarted = await (await fetch(`http://127.0.0.1:${again.port}/api/machines`, { headers: { origin: `http://127.0.0.1:${again.port}` } })).json() as { machines: Machine[] };
   expect(restarted.machines.some((m) => m.id === machine!.id && m.kind === "relay")).toBe(true);
+}, 60_000);
+
+it("admits the PC's server there as a device that only watches: reads pass through it, writes and adding PCs there are refused", async () => {
+  const { aBase, b, bState, pc, approver, admit } = await accountPcs();
+  const started = await start(aBase, pc);
+  await admit(started.body.key);
+  const member = await approver();
+  const prompted = remotePrompt(b);
+  const next = lines(await post(aBase, "pair", { ticket: started.body.ticket }));
+  const { digits } = await next();
+  const [request] = await prompted;
+  expect(await member.decide(request!.id, "approve", digits)).toBe(200);
+  const { machine } = await next();
+  // one row there for every device of A: a Revoke or block of one of them on B could not reach it through A
+  const registry = readDeviceRegistry(join(bState, "devices.json"));
+  expect(registry.kind === "ok" ? registry.devices.find((device) => device.relay_public_key === started.body.key)?.role : registry.kind).toBe("watch");
+  // A reads B as any PC it lists, connected
+  expect(machine).toMatchObject({ kind: "relay", state: "connected", error: null });
+  const onB = (method: string, path: string, body?: unknown) => fetch(`${aBase}/api/machines/${machine!.id}/${path}`,
+    { method, headers: machineHeaders(aBase), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  expect((await onB("GET", "session")).status).toBe(200);
+  expect((await onB("GET", "system")).status).toBe(200);
+  // B refuses every write that comes through A, adding a PC of the account there included
+  for (const [path, body] of [["pane/input", { pane_id: "w1:p1", text: "x" }], ["machines/relay/account/check", { pcs: [] }], ["machines/relay/account/start", { pc }]] as const) {
+    const refused = await onB("POST", path, body);
+    expect([path, refused.status, ((await refused.json()) as { error: { code: string } }).error.code]).toEqual([path, 403, "read_only"]);
+  }
 }, 60_000);
 
 it("adds nothing when the member declines, or picks other digits", async () => {

@@ -239,6 +239,12 @@ server's bridge token, which asks for its own install by revision.
 The request must also come from this app's own page: the `X-Herdr-Update: 1` header, same origin,
 no query. Anything else gets 403 `forbidden`. The app sends the header on every PC request.
 
+Adding a PC of the account ([account.md](account.md#adding-a-pc-of-your-account)) follows the same
+table. A PC added that way admits this server as a device that only watches it: one row for every
+device of this PC, which that PC could not revoke one by one, so it answers every write that comes
+through here, adding PCs there included, with 403 `read_only` until this PC tells it which device
+asks (a later change).
+
 ### Installing Ovis on a PC over SSH
 
 Where a PC's own Ovis cannot update itself, or a PC has none yet, Ovis is installed there from

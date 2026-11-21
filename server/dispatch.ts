@@ -74,7 +74,7 @@ import { handleVoiceRequest } from "./voice.ts";
 import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
 import { bridgeIdentity } from "./bridge.ts";
 import { discoverHerdrSessions } from "./herdr-discovery.ts";
-import { handleMachineRequest, nonCanonicalPath, slowMachinePath, type EventStreamBudget } from "./machine-api.ts";
+import { ACCOUNT_PC_OWNER_ONLY, handleMachineRequest, nonCanonicalPath, slowMachinePath, type EventStreamBudget } from "./machine-api.ts";
 import { machinePairingEvents } from "./machine-pairing-events.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
 import type { PiSessionReader } from "./pi-session-metadata.ts";
@@ -443,12 +443,15 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add PCs from your Tailscale on this PC itself, or from a device paired with it directly." } }, 403);
   }
-  // Another PC of the account is paired with this PC's server by a window direct to this PC that drives it (docs/account.md,
-  // "Adding a PC of your account"): a device on the relay, a Portal visitor or an open LAN window must not have this PC
-  // pair itself with whatever PC they name; a watching device is refused in machine-api.ts (read_only)
-  if (pathname.startsWith("/api/machines/relay/account/") && access.level === "full" && (access.via === "open" || access.via === "portal" || access.via === "relay")) {
+  // Another PC of the account is paired with this PC's server by a device that drives this PC (docs/account.md, "Adding a
+  // PC of your account"): a window direct to it, or a device paired with it over the relay, which is how the hosted shell
+  // and the phone reach this PC at all. Their account sign-in posts the admission that vouches for this PC, and a member
+  // still picks the digits on the other PC. An open LAN window or a Portal visitor has no such sign-in and must not have
+  // this PC pair itself with whatever PC they name; a watching device is refused above and in machine-api.ts (read_only).
+  // The same routes of another PC asked through this one are the owner's too (machine-api.ts ACCOUNT_PC_PATH).
+  if (pathname.startsWith("/api/machines/relay/account/") && access.level === "full" && (access.via === "open" || access.via === "portal")) {
     setRequestRoute("owner-refusal");
-    return jsonResponse({ error: { code: "owner_only", message: "Add PCs of your account on this PC itself, or from a device paired with it directly." } }, 403);
+    return jsonResponse({ error: { code: "owner_only", message: ACCOUNT_PC_OWNER_ONLY } }, 403);
   }
   // so is another PC's Ovis added by its address: this PC would keep a device token that drives it
   if (pathname === "/api/machines/address" && access.level === "full" && (access.via === "open" || access.via === "portal" || access.via === "relay")) {
@@ -516,9 +519,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     } else {
       // a worktree made with an agent waits on git and then agent.start, up to 150 s on the PC, and a
       // resume on agent.start and then its store check (machine-api.ts slowMachinePath)
-      // a move's install there is waited for 200 s (machine-api.ts): this connection is held a little longer still
+      // a move's install there is waited for 200 s (machine-api.ts), and so is that PC's comparison with another PC of
+      // the account (it holds it 180 s): this connection is held a little longer still
       const machinePathAsked = pathname.split("/").slice(4).join("/");
-      ctx.timeout(request, pathname === "/api/machines/events" ? 0 : machinePathAsked === "runtime/move/install" ? 210 : slowMachinePath(machinePathAsked) || pathname === "/api/machines/relay/account/pair" ? 180 : 80);
+      ctx.timeout(request, pathname === "/api/machines/events" ? 0 : machinePathAsked === "runtime/move/install" || machinePathAsked === "machines/relay/account/pair" ? 210 : slowMachinePath(machinePathAsked) || pathname === "/api/machines/relay/account/pair" ? 180 : 80);
       const deviceId = access.level === "full" ? access.device?.id : undefined;
       // Tabs opening at once each get a cookie of their own name; a later pairing carries all of them.
       const presentedKeys = streamKeys(request);

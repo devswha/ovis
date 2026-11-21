@@ -899,8 +899,11 @@ PC's refusal or the Tailscale tab's SSH connection.
 the account's other PCs: **Connect** for one already in A's machine list,
 **Add** for one that would pair, and "Update Ovis on that PC" or "Offline" with no button. **Add**
 makes A's server a paired device of that PC (B), as **Add a PC through the relay** with a link does,
-and A then lists B like any SSH PC, after a restart too. B's row is a plain drive row: A is never an
-account member, holds no account key and signs nothing ([rule 3](#rules)).
+and A then lists B like any SSH PC, after a restart too. B's row is a plain watch row: A is never an
+account member, holds no account key and signs nothing ([rule 3](#rules)), and it only watches B.
+That row stands for every device of A at once, so B could not revoke or block one of them that comes
+through A: B lets A read, never drive, until A tells B which device asks (a later change). A row made
+before this keeps its role.
 
 A's page cannot reach a relay (its `connect-src` is itself and the account service), so A's server
 does the relay work, and the page only vouches for it:
@@ -929,9 +932,19 @@ does the relay work, and the page only vouches for it:
    saving the PC leaves B a row for a key A dropped: nobody can sign in with it, B lists it as
    "Ovis on <host>" (announced as every admission is), and **Revoke** on B removes it.
 
-These routes are A's owner's, from a window direct to A that drives it: a device on the relay, a
+These routes are A's owner's, from a device that drives A: a window direct to A, or a device paired
+with A over the relay (the hosted shell at app.ovis.sh and the phone app reach A only that way). The
+admission comes from that device's own account sign-in, and a member still picks the digits on B. A
 Portal visitor and an open LAN window get 403 `owner_only`, a watching device `read_only`, so none
-of them can have A pair itself with a PC they name. No person checks A's side of the comparison:
+of them can have A pair itself with a PC they name.
+
+A passes the same routes of a PC it lists on to it (`POST /api/machines/<B's id>/machines/relay/account/{check,start,pair}`,
+`pair`'s lines as they come, held up to 200 seconds), from the devices it takes its own routes from
+(`owner_only` and `read_only` as above). B answers them as any device that watches it: 403
+`read_only`, as it refuses every other write that comes through A. A device adds PCs to B by
+connecting to B itself.
+
+No person checks A's side of the comparison:
 A dials B by B's own key, checked against B's id, so a relay cannot stand in for B. B's side is the
 one a member checks, by picking the digits A's page shows.
 
