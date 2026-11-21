@@ -1,7 +1,7 @@
 import { Monitor } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ACCOUNT_PCS_CHANGED_EVENT, myPcs, newPcs, type MyPc } from "../lib/account/myPcs.ts";
-import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, SignedOutError, type AccountService } from "../lib/account/service.ts";
+import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { indexedDeviceStore, type RelayDevice } from "../lib/relay/device.ts";
@@ -11,7 +11,15 @@ import { usePcRemoval } from "./usePcRemoval.tsx";
 import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
 
-type Asking = { readonly session: AccountSession; readonly pcs: readonly MyPc[] };
+type Asking = { readonly session: AccountSession; readonly pcs: readonly MyPc[]; readonly listings: ReadonlyMap<string, string> };
+
+/** One listing of a PC: a PC that asks again after a Decline is listed anew, so its new request is not the declined one. */
+const listingOf = (pc: DirectoryPc): string => pc.listing_id ?? `${pc.server_id}@${pc.added_at}`;
+
+/** The PCs still asking to join, each with the listing it asks by. */
+function askingPcs(listed: readonly DirectoryPc[], here: readonly RelayDevice[], now: number): { pcs: MyPc[]; listings: Map<string, string> } {
+  return { pcs: newPcs(myPcs(listed, here, { now }), now), listings: new Map(listed.map((pc) => [pc.server_id, listingOf(pc)])) };
+}
 
 /**
  * A PC that asks to join the account, as the PC's own Add this PC to my account leaves it when its one press is refused
@@ -21,7 +29,10 @@ type Asking = { readonly session: AccountSession; readonly pcs: readonly MyPc[] 
  * device says so here: Allow opens that PC's own page, whose join takes the number the PC's screen shows and the PC's
  * approval (the guards of every join, AddPcSheet). Decline denies the request: it removes the listing with this sign-in
  * (DELETE /v1/pcs/:id), so no device shows it and the PC is not added; the waiting PC ends its wait (AccountSection
- * deniedElsewhere) and asks again only by a new press. Only an app's own sign-in is offered either.
+ * deniedElsewhere) and asks again only by a new press. Only an app's own sign-in is offered either. A Decline first reads
+ * the directory again and removes the PC only while the listing it shows still asks: a card left open while another
+ * device let the PC in (or the PC asked again) is refreshed instead, and a declined card hides that listing only, so the
+ * PC's new press is shown.
  */
 const pairedHere = (): Promise<readonly RelayDevice[]> => indexedDeviceStore.list();
 const openPcPage = (serverId: string): void => window.location.assign(serverScopePath(serverId));
@@ -34,12 +45,14 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
 }) {
   const t = useT();
   const [asking, setAsking] = useState<Asking | null>(null);
+  // the declined listings, so a new request from the same PC is shown
   const [denied, setDenied] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   // a Decline is a removal (PCR-1): one the service wants a fresh own sign-in for says so, with Sign in again, in its card
   const removal = usePcRemoval(service, (serverId) => {
-    setDenied((prior) => new Set([...prior, serverId]));
+    const listing = asking?.listings.get(serverId);
+    if (listing !== undefined) setDenied((prior) => new Set([...prior, listing]));
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
   });
   useEffect(() => {
@@ -54,7 +67,7 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
         const [own, listed, here] = await Promise.all([directory.ownSignIn(), directory.listPcs(), devices()]);
         if (mine !== version) return;
         // a device code's sign-in is no one's to let a PC in or turn it away with
-        setAsking(own ? { session, pcs: newPcs(myPcs(listed, here, { now: now() }), now()) } : null);
+        setAsking(own ? { session, ...askingPcs(listed, here, now()) } : null);
       } catch (error) {
         if (mine !== version) return;
         if (error instanceof SignedOutError) setAsking(null);
@@ -83,13 +96,21 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
     setBusy(pc.server_id);
     setFailed(null);
     try {
+      // only the request this card shows: one another device let in, or the PC renewed by a new press, is not declined
+      const [listed, here] = await Promise.all([service.forSignIn(asking.session).listPcs(), devices()]);
+      const current = askingPcs(listed, here, now());
+      const shown = asking.listings.get(pc.server_id);
+      if (shown === undefined || current.listings.get(pc.server_id) !== shown || !current.pcs.some((still) => still.server_id === pc.server_id)) {
+        window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+        return;
+      }
       await removal.remove(asking.session, pc.server_id);
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       setFailed(pc.server_id);
     } finally { setBusy(null); }
   };
-  return asking.pcs.filter((pc) => !denied.has(pc.server_id)).map((pc) => (
+  return asking.pcs.filter((pc) => !denied.has(asking.listings.get(pc.server_id) ?? "")).map((pc) => (
     <div key={pc.server_id} className="update-notice is-paired device-notice" role="status" data-join-request={pc.server_id}>
       <Monitor aria-hidden="true" />
       <span className="device-notice-text">
