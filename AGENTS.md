@@ -4,9 +4,9 @@ Browser UI for the herdr terminal multiplexer: a React 19 + xterm.js client (`sr
 backend (`server/`) that bridges herdr's unix-socket API, and the wire contract both import
 (`shared/`). herdr owns every pty, scrollback and agent state; this app is only a bridge.
 
-These files hold only the traps the code and tests do not show. Commands, layout, checks and
-release steps are in [docs/development.md](docs/development.md); contributors follow
-[CONTRIBUTING.md](CONTRIBUTING.md). Code conventions (imports, CSS tokens, i18n entries, fixed
+These files hold only the traps the code and tests do not show. Setup and the checks are in
+[CONTRIBUTING.md](CONTRIBUTING.md); the release steps and the settings made once outside the
+repository are in [docs/development.md](docs/development.md). Code conventions (imports, CSS tokens, i18n entries, fixed
 sleeps, wording, icons) are enforced by the `conventions.test.ts` files, whose failures say what
 to change. Also read [server/AGENTS.md](server/AGENTS.md) and [src/AGENTS.md](src/AGENTS.md).
 
