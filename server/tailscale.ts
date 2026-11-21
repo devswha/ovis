@@ -276,9 +276,16 @@ const cliStatus = async (): Promise<string | null> => {
   return binary === null ? null : run(binary, ["status", "--json"]);
 };
 
-const cliWhois = async (address: string): Promise<string | null> => {
-  const binary = tailscaleBinary();
-  return binary === null ? null : run(binary, ["whois", "--json", address]);
+/**
+ * The WhoIs a source without a reader of its own asks: the tailscale CLI. Under bun test the preload replaces `read` with
+ * one that answers nothing (scripts/test-herdr.ts), so no test asks the real tailscaled; a test that needs an answer
+ * passes its own reader.
+ */
+export const tailscaleWhois = {
+  read: async (address: string): Promise<string | null> => {
+    const binary = tailscaleBinary();
+    return binary === null ? null : run(binary, ["whois", "--json", address]);
+  },
 };
 
 /**
@@ -304,6 +311,8 @@ export function parseWhois(text: string | null): TailnetNode | null {
 
 /** how long a tailnet address is taken to stay the same node */
 const WHOIS_TTL_MS = 60_000;
+/** how long a WhoIs that named nothing is not asked again, so a broken CLI is not spawned once per request */
+const WHOIS_FAILED_MS = 5_000;
 
 /**
  * What `tailscale status --json` says about this PC and its tailnet, read through `readStatus` and
@@ -320,27 +329,26 @@ export class TailnetIdentitySource {
   private cache: (TailnetIdentity & { at: number; settled: boolean; ownerKnown: boolean }) | null = null;
   private reading: Promise<void> | null = null;
 
-  private readonly nodes = new Map<string, { node: TailnetNode; at: number }>();
+  private readonly nodes = new Map<string, { node: TailnetNode | null; at: number }>();
   private readonly asking = new Map<string, Promise<TailnetNode | null>>();
 
   constructor(private readonly readStatus: () => Promise<string | null> = cliStatus,
-    private readonly readWhois: (address: string) => Promise<string | null> = cliWhois) {}
+    private readonly readWhois: (address: string) => Promise<string | null> = (address) => tailscaleWhois.read(address)) {}
 
   /**
-   * The node behind one tailnet address (`tailscale whois`), kept a minute; a read that fails is not kept, so the
-   * next request asks again. Reads of one address share the one in flight.
+   * The node behind one tailnet address (`tailscale whois`), kept a minute; a read that names nothing is kept five
+   * seconds, so a broken CLI is not spawned per request. Reads of one address share the one in flight.
    */
   async node(address: string): Promise<TailnetNode | null> {
     const kept = this.nodes.get(address);
-    if (kept !== undefined && Date.now() - kept.at < WHOIS_TTL_MS) return kept.node;
+    if (kept !== undefined && Date.now() - kept.at < (kept.node === null ? WHOIS_FAILED_MS : WHOIS_TTL_MS)) return kept.node;
     let reading = this.asking.get(address);
     if (reading === undefined) {
       reading = this.readWhois(address).then(parseWhois, () => null).finally(() => this.asking.delete(address));
       this.asking.set(address, reading);
     }
     const node = await reading;
-    if (node === null) this.nodes.delete(address);
-    else this.nodes.set(address, { node, at: Date.now() });
+    this.nodes.set(address, { node, at: Date.now() });
     return node;
   }
 
