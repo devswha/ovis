@@ -239,11 +239,11 @@ try {
 
   for (const relation of ["other", "signed-out"] as const) {
     const { page } = await accountWindow(browser, pageErrors, relation);
-    // a window signed out of this PC's account gets its one line and the sign-in, not the Add from account prompt
-    const tab = await openRelayTab(page, relation === "signed-out" ? "This PC is in an Ovis account." : undefined);
+    // a window signed out of this PC's account gets the sign-in alone, not the Add from account prompt
+    const tab = await openRelayTab(page, relation === "signed-out" ? "Sign in to Ovis" : undefined);
     if (relation === "signed-out") {
-      // one line and the sign-in: no Add from account prompt beside it
-      await tab.getByText("This PC is in an Ovis account.", { exact: true }).waitFor();
+      // the sign-in alone: no line above it, no Add from account prompt beside it
+      assert.equal(await tab.getByTestId("connect-signin").locator("p.settings-description, p.settings-hint").count(), 0);
       assert.equal(await tab.getByRole("button", { name: "Add from account", exact: true }).count(), 0);
       const signIn = tab.getByTestId("connect-signin");
       const first = signIn.getByRole("button").first();

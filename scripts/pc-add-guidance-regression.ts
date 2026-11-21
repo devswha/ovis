@@ -59,12 +59,12 @@ try {
       const sheet = page.locator(".connect-phone-dialog");
       await sheetRisen(page, ".connect-phone-dialog");
       await sheet.locator('.connect-tabs [data-tab="relay"]').click();
-      // signed out of a PC in an account: one line and the sign-in, never the Add from account prompt beside it (owner, 0.5.10)
+      // signed out of a PC in an account: the sign-in alone, no line above it and never the Add from account prompt (owner, 0.5.10)
       const signin = sheet.getByTestId("connect-signin");
-      await signin.getByText(language === "en" ? "This PC is in an Ovis account." : "이 PC는 Ovis 계정에 있어요.", { exact: true }).waitFor();
-      assert.equal(await sheet.getByTestId("pc-add-source-bound").count(), 0);
-      assert.equal(await signin.locator("p.settings-description, p.settings-hint").count(), 1);
       const provider = signin.getByRole("button", { name: /GitHub/ });
+      await provider.waitFor();
+      assert.equal(await sheet.getByTestId("pc-add-source-bound").count(), 0);
+      assert.equal(await signin.locator("p.settings-description, p.settings-hint").count(), 0);
       assert.equal(await provider.isEnabled(), true);
       assert.ok(!(await sheet.innerText()).includes("acct_"));
       assert.equal(await sheet.evaluate(el => el.scrollWidth <= el.clientWidth), true, "No horizontal clipping");

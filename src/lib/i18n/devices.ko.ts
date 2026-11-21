@@ -7,7 +7,6 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const DEVICES_KO: Record<string, string> = {
-  "This PC is in an Ovis account.": "이 PC는 Ovis 계정에 있어요.",
   "Sign in to this PC's account.": "이 PC의 계정으로 로그인하세요.",
   "This PC is in your account.": "이 PC는 내 계정에 있습니다.",
   "The PCs of this Tailscale login. Connect goes over SSH, with nothing to install there.": "이 Tailscale 계정의 PC예요. SSH로 연결하고, 그 PC에 설치할 것은 없어요.",

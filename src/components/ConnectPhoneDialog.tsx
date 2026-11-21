@@ -748,7 +748,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
-        <RelaySignIn service={account.service} boundPc={pcAddFromAccount === true || pcIn !== null} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(on && pcIn !== null && session.account === pcIn); }} />
+        <RelaySignIn service={account.service} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(on && pcIn !== null && session.account === pcIn); }} />
       </div>
       {qr(false)}
     </>
