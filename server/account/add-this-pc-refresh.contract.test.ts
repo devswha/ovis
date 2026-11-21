@@ -22,8 +22,11 @@ afterEach(async () => {
   for (const close of closes.splice(0)) await close();
 });
 
-/** `unusable`: the directory sends `listing` for the stale row, and the refresh route answers a structured 404 as an old service would. */
-async function fixture(mode: "bind" | "complete" | "pending" | "refusal" | "unusable", listing: unknown = LISTING) {
+/**
+ * `unusable`: the directory sends `listing` for the row, and the refresh route answers a structured 404 as an old service would.
+ * `age`: how long ago the row was listed (stale by default, so the invitation is due for its refresh).
+ */
+async function fixture(mode: "bind" | "complete" | "pending" | "refusal" | "unusable", listing: unknown = LISTING, age = 2 * INVITATION_MS) {
   const pc = await pairingPc({ server: { accountOpensAll: true } });
   let passSetup: Promise<Response> | undefined;
   closes.push(async () => { try { await passSetup; } finally { await pc.close(); } });
@@ -33,7 +36,7 @@ async function fixture(mode: "bind" | "complete" | "pending" | "refusal" | "unus
   const serverId = identity.server_id;
   const path = `/v1/pcs/${serverId}`;
   const now = Date.now();
-  const added = new Date(now - 2 * INVITATION_MS).toISOString();
+  const added = new Date(now - age).toISOString();
   let invitedAt = added;
   const store = memoryAccountStore();
   await store.set("session", { account: ACCOUNT, provider: "github", service: SERVICE, access_token: pc.account.issueToken(ACCOUNT), refresh_token: "fixture", expires_at: now + 3_600_000 });
@@ -141,4 +144,12 @@ test.each([["malformed", "invalid"], ["null", null]] as const)("a %s listing ID 
 
   expect(f.changes).toEqual([]);
   expect(f.pc.devices.account()).toBe(ACCOUNT);
+});
+
+test.each([["a malformed", "invalid"], ["a numeric", 17], ["an empty", ""]] as const)("a fresh row with %s listing ID the directory sent is not listed again", async (_kind, listing) => {
+  const f = await fixture("unusable", listing, 1_000);
+
+  await expect(listThisPc(f.directory, { relistMs: RELIST_MS })).rejects.toMatchObject({ code: "invalid_answer" });
+
+  expect(f.changes).toEqual([]);
 });
