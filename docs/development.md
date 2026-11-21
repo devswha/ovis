@@ -223,8 +223,11 @@ wait for `desktop`, so the release becomes latest only with the desktop files in
 job leaves the release published but holds them back: **Re-run failed jobs** on the Release run
 builds and attaches it again (`--clobber`), then runs them. **Actions → Desktop app** from `main`
 with a tag does the same for one release alone, and refuses the latest release, whose feed installed
-apps read (fix that one with a new patch release); without a tag it only builds, as on a pull
-request touching the app. A release build skips the app's unit tests, which its pull requests ran.
+apps read (fix that one with a new patch release); without a tag it only builds, as it does every
+day on `main` and for a pull request that changes `desktop.yml` itself. A pull request that changes the app
+runs `desktop-check.yml` instead: the app's unit tests, its type check and the Linux x64 build, on the
+self-hosted runners, so a build that breaks on another platform only shows in the next day's run. A
+release build skips the app's unit tests, which its pull requests ran.
 Do not push release tags by hand: installed updaters read Git tags directly, so a tag is
 visible to them even without a GitHub release. Existing tags cannot be reused; fix a
 published version with a new patch release. If publishing fails after a tag was created,

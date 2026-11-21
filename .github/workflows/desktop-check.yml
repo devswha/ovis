@@ -1,0 +1,61 @@
+name: Desktop app check
+# A pull request that changes the desktop app runs the app's unit tests, its type check and one build
+# (Linux x64) on the self-hosted pool; a fork's runs on ubuntu-24.04. All five builds are desktop.yml's:
+# every day on main, at a release, and for a pull request that changes desktop.yml itself.
+on:
+  pull_request:
+    paths:
+      - 'app/electron/**'
+      - '.github/workflows/desktop-check.yml'
+permissions:
+  contents: read
+concurrency:
+  group: desktop-check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    name: check (linux-x64)
+    # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
+    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+          no-cache: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install the client's packages
+        run: bun install --frozen-lockfile
+      - name: Install the app's packages
+        working-directory: app/electron
+        run: bun install --frozen-lockfile
+      # the built-in browser's tests run a real Electron without a display: its binary, which
+      # electron-builder fetches on its own later, is not there after bun install
+      - name: Electron for the built-in browser tests
+        working-directory: app/electron
+        run: node node_modules/electron/install.js
+      - name: Unit tests
+        working-directory: app/electron
+        run: bun test
+      - name: Type check
+        working-directory: app/electron
+        run: bun run typecheck
+      # unsigned, with no release tag and no update feed: what desktop.yml builds when it only builds
+      - name: Build linux-x64
+        working-directory: app/electron
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: bun run dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ovis-desktop-check-linux-x64
+          path: |
+            app/electron/dist/Ovis-*
+            app/electron/dist/latest*.yml
+          if-no-files-found: error
