@@ -177,9 +177,20 @@ class GhosttyEmulator implements Emulator {
     this.module = null;
   }
 
+  /**
+   * The engine reads the bytes up to a refused graphics query's terminator, then the refusal is sent, then the engine reads on, so
+   * the refusal comes before what the engine answers to bytes written after the query (a program that asks for graphics and then
+   * for its terminal's attributes reads the refusal first).
+   */
   write: Emulator["write"] = (bytes) => this.call((engine) => {
-    engine.write(bytes);
-    this.graphics.feed(bytes, (reply) => { if (!this.disposed) this.events.onReply?.(reply); });
+    let from = 0;
+    for (const { end, reply } of this.graphics.feed(bytes)) {
+      engine.write(bytes.subarray(from, end));
+      from = end;
+      if (this.disposed) return;
+      this.events.onReply?.(reply);
+    }
+    if (from < bytes.length) engine.write(bytes.subarray(from));
   });
 
   resize: Emulator["resize"] = (cols, rows, cellW, cellH) =>

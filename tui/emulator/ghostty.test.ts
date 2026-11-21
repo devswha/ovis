@@ -110,6 +110,22 @@ describe("emulator per pane", () => {
     expect(rowText(emulator, 0)).toBe("beforeafter");
   });
 
+  it("answers a graphics query before what the engine answers to bytes written after it", async () => {
+    const { emulator, replies } = await pane(countingLoader().loader);
+    const query = "\x1b_Ga=q,i=31,t=d,f=24,s=1,v=1;AAAA\x1b\\";
+    const refusal = "\x1b_Gi=31;ENOTSUP:graphics are not supported\x1b\\";
+    const kind = (reply: string) => reply === refusal ? "refusal" : reply.startsWith("\x1b[?") && reply.endsWith("c") ? "attributes" : reply;
+    emulator.write(bytesOf(`${query}\x1b[c`));
+    expect(replies.map(kind)).toEqual(["refusal", "attributes"]);
+    replies.length = 0;
+    emulator.write(bytesOf(`\x1b[c${query}`));
+    expect(replies.map(kind)).toEqual(["attributes", "refusal"]);
+    replies.length = 0;
+    emulator.write(bytesOf(query.slice(0, -1)));
+    emulator.write(bytesOf("\\\x1b[c"));
+    expect(replies.map(kind)).toEqual(["refusal", "attributes"]);
+  });
+
   it("shares no state between two emulators", async () => {
     const { loader } = countingLoader();
     const a = await pane(loader);
