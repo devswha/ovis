@@ -92,6 +92,12 @@ function realFolder(stateDir: string): string {
 const HANDLES = new Map<string, PcAccountState>();
 
 export class PcAccountState {
+  private readonly bindingListeners = new Set<() => void>();
+
+  onBindingChange(listener: () => void): () => void {
+    this.bindingListeners.add(listener);
+    return () => { this.bindingListeners.delete(listener); };
+  }
   private doc: PcDoc = { v: 1, next_admit: 1, binding: null, clears: [], first: null, others_ever: false, gen: 0 };
   private problem: string | null = null;
   /** no file and no journal: this folder's rows predate the release, and are migrated once (T50) */
@@ -360,7 +366,9 @@ export class PcAccountState {
 
   private write(doc: PcDoc): void {
     if (this.problem !== null) throw new Error(this.strict!);
+    const before = this.doc.binding?.bind_id;
     writePrivateState(this.path, doc);
     this.doc = doc;
+    if (before !== doc.binding?.bind_id) for (const listener of this.bindingListeners) listener();
   }
 }

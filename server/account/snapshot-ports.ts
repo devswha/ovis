@@ -139,7 +139,7 @@ export function snapshotPorts(deps: SnapshotDeps): SnapshotPorts {
       journal.recordSnapshotLifts(safetyLog);
       devices.handedLifts.decide(stage.snapshot.lifts);
       // Take away access using the now-reconciled order before the mailbox or account list can grant new access.
-      devices.applyWaitingBlocks();
+      devices.applyWaitingBlocks(true);
       return lifts.length;
     },
     commitList(snapshot) {

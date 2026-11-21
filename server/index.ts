@@ -573,13 +573,14 @@ export function createServer(
   // a port file an earlier run left names a port anyone may have taken since
   try { rmSync(join(stateDir, LOCAL_CONFIRM_FILE), { force: true }); }
   catch (error) { console.error(`${LOCAL_CONFIRM_FILE} could not be removed: ${error instanceof Error ? error.message : String(error)}`); }
-  const localConfirms = (options.accountOpensAll ?? accountOpensAll()) ? new LocalConfirms() : undefined;
+  const localConfirms = opensAll ? new LocalConfirms() : undefined;
   // a page that cannot open leaves acts waiting for the desktop app's channel; it never fails the start
-  const confirmListener = (() => {
+  const openConfirms = () => {
     if (!localConfirms) return null;
     try { return openConfirmListener(localConfirms, { stateDir }); }
     catch (error) { console.error(`The local confirm page did not open: ${error instanceof Error ? error.message : String(error)}`); return null; }
-  })();
+  };
+  let confirmListener = devices.accountPolicyActive() ? openConfirms() : null;
   const desktopOwner = localConfirms && options.desktopOwner ? desktopOwnerChannel(localConfirms, options.desktopOwner) : null;
   // devices that redeemed a code and proved their key, waiting for this PC's screen (server/account/pending.ts)
   const pendingRedemptions = localConfirms ? new PendingRedemptions({
@@ -595,6 +596,12 @@ export function createServer(
     ? new KeyProofPairings({ pending: pendingRedemptions, seams: devices }) : undefined;
   devices.onKeyRemoved((key, cause) => pendingRedemptions?.dropKey(key, cause));
   const askScreen = localConfirms && keyProofPairings ? (entry: PendingRedemption) => askScreenForKey(localConfirms, keyProofPairings, entry) : undefined;
+  const stopBindingWatch = pcAccount?.onBindingChange(() => {
+    confirmListener?.stop();
+    for (const entry of localConfirms?.pending() ?? []) localConfirms?.withdraw(entry.id);
+    for (const entry of pendingRedemptions?.list() ?? []) pendingRedemptions?.decline(entry.id);
+    confirmListener = devices.accountPolicyActive() ? openConfirms() : null;
+  });
   // `ovis recover` (server/account/recovery.ts): this PC's user, at its terminal or over SSH, on a socket no route reaches.
   // Each release and undo is journalled per row before it takes effect; whether the log can be read is asked live
   const recoveryReleases = opensAll && journal ? new RecoveryReleases({
@@ -654,7 +661,12 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, localConfirms, recoveryReleases, pendingRedemptions, keyProofPairings, askScreenForKey: askScreen, lockRoutes: lockHandler, lockSignal,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
+    get localConfirms() { return devices.accountPolicyActive() ? localConfirms : undefined; },
+    get pendingRedemptions() { return devices.accountPolicyActive() ? pendingRedemptions : undefined; },
+    get keyProofPairings() { return devices.accountPolicyActive() ? keyProofPairings : undefined; },
+    get askScreenForKey() { return devices.accountPolicyActive() ? askScreen : undefined; },
+    get lockRoutes() { return devices.accountPolicyActive() ? lockHandler : undefined; },
     get portalStartupResult() { return portalStartupResult; },
   };
   ovisRelay.resume(services, server.port ?? DEFAULT_PORT);
@@ -755,6 +767,7 @@ export function createServer(
       server.stop(true);
       ipv6?.stop(true);
       ownerListener?.stop(true);
+      stopBindingWatch?.();
       confirmListener?.stop();
       recoverySocket?.stop();
       desktopOwner?.stop();

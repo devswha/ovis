@@ -42,6 +42,8 @@ export type FrameType = typeof FrameType[keyof typeof FrameType];
 export const PAIR_SAS_FEATURE = "pair-sas";
 /** A device that offers it proves the key it pairs with over a challenge the PC makes after the key was named. */
 export const KEY_PROOF_FEATURE = "key-proof-1";
+/** A code-adding PC asks before sending PAIR; only an account-bound Step 2 target selects it. */
+export const PC_CODE_ACCOUNT_ONLY = "pc-code-account-only-1";
 export const ACCOUNT_FEATURE = "account";
 export const PAIR_INTENT_PC = "pair-intent-pc";
 export const PAIR_INTENT_ACCOUNT = "pair-intent-account";

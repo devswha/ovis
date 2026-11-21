@@ -357,7 +357,7 @@ export function readDeviceRegistry(path: string, opensAll = accountOpensAll()): 
       && (d.imported === undefined || d.imported === true)
       && (d.invalid_origin === undefined || d.invalid_origin === true)
       && (d.off_pair_binding === undefined || (typeof d.off_pair_binding === "string" && /^[0-9a-f]{32}$/.test(d.off_pair_binding)))
-      && (d.recovered_over === undefined || Array.isArray(d.recovered_over) && d.recovered_over.every(id => typeof id === "string" && /^f:[0-9a-f]{64}$/.test(id)))
+      && (d.recovered_over === undefined || Array.isArray(d.recovered_over) && d.recovered_over.every(id => typeof id === "string" && /^(?:f:)?[0-9a-f]{64}$/.test(id)))
       && (d.untrusted_created_at === undefined || typeof d.untrusted_created_at === "string")
       && (d.account_add === undefined || isJsonObject(d.account_add))
       && (!opensAll || (d.held === undefined || (typeof d.held === "string" && /^[0-9a-f]{32}$/.test(d.held)))
@@ -971,7 +971,7 @@ export class DeviceStore {
       if (record.kind === "freeze") {
         return this.beforeServiceCutoff(key, record, options?.retainedRow, targetOnlyCompanion === true && proof === "legacy_credential");
       }
-      return rows.length > 0 && rows.every((row) => !this.newerThanFreeze(row, asof));
+      return rows.length > 0 && rows.every((row) => !this.newerThanFreeze(row, record.id, asof));
     });
   }
 
@@ -1032,8 +1032,9 @@ export class DeviceStore {
     const pending = this.pending;
     const reserved = pending?.reserved?.get(confirm.key);
     if (this.safety === null || this.pc === null || pending === null || pending.id !== confirm.codeId || reserved === undefined || this.codeOver(pending, now)) return null;
-    const recovery = confirm.source === "recover" ? Object.freeze(this.safety.inForce.freezes.flatMap(({ record }) =>
-      record.kind === "freeze" && record.target !== confirm.key ? [record.id] : [])) : undefined;
+    if (confirm.source === "recover" && (this.isTombstoned(confirm.key) || this.safety.inForce.blocks.some(entry => entry.record.target === confirm.key)
+      || this.safety.inForce.freezes.some(entry => entry.record.target === confirm.key))) return null;
+    const recovery = confirm.source === "recover" ? Object.freeze(this.safety.inForce.freezes.map(({ record }) => record.id)) : undefined;
     const proof: ConfirmProof = { codeId: confirm.codeId, key: confirm.key, source: confirm.source,
       ...(recovery ? { recoveredOver: recovery } : {}) };
     MINTED_PROOFS.add(Object.freeze(proof));
@@ -1041,7 +1042,7 @@ export class DeviceStore {
     if (!this.admits(confirm.key, proof, { pairingHere })) return null;
     // a Revoke that stands keeps the key out unless this confirm names it (P13)
     const revokes = this.evidence?.standingRevokes(confirm.key) ?? [];
-    if (revokes.some((revoke) => !(confirm.unrevokes ?? []).includes(revoke.id))) return null;
+    if (revokes.some((revoke) => confirm.source === "recover" || !(confirm.unrevokes ?? []).includes(revoke.id))) return null;
     // a first-link code: the confirmed key waits to link, as a plain pairing of it would, and only its link admits it;
     // the code's other reservations end here, so it admits one key (T72, T7 in 2d)
     if (pending.waiting !== undefined) {
@@ -1054,9 +1055,15 @@ export class DeviceStore {
     const over = recovery ? { recovered_over: recovery } : {};
     const existing = this.devices.find((d) => d.relay_public_key === confirm.key);
     if (existing !== undefined) {
-      const next = this.devices.map((d) => d === existing ? { ...d, origin, ...over } : d);
+      const updated = { ...existing, origin, ...over };
+      if (proof.source === "screen") {
+        delete updated.imported;
+        delete updated.invalid_origin;
+      }
+      const next = this.devices.map((d) => d === existing ? updated : d);
       this.save(next);
       this.devices = next;
+      if (proof.source === "recover" && this.admits(confirm.key, undefined, { retainId: updated.id })) this.catchUp?.recoveredHere(updated.id);
       this.voidPending();
       return { id: existing.id, label: existing.label, role: existing.role };
     }
@@ -1067,9 +1074,9 @@ export class DeviceStore {
   }
 
   /** P16: a screen-confirmed row is never newer; an unplaced row counts as newer. */
-  private newerThanFreeze(device: StoredDevice, asof: BlockAsOf | undefined): boolean {
+  private newerThanFreeze(device: StoredDevice, id: string, asof: BlockAsOf | undefined): boolean {
     if (asof?.target_only === true) return false;
-    if (device.origin?.from === "pc") return false;
+    if (this.approvedOver(device, id)) return false;
     if (asof?.joined == null) return true;
     if (device.relay_public_key === undefined && (device.imported || device.untrusted_created_at !== undefined
       || (device.origin?.from === "legacy" && device.origin.at !== device.created_at))) return true;
@@ -1077,11 +1084,15 @@ export class DeviceStore {
     return compareAdmissionPositions(admissionPosition(device), cutoff) !== "older";
   }
 
+  private approvedOver(row: StoredDevice, id: string): boolean {
+    return !row.imported && !row.invalid_origin && (row.origin?.from === "pc"
+      || (row.origin?.from === "recover" && row.recovered_over?.includes(id) === true));
+  }
+
   /** An owner's approval belongs to the exact row retained here, not to a new grant for the same key. */
   private beforeServiceCutoff(key: string | undefined, line: Extract<SafetyRecord, { kind: "freeze" }>, row?: StoredDevice, allowLegacy = false): boolean {
     if (key === line.target) return false;
-    if (key !== undefined && row?.relay_public_key === key && !row.imported && !row.invalid_origin
-      && (row.origin?.from === "pc" || (row.origin?.from === "recover" && row.recovered_over?.includes(line.id)))) return true;
+    if (key !== undefined && row?.relay_public_key === key && this.approvedOver(row, line.id)) return true;
     const no = key === undefined ? null : this.accountOrder?.no(key) ?? this.joinedRows?.rowsByKey(key)[0]?.no;
     if (no == null) return allowLegacy && row !== undefined && this.isLegacyCredential(row);
     return key !== undefined && this.accountOrder?.late(key) === false && no <= line.after;
@@ -1090,7 +1101,7 @@ export class DeviceStore {
   private frozen(device: StoredDevice): boolean {
     const state = this.safety?.inForce;
     if (!state) return false;
-    if (state.blocks.some(entry => device.relay_public_key !== entry.record.target && this.newerThanFreeze(device, entry.asof))) return true;
+    if (state.blocks.some(entry => device.relay_public_key !== entry.record.target && this.newerThanFreeze(device, entry.record.id, entry.asof))) return true;
     const key = device.relay_public_key;
     return state.freezes.some(({ record, targetOnlyCompanion }) => targetOnlyCompanion && record.kind === "freeze"
       && !this.beforeServiceCutoff(key, record, device, true));
@@ -1127,7 +1138,7 @@ export class DeviceStore {
   }
 
   /** The commit turn of a verified block, in P8's order, with no wait inside. */
-  private commitBlock(record: BlockRecord, got: SafetyGot, onRaise?: () => void): BlockReceipt {
+  private commitBlock(record: BlockRecord, got: SafetyGot, onRaise?: () => void, reconciled = false): BlockReceipt {
     const refused = (reason: Extract<BlockReceipt, { outcome: "refused" }>["reason"]): BlockReceipt => ({ outcome: "refused", id: record.id, reason });
     const { safety, evidence } = this;
     if (safety === null || this.failsClosed) return refused("record_invalid");
@@ -1140,7 +1151,9 @@ export class DeviceStore {
     const joinedTargets = allTargets.filter((d) => !targets.includes(d));
     const serverId = this.accountOrderServerId?.() ?? null;
     const bindId = this.pc?.binding()?.bind_id;
-    const order = (got === "mailbox" || got === "snapshot") && serverId !== null && this.accountOrder !== null
+    // The first delivery stays in the receipt. A committed whole read supplies its own proof for queued records.
+    const useAccountOrder = reconciled || got === "mailbox" || got === "snapshot";
+    const order = useAccountOrder && serverId !== null && this.accountOrder !== null
       && this.accountOrder.lastVersion(bindId, serverId) !== null ? this.accountOrder : null;
     // Local rollback provenance identifies the target only; it never gives that row order or signing authority.
     const legacyTarget = targets.length > 0 && targets.every(row => row.origin?.from === "legacy" || this.legacyFromRegistry(row)
@@ -1157,7 +1170,7 @@ export class DeviceStore {
       const access = listed ? this.listedAccess(listed) : null;
       return access !== null && "ok" in access;
     };
-    const signers = legacyTarget && (got === "snapshot" || got === "mailbox")
+    const signers = legacyTarget && useAccountOrder
       ? this.memberRows(record.signer, record.account).filter(row => !row.imported && !row.invalid_origin && row.held === undefined
         && admissionPosition(row) !== null && standing(row) && this.admissionAllowed(record.signer, "legacy_credential", { retainedRow: row }))
       : this.signingRows(record.signer, record.account);
@@ -1188,7 +1201,7 @@ export class DeviceStore {
       ? { signer_no: pinnedSigner, target_no: pinnedTarget, after: null, joined: null, signer_removed: false, target_only: true }
       : { signer_no: signerNo, target_no: cutoff!.admit_no, after: cutoff!.admit_no, joined: cutoff!.admit_no, signer_removed: false,
         ...(cutoff!.legacy_created_at === undefined ? {} : { legacy_created_at: cutoff!.legacy_created_at }) };
-    const affected = this.devices.filter((d) => d.relay_public_key !== record.target && this.newerThanFreeze(d, asof));
+    const affected = this.devices.filter((d) => d.relay_public_key !== record.target && this.newerThanFreeze(d, record.id, asof));
     let receipt = refused("record_invalid");
     // P8: advance gen before a durable log receipt can be replayed.
     const denied = this.deny([record.target], () => {
@@ -1207,7 +1220,7 @@ export class DeviceStore {
     this.keepOut(affected, false);
     // the account rows it freezes end their sessions in this turn too; its account-row targets end and leave their store
     const joinedIds = new Set(joinedTargets.map((d) => d.id));
-    const frozenListed = (this.joinedRows?.rows() ?? []).filter(row => !joinedIds.has(row.id) && this.newerThanFreeze(this.joinedAsStored(row), asof));
+    const frozenListed = (this.joinedRows?.rows() ?? []).filter(row => !joinedIds.has(row.id) && this.newerThanFreeze(this.joinedAsStored(row), record.id, asof));
     this.catchUp?.noteFreeze(record.target, [...affected, ...frozenListed].map(row => row.id));
     for (const row of frozenListed) this.closeAccountSessions(row.id);
     if (joinedIds.size > 0) {
@@ -1264,14 +1277,14 @@ export class DeviceStore {
     return ids.filter((id) => this.has(id));
   }
 
-  applyWaitingBlocks(): void {
+  applyWaitingBlocks(reconciled = false): void {
     if (this.safety === null) return;
     for (const { record, got, signer_removed: signerRemoved } of [...this.safety.waitingBlocks()]) {
       if (this.failsClosed) return;
       if (this.safety.receipt(record.id) !== null) { this.safety.unwait(record.id); continue; }
       if (signerRemoved || this.memberRows(record.signer, record.account).length === 0) { this.safety.unwait(record.id); continue; }
       if (this.rowsOfKey(record.target).length === 0) continue;
-      const receipt = this.commitBlock(record, got);
+      const receipt = this.commitBlock(record, got, undefined, reconciled);
       if (!this.failsClosed && receipt.outcome === "refused" && receipt.reason !== "unknown_target") this.safety.unwait(record.id);
     }
   }
@@ -1386,6 +1399,9 @@ export class DeviceStore {
 
   /** Whether the account-opens-all release flag is on for this store. */
   opensAll(): boolean { return this.safety !== null; }
+
+  /** Unbound PCs pair as in Step 1. Unreadable account state is never proof of being unbound. */
+  accountPolicyActive(): boolean { return this.opensAll() && (this.account() !== null || this.accountError !== null); }
 
   /**
    * One press (docs/account.md): binds this PC, in no account, to `account` on the account service's word for it. Only
@@ -3377,6 +3393,8 @@ export class DeviceStore {
     if (device === undefined) return null;
     if (!this.admits(confirm.key, proof)) return null;
     const updated: StoredDevice = { ...device, relay_public_key: confirm.key, account: waiting.account, linked_at: new Date(now).toISOString(), link_moved_key: true, ...(ownWord ? { joined_by: vouched ? "service" as const : "word" as const } : {}), origin: this.pc.admit("pc", "link", null, now) };
+    delete updated.imported;
+    delete updated.invalid_origin;
     this.bindingWith(waiting.account, confirm.key, () => this.enroll(updated, now, [], false, { replaces: device, confirm: proof }));
     this.endNoAccountCode();
     for (const listener of [...this.relinks.get(confirm.row) ?? []]) listener(sessionId);

@@ -104,6 +104,9 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       }
       case RELAY_CONTROLS.code: {
         setRequestRoute("/api/relay/code");
+        if (request.headers.get("x-ovis-pc-add") === "1" && context.services.devices.accountPolicyActive()) {
+          return fail("pc_add_target_bound", "That PC is in an account. Add it from that account.", 409);
+        }
         if (service.status().phase === "off" || service.status().blocked) return fail("relay_off", "Start the relay before pairing.", 409);
         if (service.status().phase === "error") return fail("relay_offline", "The relay is not reachable; wait until it is online before pairing.", 409);
         if (account !== null && !ACCOUNT_ID.test(account)) return invalidAccount();

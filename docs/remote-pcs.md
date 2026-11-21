@@ -69,9 +69,9 @@ headless server into the desktop session, and Ovis never restarts it or its pane
 An initial connection can be cancelled while waiting; already-started work stays running.
 ## Through the relay
 
-Add a connection no longer offers adding a PC through the relay: the relay is used through the Ovis
-account ([relay.md](relay.md)), and a PC on your Tailscale is added over SSH (above). A PC added through
-the relay before keeps working as described here. Such a PC was added with no SSH and no open port: both PCs only connect out to the [Ovis relay](relay.md). On the other PC, open
+In **Add a connection → Tailscale**, Connect uses one-tap relay add for a discovered Ovis with an online relay; other eligible hosts use SSH. With Step 2 on, a PC in an account uses **Ovis relay → Add from account** instead. If only the target PC is in an account, add it from that account. There is no new link or typed-code field. **Direct** (SSH or HTTPS address + code) is unchanged.
+
+PCs already added through the relay keep working. Clients that support pairing links or typed codes can still use them between unbound PCs: both PCs only connect out to the [Ovis relay](relay.md). On the other PC, open
 **Settings → Devices and PCs → Connect** (with the relay on) and type the ten-character code it shows
 beside its QR code here (an older Ovis names it **Show a code to type**; its pairing link works too):
 this PC's server finds that PC through the relay as a phone does ([Pairing with a typed code](relay.md)),

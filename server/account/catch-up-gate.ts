@@ -20,7 +20,7 @@ export class CatchUpGate {
   /** The binding the last whole read was for: a new binding waits for a read of its own (T59). */
   private caughtUpFor: string | null = null;
   /** A lift changes the next read's decision, never the result of the previous one. */
-  private waiting: ReadonlySet<string> = new Set();
+  private waiting = new Set<string>();
   private readonly frozenByTarget = new Map<string, Set<string>>();
   private readonly lifted = new Set<string>();
 
@@ -42,6 +42,11 @@ export class CatchUpGate {
     this.caughtUpFor = this.binding();
     this.waiting = new Set(refused);
     this.lifted.clear();
+  }
+
+  /** An exact recovery can supersede this read's refusal, never the first read or a wait after a lift. */
+  recoveredHere(id: string): void {
+    if (this.caughtUpFor !== null && this.caughtUpFor === this.binding()) this.waiting.delete(id);
   }
 
   /** The lift identifies its target key, not the newer rows this block froze between reads. */

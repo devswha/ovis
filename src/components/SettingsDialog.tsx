@@ -1220,10 +1220,13 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   // a new device joins by signing in only to a PC in the account this browser is signed in to (docs/account.md
   // "Joining through the account")
   const [pcAccount, setPcAccount] = useState<string | null>(null);
+  const [pcAddFromAccount, setPcAddFromAccount] = useState(false);
   useEffect(() => {
-    if (account.account === null) { setPcAccount(null); return; }
+    if (!connecting && account.account === null) { setPcAccount(null); setPcAddFromAccount(false); return; }
     let live = true;
-    pcAccountStatus(apiFetch).then((status) => { if (live) setPcAccount(status.account); }, () => { if (live) setPcAccount(null); });
+    pcAccountStatus(apiFetch).then((status) => {
+      if (live) { setPcAccount(status.account); setPcAddFromAccount(status.pcAddFromAccount === true); }
+    }, () => { if (live) { setPcAccount(null); setPcAddFromAccount(false); } });
     return () => { live = false; };
   }, [account.account, connecting]);
   const joinBySignIn = account.account !== null && pcAccount === account.account && relay.status?.phase === "online";
@@ -1323,6 +1326,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
         <ConnectPhoneDialog plan={plan} pairUrl={pairUrl}
           relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"}
           signedIn={account.signedIn} accountId={account.account} joinBySignIn={joinBySignIn}
+          pcAddFromAccount={pcAddFromAccount} onAccountSetup={openAccount}
           account={accountService !== null && account.reachable ? { service: accountService, onOpen: openAccount, onSignedIn: readAccountAgain, ...(opensAll === undefined ? {} : { opensAll }) } : null}
           onAddPc={(preset) => { setConnecting(false); openAddPc(preset); }} machines={machines}
           onConnectMachine={(machine) => { setConnecting(false); connectPc(machine); }}
