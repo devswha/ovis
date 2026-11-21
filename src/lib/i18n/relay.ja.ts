@@ -140,4 +140,10 @@ export const RELAY_JA: Record<string, string> = {
   "Turn on Ovis on the PC": "PC で Ovis を起動してください",
   "Or scan the QR on the PC's screen": "または PC 画面の QR を読み取る",
   "Or pair with a code": "またはコードでペアリング",
+  "{name} is off. Turn on Ovis on it.": "{name} はオフです - Ovis を起動してください",
+  "Not allowed. Ask again, then press [Allow] on {name}.": "許可されませんでした - もう一度依頼してから {name} で [許可] を押してください",
+  "This device was removed from {name}. Ask again to join it.": "この端末は {name} から削除されました - もう一度依頼してください",
+  "Sign in with the same account on the PC where Ovis runs": "Ovis を起動した PC で同じアカウントにサインインしてください",
+  "Ask again": "もう一度依頼",
+  "Other ways to connect": "ほかの方法で接続",
 };

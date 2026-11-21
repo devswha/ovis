@@ -270,7 +270,8 @@ async function walkOne(browser: Browser, site: PagesSite, run: Run, arriveHere: 
   await page.locator(".account-provider").first().click({ timeout: LOAD_MS });
   // a sign-in lands on the connect tabs, or on the join an account PC its launch picked asks by itself (#16)
   await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs, [data-add-pc-mode], [data-approval-wait]').first().waitFor({ timeout: LOAD_MS });
-  // the tab's launch is past: the front page stays Add a PC
+  // the person goes to the front page (as Cancel or Back would): it stays the connect tabs, launching nothing (#16)
+  await page.evaluate(() => sessionStorage.setItem("ovis-front-chosen", "1"));
   await page.goto(`${APP}/`);
   await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs').waitFor({ timeout: LOAD_MS });
   await seed(page);

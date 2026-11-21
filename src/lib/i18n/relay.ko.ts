@@ -140,4 +140,10 @@ export const RELAY_KO: Record<string, string> = {
   "Turn on Ovis on the PC": "PC에서 Ovis를 켜세요",
   "Or scan the QR on the PC's screen": "또는 PC 화면의 QR 찍기",
   "Or pair with a code": "또는 코드로 페어링",
+  "{name} is off. Turn on Ovis on it.": "{name}에서 Ovis가 꺼져 있어요 - Ovis를 켜세요",
+  "Not allowed. Ask again, then press [Allow] on {name}.": "거절됐어요 - 다시 요청한 뒤 {name}에서 [허용]을 누르세요",
+  "This device was removed from {name}. Ask again to join it.": "{name}에서 이 기기가 제거됐어요 - 다시 요청하세요",
+  "Sign in with the same account on the PC where Ovis runs": "Ovis가 켜진 PC에서 같은 계정으로 로그인하세요",
+  "Ask again": "다시 요청",
+  "Other ways to connect": "다른 방법으로 연결",
 };

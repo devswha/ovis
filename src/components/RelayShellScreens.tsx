@@ -20,22 +20,46 @@ import { ConnectStart } from "./ConnectStart.tsx";
 import { canScanQr, RelayAddPc } from "./RelayAddPc.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
 
+/** Why the plain screen is up (#16): what the person does next on the PC, or why nothing goes on. */
+export type PlainReason = "allow" | "type" | "off" | "declined" | "removed" | "no-account-pc";
+
 /**
- * #16: the one screen a phone waits on after its sign-in, with no tabs and no list: while an account PC it asked to join
- * approves it (`name`, the number when the join shows one, and whether the PC asks for it typed), or while none of the
- * account's PCs is on (`name` null, with Check again). Under it the PC screen's QR way in, a code in a browser.
+ * #16: the one plain screen a signed-in device shows instead of the connect tabs, app and browser alike: the PC's name,
+ * one line with what to do there (press Allow, type this number, turn Ovis on, ask again after a decline or a removal,
+ * sign in on a PC), the number when the join shows one, and under it the PC screen's QR way in (a code in a browser) and
+ * the other ways to connect. No tabs, no banner, no list.
  */
-export function PcApprovalWait({ name, digits = null, typedOnPc = false, onQr, onCheck }: { readonly name: string | null; readonly digits?: string | null; readonly typedOnPc?: boolean; readonly onQr: () => void; readonly onCheck?: () => void }) {
+export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onCheck, onAskAgain, onOtherWays }: {
+  readonly reason: PlainReason; readonly name: string | null; readonly digits?: string | null; readonly menu?: ReactNode;
+  readonly onQr: () => void; readonly onCheck?: (() => void) | undefined; readonly onAskAgain?: (() => void) | undefined; readonly onOtherWays?: (() => void) | undefined;
+}) {
   const t = useT();
-  const line = name === null ? t("Turn on Ovis on the PC") : typedOnPc ? t("Type this number on {name}", { name }) : t("Press [Allow] on {name}", { name });
+  const line = (() => {
+    switch (reason) {
+      case "allow": return t("Press [Allow] on {name}", { name: name ?? t("this PC") });
+      case "type": return t("Type this number on {name}", { name: name ?? t("this PC") });
+      case "off": return name === null ? t("Turn on Ovis on the PC") : t("{name} is off. Turn on Ovis on it.", { name });
+      case "declined": return t("Not allowed. Ask again, then press [Allow] on {name}.", { name: name ?? t("this PC") });
+      case "removed": return t("This device was removed from {name}. Ask again to join it.", { name: name ?? t("this PC") });
+      case "no-account-pc": return t("Sign in with the same account on the PC where Ovis runs");
+      default: {
+        const exhaustive: never = reason;
+        return exhaustive;
+      }
+    }
+  })();
+  const waiting = reason === "allow" || reason === "type";
   return (
-    <div className="relay-shell account-centered relay-approval-wait" data-approval-wait={name === null ? "no-pc" : "pc"}>
+    <div className="relay-shell account-centered relay-approval-wait" data-approval-wait={name === null && reason === "off" ? "no-pc" : reason === "allow" || reason === "type" ? "pc" : reason}>
+      {menu !== undefined && <div className="relay-approval-wait-menu">{menu}</div>}
       {name !== null && <h1 className="relay-shell-title">{name}</h1>}
-      <p className="relay-shell-copy" role="status">{line}</p>
+      <p className={reason === "declined" || reason === "removed" ? "relay-shell-copy add-pc-problem" : "relay-shell-copy"} role={reason === "declined" || reason === "removed" ? "alert" : "status"}>{line}</p>
       {digits !== null && digits !== "" && <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>}
-      <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /></div>
-      {onCheck && <button type="button" className="btn" onClick={onCheck}>{t("Check again")}</button>}
+      {waiting && <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /></div>}
+      {onAskAgain && <button type="button" className="btn btn-primary" data-action="ask-again" onClick={onAskAgain}>{t("Ask again")}</button>}
+      {onCheck && <button type="button" className="btn" data-action="check-again" onClick={onCheck}>{t("Check again")}</button>}
       <button type="button" className="btn btn-ghost account-link" data-action="approval-wait-qr" onClick={onQr}>{canScanQr() ? t("Or scan the QR on the PC's screen") : t("Or pair with a code")}</button>
+      {onOtherWays && <button type="button" className="btn btn-ghost account-link" data-action="other-ways" onClick={onOtherWays}>{t("Other ways to connect")}</button>}
     </div>
   );
 }

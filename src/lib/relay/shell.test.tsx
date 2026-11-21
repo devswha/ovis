@@ -1351,6 +1351,39 @@ describe("the hosted shell's front page", () => {
       expect(browser.sessionStore.has("ovis-launch-join")).toBe(false);
     });
 
+    it("#16 (13): a later load of the front page in the tab, signed in with nothing saved, asks the PC that is on again; one the person chose stays", async () => {
+      const pair = generateKeyPair();
+      const listed = { server_id: deriveServerId(pair.publicKey), label: "Mac", added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
+      const load = async (): Promise<string[]> => {
+        const went: string[] = [];
+        const accountStore = memoryAccountStore();
+        await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+        await mountRelayShell(mountFor({ store: deviceStore([]), navigate: (path) => { went.push(path); }, accountStore, accountService: SERVICE, accountProviders: ["github"],
+          accountFetch: async (input) => new URL(String(input)).pathname === "/v1/pcs" ? Response.json({ pcs: [listed] }) : new Response(null, { status: 404 }) }));
+        await drain();
+        return went;
+      };
+      // the tab's launch is past (ovis-launched): this is a reload
+      const again = await load();
+      await until(() => again.length > 0, "the PC's own page");
+      expect(again).toEqual([expect.stringMatching(new RegExp(`^/s/${listed.server_id}/#offer=`))]);
+      browser.sessionStore.set("ovis-front-chosen", "1");
+      browser.sessionStore.delete("ovis-launch-join");
+      browser.sessionStore.delete("ovis-confirmed-pc");
+      expect(await load()).toEqual([]);
+    });
+
+    it("#16 (6): a reload of the page a launch's join waits on asks the PC again, with no press", async () => {
+      const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Mac" };
+      browser.sessionStore.set("ovis-launch-join", offer.server_id);
+      browser.sessionStore.set(SHEET_JOIN, JSON.stringify({ mode: "join", server_id: offer.server_id, alone: true }));
+      const asked: string[] = [];
+      await mountRelayShell(mountFor({ entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate() {},
+        open: async (opened) => { asked.push(opened.server_id); throw new MuxProtocolError("auth_failed", "fixture declined"); } }));
+      await until(() => asked.length > 0, "the join asked again");
+      expect(asked).toEqual([offer.server_id]);
+    });
+
     it("#16: signed in with nothing saved and none of the account's PCs on, the front page says to turn one on, with no tabs", async () => {
       browser.setVisibility("hidden");
       const went: string[] = [];
@@ -1358,7 +1391,7 @@ describe("the hosted shell's front page", () => {
       const off = { server_id: deriveServerId(pair.publicKey), label: "Mac", added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: new Date(Date.now() - 864e5).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
       await returned(deviceStore([]), went, [off]);
       expect(went).toEqual([]);
-      expect(last().state).toMatchObject({ kind: "empty", waitPc: true });
+      expect(last().state).toMatchObject({ kind: "empty", waitPc: true, offPc: "Mac" });
     });
 
     it("#16: an account PC the directory saw lately that its relay check finds off is not asked: the front page says to turn one on", async () => {
@@ -1368,7 +1401,7 @@ describe("the hosted shell's front page", () => {
       const row = { server_id: deriveServerId(pair.publicKey), label: "Mac", added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
       await returned(deviceStore([]), went, [row], async () => ({ kind: "offline", reason: "pc" }));
       expect(went).toEqual([]);
-      expect(last().state).toMatchObject({ kind: "empty", waitPc: true });
+      expect(last().state).toMatchObject({ kind: "empty", waitPc: true, offPc: "Mac" });
       expect(browser.sessionStore.has("ovis-confirmed-pc")).toBe(false);
     });
 
@@ -1485,7 +1518,7 @@ describe("the hosted shell's front page", () => {
       expect(last().state.kind).not.toBe("connecting");
     });
 
-    it("opens no account PC when the account's PCs answer after the launch's wait gave up", async () => {
+    it("#16: a slow account read keeps the launch's card, never the connect tabs, and asks the PC once the read lands", async () => {
       browser.setVisibility("hidden");
       const went: string[] = [];
       const pair = generateKeyPair();
@@ -1505,13 +1538,14 @@ describe("the hosted shell's front page", () => {
         },
       }));
       await until(() => rendered.length > 0 && last().state.kind === "connecting", "the launch's wait for the account's PCs");
-      jest.advanceTimersByTime(ACCOUNT_READ_WAIT_MS);
-      await until(() => last().state.kind !== "connecting", "the front page after the wait");
+      jest.advanceTimersByTime(ACCOUNT_READ_WAIT_MS * 3);
+      await drain();
+      expect(last().state.kind).toBe("connecting");
       directory.resolve(Response.json({ pcs: [listed] }));
       await mounted;
-      await drain();
-      expect(went).toEqual([]);
-      expect(last().state.kind).not.toBe("connecting");
+      jest.useRealTimers();
+      await until(() => went.length > 0, "the PC's own page");
+      expect(went).toEqual([expect.stringMatching(new RegExp(`^/s/${listed.server_id}/#offer=`))]);
     });
 
     const directoryRow = (server_id: string, newFor: number | null) => ({ server_id, label: "Desk PC", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: AP,

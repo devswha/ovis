@@ -78,7 +78,7 @@ describe("the front page's account part", () => {
   });
 
   it("opens signed in with no PC on the same three connect tabs, the relay tab saying what to do on the PC", () => {
-    const html = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none });
+    const html = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false });
     expect(html).toContain('data-account-state="signed-in"');
     expect(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]).toBe("Connect a PC");
     expect(html.match(/<h1/g)).toHaveLength(1);
@@ -404,7 +404,7 @@ describe("the hosted front page", () => {
 
     it("reads the account's PCs again when a notice changed them (a PC confirmed or removed), so Your PCs shows it at once", async () => {
       let refreshed = 0;
-      await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onRefreshAccount: () => { refreshed += 1; } });
+      await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false, onRefreshAccount: () => { refreshed += 1; } });
       expect(refreshed).toBe(0);
       await act(async () => { window.dispatchEvent(new Event("ovis:account-pcs-changed")); });
       expect(refreshed).toBe(1);
@@ -412,7 +412,7 @@ describe("the hosted front page", () => {
 
     it("pairs with a code from the relay tab, signed in with no PC, in the pairing dialog", async () => {
       let started = 0;
-      const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onCodeStart: () => { started += 1; } } satisfies RelayShellProps;
+      const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false, onCodeStart: () => { started += 1; } } satisfies RelayShellProps;
       await mount(shown);
       expect(panel()).toBe("relay");
       await act(async () => { button("Pair with a code").props.onClick(); });
@@ -439,7 +439,7 @@ describe("the hosted front page", () => {
         },
       } });
       try {
-        const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
+        const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false } satisfies RelayShellProps;
         await mount(shown);
         expect(buttons("Pair with a code")).toHaveLength(0);
         await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "scan-qr").props.onClick(); });
@@ -465,7 +465,7 @@ describe("the hosted front page", () => {
 
     it("hands SSH from the Direct tab to the phone app's own SSH screen, and offers no SSH in a browser", async () => {
       const called: string[] = [];
-      const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
+      const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false } satisfies RelayShellProps;
       const directField = () => renderer!.root.find((node) => node.type === "input" && node.props.name === "address");
       const submitDirect = async (typed: string) => {
         const form = renderer!.root.find((node) => node.type === "form");
@@ -646,5 +646,66 @@ describe("#16: the one plain screen a phone waits on after its sign-in", () => {
     expect(html).toContain("Check again");
     noTabsNoList(html);
     expect(html).not.toContain(">Mac<");
+  });
+});
+
+describe("#16 sweep: a signed-in device never lands on the connect tabs by itself", () => {
+  let windowBefore: PropertyDescriptor | undefined;
+  beforeEach(() => { windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window"); Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } }); });
+  afterEach(() => { if (windowBefore) Object.defineProperty(globalThis, "window", windowBefore); else Reflect.deleteProperty(globalThis, "window"); });
+  const id = "a".repeat(32);
+  const mac = { server_id: id, name: "Mac", state: "offline" as const, last_seen_at: null, added_at: null, listed: true, paired: false, linked: false };
+  const signedIn = (pcs: MyPc[]) => ({ kind: "signed-in" as const, provider: "github" as const, error: null, pcs });
+  const plain = (html: string): string | null => /data-approval-wait="([^"]+)"/.exec(html)?.[1] ?? null;
+  const front = (state: RelayShellProps["state"], more: Partial<RelayShellProps> = {}) => render({ ...props(state), scoped: false, onSignIn: none, onWaitAgain: none, onFindPc: none, ...more });
+
+  it("2: none of the account's PCs on names the PC that is off, with Check again", () => {
+    const html = front({ kind: "empty", waitPc: true, offPc: "Mac", account: signedIn([mac]) });
+    expect(plain(html)).toBe("off");
+    expect(html).toContain("Mac is off. Turn on Ovis on it.");
+    expect(html).toContain('data-action="check-again"');
+    expect(html).toContain('data-action="other-ways"');
+    expect(html).not.toContain("data-tab=");
+  });
+
+  it("3, 4: the PC this device opened is off (its relay too): one line naming it, not the tabs and the list", () => {
+    const desk = { server_id: id, server_public_key: "k", relay: "wss://relay.example", name: "Desk", device_id: "0".repeat(16), label: "Phone" } as unknown as Extract<RelayShellProps["state"], { kind: "list" }>["devices"][number];
+    const html = front({ kind: "list", devices: [desk], noneOnline: true, account: signedIn([]) });
+    expect(plain(html)).toBe("off");
+    expect(html).toContain("Desk is off. Turn on Ovis on it.");
+    expect(html).not.toContain("data-tab=");
+    expect(html).not.toContain("relay-add-saved-pc");
+  });
+
+  it("10: an account with no PC yet says to sign in on the PC, in one line", () => {
+    const html = front({ kind: "empty", account: signedIn([]) });
+    expect(plain(html)).toBe("no-account-pc");
+    expect(html).toContain("Sign in with the same account on the PC where Ovis runs");
+    expect(html).not.toContain("data-tab=");
+  });
+
+  it("13: a front page the person chose (Cancel, Back) is the connect tabs", () => {
+    expect(plain(front({ kind: "empty", account: signedIn([]) }, { plainFront: false }))).toBeNull();
+    expect(front({ kind: "empty", account: signedIn([]) }, { plainFront: false })).toContain("data-tab=");
+  });
+
+  it("5, 9: the join a launch asked ends in one line: declined or removed with Ask again, the PC off with Check again", () => {
+    const failed = (failure: string) => render({ ...props({ kind: "failed", failure, name: "Mac", detail: null, server_id: id } as RelayShellProps["state"]), sheetJoin: { mode: "join", server_id: id }, launchJoin: true });
+    const declined = failed("pair-declined");
+    expect(plain(declined)).toBe("declined");
+    expect(declined).toContain("Not allowed. Ask again, then press [Allow] on Mac.");
+    expect(declined).toContain('data-action="ask-again"');
+    const removed = failed("revoked");
+    expect(plain(removed)).toBe("removed");
+    expect(removed).toContain("This device was removed from Mac. Ask again to join it.");
+    const off = failed("pc-offline");
+    expect(plain(off)).toBe("off");
+    expect(off).toContain('data-action="check-again"');
+  });
+
+  it("9: a signed-in device removed from a PC it had opened says so in one line, with Ask again", () => {
+    const html = render({ ...props({ kind: "failed", failure: "revoked", name: "Mac", detail: null, server_id: id }), signedIn: true, onAskAgain: none });
+    expect(plain(html)).toBe("removed");
+    expect(html).toContain('data-action="ask-again"');
   });
 });

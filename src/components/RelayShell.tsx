@@ -22,7 +22,7 @@ import { NoPcOnline } from "./NoPcOnline.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
 import { canScanQr, RelayAddPc, scanQr, useAddressOpen } from "./RelayAddPc.tsx";
-import { INSTALLER_COMMAND, PcApprovalWait, PLUGIN_COMMANDS, RelayShellCardContent, ScanQrStep, TypedDigits } from "./RelayShellScreens.tsx";
+import { INSTALLER_COMMAND, PcApprovalWait, type PlainReason, PLUGIN_COMMANDS, RelayShellCardContent, ScanQrStep, TypedDigits } from "./RelayShellScreens.tsx";
 import { RelayStepFrame, type RelayStepBack } from "./RelayStepFrame.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
 
@@ -50,6 +50,11 @@ export interface RelayShellProps {
   launchJoin?: boolean;
   /** Check again on the line that says to turn a PC on (`waitPc`): the sign-in's launch once more */
   onWaitAgain?: () => void;
+  /** #16: the signed-in front page may stand as one plain line (the person did not choose the front page in this tab) */
+  plainFront?: boolean;
+  signedIn?: boolean;
+  /** Ask again after this device was removed from its PC: the front page's launch asks the account's PCs again */
+  onAskAgain?: () => void;
   accountProviders?: readonly AccountProvider[];
   onCodeStart: () => void; onCodeSubmit: (code: string) => void; onCodeMatch: () => void;
   /** the front page was opened on Add a PC (`/#add`: the app's More → Add a PC), whatever the account's state */
@@ -183,6 +188,7 @@ export function RelayShell(props: RelayShellProps) {
   const stateName = state.kind === "failed" ? state.failure : state.kind === "outdated" ? "pc-outdated" : state.kind === "forged" ? "identity-changed" : state.kind;
   const devices = state.kind === "list" ? state.devices : [];
   const scan = useAddressOpen();
+  const [otherWays, setOtherWays] = useState(false);
   // the plain wait's QR way in: the phone app's scanner, else a code typed in (#16)
   const qrOrCode = (code: () => void) => (): void => { if (canScanQr()) { scan.setError(null); scanQr(t, scan.take, code); } else code(); };
   const noneOnline = (state.kind === "list" || state.kind === "empty") && state.noneOnline === true && props.onFindPc ? <NoPcOnline onCheck={props.onFindPc} /> : null;
@@ -228,13 +234,18 @@ export function RelayShell(props: RelayShellProps) {
   // signed in, the front page is the same connect tabs, the account's PCs under them and its menu at the top; a code
   // typed from the relay tab goes on in the pairing dialog over them
   if (account?.kind === "signed-in") {
+    const plainFront: { readonly reason: PlainReason; readonly name: string | null; readonly check?: (() => void) | undefined } | null = otherWays || props.plainFront === false ? null
+      : state.kind === "empty" && state.waitPc === true ? { reason: "off", name: state.offPc ?? null, check: props.onWaitAgain }
+      : (state.kind === "list" || state.kind === "empty") && state.noneOnline === true ? { reason: "off", name: devices[0]?.name ?? null, check: props.onFindPc }
+      : state.kind === "empty" && account.pcs !== null && account.pcs.length === 0 && account.error === null ? { reason: "no-account-pc", name: null }
+      : null;
     return (
       <main className="relay-shell-screen relay-add-screen" data-relay-state={stateName} data-account-state={account.kind}>
         {/* one wrapper whether the dialog is open or not: swapping it in would remount the page, losing the control that opened it before its focus trap records it */}
         <div className="relay-shell account-centered relay-shell-signin" inert={addingPc || undefined}>
-          {state.kind === "empty" && state.waitPc === true
-            // #16: none of the account's PCs is on to ask: one line and the QR way in, no tabs and no list
-            ? <PcApprovalWait name={null} onQr={qrOrCode(() => { setAddingPc(true); onCodeStart(); })} {...(props.onWaitAgain ? { onCheck: props.onWaitAgain } : {})} />
+          {plainFront !== null
+            // #16: one plain line instead of the connect tabs: no PC on, or none in the account yet
+            ? <PcApprovalWait reason={plainFront.reason} name={plainFront.name} menu={<StartScreenAccountMenu />} onQr={qrOrCode(() => { setAddingPc(true); onCodeStart(); })} onCheck={plainFront.check} onOtherWays={() => setOtherWays(true)} />
             : <>
               {noneOnline}
               {/* the account's PCs are not listed here (#16): this device's own pairings only */}
@@ -259,11 +270,19 @@ export function RelayShell(props: RelayShellProps) {
     : state.kind === "failed" ? state.server_id === sheetJoin.server_id && state.failure !== "identity-changed"
     : state.kind === "connecting" || state.kind === "compare" || state.kind === "ready");
   if (continued) {
-    // #16: the join a sign-in's launch asked by itself waits on one plain screen; a failure, or a number to type here, keeps the sheet
-    if (props.launchJoin === true && (state.kind === "confirm" || state.kind === "connecting" || (state.kind === "compare" && state.typed !== true))) {
+    // #16: the join a sign-in's launch asked by itself waits on one plain screen, and ends on one too (declined, removed,
+    // the PC off: Ask again or Check again asks once more); any other failure, or a number to type here, keeps the sheet
+    const launched: { readonly reason: PlainReason; readonly digits?: string; readonly ask?: () => void; readonly check?: () => void } | null = props.launchJoin !== true ? null
+      : state.kind === "confirm" || state.kind === "connecting" ? { reason: "allow" }
+      : state.kind === "compare" && state.typed !== true ? { reason: state.approveOn === undefined ? "type" : "allow", digits: state.digits }
+      : state.kind === "failed" && (state.failure === "pair-declined" || state.failure === "pair-unavailable") ? { reason: "declined", ask: onRetry }
+      : state.kind === "failed" && state.failure === "revoked" ? { reason: "removed", ask: onRetry }
+      : state.kind === "failed" && state.failure === "pc-offline" ? { reason: "off", check: onRetry }
+      : null;
+    if (launched !== null) {
       return (
         <main className="relay-shell-screen" data-relay-state={stateName}>
-          <PcApprovalWait name={pc} digits={state.kind === "compare" ? state.digits : null} typedOnPc={state.kind === "compare" && state.approveOn === undefined} onQr={qrOrCode(onCodeStart)} />
+          <PcApprovalWait reason={launched.reason} name={pc} digits={launched.digits ?? null} onQr={qrOrCode(onCodeStart)} onAskAgain={launched.ask} onCheck={launched.check} />
           {scan.error !== null && <p className="account-error" role="alert">{scan.error}</p>}
         </main>
       );
@@ -276,6 +295,15 @@ export function RelayShell(props: RelayShellProps) {
     );
   }
 
+  // #16: a signed-in device removed from a PC it had opened says so in one line, with Ask again
+  if (scoped && state.kind === "failed" && state.failure === "revoked" && props.signedIn === true && props.onAskAgain) {
+    return (
+      <main className="relay-shell-screen" data-relay-state={stateName}>
+        <PcApprovalWait reason="removed" name={pc} onQr={qrOrCode(onCodeStart)} onAskAgain={props.onAskAgain} />
+        {scan.error !== null && <p className="account-error" role="alert">{scan.error}</p>}
+      </main>
+    );
+  }
   const content = <RelayShellCardContent props={props} view={view} signInFirst={signInFirst} addingPc={addingPc} setSignedOutView={setSignedOutView} setAddingPc={setAddingPc} />;
   const step = plain ? undefined : pairingStep(state);
   if (step !== undefined) {

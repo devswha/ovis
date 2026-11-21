@@ -140,4 +140,10 @@ export const RELAY_ZH: Record<string, string> = {
   "Turn on Ovis on the PC": "请在 PC 上打开 Ovis",
   "Or scan the QR on the PC's screen": "或扫描 PC 屏幕上的二维码",
   "Or pair with a code": "或用代码配对",
+  "{name} is off. Turn on Ovis on it.": "{name} 已关闭 - 请打开 Ovis",
+  "Not allowed. Ask again, then press [Allow] on {name}.": "未获允许 - 请重新请求，然后在 {name} 上点按 [允许]",
+  "This device was removed from {name}. Ask again to join it.": "此设备已从 {name} 移除 - 请重新请求",
+  "Sign in with the same account on the PC where Ovis runs": "请在运行 Ovis 的 PC 上登录同一个账户",
+  "Ask again": "重新请求",
+  "Other ways to connect": "其他连接方式",
 };

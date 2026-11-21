@@ -257,6 +257,7 @@ async function listedPcs(device: Device): Promise<string[]> {
   const { page } = device;
   // Add a PC (#16: the signed-in front page lists only this device's own PCs): each PC a link to its own page, /s/<id>/
   await page.goto(`${APP}/#add`, { waitUntil: "domcontentloaded" });
+  await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator("a.relay-add-saved-pc").first().waitFor();
   return page.locator("a.relay-add-saved-pc").evaluateAll((links) => [...new Set(links.map((link) => /^\/s\/([^/]+)\/$/.exec(link.getAttribute("href") ?? "")?.[1] ?? ""))]);
 }
@@ -416,6 +417,7 @@ const steps: Step<World>[] = [
     // Forget goes to the front page; Add a PC lists the PC, still in the account, only as one needing approval
     await page.waitForURL(`${APP}/`);
     await page.goto(`${APP}/#add`, { waitUntil: "domcontentloaded" });
+    await page.reload({ waitUntil: "domcontentloaded" });
     await page.locator("a.relay-add-saved-pc").first().waitFor();
     assert.equal(await savedKey(page, id), false, "the desktop's key for the PC is gone");
     const notes = await page.locator(`a.relay-add-saved-pc[href="/s/${id}/"]`).evaluateAll((links) => links.map((link) => link.querySelector(".relay-add-saved-note")?.textContent ?? null));

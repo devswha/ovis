@@ -74,6 +74,8 @@ try {
         await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs, [data-add-pc-mode], [data-approval-wait]').first().waitFor({ timeout: 45_000 });
         // the tab's launch is past; the account's PCs are listed on Add a PC, not on the signed-in front page (#16)
         await page.goto(`${APP}/#add`);
+        // from the front page that is a same-document hash change: the load draws Add a PC
+        await page.reload();
         const pc = mode === "new" ? "New mini PC" : "Old MacBook";
         await page.locator('main.relay-add-screen[data-account-state="signed-in"] a.relay-add-saved-pc').filter({ hasText: pc }).click();
         const sheet = page.locator(`[data-add-pc-mode="${mode}"][data-add-pc-phase="confirm"]`);

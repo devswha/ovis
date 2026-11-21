@@ -109,6 +109,8 @@ try {
         // the tab's launch is past: Add a PC lists both PCs as not in on this device yet
         const front = async (): Promise<void> => {
           await page.goto(`${APP}/#add`);
+          // from the front page that is a same-document hash change: the load draws Add a PC
+          await page.reload();
           await page.locator('main.relay-add-screen[data-account-state="signed-in"] a.relay-add-saved-pc').filter({ hasText: "desk2" }).waitFor({ timeout: 45_000 });
         };
         const link = (label: string) => page.locator("a.relay-add-saved-pc").filter({ hasText: label });

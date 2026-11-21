@@ -428,3 +428,10 @@
   margin: var(--space-4) 0;
 }
 
+
+/* #16: the plain line a signed-in device shows instead of the connect tabs, its account menu at the top end */
+.relay-approval-wait-menu {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}

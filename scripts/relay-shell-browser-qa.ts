@@ -703,6 +703,8 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await pcLink(a, "Desk PC").waitFor();
       assert.equal(await pcLink(a, "Mac mini").count(), 0, "the front page lists no account PC this device is not in");
       await a.goto(`${APP}/#add`);
+      // from the front page that is a same-document hash change: the load draws Add a PC
+      await a.reload();
       await pcLink(a, "Mac mini").locator(".relay-add-saved-note", { hasText: "Needs approval" }).waitFor();
       const sheetNew = await joinFromFront(a, "Mac mini", pc2.id, "new");
       await settledSheet(a);
@@ -738,6 +740,8 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await signInScreen(b);
       // #16: the sign-in's launch goes to Desk PC (on, this device not in it yet) and asks to join at once, with no press:
       // one plain screen names the PC and shows the number, with no tabs, no list and no sheet
+      // the launch asks the PC this browser opened last first: Desk PC, which the first device has open as a member
+      await b.evaluate((id) => localStorage.setItem("ovis-last-pc", id), pc1.id);
       await b.getByRole("button", { name: "Continue with GitHub" }).click();
       const wait = b.locator('[data-approval-wait="pc"]');
       await wait.waitFor({ timeout: 45_000 });
@@ -752,8 +756,6 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       const prompt = a.getByTestId("account-approval");
       await prompt.waitFor();
       assert.deepEqual(await pc1.pairings(), [], "the PC's own windows are shown no prompt for an account join");
-      await settledSheet(b);
-      await capture(b, "sheet-digits-390-dark");
       await capture(a, "member-approval-1440-dark");
       await prompt.getByRole("radio", { name: shown.split("").join(" ") }).click();
       await prompt.getByRole("button", { name: "Approve" }).click();
