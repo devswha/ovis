@@ -819,7 +819,26 @@ describe("providers", () => {
     if (result === "failing") commands.set("secret-tool lookup service gemini username antigravity", "");
     const report = await new UsageService(context("linux"), only("antigravity")).report();
     expect(report).toEqual({ server_time: expect.any(String), providers: [] });
-    expect(commandCalls).toEqual([["secret-tool", "lookup", "service", "gemini", "username", "antigravity"]]);
+    // An empty lookup is followed by `search`, which tells a locked keyring from no item.
+    expect(commandCalls).toEqual([
+      ["secret-tool", "lookup", "service", "gemini", "username", "antigravity"],
+      ["secret-tool", "search", "service", "gemini", "username", "antigravity"],
+    ]);
+  });
+
+  it("shows Antigravity as locked when the Linux keyring lists its item but keeps the secret locked", async () => {
+    commands.set("secret-tool search service gemini username antigravity", "[/9]\nlabel = \nschema = org.freedesktop.Secret.Generic\nattribute.service = gemini");
+    const report = await new UsageService(context("linux"), only("antigravity")).report();
+    expect(report.providers).toHaveLength(1);
+    expect(report.providers[0]).toMatchObject({ id: "antigravity", problem: "locked" });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("treats a listed item whose secret the search itself reads as no sign-in, not a locked keyring", async () => {
+    commands.set("secret-tool search service gemini username antigravity", "[/9]\nlabel = \nschema = org.freedesktop.Secret.Generic\nattribute.service = gemini\nsecret = not-empty");
+    const report = await new UsageService(context("linux"), only("antigravity")).report();
+    expect(report).toEqual({ server_time: expect.any(String), providers: [] });
+    expect(requests).toHaveLength(0);
   });
 
   it("names secret-tool when Linux lacks it and no Antigravity sign-in was found, and looks again on the next report", async () => {
