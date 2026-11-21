@@ -269,6 +269,17 @@ it("a join waits on the PC until one window sees it: told to a window opened lat
     const own = await openEvents(base(), { cookie: `${DEVICE_COOKIE}=${paired.token}` }, abort.signal);
     await settled(own);
     expect(own.events.filter(joined)).toEqual([]);
+    // a device paired after the join never hears of it, so it cannot mark it seen for the others
+    const running = server.context.services.devices;
+    const tablet = running.pair(running.startPairing().code, "Tablet", "drive");
+    if (!tablet) throw new Error("Expected pairing");
+    running.match(tablet.token);
+    const tabletCookie = `${DEVICE_COOKIE}=${tablet.token}`;
+    const later = await openEvents(base(), { cookie: tabletCookie }, abort.signal);
+    await settled(later);
+    expect(later.events.filter(joined)).toEqual([]);
+    const refused = await fetch(`${base()}/api/devices/joins/seen`, { method: "POST", headers: { ...guard, cookie: tabletCookie }, body: JSON.stringify({ event_id: told.event_id }) });
+    expect(refused.status).toBe(404);
     const second = await openEvents(base(), {}, abort.signal);
     await second.next(joined, "another window hears of it too");
     const gone = second.next((event) => event.type === "device-paired-seen" && event.event_id === told.event_id, "seen in the first window");
@@ -276,9 +287,9 @@ it("a join waits on the PC until one window sees it: told to a window opened lat
     expect(await seen.json()).toEqual({ seen: true });
     await gone;
     restart();
-    const later = await openEvents(base(), {}, abort.signal);
-    await settled(later);
-    expect(later.events.filter(joined)).toEqual([]);
+    const afterRestart = await openEvents(base(), {}, abort.signal);
+    await settled(afterRestart);
+    expect(afterRestart.events.filter(joined)).toEqual([]);
   } finally {
     abort.abort();
     server.stop();
@@ -440,9 +451,9 @@ it.each([false, true])("revoking every device closes each paired client's stream
     const cookieD = await pair("D");
     const toldD = await Promise.all(heardD);
     expect(toldD.every((event) => event.type === "device-paired" && event.event_id === (toldD[0] as DevicePairedEvent).event_id)).toBe(true);
-    // a stream opens on the joins this server announced that nobody has seen yet (the newest three), never its own, then
-    // hears each new one (Watch was paired before the server ran, so no join of it waits)
-    expect(streamC.events.filter((event) => event.type === "device-paired").map((event) => (event as DevicePairedEvent).label)).toEqual(["A", "B", "D"]);
+    // a device opens on the joins nobody has seen yet that came after it was paired (T57), never its own, then hears each
+    // new one: C, paired after A and B, hears only D (Watch was paired before the server ran, so no join of it waits)
+    expect(streamC.events.filter((event) => event.type === "device-paired").map((event) => (event as DevicePairedEvent).label)).toEqual(["D"]);
     expect(streamA.events.filter((event) => event.type === "device-paired").map((event) => (event as DevicePairedEvent).label)).toEqual(["B", "C", "D"]);
     const { devices } = await (await fetch(`${base}/api/devices`, { headers: admin })).json() as { devices: { id: string; label: string }[] };
     expect(devices.map((device) => device.label).sort()).toEqual(["A", "B", "C", "D", "Watch"]);

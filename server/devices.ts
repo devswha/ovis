@@ -2935,6 +2935,9 @@ export class DeviceStore {
 
   has(id: string): boolean { return this.devices.some((device) => device.id === id) || (this.joinedRows?.row(id) ?? null) !== null; }
 
+  /** When the row `id` was added here (an account row: when it was confirmed), or undefined for none. */
+  addedAt(id: string): string | undefined { return this.anyRow(id)?.created_at; }
+
   /** Whether the device may answer a pane's prompt: paired to drive, not to watch. */
   canDrive(id: string): boolean {
     if (!this.opensAll()) return this.devices.some(row => row.id === id && row.role === "drive" && !Object.hasOwn(row, "held"));

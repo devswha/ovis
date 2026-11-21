@@ -17,6 +17,17 @@ export const JOIN_SEEN_PATH = "/api/devices/joins/seen";
 /** `origin`: the stream keys of the browser that paired, which is never told of its own pairing. */
 export interface WaitingJoin { readonly event: DevicePairedEvent; readonly origin: readonly string[] }
 
+/** The window asking: this PC's own (dispatch.ts ownWindow), and when it is a device, when that device was added here. */
+export interface JoinViewer { readonly ownWindow: boolean; readonly since: string | undefined }
+
+/**
+ * Who is told of a waiting join, and so may mark it seen for all: this PC's own window, or a device that was here before
+ * the join (the journal's T57 rule). A device paired later never hears of older joins, nor clears them.
+ */
+export function shownTo(join: WaitingJoin, viewer: JoinViewer): boolean {
+  return viewer.ownWindow || (viewer.since !== undefined && Date.parse(viewer.since) < Date.parse(join.event.enrolled_at));
+}
+
 function readJoins(path: string): WaitingJoin[] {
   let text: string;
   try { text = readFileSync(path, "utf8"); } catch { return []; }
@@ -86,7 +97,7 @@ export class JoinNotices {
  * POST /api/devices/joins/seen { event_id }: any window that may drive this PC marks a join seen for all its windows. A
  * window the open LAN let in is never told of a join, so it marks none (an account row is held to `drive` by its rights).
  */
-export async function handleJoinSeen(request: Request, joins: JoinNotices, access: Access): Promise<Response> {
+export async function handleJoinSeen(request: Request, joins: JoinNotices, access: Access, viewer: JoinViewer): Promise<Response> {
   setRequestRoute(JOIN_SEEN_PATH);
   if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
   if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return jsonResponse({ error: { code: "invalid_origin", message: "Manage devices from this app" } }, 403);
@@ -95,5 +106,10 @@ export async function handleJoinSeen(request: Request, joins: JoinNotices, acces
   let body: unknown;
   try { body = await request.json(); } catch { return badRequest("invalid_json", "request body must be JSON"); }
   if (!isJsonObject(body) || typeof body["event_id"] !== "string" || !/^[0-9a-f]{16}$/.test(body["event_id"])) return badRequest("invalid_body", "event_id must be a join's event id");
-  return jsonResponse({ seen: joins.see(body["event_id"]) }, 200, { "cache-control": "no-store" });
+  const eventId = body["event_id"];
+  // a join this window was never told of is none of its business: as if it did not wait
+  if (!joins.waiting().some((join) => join.event.event_id === eventId && shownTo(join, viewer))) {
+    return jsonResponse({ error: { code: "join_not_found", message: "No such new device waits to be seen here" } }, 404, { "cache-control": "no-store" });
+  }
+  return jsonResponse({ seen: joins.see(eventId) }, 200, { "cache-control": "no-store" });
 }

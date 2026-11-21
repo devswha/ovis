@@ -269,7 +269,7 @@ export function App() {
   const { layoutNotice, setLayoutNotice } = useLayoutNotice();
   const { locked, setLocked, lockReason, pairCode, consumePairCode, pairingUnconfirmed, onPaired, auth, canSignOut, security, readBridgeHealth } = useAccessState({ ui: settings.uiFontFamily, chat: settings.chatFontFamily });
   const pendingAccess = locked === true ? false : auth === null ? undefined : auth.authenticated && auth.role === "drive" && auth.via !== "open";
-  const { pairedNotices, setPairedNotices, dismissPairedNotice, relayPairings, setRelayPairings, remotePairings, setRemotePairings, removedNotices, setRemovedNotices, dismissRemovedNotice, pendingKeys, setPendingKeys, clearPendingKeys } = usePairedNotices(pendingAccess);
+  const { pairedNotices, setPairedNotices, dismissPairedNotice, relayPairings, setRelayPairings, remotePairings, setRemotePairings, removedNotices, setRemovedNotices, dismissRemovedNotice, pendingKeys, setPendingKeys, clearPendingKeys } = usePairedNotices(pendingAccess, auth?.role === "watch");
   const ownWindow = ownWindowHere(health?.auth);
   const prompts = useOwnWindowPrompts(relayPairings, pendingKeys, ownWindow);
   const updates = useUpdates(locked === false);

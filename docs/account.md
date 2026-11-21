@@ -1083,10 +1083,12 @@ is what authenticates the PC.
   identity), the device that revoked it through the app, or the member that signed an account
   `remove`.
 - A join (`device-paired`) waits on the PC, in `join-notices.json` beside `devices.json`, until a window sees it:
-  each machines event stream opens on the joins nobody has seen yet (the newest three, within a week, of devices
-  still here), never the new device's own nor a window the open LAN let in. `POST /api/devices/joins/seen
-  { "event_id" }` from a window that may drive the PC marks it seen for all, and every open stream is told
-  `{ "type": "device-paired-seen", "event_id" }`.
+  the PC's own window and each device that was here before the join open their machines event stream on the joins
+  nobody has seen yet (the newest three, within a week, of devices still here), never the new device's own; a
+  device paired later, a window the open LAN let in and any other window hear none. `POST /api/devices/joins/seen
+  { "event_id" }` from one of those windows that may drive the PC marks it seen for all (any other gets 404), and
+  every open stream is told `{ "type": "device-paired-seen", "event_id" }`. A watching window hides a join for
+  itself, in its own browser storage.
 - `GET /api/devices` adds `account`, `account_key` (the member's `relay_public_key`, which is public)
   and `added_by` to account members' rows, for a caller with drive access only; a watching device
   sees none of them.

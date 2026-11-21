@@ -78,7 +78,7 @@ import { bridgeIdentity } from "./bridge.ts";
 import { discoverHerdrSessions } from "./herdr-discovery.ts";
 import { ACCOUNT_PC_OWNER_ONLY, handleMachineRequest, nonCanonicalPath, slowMachinePath, type EventStreamBudget } from "./machine-api.ts";
 import { machinePairingEvents } from "./machine-pairing-events.ts";
-import { handleJoinSeen, JOIN_SEEN_PATH, type JoinNotices } from "./join-notices.ts";
+import { handleJoinSeen, JOIN_SEEN_PATH, type JoinNotices, type JoinViewer } from "./join-notices.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
 import type { PiSessionReader } from "./pi-session-metadata.ts";
 import { withoutHiddenTokens, type HerdrSidebarConfig } from "./herdr-sidebar.ts";
@@ -296,6 +296,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // this PC's own window may still read the lock and ask for an unlock: both only ask the screen, which grants
   // (on a PC with an access token, that window comes in with the token: the same window, loopback and not forwarded)
   const ownWindow = access.level === "full" && (access.via === "local" || (access.via === "token" && loopback && !forwarded));
+  // who is told of a join that waits to be seen, and may mark it seen (server/join-notices.ts shownTo)
+  const joinViewer: JoinViewer = { ownWindow, since: access.level === "full" && access.device ? devices.addedAt(access.device.id) : undefined };
   // a lock or unlock is asked only from this PC's own window: any other is told so, before any other refusal (S36-1)
   if (!ownWindow && request.method === "POST" && (pathname === "/api/account/lock" || pathname === "/api/account/unlock") && ctx.services.lockRoutes !== undefined) {
     setRequestRoute(pathname);
@@ -548,7 +550,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       const issuedKey = presentedKeys.length === 0 && pathname === "/api/machines/events" ? newStreamKey() : null;
       const keys = issuedKey === null ? presentedKeys : [issuedKey];
       const openAccess = access.level === "full" && access.via === "open";
-      const pairings = machinePairingEvents(ctx, access, keys);
+      const pairings = machinePairingEvents(ctx, access, keys, joinViewer);
       // a stream ends with what let it in: a device's revoke, the gate closing on one the open LAN let in, Portal's recheck
       const endsWith = deviceId ? (close: () => void) => devices.onRevoke(deviceId, close) : openAccess ? (close: () => void) => devices.endWithGate(close) : portalRecheckMs !== undefined ? (close: () => void) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined;
       // and with a lock, when what let it in is a grant the lock refuses
@@ -602,7 +604,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const openAccess = access.level === "full" && access.via === "open";
     const machineEvents = useMachineEvents ? {
       manager: machines, preferences, herdrSidebar, seen,
-      pairings: machinePairingEvents(ctx, access, keys),
+      pairings: machinePairingEvents(ctx, access, keys, joinViewer),
     } : undefined;
     const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, localRoster, deviceId, ...(ctx.peer.kind === "relay" && ctx.peer.device.id === deviceId && ctx.peer.key ? { provedKey: ctx.peer.key } : {}), readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(ingress === undefined ? {} : { ingress }), ...recheck, ...(untilLock ? { untilLock } : {}) }) });
     if (upgraded) return undefined;
@@ -625,7 +627,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const pendingRedemptions = ctx.services.pendingRedemptions;
     if (pendingRedemptions !== undefined) return handlePendingRequest(request, pathname, pendingRedemptions, access);
   }
-  if (pathname === JOIN_SEEN_PATH) return handleJoinSeen(request, ctx.services.joins, access);
+  if (pathname === JOIN_SEEN_PATH) return handleJoinSeen(request, ctx.services.joins, access, joinViewer);
   if (pathname === "/api/devices" || pathname.startsWith("/api/devices/")) {
     try {
       // one device, or all of them: the registry names what was revoked, and the cleanup follows its ids
