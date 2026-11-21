@@ -30,6 +30,7 @@ describe("a shell whose code failed to load", () => {
     expect(reloadAddress("https://app.ovis.sh/#code=c&state=s", false)).toBe("/#code=c&state=s");
     expect(reloadAddress("https://app.ovis.sh/?file=%2Fhome%2Fnotes.md", false)).toBe("/#file=%2Fhome%2Fnotes.md");
     expect(reloadAddress("https://app.ovis.sh/?sign-in=github", false)).toBe("/");
+    expect(reloadAddress(`https://app.ovis.sh/s/${id}/?pane=p1&view=terminal#offer=abc`, false)).toBe(`/s/${id}/#offer=abc`);
     expect(reloadAddress("https://app.ovis.sh/#pcs", true)).toBeNull();
   });
 

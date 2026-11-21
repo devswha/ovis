@@ -26,9 +26,14 @@ export function takeEntryUrl(page: Page): string {
   // does a link that starts a sign-in (`#sign-in=<provider>`), so a reload or Back does not start it again
   // A query naming one is dropped, never moved into the fragment (pageQuery.ts)
   const query = search.length > 1 ? queryWithoutSignIn(search) : "";
-  const kept = query !== "" ? `#${query}` : hash.startsWith("#offer=") || hash.startsWith("#sign-in=") || signInFragment(hash) ? "" : hash;
+  const kept = query !== "" ? `#${query}` : enteredBy(hash) ? "" : hash;
   if (`${search}${hash}` !== kept) page.history.replaceState(null, "", pathname + kept);
   return href;
+}
+
+/** An offer, a link that starts a sign-in or a sign-in's return: what the shell reads from the entry alone. */
+function enteredBy(hash: string): boolean {
+  return hash.startsWith("#offer=") || hash.startsWith("#sign-in=") || signInFragment(hash);
 }
 
 function signInFragment(hash: string): boolean {
@@ -98,12 +103,14 @@ export function shellLoaded(memory: TabMemory | null): void {
 /**
  * The address a reload after a failed load opens: the entry's, whose offer or sign-in's return takeEntryUrl took off the
  * address before the shell could read it (the reloaded page takes it off again), with a query in the fragment as
- * takeEntryUrl keeps it, so no request carries it again. Null once the tab navigated since: the address it went to stays.
+ * takeEntryUrl keeps it, so no request carries it again. The offer takes the whole fragment, so an older link with both
+ * keeps the offer and drops the query (a pane or a view to show). Null once the tab navigated since: the address it went
+ * to stays.
  */
 export function reloadAddress(entryUrl: string, navigated: boolean): string | null {
   if (navigated) return null;
   const { pathname, search, hash } = new URL(entryUrl);
-  if (search.length <= 1) return pathname + hash;
+  if (search.length <= 1 || enteredBy(hash)) return pathname + hash;
   const query = queryWithoutSignIn(search);
   return pathname + (query !== "" ? `#${query}` : "");
 }
