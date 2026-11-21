@@ -1,4 +1,4 @@
-import { accessSync, chmodSync, constants, lstatSync, mkdirSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join, posix, win32 } from "node:path";
 
 /**
@@ -94,19 +94,20 @@ export function writeLauncher(dir: string, platform: NodeJS.Platform, places: La
 /**
  * Where the command is, for Settings. `taken`: an `ovis` the app did not put there (install.sh's or install.ps1's, of
  * another Ovis) is in the way and stays. `off-path`: the command is in a folder the terminal's PATH lacks. `shadowed`:
- * another `ovis` comes first on that PATH.
+ * another `ovis` comes first on that PATH. `profile`: adding it put ~/.local/bin on the PATH in that shell profile, which a
+ * new terminal reads.
  */
 export interface CommandState {
   installed: boolean;
   at: string | null;
-  note: { kind: "taken" | "shadowed"; path: string } | { kind: "off-path"; dir: string } | null;
+  note: { kind: "taken" | "shadowed" | "profile"; path: string } | { kind: "off-path"; dir: string } | null;
 }
 
 export interface CommandHost {
   platform: NodeJS.Platform;
   home: string;
-  /** a Mac's system-wide folder for it: /usr/local/bin */
-  systemBin: string;
+  /** the user's login shell ($SHELL), whose profile a Mac's PATH line goes in */
+  shell: string;
   /** the launcher writeLauncher wrote */
   launcher: string;
   /** the PATH a new terminal gets: the login shell's on a Mac or Linux (an app opened from the Dock has launchd's), the user's on Windows */
@@ -117,10 +118,26 @@ export interface CommandHost {
   run(program: string, args: readonly string[], env?: Record<string, string>): Promise<number | null>;
 }
 
-/** the places a Mac or Linux links the command, in the order they are tried */
-export function linkPlaces(host: Pick<CommandHost, "platform" | "home" | "systemBin">): string[] {
-  const own = posix.join(host.home, ".local", "bin", "ovis");
-  return host.platform === "darwin" ? [posix.join(host.systemBin, "ovis"), own] : [own];
+/**
+ * Where a Mac or Linux links the command: the user's own ~/.local/bin, never a folder every account and root run from
+ * (a link there would run a file this user can rewrite, as anyone who types ovis, sudo too).
+ */
+export const linkPath = (home: string): string => posix.join(home, ".local", "bin", "ovis");
+
+/** the line a Mac's shell profile gets when ~/.local/bin is not on its PATH; its mark keeps it from being added twice */
+export const PROFILE_LINE = 'export PATH="$HOME/.local/bin:$PATH" # added by Ovis';
+
+/** the profile a login shell reads: zsh's ~/.zprofile (a Mac's default), bash's ~/.bash_profile, else ~/.profile */
+export function profileOf(home: string, shell: string): string {
+  const name = posix.basename(shell);
+  return posix.join(home, name === "zsh" ? ".zprofile" : name === "bash" ? ".bash_profile" : ".profile");
+}
+
+function addToProfile(file: string): void {
+  let text = "";
+  try { text = readFileSync(file, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (text.split("\n").some((line) => line.trim() === PROFILE_LINE)) return;
+  appendFileSync(file, `${text === "" || text.endsWith("\n") ? "" : "\n"}${PROFILE_LINE}\n`);
 }
 
 type Place = "ours" | "free" | "taken";
@@ -178,24 +195,19 @@ export async function commandState(host: CommandHost): Promise<CommandState> {
     if (other !== null) return { installed, at: installed ? host.launcher : null, note: { kind: installed ? "shadowed" : "taken", path: other } };
     return { installed, at: installed ? host.launcher : null, note: null };
   }
-  const places = linkPlaces(host).map((at) => ({ at, place: placeOf(at, host.launcher) }));
-  const ours = places.find(({ place }) => place === "ours");
-  if (ours === undefined) {
-    const free = places.some(({ place }) => place === "free");
-    return { installed: false, at: null, note: free ? null : { kind: "taken", path: places[0]!.at } };
-  }
+  const at = linkPath(host.home);
+  const place = placeOf(at, host.launcher);
+  if (place !== "ours") return { installed: false, at: null, note: place === "free" ? null : { kind: "taken", path: at } };
   const first = firstOnPath(path, host);
-  if (first === null) return { installed: true, at: ours.at, note: { kind: "off-path", dir: posix.dirname(ours.at) } };
-  return { installed: true, at: ours.at, note: samePath(first, host.launcher) ? null : { kind: "shadowed", path: first } };
+  if (first === null) return { installed: true, at, note: { kind: "off-path", dir: posix.dirname(at) } };
+  return { installed: true, at, note: samePath(first, host.launcher) ? null : { kind: "shadowed", path: first } };
 }
 
-const appleScriptString = (value: string): string => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
-
 /**
- * Puts the command on the terminal's PATH, never over an `ovis` already there: on a Mac a link in /usr/local/bin, asking
- * for an administrator's password where that folder is not the user's, else in ~/.local/bin; on Linux in ~/.local/bin
- * (a .deb's /usr/bin/ovis stays the app); on Windows the launcher's folder on the user's Path, unless another Ovis's
- * `ovis` (install.ps1's) is on it.
+ * Puts the command on the terminal's PATH as this user alone, never over an `ovis` already there and with no
+ * administrator step: on a Mac and Linux a link in ~/.local/bin (a .deb's /usr/bin/ovis stays the app), and on a Mac
+ * one marked PATH line in the login shell's profile when that PATH lacks ~/.local/bin; on Windows the launcher's folder
+ * on the user's Path, unless another Ovis's `ovis` (install.ps1's) is on it.
  */
 export async function installCommand(host: CommandHost): Promise<CommandState> {
   const before = await commandState(host);
@@ -204,31 +216,13 @@ export async function installCommand(host: CommandHost): Promise<CommandState> {
     await host.run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ADD_USER_PATH], { OVIS_COMMAND_DIR: win32.dirname(host.launcher) });
     return commandState(host);
   }
-  for (const at of linkPlaces(host)) {
-    if (placeOf(at, host.launcher) !== "free") continue;
-    const dir = posix.dirname(at);
-    if (host.platform === "darwin" && dir === host.systemBin) {
-      if (!writable(dir)) {
-        // the test and ln run as root: still nothing is replaced, should an ovis have come since
-        const script = `mkdir -p ${shQuote(dir)} && [ ! -e ${shQuote(at)} ] && [ ! -L ${shQuote(at)} ] && ln -s ${shQuote(host.launcher)} ${shQuote(at)}`;
-        // cancelled or refused (-128): ~/.local/bin next
-        if (await host.run("/usr/bin/osascript", ["-e", `do shell script ${appleScriptString(script)} with administrator privileges`]) === 0) break;
-        continue;
-      }
-    }
-    try {
-      mkdirSync(dir, { recursive: true });
-      // fails where a file has come since: nothing is replaced
-      symlinkSync(host.launcher, at);
-      break;
-    } catch { /* the next place */ }
-  }
-  return commandState(host);
-}
-
-function writable(dir: string): boolean {
-  try {
-    accessSync(dir, constants.W_OK);
-    return true;
-  } catch { return false; }
+  const at = linkPath(host.home);
+  mkdirSync(posix.dirname(at), { recursive: true });
+  // fails where a file has come since: nothing is replaced
+  symlinkSync(host.launcher, at);
+  const after = await commandState(host);
+  if (host.platform !== "darwin" || after.note?.kind !== "off-path") return after;
+  const profile = profileOf(host.home, host.shell);
+  addToProfile(profile);
+  return { ...after, note: { kind: "profile", path: profile } };
 }

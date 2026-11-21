@@ -312,4 +312,5 @@ export const SETTINGS_ZH: Record<string, string> = {
   "{path} is the ovis command of another Ovis install: it stays as it is, and this app adds none.": "{path} 是另一个 Ovis 安装的 ovis 命令：保持原样，此应用不添加命令。",
   "{path} comes first on your terminal's PATH, so ovis runs that one.": "终端的 PATH 中 {path} 排在前面，因此 ovis 会运行它。",
   "{dir} is not on your terminal's PATH: add it there to run ovis.": "{dir} 不在终端的 PATH 中：将其加入 PATH 才能运行 ovis。",
+  "Added ~/.local/bin to your PATH in {path}: open a new terminal window to run ovis.": "已在 {path} 中将 ~/.local/bin 加入 PATH：请打开新的终端窗口运行 ovis。",
 };

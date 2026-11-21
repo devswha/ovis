@@ -312,4 +312,5 @@ export const SETTINGS_JA: Record<string, string> = {
   "{path} is the ovis command of another Ovis install: it stays as it is, and this app adds none.": "{path} は別の Ovis インストールの ovis コマンドです。そのまま残し、このアプリは追加しません。",
   "{path} comes first on your terminal's PATH, so ovis runs that one.": "ターミナルの PATH で {path} が先にあるため、ovis はそちらを実行します。",
   "{dir} is not on your terminal's PATH: add it there to run ovis.": "{dir} はターミナルの PATH にありません。ovis を実行するには PATH に追加してください。",
+  "Added ~/.local/bin to your PATH in {path}: open a new terminal window to run ovis.": "{path} で ~/.local/bin を PATH に追加しました。新しいターミナルウィンドウを開いて ovis を実行してください。",
 };

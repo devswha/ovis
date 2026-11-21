@@ -131,8 +131,7 @@ async function terminalPath(): Promise<string> {
 }
 
 function commandHost(launcher: string): CommandHost {
-  // the administrator prompt waits for the person
-  return { platform: process.platform, home: homedir(), systemBin: "/usr/local/bin", launcher, isFile, terminalPath, run: async (program, args, env) => (await programOutput(program, args, 300_000, env)).code };
+  return { platform: process.platform, home: homedir(), shell: process.env["SHELL"] || "/bin/zsh", launcher, isFile, terminalPath, run: async (program, args, env) => (await programOutput(program, args, 60_000, env)).code };
 }
 
 function ours(url: string): boolean {

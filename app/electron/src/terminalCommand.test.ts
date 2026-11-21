@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandState, installCommand, launcherText, shellPath, writeLauncher, type CommandHost, type LauncherPlaces } from "./terminalCommand.ts";
+import { commandState, installCommand, launcherText, PROFILE_LINE, shellPath, writeLauncher, type CommandHost, type LauncherPlaces } from "./terminalCommand.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -119,7 +119,7 @@ describe("shellPath", () => {
 
 interface Fake extends CommandHost { runs: { program: string; args: readonly string[]; env?: Record<string, string> }[] }
 
-function posixHost(platform: "linux" | "darwin", dir: string, path: (home: string) => string, run: (program: string, args: readonly string[]) => number = () => 1): Fake {
+function posixHost(platform: "linux" | "darwin", dir: string, path: (home: string) => string): Fake {
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
   const launcher = join(dir, "cli", "ovis");
@@ -127,12 +127,10 @@ function posixHost(platform: "linux" | "darwin", dir: string, path: (home: strin
   writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o755 });
   const runs: Fake["runs"] = [];
   return {
-    platform, home, launcher, runs,
-    // a folder that is not there: never the real /usr/local/bin, and not writable even for root
-    systemBin: join(dir, "usr-local", "bin"),
+    platform, home, launcher, runs, shell: "/bin/zsh",
     isFile: (file) => { try { return lstatSync(file).isFile() || lstatSync(file).isSymbolicLink(); } catch { return false; } },
     terminalPath: async () => path(home),
-    run: async (program, args, env) => { runs.push({ program, args, env }); return run(program, args); },
+    run: async (program, args, env) => { runs.push({ program, args, env }); return 1; },
   };
 }
 
@@ -172,39 +170,45 @@ describe("adding the command on Linux", () => {
 });
 
 describe("adding the command on a Mac", () => {
-  it("asks for an administrator's password to link it in /usr/local/bin, without replacing anything there", async () => {
+  it("links ~/.local/bin/ovis with no administrator step, and puts ~/.local/bin on zsh's PATH in ~/.zprofile once", async () => {
     const dir = folder();
-    const host = posixHost("darwin", dir, () => join(dir, "usr-local", "bin"), (program, args) => {
-      // what the prompt's root shell does once the person agrees
-      mkdirSync(join(dir, "usr-local", "bin"), { recursive: true });
-      symlinkSync(join(dir, "cli", "ovis"), join(dir, "usr-local", "bin", "ovis"));
-      return program === "/usr/bin/osascript" && args[1]!.endsWith("with administrator privileges") ? 0 : 1;
-    });
-    const at = join(host.systemBin, "ovis");
-    expect(await installCommand(host)).toEqual({ installed: true, at, note: null });
-    expect(host.runs).toHaveLength(1);
-    const script = host.runs[0]!.args[1]!;
-    expect(script).toContain("[ ! -e ");
-    expect(script).toContain("ln -s ");
-    expect(script).not.toContain("ln -sf");
+    const host = posixHost("darwin", dir, () => "/usr/bin:/bin");
+    const profile = join(host.home, ".zprofile");
+    writeFileSync(profile, "eval \"$(/opt/homebrew/bin/brew shellenv)\"");
+    const at = join(host.home, ".local", "bin", "ovis");
+    expect(await installCommand(host)).toEqual({ installed: true, at, note: { kind: "profile", path: profile } });
+    expect(readlinkSync(at)).toBe(host.launcher);
+    expect(host.runs).toEqual([]);
+    expect(await installCommand(host)).toEqual({ installed: true, at, note: { kind: "off-path", dir: join(host.home, ".local", "bin") } });
+    rmSync(at);
+    await installCommand(host);
+    expect(readFileSync(profile, "utf8")).toBe(`eval "$(/opt/homebrew/bin/brew shellenv)"\n${PROFILE_LINE}\n`);
   });
 
-  it("puts it in ~/.local/bin when the password prompt is cancelled", async () => {
+  it("writes bash's line in ~/.bash_profile", async () => {
     const dir = folder();
-    const host = posixHost("darwin", dir, (home) => `${home}/.local/bin`, () => 1);
+    const host = { ...posixHost("darwin", dir, () => "/usr/bin:/bin"), shell: "/bin/bash" };
+    expect((await installCommand(host)).note).toEqual({ kind: "profile", path: join(host.home, ".bash_profile") });
+    expect(readFileSync(join(host.home, ".bash_profile"), "utf8")).toBe(`${PROFILE_LINE}\n`);
+    expect(existsSync(join(host.home, ".zprofile"))).toBe(false);
+  });
+
+  it("leaves the profile alone when the PATH already has ~/.local/bin", async () => {
+    const dir = folder();
+    const host = posixHost("darwin", dir, (home) => `${home}/.local/bin:/usr/bin`);
     expect(await installCommand(host)).toEqual({ installed: true, at: join(host.home, ".local", "bin", "ovis"), note: null });
-    expect(host.runs).toHaveLength(1);
+    expect(existsSync(join(host.home, ".zprofile"))).toBe(false);
   });
 
-  it("goes straight to ~/.local/bin when /usr/local/bin already has another ovis, which stays", async () => {
+  it("never replaces an ovis already in ~/.local/bin, and writes no profile line", async () => {
     const dir = folder();
-    const host = posixHost("darwin", dir, (home) => `${join(dir, "usr-local", "bin")}:${home}/.local/bin`);
-    mkdirSync(host.systemBin, { recursive: true });
-    writeFileSync(join(host.systemBin, "ovis"), "other\n");
-    chmodSync(join(host.systemBin, "ovis"), 0o755);
-    const state = await installCommand(host);
-    expect(state).toEqual({ installed: true, at: join(host.home, ".local", "bin", "ovis"), note: { kind: "shadowed", path: join(host.systemBin, "ovis") } });
-    expect(readFileSync(join(host.systemBin, "ovis"), "utf8")).toBe("other\n");
+    const host = posixHost("darwin", dir, () => "/usr/bin:/bin");
+    const at = join(host.home, ".local", "bin", "ovis");
+    mkdirSync(join(host.home, ".local", "bin"), { recursive: true });
+    writeFileSync(at, "#!/bin/sh\n# install.sh\n", { mode: 0o755 });
+    expect(await installCommand(host)).toEqual({ installed: false, at: null, note: { kind: "taken", path: at } });
+    expect(readFileSync(at, "utf8")).toBe("#!/bin/sh\n# install.sh\n");
+    expect(existsSync(join(host.home, ".zprofile"))).toBe(false);
     expect(host.runs).toEqual([]);
   });
 });
@@ -215,7 +219,7 @@ describe("adding the command on Windows", () => {
     const runs: Fake["runs"] = [];
     const path = ["C:\\Windows\\system32", ...userPath];
     return {
-      platform: "win32", home: "C:\\Users\\Ann", systemBin: "", launcher, runs,
+      platform: "win32", home: "C:\\Users\\Ann", shell: "", launcher, runs,
       isFile: (file) => files.includes(file) || file === launcher,
       terminalPath: async () => path.join(";"),
       run: async (program, args, env) => {

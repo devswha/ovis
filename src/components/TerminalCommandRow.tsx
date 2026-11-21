@@ -8,7 +8,7 @@ import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
 export interface CommandState {
   installed: boolean;
   at: string | null;
-  note: { kind: "taken" | "shadowed"; path: string } | { kind: "off-path"; dir: string } | null;
+  note: { kind: "taken" | "shadowed" | "profile"; path: string } | { kind: "off-path"; dir: string } | null;
 }
 
 /** The desktop app's bridge (app/electron/src/preload.ts ovisCommand); null elsewhere, where there is no row. */
@@ -43,6 +43,7 @@ export function TerminalCommandRow() {
   const said = state.note;
   const note = said === null ? null
     : said.kind === "off-path" ? t("{dir} is not on your terminal's PATH: add it there to run ovis.", { dir: said.dir })
+    : said.kind === "profile" ? t("Added ~/.local/bin to your PATH in {path}: open a new terminal window to run ovis.", { path: said.path })
     : said.kind === "taken" ? t("{path} is the ovis command of another Ovis install: it stays as it is, and this app adds none.", { path: said.path })
     : t("{path} comes first on your terminal's PATH, so ovis runs that one.", { path: said.path });
   return (

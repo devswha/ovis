@@ -312,4 +312,5 @@ export const SETTINGS_KO: Record<string, string> = {
   "{path} is the ovis command of another Ovis install: it stays as it is, and this app adds none.": "{path}은 다른 Ovis 설치의 ovis 명령입니다. 그대로 두고 이 앱은 명령을 추가하지 않습니다.",
   "{path} comes first on your terminal's PATH, so ovis runs that one.": "터미널 PATH에서 {path}이 먼저 나오므로 ovis는 그것을 실행합니다.",
   "{dir} is not on your terminal's PATH: add it there to run ovis.": "{dir} 폴더가 터미널 PATH에 없습니다. PATH에 추가해야 ovis를 실행할 수 있습니다.",
+  "Added ~/.local/bin to your PATH in {path}: open a new terminal window to run ovis.": "{path}에서 ~/.local/bin을 PATH에 추가했습니다. 새 터미널 창을 열어 ovis를 실행하세요.",
 };
