@@ -18,15 +18,16 @@ export interface Seen { readonly id: string; readonly created: number | null }
 
 /**
  * An action the reducer cannot finish itself, for the caller to perform: a layout write, a jump through the
- * agent list, the goto query, or a directional focus (the caller finds the neighbour on the drawn layout and
- * answers with a `select` event).
+ * agent list, or a directional focus (the caller finds the neighbour on the drawn layout and answers with a
+ * `select` event). `zoom_follow`: the zoom of the target pane's tab moves to it, because focus went to a pane
+ * that tab's shared zoom covered.
  */
 export interface RunEffect {
   readonly type: "run";
-  readonly action: HerdrAction | MoveAction;
+  readonly action: HerdrAction | MoveAction | "zoom_follow";
   readonly target: Target | null;
   readonly index: number | null;
-  /** a name typed into a field (rename, new tab) or the goto query */
+  /** a name typed into a field (rename, new tab) */
   readonly name: string | null;
   /** a close: every terminal it ends, as the screen showed them; the caller ends nothing when the core holds others */
   readonly seen?: readonly Seen[];

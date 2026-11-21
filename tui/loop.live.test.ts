@@ -198,7 +198,8 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     expect((await hc.call("terminal.get", { terminal: address })).state).toBe("finished");
     await hc.call("terminal.rm", { terminal: address });
     let grid = ended;
-    while (grid.includes("+- ends ")) grid = await nextGrid(run);
+    // the frame that drops the pane can arrive in two reads too: wait until its banner is gone as well
+    while (grid.includes("+- ends ") || grid.includes("ended (3)")) grid = await nextGrid(run);
     expect([grid.includes("+- stays "), grid.includes("ended (3)")]).toEqual([true, false]);
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);

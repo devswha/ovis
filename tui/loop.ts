@@ -15,6 +15,7 @@ import type { HcTransport, HelloInfo } from "../server/herdr-core/connection.ts"
 import { editLayout } from "../server/herdr-core/layout-ops.ts";
 import type { ScreenRange } from "./emulator/index.ts";
 import { DividerWrites } from "./core/divider.ts";
+import { LayoutWrites } from "./core/layout.ts";
 import { type CoreLink, type LinkNotice, type LinkState, openLink } from "./core/link.ts";
 import { createPanes, type PaneInput, type PaneNotice, type Panes, type PaneView } from "./core/pane.ts";
 import { CoreWorld, focusDirection, paneToward } from "./core/world.ts";
@@ -211,6 +212,18 @@ export function startLoop(options: LoopOptions): Loop {
     },
   });
 
+  const layout = new LayoutWrites({
+    hc: link,
+    model: world.model,
+    folder: options.cwd,
+    answer: (answer) => {
+      guard(() => dispatch(answer.type === "notice"
+        ? { type: "notice", code: answer.code, data: answer.data, ...(answer.calm ? { calm: true } : {}), at: clock.now() }
+        : { type: "follow", target: answer.target, away: answer.away, at: clock.now() }));
+      arm();
+    },
+  });
+
   function onLinkNotice(notice: LinkNotice): void {
     panes.notice(notice);
     if (notice.type === "state") {
@@ -269,6 +282,46 @@ export function startLoop(options: LoopOptions): Loop {
     owePass();
   }
 
+  /**
+   * What the user typed, pasted or clicked while a layout write that one of their actions started is under way: it
+   * waits behind that write, in order, and goes through once the write is done, so it meets the layout the write
+   * leaves (the pane a close focuses, the pane a split follows), as a later read would. null when no write holds it.
+   * `ahead` is the state core as if what waits had gone through: only to see a detach in it, which never waits.
+   */
+  let behindWrite: { readonly events: ModelEvent[]; ahead: ModelState } | null = null;
+
+  /**
+   * A user's input event: through the state core now, or behind the layout write under way. A detach among what would
+   * wait leaves at once: a user leaving never waits for a write (what waited, typed before it, goes nowhere).
+   */
+  function userInput(event: ModelEvent): void {
+    if (behindWrite === null || !(event.type === "key" || event.type === "text" || event.type === "paste" || event.type === "mouse")) {
+      dispatch(event);
+      return;
+    }
+    const step = reduce(behindWrite.ahead, event);
+    if (step.effects.some((effect) => effect.type === "quit")) {
+      behindWrite = null;
+      perform({ type: "quit" });
+      return;
+    }
+    behindWrite.events.push(event);
+    behindWrite.ahead = step.state;
+  }
+
+  /** Holds the user's input until `writing` is done; then what waited goes through in order (and may hold again). */
+  function holdUntil(writing: Promise<void>): void {
+    behindWrite ??= { events: [], ahead: state };
+    void writing.then(() => {
+      guard(() => {
+        const waited = behindWrite?.events ?? [];
+        behindWrite = null;
+        for (const event of waited) userInput(event);
+      });
+      arm();
+    });
+  }
+
   /** One event through the state core, and its effects performed in order, now. */
   function dispatch(event: ModelEvent): void {
     const before = state;
@@ -297,13 +350,20 @@ export function startLoop(options: LoopOptions): Loop {
           if (toward !== null) dispatch({ type: "select", target: { kind: "pane", id: toward }, at: clock.now() });
           return;
         }
-        // layout writes and the agent list come with later rows of the plan: one notice per press, never silence
+        const writing = layout.run(effect);
+        if (writing !== null) {
+          // a zoom that follows the focus moves nothing input is routed by (the focus moved already): the next move
+          // goes on at once, and the layout writes only the latest of such zooms
+          if (effect.action !== "zoom_follow") holdUntil(writing);
+          return;
+        }
+        // the agent list comes with a later row of the plan: one notice per press, never silence
         dispatch({ type: "notice", code: "not_built", data: { action: effect.action }, at: clock.now() });
         return;
       }
       case "input":
         // the rest of a text run, behind the action before it: it meets the focus and mode that action left
-        dispatch(effect.event);
+        userInput(effect.event);
         return;
       case "quit":
         act("quit");
@@ -442,7 +502,7 @@ export function startLoop(options: LoopOptions): Loop {
         // the host lost its screen meanwhile, or redrew it: the next frame writes every cell
         if (event.focused) painter?.invalidate();
       }
-      dispatch(event);
+      userInput(event);
     }
   }
 
@@ -453,7 +513,7 @@ export function startLoop(options: LoopOptions): Loop {
       if (quitting && now >= quitting.at) quitting.settle();
       return;
     }
-    for (const event of framer.tick(now)) dispatch(event);
+    for (const event of framer.tick(now)) userInput(event);
     if (pasteAt !== null && now >= pasteAt) {
       pasteAt = null;
       framer.reset();

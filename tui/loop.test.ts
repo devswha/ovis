@@ -277,6 +277,23 @@ describe("the loop", () => {
     for (const terminal of ["t1", "t2", "t3", "t4"]) expect(run.core.terminal(terminal).state).toBe("live");
   }, TEST_MS);
 
+  it("a detach never waits behind a layout write: with the core silent mid-close, the prefix and q leave within the quit bound", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    run.muted = true;
+    let ended = false;
+    void run.loop.done.then(() => { ended = true; });
+    // a close: its write waits on a core that answers nothing, and typing waits behind it
+    run.type("\x02x");
+    await run.advance(20);
+    run.type("\x02q");
+    await run.advance(QUIT_BOUND_MS + 100);
+    expect(ended).toBe(true);
+    expect(await run.loop.done).toEqual({ kind: "quit" });
+    expect(run.core.calls().filter(({ method }) => method === "terminal.kill" || method === "terminal.rm")).toEqual([]);
+  }, TEST_MS);
+
   it("quit detaches within its bound when the core never answers", async () => {
     const run = await start({ fixture: demo });
     await run.live();
@@ -354,7 +371,9 @@ describe("the loop", () => {
           await run.advance(20);
         }
         const model = run.loop.model();
-        return { focus: model.focus, mode: model.mode.name, received: ["t1", "t2", "t3", "t4"].map((terminal) => run.core.program(terminal).receivedHex()) };
+        // a close ends its terminal: the fake then has no program for it
+        const received = (terminal: string) => (run.core.calls().some((call) => call.method === "terminal.rm" && call.params["terminal"] === terminal) ? "removed" : run.core.program(terminal).receivedHex());
+        return { focus: model.focus, mode: model.mode.name, received: ["t1", "t2", "t3", "t4"].map(received) };
       } finally {
         await run.close();
       }
@@ -520,6 +539,41 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     await run.keys("press@71:10,drag@60:10,release@60:10");
     await run.advance(20);
     expect(run.loop.report().actions).toContain("divider:done");
+    return { run };
+  }],
+  ["the close-workspace dialog open", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    await run.keys("ctrl+b,D");
+    expect(run.loop.report().mode.overlays).toEqual(["confirm"]);
+    return { run };
+  }],
+  ["a rename field open", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    await run.keys("ctrl+b,T,x");
+    expect(run.loop.report().mode.overlays).toEqual(["text"]);
+    return { run };
+  }],
+  ["after a split, the new pane focused", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    await run.keys("ctrl+b,v");
+    await run.live();
+    const state = run.loop.model();
+    expect([run.loop.panes.views().map((view) => view.terminal).sort(), state.focus.panes[state.focus.tabs[state.focus.workspace!]!]]).toEqual([["t1", "t2", "t5"], "t5"]);
+    return { run };
+  }],
+  ["after a layout write that changed nothing", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    await run.keys("ctrl+b,H");
+    await run.advance(20);
+    expect(run.loop.model().notices.map((notice) => [notice.code, notice.calm])).toEqual([["layout_unchanged", true]]);
     return { run };
   }],
 ];
