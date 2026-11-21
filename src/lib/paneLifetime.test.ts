@@ -82,6 +82,26 @@ describe("pane state per herdr lifetime", () => {
     expect(lifetimes.unsent()).toEqual([]);
   });
 
+  it("keeps display-dismissed IDs on the same herdr without recovering their text, then retires only that lifetime's marks", () => {
+    const storage = new MemoryStorage(), lifetimes = page(storage);
+    lifetimes.observe([pc("local", "dismiss-herdr-a")], title);
+    const store = new PendingMessageStore(() => lifetimes.paneStorage, lifetimes);
+    lifetimes.onRetire(machine => store.forget(machine));
+    const copy = { id: "dismissed-id", request_id: 1, text: "already sent", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
+    lifetimes.paneStorage.setItem(DRAFT, "keep this draft");
+    store.accept("w1:p1", copy, "scope");
+    expect(store.dismissCopy("w1:p1", copy.id)).toBe(true);
+    const reloaded = page(storage); reloaded.observe([pc("local", "dismiss-herdr-a")], title);
+    const restored = new PendingMessageStore(() => reloaded.paneStorage, reloaded);
+    restored.publish("w1:p1", [copy], [], "new-scope");
+    expect(restored.read("w1:p1")).toEqual([]);
+    expect(reloaded.paneStorage.getItem(DRAFT)).toBe("keep this draft");
+    lifetimes.observe([pc("local", "dismiss-herdr-b")], title);
+    expect(lifetimes.unsent().map(item => item.text)).toEqual(["keep this draft"]);
+    // The recycled pane ID in another herdr does not inherit display tombstones.
+    store.accept("w1:p1", copy, "new-herdr");
+    expect(store.read("w1:p1")).toMatchObject([{ id: copy.id }]);
+  });
   it("keeps a pane's state across server restarts on one herdr, and leaves a replaced herdr's text to recovery", () => {
     const storage = new MemoryStorage();
     const first = page(storage);

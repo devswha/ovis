@@ -155,7 +155,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
     [agent, agentStatus, answering, answerPending, heldByOpenQueue, sendAnswer, submitComposerMessage, queueStore, machineId, settings.autoSendQueued, showSentCommand, inputAtRest, inputRowNow, stillOpenNote],
   );
 
-  const actOnPending = useCallback(async (id: string, action: "steer" | "discard" | "edit"): Promise<void> => {
+  const actOnPending = useCallback(async (id: string, action: "steer" | "discard" | "edit" | "dismiss"): Promise<void> => {
     const perform = async (): Promise<void> => {
       const owner = queueOwner, pane = paneId;
       const socket = socketRef.current, scope = pendingScopeRef.current;
@@ -163,6 +163,12 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       pendingMessages.refresh(owner);
       const message = pendingMessages.read(owner).find((item) => item.id === id);
       if (!message || message.state === "sending") return;
+      // The X on an uncertain row hides its display copy, even offline. Explicit
+      // intent stays local if a later publish changed the row to queued/held.
+      if (action === "dismiss" || action === "discard" && message.state === "uncertain") {
+        pendingMessages.dismissCopy(owner, id);
+        return;
+      }
       // Editing needs this connection's withdrawal authority, not just a saved held copy.
       if (action === "edit" && (!message.serverOwned || message.state !== "queued" && message.state !== "held" || message.resendInFlight)) return;
       if (action === "steer" && (message.state === "uncertain" || !socket?.connected || heldRef.current || secretRef.current !== null || observeRef.current || ended || heldByOpenQueue || answering !== null)) return;
