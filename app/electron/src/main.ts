@@ -7,7 +7,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { accountServiceOf, startLoopbackSignIn, type LoopbackSignIn } from "./accountSignIn.ts";
 import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWorking, writeAwakeSettings, type AwakeSettings } from "./awake.ts";
-import { checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
+import { appUpdateState, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type AppUpdateState, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
 import { extractedAppDir, othersRunFrom } from "./appimage.ts";
 import { desktopLocale, desktopText } from "./text.ts";
 import { hideWindow } from "./windowClose.ts";
@@ -59,6 +59,9 @@ let stopped = false;
 let offer: UpdateOffer = NO_OFFER;
 let installOffer: (() => void) | null = null;
 let installWaiters: (() => void)[] = [];
+/** the app's own check (Settings → About), and the check itself once updates are on */
+let appCheck: AppCheck = { is: "idle" };
+let checkNow: (() => Promise<void>) | null = null;
 const noticesPath = join(app.getPath("userData"), "update-notice.json");
 let notices = readUpdateNotices(noticesPath);
 /** held so its click still arrives: a notification nothing holds is collected, and its click with it */
@@ -488,12 +491,26 @@ function sendUpdateLine(): void {
   window?.webContents.send("ovis:update", updateLine());
 }
 
+function appUpdate(): AppUpdateState {
+  return appUpdateState(app.getVersion(), checkNow !== null, appCheck, offer);
+}
+
+function sendAppUpdate(): void {
+  window?.webContents.send("ovis:update-state", appUpdate());
+}
+
+function setAppCheck(next: AppCheck): void {
+  appCheck = next;
+  sendAppUpdate();
+}
+
 function heldUpdate(): HeldUpdate | null {
   if (offer.ready !== null && stillHeld(offer.ready, existsSync) === null) {
     updateLog(`The downloaded update ${offer.ready.version} is gone from the updater's folder: no longer offered until it is downloaded again.`);
     offer = { ...offer, ready: null };
     rebuildTrayMenu();
     sendUpdateLine();
+    sendAppUpdate();
   }
   return offer.ready;
 }
@@ -609,6 +626,7 @@ async function startUpdates(): Promise<void> {
   const told = (event: UpdaterEvent) => {
     const before = offer.ready;
     offer = nextOffer(offer, event, process.platform);
+    sendAppUpdate();
     if (offer.ready === before) return;
     rebuildTrayMenu();
     announceUpdate();
@@ -616,6 +634,7 @@ async function startUpdates(): Promise<void> {
   autoUpdater.on("error", (error) => {
     failed = true;
     updateLog(`Update failed: ${message(error)}`);
+    appCheck = { is: "failed", error: message(error) };
     told({ is: "error" });
     // a download that failed emptied the updater's folder, the update held until now with it
     heldUpdate();
@@ -637,13 +656,29 @@ async function startUpdates(): Promise<void> {
       told({ is: "staged" });
     });
   }
-  const check = () => {
+  autoUpdater.on("download-progress", (progress) => {
+    if (appCheck.is === "downloading") setAppCheck({ ...appCheck, percent: Math.floor(progress.percent) });
+  });
+  // one check at a time: the hourly one and About's button join a check under way
+  let checking: Promise<void> | null = null;
+  const check = (): Promise<void> => {
     // not once the app is on its way out: a download that fails then empties the folder the install reads
-    if (quitting) return;
-    void checkForUpdates(autoUpdater, updateLog, (version) => !quitting && downloadsUpdate({ found: version, held: offer.staging ?? heldUpdate(), failed, exists: existsSync }));
+    if (quitting) return Promise.resolve();
+    checking ??= (async () => {
+      setAppCheck({ is: "checking" });
+      const outcome = await checkForUpdates(autoUpdater, updateLog, (version) => {
+        const wanted = !quitting && downloadsUpdate({ found: version, held: offer.staging ?? heldUpdate(), failed, exists: existsSync });
+        if (wanted) setAppCheck({ is: "downloading", version, percent: null });
+        return wanted;
+      });
+      // a downloaded or held update is the offer's to show (updates.ts appUpdateState)
+      setAppCheck(outcome.is === "failed" ? { is: "failed", error: outcome.error } : outcome.is === "latest" ? { is: "latest" } : { is: "idle" });
+    })().finally(() => { checking = null; });
+    return checking;
   };
-  check();
-  setInterval(check, UPDATE_CHECK_INTERVAL_MS);
+  checkNow = check;
+  void check();
+  setInterval(() => void check(), UPDATE_CHECK_INTERVAL_MS);
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -678,6 +713,11 @@ if (!app.requestSingleInstanceLock()) {
     // Answered at once when the install returned: a .deb's prompt
     // cancelled, with Ovis running on (or a .deb installed, a moment before it quits)
     return quitting ? new Promise<void>((answer) => { installWaiters.push(answer); }) : undefined;
+  });
+  // Settings → About: the app's version and its own check, which the button there starts now
+  ipcMain.handle("ovis:update-state", (event) => ownPage(event.senderFrame?.url) ? appUpdate() : null);
+  ipcMain.handle("ovis:update-check", (event) => {
+    if (ownPage(event.senderFrame?.url)) void checkNow?.();
   });
   ipcMain.on("ovis:update-close", (event, version: unknown) => {
     if (!ownPage(event.senderFrame?.url) || !offer.ready || version !== offer.ready.version) return;
