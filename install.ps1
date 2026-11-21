@@ -426,12 +426,12 @@ command = ["herdr", "plugin", "pane", "open", "--plugin", "$pluginId", "--entryp
 
 # `ovis` in any new terminal, as install.sh's launcher gives Linux and macOS: cmd\ovis.cmd runs the release's server as
 # `ovis-server plugin <command>`. It is kept beside bin\, not in it, since an update replaces bin\ whole; its folder is
-# put on the user's PATH once.
+# put on the user's PATH once. The shim names the server relative to itself (%~dp0), so a user folder outside ASCII
+# stays intact.
 function Write-OvisCommand {
     $dir = Join-Path $ovisHome 'cmd'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    $exe = Join-Path $ovisHome 'bin\ovis-server.exe'
-    Set-Content -LiteralPath (Join-Path $dir 'ovis.cmd') -Value "@echo off`r`n`"$exe`" plugin %*" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $dir 'ovis.cmd') -Value "@echo off`r`n`"%~dp0..\bin\ovis-server.exe`" plugin %*" -Encoding ASCII
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if (-not (($userPath -split ';') -contains $dir)) {
         [Environment]::SetEnvironmentVariable('Path', ((@($userPath -split ';' | Where-Object { $_ }) + $dir) -join ';'), 'User')
