@@ -267,6 +267,15 @@ describe("with-core's options", () => {
 describe("with-core --pty", () => {
   const noHc = () => callerEnv({ OVIS_TEST_HC_BIN: undefined });
 
+  it("--dump preserves the last alternate screen even after the command restores the terminal", async () => {
+    const run = helper(["--no-core", "--pty", "--size", "40x5", "--dump", "--", "sh", "-c",
+      "printf 'original-screen\\033[?1049h\\033[Hlast-frame\\033[?1049ldetached\\r\\n'"], noHc());
+    expect(await run.exited).toBe(0);
+    expect(run.stdout()).toMatch(/^last-frame\n+\s*$/m);
+    expect(run.stdout()).not.toMatch(/original-screen|detached/);
+    expect(leftovers(run)).toEqual(NOTHING_LEFT);
+  }, TEST_MS);
+
   it("runs the command on a pseudo-terminal of the given size, and --dump prints the final cells", async () => {
     const run = helper(["--no-core", "--pty", "--size", "30x4", "--dump", "--", "sh", "-c", "test -t 0 && test -t 1 && stty size && printf hello"], noHc());
     expect(await run.exited).toBe(0);

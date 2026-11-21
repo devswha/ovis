@@ -12,10 +12,14 @@
  */
 
 import type { HcTransport, HelloInfo } from "../server/herdr-core/connection.ts";
+import { editLayout } from "../server/herdr-core/layout-ops.ts";
+import type { ScreenRange } from "./emulator/index.ts";
+import { DividerWrites } from "./core/divider.ts";
 import { type CoreLink, type LinkNotice, type LinkState, openLink } from "./core/link.ts";
-import { createPanes, type PaneNotice, type Panes } from "./core/pane.ts";
+import { createPanes, type PaneInput, type PaneNotice, type Panes, type PaneView } from "./core/pane.ts";
 import { CoreWorld, focusDirection, paneToward } from "./core/world.ts";
 import { errorCode } from "./crash.ts";
+import { effectBytes, osc52 } from "./host/effects.ts";
 import type { Host, HostEnd } from "./host/index.ts";
 import type { InputEvent } from "./input/decode.ts";
 import { Framer } from "./input/framer.ts";
@@ -27,7 +31,8 @@ import type { Effect } from "./model/effects.ts";
 import { focused } from "./model/focus.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
-import { Painter, type PaneScene } from "./view/paint.ts";
+import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
+import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
 import { layOut, paneScene, type ScreenShape } from "./view/screen.ts";
 
 /** The caller's clock and its one timer: `arm` sets the timer for `at` (on the same clock) and answers its cancel. */
@@ -120,6 +125,10 @@ export function startLoop(options: LoopOptions): Loop {
   const cwd = options.cwd ?? "~";
   let grids = new Map<string, { emulator: unknown; grid: PaneGrid }>();
   let shape: ScreenShape | null = null;
+  const pointer = new Pointer();
+  /** the last frame's hit map and pane scenes: what the mouse lands on */
+  let hits: HitMap | null = null;
+  const drawn = new Map<string, PaneScene>();
   let shownKey = "";
   let paneFocus: string | null = null;
   let hello: HelloInfo | null = null;
@@ -190,6 +199,18 @@ export function startLoop(options: LoopOptions): Loop {
     },
   });
 
+  const dividers = new DividerWrites({
+    edit: (change) => editLayout(link, change),
+    refused: (refusal) => {
+      guard(() => {
+        dispatch({ type: "notice", code: refusal.code, data: refusal.reason === null ? {} : { reason: refusal.reason }, at: clock.now() });
+        reshow();
+        owePass();
+      });
+      arm();
+    },
+  });
+
   function onLinkNotice(notice: LinkNotice): void {
     panes.notice(notice);
     if (notice.type === "state") {
@@ -241,6 +262,10 @@ export function startLoop(options: LoopOptions): Loop {
       else holds.delete(notice.terminal);
     }
     if (notice.type === "gone") grids.delete(notice.terminal);
+    if (notice.type === "effect" && !closing) {
+      const bytes = effectBytes(notice.effect, notice.terminal === paneFocus);
+      if (bytes && !host.write(bytes)) painter?.invalidate();
+    }
     owePass();
   }
 
@@ -258,17 +283,10 @@ export function startLoop(options: LoopOptions): Loop {
 
   function perform(effect: Effect): void {
     switch (effect.type) {
-      case "pane": {
-        // each effect goes to the pane it names, in order: a prefix in a text run can move focus between two
-        if (paneFocus !== effect.pane) {
-          paneFocus = effect.pane;
-          panes.focus(effect.pane);
-        }
-        const sent = panes.input(effect.input);
-        act(`input:${effect.input.type}:${sent.sent ? "sent" : sent.code}`);
-        if (!sent.sent && sent.notice) dispatch({ type: "notice", code: "input_refused", data: { reason: sent.code }, at: clock.now() });
+      case "pane":
+        for (const step of pointer.typed(effect.pane, lookOf(effect.pane))) performPointer(step);
+        toPane(effect.pane, effect.input);
         return;
-      }
       case "run": {
         act(`run:${effect.action}`);
         const direction = focusDirection(effect.action);
@@ -296,12 +314,92 @@ export function startLoop(options: LoopOptions): Loop {
         dispatch({ type: "keys", keys: options.readKeys ? options.readKeys() : options.keys, at: clock.now() });
         return;
       case "mouse":
-        // the hit map's mouse actions plug in here; the event is dropped for now
         act(`mouse:${effect.over}`);
+        for (const step of pointer.mouse(effect.over, effect.event, pointerScene())) performPointer(step);
         return;
       case "host_reply":
         return;
     }
+  }
+
+  /** Input for a pane: each goes to the pane it names, in order (a prefix in a text run can move focus between two). */
+  function toPane(pane: string, input: PaneInput): void {
+    if (paneFocus !== pane) {
+      paneFocus = pane;
+      panes.focus(pane);
+    }
+    const sent = panes.input(input);
+    act(`input:${input.type}:${sent.sent ? "sent" : sent.code}`);
+    if (!sent.sent && sent.notice) dispatch({ type: "notice", code: "input_refused", data: { reason: sent.code }, at: clock.now() });
+  }
+
+  function performPointer(step: PointerAct): void {
+    switch (step.kind) {
+      case "select":
+        dispatch({ type: "select", target: step.target, at: clock.now() });
+        return;
+      case "action":
+        dispatch({ type: "action", action: step.action, at: clock.now() });
+        return;
+      case "forward":
+        toPane(step.pane, step.event);
+        return;
+      case "scroll":
+        // the emulator marks every row of its screen changed when the screen moves: the next pass draws them all
+        panes.view(step.pane)?.emulator?.scrollFromBottom(step.fromBottom);
+        owePass();
+        return;
+      case "copy":
+        copy(step.pane, step.range);
+        return;
+      case "divider":
+        act(`divider:${step.done ? "done" : "move"}`);
+        dividers.move(step.grab, step.tab, step.name, step.ratio, step.done);
+        reshow();
+        owePass();
+        return;
+      case "redraw":
+        owePass();
+        return;
+      case "close_overlay":
+        dispatch({ type: "close_overlay", at: clock.now() });
+        return;
+    }
+  }
+
+  /** The selected text to the host's clipboard as OSC 52, with a notice: `copied`, or `copy_refused` over the size cap. */
+  function copy(pane: string, range: ScreenRange): void {
+    const text = panes.view(pane)?.emulator?.textOf(range);
+    if (!text?.ok) return;
+    const data = new TextEncoder().encode(text.value);
+    const write = osc52(data);
+    if (!write.ok) {
+      if (write.code !== "empty") dispatch({ type: "notice", code: "copy_refused", data: { reason: write.code, bytes: data.length }, at: clock.now() });
+      return;
+    }
+    act("copy");
+    // a write the host does not take means the terminal is gone: the screen ends, and no notice could be seen
+    if (!host.write(write.bytes)) {
+      painter?.invalidate();
+      return;
+    }
+    dispatch({ type: "notice", code: "copied", data: { bytes: data.length }, at: clock.now() });
+  }
+
+  /** What the pointer reads of a shown pane as the last frame drew it; null for a pane not drawn or with no picture. */
+  function lookOf(pane: string, view: PaneView | undefined = panes.view(pane), scene: PaneScene | undefined = drawn.get(pane)): PaneLook | null {
+    const emulator = view?.emulator;
+    if (!emulator || !view.actual || !scene) return null;
+    const modes = emulator.modes();
+    const history = emulator.history();
+    if (!modes.ok || !history.ok) return null;
+    return { rect: scene.rect, top: scene.view?.row ?? 0, grid: view.actual, programMouse: modes.value.mouse !== "none", altScreen: modes.value.altScreen, emulator, history: history.value };
+  }
+
+  function pointerScene(): PointerScene {
+    const tab = focused(state.world, state.focus).tab;
+    const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
+    return { hits, focus: paneFocus, tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: shape?.splits ?? [], look: (pane) => lookOf(pane) };
   }
 
   /** The shown tab's panes with their cells, told to the pane machine when anything about them changed. */
@@ -309,7 +407,7 @@ export function startLoop(options: LoopOptions): Loop {
     const size = host.size();
     const view = world.view();
     const tab = focused(state.world, state.focus).tab;
-    shape = layOut(size.cols, size.rows, tab ? view.tabs.get(tab.id) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed });
+    shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed });
     const shown = shape.spots.map(({ pane, cells, covered }) => ({ terminal: pane, cols: cells.cols, rows: cells.rows, covered }));
     const key = JSON.stringify(shown);
     if (painter && key !== shownKey) {
@@ -319,6 +417,7 @@ export function startLoop(options: LoopOptions): Loop {
     const pane = focused(state.world, state.focus).pane?.id ?? null;
     if (pane !== paneFocus) {
       paneFocus = pane;
+      pointer.focusChanged(pane);
       panes.focus(pane);
     }
   }
@@ -380,7 +479,8 @@ export function startLoop(options: LoopOptions): Loop {
     // the style table only grows: past its limit the painter and every grid are made anew
     if (painter.styles.get(STYLE_TABLE_LIMIT) !== undefined) rebuildPainter();
     const scenes: PaneScene[] = [];
-    const drawn = new Set<string>();
+    const copied = new Set<string>();
+    drawn.clear();
     for (const spot of shape.spots) {
       if (spot.covered) continue;
       const view = panes.view(spot.pane);
@@ -394,10 +494,14 @@ export function startLoop(options: LoopOptions): Loop {
       held.grid.resize(actual.cols, actual.rows);
       if (emulator) {
         held.grid.copy(emulator, held.grid.allDirty);
-        drawn.add(spot.pane);
+        copied.add(spot.pane);
       }
       const live = paneLive(view, shown);
-      scenes.push(paneScene(spot, held.grid, actual, { live, hold: holds.has(spot.pane), dim: !live }));
+      const scene = paneScene(spot, held.grid, actual, { live, hold: holds.has(spot.pane), dim: !live });
+      drawn.set(spot.pane, scene);
+      const look = lookOf(spot.pane, view, scene);
+      const selection = pointer.shown(spot.pane, paneFocus, look);
+      scenes.push({ ...scene, scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(selection ? { selection } : {}) });
     }
     const size = host.size();
     const paneViews = new Map(panes.views().map((v) => [v.terminal, v]));
@@ -418,6 +522,7 @@ export function startLoop(options: LoopOptions): Loop {
       width: size.cols, height: size.rows, parts: chrome.parts,
       panes: scenes, overlays: chrome.overlays, focus: paneFocus, input: chrome.input,
     });
+    hits = frame.hits;
     let taken = true;
     if (frame.bytes.length > 0) {
       writes++;
@@ -434,7 +539,7 @@ export function startLoop(options: LoopOptions): Loop {
     }
     // bytes a covered pane owes stay owed by design (it takes no credit until the zoom ends): they owe no pass
     if (order.some((spot) => { const view = panes.view(spot.pane); return view !== undefined && !view.covered && view.owed > 0; })) owePass();
-    const ready = [...drawn].filter((pane) => panes.view(pane)?.ready);
+    const ready = [...copied].filter((pane) => panes.view(pane)?.ready);
     if (ready.length > 0 && !draining) drainThenLive(ready);
   }
 
