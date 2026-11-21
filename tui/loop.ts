@@ -295,18 +295,27 @@ export function startLoop(options: LoopOptions): Loop {
    * wait leaves at once: a user leaving never waits for a write (what waited, typed before it, goes nowhere).
    */
   function userInput(event: ModelEvent): void {
+    // nothing after a detach goes anywhere, from the same read either: the screen is leaving
+    if (closing) return;
     if (behindWrite === null || !(event.type === "key" || event.type === "text" || event.type === "paste" || event.type === "mouse")) {
       dispatch(event);
       return;
     }
-    const step = reduce(behindWrite.ahead, event);
-    if (step.effects.some((effect) => effect.type === "quit")) {
-      behindWrite = null;
-      perform({ type: "quit" });
-      return;
+    // read ahead the way the loop would go: the event, then each rest of a read it hands back, in order
+    const ahead = [event];
+    for (let next = ahead.shift(); next !== undefined; next = ahead.shift()) {
+      const step = reduce(behindWrite.ahead, next);
+      behindWrite.ahead = step.state;
+      for (const effect of step.effects) {
+        if (effect.type === "quit") {
+          behindWrite = null;
+          perform({ type: "quit" });
+          return;
+        }
+        if (effect.type === "input") ahead.push(effect.event);
+      }
     }
     behindWrite.events.push(event);
-    behindWrite.ahead = step.state;
   }
 
   /** Holds the user's input until `writing` is done; then what waited goes through in order (and may hold again). */
@@ -490,6 +499,8 @@ export function startLoop(options: LoopOptions): Loop {
     if (events.some((event) => event.type === "paste" && !event.complete)) pasteAt = clock.now() + PASTE_ABANDON_MS;
     else if (pasteAt !== null) pasteAt = events.length > 0 ? null : clock.now() + PASTE_ABANDON_MS;
     for (const event of events) {
+      // the rest of a read that detached goes nowhere, as a later read would not
+      if (closing) break;
       act(`read:${event.type}`);
       if (event.type === "reply") {
         if (event.kind === "scheme") host.refreshDisplay();

@@ -294,6 +294,82 @@ describe("the loop", () => {
     expect(run.core.calls().filter(({ method }) => method === "terminal.kill" || method === "terminal.rm")).toEqual([]);
   }, TEST_MS);
 
+  it("a detach behind an action in the same read never waits behind a layout write either", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    // a printable prefix: a zoom and the detach after it are one text run, so the detach is the rest of that run
+    run.loop.dispatch({ type: "keys", keys: { prefix: "-" }, at: run.clock.current });
+    await run.advance(1);
+    run.muted = true;
+    let ended = false;
+    void run.loop.done.then(() => { ended = true; });
+    run.type("-x");
+    await run.advance(20);
+    run.type("-z-q");
+    await run.advance(QUIT_BOUND_MS + 100);
+    expect(ended).toBe(true);
+    expect(await run.loop.done).toEqual({ kind: "quit" });
+  }, TEST_MS);
+
+  it("random key sequences route alike read whole, split at every byte, and a byte at a time", async () => {
+    // prefix actions (moves, zoom, close, help, the workspace picker, resize mode, detach), text and Enter, with the
+    // default prefix (a key of its own) and with a printable one (one text run holds the actions and what follows them)
+    const ACTIONS = ["l", "h", "z", "x", "?", "q", "w", "r"];
+    const TEXT = ["a", "b", "q", "l", "\r"];
+    let seed = 0x5eed;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const outcome = async (prefix: string, reads: string[]) => {
+      const run = await Run.start({ fixture: demo });
+      try {
+        await run.live();
+        if (prefix !== "\x02") run.loop.dispatch({ type: "keys", keys: { prefix }, at: run.clock.current });
+        await run.advance(1);
+        let ended = false;
+        void run.loop.done.then(() => { ended = true; });
+        // each read once the screen settled from the one before: the core answers a write, then tells of what it did
+        // and the screen draws it over its own clock, and a read that comes in between meets the screen as it is then
+        for (const read of reads) {
+          run.type(read);
+          await run.advance(200);
+          await run.settle();
+          // the frame pass that shows what the core answered meanwhile, and a read after the instant a pane went live
+          await run.advance(FRAME_PASS_MS);
+          await run.settle();
+          await run.advance(1);
+        }
+        const model = run.loop.model();
+        const removed = (terminal: string) => run.core.calls().some((call) => call.method === "terminal.rm" && call.params["terminal"] === terminal);
+        return {
+          ended, focus: model.focus, mode: model.mode.name, overlays: model.overlays.map((overlay) => overlay.kind),
+          received: ["t1", "t2", "t3", "t4"].map((terminal) => (removed(terminal) ? "removed" : run.core.program(terminal).receivedHex())),
+        };
+      } finally {
+        await run.close();
+      }
+    };
+    // A detach never waits for a layout write (it leaves at once), so a write still under way when the screen left may
+    // or may not have landed: for a run that detached, what the writes did (a removed terminal, the focus) is not
+    // compared, only that it left and what each program was sent.
+    type Outcome = Awaited<ReturnType<typeof outcome>>;
+    const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received.map((sent) => (sent === "removed" ? "" : sent)) } : seen);
+    for (const prefix of ["\x02", "-"]) {
+      const tokens = [...ACTIONS.map((action) => prefix + action), ...TEXT];
+      for (let n = 0; n < 10; n++) {
+        const bytes = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
+        const joined = compared(await outcome(prefix, [bytes]));
+        expect({ bytes, outcome: compared(await outcome(prefix, [...bytes])) }).toEqual({ bytes, outcome: joined });
+        for (let cut = 1; cut < bytes.length; cut++) {
+          expect({ bytes, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)])) }).toEqual({ bytes, cut, outcome: joined });
+        }
+      }
+    }
+  }, SOAK_MS);
+
   it("quit detaches within its bound when the core never answers", async () => {
     const run = await start({ fixture: demo });
     await run.live();
@@ -380,7 +456,7 @@ describe("the loop", () => {
     };
     // a directional focus, two of them, the workspace picker and a key of its mode, resize mode, a zoom and a close,
     // each followed by text in the same read
-    for (const bytes of ["\x02lzy\r", "\x02l\x02hab", "\x02wlab", "\x02rhab", "\x02zab", "\x02xab"]) {
+    for (const bytes of ["\x02lzy\r", "\x02l\x02hab", "\x02wlab", "\x02rhab", "\x02zab", "\x02xab", "\x02?qab"]) {
       const joined = await outcome([bytes]);
       expect({ bytes, outcome: await outcome([...bytes]) }).toEqual({ bytes, outcome: joined });
       for (let cut = 1; cut < bytes.length; cut++) {

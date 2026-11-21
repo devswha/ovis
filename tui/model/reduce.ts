@@ -249,12 +249,17 @@ function ladderText(acc: Acc, event: TextInput): void {
       toPane(acc, run);
       return;
     }
-    if (s.overlays.length > 0) {
-      acc.levels.push(2);
-      toOverlay(acc, { kind: "text", event: run });
-      return;
-    }
     const [first, after] = splitFirst(rest);
+    if (s.overlays.length > 0) {
+      // one code point at a time, as reads that split the run would give them: a choice the overlay makes from one
+      // (a digit, a letter) leaves the rest of the run to whatever is below once it closed, never dropped
+      acc.levels.push(2);
+      const from = acc.effects.length;
+      toOverlay(acc, { kind: "text", event: { type: "text", text: first, at: event.at } });
+      if (handBack(acc, from, after, event.at)) return;
+      rest = after;
+      continue;
+    }
     if (s.mode.name !== "terminal") {
       acc.levels.push(3);
       const bound = boundIn(s.keymap.modeKeys[s.mode.name], charChords(first, false));
@@ -295,9 +300,11 @@ function ladderText(acc: Acc, event: TextInput): void {
  * After an action the caller performs (a run effect, such as a directional focus), the rest of the text run waits
  * for it: it goes back to the caller as an `input` effect behind the run, and the caller dispatches it once the run
  * is performed, so it meets the focus the action left. One read then routes as the same bytes split across reads do.
- * True when the run handed the rest back.
+ * After a detach the rest is dropped. True when the run handed the rest back or dropped it.
  */
 function handBack(acc: Acc, from: number, rest: string, at: number): boolean {
+  // nothing typed after a detach goes anywhere: the rest of the run ends with it, as a later read would
+  if (acc.effects.slice(from).some((effect) => effect.type === "quit")) return true;
   if (!acc.effects.slice(from).some((effect) => effect.type === "run")) return false;
   if (rest.length > 0) acc.effects.push({ type: "input", event: { type: "text", text: rest, at } });
   return true;
