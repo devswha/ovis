@@ -22,7 +22,8 @@ afterEach(async () => {
   for (const close of closes.splice(0)) await close();
 });
 
-async function fixture(mode: "bind" | "complete" | "pending" | "refusal") {
+/** `unusable`: the directory sends `listing` for the stale row, and the refresh route answers a structured 404 as an old service would. */
+async function fixture(mode: "bind" | "complete" | "pending" | "refusal" | "unusable", listing: unknown = LISTING) {
   const pc = await pairingPc({ server: { accountOpensAll: true } });
   let passSetup: Promise<Response> | undefined;
   closes.push(async () => { try { await passSetup; } finally { await pc.close(); } });
@@ -45,6 +46,13 @@ async function fixture(mode: "bind" | "complete" | "pending" | "refusal") {
   const admit = new AccountService({ store: otherStore, fetch: pc.account.fetch });
   const binds = mode === "bind" || mode === "complete";
   let raced = false;
+  const bind = async () => {
+    raced = true;
+    expect(pc.devices.account()).toBeNull();
+    await admit.admitPc(serverId);
+    const bound = await pc.local("/api/account/one-press", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account: ACCOUNT } });
+    expect(bound.status).toBe(200);
+  };
   const changes: string[] = [];
   const directory = new AccountService({ store, fetch: async (input, init) => {
     const request = new Request(input, init);
@@ -56,27 +64,23 @@ async function fixture(mode: "bind" | "complete" | "pending" | "refusal") {
       const pcs: readonly unknown[] = body.pcs;
       return Response.json({ pcs: pcs.map((entry) =>
         typeof entry === "object" && entry !== null && "server_id" in entry && entry.server_id === serverId
-          ? { ...entry, added_at: added, listing_id: LISTING, invited_at: invitedAt }
+          ? { ...entry, added_at: added, listing_id: listing, invited_at: invitedAt }
           : entry,
       ) });
     }
     if (pathname === path || pathname === `${path}/refresh`) {
       changes.push(`${request.method} ${pathname}`);
-      if (binds && !raced) {
-        raced = true;
-        expect(pc.devices.account()).toBeNull();
-        await admit.admitPc(serverId);
-        const bound = await pc.local("/api/account/one-press", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account: ACCOUNT } });
-        expect(bound.status).toBe(200);
-      }
+      // `unusable`: another add binds the PC after the last local membership read, right before a removal
+      if (!raced && (binds || (mode === "unusable" && request.method === "DELETE"))) await bind();
       if (pathname === `${path}/refresh`) {
+        if (mode === "unusable") return Response.json({ error: { code: "not_found" } }, { status: 404 });
         expect(await request.json()).toEqual({ listing_id: LISTING });
         if (mode === "refusal" || mode === "complete") return Response.json({ error: { code: "listing_changed" } }, { status: 409 });
         invitedAt = new Date(now).toISOString();
         return Response.json({ invited_at: invitedAt });
       }
       const answer = await pc.account.fetch(request);
-      if (binds && request.method === "DELETE") await pc.app.context.services.accountMailbox.readSnapshot();
+      if (raced && request.method === "DELETE") await pc.app.context.services.accountMailbox.readSnapshot();
       return answer;
     }
     return pc.account.fetch(request);
@@ -89,7 +93,7 @@ async function fixture(mode: "bind" | "complete" | "pending" | "refusal") {
     return reply;
   };
   setTransport({ ...nativeTransport, fetch: Object.assign(fetchPc, { preconnect: fetch.preconnect }) });
-  return { pc, directory, changes, now, added, serverId, refresh: `POST ${path}/refresh` };
+  return { pc, directory, changes, now, added, serverId, refresh: `POST ${path}/refresh`, bind, raced: () => raced };
 }
 
 test.each(["bind", "complete"] as const)("refresh races a real one-press %s without removing the binding", async (mode) => {
@@ -125,4 +129,16 @@ test("a changed-listing response never triggers legacy removal or recreates the 
   await expect(listThisPc(f.directory, { relistMs: RELIST_MS })).rejects.toMatchObject({ code: "listing_changed" });
 
   expect(f.changes).toEqual([f.refresh]);
+});
+
+test.each([["malformed", "invalid"], ["null", null]] as const)("a %s listing ID the directory sent never falls back to removal on a 404, so a one-press bind stays", async (_kind, listing) => {
+  const f = await fixture("unusable", listing);
+
+  await expect(listThisPc(f.directory, { relistMs: RELIST_MS })).rejects.toMatchObject({ code: "invalid_answer" });
+  // the add failed without a directory write; the one-press that the removal would have raced still binds and stays bound
+  if (!f.raced()) await f.bind();
+  await f.pc.app.context.services.accountMailbox.readSnapshot();
+
+  expect(f.changes).toEqual([]);
+  expect(f.pc.devices.account()).toBe(ACCOUNT);
 });
