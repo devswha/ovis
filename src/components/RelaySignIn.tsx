@@ -19,10 +19,10 @@ function failureText(t: ReturnType<typeof useT>, error: unknown): string {
   }
 }
 
-export function RelaySignIn({ service, onSignedIn, onOpenAccount, boundPc = false }: { service: string; onSignedIn: (session: AccountSession) => void; onOpenAccount: () => void; boundPc?: boolean }) {
+export function RelaySignIn({ service, onSignedIn, boundPc = false }: { service: string; onSignedIn: (session: AccountSession) => void; boundPc?: boolean }) {
   const t = useT();
   const locale = useLocale();
-  const { state, ready, own, unavailable, linkPage, start, cancel } = useLinkPageSignIn(service, onSignedIn, onOpenAccount);
+  const { state, ready, own, unavailable, linkPage, start, cancel } = useLinkPageSignIn(service, onSignedIn);
   const providers = providerChoice(locale, linkPage);
   const signInButton = useRef<HTMLButtonElement>(null);
   const providerButtons = useRef<HTMLDivElement>(null);

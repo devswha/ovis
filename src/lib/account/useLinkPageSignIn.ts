@@ -46,7 +46,7 @@ export interface LinkPageSignIn {
   readonly cancel: () => void;
 }
 
-export function useLinkPageSignIn(service: string, onSignedIn: (session: AccountSession) => void, onOpenAccount: () => void): LinkPageSignIn {
+export function useLinkPageSignIn(service: string, onSignedIn: (session: AccountSession) => void): LinkPageSignIn {
   const [state, setState] = useState<LinkPageSignInState>({ kind: "idle" });
   const [offer, setOffer] = useState<OfferedProviders | null>(null);
   const bridge = desktopAccount();
@@ -103,7 +103,6 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       });
       return;
     }
-    if (offer.page.length === 0 && offer.device.length === 0) { onOpenAccount(); return; }
     // a provider's button pressed again while its sign-in starts asks for no second code
     if (deviceOnly && running.current !== null) return;
     running.current?.abort();
@@ -135,7 +134,7 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       console.warn("Ovis: the sign-in did not finish", error instanceof Error ? error.name : error);
       setState({ kind: "failed", error });
     }).finally(() => { if (running.current === controller) running.current = null; });
-  }, [service, offer, ownSignIn, deviceOnly, bridge, ownRedirect, onOpenAccount]);
+  }, [service, offer, ownSignIn, deviceOnly, bridge, ownRedirect]);
 
   return { state, ready: offer !== null && ownRedirect !== undefined, own, unavailable, linkPage: offer === null ? [] : offer.page.length > 0 ? offer.page : offer.device, start, cancel };
 }

@@ -171,7 +171,7 @@ describe("the relay tab's Sign in", () => {
     let actions: ReturnType<typeof useLinkPageSignIn> | undefined;
     const gate = Promise.withResolvers<void>();
     if (phase === "starting") startGate = gate.promise;
-    function SignInHarness() { actions = useLinkPageSignIn(SERVICE, () => undefined, () => undefined); return null; }
+    function SignInHarness() { actions = useLinkPageSignIn(SERVICE, () => undefined); return null; }
     await act(async () => { renderer = create(<SignInHarness />); });
     await act(async () => { actions?.start(); });
     if (phase === "waiting") await act(async () => { await firstPoll; });

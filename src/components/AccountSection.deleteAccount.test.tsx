@@ -27,6 +27,9 @@ let safetyAnswer: ((id: string) => Response | Promise<Response>) | null = null;
 /** this PC explicitly withdrew the account release (its last feature list lacked it) */
 let withdrawnNow = false;
 let safetyPosts = 0;
+/** the desktop app's providers, and whether the account service refuses to start a link */
+let bridgeProviders: string[] = ["github"];
+let linkFails = false;
 
 describe("deleting the account from Settings", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -44,6 +47,8 @@ describe("deleting the account from Settings", () => {
     safetyAnswer = null;
     withdrawnNow = false;
     safetyPosts = 0;
+    bridgeProviders = ["github"];
+    linkFails = false;
     fake = new FakeAccountService(() => Date.now() + ahead);
     fake.offerLinkPage(["github", "google"]);
     for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "location", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -57,7 +62,7 @@ describe("deleting the account from Settings", () => {
     const tab = new Map<string, string>();
     // the desktop app's sign-in: the system browser at the provider, back to its loopback server with the code
     const bridge = {
-      service: SERVICE, providers: ["github"],
+      service: SERVICE, get providers() { return bridgeProviders; },
       start: async () => "http://127.0.0.1:4321/callback",
       open: async (url: string) => {
         fake.signInAs("github", signsInAs);
@@ -86,6 +91,7 @@ describe("deleting the account from Settings", () => {
         if (url.pathname === "/api/account/status") return Response.json({ account: ACCOUNT, unlinked: [], removals: [], adds: [], blocked: [] });
         return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
       }
+      if (url.pathname === "/v1/identities/link" && linkFails) return Response.json({ error: { code: "unavailable", message: "down" } }, { status: 503 });
       if (url.pathname === "/v1/safety-records") safetyPosts++;
       if (url.pathname === "/v1/safety-records" && safetyAnswer !== null) return safetyAnswer(String((JSON.parse(String(init?.body)) as { record: { id: unknown } }).record.id));
       if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, signsInAs, "github"); fake.approveDevice(userCode, signsInAs); userCode = null; }
@@ -364,8 +370,10 @@ describe("deleting the account from Settings", () => {
     onDelete = () => indexedAccountStore.set("session", { ...mine, account: "acct_two", access_token: fake.issueToken("acct_two"), refresh_token: "rt-two", sign_in_id: "another-sign-in" });
     await press("Delete account");
     await press("Delete account for good?");
-    await until(() => fake.deleted(ACCOUNT) && (buttons().includes(SIGN_IN) || (fake.requests.slice(fake.requests.indexOf("DELETE /v1/account") + 1).some((line) => line.startsWith("GET ")) && buttons().includes("Delete account"))));
+    await until(() => fake.deleted(ACCOUNT) && (buttons().includes(SIGN_IN) || (fake.requests.slice(fake.requests.indexOf("DELETE /v1/account") + 1).some((line) => line.startsWith("GET ")) && buttons().includes("Manage account"))));
     expect(buttons()).not.toContain(SIGN_IN);
+    // Manage account was the deleted account's: it does not stay open for the sign-in that took its place
+    expect(renderer!.root.findAll((node) => node.props["data-testid"] === "manage-account")).toHaveLength(0);
     expect((await indexedAccountStore.get("session"))?.account).toBe("acct_two");
   });
 
@@ -476,6 +484,26 @@ describe("deleting the account from Settings", () => {
     expect(buttons()).toContain("Delete account");
     expect(buttons()).not.toContain("Delete account for good?");
     expect(fake.deleted(ACCOUNT)).toBe(false);
+  });
+
+  it("keeps Manage account open through adding a way in, and asks for the sign-in again there", async () => {
+    bridgeProviders = ["github", "google"];
+    await signedIn();
+    ahead = 11 * 60_000;
+    await press("Add Google");
+    await until(() => renderer!.root.findAll((node) => node.props["data-testid"] === "manage-account").length === 1 && sheet().includes("To change how you sign in, sign in again with GitHub first."));
+    expect(inSheet(button("Sign in again"))).toBe(true);
+  });
+
+  it("says why a change made in Manage account failed inside the sheet, not behind it", async () => {
+    bridgeProviders = ["github", "google"];
+    linkFails = true;
+    await signedIn();
+    await press("Add Google");
+    await until(() => renderer!.root.findAll((node) => node.props["data-testid"] === "manage-account").length === 1 && sheet().includes("The sign-in did not finish. Try again."));
+    const alerts = renderer!.root.findAll((node) => node.props.role === "alert" && text(node).includes("The sign-in did not finish"));
+    expect(alerts).toHaveLength(1);
+    expect(inSheet(alerts[0]!)).toBe(true);
   });
 
   it("asks for a sign-in again in Manage account's sheet, then deletes", async () => {

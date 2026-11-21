@@ -785,8 +785,8 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   const t = useT();
   // a search finds settings rows only: while one runs, the account's rows are the group's own rows, not a sheet
   const searching = useContext(SettingsQuery).length > 0;
-  /** Manage account's sheet is open: the ways in, the plan and Delete account */
-  const [managing, setManaging] = useState(false);
+  /** the account Manage account's sheet was opened for (the ways in, the plan and Delete account); null while it is shut */
+  const [managedAccount, setManagedAccount] = useState<string | null>(null);
   const bridge = desktopAccount();
   const pcService = pcServiceHere();
   const ownRedirect = useOwnWindowRedirect(bridge === null && pcService !== null);
@@ -892,7 +892,13 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   useEffect(() => { recheckAccount(); }, [offered, load, recheck]);
   // a sign-out or a deleted account takes Manage account's sheet with it; a sign-in again for this account (to add or
   // remove a way in) keeps it, so the step it asks for next shows where it was asked
-  useEffect(() => { if (view.kind === "signed-out") setManaging(false); }, [view.kind]);
+  // and another account shown here (a sign-in that ended as someone else) never gets the sheet without asking
+  const shownAccount = view.kind === "signed-in" ? view.account : null;
+  useEffect(() => {
+    if (view.kind === "signed-out" || (shownAccount !== null && managedAccount !== null && shownAccount !== managedAccount)) setManagedAccount(null);
+  }, [view.kind, shownAccount, managedAccount]);
+  /** the sheet is drawn for the account it was opened for, never while a search shows the rows on the page */
+  const managing = managedAccount !== null && shownAccount === managedAccount && !searching;
   useEffect(() => {
     const signedIn = view.kind === "signed-in" ? view : null;
     onAccount?.({ signedIn: signedIn !== null, account: signedIn?.account ?? null, pcs: signedIn?.pcs ?? null, provider: signedIn?.provider ?? null,
@@ -1403,7 +1409,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
       {view.kind === "signed-in" && (
         <>
           {/* who is signed in, on one line: the account's id is shown nowhere (G-106) */}
-          <AccountHead provider={view.provider} plan={searching ? plan : null} onSignOut={signOut} {...(searching ? {} : { onManage: () => setManaging(true) })} />
+          <AccountHead provider={view.provider} plan={searching ? plan : null} onSignOut={signOut} {...(searching ? {} : { onManage: () => setManagedAccount(view.account) })} />
           {/* the question is its own sign-in's: under another account's view it is not drawn */}
           {unsentAsked !== null && unsentAsked.session.account === view.account && (
             <div className="settings-item" role="status">
@@ -1425,8 +1431,8 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
           )}
           {/* while a search runs the account's rows are the group's own; otherwise they wait in Manage account's sheet */}
           {searching && <>{methodsPart}{deleteParts}</>}
-          {managing && !searching && (
-            <ManageAccountSheet onClose={() => { setManaging(false); deleteAsks.current++; setDeleteAsked(null); }}>
+          {managing && (
+            <ManageAccountSheet onClose={() => { setManagedAccount(null); deleteAsks.current++; setDeleteAsked(null); }}>
               {methodsPart}
               {plan !== null && <div className="settings-row account-plan-row"><span className="settings-label">{t("Plan|account plan")}</span><span className="account-plan">{plan}</span></div>}
               {deleteParts}
@@ -1436,7 +1442,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
           )}
           {!signInElsewhere && <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} {...(opensAll === undefined ? {} : { opensAll })} />}
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
-          {view.error !== null && !(managing && !searching) && errorLine}
+          {view.error !== null && !managing && errorLine}
         </>
       )}
     </SettingsGroup>

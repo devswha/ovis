@@ -110,7 +110,7 @@ it("honors a committed session when cancellation arrives before finish resolves"
     },
   } });
   function Harness() {
-    actions = useLinkPageSignIn(SERVICE, signedIn, openAccount);
+    actions = useLinkPageSignIn(SERVICE, signedIn);
     return <output>{actions.state.kind}</output>;
   }
   await mount(<Harness />);
