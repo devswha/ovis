@@ -298,6 +298,49 @@ final class SshTunnel {
         }
     }
 
+    /**
+     * The body of the PC's own Ovis's answer to `GET path` over this tunnel's SSH connection (made if need be), as from
+     * its own loopback, which it lets in as its own PC's: for the app itself, never a page. At most 256 KiB, within
+     * 20 seconds; an answer other than 200 is `internal`.
+     */
+    String get(String path) throws SshFailure {
+        Channel stream = channel();
+        java.util.concurrent.Future<String> reading = pipes.submit(() -> {
+            OutputStream out = stream.output();
+            out.write(("GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: application/json\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            InputStream in = stream.input();
+            ByteArrayOutputStream body = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                body.write(buffer, 0, read);
+                if (body.size() > 256 * 1024) throw new IOException("The answer is too long");
+            }
+            return body.toString("UTF-8");
+        });
+        String response;
+        try {
+            response = reading.get(20, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException late) {
+            throw new SshFailure("timeout", "The PC's Ovis did not answer in time");
+        } catch (ExecutionException failed) {
+            throw new SshFailure("unreachable", SshFailure.rootMessage(failed));
+        } catch (InterruptedException stopped) {
+            Thread.currentThread().interrupt();
+            throw new SshFailure("cancelled", "Cancelled");
+        } finally {
+            reading.cancel(true);
+            stream.close();
+        }
+        int split = response.indexOf("\r\n\r\n");
+        if (split < 0) throw new SshFailure("internal", "No answer");
+        String head = response.substring(0, split).toLowerCase(Locale.ROOT);
+        if (!head.startsWith("http/1.1 200") && !head.startsWith("http/1.0 200")) throw new SshFailure("internal", head.split("\r\n")[0]);
+        String body = response.substring(split + 4);
+        return head.contains("transfer-encoding: chunked") ? SshLink.unchunk(body) : body;
+    }
+
     private void serve(Socket client) {
         try {
             client.setSoTimeout(15_000);

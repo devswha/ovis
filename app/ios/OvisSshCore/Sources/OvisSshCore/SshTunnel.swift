@@ -211,6 +211,41 @@ public actor SshTunnel {
         }
     }
 
+    /// The body of the PC's own Ovis's answer to `GET path` over this tunnel's SSH connection (made if need be), as
+    /// from its own loopback, which it lets in as its own PC's: for the app itself, never a page. At most 256 KiB, in
+    /// `seconds`; an answer other than 200 is `internal`.
+    public func get(_ path: String, seconds: UInt64 = 20) async throws -> Data {
+        let pc = try await channel()
+        return try await withThrowingTaskGroup(of: Data?.self) { group in
+            group.addTask {
+                var answer = Data()
+                try await pc.executeThenClose { inbound, outbound in
+                    try await outbound.write(ByteBuffer(string: "GET \(path) HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: application/json\r\nConnection: close\r\n\r\n"))
+                    for try await bytes in inbound {
+                        answer.append(contentsOf: bytes.readableBytesView)
+                        if answer.count > 256 * 1024 { throw SshFailure("internal", "The answer is too long") }
+                    }
+                }
+                return answer
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                return nil
+            }
+            let first = try await group.next() ?? nil
+            group.cancelAll()
+            guard let answer = first else { throw SshFailure("timeout", "The PC's Ovis did not answer in time") }
+            let text = String(decoding: answer, as: UTF8.self)
+            guard let split = text.range(of: "\r\n\r\n") else { throw SshFailure("internal", "No answer") }
+            let head = text[..<split.lowerBound].lowercased()
+            guard head.hasPrefix("http/1.1 200") || head.hasPrefix("http/1.0 200") else {
+                throw SshFailure("internal", String(head.prefix(while: { $0 != "\r" })))
+            }
+            let body = String(text[split.upperBound...])
+            return Data((head.contains("transfer-encoding: chunked") ? SshCommands.unchunk(body) : body).utf8)
+        }
+    }
+
     private func serve(_ client: NIOAsyncChannel<ByteBuffer, ByteBuffer>) async {
         let ownOrigin = origin, gate = self.gate, cookie = cookieName, ports = sshPorts()
         let headTimer = client.channel.eventLoop.scheduleTask(in: .seconds(15)) { client.channel.close(promise: nil) }

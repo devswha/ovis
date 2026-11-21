@@ -208,6 +208,36 @@ export function sshOrAddress(text) {
 }
 
 /**
+ * The PCs an SSH PC knows (OvisSsh known: its own Ovis's /api/machines/ssh-candidates and /api/machines), as logins
+ * this phone can add over SSH, `{ user, host, port, name, source }`: an ssh config host by its user@hostname (an alias
+ * alone means nothing on the phone, which has no such config), a PC of its Tailscale login by its MagicDNS name, as
+ * `from`'s user (Tailscale SSH or a key there takes the same login), and a PC it added over SSH by its target. Those
+ * already saved on this phone (`saved`: SSH PCs as OvisSsh list gives them) and `from` itself are left out, each
+ * login once, at most 20.
+ */
+export function knownLogins(known, from, saved = []) {
+  const logins = [];
+  const take = (name, text, port, source, user = null) => {
+    const login = SSH_TARGET.exec(`${text.includes("@") ? "" : `${user ?? from.user}@`}${text}${port && port !== 22 ? `:${port}` : ""}`);
+    if (login === null) return;
+    const entry = { user: login[1], host: login[2].replace(/^\[|\]$/g, ""), port: login[3] === undefined ? 22 : Number(login[3]), name, source };
+    const same = (pc) => pc.user === entry.user && pc.host.toLowerCase() === entry.host.toLowerCase() && pc.port === entry.port;
+    if (same(from) || saved.some(same) || logins.some(same)) return;
+    logins.push(entry);
+  };
+  for (const pc of Array.isArray(known?.candidates?.pcs) ? known.candidates.pcs : []) {
+    if (typeof pc?.name !== "string") continue;
+    if (pc.source === "tailscale" && typeof pc.destination === "string") take(pc.name, pc.destination, 22, "tailscale");
+    else if (pc.source === "ssh_config" && typeof pc.detail === "string" && pc.detail.includes("@")) take(pc.name, pc.detail, 22, "ssh_config");
+  }
+  for (const machine of Array.isArray(known?.machines?.machines) ? known.machines.machines : []) {
+    if (machine?.kind !== "ssh" || typeof machine.target?.destination !== "string" || !machine.target.destination.includes("@")) continue;
+    take(typeof machine.name === "string" ? machine.name : machine.target.destination, machine.target.destination, machine.target.port ?? 22, "pc");
+  }
+  return logins.slice(0, 20);
+}
+
+/**
  * A saved PC's name in the lists and on the way back to it: its saved name, else what its address says (a relay PC's
  * id, as its host is the app's; a Tailscale host's first word; an SSH login; the address).
  */

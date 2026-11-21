@@ -83,6 +83,11 @@
         <h2 data-ko="SSH로 연결한 PC">PCs added over SSH</h2>
         <ul id="ssh-pcs" class="card list"></ul>
       </section>
+      <!-- the PCs an SSH PC on this phone knows (its ssh config, its Tailscale login, the PCs it added): connect.js showKnown -->
+      <section id="known-section" hidden>
+        <h2 id="known-title"></h2>
+        <ul id="known-pcs" class="card list"></ul>
+      </section>
       <!-- the PCs this phone opened at any other address before (a same-Wi-Fi one among them): kept, to open or forget -->
       <section id="saved-section" hidden>
         <h2 data-ko="저장된 주소">Saved addresses</h2>

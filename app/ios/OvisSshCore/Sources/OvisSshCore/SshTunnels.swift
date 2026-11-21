@@ -68,6 +68,23 @@ public final class SshTunnels: @unchecked Sendable {
         }
     }
 
+    /// What the PC `pc` knows of other PCs, from its own Ovis over its tunnel: the hosts of its ssh config and its
+    /// Tailscale login's PCs (`/api/machines/ssh-candidates`), and the PCs it has added (`/api/machines`), each JSON as
+    /// it answers. A PC whose Ovis is older, or refuses, gives what it gave; neither list is required.
+    public func known(_ pc: SshPcs.Pc) async throws -> (candidates: Data?, machines: Data?) {
+        let tunnel = try await open(pc)
+        var failure: Error?
+        var answers: [Data?] = []
+        for path in ["/api/machines/ssh-candidates", "/api/machines"] {
+            do { answers.append(try await tunnel.get(path)) } catch {
+                failure = failure ?? error
+                answers.append(nil)
+            }
+        }
+        if answers.allSatisfy({ $0 == nil }), let failure { throw SshFailure.from(failure) }
+        return (answers[0], answers[1])
+    }
+
     public func closeFor(_ origin: String) {
         let entry = lock.locked { tunnels.removeValue(forKey: origin) }
         if let entry { Task { await entry.tunnel.close() } }

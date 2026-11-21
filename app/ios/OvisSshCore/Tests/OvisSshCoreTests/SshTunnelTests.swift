@@ -316,6 +316,22 @@ final class SshTunnelTests: XCTestCase {
         XCTAssertEqual(dials.value, 1)
     }
 
+    func testTheAppReadsThePcsOvisOverTheTunnelWithoutAPage() async throws {
+        pc.answer.value = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nb\r\n{\"pcs\":[1]}\r\n0\r\n\r\n"
+        let body = try await tunnel.get("/api/machines/ssh-candidates")
+        XCTAssertEqual(String(decoding: body, as: UTF8.self), "{\"pcs\":[1]}")
+        let head = try XCTUnwrap(pc.heads.value?.last)
+        XCTAssertTrue(head.hasPrefix("GET /api/machines/ssh-candidates HTTP/1.1\r\n"))
+        XCTAssertFalse(head.contains("ovis_ssh_gate"))
+        pc.answer.value = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+        do {
+            _ = try await tunnel.get("/api/machines")
+            XCTFail("a 404 was read as an answer")
+        } catch let failure as SshFailure {
+            XCTAssertEqual(failure.kind, "internal")
+        }
+    }
+
     func testTwoListensAtOnceShareOneBind() async throws {
         await tunnel.close()
         port = try await Self.freePort()

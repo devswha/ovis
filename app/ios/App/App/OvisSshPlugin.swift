@@ -154,7 +154,7 @@ final class KeychainSealer: SshPcs.Sealer {
 public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "OvisSshPlugin"
     public let jsName = "OvisSsh"
-    public let pluginMethods: [CAPPluginMethod] = ["add", "setUp", "list", "phoneKey", "copy", "share", "rename", "forgetHostKey", "remove"].map {
+    public let pluginMethods: [CAPPluginMethod] = ["add", "setUp", "list", "phoneKey", "copy", "share", "rename", "forgetHostKey", "remove", "known"].map {
         CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise)
     }
 
@@ -239,6 +239,23 @@ public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
         let name = String((call.getString("name") ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(64))
         PCStore.names[pc.origin] = name.isEmpty ? pc.label + " (SSH)" : name
         call.resolve()
+    }
+
+    /// What the SSH PC `origin` knows of other PCs (its ssh config's hosts, its Tailscale login's PCs, the PCs it
+    /// added), as its own Ovis answers over its tunnel: `candidates` and `machines`, each that JSON or null.
+    @objc func known(_ call: CAPPluginCall) {
+        guard fromAppPage(call) else { return }
+        guard let pc = OvisSsh.store.get(call.getString("origin")), pc.hasHostKey else { return call.reject("That SSH PC is not saved on this phone.") }
+        Task {
+            do {
+                let (candidates, machines) = try await OvisSsh.tunnels.known(pc)
+                func json(_ data: Data?) -> Any { data.flatMap { try? JSONSerialization.jsonObject(with: $0) } ?? NSNull() }
+                call.resolve(["candidates": json(candidates), "machines": json(machines)])
+            } catch {
+                let failure = SshFailure.from(error)
+                call.reject(failure.message, failure.kind)
+            }
+        }
     }
 
     /// Forgets the PC's host key on purpose: it opens again only once the setup screen confirms the key it shows then.

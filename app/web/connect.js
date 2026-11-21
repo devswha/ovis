@@ -1,7 +1,7 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, savedPcLabel, sshDetails, sshOrAddress, t, tabPcs } from "./shell.js";
+import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, followScheme, knownLogins, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, savedPcLabel, sshDetails, sshOrAddress, t, tabPcs } from "./shell.js";
 
 localize();
 followScheme();
@@ -332,6 +332,53 @@ function renderPcs(which, list, section, state) {
   return pcs.length;
 }
 
+const KNOWN_SOURCES = { tailscale: () => "Tailscale", ssh_config: () => t("SSH config", "SSH 설정"), pc: () => t("Its PC", "그 PC의 PC") };
+
+/**
+ * After the first PC: the PCs an SSH PC on this phone knows (its ssh config's hosts, its Tailscale login's PCs, the PCs
+ * it added), as its own Ovis answers over its tunnel (OvisSsh known), each with Add, which opens the SSH setup screen
+ * filled in. Asked of the PC last opened (else the first saved), once per screen; one that does not answer shows nothing.
+ */
+async function showKnown(state) {
+  const section = document.getElementById("known-section");
+  const from = sshPcs[state.last] ?? Object.values(sshPcs).find((pc) => pc.fingerprint);
+  section.hidden = true;
+  if (!sshOffered || from === undefined || !from.fingerprint) return;
+  let known;
+  try { known = await ssh("known", { origin: from.origin }); }
+  catch { return; }
+  const logins = knownLogins(known, from, Object.values(sshPcs));
+  const label = savedPcLabel(from.origin, state.names ?? {}, sshPcs);
+  document.getElementById("known-title").textContent = t(`PCs ${label} knows`, `${label}이(가) 아는 PC`);
+  document.getElementById("known-pcs").replaceChildren(...logins.map((login) => {
+    const item = document.createElement("li");
+    const text = document.createElement("span");
+    text.className = "way-text";
+    const title = document.createElement("span");
+    title.className = "way-title pc-name";
+    title.textContent = login.name;
+    const sub = document.createElement("span");
+    sub.className = "sub pc-sub";
+    const tag = document.createElement("span");
+    tag.className = "pc-tag";
+    tag.textContent = KNOWN_SOURCES[login.source]();
+    const address = document.createElement("span");
+    address.className = "pc-address";
+    address.textContent = `${login.user}@${login.host}${login.port === 22 ? "" : `:${login.port}`}`;
+    sub.append(tag, address);
+    text.append(title, sub);
+    const add = button(t("Add", "추가"), async () => {
+      error.textContent = "";
+      try { await ssh("add", { user: login.user, host: login.host, port: login.port }); }
+      catch (err) { error.textContent = String(err?.message ?? err); }
+    }, "primary");
+    add.setAttribute("aria-label", t(`Add ${login.name}`, `${login.name} 추가`));
+    item.append(text, add);
+    return item;
+  }));
+  section.hidden = logins.length === 0;
+}
+
 function button(text, onClick, className = "") {
   const element = document.createElement("button");
   element.type = "button";
@@ -459,6 +506,7 @@ async function load() {
   document.getElementById("tailnet-none").hidden = tailnet > 0;
   renderPcs("ssh", document.getElementById("ssh-pcs"), document.getElementById("ssh-section"), state);
   renderPcs("saved", document.getElementById("saved-pcs"), document.getElementById("saved-section"), state);
+  void showKnown(state);
   // an SSH PC whose address on this phone another app took first is not opened (OvisSshPlugin.listen)
   if (state.kind === "ssh-port") {
     error.textContent = t(

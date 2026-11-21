@@ -189,6 +189,30 @@ public class OvisSshPlugin extends Plugin {
         call.resolve();
     }
 
+    /** What the SSH PC `origin` knows of other PCs, as its own Ovis answers over its tunnel (SshTunnels.known). */
+    @PluginMethod
+    public void known(PluginCall call) {
+        if (!fromAppPage(call)) return;
+        SshPcs.Pc pc = SshPcs.on(getContext()).get(call.getString("origin"));
+        if (pc == null || !pc.hasHostKey()) {
+            call.reject("That SSH PC is not saved on this phone.");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                org.json.JSONObject found = SshTunnels.known(getContext(), pc);
+                JSObject answer = new JSObject();
+                answer.put("candidates", found.opt("candidates"));
+                answer.put("machines", found.opt("machines"));
+                call.resolve(answer);
+            } catch (SshFailure failed) {
+                call.reject(failed.getMessage(), failed.kind);
+            } catch (IOException taken) {
+                call.reject(taken.getMessage(), "ssh-port");
+            }
+        }, "ovis-ssh-known").start();
+    }
+
     /** Forgets the PC's host key on purpose: it opens again only once the setup screen confirms the key it shows then. */
     @PluginMethod
     public void forgetHostKey(PluginCall call) {
