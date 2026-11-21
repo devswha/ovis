@@ -245,6 +245,27 @@ export function relayLink(url, appOrigin = APP_ORIGIN) {
   return { url: scope + url.hash, scope, name: offer.name };
 }
 
+/**
+ * The pairing link of a PC found on this Wi-Fi (HerdrShell findLanPcs, lanOffer): what it answered at /v1/offer, with
+ * the carrier it was found at as `lan`, so the hosted shell pairs there alone, by comparing digits (docs/relay.md,
+ * "Joining on the same Wi-Fi"). Null for an answer that is not a PC's offer, or one that carries a code. The hosted
+ * shell checks it in full before it pairs.
+ */
+export function lanOfferLink(text, host, port, appOrigin = APP_ORIGIN) {
+  let offer;
+  try { offer = JSON.parse(text); } catch { return null; }
+  if (typeof offer !== "object" || offer === null || offer.v !== 1 || typeof offer.server_id !== "string" || !/^[0-9a-f]{32}$/.test(offer.server_id)) return null;
+  if (typeof offer.server_public_key !== "string" || typeof offer.relay !== "string" || offer.code !== undefined) return null;
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  const named = { v: 1, server_id: offer.server_id, server_public_key: offer.server_public_key, relay: offer.relay,
+    ...(typeof offer.name === "string" && offer.name !== "" && offer.name.length <= 64 ? { name: offer.name } : {}), lan: `ws://${host}:${port}` };
+  const bytes = new TextEncoder().encode(JSON.stringify(named));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const payload = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `${appOrigin.replace(/\/+$/, "")}/s/${offer.server_id}/${OFFER}${payload}`;
+}
+
 function offerOf(payload) {
   if (!/^[A-Za-z0-9_-]{1,2048}$/.test(payload) || payload.length % 4 === 1) return null;
   let offer;

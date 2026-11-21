@@ -773,6 +773,12 @@ so the apps' `OvisDirect` plugin opens it for the hosted app (`app/ios/App/App/O
   Android needs no permission while `targetSdkVersion` is below 37; at 37 add
   `ACCESS_LOCAL_NETWORK`. Android has no WebSocket library, so `DirectSocket.java` is a small
   `ws://` client of its own.
+- **PCs on this Wi-Fi.** The connect screen's Direct tab lists the Ovis PCs on the phone's Wi-Fi that let a
+  phone join now ([relay.md](relay.md#joining-on-the-same-wi-fi)): Android browses `_ovis._tcp` with NsdManager
+  for 3 s (`HerdrShell findLanPcs`, `LanPcs.java`), lists private IPv4 addresses only, and a tap reads the PC's
+  `/v1/offer` (`lanOffer`, 4 KiB at most) and opens it as a pairing link with `lan`, which the hosted app pairs
+  over that carrier by comparing digits. Both answer the connect screen alone. iOS has no list yet (NWBrowser is
+  to come); its Direct field takes the address the PC shows.
 
 ## Risks and open questions
 

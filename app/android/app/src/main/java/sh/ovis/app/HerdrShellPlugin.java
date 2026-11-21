@@ -208,4 +208,107 @@ public class HerdrShellPlugin extends Plugin {
     private void reopen() {
         getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).reopen());
     }
+
+    /** How long the connect screen's Direct tab listens for PCs on this Wi-Fi before it lists what it found. */
+    private static final long LAN_BROWSE_MS = 3_000;
+
+    /**
+     * The connect screen's alone: the Ovis PCs on this Wi-Fi that let a phone join now (LanPcs), as
+     * `pcs: [{ name, host, port }]`, after LAN_BROWSE_MS of NsdManager browsing. Only private IPv4 addresses are listed.
+     */
+    @PluginMethod
+    public void findLanPcs(PluginCall call) {
+        if (!showingConnectScreen()) {
+            call.reject("Only the app's own connect screen looks for PCs on this Wi-Fi.");
+            return;
+        }
+        android.net.nsd.NsdManager nsd = (android.net.nsd.NsdManager) getContext().getSystemService(android.content.Context.NSD_SERVICE);
+        if (nsd == null) {
+            call.reject("This phone cannot look for PCs on its Wi-Fi.");
+            return;
+        }
+        java.util.Map<String, JSObject> found = new java.util.LinkedHashMap<>();
+        java.util.ArrayDeque<android.net.nsd.NsdServiceInfo> toResolve = new java.util.ArrayDeque<>();
+        boolean[] resolving = { false };
+        Object lock = new Object();
+        Runnable[] next = new Runnable[1];
+        next[0] = () -> {
+            android.net.nsd.NsdServiceInfo service;
+            synchronized (lock) {
+                if (resolving[0] || toResolve.isEmpty()) return;
+                service = toResolve.poll();
+                resolving[0] = true;
+            }
+            // one resolve at a time: older NsdManagers refuse a second while one runs
+            nsd.resolveService(service, new android.net.nsd.NsdManager.ResolveListener() {
+                @Override public void onResolveFailed(android.net.nsd.NsdServiceInfo info, int error) { done(); }
+                @Override public void onServiceResolved(android.net.nsd.NsdServiceInfo info) {
+                    java.net.InetAddress address = info.getHost();
+                    String host = address == null ? null : address.getHostAddress();
+                    if (LanPcs.lanHost(host) && LanPcs.offerUrl(host, info.getPort()) != null) {
+                        JSObject pc = new JSObject();
+                        pc.put("name", LanPcs.shownName(info.getServiceName()));
+                        pc.put("host", host);
+                        pc.put("port", info.getPort());
+                        synchronized (lock) { found.put(host + ":" + info.getPort(), pc); }
+                    }
+                    done();
+                }
+                private void done() {
+                    synchronized (lock) { resolving[0] = false; }
+                    next[0].run();
+                }
+            });
+        };
+        android.net.nsd.NsdManager.DiscoveryListener listener = new android.net.nsd.NsdManager.DiscoveryListener() {
+            @Override public void onStartDiscoveryFailed(String type, int error) { }
+            @Override public void onStopDiscoveryFailed(String type, int error) { }
+            @Override public void onDiscoveryStarted(String type) { }
+            @Override public void onDiscoveryStopped(String type) { }
+            @Override public void onServiceFound(android.net.nsd.NsdServiceInfo service) {
+                synchronized (lock) { toResolve.add(service); }
+                next[0].run();
+            }
+            @Override public void onServiceLost(android.net.nsd.NsdServiceInfo service) { }
+        };
+        try {
+            nsd.discoverServices(LanPcs.SERVICE_TYPE, android.net.nsd.NsdManager.PROTOCOL_DNS_SD, listener);
+        } catch (RuntimeException failed) {
+            call.reject("This phone cannot look for PCs on its Wi-Fi.");
+            return;
+        }
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            try { nsd.stopServiceDiscovery(listener); } catch (RuntimeException alreadyStopped) { }
+            JSArray pcs = new JSArray();
+            synchronized (lock) { for (JSObject pc : found.values()) pcs.put(pc); }
+            JSObject result = new JSObject();
+            result.put("pcs", pcs);
+            call.resolve(result);
+        }, LAN_BROWSE_MS);
+    }
+
+    /** The connect screen's alone: what a PC found on this Wi-Fi answers at /v1/offer (LanPcs.readOffer), as `offer` text. */
+    @PluginMethod
+    public void lanOffer(PluginCall call) {
+        if (!showingConnectScreen()) {
+            call.reject("Only the app's own connect screen asks a PC on this Wi-Fi.");
+            return;
+        }
+        String host = call.getString("host");
+        Integer port = call.getInt("port");
+        if (port == null || LanPcs.offerUrl(host, port) == null) {
+            call.reject("That is not an address on this Wi-Fi.");
+            return;
+        }
+        new Thread(() -> {
+            String offer = LanPcs.readOffer(host, port);
+            if (offer == null) {
+                call.reject("That PC no longer lets a phone join. Open Add a connection, then Direct, on the PC.");
+                return;
+            }
+            JSObject result = new JSObject();
+            result.put("offer", offer);
+            call.resolve(result);
+        }, "ovis-lan-offer").start();
+    }
 }

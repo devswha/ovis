@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
-import { APP_ORIGIN, directTarget, homeHost, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, tailnetHost, tailnetPcs } from "../app/web/shell.js";
+import { APP_ORIGIN, directTarget, homeHost, lanOfferLink, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, tailnetHost, tailnetPcs } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
-import { encodeOffer } from "../shared/relay-offer.ts";
+import { decodeOffer, encodeOffer } from "../shared/relay-offer.ts";
 
 const SERVER_ID = "0123456789abcdef0123456789abcdef";
 const offer = { v: 1 as const, server_id: SERVER_ID, server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.ovis.sh", code: "123456", name: "Studio PC" };
@@ -193,5 +193,24 @@ describe("an SSH PC under Manage", () => {
     const forgotten = sshDetails({ ...pc, hostKeyAlgorithm: "", fingerprint: "" });
     expect(forgotten.confirmed).toBe(false);
     expect(forgotten.hostKey).not.toContain("SHA256:");
+  });
+});
+
+describe("a PC found on this Wi-Fi", () => {
+  const key = exportPublicKey(generateKeyPair().publicKey);
+  const answered = JSON.stringify({ v: 1, server_id: "0123456789abcdef0123456789abcdef", server_public_key: key, relay: "wss://relay.ovis.sh", name: "Studio" });
+
+  it("opens as a pairing link the hosted shell takes, pairing on the carrier it was found at", () => {
+    const opened = lanOfferLink(answered, "192.168.0.12", 7319)!;
+    expect(link(opened)).toMatchObject({ scope: `${APP_ORIGIN}/s/0123456789abcdef0123456789abcdef/`, name: "Studio" });
+    expect(decodeOffer(opened)).toEqual({ v: 1, server_id: "0123456789abcdef0123456789abcdef", server_public_key: key, relay: "wss://relay.ovis.sh", name: "Studio", lan: "ws://192.168.0.12:7319" });
+  });
+
+  it("is nothing for an answer that is not a PC's offer, or one with a code", () => {
+    for (const text of ["", "not json", "null", JSON.stringify({ v: 2 }), JSON.stringify({ ...JSON.parse(answered), server_id: "nope" }), JSON.stringify({ ...JSON.parse(answered), code: "123456" })]) {
+      expect(lanOfferLink(text, "192.168.0.12", 7319)).toBeNull();
+    }
+    expect(lanOfferLink(answered, "pc.local", 7319)).toBeNull();
+    expect(lanOfferLink(answered, "192.168.0.12", 0)).toBeNull();
   });
 });

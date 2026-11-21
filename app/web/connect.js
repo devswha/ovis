@@ -1,7 +1,7 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, directTarget, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, sshDetails, t, tailnetPcs } from "./shell.js";
+import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, directTarget, followScheme, lanOfferLink, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, sshDetails, t, tailnetPcs } from "./shell.js";
 
 localize();
 followScheme();
@@ -148,6 +148,7 @@ function pick(name, focus = false) {
   }
   if (focus) tabs.find((each) => each.dataset.tab === name)?.focus();
   if (name === "tailscale") void checkTailscale();
+  if (name === "direct") void findLanPcs();
 }
 
 for (const each of tabs) each.addEventListener("click", () => pick(each.dataset.tab));
@@ -257,6 +258,55 @@ for (const scan of document.querySelectorAll("[data-scan]")) scan.addEventListen
 });
 
 /** The Tailscale tab's PCs: those this phone opened at a Tailscale address, each with Connect. */
+/**
+ * Direct's list of the Ovis PCs on this Wi-Fi that let a phone join now: a PC lists itself only while its own window
+ * shows Add a connection, then Direct (docs/relay.md, "Joining on the same Wi-Fi"). Android looks for them (HerdrShell
+ * findLanPcs); an app without it shows no list, and the address field still takes a PC's address.
+ */
+let lanLooking = 0;
+async function findLanPcs() {
+  if (!android) return;
+  const section = document.getElementById("lan");
+  const status = document.getElementById("lan-status");
+  const mine = ++lanLooking;
+  section.hidden = false;
+  status.textContent = t("Looking for PCs on this Wi-Fi…", "같은 Wi-Fi의 PC를 찾는 중…");
+  let pcs = [];
+  try { pcs = (await shell("findLanPcs")).pcs ?? []; }
+  catch { if (mine === lanLooking) section.hidden = true; return; }
+  if (mine !== lanLooking || tab !== "direct") return;
+  document.getElementById("lan-pcs").replaceChildren(...pcs.map(({ name, host, port }) => {
+    const item = document.createElement("li");
+    const text = document.createElement("span");
+    text.className = "way-text";
+    const title = document.createElement("span");
+    title.className = "way-title";
+    title.textContent = name || host;
+    const sub = document.createElement("span");
+    sub.className = "sub";
+    sub.textContent = host;
+    text.append(title, sub);
+    const connect = button(t("Connect", "연결"), () => void joinLanPc(name || host, host, port), "primary");
+    connect.setAttribute("aria-label", t(`Connect to ${name || host}`, `${name || host}에 연결`));
+    item.append(text, connect);
+    return item;
+  }));
+  status.textContent = pcs.length > 0 ? ""
+    : t("No PC on this Wi-Fi lets a phone join now. On the PC, open Add a connection, then Direct.", "지금 폰 연결을 받는 PC가 같은 Wi-Fi에 없어요. PC에서 연결 추가 → 직접 연결을 여세요.");
+}
+
+/** A PC from the list: its offer read on this Wi-Fi, opened as a pairing link that pairs there by comparing digits. */
+async function joinLanPc(label, host, port) {
+  stopPending();
+  error.textContent = "";
+  let answer;
+  try { answer = await shell("lanOffer", { host, port }); }
+  catch (err) { error.textContent = String(err?.message ?? err); return; }
+  const link = lanOfferLink(answer?.offer ?? "", host, port);
+  if (link === null) { error.textContent = t(`${label} did not answer as an Ovis PC.`, `${label}이(가) Ovis PC로 응답하지 않았어요.`); return; }
+  await open(link);
+}
+
 function renderTailnet(saved, names) {
   const pcs = tailnetPcs(saved, names);
   document.getElementById("tailnet").replaceChildren(...pcs.map(({ origin, label }) => {

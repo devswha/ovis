@@ -258,6 +258,7 @@ export class RelayTransport implements Transport {
   private race(generation: number, offer: RelayOffer, options: RelayChannelOptions): Promise<{ channel: RelayChannel; relay: string }> {
     const viaRelay = (signal: AbortSignal, onClose = options.onClose) => openRelayChannelWithFallback(offer,
       { ...options, signal, onClose, offerDirect: this.options.directSocket !== undefined, offerTailnet: this.options.directTailnet?.() === true }, this.options.openChannel ?? openRelayChannel, this.relay);
+    if (generation === 1 && offer.lan !== undefined && offer.code === undefined) return this.joinOnLan(offer, offer.lan, options, viaRelay);
     if (!this.options.directSocket || (generation === 1 && this.offer.code !== undefined)) return viaRelay(this.abort.signal);
     // a race the relay won by a hair would bring a switch the probe just earned back onto the relay, time after time
     const proven = this.switchingDirect;
@@ -305,6 +306,20 @@ export class RelayTransport implements Transport {
         else { cancelHeadStart?.(); startRelay(); }
       }, (error: unknown) => { directDone = true; fail(error); });
     });
+  }
+
+  /**
+   * A PC found on this Wi-Fi that this device has not paired with: the comparison goes on its direct carrier alone, the only
+   * place it asked to be joined (docs/relay.md, "Joining on the same Wi-Fi"). A device already paired with it signs in as ever.
+   */
+  private async joinOnLan(offer: RelayOffer, lan: string, options: RelayChannelOptions, viaRelay: (signal: AbortSignal) => Promise<{ channel: RelayChannel; relay: string }>): Promise<{ channel: RelayChannel; relay: string }> {
+    const saved = await (this.options.store ?? indexedDeviceStore).get(offer.server_id).catch(() => undefined);
+    if (saved?.device_id != null) return viaRelay(this.abort.signal);
+    const socket = this.options.directSocket;
+    if (!socket) throw new DirectCarrierUnusableError();
+    const channel = await (this.options.openChannel ?? openRelayChannel)(offer, { ...options, signal: this.abort.signal, direct: lan, socket, lanJoin: true,
+      offerDirect: true, offerTailnet: this.options.directTailnet?.() === true });
+    return { channel, relay: this.relay };
   }
 
   /** Only a refusal by the PC itself, after Noise proved it is the PC, is final there as it is through the relay. */

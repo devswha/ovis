@@ -56,6 +56,12 @@
       </div>
     </section>
     <section id="panel-direct" class="panel" role="tabpanel" aria-labelledby="tab-direct" hidden>
+      <!-- the Ovis PCs on this Wi-Fi that let a phone join now (connect.js findLanPcs); Android only -->
+      <div id="lan" hidden>
+        <p class="label" data-ko="같은 Wi-Fi의 PC">PCs on this Wi-Fi</p>
+        <ul id="lan-pcs" class="saved"></ul>
+        <p class="note" id="lan-status"></p>
+      </div>
       <!-- one field for an address or SSH's user@host (shell.js directTarget); SSH only where the app has OvisSsh -->
       <label class="label" for="address" id="address-label" data-ko="주소 또는 SSH">Address or SSH</label>
       <form id="connect" class="field" novalidate>
