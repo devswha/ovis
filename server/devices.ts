@@ -2743,10 +2743,13 @@ export class DeviceStore {
     return () => { this.noticeListeners.delete(listener); };
   }
 
-  /** Whether the row `id` is told of `entry`: entries about rows that joined this PC after it (T57); a row with no age hears none. */
+  /**
+   * Whether the row `id` is told of `entry`: entries about rows that joined this PC after it (T57); a row with no age hears
+   * none, and a row never hears of its own key's admission (a listed row and the row its approval made are one device).
+   */
   private tells(id: string, entry: JournalEntry): boolean {
     const row = this.anyRow(id);
-    if (row?.origin === undefined || entry.row === id) return false;
+    if (row?.origin === undefined || entry.row === id || (entry.key !== null && entry.key === row.relay_public_key)) return false;
     if (row.origin.from === "legacy") return true;
     return entry.no !== null && row.origin.admit_no < entry.no;
   }

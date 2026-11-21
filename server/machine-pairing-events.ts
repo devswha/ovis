@@ -10,9 +10,12 @@ export function machinePairingEvents({ services, peer }: ServerContext, access: 
   const openAccess = access.level === "full" && access.via === "open";
   const driving = access.level === "full" && access.role === "drive" && access.via !== "open";
   return { subscribe(listener) {
-    // An enrollment excludes its own device and asking browser. The enrollment closes the gate on the open LAN.
+    // An enrollment excludes its own device (by row, and by key: another row of the same key is that device too) and
+    // asking browser. The enrollment closes the gate on the open LAN; this PC's own window is local, never open.
+    const ownKey = peer.kind === "relay" ? peer.key : undefined;
     const stopPaired = devices.onPaired((event, origin) => {
-      if (!openAccess && event.device_id !== deviceId && !sameBrowser(origin, keys)) listener(event);
+      const aboutThisDevice = event.device_id === deviceId || (ownKey !== undefined && devices.relayKeyOf(event.device_id) === ownKey);
+      if (!openAccess && !aboutThisDevice && !sameBrowser(origin, keys)) listener(event);
     });
     const stopRemoved = driving ? devices.onRemoved(listener) : undefined;
     // Direct approvers see the digits; drive account members on the relay get three candidates instead.
