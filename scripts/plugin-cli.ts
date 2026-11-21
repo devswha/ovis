@@ -113,6 +113,9 @@ const GROUPS: readonly (readonly [string, readonly string[]])[] = [
 
 export const GUIDE = "https://github.com/devswha/ovis/blob/main/docs/guide.md";
 
+/** An Ovis account as every command names it (login, logout, status): its first characters, never the whole id. */
+export const shortAccount = (account: string): string => account.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").slice(0, 12);
+
 export function mainHelp(context: CliContext): string {
   const lines = [
     "Ovis - herdr in your browser and on your phone",

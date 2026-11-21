@@ -4,6 +4,7 @@
  * terminal; input that is not a terminal answers nothing.
  */
 import type { RecoveryAction, RecoveryStanding } from "../shared/account-devices-api.ts";
+import { shortAccount } from "./plugin-cli.ts";
 
 export interface RecoverIo {
   out(text: string): void;
@@ -170,7 +171,7 @@ export async function runLogout(io: LogoutIo): Promise<number> {
     io.out("ovis logout asks you to type yes, so it runs only in a terminal on this PC (over ssh, run ssh -t).\n");
     return 1;
   }
-  io.out(`This PC (${terminalText(io.label)}) is in Ovis account ${terminalText(state.account)}, with ${state.members} device${state.members === 1 ? "" : "s"} of it.\n`
+  io.out(`This PC (${terminalText(io.label)}) is in Ovis account ${terminalText(shortAccount(state.account))}, with ${state.members} device${state.members === 1 ? "" : "s"} of it.\n`
     + "Leaving cuts off every device that uses this PC: your account's devices, and also every device paired with a code.\n"
     + "All of them are revoked (Revoke all) and must be paired again with ovis login or ovis pair.\n");
   if ((await io.ask("Leave the account? Type yes: ")).trim() !== "yes") {

@@ -37,6 +37,7 @@ import { NEW_PC_MS } from "../src/lib/account/myPcs.ts";
 import { ownPcProof } from "../src/lib/account/pcProof.ts";
 import { AccountService, AccountServiceError, DEVICE_PROVIDERS, offeredProviders, type DeviceProvider } from "../src/lib/account/service.ts";
 import { memoryAccountStore, memoryLock, type AccountProvider } from "../src/lib/account/store.ts";
+import { shortAccount } from "./plugin-cli.ts";
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -820,7 +821,6 @@ async function putListing(api: Api, service: AccountService, listing: Listing): 
   try { await service.putPc(listing.serverId, { ...listing.entry, ...await ownPcProof(listing.serverId, (path) => api("POST", path)) }); return true; } catch { return false; }
 }
 
-const shortId = (account: string): string => plainLabel(account).slice(0, 12);
 
 interface Device {
   readonly id: string; readonly label: string; readonly created_at: string; readonly via_relay?: true; readonly account?: string;
@@ -987,7 +987,7 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
   const refusal = (error: LocalError): LocalError => error.code === "pairing_gone"
     ? new LocalError(`Another pairing code was made on this PC (in Settings, by ${cli(options)} pair, or by another run) after this run's: it is left as it is, and no QR code is shown. Run ${cli(options)} add again.`, error.status, error.code)
     : error.code !== "invalid_account" ? error
-    : new LocalError(`The Ovis on this PC did not take the id of the account you signed in to (${shortId(joining.signedIn)}) for its code (${error.message})`, error.status, error.code);
+    : new LocalError(`The Ovis on this PC did not take the id of the account you signed in to (${shortAccount(joining.signedIn)}) for its code (${error.message})`, error.status, error.code);
   const mint = async (): Promise<void> => {
     minted++;
     pinned = null;
@@ -1026,7 +1026,7 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     tied = offer.expect_account !== undefined;
     for (const answer of [offer, typed]) {
       if (answer?.expect_account !== undefined && answer.expect_account !== joining.signedIn) {
-        throw new LocalError(`The Ovis on this PC made its code for another Ovis account (${shortId(answer.expect_account)}) than the one you signed in to (${shortId(joining.signedIn)}). Run ${cli(options)} add again.`);
+        throw new LocalError(`The Ovis on this PC made its code for another Ovis account (${shortAccount(answer.expect_account)}) than the one you signed in to (${shortAccount(joining.signedIn)}). Run ${cli(options)} add again.`);
       }
     }
     pinned = offer.pairing?.id ?? null;
@@ -1220,7 +1220,7 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           // device paired before to do it. Whoever came since the first code goes, with no question: nobody here
           // vouches for that account, and this PC is out of it again once its members here are gone
           const { outcomes, open } = await clear(list);
-          const said = `This PC joined another Ovis account (${shortId(account)})${label === null ? "" : `, added by ${label}`}, not the one you signed in to (${shortId(joining.signedIn)}).${removals(outcomes, false)}`;
+          const said = `This PC joined another Ovis account (${shortAccount(account)})${label === null ? "" : `, added by ${label}`}, not the one you signed in to (${shortAccount(joining.signedIn)}).${removals(outcomes, false)}`;
           // where that leaves this PC. When its devices or its account cannot be read, more of that account's devices
           // may be paired than were removed: that is said, with the way to end them, rather than left to the next run
           let unread = open !== null && open !== "more" ? open.unread : null;
@@ -1350,7 +1350,7 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           }
         }
         if (added && joined.enrolling !== true && strays.length === 0) {
-          say(`This PC is in your account (${shortId(joining.signedIn)})${label === null ? "" : `, added by ${label}`}: every device of your account can use it.\n${loginClosing(options)}`);
+          say(`This PC is in your account (${shortAccount(joining.signedIn)})${label === null ? "" : `, added by ${label}`}: every device of your account can use it.\n${loginClosing(options)}`);
           return unremoved ? 1 : 0;
         }
       } catch (error) {
@@ -1438,10 +1438,10 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   }
   if (first.account !== null) {
     if (first.enrolling !== true) {
-      out(`This PC is already in an Ovis account (${shortId(first.account)}).\n`);
+      out(`This PC is already in an Ovis account (${shortAccount(first.account)}).\n`);
       return 0;
     }
-    out(`This PC is already in an Ovis account (${shortId(first.account)}), but its account's other devices are not in yet. Open the Ovis app on the phone that added it. Waiting for them; press Ctrl+C to stop.\n`);
+    out(`This PC is already in an Ovis account (${shortAccount(first.account)}), but its account's other devices are not in yet. Open the Ovis app on the phone that added it. Waiting for them; press Ctrl+C to stop.\n`);
     const stopAt = now() + WAITING_MS;
     for (;;) {
       await wait(POLL_MS, signal);
@@ -1454,7 +1454,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         return 1;
       }
       if (again !== null && again.enrolling !== true) {
-        out(`This PC is in an Ovis account (${shortId(again.account ?? first.account)}): every device of that account can use it.\n`);
+        out(`This PC is in an Ovis account (${shortAccount(again.account ?? first.account)}): every device of that account can use it.\n`);
         return 0;
       }
       if (now() >= stopAt) {
@@ -1551,7 +1551,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       pending.listing = null;
       const unlistedThere = await service.deletePc(first.serverId).then(() => true, () => false);
       await api("POST", "/api/account/relay-account", { body: { account } }).catch(() => undefined);
-      say(`This PC joined another Ovis account (${shortId(account)}), not the one you signed in to (${shortId(signedIn)}). ${unlistedThere ? "It was taken off the list of the account you signed in to." : "It could not be taken off the list of the account you signed in to; remove it there."} If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n`);
+      say(`This PC joined another Ovis account (${shortAccount(account)}), not the one you signed in to (${shortAccount(signedIn)}). ${unlistedThere ? "It was taken off the list of the account you signed in to." : "It could not be taken off the list of the account you signed in to; remove it there."} If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n`);
       return 1;
     };
     let lastListed = false;
@@ -1614,7 +1614,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         const joined = await status();
         if (joined.account !== null && joined.account !== signedIn) return await elsewhere(joined.account);
         if (joined.account !== null && joined.enrolling !== true) {
-          say(`This PC is in your account (${shortId(joined.account)}): every device of your account can use it.\n${loginClosing(options)}`);
+          say(`This PC is in your account (${shortAccount(joined.account)}): every device of your account can use it.\n${loginClosing(options)}`);
           return 0;
         }
         added = joined.account !== null;

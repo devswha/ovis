@@ -728,9 +728,10 @@ describe("the state dir when run by hand", () => {
 describe("the devices status lists apart", () => {
   const GROUPS = { unlinked: [{ id: "6a1f0c9e2b7d4a10", label: "Old phone" }], own_word: [{ id: "0d4c1b7a9e2f3c58", label: "Tab\u001b]0;let\u0007let" }, { id: "1e5d2c8b0a3f4d69", label: "Laptop" }] };
   /** An Ovis on a port of its own whose health answer is `answer` for each request, by the request's authorization. */
-  function answering(answer: (authorization: string | null) => Record<string, unknown>) {
+  function answering(answer: (authorization: string | null) => Record<string, unknown>, account?: Record<string, unknown>) {
     const asked: (string | null)[] = [];
     const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      if (account !== undefined && new URL(request.url).pathname === "/api/account/status") return Response.json(account);
       if (new URL(request.url).pathname !== "/api/health") return new Response(null, { status: 404 });
       asked.push(request.headers.get("authorization"));
       return Response.json(answer(request.headers.get("authorization")));
@@ -750,6 +751,14 @@ describe("the devices status lists apart", () => {
         "devices that joined the account on their own word: Tab]0;letlet (0d4c1b7a9e2f3c58), Laptop (1e5d2c8b0a3f4d69)",
       ]);
       expect(pc.asked).toEqual([null]);
+    } finally { await pc.server.stop(true); }
+  });
+
+  it("come under the account, named in the short form ovis login uses, never its whole id", async () => {
+    const pc = answering(() => ({ ...APP_HEALTH, account_devices: { unlinked: [], own_word: [] } }), { account: "acct_0123456789abcdef", members: 2 });
+    try {
+      const result = await run("status", pc.env);
+      expect(result.out.split("\n").filter((line) => line.startsWith("account: ")), result.err).toEqual(["account: acct_0123456 (2 devices)"]);
     } finally { await pc.server.stop(true); }
   });
 

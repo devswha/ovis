@@ -42,7 +42,7 @@ import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts"
 import type { WaitingDevice } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
 import { coreAnswers, findTui, runTui } from "./plugin-tui.ts";
-import { mainHelp, parseCommand, unknownCommand, type CliContext } from "./plugin-cli.ts";
+import { mainHelp, parseCommand, shortAccount, unknownCommand, type CliContext } from "./plugin-cli.ts";
 import { coreSocket } from "../server/herdr-core/core-socket.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
@@ -1272,7 +1272,7 @@ async function status(): Promise<number> {
   // only to the app's owner, whose answer lists the device groups below: nobody else is told the account
   const account = answer?.devices == null ? null : await accountOf();
   if (account !== null) {
-    process.stdout.write(`account: ${account.account === null ? "none (run ovis login)" : `${account.account} (${account.members} device${account.members === 1 ? "" : "s"})`}\n`);
+    process.stdout.write(`account: ${account.account === null ? "none (run ovis login)" : `${shortAccount(account.account)} (${account.members} device${account.members === 1 ? "" : "s"})`}\n`);
   }
   if (typeof answer?.relay === "string") process.stdout.write(`relay: ${answer.relay}\n`);
   // the groups of the app's own answer, which carries no token: on a machine profile's owner socket, or over TCP when

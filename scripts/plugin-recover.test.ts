@@ -268,6 +268,13 @@ describe("ovis logout", () => {
     expect(at.text()).toContain("Left. This PC is in no account; 2 devices were revoked.");
   });
 
+  test("names the account in the short form ovis login uses, never its whole id", async () => {
+    const at = io({ answers: ["no"] });
+    await runLogout({ ...at.value, label: "desk", account: async () => ({ account: "acct_0123456789abcdef", members: 1 }), leave: async () => false });
+    expect(at.text()).toContain("This PC (desk) is in Ovis account acct_0123456, with 1 device of it.");
+    expect(at.text()).not.toContain("789abcdef");
+  });
+
   test.each(["y", "", "YES please"])("%j is not yes: nothing is sent", async (answer) => {
     const at = io({ answers: [answer] });
     expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
