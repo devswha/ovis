@@ -13,7 +13,8 @@
        phone, so markup inside a sentence gets its own element. One screen, Connect a PC, with the desktop's Add a
        connection tabs in its order (connect.js pick): the Ovis relay (its sign-in), Tailscale and Direct. No sign-in comes
        first: Tailscale and Direct need none. -->
-  <header class="bar"><img src="ovis-sheep.svg" alt="" width="28" height="28"><span>Ovis</span></header>
+  <!-- opened from a PC's Connect a PC (HerdrShell chooseAnother): back to that PC, which stays open until another is picked (connect.js) -->
+  <header class="bar"><img src="ovis-sheep.svg" alt="" width="28" height="28"><span>Ovis</span><button type="button" id="back-to-pc" class="bar-back" hidden></button></header>
   <main id="connect-screen" class="first">
     <h1 class="step" data-ko="PC 연결">Connect a PC</h1>
     <!-- a tab is picked, never stepped to: the phone's Back leaves the app from here (connect.js pick) -->

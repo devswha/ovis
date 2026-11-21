@@ -20,6 +20,7 @@ public class HerdrShellPlugin extends Plugin {
         state.put("name", last == null ? "" : PCStore.names(getContext()).optString(last, ""));
         state.put("current", current == null ? "" : current);
         state.put("last", last == null ? "" : last);
+        state.put("choosing", PCStore.choosing && current != null);
         state.put("failure", PCStore.failure == null ? "" : PCStore.failure);
         state.put("kind", PCStore.failureKind == null ? "" : PCStore.failureKind);
         state.put("command", PCStore.failureCommand == null ? "" : PCStore.failureCommand);
@@ -195,6 +196,20 @@ public class HerdrShellPlugin extends Plugin {
         PCStore.setCurrent(getContext(), null);
         call.resolve();
         reopen();
+    }
+
+    /** A PC page's Connect a PC: the connect screen, the current PC kept until another opens (PCStore.choosing). */
+    @PluginMethod
+    public void chooseAnother(PluginCall call) {
+        call.resolve();
+        getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).chooseAnother());
+    }
+
+    /** The connect screen's way back to the PC it was opened from to choose another way. */
+    @PluginMethod
+    public void backToCurrent(PluginCall call) {
+        call.resolve();
+        getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).backToCurrent());
     }
 
     @PluginMethod

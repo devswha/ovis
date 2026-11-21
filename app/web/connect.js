@@ -413,6 +413,22 @@ function managePanel(origin, label) {
   return panel;
 }
 
+/** Opened from a PC to choose another way (HerdrShell chooseAnother): that PC stays open until another is picked, and this goes back to it. */
+function showBackToPc(state) {
+  const back = document.getElementById("back-to-pc");
+  back.hidden = state.choosing !== true;
+  if (back.hidden) return;
+  const name = (state.names ?? {})[state.current] || new URL(state.current).hostname.split(".")[0];
+  back.textContent = `‹ ${name}`;
+  back.setAttribute("aria-label", t(`Back to ${name}`, `${name} 화면으로 돌아가기`));
+}
+
+document.getElementById("back-to-pc").addEventListener("click", async () => {
+  error.textContent = "";
+  try { await shell("backToCurrent"); }
+  catch (err) { error.textContent = String(err?.message ?? err); }
+});
+
 async function load() {
   const state = await shell("getState");
   savedOrigins = state.saved ?? [];
@@ -421,6 +437,7 @@ async function load() {
     try { for (const pc of (await ssh("list")).pcs ?? []) sshPcs[pc.origin] = pc; }
     catch { /* an app without the plugin lists its PCs as before */ }
   }
+  showBackToPc(state);
   const tailnet = renderPcs("tailscale", document.getElementById("tailnet"), document.getElementById("tailnet-section"), state);
   document.getElementById("tailnet-none").hidden = tailnet > 0;
   renderPcs("direct", document.getElementById("direct-pcs"), document.getElementById("direct-section"), state);

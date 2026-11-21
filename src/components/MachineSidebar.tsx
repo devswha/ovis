@@ -33,14 +33,14 @@ import { sidebarAgents } from "../lib/sidebarAgents.ts";
 import { useEdgeFades } from "../lib/useEdgeFades.ts";
 import "./Machines.css";
 import "./SidebarSections.css";
-import { useT } from "../lib/i18n.ts";
+import { t, useT } from "../lib/i18n.ts";
 import { asksChoice, FoundHerdrChoices } from "./FoundHerdrChoices.tsx";
 import { useSettings } from "../lib/settings.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway, sshFailure } from "../lib/userError.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
-import { changePc, inNativeApp } from "../lib/nativeApp.ts";
+import { chooseAnotherPc, inNativeApp } from "../lib/nativeApp.ts";
 import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
 import { canHideMachine, HIDDEN_MACHINES_MAX, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
@@ -70,9 +70,17 @@ export function addPcExit(page: { nativeApp: boolean; relayShell: boolean; pathn
 /** The hosted app's Add a PC, opened from a PC's More: its Back comes back here (RelayShell's `addEntry`). */
 export const ADD_PC_FROM_KEY = "ovis-add-pc-from";
 
-/** Opens Add a PC where `exit` (addPcExit) leads. */
-export function openAddPc(exit: "app" | "shell"): void {
-  if (exit === "app") { void changePc(); return; }
+/**
+ * A phone's More item to another PC or way (relay step 1), named as its screen is, Connect a PC: a phone connects to
+ * PCs. None on a desktop, which adds a PC from Settings → Devices and PCs.
+ */
+export function addPcMoreItem(exit: "app" | "shell" | null, sheetWidth: boolean): RowMenuItem | null {
+  return exit !== null && sheetWidth ? { id: "add-pc", label: t("Connect a PC"), icon: Plus, run: () => void openAddPc(exit) } : null;
+}
+
+/** Opens Add a PC where `exit` (addPcExit) leads: the phone app's connect tabs keep this PC open until another is picked. */
+export async function openAddPc(exit: "app" | "shell"): Promise<void> {
+  if (exit === "app") { await chooseAnotherPc(); return; }
   try { sessionStorage.setItem(ADD_PC_FROM_KEY, window.location.pathname); } catch { /* no storage: Back drops #add and stays */ }
   window.location.assign("/#add");
 }

@@ -582,7 +582,7 @@ const BASE: Record<string, string> = {
   "Ready": "準備完了",
   "Offline": "オフライン",
   "Open": "開く",
-  "Add a PC": "PC を追加",
+  "Connect a PC": "PC を接続",
   "All": "すべて",
   "Search": "検索",
   "Choose one from the list to open its chat here.": "リストから選ぶと、チャットがここに開きます。",

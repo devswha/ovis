@@ -587,7 +587,7 @@ const BASE: Record<string, string> = {
   "Ready": "就绪",
   "Offline": "离线",
   "Open": "打开",
-  "Add a PC": "添加电脑",
+  "Connect a PC": "连接电脑",
   "All": "全部",
   "Search": "搜索",
   "Choose one from the list to open its chat here.": "从列表中选择一项，它的聊天会在这里打开。",

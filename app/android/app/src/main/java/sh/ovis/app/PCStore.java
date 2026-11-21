@@ -41,6 +41,13 @@ final class PCStore {
     /** The address to open instead of the bare origin until a PC page loads: a pairing link keeps its code through Try again. In memory only, as it can hold that code. */
     static String pendingStart;
 
+    /**
+     * The connect screen is up to pick another way or PC, the current PC kept (HerdrShell chooseAnother, a PC page's
+     * Connect a PC): Back or its button reopens that PC, and opening another replaces it. In memory only, so an app
+     * started again opens the current PC.
+     */
+    static volatile boolean choosing;
+
     /** A PC's page on the hosted shell the app was opened with (appLink), until the connect screen takes it. In memory only, as it can hold a pairing offer's code. */
     static volatile String link;
 
@@ -297,6 +304,7 @@ final class PCStore {
     }
 
     static void setCurrent(Context context, String origin) {
+        choosing = false;
         prefs(context).edit().putString("current", origin).apply();
     }
 
@@ -305,6 +313,7 @@ final class PCStore {
     }
 
     static void open(Context context, String key, String start) {
+        choosing = false;
         prefs(context).edit().putString("current", key).putString("last", key).apply();
         pendingStart = start;
     }

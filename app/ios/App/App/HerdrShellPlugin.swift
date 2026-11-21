@@ -10,6 +10,8 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "open", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "forget", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "disconnect", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "chooseAnother", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "backToCurrent", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "retry", returnType: CAPPluginReturnPromise)
     ]
 
@@ -19,6 +21,7 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
             "names": PCStore.names,
             "current": PCStore.current ?? "",
             "last": PCStore.last ?? "",
+            "choosing": PCStore.choosing && PCStore.current != nil,
             "name": PCStore.last.flatMap { PCStore.names[$0] } ?? "",
             "failure": PCStore.failure ?? ""
         ])
@@ -42,6 +45,7 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
         if let name = call.getString("name"), !name.isEmpty { PCStore.names[key] = String(name.prefix(64)) }
         PCStore.current = key
         PCStore.last = key
+        PCStore.choosing = false
         PCStore.pendingStart = text
         PCStore.failure = nil
         PCStore.redirects = 0
@@ -56,6 +60,21 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func disconnect(_ call: CAPPluginCall) {
         PCStore.current = nil
+        PCStore.choosing = false
+        call.resolve()
+        DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
+    }
+
+    /// A PC page's Connect a PC: the connect screen, the current PC kept until another opens (PCStore.choosing).
+    @objc func chooseAnother(_ call: CAPPluginCall) {
+        PCStore.choosing = true
+        call.resolve()
+        DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
+    }
+
+    /// The connect screen's way back to the PC it was opened from to choose another way.
+    @objc func backToCurrent(_ call: CAPPluginCall) {
+        PCStore.choosing = false
         call.resolve()
         DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
     }

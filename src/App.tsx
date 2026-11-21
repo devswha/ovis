@@ -47,7 +47,7 @@ import { pageSearch } from "./lib/pageQuery.ts";
 import { copyText } from "./lib/clipboard.ts";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { AppLayoutContext, appLayoutOf, MachineContext } from "./lib/machineContext.tsx";
-import { addPcExit, MachineActionBanner, MachineSidebar, openAddPc } from "./components/MachineSidebar.tsx";
+import { addPcExit, addPcMoreItem, MachineActionBanner, MachineSidebar } from "./components/MachineSidebar.tsx";
 import { SidebarResizer } from "./components/SidebarResizer.tsx";
 import { type PanePresence, useSidebarActivityState } from "./lib/sidebarActivity.tsx";
 import { useAgentStateStamping } from "./lib/useAgentStateSince.ts";
@@ -835,7 +835,7 @@ export function App() {
   const moreItems: RowMenuItem[] = [
     // a phone's way to another PC (relay step 1): the hosted app's Add a PC, or the phone app's own screens
     // on a phone only, as the approved flow draws it: a desktop adds a PC from Settings → Devices and PCs
-    ...(addPcTo !== null && isSheetWidth ? [{ id: "add-pc", label: t("Add a PC"), icon: Plus, run: () => openAddPc(addPcTo) }] : []),
+    ...[addPcMoreItem(addPcTo, isSheetWidth)].filter((item) => item !== null),
     ...(waitingInMore && nextWaiting !== null ? [{ id: "next-waiting", label: t("Open the next session waiting for you"), hint: String(moreWaiting), icon: CircleHelp, run: openNextWaiting }] : []),
     { id: "palette", label: t("Search panes and actions"), icon: Search, ...(paletteKeys ? { hint: paletteKeys } : {}), run: () => openPalette() },
     ...(foldFind && more ? [{ id: "find-group", label: t("Find…"), icon: TextSearch, run: () => openMoreGroup("find", more.anchor) }] : findInTerminal),

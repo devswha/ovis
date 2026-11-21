@@ -522,7 +522,7 @@ describe("the hosted front page", () => {
     it("opens on Add a PC when asked by its address, signed in too, and its Back leaves it", async () => {
       (window.location as { hash?: string }).hash = "#add";
       await mount({ ...signedIn(four()), addEntry: true });
-      expect(textOf(renderer!.root.findByType("h1"))).toBe("Add a PC");
+      expect(textOf(renderer!.root.findByType("h1"))).toBe("Connect a PC");
       await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Back").props.onClick(); });
       // the front page it leaves for is the connect tabs, with no Back, and never the dashboard
       expect(renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back")).toHaveLength(0);

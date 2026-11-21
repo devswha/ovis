@@ -34,6 +34,13 @@ enum PCStore {
     /// its `?pair=` code through Try again. In memory only, as it can hold that code.
     static var pendingStart: String?
 
+    /// The connect screen is up to pick another way or PC, the current PC kept (HerdrShell chooseAnother): its button
+    /// reopens that PC, and opening another replaces it. In memory only, so an app started again opens the current PC.
+    static var choosing = false
+
+    /// The PC the app shows: the current one, none while the connect screen is up to choose another way.
+    static var shown: String? { choosing ? nil : current }
+
     static var failure: String?
 
     static var redirects = 0
@@ -390,7 +397,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
 
     override func instanceDescriptor() -> InstanceDescriptor {
         let descriptor = super.instanceDescriptor()
-        if let origin = PCStore.current, let host = URL(string: origin)?.host {
+        if let origin = PCStore.shown, let host = URL(string: origin)?.host {
             // what server.url sets; the pairing link until a PC page has loaded, the PC's first page
             // after it (a relay PC's scope keeps a pairing offer's `#offer=` fragment through here)
             descriptor.serverURL = PCStore.pendingStart ?? PCStore.firstPage(origin)
@@ -426,7 +433,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
 
     override func viewDidLoad() {
         // before super, which starts the first load
-        if let webView = webView, PCStore.current != nil {
+        if let webView = webView, PCStore.shown != nil {
             let proxy = NavigationFailureProxy(inner: webView.navigationDelegate) { [weak self] webView, reason in
                 self?.showFailure(in: webView, reason: reason)
             }
@@ -450,7 +457,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             webView.navigationDelegate = proxy
         }
         super.viewDidLoad()
-        if webView != nil, let origin = PCStore.current {
+        if webView != nil, let origin = PCStore.shown {
             showOpening(origin)
             watch = OpeningWatch(now: ProcessInfo.processInfo.systemUptime, answerLimit: TimeInterval(Self.answerSeconds))
             // often enough that the cover lifts within a fifth of a second of the client's first frame
@@ -700,7 +707,7 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
     /// choose the PC.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         if !pageShown, provisional, navigationAction.targetFrame?.isMainFrame == true,
-           let current = PCStore.current, let url = navigationAction.request.url,
+           let current = PCStore.shown, let url = navigationAction.request.url,
            let next = PCStore.origin(of: url), next != PCStore.origin(ofKey: current) {
             decisionHandler(.cancel)
             follow(url, from: current, in: webView)

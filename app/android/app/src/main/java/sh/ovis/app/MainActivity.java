@@ -170,7 +170,8 @@ public class MainActivity extends BridgeActivity {
         String link = takeAppLink(getIntent(), savedInstanceState == null);
         if (link != null) openAppLink(link);
         else openAlert(getIntent(), savedInstanceState == null);
-        String pc = OvisSshPlugin.opening(this, PCStore.link != null ? null : PCStore.current(this));
+        // choosing another way (PCStore.choosing): the connect screen, the current PC kept for Back
+        String pc = PCStore.choosing ? null : OvisSshPlugin.opening(this, PCStore.link != null ? null : PCStore.current(this));
         String origin = pc == null ? null : PCStore.origin(pc);
         String host = origin == null ? null : Uri.parse(origin).getHost();
         if (host != null) {
@@ -209,6 +210,13 @@ public class MainActivity extends BridgeActivity {
         keepClearOfNavigationButtons();
         String appOrigin = bridge.getScheme() + "://" + bridge.getHost();
         getOnBackPressedDispatcher().addCallback(this, pageBack);
+        // Back on the connect screen opened to choose another way goes back to the PC it was opened from
+        if (host == null && PCStore.choosing) getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                backToCurrent();
+            }
+        });
         if (host == null) {
             bridge.setWebViewClient(
                 new BridgeWebViewClient(bridge) {
@@ -922,6 +930,18 @@ public class MainActivity extends BridgeActivity {
 
     void changePc() {
         PCStore.setCurrent(this, null);
+        reopen();
+    }
+
+    /** The connect screen, the current PC kept until another opens (PCStore.choosing). */
+    void chooseAnother() {
+        PCStore.choosing = true;
+        reopen();
+    }
+
+    /** Back from choosing another way: the current PC again. */
+    void backToCurrent() {
+        PCStore.choosing = false;
         reopen();
     }
 

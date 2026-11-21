@@ -46,6 +46,7 @@ pre.command[hidden] { display: none; }
 a { color: var(--primary); }
 
 /* the app's own screen (index.html): Connect a PC, its tabs one at a time (connect.js pick) */
+.bar-back { margin-left: auto; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: .4rem .75rem; font-size: .9rem; font-weight: 600; }
 .bar { display: flex; align-items: center; gap: .6rem; max-width: 32rem; margin: 0 auto; padding: calc(env(safe-area-inset-top) + .75rem) 1.25rem .75rem; color: var(--strong); font-size: 1.15rem; font-weight: 700; border-bottom: 1px solid var(--border); }
 main.first { display: flex; flex-direction: column; padding-top: 1.5rem; }
 main.first h1.step { margin: 0 0 1rem; font-size: 1.4rem; }

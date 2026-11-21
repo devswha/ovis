@@ -580,7 +580,7 @@ const BASE: Record<string, string> = {
   "Ready": "준비됨",
   "Offline": "오프라인",
   "Open": "열기",
-  "Add a PC": "PC 추가",
+  "Connect a PC": "PC 연결",
   "All": "전체",
   "Search": "검색",
   "Choose one from the list to open its chat here.": "목록에서 하나를 고르면 채팅이 여기에 열립니다.",

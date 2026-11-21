@@ -933,7 +933,7 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
         assert.equal(response?.headers()["content-security-policy"], shellContentSecurityPolicy(Object.values(REGIONAL_APPS)), "the front page carries the shell policy");
         assert.equal(await page.evaluate(() => document.documentElement.dataset["theme"]), theme);
         await state(page, "empty").waitFor();
-        await page.getByRole("heading", { name: "Add a PC" }).waitFor();
+        await page.getByRole("heading", { name: "Connect a PC" }).waitFor();
         assert.equal(await page.getByRole("button", { name: "Back" }).count(), 0, "the front page offers no Back");
         assert.deepEqual(await page.locator("main button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("data-action"))), ["add-qr", "add-address"], "the front page offers Add a PC's ways, SSH only in the phone app");
         await shot(page, `empty-${device}-${theme}`);

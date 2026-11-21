@@ -227,7 +227,7 @@ export function RelayAddPc({ onBack, devices, qr }: {
       {step === "ways" ? (
         <>
           <SheepMascot screen="header" size={56} badge />
-          <h1 className="relay-add-title" ref={title} tabIndex={-1}>{t("Add a PC|screen")}</h1>
+          <h1 className="relay-add-title" ref={title} tabIndex={-1}>{t("Connect a PC")}</h1>
           <div className="relay-add-ways">
             <Way icon={QrCode} title={t("Scan a QR code")} sub={t("The QR on the PC's screen")} action="add-qr" onClick={scan} />
             <Way icon={Globe} title={t("Enter an address")} sub="Tailscale · Wi-Fi" action="add-address" onClick={() => go("address")} />
