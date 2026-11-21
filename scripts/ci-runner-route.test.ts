@@ -472,7 +472,7 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
         expect(rust({ ...env, RUST_LABELS: '["self-hosted","self-hosted-ovis-rust"]' })).toBe("ubuntu-24.04");
       }
       expect(rust({ ...pr, RUST_LABELS: ' "ubuntu-24.04"\n' })).toBe("ubuntu-24.04");
-      for (const value of ['["self-hosted","self-hosted-ovis-rust"]', '["self-hosted","other"]', '["other"]', "[]", '["self-hosted",', '"ubuntu -24.04"', '"ubuntu-24.04 "', "ubuntu-24.04"]) {
+      for (const value of ['["self-hosted","self-hosted-ovis-rust"]', '["self-hosted","other"]', '["other"]', "[]", '["self-hosted",', '"ubuntu -24.04"', '"ubuntu-24.04 "', "ubuntu-24.04", '"ubuntu-24.04" garbage', '"ubuntu-24.04" "ubuntu-24.04"']) {
         const result = route({ ...pr, RUST_LABELS: value, FAKE_GH: actions({}) });
         expect(result.status).toBe(1);
         expect(result.stdout).toBe("");

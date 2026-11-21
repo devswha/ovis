@@ -184,7 +184,8 @@ route_rust() {
     echo "Rust PTY host: ubuntu-24.04 ($event)" >&2
     echo "rust=$hosted"
   elif [[ -n "${configured_rust//[[:space:]]/}" ]]; then
-    if [[ "$(jq -c . <<<"$configured_rust" 2>/dev/null)" != "$hosted" ]]; then
+    local parsed
+    if ! parsed=$(jq -c . <<<"$configured_rust" 2>/dev/null) || [[ "$parsed" != "$hosted" ]]; then
       echo "::error::repository variable CI_RUST_LABELS may only be \"ubuntu-24.04\" (or unset), got: $configured_rust" >&2
       exit 1
     fi
