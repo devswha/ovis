@@ -72,7 +72,10 @@ export interface FakePc { server_id: string; label: string; public_key: string; 
   /** listed by a device code while Step 2 was on: until confirmed or admitted it leaves the account never used (account#62) */
   pending_under_step2?: boolean;
   /** the sign-in (family) that wrote the listing, as the service's `listed_by_session` (account#63): upkeep never rewrites it */
-  listed_by_session?: string }
+  listed_by_session?: string;
+  /** the PC completed its add (the service's `completed_at`), and a device was admitted to it by its digits (`digit_admitted`) */
+  completed_at?: string | null;
+  digit_admitted?: boolean }
 /** How long a PC added in one press stays new to the account's other devices. */
 export const PC_NEW_MS = 24 * 60 * 60_000;
 /** One-press PC adds one account may make per rolling day; past it 429 `pc_add_cap`. */
@@ -573,7 +576,7 @@ export class FakeAccountService {
       const unconfirmed = new URL(request.url).searchParams.get("include") === "unconfirmed";
       // null while step 2 is off for the account, and once passed
       const keyAt = this.keyRegisteredAt.get(session.family);
-      return json({ pcs: [...directory.values()].filter((entry) => unconfirmed || !this.opensAll || entry.listed_by_device !== true).map(({ exempt, listed_by_device, pending_under_step2: _pending, listed_by_session: _lister, ...entry }) => ({
+      return json({ pcs: [...directory.values()].filter((entry) => unconfirmed || !this.opensAll || entry.listed_by_device !== true).map(({ exempt, listed_by_device, pending_under_step2: _pending, listed_by_session: _lister, digit_admitted: _digits, ...entry }) => ({
         ...entry,
         unconfirmed: this.opensAll && listed_by_device === true,
         new_until: this.opensAll && entry.new_until != null && Date.parse(entry.new_until) > this.now() ? entry.new_until : null,
@@ -660,7 +663,7 @@ export class FakeAccountService {
       directory.set(pc, entry);
       if (proven) this.pcLeaves.delete(box(pc, account));
       if (fresh || confirming) this.ring(account, session.family);
-      const { exempt: _exempt, listed_by_device, pending_under_step2: _pending, listed_by_session: _lister, ...shown } = entry;
+      const { exempt: _exempt, listed_by_device, pending_under_step2: _pending, listed_by_session: _lister, digit_admitted: _digits, ...shown } = entry;
       return json({ pc: { ...shown, unconfirmed: this.opensAll && listed_by_device === true } });
     }
     if (pc !== undefined && request.method === "DELETE") {
@@ -669,7 +672,9 @@ export class FakeAccountService {
       // or admitted), as an installed CLI renews its card; that listing was never a member, so it leaves the account unused
       if (this.deviceFamilies.has(session.family)) {
         const own = directory.get(pc);
-        if (own === undefined || own.listed_by_session !== session.family || own.listed_by_device !== true || own.admitted_at != null) {
+        // as the service: written by this sign-in, never confirmed, admitted (one press or digits) or completed
+        if (own === undefined || own.listed_by_session !== session.family || own.listed_by_device !== true || own.admitted_at != null
+          || own.completed_at != null || own.digit_admitted === true) {
           return problem(403, "own_sign_in_required", "Sign in on this device to remove a PC");
         }
         directory.delete(pc);

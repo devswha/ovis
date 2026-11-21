@@ -35,6 +35,24 @@ async function pull(service: FakeAccountService, machine: ReturnType<typeof pc>,
 }
 
 describe("the fake account service", () => {
+  test("PCR-1 compat: a device code's own listing that completed or was digit-admitted is not its to end", async () => {
+    const service = new FakeAccountService();
+    const cli = service.issueToken("acct_1", { device: true });
+    const put = (machine: ReturnType<typeof pc>) => service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, {
+      method: "PUT", body: JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.test" }), headers: { "content-type": "application/json", authorization: `Bearer ${cli}` },
+    }));
+    const remove = async (machine: ReturnType<typeof pc>) => {
+      const answer = await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "DELETE", headers: { authorization: `Bearer ${cli}` } }));
+      return answer.status === 204 ? 204 : `${answer.status} ${((await answer.json()) as { error?: { code?: string } }).error?.code}`;
+    };
+    for (const after of [{ completed_at: new Date().toISOString() }, { digit_admitted: true }] as Partial<FakePc>[]) {
+      const machine = pc();
+      expect((await put(machine)).status).toBe(200);
+      Object.assign(service.pcs("acct_1").find((entry) => entry.server_id === machine.serverId)!, after);
+      expect(await remove(machine)).toBe("403 own_sign_in_required");
+    }
+  });
+
   test("PCR-1 compat: a device code's sign-in ends only its own pending listing, logging nothing; everything else is 403", async () => {
     const service = new FakeAccountService();
     const put = (token: string, machine: ReturnType<typeof pc>) => service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, {
