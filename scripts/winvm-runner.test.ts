@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // scripts/self-hosted-runner/winvm-runner.sh --once against fake winvm, ssh, scp, gh and sleep: what it resets, when it
-// offers winvm to the route (CI_WINVM_READY) and what it leaves to the next user of the VM.
+// offers winvm to the route (CI_WINVM_READY), which jobs it serves before it stops and what it leaves to the next user.
 const script = fileURLToPath(new URL("./self-hosted-runner/winvm-runner.sh", import.meta.url));
 const created: string[] = [];
 afterAll(() => {
@@ -17,43 +17,62 @@ const fakes: Record<string, string> = {
   winvm: `#!/bin/bash
 echo "winvm $*" >> "$FAKE/calls"
 case "$1" in
-  status) cat "$FAKE/state"; if [ -f "$FAKE/lease" ]; then echo "lease: $(cat "$FAKE/lease")"; else echo "lease: free"; fi ;;
+  status) [ -f "$FAKE/status-fails-after-job" ] && [ -s "$FAKE/rounds" ] && exit 1
+          cat "$FAKE/state"; if [ -f "$FAKE/lease" ]; then echo "lease: $(cat "$FAKE/lease")"; else echo "lease: free"; fi ;;
   lease) if [ -f "$FAKE/lease" ] && [ "$(cut -d' ' -f1 "$FAKE/lease")" != "$2" ]; then echo "winvm: busy, leased by $(cat "$FAKE/lease")"; exit 1; fi
          echo "$2 2026-11-21T00:00:00+09:00" > "$FAKE/lease"; echo "winvm: leased to $2" ;;
-  release) rm -f "$FAKE/lease" ;;
-  reset|start) [ -f "$FAKE/reset-fails" ] && exit 1; [ "$1" = start ] && echo running > "$FAKE/state"; true ;;
+  release) [ -f "$FAKE/release-fails" ] && exit 1; rm -f "$FAKE/lease" ;;
+  reset) echo x >> "$FAKE/resets"; [ -f "$FAKE/reset-fails-after-job" ] && [ -s "$FAKE/rounds" ] && exit 1
+         echo "services 1" > "$FAKE/services"; true ;;
+  start) echo running > "$FAKE/state" ;;
 esac
 `,
+  // the VM: a fence stops the other runner services that are not in a job; Invoke-InSession runs one job a round, and from
+  // the second round on serves one of the jobs queued for the label
   ssh: `#!/bin/bash
 cmd="\${@: -1}"
 case "$cmd" in
+  *EncodedCommand*) [ -f "$FAKE/unreachable" ] && exit 255
+    [ -f "$FAKE/fence-lies" ] && { echo "FENCE 0 0"; exit 255; }
+    w=$(cat "$FAKE/workers"); [ -f "$FAKE/workers-after-job" ] && [ -s "$FAKE/rounds" ] && w=1
+    s=$(cut -d' ' -f2 "$FAKE/services")
+    if [ "$w" = 0 ] && [ "$s" != 0 ]; then echo "Stopped actions.runner.other"; echo "services 0" > "$FAKE/services"; s=0; fi
+    echo "fence $s $w" >> "$FAKE/calls"; echo "FENCE $s $w" ;;
   *"Get-Process Runner.Worker"*) [ -f "$FAKE/unreachable" ] && exit 255; cat "$FAKE/workers" ;;
   *"Get-Process explorer"*) echo UP ;;
   *"ReadLine"*) cat > "$FAKE/token" ;;
-  *Invoke-InSession*) echo "ssh $cmd" >> "$FAKE/calls"; echo "rounds" >> "$FAKE/rounds"
+  *Invoke-InSession*) echo "ssh $cmd" >> "$FAKE/calls"
+    if [ -s "$FAKE/rounds" ]; then n=$(cat "$FAKE/queued" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && echo $((n - 1)) > "$FAKE/queued"; fi
+    echo round >> "$FAKE/rounds"
     echo "Current runner version: '9.9.9'"; echo "2026-11-21 00:00:00Z: Listening for Jobs"
     echo "2026-11-21 00:00:05Z: Running job: Native Windows install"; echo "Job Native Windows install completed with result: Succeeded" ;;
   *) true ;;
 esac
 `,
   scp: "#!/bin/sh\nexit 0\n",
-  sleep: "#!/bin/sh\nexit 0\n",
+  sleep: '#!/bin/sh\necho "$1" >> "$FAKE/sleeps"\n',
+  // a late job is queued only once the launcher has waited out the routes that read its last offer
   gh: `#!/bin/bash
 echo "gh $*" >> "$FAKE/calls"
 case "$*" in
   "variable set"*) echo "mark \${@: -1}" >> "$FAKE/marks" ;;
-  *releases/latest*) echo v9.9.9 ;;
+  *releases/latest*) [ -f "$FAKE/package-fails" ] && exit 1; echo v9.9.9 ;;
   *registration-token*) echo SECRET-TOKEN ;;
   *"-X DELETE"*) echo deleted >> "$FAKE/deleted" ;;
   *actions/runners*) echo 42 ;;
-  *"runs?status=queued"*) n=$(cat "$FAKE/queued" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && echo 7; true ;;
-  *runs/7/jobs*) n=$(cat "$FAKE/queued"); echo "$n"; echo $((n - 1)) > "$FAKE/queued" ;;
+  *"runs?status=queued"*)
+    if [ -f "$FAKE/queue-fails-once" ]; then rm "$FAKE/queue-fails-once"; exit 1; fi
+    if [ -f "$FAKE/late-job" ] && awk '$1 >= 300 { found = 1 } END { exit !found }' "$FAKE/sleeps"; then rm "$FAKE/late-job"; echo 1 > "$FAKE/queued"; fi
+    echo 7 ;;
+  *runs/7/jobs*) cat "$FAKE/queued" 2>/dev/null || echo 0 ;;
   *) true ;;
 esac
 `,
 };
 
-function setup(state: { workers?: string; unreachable?: boolean; resetFails?: boolean; queued?: number; lease?: string } = {}) {
+type State = { workers?: number; services?: number; queued?: number; lease?: string; flags?: readonly string[] };
+
+function setup(state: State = {}) {
   const dir = mkdtempSync(join(tmpdir(), "winvm-runner-"));
   created.push(dir);
   const bin = join(dir, "bin");
@@ -66,11 +85,11 @@ function setup(state: { workers?: string; unreachable?: boolean; resetFails?: bo
   }
   writeFileSync(join(cache, "winvm-runner", "actions-runner-win-x64-9.9.9.zip"), "zip");
   writeFileSync(join(fake, "state"), "running\n");
-  writeFileSync(join(fake, "workers"), `${state.workers ?? "0"}\n`);
-  for (const file of ["calls", "marks", "rounds", "deleted"]) writeFileSync(join(fake, file), "");
-  if (state.unreachable) writeFileSync(join(fake, "unreachable"), "");
-  if (state.resetFails) writeFileSync(join(fake, "reset-fails"), "");
-  if (state.queued) writeFileSync(join(fake, "queued"), String(state.queued));
+  writeFileSync(join(fake, "workers"), `${state.workers ?? 0}\n`);
+  writeFileSync(join(fake, "services"), `services ${state.services ?? 0}\n`);
+  writeFileSync(join(fake, "queued"), `${state.queued ?? 0}\n`);
+  for (const file of ["calls", "marks", "rounds", "deleted", "resets", "sleeps"]) writeFileSync(join(fake, file), "");
+  for (const flag of state.flags ?? []) writeFileSync(join(fake, flag), "");
   if (state.lease) writeFileSync(join(fake, "lease"), `${state.lease} 2026-11-21T00:00:00+09:00\n`);
   const env = { PATH: `${bin}:${process.env.PATH ?? ""}`, FAKE: fake, XDG_CACHE_HOME: cache, HOME: dir };
   const lines = (file: string): string[] => readFileSync(join(fake, file), "utf8").split("\n").filter(Boolean);
@@ -79,23 +98,34 @@ function setup(state: { workers?: string; unreachable?: boolean; resetFails?: bo
     expect(result.error).toBeUndefined();
     return result;
   };
-  return { run, env, lines, lockFile: join(cache, "winvm-runner", "launcher.lock"), leaseHeld: () => existsSync(join(fake, "lease")) };
+  const vmCalls = (): string[] => lines("calls").filter((call) => /^(winvm (reset|start|release)|fence )/.test(call));
+  return { run, env, lines, vmCalls, lockFile: join(cache, "winvm-runner", "launcher.lock"), leaseHeld: () => existsSync(join(fake, "lease")) };
 }
 
-const vmCalls = (calls: string[]): string[] => calls.filter((call) => /^winvm (reset|start|release)/.test(call));
-
 describe.skipIf(process.platform === "win32")("winvm-runner.sh", () => {
-  it("resets winvm before the job and after it, offers it only while its runner listens, and frees it", () => {
-    const { run, lines, leaseHeld } = setup();
+  it("fences and resets winvm before the job and after it, offers it only while its runner listens, and frees it", () => {
+    const { run, lines, vmCalls, leaseHeld } = setup({ services: 1 });
     const result = run();
     expect(result.status).toBe(0);
-    expect(vmCalls(lines("calls"))).toEqual(["winvm reset", "winvm start", "winvm reset", "winvm start", "winvm release"]);
+    // the snapshot's other runner service is stopped before each reset, which brings it back
+    expect(vmCalls()).toEqual(["fence 0 0", "winvm reset", "winvm start", "fence 0 0", "winvm reset", "winvm start", "winvm release"]);
     const marks = lines("marks").map((line) => line.slice("mark ".length));
-    expect(marks.some((mark) => /^[1-9]\d{9}$/.test(mark))).toBe(true);
+    const offered = marks.findIndex((mark) => /^[1-9]\d{9}$/.test(mark));
+    expect(offered).toBeGreaterThanOrEqual(0);
+    expect(marks.indexOf("0", offered)).toBeGreaterThan(offered);
     expect(marks.at(-1)).toBe("0");
-    expect(marks.indexOf("0", marks.findIndex((mark) => mark !== "0"))).toBeGreaterThan(0);
     expect(lines("deleted")).toEqual(["deleted"]);
     expect(leaseHeld()).toBe(false);
+  });
+
+  it("waits out the routes that read its last offer before it reads the queue and stops", () => {
+    const { run, lines } = setup();
+    expect(run().status).toBe(0);
+    const sleeps = lines("sleeps").map(Number);
+    expect(sleeps.some((seconds) => seconds >= 300)).toBe(true);
+    const calls = lines("calls");
+    const lastRound = calls.map((call) => call.includes("Invoke-InSession")).lastIndexOf(true);
+    expect(calls.findIndex((call) => call.includes("runs?status=queued"))).toBeGreaterThan(lastRound);
   });
 
   it("hands the registration token over stdin, never in a command line", () => {
@@ -105,40 +135,96 @@ describe.skipIf(process.platform === "win32")("winvm-runner.sh", () => {
     expect(lines("calls").filter((call) => call.includes("SECRET-TOKEN"))).toEqual([]);
   });
 
-  // each walks the hour of waiting for an answer (sleep is a no-op), then the cleanup's ten minutes
-  for (const [why, state] of [["the VM does not answer", { unreachable: true }], ["another runner in it is in a job", { workers: "1" }]] as const) {
-    it(`resets nothing while ${why}, keeps the lease and fails`, () => {
+  // each walks the hour of fencing (sleep is a no-op); the VM was never touched, so the lease goes back as it was
+  for (const [why, state] of [
+    ["the VM does not answer", { flags: ["unreachable"] }],
+    ["a fence answers 0 0 but its ssh failed", { flags: ["fence-lies"] }],
+    ["another runner in it stays in a job", { workers: 1, services: 1 }],
+  ] as const) {
+    it(`resets nothing and fails while ${why}`, () => {
       const { run, lines, leaseHeld } = setup(state);
       const result = run();
       expect(result.status).toBe(1);
-      expect(vmCalls(lines("calls"))).toEqual([]);
+      expect(lines("resets")).toEqual([]);
       expect(lines("rounds")).toEqual([]);
-      expect(leaseHeld()).toBe(true);
-      expect(result.stdout).toContain("winvm was not reset; the lease stays with ci-winvm-runner");
+      expect(leaseHeld()).toBe(false);
+      expect(result.stdout).toContain("winvm was not shown free of jobs; not resetting it");
     }, 15_000);
   }
 
-  it("keeps the lease and fails when the reset after the job fails", () => {
-    const { run, lines, leaseHeld } = setup({ resetFails: true });
+  it("keeps the lease and fails when after the job another runner stays in one", () => {
+    const { run, lines, leaseHeld } = setup({ flags: ["workers-after-job"] });
     const result = run();
     expect(result.status).toBe(1);
+    expect(lines("rounds")).toHaveLength(1);
+    expect(lines("resets")).toHaveLength(1);
+    expect(leaseHeld()).toBe(true);
+    expect(result.stdout).toContain("winvm was not reset; the lease stays with ci-winvm-runner");
+  }, 15_000);
+
+  it("keeps the lease and fails when the reset after the job fails", () => {
+    const { run, lines, leaseHeld } = setup({ flags: ["reset-fails-after-job"] });
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(lines("rounds")).toHaveLength(1);
+    expect(lines("resets")).toHaveLength(2);
     expect(lines("calls")).not.toContain("winvm release");
     expect(leaseHeld()).toBe(true);
   });
 
-  it("takes no job and touches nothing while a lane holds the lease", () => {
-    const { run, lines } = setup({ lease: "some-lane" });
+  it("keeps the lease and fails when winvm status fails after the job, or the release fails", () => {
+    const status = setup({ flags: ["status-fails-after-job"] });
+    const stopped = status.run();
+    expect(stopped.status).toBe(1);
+    expect(status.lines("resets")).toHaveLength(1);
+    expect(status.leaseHeld()).toBe(true);
+    expect(stopped.stdout).toContain("winvm was not reset; the lease stays with ci-winvm-runner");
+    const release = setup({ flags: ["release-fails"] });
+    const result = release.run();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("winvm release failed");
+  });
+
+  it("neither resets nor keeps a VM it never touched, and fails when its round failed", () => {
+    const { run, lines, leaseHeld } = setup({ flags: ["package-fails"] });
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(lines("resets")).toEqual([]);
+    expect(lines("rounds")).toEqual([]);
+    expect(lines("calls")).toContain("winvm release");
+    expect(leaseHeld()).toBe(false);
+  });
+
+  it("takes no job and neither resets nor releases a VM a lane holds", () => {
+    const { run, lines, leaseHeld } = setup({ lease: "some-lane" });
     const result = run();
     expect(result.status).toBe(0);
-    expect(vmCalls(lines("calls"))).toEqual([]);
+    expect(lines("resets")).toEqual([]);
     expect(lines("rounds")).toEqual([]);
+    expect(lines("calls")).not.toContain("winvm release");
+    expect(leaseHeld()).toBe(true);
     expect(result.stdout).toContain("winvm: busy, leased by some-lane");
   });
 
-  it("serves a job still queued for its label before it stops", () => {
-    const { run, lines } = setup({ queued: 1 });
-    expect(run().status).toBe(0);
-    expect(lines("rounds")).toHaveLength(2);
+  for (const [why, state] of [
+    ["was queued for its label", { queued: 1 }],
+    ["is queued only after its route's Detect changes ends", { flags: ["late-job"] }],
+    ["is queued while the first queue read fails", { queued: 1, flags: ["queue-fails-once"] }],
+  ] as const) {
+    it(`serves a job that ${why} before it stops`, () => {
+      const { run, lines, env } = setup(state);
+      expect(run().status).toBe(0);
+      expect(lines("rounds")).toHaveLength(2);
+      expect(readFileSync(join(env.FAKE, "queued"), "utf8").trim()).toBe("0");
+    });
+  }
+
+  it("fails, saying what to do, when jobs still wait after three more rounds", () => {
+    const { run, lines } = setup({ queued: 9 });
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(lines("rounds")).toHaveLength(4);
+    expect(result.stdout).toContain("cancel it and re-run all jobs of its run");
   });
 
   it("refuses to run beside another copy", async () => {

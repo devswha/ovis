@@ -681,12 +681,14 @@ unit runs):
 
 1. It takes the winvm lease (`ci-winvm-runner`) and keeps it while it runs. A lane holding the VM
    keeps the runner off; a lane that wants the VM stops the unit, which frees it (step 5).
-2. Only once a query of the VM answers that no runner there (other repositories' runners are kept
-   in its snapshot) is in a job does it `winvm reset` and `winvm start` (about 2 minutes): every
-   job starts from the snapshot. A VM that does not answer, or a job still running after an
-   hour, is never reset: the round gives up and tries again later.
-3. It copies the newest `actions/runner` package (cached on the PC) and `winvm-runner.ps1` and
-   `winvm-job-started.ps1` into `C:\ProgramData\winvm\ovis-runner`, hands a registration token
+2. It fences the VM: `winvm-fence.ps1`, sent over ssh, stops each other repository's runner
+   service kept in the snapshot as soon as it is not in a job, and answers `FENCE <services left>
+   <their workers>`. Only on `FENCE 0 0` from a successful ssh, when no such runner can take a job
+   or is in one, does it `winvm reset` and `winvm start` (about 2 minutes, which starts those
+   services again): every job starts from the snapshot. A VM that does not answer, or a job still
+   running after an hour, is never reset: the round gives up and tries again later.
+3. It copies the newest `actions/runner` package (cached on the PC), `winvm-runner.ps1`,
+   `winvm-job-started.ps1` and `winvm-fence.ps1` into `C:\ProgramData\winvm\ovis-runner`, hands a registration token
    over ssh's stdin to a file the VM script reads and deletes (it reaches `config.cmd` in
    `ACTIONS_RUNNER_INPUT_TOKEN`, which the runner reads and clears, never in a command line), and
    starts `winvm-runner.ps1` in
@@ -699,26 +701,33 @@ unit runs):
    minutes old and no job of winvm's label is queued or running (the Actions jobs API, which the
    route reads for the Linux jobs too), and `windows-latest` otherwise, so the check runs, under
    its name, on every code pull request whether winvm is up, busy or leased. Two routes that read
-   the API within the same few seconds can still both pick winvm; a job left queued for its label
-   after a round gets another round, also when the launcher stops (step 5).
+   the API before the first one's Windows job exists can both pick winvm; the second job gets
+   the next round, also when the launcher stops (step 5).
 5. An idle runner is recycled after 100 minutes (`Invoke-InSession` ends its task after two
    hours). A stop waits for a job in progress. For an idle runner it clears the mark, waits 5.5
    minutes for a job a route sent just before (Detect changes, which routes, ends within five),
    then deletes the registration, which GitHub refuses while the runner is in a job, and ends the
-   VM's listener. Up to three more rounds serve jobs still queued for the label. Then it resets
-   and starts the VM and releases the lease. When the VM cannot be shown free of jobs within 10
-   minutes, or the reset fails, it keeps the lease and exits nonzero (`winvm status` shows
-   `ci-winvm-runner`): `winvm reset && winvm start && winvm release` once no job runs there.
+   VM's listener. Before it ends, the launcher waits until 5.5 minutes have passed since winvm
+   was last offered, so every route that read that offer has queued its job, then reads the
+   queue (three tries). A job queued for the label, or a queue it cannot read, gets another round,
+   three at most; after that it exits nonzero and says to cancel and re-run that run. Then, if a
+   round touched the VM, it fences, resets and starts it, and releases the lease. Ownership is the
+   run's own record, not a read of `winvm status`. When the VM cannot be fenced within 10 minutes,
+   the reset fails or the release fails, it keeps what it holds and exits nonzero (`winvm status`
+   shows `ci-winvm-runner`): `winvm reset && winvm start && winvm release` once no job runs there.
+   `--once` also exits nonzero when its round failed.
 
 `winvm-job-started.ps1` is the runner's `ACTIONS_RUNNER_HOOK_JOB_STARTED`: the Windows
 counterpart of `job-started.sh`, with the same verdict on the event payload (a fork's code is
 refused). Any error before the verdict refuses too. A refusal ends the job's `Runner.Worker`, the
 nearest ancestor of that name that started before the hook; while none is found or the kill
 fails, the hook kills nothing and blocks, trying again every 5 seconds, so no further step of
-the job runs. A job it allows then stops the VM's other runner services that are idle, so no
-other repository's job starts beside it (the next reset starts them again), and waits up to
-three minutes for one already in a job; after that the job fails and says to re-run all jobs
-of the run, whose new route takes `windows-latest`.
+the job runs. A job it allows then runs `winvm-fence.ps1` until it answers `FENCE 0 0`: every
+other runner service is stopped, one in a job as soon as that job ends, so none takes a job
+beside ours (the next reset starts them again). After three minutes without that the job fails
+and says to re-run all jobs of the run, whose new route takes `windows-latest`. The fence reads
+the workers, then stops the services without one: a service that takes a job in the
+milliseconds between the two is stopped with that job.
 
 Install on the PC (`winvm` on PATH, `gh` logged in as a repository admin):
 
@@ -731,8 +740,8 @@ ExecStart=%h/workspace/ovis/scripts/self-hosted-runner/winvm-runner.sh
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # the launcher alone gets the stop: it drains the runner, then resets and releases the VM
 KillMode=mixed
-# a drain (5.5 min), a job (10), the queued-job rounds, another repository's job (10), a reset (2)
-TimeoutStopSec=45min
+# the drain (5.5 min), a job (10), three more rounds (about 17 each), the fence (10) and a reset (2)
+TimeoutStopSec=90min
 Restart=on-failure
 [Install]
 WantedBy=default.target

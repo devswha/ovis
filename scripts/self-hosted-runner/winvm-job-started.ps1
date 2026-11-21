@@ -8,11 +8,10 @@
 # before this hook. While that worker is not found, the hook kills nothing and blocks, trying again every 5 s, so no
 # other step starts.
 #
-# An allowed job then has the VM to itself: the VM's other runner services (other repositories' runners kept in the
-# snapshot) are stopped while idle, and a job one of them already runs is waited for, three minutes at most; the reset
-# after this job starts them again.
+# An allowed job then has the VM to itself: winvm-fence.ps1 stops the VM's other runner services (other repositories'
+# runners kept in the snapshot), each as soon as it is not in a job, for up to three minutes; the reset after this job
+# starts them again.
 $ErrorActionPreference = 'Stop'
-$own = 'C:\actions-runners\ovis-win\*'
 
 function Find-Worker {
     $me = Get-CimInstance Win32_Process -Filter "ProcessId = $PID"
@@ -63,20 +62,17 @@ try {
 }
 Write-Output "Runner guard: $eventName from $repository"
 
-$foreign = { @(Get-Process -Name Runner.Worker -ErrorAction SilentlyContinue | Where-Object { $_.Path -notlike $own }) }
-$busy = @(& $foreign | ForEach-Object { Split-Path (Split-Path $_.Path) })
-Get-CimInstance Win32_Service -Filter "Name LIKE 'actions.runner.%' AND State = 'Running'" | ForEach-Object {
-    if ($busy -notcontains (Split-Path (Split-Path $_.PathName.Trim('"')))) {
-        Stop-Service -Name $_.Name
-        Write-Output "Stopped $($_.Name) for this job"
-    }
-}
+# a service in a job now is stopped as soon as that job ends, before it can take another
 $deadline = (Get-Date).AddMinutes(3)
-while ((& $foreign).Count -gt 0) {
+while ($true) {
+    $out = @(& (Join-Path $PSScriptRoot 'winvm-fence.ps1'))
+    $out | Select-Object -SkipLast 1 | Write-Output
+    $fence = $out[-1]
+    if ($fence -eq 'FENCE 0 0') { break }
     if ((Get-Date) -gt $deadline) {
-        Write-Output "::error::Another repository's runner in winvm is still in a job after 3 minutes. Re-run all jobs of this run: winvm is not offered while it is busy, so the new route takes windows-latest (re-running this job alone keeps winvm's label)."
+        Write-Output "::error::Another repository's runner in winvm is still in a job after 3 minutes ($fence). Re-run all jobs of this run: winvm is not offered while it is busy, so the new route takes windows-latest (re-running this job alone keeps winvm's label)."
         exit 1
     }
-    Write-Output "Another repository's runner in winvm is in a job; waiting for it"
+    Write-Output "Another repository's runner in winvm is in a job ($fence); waiting for it"
     Start-Sleep -Seconds 15
 }
