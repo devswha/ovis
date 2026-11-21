@@ -38,6 +38,10 @@ local API names as its foreground session, through foreground switches. It reads
 when the listener is bound to loopback and belongs to the pane's own process. It sends only
 `connect` and `session.getForeground`. Ovis never adds `--ui-server` to a launch.
 
+This API reader requires UI-server protocol 4 (verified with the Copilot CLI 1.0.114-0
+distribution). Panes started with `--ui-server` on protocol 3 or an unknown version use
+Terminal instead. To use Chat's API reader, start a pane with a CLI that speaks protocol 4.
+
 That API has no authentication. With Copilot CLI 1.0.105, any program that can reach its
 loopback port can control the session, including creating new sessions, and setting
 `COPILOT_CONNECTION_TOKEN` did not change this. Other users on the same PC may be able to reach
