@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:
 import { createElement } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
+import { pairingPc } from "../../server/account/pairing.test-helpers.ts";
+import { handleRelayRequest } from "../../server/relay/routes.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
@@ -51,6 +53,8 @@ describe("AddThisPc", () => {
   let tab: Map<string, string>;
   let restore: (() => void)[];
   let puts: string[];
+  let relayRequest: ((path: string, init?: RequestInit) => Promise<Response>) | null;
+  const loopbackFetch = globalThis.fetch;
   let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null; close: Promise<void> | null; press: Promise<void> | null };
   /** the account service; `bound` is the account of the one sign-in it acts for (forSignIn), which refuses once another is stored */
   const service = (bound?: string): AccountService => {
@@ -79,6 +83,7 @@ describe("AddThisPc", () => {
     asked = [];
     directory = [];
     puts = [];
+    relayRequest = null;
     held = { listPcs: null, putPc: null, session: null, link: null, start: null, close: null, press: null };
     tab = new Map();
     page = { hidden: false, events: new EventTarget() };
@@ -100,13 +105,16 @@ describe("AddThisPc", () => {
     };
     for (const name of globals) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: values[name] });
     const answer = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const path = new URL(String(input instanceof Request ? input.url : input), "http://localhost").pathname;
+      const url = new URL(String(input instanceof Request ? input.url : input), "http://localhost");
+      if (url.hostname === "127.0.0.1" && url.port !== "") return loopbackFetch(input, init);
+      const path = url.pathname;
       asked.push({ path, localOnly: new Headers(init?.headers).get("x-ovis-local-only") === "1" });
       if (pc.hang === path) { pc.hang = null; return new Promise<Response>(() => {}); }
       if (path === "/api/account/status" && pc.via === "open") return Response.json({ error: { code: "owner_only", message: "Manage the account from this PC itself, or from a paired device." } }, { status: 403 });
       if (path === "/api/relay/link") await held.link;
       if (path === "/api/relay/start") await held.start;
       if (path === "/api/relay/link/close") await held.close;
+      if (relayRequest !== null && (path === "/api/relay/link" || path === "/api/relay/link/close")) return relayRequest(path, init);
       if (path === "/api/account/status" && pc.statusDown) return Response.json({ error: { code: "internal", message: "restarting" } }, { status: 503 });
       if (path === "/api/account/status") return Response.json({ account: pc.account, unlinked: [], removals: [], adds: [], blocked: [], enrolling: pc.enrolling });
       if (path === "/api/relay/start" && pc.start === "broken") return Response.json({ error: { code: "internal", message: "broken" } }, { status: 500 });
@@ -184,6 +192,23 @@ describe("AddThisPc", () => {
     await press(renderer, "Add this PC to my account");
     return renderer;
   };
+
+  async function realRelay() {
+    const fixture = await pairingPc();
+    const { context } = fixture.app;
+    const base = `http://127.0.0.1:${fixture.app.port}`;
+    relayRequest = (path, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("origin", base);
+      return handleRelayRequest(new Request(base + path, { ...init, headers }), path, context, null, true, true);
+    };
+    pc.healthId = context.services.relay.currentIdentity()?.server_id ?? null;
+    return {
+      approvals: context.services.relay.approvals,
+      copyLink: () => fixture.local("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1" } }),
+      close: fixture.close,
+    };
+  }
 
   test("after the press it says what to do on any signed-in device, and keeps the wait for a reload", async () => {
     const renderer = await waitingFrom();
@@ -350,6 +375,45 @@ describe("AddThisPc", () => {
     expect(tab.has(MARKER)).toBe(false);
     expect(asked.filter(({ path }) => path === "/api/relay/link" || path === "/api/relay/link/close").map(({ path }) => path))
       .toEqual(["/api/relay/link", "/api/relay/link/close"]);
+  });
+
+  test("a retry that finds membership leaves an independently opened codeless window open", async () => {
+    const relay = await realRelay();
+    try {
+      const renderer = await mount();
+      const release = hold("listPcs");
+      await press(renderer, "Add this PC to my account");
+      expect(relay.approvals.windowOpen()).toBe(true);
+
+      pc.account = ACCOUNT;
+      expect((await relay.copyLink()).status).toBe(200);
+      release();
+      await settle();
+
+      expect(words(renderer)).toContain("This PC is in your account.");
+      expect(relay.approvals.windowOpen()).toBe(true);
+    } finally { await relay.close(); }
+  });
+
+  test("a periodic relist finding membership closes its window even when session storage is blocked", async () => {
+    const relay = await realRelay();
+    try {
+      Object.defineProperty(window, "sessionStorage", { configurable: true, get() { throw new Error("blocked"); } });
+      const renderer = await waitingFrom();
+      expect(buttons(renderer)).toEqual(["Stop waiting"]);
+      show(true);
+      const release = hold("listPcs");
+      await advance(RELIST_MS);
+      expect(links()).toBe(2);
+      expect(relay.approvals.windowOpen()).toBe(true);
+
+      pc.account = ACCOUNT;
+      release();
+      await settle();
+
+      expect(words(renderer)).toContain("This PC is in your account.");
+      expect(relay.approvals.windowOpen()).toBe(false);
+    } finally { await relay.close(); }
   });
 
   test("says by itself that the PC is in the account once a device added it, and then asks nothing more", async () => {
