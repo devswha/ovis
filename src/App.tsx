@@ -19,10 +19,11 @@ import { NewSessionDialog } from "./components/NewSessionDialog.tsx";
 import { SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
 import { useOtherDevice, useSetupGuide } from "./lib/useSetupGuide.ts";
 import { armHints, browserStorage, setupRowState } from "./lib/firstHints.ts";
-import { alertsHere, alertsSurfaces } from "./lib/setupGuideFlow.ts";
+import { alertsFailed, alertsHere, alertsSurfaces } from "./lib/setupGuideFlow.ts";
 import { pushSupported, registeredPushEndpoint } from "./lib/push.ts";
 import { confirmation } from "./lib/pushConfirm.ts";
 import { SetupProgressRow } from "./components/SetupProgressRow.tsx";
+import { askAddConnection } from "./lib/addConnectionRequest.ts";
 import { FirstStartHints } from "./components/FirstStartHints.tsx";
 import { SessionHistory } from "./components/SessionHistory.tsx";
 import { WorktreeRequestDialog } from "./components/WorktreeDialog.tsx";
@@ -355,7 +356,13 @@ export function App() {
   const alertsHealth = usePushHealth();
   const rowAlerts = alertsSurfaces(alertsHere({ alertsOn, notifications, desktop: desktopUpdateBridge() !== null, pushSupported: pushSupported(), pushOn, push: { checked: alertsHealth.checked, problem: alertsHealth.health.problem, delivered: alertsHealth.delivered }, confirmed: confirmation(registeredPushEndpoint()) })).row;
   const setupRow = rowOn && otherDevicePaired !== undefined && rowAlerts !== "wait"
-    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: rowAlerts === "done" }} />
+    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: rowAlerts === "done" }} actions={{
+      workspace: () => actions.openNewSession(),
+      // Add a connection on the Ovis relay tab, which needs no Tailscale; Tailscale only when picked there
+      phone: () => { askAddConnection("relay"); setSettingsLinkPage("devices"); setSettingsOpen(true); },
+      // the guide's alerts step's own call; a browser that refused says why in Settings → Alerts
+      alerts: () => { void enableNotifications().then((result) => { if (alertsFailed(result, desktopUpdateBridge() !== null)) { setSettingsLinkPage("alerts"); setSettingsOpen(true); } }); },
+    }} />
     : null;
   const inMode = inboxMode.on && !guideShown;
   inboxMode.drawerBlocked.current = inMode;

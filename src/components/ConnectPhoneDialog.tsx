@@ -12,6 +12,7 @@ import { pcAccountStatus, type PcAccountStatus } from "../lib/account/join.ts";
 import { listOfferedPc } from "../lib/account/addThisPc.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { AccountService } from "../lib/account/service.ts";
+import type { AddConnectionTab } from "../lib/addConnectionRequest.ts";
 import { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_POLL_MS, ACCOUNT_QR_WATCH_EVENT, accountQrFindings, accountQrNoticeWaiting, accountQrPending, addedBy, holdAccountQrNotice, resetAccountQrWatch, stopAccountQrWatch, takeAccountQrNotice, watchEndedAccountQr, type AccountQrBaseline, type AccountQrStray } from "../lib/accountQrWatch.ts";
 import { addAddressPc, ApiError, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, revokeDevice, startPairing, type RelayOffer, type SshCandidate } from "../lib/api.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
@@ -42,7 +43,7 @@ import { ExternalLink } from "../lib/externalLink.ts";
  * The ways to connect are the tabs (the relay, Tailscale, a typed address): each adds a PC its own way, and under that
  * shows the QR code a phone scans to connect that same way (PhoneScan).
  */
-export type ConnectTab = "relay" | "tailscale" | "direct";
+export type ConnectTab = AddConnectionTab;
 
 const TAILSCALE_DOWNLOAD = "https://tailscale.com/download";
 
@@ -95,7 +96,9 @@ export function connectTabs({ sshOffered, relay, readOnly }: { sshOffered: boole
  * relay tab is the relay's own pairing, so the window opens on the first way that adds a PC instead. Null with no tab:
  * the window then shows what a phone scans alone (a phone's page, the hosted shell, a device that only watches).
  */
-export function openingTab({ tabs, noticeWaiting, hasAccount }: { tabs: readonly ConnectTab[]; noticeWaiting: boolean; hasAccount: boolean }): ConnectTab | null {
+export function openingTab({ tabs, noticeWaiting, hasAccount, asked = null }: { tabs: readonly ConnectTab[]; noticeWaiting: boolean; hasAccount: boolean; asked?: ConnectTab | null }): ConnectTab | null {
+  // the setup checklist's Connect your phone asks for the relay, which needs no Tailscale
+  if (asked !== null && tabs.includes(asked)) return asked;
   if (noticeWaiting && hasAccount && tabs.includes("relay")) return "relay";
   return tabs.find((way) => way !== "relay" || hasAccount) ?? tabs[0] ?? null;
 }
@@ -109,6 +112,8 @@ export interface RelayAccount {
 }
 
 export interface ConnectPhoneDialogProps {
+  /** the tab it was asked to open on (the setup checklist's Connect your phone: the relay), until another is picked */
+  asked?: ConnectTab | null;
   pcAddFromAccount?: PcAccountStatus["pcAddFromAccount"];
   onAccountSetup?: () => void;
   plan: PhonePlan;
@@ -148,7 +153,7 @@ export interface ConnectPhoneDialogProps {
   onClose: () => void;
 }
 
-export function ConnectPhoneDialog({ plan, tailscale = plan, pairUrl, pageUrl = pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ asked = null, plan, tailscale = plan, pairUrl, pageUrl = pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -171,7 +176,7 @@ export function ConnectPhoneDialog({ plan, tailscale = plan, pairUrl, pageUrl = 
   const tabs = connectTabs({ sshOffered: onAddPc !== null && !readOnly && !inRelayShell(), relay, readOnly });
   const hasAccount = account !== null;
   // until a tab is picked, the opening one follows the tabs as they arrive (the relay's state comes a moment later)
-  const [chosen, setChosen] = useState<ConnectTab | null>(() => accountQrNoticeWaiting() && hasAccount ? "relay" : null);
+  const [chosen, setChosen] = useState<ConnectTab | null>(() => asked ?? (accountQrNoticeWaiting() && hasAccount ? "relay" : null));
   const found = useFoundPcs(machines, tabs.includes("tailscale"));
   useEffect(() => {
     if (!hasAccount) return;
@@ -179,7 +184,7 @@ export function ConnectPhoneDialog({ plan, tailscale = plan, pairUrl, pageUrl = 
     window.addEventListener(ACCOUNT_QR_WATCH_EVENT, onWatch);
     return () => window.removeEventListener(ACCOUNT_QR_WATCH_EVENT, onWatch);
   }, [hasAccount]);
-  const tab = chosen !== null && tabs.includes(chosen) ? chosen : openingTab({ tabs, noticeWaiting: false, hasAccount });
+  const tab = chosen !== null && tabs.includes(chosen) ? chosen : openingTab({ tabs, noticeWaiting: false, hasAccount, asked });
   // until the relay's state comes, which tab opens is not known: nothing is mounted, so no pairing code is made unasked
   const waiting = !readOnly && relayPending(relay);
   const opened = useRef(new Set<ConnectTab>());

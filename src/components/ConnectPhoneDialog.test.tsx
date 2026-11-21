@@ -574,6 +574,22 @@ describe("Connect a phone on a phone", () => {
     expect(openingTab({ tabs: [], noticeWaiting: false, hasAccount: true })).toBeNull();
   });
 
+  it("opens on the Ovis relay tab when the setup checklist's Connect your phone asked for it, account or not; Tailscale only when picked", async () => {
+    const { askAddConnection, takeAddConnection } = await import("../lib/addConnectionRequest.ts");
+    const all = ["relay", "tailscale", "direct"] as const;
+    let asked = 0;
+    const heard = (): void => { asked += 1; };
+    window.addEventListener("ovis:add-connection", heard);
+    try { askAddConnection("relay"); } finally { window.removeEventListener("ovis:add-connection", heard); }
+    expect(asked).toBe(1);
+    const tab = takeAddConnection();
+    expect(tab).toBe("relay");
+    // taken once: a later Add a connection opens as before
+    expect(takeAddConnection()).toBeNull();
+    expect(openingTab({ tabs: all, noticeWaiting: false, hasAccount: false, asked: tab })).toBe("relay");
+    expect(openingTab({ tabs: ["tailscale", "direct"], noticeWaiting: false, hasAccount: false, asked: tab })).toBe("tailscale");
+  });
+
   it("the QR code of a PC in an account opens its page in the hosted app with this page's sign-in, and carries nothing else", () => {
     const id = "0123456789abcdef0123456789abcdef";
     expect(signInLink("https://app.ovis.sh", id, "github")).toBe(`https://app.ovis.sh/s/${id}/#sign-in=github`);

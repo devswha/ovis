@@ -69,6 +69,7 @@ import { apiFetch } from "../lib/api-request-id.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { ConnectPhoneDialog, relayOffered, relayPending } from "./ConnectPhoneDialog.tsx";
 import { ACCOUNT_QR_WATCH_EVENT, accountQrNoticeWaiting } from "../lib/accountQrWatch.ts";
+import { ADD_CONNECTION_EVENT, takeAddConnection, type AddConnectionTab } from "../lib/addConnectionRequest.ts";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { AlertWebhookGroup } from "./AlertWebhookGroup.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
@@ -1230,7 +1231,21 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const relayReadOnly = auth?.role === "watch" || auth?.via === "portal";
   const closesGate = security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured;
   const [connecting, setConnecting] = useState(false);
+  const [connectAsked, setConnectAsked] = useState<AddConnectionTab | null>(null);
   const [accountChecks, setAccountChecks] = useState(0);
+  // the setup checklist's Connect your phone: Add a connection, on the tab it asked for, as soon as this page is up
+  useEffect(() => {
+    const open = (): void => {
+      const tab = takeAddConnection();
+      if (tab === null) return;
+      setConnectAsked(tab);
+      setConnecting(true);
+      setAccountChecks((count) => count + 1);
+    };
+    open();
+    window.addEventListener(ADD_CONNECTION_EVENT, open);
+    return () => window.removeEventListener(ADD_CONNECTION_EVENT, open);
+  }, []);
   const searching = useContext(SettingsQuery).length > 0;
   const [devicesMore, setDevicesMore] = useState<HTMLDivElement | null>(null);
   const [devicesCheck, setDevicesCheck] = useState<HTMLDivElement | null>(null);
@@ -1293,11 +1308,11 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
         {/* how anything else gets connected: one button, its sheet picks the way; a search finds it as a row by every way it holds */}
         {searching ? (
           <SettingsRow label={t("Add a connection")} keywords={t("phone browser PC pair pairing code QR relay Tailscale Wi-Fi SSH Portal add PC remote PCs")}>
-            <button type="button" className="btn btn-primary" onClick={() => { setConnecting(true); setAccountChecks((count) => count + 1); }}><Plus aria-hidden="true" />{t("Add a connection")}</button>
+            <button type="button" className="btn btn-primary" onClick={() => { setConnectAsked(null); setConnecting(true); setAccountChecks((count) => count + 1); }}><Plus aria-hidden="true" />{t("Add a connection")}</button>
           </SettingsRow>
         ) : (
           <div className="settings-item devices-add">
-            <button type="button" className="btn btn-primary" onClick={() => { setConnecting(true); setAccountChecks((count) => count + 1); }}><Plus aria-hidden="true" />{t("Add a connection")}</button>
+            <button type="button" className="btn btn-primary" onClick={() => { setConnectAsked(null); setConnecting(true); setAccountChecks((count) => count + 1); }}><Plus aria-hidden="true" />{t("Add a connection")}</button>
           </div>
         )}
         <DamagedPcFiles pcSettings={pcSettings} />
@@ -1351,7 +1366,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       </SettingsFold>
 
       {connecting && (
-        <ConnectPhoneDialog plan={plan} tailscale={tailscale} pairUrl={pairUrl} pageUrl={isLoopbackHost(window.location.hostname) ? null : window.location.origin}
+        <ConnectPhoneDialog asked={connectAsked} plan={plan} tailscale={tailscale} pairUrl={pairUrl} pageUrl={isLoopbackHost(window.location.hostname) ? null : window.location.origin}
           relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"}
           signedIn={account.signedIn} accountId={account.account} provider={account.provider} joinBySignIn={joinBySignIn}
           pcAddFromAccount={pcAddFromAccount} onAccountSetup={openAccount}
