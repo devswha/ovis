@@ -9,6 +9,8 @@ const script = fileURLToPath(new URL("./self-hosted-runner/rust-heartbeat.sh", i
 const repo = "devswha/ovis";
 const label = "self-hosted-ovis-rust";
 const now = 2_000_000_000;
+const SHA = "a".repeat(40);
+const NEWER = "b".repeat(40);
 
 const created: string[] = [];
 function tempDir(): string {
@@ -20,20 +22,28 @@ afterAll(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true });
 });
 
-// Answers from the files in $FAKE_GH and logs every call. A run reads as completed once cancelled, unless a
-// status-<id> file says otherwise; seen-error holds the error a read of the variable fails with (else, without
-// a seen file, GitHub's 404 for a missing variable).
+// Answers from the files in $FAKE_GH and logs every call. `run view` prints "<status> <attempt>": status-<id>
+// when given, else completed once cancelled, with attempt-<id>, which an accepted rerun raises. cancel-lost and
+// rerun-lost make GitHub act but the answer fail; rerun-fails refuses reruns; head-error fails the head lookup.
+// seen-error holds the error a read of the variable fails with (else, without a seen file, GitHub's 404).
 const bin = tempDir();
 writeFileSync(join(bin, "gh"), `#!/bin/sh
-echo "$*" >> "$FAKE_GH/calls"
+d="$FAKE_GH"
+echo "$*" >> "$d/calls"
 answer() { if [ -n "$jq" ]; then jq -r "$jq" "$1"; else cat "$1"; fi; }
+attempt() { cat "$d/attempt-$1" 2>/dev/null || echo 1; }
 case "$1 $2" in
   "variable set") exit 0 ;;
-  "run cancel") touch "$FAKE_GH/cancelled-$3"; exit 0 ;;
+  "run cancel") touch "$d/cancelled-$3"; [ -f "$d/cancel-lost" ] && { echo "gh: connection reset" >&2; exit 1; }; exit 0 ;;
   "run view")
-    if [ -f "$FAKE_GH/status-$3" ]; then cat "$FAKE_GH/status-$3"; elif [ -f "$FAKE_GH/cancelled-$3" ]; then echo completed; else echo in_progress; fi
+    if [ -f "$d/status-$3" ]; then echo "$(cat "$d/status-$3") $(attempt "$3")"
+    elif [ -f "$d/cancelled-$3" ]; then echo "completed $(attempt "$3")"
+    else echo "in_progress $(attempt "$3")"; fi
     exit 0 ;;
-  "run rerun") [ -f "$FAKE_GH/rerun-fails" ] && { echo "gh: HTTP 422" >&2; exit 1; }; exit 0 ;;
+  "run rerun")
+    [ -f "$d/rerun-fails" ] && { echo "gh: HTTP 422" >&2; exit 1; }
+    echo $(( $(attempt "$3") + 1 )) > "$d/attempt-$3"; rm -f "$d/cancelled-$3" "$d/status-$3"
+    [ -f "$d/rerun-lost" ] && { echo "gh: connection reset" >&2; exit 1; }; exit 0 ;;
 esac
 shift
 [ "$1" = --paginate ] && shift
@@ -41,25 +51,30 @@ url="$1"; jq=""
 [ "$2" = --jq ] && jq="$3"
 case "$url" in
   */variables/CI_RUST_RUNNER_SEEN)
-    if [ -f "$FAKE_GH/seen-error" ]; then cat "$FAKE_GH/seen-error" >&2; exit 1; fi
-    [ -f "$FAKE_GH/seen" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
-    printf '{"value":"%s"}' "$(cat "$FAKE_GH/seen")" > "$FAKE_GH/.seen.json"; answer "$FAKE_GH/.seen.json" ;;
-  */runners*) answer "$FAKE_GH/runners.json" ;;
-  */workflows/ci.yml/runs*) b=\${url#*branch=}; b=\${b%%&*}; answer "$FAKE_GH/newest-$b.json" ;;
-  */jobs*) id=\${url#*/runs/}; answer "$FAKE_GH/jobs-\${id%%/*}.json" ;;
-  *status=queued*) answer "$FAKE_GH/queued.json" ;;
-  *status=in_progress*) answer "$FAKE_GH/in_progress.json" ;;
+    if [ -f "$d/seen-error" ]; then cat "$d/seen-error" >&2; exit 1; fi
+    [ -f "$d/seen" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    printf '{"value":"%s"}' "$(cat "$d/seen")" > "$d/.seen.json"; answer "$d/.seen.json" ;;
+  */runners*) answer "$d/runners.json" ;;
+  */pulls/*|*/branches/*) [ -f "$d/head-error" ] && { echo "gh: Server Error (HTTP 503)" >&2; exit 1; }; answer "$d/head-\${url##*/}.json" ;;
+  */jobs*) id=\${url#*/runs/}; answer "$d/jobs-\${id%%/*}.json" ;;
+  *status=queued*) answer "$d/queued.json" ;;
+  *status=in_progress*) answer "$d/in_progress.json" ;;
   *) exit 1 ;;
 esac
 `);
 chmodSync(join(bin, "gh"), 0o755);
 
 type Job = { name: string; status: string; labels: string[] };
-type Run = { id: number; branch?: string; event?: string; path?: string; head?: string; attempt?: number; jobs: Job[] };
-type State = { runnerLabels?: string[]; online?: boolean; seen?: number | string; seenError?: string; queued?: Run[]; inProgress?: Run[]; newest?: Record<string, number>; status?: Record<number, string>; rerunFails?: boolean };
+type Run = { id: number; event?: string; path?: string; repoOf?: string; attempt?: number; pr?: number | null; head?: string; jobs: Job[] };
+type State = {
+  runnerLabels?: string[]; online?: boolean; seen?: number | string; seenError?: string;
+  queued?: Run[]; inProgress?: Run[]; status?: Record<number, string>; flags?: string[];
+};
 
 const rust = (status = "queued", labels = ["self-hosted", label]): Job => ({ name: "Rust PTY host", status, labels });
 const fast = (status = "queued", labels = ["self-hosted", label]): Job => ({ name: "Fast checks", status, labels });
+const prOf = (run: Run) => (run.pr === undefined ? run.id * 10 : run.pr);
+const branchOf = (run: Run) => `topic-${run.id}`;
 
 function fakeGitHub(state: State): string {
   const dir = tempDir();
@@ -70,18 +85,20 @@ function fakeGitHub(state: State): string {
   ] }));
   if (state.seen !== undefined) writeFileSync(join(dir, "seen"), String(state.seen));
   if (state.seenError !== undefined) writeFileSync(join(dir, "seen-error"), state.seenError);
-  if (state.rerunFails) writeFileSync(join(dir, "rerun-fails"), "");
+  for (const flag of state.flags ?? []) writeFileSync(join(dir, flag), "");
   const all = [...(state.queued ?? []), ...(state.inProgress ?? [])];
   for (const [file, runs] of [["queued", state.queued ?? []], ["in_progress", state.inProgress ?? []]] as const) {
     writeFileSync(join(dir, `${file}.json`), JSON.stringify({ workflow_runs: runs.map((run) => ({
-      id: run.id, run_attempt: run.attempt ?? 1, head_repository: { full_name: run.head ?? repo },
-      path: run.path ?? ".github/workflows/ci.yml", event: run.event ?? "pull_request", head_branch: run.branch ?? `topic-${run.id}`,
+      id: run.id, run_attempt: run.attempt ?? 1, head_sha: SHA, head_branch: branchOf(run),
+      head_repository: { full_name: run.repoOf ?? repo }, path: run.path ?? ".github/workflows/ci.yml", event: run.event ?? "pull_request",
+      pull_requests: prOf(run) === null ? [] : [{ number: prOf(run) }],
     })) }));
   }
   for (const run of all) {
     writeFileSync(join(dir, `jobs-${run.id}.json`), JSON.stringify({ jobs: run.jobs }));
-    const branch = run.branch ?? `topic-${run.id}`;
-    writeFileSync(join(dir, `newest-${branch}.json`), JSON.stringify({ workflow_runs: [{ id: state.newest?.[run.id] ?? run.id }] }));
+    if (run.attempt !== undefined) writeFileSync(join(dir, `attempt-${run.id}`), String(run.attempt));
+    writeFileSync(join(dir, `head-${prOf(run)}.json`), JSON.stringify({ head: { sha: run.head ?? SHA } }));
+    writeFileSync(join(dir, `head-${branchOf(run)}.json`), JSON.stringify({ commit: { sha: run.head ?? SHA } }));
   }
   for (const [id, status] of Object.entries(state.status ?? {})) writeFileSync(join(dir, `status-${id}`), status);
   return dir;
@@ -98,6 +115,8 @@ function heartbeat(github: string, stateDir = tempDir()): { status: number | nul
 const acted = (calls: string[]) => calls.filter((call) => /^run (cancel|rerun) /.test(call));
 const pending = (stateDir: string) => readdirSync(stateDir).filter((name) => name.startsWith("run-")).sort();
 const stale = now - 3_600;
+const cancel = (id: number) => `run cancel ${id} --repo ${repo}`;
+const rerun = (id: number) => `run rerun ${id} --repo ${repo}`;
 
 describe.skipIf(process.platform === "win32")("Rust runners' heartbeat", () => {
   it("writes the time while a Rust runner is online, whatever the case of its label, and cancels nothing", () => {
@@ -124,41 +143,46 @@ describe.skipIf(process.platform === "win32")("Rust runners' heartbeat", () => {
         seen,
         queued: [
           { id: 7, jobs: [rust(), fast("in_progress", ["self-hosted", "self-hosted-ovis"])] },
-          { id: 8, event: "push", branch: "main", jobs: [rust("queued", ["Self-Hosted", "Self-Hosted-Ovis-Rust"])] },
+          { id: 8, event: "push", jobs: [rust("queued", ["Self-Hosted", "Self-Hosted-Ovis-Rust"])] },
         ],
         inProgress: [{ id: 7, jobs: [rust()] }],
       }));
       expect(status).toBe(0);
-      expect(acted(calls)).toEqual([`run cancel 7 --repo ${repo}`, `run cancel 8 --repo ${repo}`, `run rerun 7 --repo ${repo}`, `run rerun 8 --repo ${repo}`]);
+      expect(acted(calls)).toEqual([cancel(7), cancel(8), rerun(7), rerun(8)]);
+      expect(calls).toContain(`api repos/${repo}/pulls/70 --jq .head.sha`);
+      expect(calls).toContain(`api repos/${repo}/branches/topic-8 --jq .commit.sha`);
       expect(pending(stateDir)).toEqual([]);
     }
   });
 
-  it("leaves a run alone unless its own Rust PTY host job waits on that label: other jobs, other workflows, forks, manual runs, third attempts", () => {
+  it("leaves a run alone unless its own Rust PTY host job waits on that label: other jobs, other workflows, forks, manual runs, third attempts, no pull request", () => {
     const { status, calls } = heartbeat(fakeGitHub({
       seen: stale,
       queued: [
         { id: 1, jobs: [fast(), rust("completed", ["ubuntu-24.04"])] },
         { id: 2, jobs: [rust("queued", ["ubuntu-24.04"])] },
         { id: 3, path: ".github/workflows/pty-sidecar.yml", jobs: [rust()] },
-        { id: 4, head: "someone/fork", jobs: [rust()] },
+        { id: 4, repoOf: "someone/fork", jobs: [rust()] },
         { id: 5, event: "workflow_dispatch", jobs: [rust()] },
         { id: 6, attempt: 3, jobs: [rust()] },
+        { id: 9, pr: null, jobs: [rust()] },
       ],
     }));
     expect(status).toBe(0);
     expect(acted(calls)).toEqual([]);
   });
 
-  it("keeps a cancelled run until it has completed, and runs it again on a later pass", () => {
-    const github = fakeGitHub({ seen: stale, queued: [{ id: 7, jobs: [rust()] }], status: { 7: "in_progress" } });
+  it("follows up a run whose cancel answer was lost, and one still cancelling, on later passes", () => {
+    const github = fakeGitHub({ seen: stale, queued: [{ id: 7, jobs: [rust()] }], status: { 7: "in_progress" }, flags: ["cancel-lost"] });
     const first = heartbeat(github);
-    expect(acted(first.calls)).toEqual([`run cancel 7 --repo ${repo}`]);
+    expect(first.status).toBe(0);
+    expect(acted(first.calls)).toEqual([cancel(7), cancel(7)]);
     expect(pending(first.stateDir)).toEqual(["run-7"]);
+    rmSync(join(github, "cancel-lost"));
     writeFileSync(join(github, "status-7"), "completed");
     writeFileSync(join(github, "queued.json"), JSON.stringify({ workflow_runs: [] }));
     const second = heartbeat(github, first.stateDir);
-    expect(acted(second.calls)).toEqual([`run rerun 7 --repo ${repo}`]);
+    expect(acted(second.calls)).toEqual([rerun(7)]);
     expect(pending(second.stateDir)).toEqual([]);
   });
 
@@ -167,24 +191,41 @@ describe.skipIf(process.platform === "win32")("Rust runners' heartbeat", () => {
     const first = heartbeat(github);
     writeFileSync(join(github, "status-7"), "completed");
     writeFileSync(join(github, "runners.json"), JSON.stringify({ runners: [{ status: "online", labels: [{ name: label }] }] }));
-    expect(acted(heartbeat(github, first.stateDir).calls)).toEqual([`run rerun 7 --repo ${repo}`]);
+    expect(acted(heartbeat(github, first.stateDir).calls)).toEqual([rerun(7)]);
   });
 
-  it("cancels but does not run again a run a newer CI run of its branch has superseded", () => {
-    const { status, calls, stateDir } = heartbeat(fakeGitHub({ seen: stale, queued: [{ id: 7, jobs: [rust()] }], newest: { 7: 9 } }));
-    expect(status).toBe(0);
-    expect(acted(calls)).toEqual([`run cancel 7 --repo ${repo}`]);
-    expect(pending(stateDir)).toEqual([]);
+  it("does not run again a run whose pull request or branch has moved on to another commit, and keeps it while that cannot be told", () => {
+    for (const event of ["pull_request", "push"]) {
+      const { calls, stateDir } = heartbeat(fakeGitHub({ seen: stale, queued: [{ id: 7, event, head: NEWER, jobs: [rust()] }] }));
+      expect(acted(calls)).toEqual([cancel(7)]);
+      expect(pending(stateDir)).toEqual([]);
+    }
+    const github = fakeGitHub({ seen: stale, queued: [{ id: 7, jobs: [rust()] }], flags: ["head-error"] });
+    const unknown = heartbeat(github);
+    expect(acted(unknown.calls)).toEqual([cancel(7)]);
+    expect(pending(unknown.stateDir)).toEqual(["run-7"]);
+    rmSync(join(github, "head-error"));
+    expect(acted(heartbeat(github, unknown.stateDir).calls)).toEqual([rerun(7)]);
+  });
+
+  it("never runs a run again past the attempt it was cancelled on, even when the rerun's answer was lost", () => {
+    const github = fakeGitHub({ seen: stale, queued: [{ id: 7, attempt: 2, jobs: [rust()] }], flags: ["rerun-lost"] });
+    const first = heartbeat(github);
+    expect(acted(first.calls)).toEqual([cancel(7), rerun(7)]);
+    expect(pending(first.stateDir)).toEqual(["run-7"]);
+    writeFileSync(join(github, "status-7"), "completed");
+    writeFileSync(join(github, "queued.json"), JSON.stringify({ workflow_runs: [] }));
+    const second = heartbeat(github, first.stateDir);
+    expect(acted(second.calls)).toEqual([]);
+    expect(second.stderr).toContain("run 7 is on attempt 3 already");
+    expect(pending(second.stateDir)).toEqual([]);
   });
 
   it("says so and fails once a cancelled run could not be run again for 30 passes", () => {
-    const github = fakeGitHub({ seen: stale, queued: [{ id: 7, jobs: [rust()] }], rerunFails: true });
+    const github = fakeGitHub({ seen: stale, queued: [{ id: 7, jobs: [rust()] }], flags: ["rerun-fails"] });
     let pass = heartbeat(github);
     expect(pass.status).toBe(0);
-    expect(pending(pass.stateDir)).toEqual(["run-7"]);
-    writeFileSync(join(pass.stateDir, "run-7"), "topic-7 pull_request 28\n");
-    pass = heartbeat(github, pass.stateDir);
-    expect(pass.status).toBe(0);
+    for (let n = 2; n < 30; n++) expect(heartbeat(github, pass.stateDir).status).toBe(0);
     pass = heartbeat(github, pass.stateDir);
     expect(pass.status).toBe(1);
     expect(pass.stderr).toContain("::error::run 7 was cancelled for its queued Rust PTY host job and could not be run again");

@@ -10,10 +10,11 @@
 # A run routed in the minutes before the value aged still waits for runners that are gone, and GitHub
 # never moves a queued job. So once no Rust runner has been seen for longer than the route allows, each CI
 # run of this repository (a push or a pull request, before its MAX_ATTEMPT-th attempt) whose Rust PTY host
-# job is still queued on that label is cancelled and, unless a newer CI run of its branch exists, run again
-# in full: its Detect changes then sends the job hosted. A cancelled run is kept in STATE_DIR until its
-# re-run is accepted, so a cancel that takes longer than this pass is re-run by a later one. A failure
-# ends this pass nonzero, which the timer's unit shows as failed.
+# job is still queued on that label is cancelled and, unless its pull request or branch has moved on to
+# another commit, run again in full: its Detect changes then sends the job hosted. A run is recorded in
+# STATE_DIR before it is cancelled and kept there until it has been run again or left for good, so a lost
+# answer or a slow cancel is followed up by a later pass. A run given up on ends the pass nonzero, which the
+# timer's unit shows as failed.
 set -euo pipefail
 
 repo="${REPO:-devswha/ovis}"
@@ -30,22 +31,37 @@ state="${STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ovis-rust-heartbeat}"
 mkdir -p "$state"
 failed=0
 
+# Each record ("<event> <pull request number or branch> <head sha> <attempt> <passes>") is written before its
+# run is cancelled, so a cancel whose answer was lost is still followed up: a run not yet completed is asked to
+# cancel again, one on a later attempt than recorded was already run again, and a completed one is run again
+# unless its pull request or branch has moved on to another commit. An answer that cannot be had keeps the record.
 rerun_pending() {
-  local file id branch event tries status newer
+  local file id event key sha attempt tries view status current head
   for file in "$state"/run-*; do
     [[ -e "$file" ]] || continue
     id=${file##*/run-}
-    read -r branch event tries <"$file" || { rm -f "$file"; continue; }
-    status=$(gh run view "$id" --repo "$repo" --json status --jq .status) || status=""
-    if [[ "$status" == completed ]]; then
-      # a newer CI run of the branch already covers it; re-running the old commit would only displace that one
-      newer=$(gh api "repos/$repo/actions/workflows/ci.yml/runs?branch=$branch&event=$event&per_page=1" --jq '.workflow_runs[0].id // empty') || newer=""
-      if [[ -n "$newer" && "$newer" != "$id" ]]; then
-        echo "run $id is superseded by run $newer: not running it again" >&2
+    read -r event key sha attempt tries <"$file" || { rm -f "$file"; continue; }
+    view=$(gh run view "$id" --repo "$repo" --json status,attempt --jq '"\(.status) \(.attempt)"') || view=""
+    read -r status current <<<"$view"
+    if [[ "$current" =~ ^[0-9]+$ ]] && (( current > attempt )); then
+      echo "run $id is on attempt $current already: nothing to run again" >&2
+      rm -f "$file"
+      continue
+    fi
+    if [[ -n "$status" && "$status" != completed ]]; then
+      gh run cancel "$id" --repo "$repo" >/dev/null 2>&1 || true
+    elif [[ "$status" == completed ]]; then
+      if [[ "$event" == pull_request ]]; then
+        head=$(gh api "repos/$repo/pulls/$key" --jq .head.sha) || head=""
+      else
+        head=$(gh api "repos/$repo/branches/$key" --jq .commit.sha) || head=""
+      fi
+      if [[ "$head" =~ ^[0-9a-f]{40}$ && "$head" != "$sha" ]]; then
+        echo "run $id is for $sha, and its $event has moved on to $head: not running it again" >&2
         rm -f "$file"
         continue
       fi
-      if gh run rerun "$id" --repo "$repo"; then
+      if [[ "$head" == "$sha" ]] && gh run rerun "$id" --repo "$repo"; then
         echo "run $id runs again" >&2
         rm -f "$file"
         continue
@@ -57,7 +73,7 @@ rerun_pending() {
       rm -f "$file"
       failed=1
     else
-      echo "$branch $event $tries" >"$file"
+      echo "$event $key $sha $attempt $tries" >"$file"
     fi
   done
 }
@@ -87,20 +103,17 @@ for status in queued in_progress; do
   gh api --paginate "repos/$repo/actions/runs?status=$status&per_page=100" |
     jq -r --arg repo "$repo" --arg workflow "$workflow" --argjson max "$max_attempt" '.workflow_runs[]
       | select(.head_repository.full_name == $repo and .path == $workflow and (.event == "push" or .event == "pull_request") and .run_attempt < $max)
-      | "\(.id) \(.head_branch) \(.event)"'
+      | "\(.id) \(.event) \(if .event == "pull_request" then (.pull_requests[0].number // "-") else .head_branch end) \(.head_sha) \(.run_attempt)"'
 done | sort -u >"$state/.candidates"
-while read -r id branch event; do
+while read -r id event key sha attempt; do
   [[ -e "$state/run-$id" ]] && continue
+  [[ "$key" != - ]] || { echo "run $id names no pull request: left alone" >&2; continue; }
   queued=$(gh api --paginate "repos/$repo/actions/runs/$id/jobs?filter=latest&per_page=100" |
     jq -s --arg label "$label" --arg name "$job_name" '[.[].jobs[] | select(.name == $name and .status == "queued" and any(.labels[]; ascii_downcase == $label))] | length')
   [[ "$queued" != 0 ]] || continue
   echo "run $id: its Rust PTY host job waits for runners labelled $label, none online: cancelling it" >&2
-  if gh run cancel "$id" --repo "$repo"; then
-    echo "$branch $event 0" >"$state/run-$id"
-  else
-    echo "::error::run $id could not be cancelled" >&2
-    failed=1
-  fi
+  echo "$event $key $sha $attempt 0" >"$state/run-$id"
+  gh run cancel "$id" --repo "$repo" || echo "run $id: no answer to its cancel yet; asked again next pass" >&2
 done <"$state/.candidates"
 rm -f "$state/.candidates"
 rerun_pending
