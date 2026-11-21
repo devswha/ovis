@@ -354,7 +354,9 @@ describe("the loop", () => {
           await run.advance(20);
         }
         const model = run.loop.model();
-        return { focus: model.focus, mode: model.mode.name, received: ["t1", "t2", "t3", "t4"].map((terminal) => run.core.program(terminal).receivedHex()) };
+        // a close ends its terminal: the fake then has no program for it
+        const received = (terminal: string) => (run.core.calls().some((call) => call.method === "terminal.rm" && call.params["terminal"] === terminal) ? "removed" : run.core.program(terminal).receivedHex());
+        return { focus: model.focus, mode: model.mode.name, received: ["t1", "t2", "t3", "t4"].map(received) };
       } finally {
         await run.close();
       }

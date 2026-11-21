@@ -282,6 +282,32 @@ export function startLoop(options: LoopOptions): Loop {
     owePass();
   }
 
+  /**
+   * What the user typed, pasted or clicked while a layout write that one of their actions started is under way: it
+   * waits behind that write, in order, and goes through once the write is done, so it meets the layout the write
+   * leaves (the pane a close focuses, the pane a split follows), as a later read would. null when no write holds it.
+   */
+  let behindWrite: ModelEvent[] | null = null;
+
+  /** A user's input event: through the state core now, or behind the layout write under way. */
+  function userInput(event: ModelEvent): void {
+    if (behindWrite !== null && (event.type === "key" || event.type === "text" || event.type === "paste" || event.type === "mouse")) behindWrite.push(event);
+    else dispatch(event);
+  }
+
+  /** Holds the user's input until `writing` is done; then what waited goes through in order (and may hold again). */
+  function holdUntil(writing: Promise<void>): void {
+    behindWrite ??= [];
+    void writing.then(() => {
+      guard(() => {
+        const waited = behindWrite ?? [];
+        behindWrite = null;
+        for (const event of waited) userInput(event);
+      });
+      arm();
+    });
+  }
+
   /** One event through the state core, and its effects performed in order, now. */
   function dispatch(event: ModelEvent): void {
     const before = state;
@@ -310,14 +336,18 @@ export function startLoop(options: LoopOptions): Loop {
           if (toward !== null) dispatch({ type: "select", target: { kind: "pane", id: toward }, at: clock.now() });
           return;
         }
-        if (layout.run(effect) !== null) return;
+        const writing = layout.run(effect);
+        if (writing !== null) {
+          holdUntil(writing);
+          return;
+        }
         // the agent list comes with a later row of the plan: one notice per press, never silence
         dispatch({ type: "notice", code: "not_built", data: { action: effect.action }, at: clock.now() });
         return;
       }
       case "input":
         // the rest of a text run, behind the action before it: it meets the focus and mode that action left
-        dispatch(effect.event);
+        userInput(effect.event);
         return;
       case "quit":
         act("quit");
@@ -456,7 +486,7 @@ export function startLoop(options: LoopOptions): Loop {
         // the host lost its screen meanwhile, or redrew it: the next frame writes every cell
         if (event.focused) painter?.invalidate();
       }
-      dispatch(event);
+      userInput(event);
     }
   }
 
@@ -467,7 +497,7 @@ export function startLoop(options: LoopOptions): Loop {
       if (quitting && now >= quitting.at) quitting.settle();
       return;
     }
-    for (const event of framer.tick(now)) dispatch(event);
+    for (const event of framer.tick(now)) userInput(event);
     if (pasteAt !== null && now >= pasteAt) {
       pasteAt = null;
       framer.reset();
