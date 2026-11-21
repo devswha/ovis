@@ -16,8 +16,10 @@ const ADD_WINDOW_MS = 10 * 60_000;
 /** the add a Sign in again was pressed for, by account and PC: the sign-in comes back as a page load, which goes on with it once */
 const PENDING_ADD = "ovis:confirm-pc";
 
-type Listing = { readonly session: AccountSession; readonly pcs: readonly DirectoryPc[]; readonly pending: string | null };
-type Problem = { readonly text: string; readonly signInAgain: boolean };
+/** `addable`: false when this sign-in can be told before a press that the service would refuse it two_step_required */
+type Listing = { readonly session: AccountSession; readonly pcs: readonly DirectoryPc[]; readonly pending: string | null; readonly addable: boolean };
+/** `signInAgain`: a fresh own sign-in may pass it; `numberOnly`: none can, so Add goes and the PC is added with its number */
+type Problem = { readonly text: string; readonly signInAgain: boolean; readonly numberOnly?: true };
 
 function takePendingAdd(account: string): string | null {
   try {
@@ -38,7 +40,8 @@ function refusal(t: Translate, error: Error): Problem {
   switch (error instanceof AccountServiceError ? error.code : null) {
     case "session_not_fresh": return { text: t("Sign in again to add it: your sign-in is more than ten minutes old."), signInAgain: true };
     case "own_sign_in_required": return { text: t("Sign in on this device to add it."), signInAgain: true };
-    case "two_step_required": return { text: t("Turn on two-step sign-in with your sign-in provider, then sign in again to add it."), signInAgain: true };
+    // the service asks two-step of a used account's confirm, and a sign-in without it (Google never says) cannot get it by signing in again
+    case "two_step_required": return { text: t("This account has no two-step sign-in to add it here. Add it with the number on the PC's screen."), signInAgain: false, numberOnly: true };
     default: return { text: t("The PC could not be added. Try again."), signInAgain: false };
   }
 }
@@ -69,10 +72,12 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
         if (mine !== version) return;
         if (session === undefined) { setListing(null); return; }
         const directory = service.forSignIn(session);
-        const [own, pcs] = await Promise.all([directory.ownSignIn(), directory.listUnconfirmedPcs()]);
+        // a Google sign-in never carries two-step, and an account with a PC already is used: the service would refuse its
+        // confirm two_step_required, so it is told so before any press
+        const [own, pcs, used] = await Promise.all([directory.ownSignIn(), directory.listUnconfirmedPcs(), session.provider === "google" ? directory.listPcs().then((listed) => listed.length > 0) : Promise.resolve(false)]);
         if (mine !== version) return;
         // a device code's sign-in cannot confirm, and it is no one's to remove a PC with: nothing is offered to it
-        setListing((prior) => own ? { session, pcs, pending: prior?.session.account === session.account ? prior.pending : takePendingAdd(session.account) } : null);
+        setListing((prior) => own ? { session, pcs, addable: !used, pending: prior?.session.account === session.account ? prior.pending : takePendingAdd(session.account) } : null);
       } catch (error) {
         if (mine !== version) return;
         if (error instanceof SignedOutError) setListing(null);
@@ -102,7 +107,7 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
   return (
     <>
       {listing.pcs.filter((pc) => !told.has(pc.server_id) && !removed.has(pc.server_id)).map((pc) => (
-        <UnconfirmedPcNotice key={`${session.account}:${pc.server_id}`} pc={pc} session={session} service={service} now={now} retry={listing.pending === pc.server_id}
+        <UnconfirmedPcNotice key={`${session.account}:${pc.server_id}`} pc={pc} session={session} service={service} now={now} addable={listing.addable} retry={listing.addable && listing.pending === pc.server_id}
           {...(onSignInAgain ? { onSignInAgain } : {})}
           onConfirmed={(row) => setConfirmed((prior) => [...prior.filter((each) => each.server_id !== row.server_id), row])}
           onRemoved={() => setRemoved((prior) => new Set([...prior, pc.server_id]))} />
@@ -112,8 +117,9 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
   );
 }
 
-function UnconfirmedPcNotice({ pc, session, service, now, retry, onSignInAgain, onConfirmed, onRemoved }: {
+function UnconfirmedPcNotice({ pc, session, service, now, addable, retry, onSignInAgain, onConfirmed, onRemoved }: {
   readonly pc: DirectoryPc;
+  readonly addable: boolean;
   readonly session: AccountSession;
   readonly service: AccountService;
   readonly now: () => number;
@@ -168,14 +174,17 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, onSignInAgain, 
   useEffect(() => { if (retry) void latestAdd.current(); }, [retry]);
 
   const time = new Date(added).toLocaleTimeString(resolvedLanguage, { hour: "2-digit", minute: "2-digit" });
+  const numberOnly = !addable || problem?.numberOnly === true;
+  const shownProblem = !addable && problem === null ? { text: t("This account has no two-step sign-in to add it here. Add it with the number on the PC's screen."), signInAgain: false } : problem;
   return (
     <div className="update-notice is-paired device-notice" role="status" data-unconfirmed-pc={pc.server_id}>
       <Monitor aria-hidden="true" />
       <span className="device-notice-text">
-        {young && <span>{t("Add this PC to your account?")}</span>}
+        {young && !numberOnly && <span>{t("Add this PC to your account?")}</span>}
         <span>{t("Name the PC gave itself: \"{name}\"", { name: pc.label })}</span>
         <span className="settings-hint">{t("A PC was added to your account with a sign-in code at {time}.", { time })}{young ? ` ${t("Add it only if you typed that code on that PC's own screen a moment ago.")}` : ""}</span>
-        {problem !== null && <span className="account-error" role="alert">{problem.text}</span>}
+        {young && shownProblem !== null && <span className={numberOnly && problem === null ? "settings-hint" : "account-error"} role={problem === null ? undefined : "alert"}>{shownProblem.text}</span>}
+        {!young && problem !== null && <span className="account-error" role="alert">{problem.text}</span>}
       </span>
       <div className="device-paired-actions">
         {problem?.signInAgain === true && onSignInAgain !== undefined && (
@@ -183,7 +192,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, onSignInAgain, 
         )}
         {young ? (
           <>
-            <button type="button" className="btn" disabled={busy} onClick={add}>{t("Add|account pc")}</button>
+            {!numberOnly && <button type="button" className="btn" disabled={busy} onClick={add}>{t("Add|account pc")}</button>}
             <button type="button" className="btn" disabled={busy} onClick={remove}>{t("No|account pc")}</button>
           </>
         ) : <button type="button" className="btn" disabled={busy} onClick={remove}>{t("Remove from my account")}</button>}

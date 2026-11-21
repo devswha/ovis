@@ -255,7 +255,7 @@ const BASE: Record<string, string> = {
   "The PC could not be added. Try again.": "PC を追加できませんでした。もう一度お試しください。",
   "Sign in again to add it: your sign-in is more than ten minutes old.": "サインインから 10 分以上たっているため追加できません。もう一度サインインしてください。",
   "Sign in on this device to add it.": "追加するには、このデバイスで直接サインインしてください。",
-  "Turn on two-step sign-in with your sign-in provider, then sign in again to add it.": "追加するには、サインインサービスで 2 段階認証をオンにしてから、もう一度サインインしてください。",
+  "This account has no two-step sign-in to add it here. Add it with the number on the PC's screen.": "このアカウントには 2 段階認証の情報がないため、ここからは追加できません。PC の画面で番号を使って追加してください。",
   "New PC": "新しいPC",
   "Rename failed: {reason}": "名前を変更できませんでした: {reason}",
 

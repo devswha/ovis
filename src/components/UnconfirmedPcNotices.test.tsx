@@ -38,8 +38,9 @@ const press = async (label: string): Promise<void> => {
 const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
 const text = (): string => renderer === undefined ? "" : renderer.root.findAll((node) => node.type === "div").map(textOf).join(" ");
 
-async function signIn(): Promise<void> {
-  const start = await beginSignIn("github", { store, service: ORIGIN, redirectUri: WEB_REDIRECT });
+async function signIn(provider: AccountProvider = "github"): Promise<void> {
+  fake.signInAs(provider, ACCOUNT);
+  const start = await beginSignIn(provider, { store, service: ORIGIN, redirectUri: WEB_REDIRECT });
   const returned = signInReturn(new URL((await fake.fetch(start)).headers.get("location") ?? "").hash);
   if (returned === null) throw new Error("no sign-in came back");
   await finishSignIn(returned, { store, fetch: fake.fetch });
@@ -51,6 +52,17 @@ async function listedByDeviceCode(): Promise<void> {
   const response = await fake.fetch(`${ORIGIN}/v1/pcs/${PC}`, {
     method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ label: LABEL, public_key: Buffer.from(key).toString("hex"), relay: "wss://relay.ovis.sh" }),
+  });
+  expect(response.ok).toBe(true);
+}
+
+/** another PC the account already has, listed by an own sign-in: the account is no longer never-used */
+async function listedByItsOwnSignIn(): Promise<void> {
+  const other = generateKeyPair().publicKey;
+  const token = fake.issueToken(ACCOUNT);
+  const response = await fake.fetch(`${ORIGIN}/v1/pcs/${deriveServerId(other)}`, {
+    method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ label: "Desk", public_key: Buffer.from(other).toString("hex"), relay: "wss://relay.ovis.sh" }),
   });
   expect(response.ok).toBe(true);
 }
@@ -172,6 +184,27 @@ describe("a PC the account lists unconfirmed", () => {
     await mount();
     expect(fake.pcs(ACCOUNT)[0]?.listed_by_device).toBe(false);
     expect(text()).toContain(`New PC added to your account: ${LABEL}`);
+  });
+
+  it("tells a sign-in without two-step in a used account to add the PC with the number, and never to sign in again", async () => {
+    await signIn();
+    await listedByItsOwnSignIn();
+    await listedByDeviceCode();
+    await mount();
+    await press("Add");
+    expect(text()).toContain("This account has no two-step sign-in to add it here. Add it with the number on the PC's screen.");
+    expect(buttons()).not.toContain("Sign in again");
+    expect(buttons()).toContain("No");
+    expect(fake.pcs(ACCOUNT).find((pc) => pc.server_id === PC)?.listed_by_device).toBe(true);
+  });
+
+  it("says so from the start to a Google sign-in, which never carries two-step, once the account has another PC", async () => {
+    await signIn("google");
+    await listedByItsOwnSignIn();
+    await listedByDeviceCode();
+    await mount();
+    expect(text()).toContain("This account has no two-step sign-in to add it here. Add it with the number on the PC's screen.");
+    expect(buttons()).toEqual(["No"]);
   });
 
   it("offers nothing to press to a device code's sign-in", async () => {
