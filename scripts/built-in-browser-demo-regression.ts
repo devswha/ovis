@@ -184,6 +184,25 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   await page.context().close();
 }
 
+async function crowded(browser: Browser, origin: string): Promise<void> {
+  // eight tabs in the Browser group, and the split taken to the PCs' minimum: the first PC row still shows
+  const page = await open(browser, origin, 1280, "light", true);
+  await page.getByRole("region", { name: "브라우저", exact: true }).waitFor();
+  await page.evaluate(() => {
+    const bridge = (window as unknown as { __browser: { tabs: Record<string, unknown>[]; listeners: ((view: unknown) => void)[] } }).__browser;
+    for (let n = 0; n < 6; n++) bridge.tabs.push({ id: 100 + n, profile: "mine", address: `https://site${n}.example/`, title: `Site ${n}`, loading: false, canGoBack: false, canGoForward: false, held: false });
+    for (const listener of bridge.listeners) listener({ tabs: bridge.tabs.map((entry) => ({ ...entry })) });
+  });
+  await page.locator(".browser-tab", { hasText: "Site 5" }).waitFor();
+  const line = page.getByRole("separator", { name: "PC와 에이전트 높이 조절", exact: true });
+  await line.focus();
+  await page.keyboard.press("Home");
+  const listHeight = await page.locator(".machine-list").evaluate((list) => list.getBoundingClientRect().height);
+  assert.ok(listHeight >= 24, `1280 crowded: the PC list keeps a row at the split's minimum (${listHeight}px)`);
+  assert.ok(await page.locator(".machine-list .workspace-group").first().isVisible(), "1280 crowded: a PC row stays in view");
+  await page.context().close();
+}
+
 async function middle(browser: Browser, origin: string): Promise<void> {
   // too narrow for a panel beside the pane: no cards that could not open their tab, and no Browser group
   const page = await open(browser, origin, 1280, "light", true);
@@ -214,6 +233,7 @@ async function main(): Promise<void> {
       try {
         const origin = `http://127.0.0.1:${server.port}/`;
         for (const theme of ["light", "dark"] as const) await wide(browser, origin, theme);
+        await crowded(browser, origin);
         await middle(browser, origin);
         await phone(browser, origin);
       } finally { await browser.close(); }

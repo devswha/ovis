@@ -19,11 +19,16 @@ import { hostForm } from "./browserState.ts";
 export const BROWSER_PROFILES = ["mine", "agent"] as const;
 export type BrowserProfile = (typeof BROWSER_PROFILES)[number];
 export const MAX_BROWSER_TABS = 8;
-/** a 320 px wide picture of a page as it is drawn, or null when it has none or does not answer in time */
-async function capture(contents: WebContents): Promise<string | null> {
+/** what `work` settles to, or null when it fails or takes longer than PICTURE_MS */
+async function settledWithin<T>(work: Promise<T>): Promise<T | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<null>((done) => { timer = setTimeout(() => done(null), PICTURE_MS); });
-  const image = await Promise.race([contents.capturePage(undefined, { stayHidden: true }).catch(() => null), late]).finally(() => clearTimeout(timer));
+  return Promise.race([work.catch(() => null), late]).finally(() => clearTimeout(timer));
+}
+
+/** a 320 px wide picture of a page as it is drawn, or null when it has none or does not answer in time */
+async function capture(contents: WebContents): Promise<string | null> {
+  const image = await settledWithin(contents.capturePage(undefined, { stayHidden: true }));
   return image === null || image.isEmpty() ? null : image.resize({ width: 320 }).toDataURL();
 }
 
@@ -36,6 +41,8 @@ function onScreen(bounds: { x: number; y: number; width: number; height: number 
 const STAGE_FRAMES = 8;
 /** how long one capture may take before it is given up (one that never answers would hold every later picture) */
 const PICTURE_MS = 1000;
+/** the isolated world a picture waits for the page's frames in (none of the page's own scripts run there) */
+const PICTURE_WORLD = 1_017;
 /** a tab smaller than this on a side has no room to draw a picture in, and is laid out as a desktop window first */
 const MIN_PICTURED = 100;
 const DESKTOP_SIZE = { width: 1280, height: 800 };
@@ -259,7 +266,10 @@ export class BrowserTabs {
       // one from when it was last drawn, so the picture is the frame after it.
       const { width, height } = tab.view.getBounds();
       if (width < MIN_PICTURED || height < MIN_PICTURED) tab.view.setBounds({ x: 0, y: 0, ...DESKTOP_SIZE });
-      let primed = false;
+      // two animation frames in the page (in a world of its own, which the page never sees) mean a frame drawn since it
+      // came on the stage; a page that does not answer in time is taken from the second frame it has, as below
+      const painted = await settledWithin(tab.view.webContents.executeJavaScriptInIsolatedWorld(PICTURE_WORLD, [{ code: "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))" }]));
+      let primed = painted === true;
       for (let attempt = 0; attempt < STAGE_FRAMES; attempt++) {
         await new Promise((next) => setTimeout(next, STAGE_FRAME_MS));
         // shown or closed meanwhile: show() has placed it, or it is gone
