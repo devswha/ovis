@@ -66,8 +66,8 @@ keytool -printcert -jarfile app/build/outputs/bundle/release/app-release.aab   #
 | Field | Now | Rule |
 |---|---|---|
 | `applicationId` | `sh.ovis.app` | never changes once uploaded |
-| `versionCode` | `13` | raise it by one for every upload, test tracks included (`defaultConfig` in `app/android/app/build.gradle`); the last upload is 1.0.5 (13), built from main at `d30527fd`, published to internal testing and sent to Google Play's production review on 2026-11-20: the scanned QR code lands on its PC (#4231), the app opens on the account sign-in (#4256), and, over 1.0.5 (12) from `0c4f0673` just before it, the app's list opens the hosted app on its PCs (#4266); 1.0.4 (11), sent to production review on 2026-11-19, is the version live on Google Play |
-| `versionName` | `1.0.5` | what people see; raise it for each public release |
+| `versionCode` | `14` | raise it by one for every upload, test tracks included (`defaultConfig` in `app/android/app/build.gradle`); the last upload is 1.0.6 (14), built from main at `ab037b30` with PCs added over SSH (#3862), published to internal testing and sent to Google Play's production review on 2026-11-21; 1.0.5 (13), built from main at `d30527fd` (the scanned QR code lands on its PC, #4231; the app opens on the account sign-in, #4256; the app's list opens the hosted app on its PCs, #4266), is the version live on Google Play |
+| `versionName` | `1.0.6` | what people see; raise it for each public release |
 | `targetSdkVersion` | 36 | Play asks new apps for a recent target |
 
 ## 3. Store listing
@@ -117,7 +117,7 @@ emulator; no real PC or session is in them.
 | Section | Answer |
 |---|---|
 | Privacy policy | `https://ovis.sh/privacy/` |
-| App access | "All or some functionality is restricted". Instructions: *Signing in is optional; no account is needed to review. The app opens a computer that runs the Ovis server (open source, ovis.sh). Without one, tap "Start without signing in", then "Enter an address", type demo and tap Open: it shows the whole app with made-up agents and terminals, on the phone only.* No login details. |
+| App access | "All or some functionality is restricted". Instructions (500 characters at most), as sent with 1.0.6: *On the first screen, tap "Start without signing in", then "Enter an address", type demo and tap Open. The offline demo opens the full app with sample agents and terminals: chat, approval cards, terminal, workspaces and Settings. No login, payment, network, QR code or PC is needed. Signing in is optional. Live use pairs with the user's own computer running Ovis (QR code, address, the end-to-end encrypted relay, or SSH to the user's own machine; SSH keys stay on the phone). No paid content.* No login details. |
 | Ads | No, the app has no ads |
 | Content rating | Category "All other app types" (utility). Every question No: no violence, sexual content, profanity, drugs, gambling; no user-to-user chat or sharing between users; no location sharing; no digital purchases. Expected rating: Everyone / PEGI 3 |
 | Target audience | 18 and over only (a developer tool; the privacy policy says it is not for children) |
@@ -274,4 +274,37 @@ service's records, the only data that reaches the developer):
 - **Saving pictures**, from 1.0 (5): Download in Chat's picture viewer saves the picture to the
   phone's Downloads (MediaStore on Android 10 and later), with no storage permission, so the Data
   safety answers stay as they are.
+- **PCs over SSH**, from 1.0.6 (docs/native-app.md, PCs over SSH): the
+  phone signs in to the user's own SSH server and opens that PC's Ovis through a tunnel on the
+  phone's loopback. What Play's review needs to hear:
+  - **No new permission.** INTERNET and ACCESS_NETWORK_STATE were already there; no
+    FOREGROUND_SERVICE (the connection is made again when the app comes back, so nothing runs in
+    the background and no foreground-service type is declared), no VpnService, no
+    QUERY_ALL_PACKAGES. The loopback listener is an ordinary socket inside the app's own process,
+    reachable on the phone only, and answers nothing without the app's own cookie.
+  - **Keys.** The phone's own SSH key (ed25519) is made on the phone; its private half is sealed
+    with an AES-GCM key held in the Android Keystore and never leaves the app. A private key the
+    user pastes in, and its passphrase, are sealed the same way. A password is used once to sign
+    in and never stored. Backups stay off (`allowBackup="false"`), so none of it goes to a
+    Google backup either. Nothing of it reaches the developer.
+  - **Data safety**: Google counts what goes to the user's own PC as collected (above), and SSH
+    adds no data type: the content is the same app's, now over SSH (encrypted), and goes only
+    to the PC, with no relay, `app.ovis.sh` or developer service on the way. Two things are new
+    and both fit rows already declared: the public half of the phone's SSH key, which the app
+    adds to the PC's `~/.ssh/authorized_keys` when the user asks (Device or other IDs: name it
+    in that row), and the SSH password, which is not a Play data type and goes only to the PC's
+    sshd. The SSH account name the user types goes to that PC's sshd too: declare it under
+    Personal info > User IDs (collected, not shared, sent only to the user's own PC, required for
+    the SSH way only). Add "the public key of the phone's SSH key, kept by the user's own PC" to
+    the Device or other IDs row when this ships.
+  - **App access**: the instructions sent with 1.0.6 (section 4) name SSH among the ways to pair
+    and say its keys stay on the phone; the demo shows the same app without a PC (the field holds
+    500 characters, so there is no room for more). The next time the text is sent, say "private
+    keys stay on the phone" (497 characters): the public key goes to the PC's `authorized_keys`.
+    Do not hand Google a login to a real machine.
+  - **Policy**: an SSH client is allowed (Device and Network Abuse covers apps that interfere
+    with other apps or networks, which this does not); the app reaches only the address the user
+    types, on the port the user types.
+  - Store listing: one line in the full description, under how to connect: *Or add a computer you
+    already reach over SSH: no relay, no account, no open port but SSH.*
 - Every new upload: raise `versionCode`, build as in section 2, upload to the track.

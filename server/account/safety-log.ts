@@ -13,14 +13,19 @@
  * change the log through the server's recovery socket (S2-15), never by writing this file.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, type Stats, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, type Stats, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { AccountRecordError, parseSafetyRecord, type PcLiftRecord, type SafetyRecord, type SafetyRecordKind } from "../../shared/account-records.ts";
+import { AccountRecordError, parseSafetyRecord, type BlockRecord, type DeviceLiftRecord, type PcLiftRecord, type SafetyRecord, type SafetyRecordKind } from "../../shared/account-records.ts";
 import { privateStateRefusal, writePrivateState } from "../private-state.ts";
 
 export const SAFETY_LOG_FILE = "account-log.json";
 /** The device journal (P15, S2-07). A state folder that has one has had a log since, so a missing log there is damage. */
 export const DEVICE_JOURNAL_FILE = "device-journal.json";
+/**
+ * Beside the log: a block was dropped by a full waiting queue and the log could not take that mark (S10-2). The PC
+ * then fails closed at every open, as the log's own `overflowed` would make it, until the queue's repair (S10-1).
+ */
+export const SAFETY_OVERFLOW_FILE = "account-log-overflowed.json";
 
 /** How the record reached this PC; noted once and never compared (P24). */
 export type SafetyGot = "handed" | "mailbox" | "snapshot" | "pc" | "session" | "merge";
@@ -32,6 +37,7 @@ export interface BlockAsOf {
   readonly after: number | null;
   readonly joined: number | null;
   readonly signer_removed: boolean;
+  readonly legacy_created_at?: number;
 }
 
 /**
@@ -49,6 +55,21 @@ export type SafetyReceipt =
   | { outcome: "applied"; id: string; n: number }
   | { outcome: "already_applied"; id: string }
   | { outcome: "refused"; id: string; code: "record_invalid" | "conflict" | "log_unavailable" };
+
+/** A block whose target this PC cannot place yet (P19): it ends nobody and waits for a read that names its target. */
+/**
+ * Why a lift was appended (seam for S2-27): a whole read's snapshot, a confirm on this PC's screen, a block whose
+ * signer left (orphan), `ovis recover --lift`, or a device-signed lift applied outside a snapshot (record). Closed: a
+ * new producer does not compile without choosing one.
+ */
+export type LiftCause = "snapshot" | "screen" | "orphan" | "recover" | "record";
+const LIFT_CAUSES: ReadonlySet<LiftCause> = new Set<LiftCause>(["snapshot", "screen", "orphan", "recover", "record"]);
+
+/** What is appended; a lift must name its cause, and one that does not is refused (seam for S2-27). */
+export interface SafetyAppend { readonly record: SafetyRecord; readonly got: SafetyGot; readonly asof?: BlockAsOf; readonly cause?: LiftCause }
+
+export interface WaitingBlock { readonly record: BlockRecord; readonly got: SafetyGot; readonly signer_removed: boolean }
+export const WAITING_MAX = 64;
 
 export interface SafetyState {
   readonly locked: boolean;
@@ -75,8 +96,10 @@ interface LogFile {
   /** folded records, one line each with no number: an id in it is known and ended (P24) */
   base: FoldedRecord[];
   entries: SafetyEntry[];
-  /** P19's waiting blocks (S2-10) */
-  waiting: unknown[];
+  /** P19's waiting blocks, at most WAITING_MAX: each with what this PC knew of its signer when it arrived */
+  waiting: WaitingBlock[];
+  /** A dropped waiting block keeps the log strict until repair; never cleared automatically (S19, P19). */
+  readonly overflowed?: true;
 }
 
 const GOTS: ReadonlySet<string> = new Set(["handed", "mailbox", "snapshot", "pc", "session", "merge"]);
@@ -98,7 +121,10 @@ function recordProblem(record: unknown, asof: BlockAsOf | undefined): string | n
   if (parsed.kind === "block") {
     if (asof === undefined) return "a block keeps what this PC knew when it arrived";
     const a = asof as unknown as Record<string, unknown>;
-    if (typeof a !== "object" || a === null || Object.keys(a).length !== 5 || !isNo(a.signer_no) || !isNo(a.target_no) || !isNo(a.after) || !isNo(a.joined) || typeof a.signer_removed !== "boolean") return "invalid asof";
+    if (typeof a !== "object" || a === null || !isNo(a.signer_no) || !isNo(a.target_no) || !isNo(a.after) || !isNo(a.joined) || typeof a.signer_removed !== "boolean") return "invalid asof";
+    const hasLegacyDate = Object.hasOwn(a, "legacy_created_at");
+    if (Object.keys(a).length !== (hasLegacyDate ? 6 : 5)
+      || (hasLegacyDate && (a.joined !== 0 || !Number.isSafeInteger(a.legacy_created_at)))) return "invalid asof";
   } else if (asof !== undefined) return "only a block keeps asof";
   return null;
 }
@@ -113,9 +139,12 @@ function parseLog(value: unknown): LogFile | string {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return "it is not a log";
   const file = value as Partial<LogFile>;
   if (file.v !== 1) return "unknown version";
+  if (file.overflowed !== undefined && file.overflowed !== true) return "invalid overflow marker";
   if (!Number.isSafeInteger(file.next) || file.next! < 1) return "invalid next";
   if (!Array.isArray(file.base) || !file.base.every((line) => typeof line === "object" && line !== null && typeof line.id === "string")) return "invalid base";
   if (!Array.isArray(file.entries) || !Array.isArray(file.waiting)) return "invalid entries";
+  if (file.waiting.length > WAITING_MAX || !file.waiting.every((item) => typeof item === "object" && item !== null && GOTS.has(item.got) && typeof item.signer_removed === "boolean"
+    && recordProblem(item.record, { signer_no: null, target_no: null, after: null, joined: null, signer_removed: false }) === null && item.record.kind === "block")) return "invalid waiting blocks";
   const seen = new Map<string, SafetyRecord>();
   const numbers = new Set<number>();
   for (const id of file.base.map((line) => line.id)) {
@@ -192,7 +221,7 @@ export class SafetyLog {
     if (HANDLES.get(this.path) === this) HANDLES.delete(this.path);
   }
 
-  /** Reads the file as open() does; false, with the log strict, when it is missing where it must exist or untrusted. */
+  /** Reads the file as open() does; false when the log is strict and must not be changed. */
   private load(): boolean {
     this.inForce = STRICT_STATE;
     // PC-written endings carry no signature: a log another account could write ends blocks and locks with one line
@@ -202,16 +231,24 @@ export class SafetyLog {
     try { text = readFileSync(this.path, "utf8"); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.readError = `Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
       else if (existsSync(join(this.stateDir, DEVICE_JOURNAL_FILE))) this.readError = `${this.path} is missing beside the device journal`;
-      else if (this.file.next !== 1) this.readError = `${this.path} is missing after this PC wrote it`;
+      else if (this.file.next !== 1 || this.file.waiting.length !== 0) this.readError = `${this.path} is missing after this PC wrote it`;
+      else if (this.overflowMarked()) this.file = { ...this.file, overflowed: true };
       else { this.inForce = this.state(); return true; }
       return false;
     }
     let parsed: LogFile | string;
     try { parsed = parseLog(JSON.parse(text)); } catch { parsed = "it is not JSON"; }
     if (typeof parsed === "string") { this.readError = `${this.path} cannot be trusted: ${parsed}`; return false; }
-    this.file = parsed;
+    this.file = this.overflowMarked() ? { ...parsed, overflowed: true } : parsed;
+    if (this.file.overflowed) return false;
     this.inForce = this.state();
     return true;
+  }
+
+  /** Whether the overflow marker stands beside the log: anything but a clean "no such file" counts (S10-2). */
+  private overflowMarked(): boolean {
+    try { lstatSync(join(this.stateDir, SAFETY_OVERFLOW_FILE)); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOENT"; }
   }
 
   /**
@@ -219,7 +256,7 @@ export class SafetyLog {
    * counts until a reload finds the log whole (S19): nothing else is appended on this handle meanwhile.
    */
   get strict(): string | null {
-    const why = this.readError ?? this.writeError;
+    const why = this.reason;
     return why === null ? null : `${why}: only this PC itself gets in until the account safety log is restored.`;
   }
 
@@ -236,6 +273,54 @@ export class SafetyLog {
       .filter((record) => record.kind === "forget" && record.target === key && record.account === account).map((record) => record.id);
   }
 
+  /** The receipts of every block of `key` this log knows (T60): applied with its number while whole, already_applied once folded. */
+  receipts(key: string): SafetyReceipt[] {
+    const whole = this.file.entries.filter((entry) => entry.record.kind === "block" && entry.record.target === key).map((entry): SafetyReceipt => ({ outcome: "applied", id: entry.record.id, n: entry.n }));
+    const folded = this.file.base.filter((line) => line.kind === "block" && line.target === key).map((line): SafetyReceipt => ({ outcome: "already_applied", id: line.id }));
+    return [...whole, ...folded];
+  }
+
+  /**
+   * The receipts of every block `key` signed that this log holds whole (T60 (2)): a refused sign-in of that key carries
+   * them. A folded line keeps no signer, so a block folded here is no longer named this way. Only blocks signed under
+   * `account`, the PC's binding: one signed under an earlier binding is no receipt of this account (seam for S2-24).
+   */
+  receiptsBySigner(key: string, account: string): SafetyReceipt[] {
+    return this.file.entries.filter((entry) => entry.record.kind === "block" && entry.record.signer === key && entry.record.account === account).map((entry) => ({ outcome: "applied", id: entry.record.id, n: entry.n }));
+  }
+
+  /** Every block id this log knows, whole or folded: a snapshot's blocks this PC already holds. */
+  blockIds(): string[] {
+    return [...this.file.entries.filter((entry) => entry.record.kind === "block").map((entry) => entry.record.id), ...this.file.base.filter((line) => line.kind === "block").map((line) => line.id)];
+  }
+
+  /**
+   * The lock (P11): written by the log itself, signed `pc`, under the account this PC is bound to; refused with no
+   * binding, since a PC in no account has no strict mode in this release.
+   */
+  appendLock(binding: { readonly account: string } | null): SafetyReceipt {
+    if (binding === null) return { outcome: "refused", id: "", code: "record_invalid" };
+    return this.append({ record: { v: 1, id: pcRecordId(), kind: "lock", account: binding.account, target: null, signer: "pc", signed_at: new Date().toISOString(), signature: "" }, got: "pc" });
+  }
+
+  /** Ends the lock `lockId` (P11, T47), written by the log itself like the lock. */
+  appendUnlock(lockId: string, binding: { readonly account: string } | null): SafetyReceipt {
+    if (binding === null) return { outcome: "refused", id: "", code: "record_invalid" };
+    return this.append({ record: { v: 1, id: pcRecordId(), kind: "unlock", account: binding.account, target: lockId, signer: "pc", signed_at: new Date().toISOString(), signature: "" }, got: "pc" });
+  }
+
+  /**
+   * A lift at the PC (`ovis recover --lift`, T69): signed `pc` under this PC's account, of a block this log holds. It
+   * ends that block and its freeze only; `forget` also ends its marker. Refused with no binding, as a lock is.
+   */
+  appendLift(blockId: string, binding: { readonly account: string } | null, options: { readonly cause: LiftCause; readonly forget?: boolean }): SafetyReceipt {
+    // a service freeze this PC holds without its block is lifted by its own id, `f:` and that block's id (P23 way 2)
+    const freeze = this.inForce.freezes.find((entry) => entry.record.kind === "freeze" && entry.record.id === blockId && entry.record.account === binding?.account);
+    const target = freeze !== undefined ? blockId.slice(2) : blockId;
+    if (binding === null || (freeze === undefined && !this.blockIds().includes(blockId))) return { outcome: "refused", id: "", code: "record_invalid" };
+    return this.append({ record: { v: 1, id: pcRecordId(), kind: "lift", account: binding.account, target, signer: "pc", signed_at: new Date().toISOString(), forget: options.forget === true, signature: "" }, got: "pc", cause: options.cause });
+  }
+
   /** The receipt of a record this log holds (T51): the same `applied` as often as it is asked, until it is folded. */
   receipt(id: string): SafetyReceipt | null {
     const entry = this.file.entries.find((candidate) => candidate.record.id === id);
@@ -247,11 +332,19 @@ export class SafetyLog {
    * Appends one record with the next number, on disk before it counts. A record this log already holds answers its
    * receipt and appends nothing; another record under a known id is refused, and the log keeps what it holds.
    */
-  append(input: { record: SafetyRecord; got: SafetyGot; asof?: BlockAsOf }): SafetyReceipt {
-    const { record, got, asof } = input;
+  /** Hears a durable lift with its block or freeze target and cause (seam for S2-27). */
+  onLifted(listener: (target: string, cause: LiftCause) => void): () => void {
+    this.liftListeners.add(listener);
+    return () => { this.liftListeners.delete(listener); };
+  }
+  private readonly liftListeners = new Set<(target: string, cause: LiftCause) => void>();
+
+  append(input: SafetyAppend): SafetyReceipt {
+    const { record, got, asof, cause } = input;
     const id = typeof record?.id === "string" ? record.id : "";
-    if (this.readError !== null || this.writeError !== null) return { outcome: "refused", id, code: "log_unavailable" };
+    if (this.strict !== null) return { outcome: "refused", id, code: "log_unavailable" };
     if (!GOTS.has(got) || recordProblem(record, asof) !== null) return { outcome: "refused", id, code: "record_invalid" };
+    if (record.kind === "lift" && !LIFT_CAUSES.has(cause as LiftCause)) return { outcome: "refused", id, code: "record_invalid" };
     // what another handle of this folder appended is read first, so no number is given twice and none is lost (P24)
     if (!this.load()) return { outcome: "refused", id, code: "log_unavailable" };
     const held = this.file.entries.find((entry) => entry.record.id === id);
@@ -259,14 +352,51 @@ export class SafetyLog {
     if (this.file.base.some((line) => line.id === id)) return { outcome: "already_applied", id };
     const entry: SafetyEntry = { n: this.file.next, got, record: { ...record }, ...(asof === undefined ? {} : { asof: { ...asof } }) };
     const next: LogFile = { ...this.file, next: this.file.next + 1, entries: [...this.file.entries, entry] };
-    try { writePrivateState(this.path, next); } catch (error) {
-      this.writeError = `Cannot write ${this.path} (${error instanceof Error ? error.message : String(error)})`;
-      this.inForce = STRICT_STATE;
-      return { outcome: "refused", id, code: "log_unavailable" };
+    if (!this.writeFile(next)) return { outcome: "refused", id, code: "log_unavailable" };
+    if (record.kind === "lift" && cause !== undefined) {
+      const held = this.file.entries.filter(({ record: candidate }) => candidate.account === record.account);
+      const block = held.find(({ record: candidate }) => candidate.kind === "block" && candidate.id === record.target);
+      const freeze = held.find(({ record: candidate }) => candidate.kind === "freeze" && candidate.id === `f:${record.target}`);
+      const target = block?.record.target ?? freeze?.record.target ?? null;
+      if (target !== null) for (const listener of [...this.liftListeners]) {
+        try { listener(target, cause); } catch (error) { console.warn(`[account] a lift listener failed: ${error instanceof Error ? error.message : String(error)}`); }
+      }
     }
-    this.file = next;
-    this.inForce = this.state();
     return { outcome: "applied", id, n: entry.n };
+  }
+
+  /** Number a whole read's lifts together; no new receipt counts until the single replacement succeeds. */
+  commitLifts(lifts: readonly DeviceLiftRecord[], cause: Extract<LiftCause, "snapshot">): { added: number; receipts: SafetyReceipt[] } {
+    if (lifts.length === 0) return { added: 0, receipts: [] };
+    const unavailable = () => ({ added: 0, receipts: lifts.map((record): SafetyReceipt => ({ outcome: "refused", id: record?.id ?? "", code: "log_unavailable" })) });
+    if (this.strict !== null || !this.load()) return unavailable();
+    const next = { ...this.file, entries: [...this.file.entries] };
+    const receipts = lifts.map((record): SafetyReceipt => {
+      const id = typeof record?.id === "string" ? record.id : "";
+      if (recordProblem(record, undefined) !== null || record.kind !== "lift" || record.signer === "pc") return { outcome: "refused", id, code: "record_invalid" };
+      const held = next.entries.find((entry) => entry.record.id === id);
+      if (held) return sameRecord(held.record, record) ? { outcome: "applied", id, n: held.n } : { outcome: "refused", id, code: "conflict" };
+      if (next.base.some((line) => line.id === id)) return { outcome: "already_applied", id };
+      const n = next.next++;
+      next.entries.push({ n, record: { ...record }, got: "snapshot" });
+      return { outcome: "applied", id, n };
+    });
+    const refused = receipts.filter((receipt) => receipt.outcome === "refused");
+    if (refused.length) return { added: 0, receipts: refused };
+    const added = next.next - this.file.next;
+    if (added) {
+      if (!this.writeFile(next)) return unavailable();
+      for (const { record } of next.entries.slice(-added)) {
+        const ended = next.entries.find(({ record: parent }) => parent.account === record.account &&
+          ((parent.kind === "block" && parent.id === record.target) || (parent.kind === "freeze" && parent.id === `f:${record.target}`)));
+        const target = ended?.record.target;
+        if (target == null) continue;
+        for (const listener of [...this.liftListeners]) {
+          try { listener(target, cause); } catch (error) { console.warn(`[account] a lift listener failed: ${error instanceof Error ? error.message : String(error)}`); }
+        }
+      }
+    }
+    return { added, receipts };
   }
 
 
@@ -309,7 +439,7 @@ export class SafetyLog {
    * counts only under the account of the record it names. Returns how many entries folded.
    */
   fold(): number {
-    if (this.readError !== null) return 0;
+    if (this.strict !== null) return 0;
     const state = this.state();
     if (state.locked || state.blocks.length > 0 || state.freezes.length > 0) return 0;
     // an ending ends only the record it names under the same account, as state() reads it (P24)
@@ -344,11 +474,53 @@ export class SafetyLog {
     return folds.size;
   }
 
-  /** The file as it stands, for a merge. */
-  snapshot(): { readonly next: number; readonly base: readonly FoldedRecord[]; readonly entries: readonly SafetyEntry[]; readonly waiting: readonly unknown[] } { return this.file; }
+  waitingBlocks(): readonly WaitingBlock[] { return this.file.waiting; }
 
-  /** Why the log could not be trusted, without the strict tail, or null. */
-  get reason(): string | null { return this.readError ?? this.writeError; }
+  /** Queues a block whose target this PC cannot place yet; false if the log cannot hold it, without evicting another (P19). */
+  wait(item: WaitingBlock): boolean {
+    if (this.strict !== null || !this.load()) return false;
+    if (this.file.waiting.some((kept) => kept.record.id === item.record.id)) return true;
+    if (this.file.waiting.length >= WAITING_MAX) {
+      // the mark is durable before the block is dropped, or a restart forgets that one was (S10-2): the log, else the side file
+      if (this.writeFile({ ...this.file, overflowed: true })) return false;
+      try { writePrivateState(join(this.stateDir, SAFETY_OVERFLOW_FILE), { v: 1, at: new Date().toISOString() }); }
+      catch (error) {
+        // no mark could be written: nothing is dropped. The block stays, over capacity and in memory only, and the PC is
+        // closed for this run (the failed log write above made it strict)
+        console.error(`The waiting queue's overflow could not be marked, so the block is kept: ${error instanceof Error ? error.message : String(error)}`);
+        this.file = { ...this.file, waiting: [...this.file.waiting, item] };
+      }
+      return false;
+    }
+    return this.writeFile({ ...this.file, waiting: [...this.file.waiting, item] });
+  }
+
+  /** A waiting block was judged: applied, or refused for good. */
+  unwait(id: string): void {
+    if (!this.file.waiting.some((kept) => kept.record.id === id)) return;
+    if (this.strict !== null || !this.load()) return;
+    const waiting = this.file.waiting.filter((kept) => kept.record.id !== id);
+    if (waiting.length !== this.file.waiting.length) this.writeFile({ ...this.file, waiting });
+  }
+
+  private writeFile(next: LogFile): boolean {
+    try { writePrivateState(this.path, next); } catch (error) {
+      this.writeError = `Cannot write ${this.path} (${error instanceof Error ? error.message : String(error)})`;
+      this.inForce = STRICT_STATE;
+      return false;
+    }
+    this.file = next;
+    this.inForce = next.overflowed ? STRICT_STATE : this.state();
+    return true;
+  }
+
+  /** The file as it stands, for a merge. */
+  snapshot(): { readonly next: number; readonly base: readonly FoldedRecord[]; readonly entries: readonly SafetyEntry[]; readonly waiting: readonly WaitingBlock[]; readonly overflowed?: true } { return this.file; }
+
+  /** Why the log is strict, without the strict tail, or null. */
+  get reason(): string | null {
+    return this.readError ?? this.writeError ?? (this.file.overflowed ? "A block could not be queued because the waiting queue is full" : null);
+  }
 
   /** Whether the log could be read: a merge never writes over one it could not. */
   get readable(): boolean { return this.readError === null; }
@@ -406,7 +578,8 @@ export function mergeSafetyLogs(active: string, sibling: string): string | null 
         .filter((entry) => !held.has(entry.record.id) && !folded.has(entry.record.id))
         .map((entry) => ({ ...entry, n: next++, got: "merge" as const }));
       const waiting = [...mine.waiting, ...theirs.waiting.filter((item) => !mine.waiting.some((own) => JSON.stringify(own) === JSON.stringify(item)))];
-      return { v: 1, next, base, entries: [...mine.entries.filter((entry) => !folded.has(entry.record.id)), ...taken].map(strictest), waiting };
+      return { v: 1, next, base, entries: [...mine.entries.filter((entry) => !folded.has(entry.record.id)), ...taken].map(strictest), waiting,
+        ...(mine.overflowed || theirs.overflowed ? { overflowed: true } : {}) };
     };
     const [forOwn, forOther] = [merged(a, b), merged(b, a)];
     const written: string[] = [];

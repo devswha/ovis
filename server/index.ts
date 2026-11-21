@@ -19,9 +19,10 @@ import { dirname, join } from "node:path";
 import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { isLoopbackBind, lanExposed } from "./access.ts";
-import { DeviceStore, folderTombstones, mergeAccountTombstones, readDeviceRegistry } from "./devices.ts";
+import { DeviceStore, folderTombstones, mergeAccountTombstones, readDeviceRegistry, type StoredDevice } from "./devices.ts";
 import { PreferenceStore } from "./preferences.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
+import { readBrowserToolSetting } from "./agent-launch.ts";
 import { SeenStore } from "./seen.ts";
 import type { SeenFinish } from "../shared/seen.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
@@ -57,12 +58,23 @@ import { accountOpensAll } from "../shared/account-devices-api.ts";
 import { mergeSafetyLogs, SafetyLog } from "./account/safety-log.ts";
 import { PcAccountState } from "./account/pc-binding.ts";
 import { savedServerId } from "./relay/identity.ts";
+import { snapshotPorts } from "./account/snapshot-ports.ts";
+import type { Readmission } from "./account/readmission.ts";
+import { AccountOrder } from "./account/account-order.ts";
+import { accountRowsFor } from "./account/account-devices.ts";
+import { listNotices } from "./account/list-notices.ts";
+import { AccountCatchUp } from "./account/account-catch-up.ts";
 import { RemovalEvidence } from "./account/removal-evidence.ts";
 import { DeviceJournal } from "./account/device-journal.ts";
+import { mergeAccountState } from "./account/account-merge.ts";
 import { AccountHolds } from "./account/holds.ts";
 import { AccountIntroductions } from "./account/introductions.ts";
+import { RecoveryReleases } from "./account/recovery.ts";
+import { openPcRecovery } from "./account/recovery-server.ts";
 import { PendingRedemptions, type PendingRedemption } from "./account/pending.ts";
 import { askScreenForKey, KeyProofPairings } from "./account/key-proof.ts";
+import { lockRoutes } from "./account/lock-routes.ts";
+import { LockSignal } from "./lock-boundary.ts";
 import { desktopOwnerChannel, desktopOwnerFdChannel, LOCAL_CONFIRM_FILE, LocalConfirms, openConfirmListener, takeDesktopOwnerFd } from "./account/local-confirm.ts";
 import { Telemetry } from "./telemetry.ts";
 import { UsageService } from "./usage.ts";
@@ -263,59 +275,101 @@ export function createServer(
   /** paired devices (server/devices.ts) and the PC's Tailscale login: the two ways in besides the token and this PC itself */
   const ovisRelay = options.relay ?? new RelayService({ stateDir, accountService: passAccountService(options.accountService?.url), ...(options.accountService?.fetch ? { accountFetch: options.accountService.fetch } : {}) });
   const opensAll = provided.accountOpensAll ?? accountOpensAll();
+  // A folder of another relay identity is another PC, not a source of rows or account state (P12, T48).
+  const sameIdentity = (other: string) => { const [mine, theirs] = [savedServerId(stateDir), savedServerId(other)]; return mine === undefined || theirs === undefined || mine === theirs; };
+  const foreignSibling = opensAll && typeof options.siblingStateDir === "string" && !sameIdentity(options.siblingStateDir);
+  const sibling = foreignSibling ? null : options.siblingStateDir;
   // the order is checked against this folder's own rows before the sibling merge, which may remove some (P21, S29)
   const checkedOrder = (dir: string) => {
     const state = PcAccountState.open(dir);
-    const own = readDeviceRegistry(join(dir, "devices.json"));
+    const own = readDeviceRegistry(join(dir, "devices.json"), opensAll);
     if (own.kind === "ok") state.checkRows(own.devices);
     return state;
   };
   const pcAccount = opensAll ? checkedOrder(stateDir) : null;
-  // a strict start changes nothing on disk, and nothing is merged with a damaged folder either, flag on or off: the
-  // check only reads, and a folder main wrote has no numbered row, so main's merge is unchanged (S29)
   // one rule, whatever the flag and with or without a sibling: when this folder's or its sibling's order is missing or
   // behind the rows it numbered, the start is blocked as a merge that could not be made blocks it, and writes nothing
   // to either folder (no merge, fold, repair or legacy pass) until the damage is repaired (S19, S29)
   const damage = (dir: string) => checkedOrder(dir).strict;
-  const blocked = pcAccount?.strict ?? damage(stateDir) ?? (options.siblingStateDir ? damage(options.siblingStateDir) : null);
+  const blocked = pcAccount?.strict ?? damage(stateDir) ?? (sibling ? damage(sibling) : null);
   if (blocked !== null) console.error(blocked);
   const untouched = blocked !== null;
   // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
-  // and only a folder of this PC's own relay identity is its sibling there: another identity is another PC (P12)
-  const sameIdentity = (other: string) => { const [mine, theirs] = [savedServerId(stateDir), savedServerId(other)]; return mine === undefined || theirs === undefined || mine === theirs; };
-  if (pcAccount !== null && options.siblingStateDir && !untouched && sameIdentity(options.siblingStateDir)) pcAccount.takeSibling(options.siblingStateDir);
-  const merge = options.siblingStateDir && !untouched ? mergeSiblingState(stateDir, options.siblingStateDir) : null;
+  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling);
   // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
-  const carried = opensAll && options.siblingStateDir && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(options.siblingStateDir)] : [];
-  let accountBlocked: string | null = null;
-  if (options.siblingStateDir && !untouched) {
-    try { accountBlocked = mergeAccountTombstones(stateDir, options.siblingStateDir, opensAll); }
-    catch (error) { accountBlocked = `cannot merge the account tombstones of ${options.siblingStateDir}: ${error instanceof Error ? error.message : String(error)}`; }
-    if (accountBlocked !== null) console.error(accountBlocked);
-  }
+  const carried = opensAll && sibling && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(sibling)] : [];
   // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)
   // a sibling folder's log is merged into both before this one is read: nothing in force is lost, nothing ended comes back (T48)
-  const logMerge = opensAll && options.siblingStateDir && !untouched ? mergeSafetyLogs(stateDir, options.siblingStateDir) : null;
-  const safetyLog = opensAll ? SafetyLog.open(stateDir, logMerge) : null;
-  // what nothing rests on any more is folded once replayed; a fold that cannot be written leaves the log whole
-  if (!untouched) try { safetyLog?.fold(); } catch (error) { console.error(`[account] the safety log could not be folded: ${error instanceof Error ? error.message : String(error)}`); }
+  const logMerge = opensAll && sibling && !untouched ? mergeSafetyLogs(stateDir, sibling) : null;
+  // a sibling dir's account state is merged too; one that cannot be fails this PC closed like a damaged log (S19)
+  const accountMerge = opensAll && sibling && !untouched ? mergeAccountState(stateDir, sibling) : null;
+  const safetyLog = opensAll ? SafetyLog.open(stateDir, logMerge ?? accountMerge) : null;
+  // then its rows: none is imported while the merged log holds a lock, a block or a freeze in force, and a row whose
+  // key differs between the two copies is dropped (T48, T27)
+  const conflicts: StoredDevice[] = [];
+  const closure = safetyLog !== null && (safetyLog.strict !== null || safetyLog.state().locked || safetyLog.state().freezes.length > 0);
+  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { holdImports: closure, dropConflictingKeys: true, onDropped: (device) => conflicts.push(device) } : {}) : null;
+  let accountBlocked: string | null = accountMerge;
+  if (sibling && !untouched && accountBlocked === null) {
+    try { accountBlocked = mergeAccountTombstones(stateDir, sibling, opensAll); }
+    catch (error) { accountBlocked = `cannot merge the account tombstones of ${sibling}: ${error instanceof Error ? error.message : String(error)}`; }
+    if (accountBlocked !== null) console.error(accountBlocked);
+  }
   const removals = opensAll ? RemovalEvidence.open(stateDir, safetyLog) : null;
   // the journal's first entry makes the safety log too, so a journal never stands without its log (P24)
   const journal = opensAll ? DeviceJournal.open(stateDir, () => safetyLog?.ensureFile()) : null;
-  const devices = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
-    safety: safetyLog, pc: pcAccount, removals, journal, carried, held: (key) => accountMailbox.gates().held(key),
+  // Step 2 (S2-24): with the release flag on, each pull is followed by a whole read applied to this PC's log and rows
+  const serverIdNow = () => ovisRelay.currentIdentity()?.server_id ?? null;
+  // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
+  const opened: { rows: ReturnType<typeof accountRowsFor> | null } = { rows: null };
+  // Recovery can use row ports inside the DeviceStore constructor, before its caller has a reference.
+  const rowsForDevices = (devices: DeviceStore) => opened.rows = safetyLog !== null && pcAccount !== null && journal !== null && removals !== null ? accountRowsFor(stateDir, serverIdNow, {
+    evidence: removals,
+    ...listNotices(journal, removals, (entry) => devices.publish(entry)),
+    settleNotices: rows => devices.settleListNotices(rows),
+    closeSessions: (id) => { devices.closeAccountSessions(id); },
+    heldByDevicesJson: (key) => devices.hasKey(key),
+    checkFreshness: () => accountCatchUp.checkFreshness(),
+    releaseOf: id => recoveryReleases?.releaseOf(id) ?? null,
+    admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
+    now: () => Date.now(),
+    setTimeout: (run, ms) => devices.waitClock().setTimeout(run, ms),
+    admitOrigin: (at) => pcAccount.admit("remote", "list", null, Date.parse(devices.nextStamp(at))),
+    firstDevice: {
+      othersEver: () => pcAccount.othersEver(),
+      setOthersEver: () => { pcAccount.setOthersEver(); },
+      listKey: () => pcAccount.first()?.list_key ?? null,
+      otherRows: () => {
+        const bound = pcAccount.first()?.key;
+        return devices.list(null).length > (bound !== undefined && devices.hasKey(bound) ? 1 : 0);
+      },
+    },
+    admitListedRows: write => devices.admitListedRows(write),
+  }) : null;
+  const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
+    safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: rowsForDevices, held: (key) => accountMailbox.gates().held(key),
   });
+  const accountRows = opened.rows;
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
   const accountMailbox = new AccountMailbox({
     pendingPath: join(stateDir, "account-pending.json"), holds: accountHolds,
+    ...(opensAll ? { snapshot: { account: () => devices.account(), ports: (readmission?: Readmission) => readPorts?.(readmission) ?? null, used: () => accountRows?.store()?.usedReport() ?? [] } } : {}),
     devices, identity: () => ovisRelay.currentIdentity(),
     service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
   });
+  // a row dropped because its copies held different keys is gone from both folders; the journal says so (T27, T48)
+  if (merge?.devicesBlocked === null) for (const device of conflicts) devices.journalEvent({ kind: "drop", how: "merge_conflict", key: device.relay_public_key ?? null, no: null, row: device.id, label: device.label, by: null, account: device.account ?? null });
+  // Device migration creates the journal's companions. Recover interrupted notices before their whole records fold.
+  if (devices.error === null && devices.accountError === null && safetyLog && journal) {
+    journal.recordSnapshotLifts(safetyLog);
+    try { safetyLog.fold(); } catch (error) { console.error(`[account] the safety log could not be folded: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   for (const strict of [safetyLog?.strict, pcAccount?.strict, removals?.strict, journal?.strict]) if (strict) console.error(strict);
   // the machine profile has no open install: from its first answer only the caller on its owner's socket and a device through the relay with its proof get in
   if (options.profile === "machine") devices.closeGate();
   const preferences = new PreferenceStore(stateDir);
   readOmpHeldFilesSetting(() => preferences.get().settings.ompHeldFiles === true);
+  readBrowserToolSetting(() => preferences.get().settings.agentBrowserTools, join(stateDir, "browser tools"));
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
   const stopPinBridge = capabilities().pins ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
   try {
@@ -438,6 +492,7 @@ export function createServer(
     };
   });
 
+
   const envPort = process.env["PORT"];
   const clientConnectionLog = new ClientConnectionLog();
   const socketContext = (bunServer: Bun.Server<SocketData>): ServerContext => ({
@@ -526,7 +581,51 @@ export function createServer(
     ? new KeyProofPairings({ pending: pendingRedemptions, seams: devices }) : undefined;
   devices.onKeyRemoved((key, cause) => pendingRedemptions?.dropKey(key, cause));
   const askScreen = localConfirms && keyProofPairings ? (entry: PendingRedemption) => askScreenForKey(localConfirms, keyProofPairings, entry) : undefined;
+  // `ovis recover` (server/account/recovery.ts): this PC's user, at its terminal or over SSH, on a socket no route reaches.
+  // Each release and undo is journalled per row before it takes effect; whether the log can be read is asked live
+  const recoveryReleases = opensAll && journal ? new RecoveryReleases({
+    journal: (entry) => {
+      if (entry.kind === "release") {
+        for (const row of entry.rows) journal.append({ kind: "release", how: "recover", key: row.key, no: null, row: row.id, label: row.id, by: entry.by, account: null });
+      } else {
+        for (const row of entry.rows) journal.append({ kind: "release", how: "recover", key: null, no: null, row, label: row, by: entry.by, account: null, undo: entry.releases.join(",") });
+      }
+    },
+  }) : undefined;
+  const recoverySocket = recoveryReleases && journal && safetyLog ? openPcRecovery({
+    stateDir, devices, pcAccount, journal, safetyLog, releases: recoveryReleases, pending: pendingRedemptions, pairings: keyProofPairings,
+  }) : null;
+  // the lock is written only after this PC's screen approves it, then the rows it does not let in end (T46)
+  const lockSignal = safetyLog ? new LockSignal() : undefined;
+  const lockHandler = localConfirms && safetyLog && pcAccount ? lockRoutes({ confirms: localConfirms, store: {
+    bound: () => pcAccount.binding() !== null,
+    state: () => ({ lock: safetyLog.state().locks.at(-1)?.record.id ?? null, strict: devices.failsClosed }),
+    preview: () => ({ rows: devices.list(null).filter((row) => devices.originOf(row.id)?.from !== "pc").map((row) => ({ id: row.id, label: row.label, origin: devices.originOf(row.id), file: "devices" as const })), grants: ["token", "portal", "tailscale", "open_lan", "loopback"] }),
+    lock: () => {
+      if (safetyLog.appendLock(pcAccount.binding()).outcome !== "applied") return;
+      // a code started before the lock pairs nobody after it: it ends in the same turn (T46)
+      devices.endPairing();
+      devices.endUnlockedRows();
+      lockSignal?.fire();
+    },
+    // the unlock names the lock's own account: a lock stays until an unlock names it, whatever the binding did since (P11)
+    unlock: (lockId) => {
+      const lock = safetyLog.state().locks.find((entry) => entry.record.id === lockId);
+      safetyLog.appendUnlock(lockId, lock === undefined ? null : { account: lock.record.account });
+    },
+    removalsPending: () => devices.pendingLockRemovals().length > 0,
+  } }) : undefined;
+  const accountCatchUp = new AccountCatchUp(devices, accountRows, pcAccount, recoveryReleases);
+  const catchUp = accountCatchUp.gate;
+  const accountOrder = safetyLog !== null ? AccountOrder.open(stateDir) : null;
+  devices.attachAccountOrder(accountOrder);
+  const readPorts = safetyLog !== null && pcAccount !== null && journal !== null && accountOrder !== null
+    ? (readmission?: Readmission) => snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: serverIdNow, requestRead: () => { void accountMailbox.pull(); },
+      // the read's commit turn: the account rows take its list, idle rows expire (T54), and the wait after a start ends
+      commitList: (snapshot) => accountCatchUp.commitList(snapshot, readmission) })
+    : null;
   const services: RequestServices = {
+    checkAccountFreshness: () => accountCatchUp.checkFreshness(),
     runtimeMove: options.runtimeService ? moveService({
       stateDir, port: server.port ?? DEFAULT_PORT, serving: runtime, facts: () => options.runtimeService?.facts(),
       lock: { path: moveLockPath(herdrSocketPath()) },
@@ -540,7 +639,7 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, localConfirms, pendingRedemptions, keyProofPairings, askScreenForKey: askScreen,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, localConfirms, recoveryReleases, pendingRedemptions, keyProofPairings, askScreenForKey: askScreen, lockRoutes: lockHandler, lockSignal,
     get portalStartupResult() { return portalStartupResult; },
   };
   ovisRelay.resume(services, server.port ?? DEFAULT_PORT);
@@ -619,6 +718,8 @@ export function createServer(
     stop: () => {
       services.runtimeMove?.stop();
       accountMailbox.stop();
+      accountRows?.stop();
+      accountCatchUp.stop();
       void ovisRelay.shutdown();
       settlePortalStartup({ ok: false, error: new Error("Server stopped before Portal startup cleanup completed") });
       core.stop(() => {
@@ -640,6 +741,7 @@ export function createServer(
       ipv6?.stop(true);
       ownerListener?.stop(true);
       confirmListener?.stop();
+      recoverySocket?.stop();
       desktopOwner?.stop();
       for (const listener of lanListeners) listener.stop(true);
       releaseFilePool();

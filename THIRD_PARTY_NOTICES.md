@@ -64,6 +64,14 @@ validation approach from
 The MIT license text below applies. Ovis uses independent server IDs,
 bounded private storage and absent-only response defaults.
 
+## orca accessibility snapshot
+
+`app/electron/src/browserAxTree.ts` adapts the accessibility-tree walk (its role sets and the
+outline it makes) from [stablyai/orca](https://github.com/stablyai/orca),
+`src/main/browser/cdp/snapshots/snapshot-ax-tree-walk.ts`, at revision
+`0854480f88dbc495dc7c2b95dc35844916e4b296`, under MIT, Copyright (c) 2026 Lovecast Inc. The MIT
+license text below applies.
+
 ## Agent of Empires IME rewrite sequences
 
 The dictation hypotheses and SwiftKey word-commit sequences in
@@ -1563,7 +1571,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ## libghostty-vt
 
-`src/lib/ghostty/ghostty-vt.wasm` is libghostty-vt from [Ghostty](https://github.com/ghostty-org/ghostty) at
+`shared/ghostty/ghostty-vt.wasm` is libghostty-vt from [Ghostty](https://github.com/ghostty-org/ghostty) at
 commit e95bed6, built for wasm32 by `scripts/ghostty-vt/build.sh` with the small change in
 `scripts/ghostty-vt/kitty-on-wasm.patch` (Kitty graphics on, file media off). It draws every terminal, under the
 MIT License below. The module links two
