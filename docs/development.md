@@ -1415,8 +1415,9 @@ takes it in ci.yml's own runs, main's push runs included; its `runs-on` sends a 
 `macos-15` before it reads the variable, and Release validation, which calls ci.yml under its own
 name with `hosted_only`, stays on `macos-15`. A Release may take main's run in place of its own, whose
 macOS job then ran on the Mac, as its Linux jobs ran on the self-hosted PC. The `macos-15` entries of
-`remote-bundles.yml`'s bundle job and `pty-sidecar.yml`'s build job take it only for a pull request
-from this repository, so the binaries a release publishes or attests are always built on GitHub's
+`remote-bundles-platforms.yml`'s bundle job (a pull request's arm64 and macOS bundles) and
+`pty-sidecar.yml`'s build job take it only for a pull request from this repository, and
+`remote-bundles.yml`'s bundle job, which carries the same form, no longer runs for a pull request, so the binaries a release publishes or attests are always built on GitHub's
 runners (scripts/privileged-jobs-workflow.test.ts). `desktop.yml` and `beta.yml` read the Mac
 signing secrets and stay hosted, as do `macos-15-intel` jobs. A job waits for a runner while the Mac
 is off or both runners are busy: delete the variable to go back to `macos-15`.
