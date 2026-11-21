@@ -1,6 +1,7 @@
 import { userInfo } from "node:os";
 import type { RecoveryStanding } from "../../shared/account-devices-api.ts";
 import type { DeviceStore } from "../devices.ts";
+import { forgetPageMedia } from "../file-view.ts";
 import type { DeviceJournal } from "./device-journal.ts";
 import type { KeyProofPairings } from "./key-proof.ts";
 import type { PcAccountState } from "./pc-binding.ts";
@@ -32,6 +33,11 @@ export function openPcRecovery(options: {
     const { kind, id, target, account, signer } = record;
     return kind === "block" || kind === "freeze" ? [{ kind, id, target, account, signer }] : [];
   });
+  // a row the CLI ends loses the page media its renders were given, as one HTTP revoke ends (dispatch.ts)
+  const forgetMedia = (ids: string[]): string[] => {
+    for (const id of ids) forgetPageMedia({ device: id });
+    return ids;
+  };
   const seams: RecoverySeams = {
     pendingList: () => (pending?.list() ?? []).map(({ id, label, fingerprint }) => ({ id, label, fingerprint })),
     standing,
@@ -46,7 +52,11 @@ export function openPcRecovery(options: {
       }
       return pairings.approve(id, fingerprint, "recover");
     },
-    removeKey: (input) => devices.removeKey(input),
+    removeKey: (input) => {
+      const done = devices.removeKey(input);
+      if ("removed" in done) forgetMedia(done.removed);
+      return done;
+    },
     appendLift: (id, forget, user) => {
       const freezeId = id.startsWith("f:");
       const restriction = standing().find((entry) => entry.id === id);
@@ -70,7 +80,7 @@ export function openPcRecovery(options: {
       }
       return done;
     },
-    revokeAll: (user) => devices.revokeAll(user),
+    revokeAll: (user) => forgetMedia(devices.revokeAll(user)),
   };
   // a bridge this app started on another PC's behalf is never that PC's own Ovis: it is not added to an account
   const managed = () => process.env["OVIS_REMOTE"] === "1";
