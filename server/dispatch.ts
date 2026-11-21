@@ -297,11 +297,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   });
   // a node the owner removed gets no Tailscale grant, and a device's own credential over the tailnet names its node on
   // its row (server/tailnet-nodes.ts). Only the address the local tailscaled wrote counts: one source, from loopback
+  let tailnetNode: string | null = null;
   if (options.profile !== "machine" && relayPeer === undefined) {
-    access = await tailnetNodeGate(access, {
+    ({ access, node: tailnetNode } = await tailnetNodeGate(access, {
       address: loopback && forwarded && !funnel && inTailnet(forwardedFor) ? forwardedFor : null,
       owner: identity.owner, nodes: ctx.services.tailnetNodes, rows: devices, whois: ctx.services.whoisNode,
-    });
+    }));
   }
   // the lock and a log that cannot be read decide here, once, for every way in (server/lock-boundary.ts)
   const safety = ctx.services.safetyLog;
@@ -351,7 +352,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const lockSignal = ctx.services.lockSignal;
   const survivesLock = access.level === "full" && (bridgeAuthorized || (access.device !== undefined && access.via !== "local")
     || lockBoundary(access, { locked: true, strict: false }, { localProof: false, ownProgram: ctx.ownerSocket === true, originOf: (rowId) => devices.originOf(rowId) }).level === "full");
-  const untilLock = lockSignal !== undefined && !survivesLock ? untilLockFrom(lockSignal) : undefined;
+  const untilLocked = lockSignal !== undefined && !survivesLock ? untilLockFrom(lockSignal) : undefined;
+  // and one that came from a tailnet node ends when that node is blocked, as a row's end with its Revoke (tailnet-nodes.ts)
+  const node = tailnetNode;
+  const untilRefused = node === null ? untilLocked : (close: () => void) => {
+    const stops = [untilLocked?.(close), ctx.services.tailnetNodes.onBlocked(node, close)];
+    return () => { for (const stop of stops) stop?.(); };
+  };
 
   // on the owner's socket a request naming another host or showing a proxy gets nothing, its health included
   if (options.profile === "machine" && access.level !== "full") return machineUnauthorized(pathname);
@@ -565,8 +572,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       const pairings = machinePairingEvents(ctx, access, keys, joinViewer);
       // a stream ends with what let it in: a device's revoke, the gate closing on one the open LAN let in, Portal's recheck
       const endsWith = deviceId ? (close: () => void) => devices.onRevoke(deviceId, close) : openAccess ? (close: () => void) => devices.endWithGate(close) : portalRecheckMs !== undefined ? (close: () => void) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined;
-      // and with a lock, when what let it in is a grant the lock refuses
-      const ends = untilLock === undefined ? endsWith : (close: () => void) => { const stops = [untilLock(close), endsWith?.(close)]; return () => { for (const stop of stops) stop?.(); }; };
+      // and with a lock, when what let it in is a grant the lock refuses, or with a block of the tailnet node it came from
+      const ends = untilRefused === undefined ? endsWith : (close: () => void) => { const stops = [untilRefused(close), endsWith?.(close)]; return () => { for (const stop of stops) stop?.(); }; };
       const response = await handleMachineRequest(request, machines, ends, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget, ownerAccess(access), ctx.services.safetyLog !== null, devices);
       response.headers.set("cache-control", "no-store");
       if (issuedKey !== null && response.ok) response.headers.append("set-cookie", streamCookie(issuedKey, isSecureRequest(request)));
@@ -591,7 +598,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         relay = new MachineRelay(machines, machineId, readOnly, browserSnapshot,
           (browser) => ctx.services.relayReceiptIds.scope(machineId, principal, browser));
         await relay.ready;
-        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...(access.level === "full" && access.via === "open" ? { open: true } : {}), ...recheck, ...(untilLock ? { untilLock } : {}) }) });
+        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...(access.level === "full" && access.via === "open" ? { open: true } : {}), ...recheck, ...(untilRefused ? { untilLock: untilRefused } : {}) }) });
         if (upgraded) return undefined;
         relay.close();
       } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
@@ -618,7 +625,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       manager: machines, preferences, herdrSidebar, seen,
       pairings: machinePairingEvents(ctx, access, keys, joinViewer),
     } : undefined;
-    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, localRoster, deviceId, ...(ctx.peer.kind === "relay" && ctx.peer.device.id === deviceId && ctx.peer.key ? { provedKey: ctx.peer.key } : {}), readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(ingress === undefined ? {} : { ingress }), ...recheck, ...(untilLock ? { untilLock } : {}) }) });
+    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, localRoster, deviceId, ...(ctx.peer.kind === "relay" && ctx.peer.device.id === deviceId && ctx.peer.key ? { provedKey: ctx.peer.key } : {}), readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(ingress === undefined ? {} : { ingress }), ...recheck, ...(untilRefused ? { untilLock: untilRefused } : {}) }) });
     if (upgraded) return undefined;
     return new Response("websocket upgrade required", { status: 426 });
   }

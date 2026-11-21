@@ -9,6 +9,7 @@ import { DeviceJournal } from "./account/device-journal.ts";
 import { PcAccountState } from "./account/pc-binding.ts";
 import { RemovalEvidence } from "./account/removal-evidence.ts";
 import { SafetyLog } from "./account/safety-log.ts";
+import { bounded } from "./relay/test-helpers.ts";
 import { DeviceStore } from "./devices.ts";
 import { createServer } from "./index.ts";
 import { handleTailnetNodeRequest, mergeTailnetNodes, TAILNET_NODES_FILE, tailnetNodeGate, TailnetNodes } from "./tailnet-nodes.ts";
@@ -110,6 +111,25 @@ describe("owner decision #13: a device removed on the PC stays out over Tailscal
     expect(await pc.auth(over("100.64.0.11"))).toMatchObject({ authenticated: true, via: "tailscale" });
   });
 
+  it("closes a live tailnet socket the moment its node is blocked from the dialog, and no other node's", async () => {
+    const pc = start(stateDir("live"));
+    const open = async (address: string) => {
+      expect(await pc.auth(over(address))).toMatchObject({ authenticated: true, via: "tailscale" });
+      const socket = new WebSocket(`${pc.base.replace("http", "ws")}/ws`, { headers: over(address) } as unknown as string[]);
+      await bounded(new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("close", reject, { once: true }); }), 5000);
+      return socket;
+    };
+    const tablet = await open("100.64.0.10");
+    const laptop = await open("100.64.0.11");
+    const closed = new Promise<CloseEvent>((resolve) => tablet.addEventListener("close", resolve, { once: true }));
+    try {
+      expect((await pc.post("/api/devices/tailnet-nodes/block", { ids: ["nTablet2CNTRL"] })).status).toBe(200);
+      const event = await bounded(closed, 5000);
+      expect([event.code, event.reason]).toEqual([1008, "Device access revoked"]);
+      expect(laptop.readyState).toBe(WebSocket.OPEN);
+    } finally { tablet.close(); laptop.close(); }
+  });
+
   it("the removal dialog blocks a node that never had a row, and only a node this PC has seen", async () => {
     const pc = start(stateDir("dialog"));
     expect(await pc.auth(over("100.64.0.10"))).toMatchObject({ authenticated: true, via: "tailscale" });
@@ -194,6 +214,8 @@ describe("the tailnet node list", () => {
       const signer = await member();
       const target = await member();
       store.noteTailnetNode(target.id, "nPhone1CNTRL");
+      const ended: string[] = [];
+      nodes.onBlocked("nPhone1CNTRL", () => ended.push(how));
       if (how === "not_me") {
         const record = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 9, signer_no: 1, signer: signer.spki, signed_at: new Date().toISOString(), nonce: newRecordId() }, signer.keys.privateKey) as BlockRecord;
         expect(await store.applyBlock(record, "session")).toMatchObject({ outcome: "applied" });
@@ -205,7 +227,7 @@ describe("the tailnet node list", () => {
       const next = await tailnetNodeGate({ level: "full", via: "tailscale", role: "drive", login: OWNER }, {
         address: "100.64.0.9", owner: OWNER, nodes, rows: store, whois: async (address) => parseWhois(whoisJson(address)),
       });
-      expect(next).toEqual({ level: "none", reason: "tailnet_blocked" });
+      expect([next.access, ended]).toEqual([{ level: "none", reason: "tailnet_blocked" }, [how]]);
       expect(journal.entries().filter((entry) => entry.kind === "tailnet").map(({ how: what, row }) => [what, row])).toEqual([["block", target.id]]);
     }
   });

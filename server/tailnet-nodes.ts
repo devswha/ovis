@@ -103,6 +103,8 @@ export class TailnetNodes {
   private nodes: StoredTailnetNode[] = [];
   private readonly path: string;
   private failure: string | null = null;
+  /** the live connections and streams of each node, ended when it is blocked (DeviceStore.onRevoke does it for a row) */
+  private readonly streams = new Map<string, Set<() => void>>();
   private asking: (TailnetNodePrompt & { readonly at: number }) | null = null;
   private readonly declined = new Map<string, number>();
 
@@ -118,10 +120,30 @@ export class TailnetNodes {
 
   get problem(): string | null { return this.failure; }
 
-  /** Every node is kept out from now on: a block that should stand did not land. */
+  /** Every node is kept out from now on, and every live connection of one ends: a block that should stand did not land. */
   failClosed(reason: string): void {
     this.failure ??= reason;
     console.error(this.failure);
+    this.end([...this.streams.keys()]);
+  }
+
+  /** Ends `close` when the node `id` is blocked; returns its unsubscribe. */
+  onBlocked(id: string, close: () => void): () => void {
+    if (this.isBlocked(id)) { close(); return () => {}; }
+    const set = this.streams.get(id) ?? new Set();
+    set.add(close);
+    this.streams.set(id, set);
+    return () => { set.delete(close); if (set.size === 0 && this.streams.get(id) === set) this.streams.delete(id); };
+  }
+
+  private end(ids: readonly string[]): void {
+    for (const id of ids) {
+      const closes = this.streams.get(id);
+      this.streams.delete(id);
+      for (const close of closes ?? []) {
+        try { close(); } catch (error) { console.warn(`[tailnet-nodes] a connection of ${id} did not end: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+    }
   }
 
   /** Whether `id` is kept out; while the list cannot be read, every node is. */
@@ -162,6 +184,8 @@ export class TailnetNodes {
     }
     this.write(trimmed(next));
     if (this.asking !== null && !this.isBlocked(this.asking.id)) this.asking = null;
+    // a block takes effect now: what the node has open ends, as a Revoke ends a row's sessions
+    this.end(fresh.map((node) => node.id));
     return fresh.map((node) => node.id);
   }
 
@@ -222,7 +246,8 @@ export interface TailnetNodeRows {
  * refusal and an ask on this PC's own window; a paired device's credential arriving over the tailnet records its node
  * on its row. `address` is the request's one tailnet source address (X-Forwarded-For from the local tailscaled), null
  * for every request that did not come that way. A node that cannot be named is let in as before only while no node is
- * blocked: with one blocked it might be that one.
+ * blocked: with one blocked it might be that one. `node`: the StableNodeID of a request let in from the tailnet, whose
+ * connections and streams end when that node is blocked.
  */
 export async function tailnetNodeGate(access: Access, input: {
   readonly address: string | null;
@@ -230,26 +255,28 @@ export async function tailnetNodeGate(access: Access, input: {
   readonly nodes: TailnetNodes;
   readonly rows: Pick<TailnetNodeRows, "noteTailnetNode">;
   readonly whois: (address: string) => Promise<TailnetNode | null>;
-}): Promise<Access> {
-  if (access.level !== "full") return access;
+}): Promise<{ readonly access: Access; readonly node: string | null }> {
+  const as = (next: Access, node: string | null = null) => ({ access: next, node });
+  if (access.level !== "full") return as(access);
   const { address, nodes } = input;
   if (access.via === "tailscale") {
     const node = address === null ? null : await input.whois(address);
-    if (node === null) return nodes.anyBlocked() ? { level: "none", reason: "tailnet_blocked" } : access;
+    if (node === null) return as(nodes.anyBlocked() ? { level: "none", reason: "tailnet_blocked" } : access);
     if (nodes.isBlocked(node.id)) {
       nodes.ask(node);
-      return { level: "none", reason: "tailnet_blocked" };
+      return as({ level: "none", reason: "tailnet_blocked" });
     }
     nodes.seen(node);
-    return access;
+    return as(access, node.id);
   }
   if (access.via === "device" && access.device !== undefined && address !== null) {
     const node = await input.whois(address);
-    if (node === null) return access;
+    if (node === null) return as(access);
     input.rows.noteTailnetNode(access.device.id, node.id);
     if (node.login !== null && input.owner !== null && node.login.toLowerCase() === input.owner.toLowerCase()) nodes.seen(node);
+    return as(access, node.id);
   }
-  return access;
+  return as(access);
 }
 
 /**
