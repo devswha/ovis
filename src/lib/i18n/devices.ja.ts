@@ -231,6 +231,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Online": "オンライン",
   "Update Ovis on that PC": "そのPCのOvisを更新してください",
   "Asking {name}…": "{name}に依頼中…",
+  "Not approved": "承認されていません",
   "Approve on another device of your account": "アカウントの別のデバイスで承認してください",
   "That PC could not be added. Try again.": "そのPCを追加できませんでした。もう一度お試しください。",
   "The relay did not start: {message}": "リレーを開始できませんでした: {message}",

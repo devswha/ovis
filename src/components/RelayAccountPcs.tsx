@@ -62,7 +62,8 @@ export interface AccountPcs {
   /** what the PC answered when asked whether it would pair; undefined while it is asked */
   stateOf(serverId: string): AccountPcState | undefined;
   pairing: Pairing | null;
-  failure: { server_id: string; message: string } | null;
+  /** `code`: the server's refusal (ApiError.code), absent for one this page decided */
+  failure: { server_id: string; message: string; code?: string } | null;
   add(pc: AccountPcEntry): Promise<void>;
   cancel(): void;
   /** asks that PC again whether it would pair (Check again on one that did not answer); rejects when it could not be asked */
@@ -90,7 +91,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
   }, []);
   const [states, setStates] = useState<ReadonlyMap<string, AccountPcState>>(new Map());
   const [pairing, setPairing] = useState<Pairing | null>(null);
-  const [failure, setFailure] = useState<{ server_id: string; message: string } | null>(null);
+  const [failure, setFailure] = useState<{ server_id: string; message: string; code?: string } | null>(null);
   const own = machines.find((machine) => machine.kind === "local")?.server_id;
   const added = (serverId: string): Machine | undefined => machines.find((machine) => machine.kind !== "local" && (machine.relay?.server_id ?? machine.server_id) === serverId);
   const listed = useRef<Round>({ asked: new Set(), invalid: new Set(), failed: new Set(), scope: null });
@@ -200,7 +201,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       // roster shows it added once that one ends
       if (error instanceof ApiError && error.code === "account_pc_busy") return;
       if (error instanceof ApiError && error.code === "account_pc_outdated") setStates((current) => new Map(current).set(pc.server_id, "outdated"));
-      setFailure({ server_id: pc.server_id, message: error instanceof ApiError ? error.detail : t("That PC could not be added. Try again.") });
+      setFailure(error instanceof ApiError ? { server_id: pc.server_id, message: error.detail, ...(error.code === null ? {} : { code: error.code }) } : { server_id: pc.server_id, message: t("That PC could not be added. Try again.") });
     }
   };
   const cancel = (): void => {

@@ -231,6 +231,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Online": "在线",
   "Update Ovis on that PC": "请更新那台 PC 上的 Ovis",
   "Asking {name}…": "正在请求 {name}…",
+  "Not approved": "未获批准",
   "Approve on another device of your account": "请在你账户的另一台设备上批准",
   "That PC could not be added. Try again.": "无法添加那台 PC。请重试。",
   "The relay did not start: {message}": "中继未能启动：{message}",

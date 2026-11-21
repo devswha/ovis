@@ -37,6 +37,8 @@ describe("the account's PCs in the sidebar", () => {
   let invalidAway: boolean;
   let events: EventTarget;
   let documentEvents: EventTarget;
+  // this browser's storage, kept across a page load within a test (mount again) and cleared between tests
+  const stored = new Map<string, string>();
 
   beforeEach(() => {
     requests = [];
@@ -58,7 +60,9 @@ describe("the account's PCs in the sidebar", () => {
       list: async () => { lists += 1; const who = listAccount ?? mine; return who === null ? null : { account: who, pcs: [OWN, DESK, LAB, OLD, AWAY] }; },
       admit: async (serverId) => { admitted.push(serverId); },
     };
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    stored.clear();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } } });
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64)", maxTouchPoints: 0 } });
@@ -189,7 +193,7 @@ describe("the account's PCs in the sidebar", () => {
     expect(opened.map((machine) => machine.id)).toEqual(["desk-id"]);
   });
 
-  it("says why a PC was not added and asks it nothing more, also when the window comes back, until the account's list changes", async () => {
+  it("says why a PC was not added and asks it nothing more, also when the window comes back or the account lists another PC", async () => {
     await mount();
     await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_declined", message: "That PC was not approved. Nothing was added." } })); pairLines!.close(); });
     await settle();
@@ -198,11 +202,51 @@ describe("the account's PCs in the sidebar", () => {
     await comeBack();
     await comeBack();
     expect(starts()).toBe(1);
-    // the account lists something new: each PC gets one more look
+    // the account lists another PC: a Deny stays until the account lists that PC itself anew
     source.list = async () => { lists += 1; return { account: "acct", pcs: [OWN, DESK, LAB, OLD, AWAY, { ...pc("4", "New one"), server_id: "4".repeat(32) }] }; };
     await comeBack();
+    expect(starts()).toBe(1);
+    expect(admitted).toEqual([DESK.server_id]);
+  });
+
+  it("remembers a member's Deny across a page load: the PC is not asked again, and its row says so", async () => {
+    await mount();
+    await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_declined", message: "That PC was not approved. Nothing was added." } })); pairLines!.close(); });
+    await settle();
+    await act(async () => { renderer!.unmount(); });
+    await mount();
+    expect(starts()).toBe(1);
+    expect(text(row("Desk"))).toContain("Not approved");
+    // the account lists that PC anew (a new window): it gets one more look
+    source.list = async () => ({ account: "acct", pcs: [OWN, { ...DESK, new_until: new Date(Date.now() + 60_000).toISOString() }, LAB, OLD, AWAY] });
+    await comeBack();
     expect(starts()).toBe(2);
-    expect(admitted).toEqual([DESK.server_id, DESK.server_id]);
+  });
+
+  it("does not ask a declined PC again after one failed read of the account's list", async () => {
+    await mount();
+    await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_declined", message: "That PC was not approved. Nothing was added." } })); pairLines!.close(); });
+    await settle();
+    const list = source.list;
+    source.list = async () => { throw new TypeError("The account service could not be reached"); };
+    await comeBack();
+    source.list = list;
+    await comeBack();
+    expect(starts()).toBe(1);
+  });
+
+  it("tries a PC whose add failed for a passing reason once more when the window comes back, and no more", async () => {
+    await mount();
+    const fail = async () => {
+      await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_offline", message: "That PC could not be reached through the relay." } })); pairLines!.close(); });
+      await settle();
+    };
+    await fail();
+    await comeBack();
+    expect(starts()).toBe(2);
+    await fail();
+    await comeBack();
+    expect(starts()).toBe(2);
   });
 
   it("signed out, asks this PC nothing: not its relay, not its account", async () => {

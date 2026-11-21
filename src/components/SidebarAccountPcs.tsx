@@ -78,31 +78,64 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, source,
   }, [account, reads]);
   const accountPcs = useAccountPcs({ machines, source, enabled: joined, expect: account, refresh: reads, onAdded });
   const waiting = accountPcs.pcs?.filter((pc) => accountPcs.added(pc.server_id) === undefined) ?? [];
-  // each PC is added on its own once: a declined or failed one is asked again only once the account lists something
-  // new, never because the window came back, so a member's Deny is not asked of them again
+  // each PC is added on its own once. A member's Deny is kept in this browser per account and PC, across page loads, until
+  // the account lists that PC anew; one that failed for a passing reason gets one more try when the window comes back;
+  // any other is asked again once the account lists something new. A read of the list that failed changes nothing.
   const [tried, setTried] = useState<ReadonlySet<string>>(new Set());
+  const [, noteDecline] = useState(0);
+  const passing = useRef(new Set<string>());
+  const retried = useRef(new Set<string>());
+  const declineKey = (serverId: string): string => `ovis:declined-pc:${account}:${serverId}`;
+  const declined = (pc: AccountPcEntry & { readonly new_until?: string | null }): boolean => {
+    try { return localStorage.getItem(declineKey(pc.server_id)) === (pc.new_until ?? ""); } catch { return false; }
+  };
+  const failure = accountPcs.failure;
+  useEffect(() => {
+    if (failure?.code === undefined) return;
+    if (failure.code !== "account_pc_declined") {
+      if (!retried.current.has(failure.server_id)) passing.current.add(failure.server_id);
+      return;
+    }
+    const pc = accountPcs.pcs?.find((entry) => entry.server_id === failure.server_id);
+    if (pc === undefined) return;
+    try { localStorage.setItem(declineKey(pc.server_id), pc.new_until ?? ""); } catch { /* not kept: asked again on the next load */ }
+    noteDecline((count) => count + 1);
+  }, [failure]);
+  useEffect(() => {
+    if (passing.current.size === 0) return;
+    const again = [...passing.current];
+    passing.current.clear();
+    for (const serverId of again) retried.current.add(serverId);
+    setTried((current) => new Set([...current].filter((serverId) => !again.includes(serverId))));
+  }, [reads]);
   const listing = accountPcs.pcs?.map((pc) => `${pc.server_id}:${pc.new_until ?? ""}`).join("\n") ?? "";
-  useEffect(() => { setTried(new Set()); }, [listing]);
+  const lastListing = useRef("");
+  useEffect(() => {
+    if (listing === "" || listing === lastListing.current) return;
+    lastListing.current = listing;
+    retried.current.clear();
+    setTried(new Set());
+  }, [listing]);
   // only a PC being added stands in for this device's own link to it (ShellPcs.tsx): one that is outdated, off,
   // declined or failed leaves that link where it was, so an update never costs a phone the way to a PC it drives
-  const adding = waiting.filter((pc) => accountPcs.stateOf(pc.server_id) === "ready" && (accountPcs.pairing?.server_id === pc.server_id || !tried.has(pc.server_id)));
+  const adding = waiting.filter((pc) => accountPcs.stateOf(pc.server_id) === "ready" && (accountPcs.pairing?.server_id === pc.server_id || (!tried.has(pc.server_id) && !declined(pc))));
   const listed = adding.map((pc) => pc.server_id).join("\n");
   useEffect(() => {
     onListed?.(listed === "" ? [] : listed.split("\n"));
     return () => onListed?.([]);
   }, [listed, onListed]);
-  const next = accountPcs.pairing === null ? waiting.find((pc) => accountPcs.stateOf(pc.server_id) === "ready" && !tried.has(pc.server_id)) : undefined;
+  const next = accountPcs.pairing === null ? waiting.find((pc) => accountPcs.stateOf(pc.server_id) === "ready" && !tried.has(pc.server_id) && !declined(pc)) : undefined;
   useEffect(() => {
     if (next === undefined) return;
     setTried((current) => new Set(current).add(next.server_id));
     void accountPcs.add(next);
   }, [next?.server_id]);
   if (waiting.length === 0) return null;
-  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} hidden={hidden} />)}</>;
+  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} declined={declined(pc)} hidden={hidden} />)}</>;
 }
 
 /** One PC of the account not in this app yet, as a PC group's header with where it is under it, and nothing to press. */
-function AccountPcRow({ pc, hidden, pcs: { stateOf, pairing, failure } }: { pc: AccountPcEntry & { readonly new_until?: string | null }; hidden: boolean; pcs: AccountPcs }) {
+function AccountPcRow({ pc, hidden, declined, pcs: { stateOf, pairing, failure } }: { pc: AccountPcEntry & { readonly new_until?: string | null }; hidden: boolean; /** a member declined it, in this browser, for this listing */ declined: boolean; pcs: AccountPcs }) {
   const t = useT();
   const [expiredAt, setExpiredAt] = useState<string>();
   const newUntil = pc.new_until;
@@ -116,9 +149,10 @@ function AccountPcRow({ pc, hidden, pcs: { stateOf, pairing, failure } }: { pc: 
   const state = stateOf(pc.server_id);
   const adding = pairing?.server_id === pc.server_id;
   const failed = !adding && failure?.server_id === pc.server_id;
-  const away = state === "offline" || state === "outdated" || failed;
+  const refused = !adding && !failed && declined;
+  const away = state === "offline" || state === "outdated" || failed || refused;
   // where it is, beside its name only: the words are the dot's tooltip and what a screen reader hears
-  const words = failed ? failure.message : state === undefined ? t("Checking…") : state === "offline" ? t("Switched off") : state === "outdated" ? t("Update Ovis on that PC") : t("Connecting…");
+  const words = failed ? failure.message : refused ? t("Not approved") : state === undefined ? t("Checking…") : state === "offline" ? t("Switched off") : state === "outdated" ? t("Update Ovis on that PC") : t("Connecting…");
   return (
     <section hidden={hidden && !adding} className={`machine-group account-pc-group${away ? " is-offline" : ""}`} aria-label={t("PC {name}", { name: pc.name })} data-pc-state={state ?? "checking"}>
       <header className="machine-header">

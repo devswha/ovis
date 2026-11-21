@@ -231,6 +231,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Online": "온라인",
   "Update Ovis on that PC": "그 PC의 Ovis를 업데이트하세요",
   "Asking {name}…": "{name}에 요청하는 중…",
+  "Not approved": "승인되지 않음",
   "Approve on another device of your account": "계정의 다른 기기에서 승인하세요",
   "That PC could not be added. Try again.": "그 PC를 추가하지 못했습니다. 다시 시도하세요.",
   "The relay did not start: {message}": "릴레이를 시작하지 못했습니다: {message}",
