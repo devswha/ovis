@@ -427,18 +427,34 @@ command = ["herdr", "plugin", "pane", "open", "--plugin", "$pluginId", "--entryp
 # `ovis` in any new terminal, as install.sh's launcher gives Linux and macOS: cmd\ovis.cmd runs the release's server as
 # `ovis-server plugin <command>`. It is kept beside bin\, not in it, since an update replaces bin\ whole; its folder is
 # put on the user's PATH once. The shim names the server relative to itself (%~dp0), so a user folder outside ASCII
-# stays intact.
+# stays intact, and it replaces only a shim of its own: an `ovis.cmd` it did not write, or a link, stays as it is.
 function Write-OvisCommand {
     $dir = Join-Path $ovisHome 'cmd'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    Set-Content -LiteralPath (Join-Path $dir 'ovis.cmd') -Value "@echo off`r`n`"%~dp0..\bin\ovis-server.exe`" plugin %*" -Encoding ASCII
+    $shim = Join-Path $dir 'ovis.cmd'
+    $text = "@echo off`r`n`"%~dp0..\bin\ovis-server.exe`" plugin %*`r`n"
+    $existing = Get-Item -LiteralPath $shim -Force -ErrorAction SilentlyContinue
+    if ($existing -and (($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        [IO.File]::ReadAllText($shim) -notmatch '^@echo off\r?\n"[^"\r\n]*\\bin\\ovis-server\.exe" plugin %\*\r?\n?$')) {
+        Write-Host "Ovis: $shim is not Ovis's own command, so it was left as it is"
+        return
+    }
+    $staged = Join-Path $dir ([IO.Path]::GetRandomFileName())
+    [IO.File]::WriteAllText($staged, $text, [Text.Encoding]::ASCII)
+    try {
+        if ($existing) { [IO.File]::Copy($staged, $shim, $true) }
+        # nothing was there: a file another installer writes meanwhile is not replaced
+        else { [IO.File]::Move($staged, $shim) }
+    } catch {
+        Write-Host "Ovis: $shim appeared while Ovis was writing it, so it was left as it is"
+        return
+    } finally { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if (-not (($userPath -split ';') -contains $dir)) {
         [Environment]::SetEnvironmentVariable('Path', ((@($userPath -split ';' | Where-Object { $_ }) + $dir) -join ';'), 'User')
         Write-Host "Ovis: added $dir to your PATH: open a new terminal to run ovis"
     }
 }
-
 $newInstall = $false
 $binaryDone = $false
 $ovisPlugin = Join-Path $ovisHome 'plugin'
