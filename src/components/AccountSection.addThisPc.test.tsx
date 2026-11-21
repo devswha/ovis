@@ -315,6 +315,43 @@ describe("AddThisPc", () => {
     expect(links()).toBe(2);
   });
 
+  test("a periodic relist that sees the PC bind during its directory read ends the wait without writing", async () => {
+    const renderer = await waitingFrom();
+    // The hidden page still relists but neither polls membership nor reopens on its own.
+    show(true);
+    const release = hold("listPcs");
+    await advance(RELIST_MS);
+    expect(links()).toBe(2);
+
+    pc.account = ACCOUNT;
+    release();
+    await settle();
+
+    expect(directory).toEqual(["putPc"]);
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(buttons(renderer)).toEqual([]);
+    expect(tab.has(MARKER)).toBe(false);
+    expect(asked.filter(({ path }) => path === "/api/relay/link" || path === "/api/relay/link/close").map(({ path }) => path))
+      .toEqual(["/api/relay/link", "/api/relay/link", "/api/relay/link/close"]);
+  });
+
+  test("an Add press closes the window it opened if the PC binds during the directory read", async () => {
+    const renderer = await mount();
+    const release = hold("listPcs");
+    await press(renderer, "Add this PC to my account");
+    expect(links()).toBe(1);
+
+    pc.account = ACCOUNT;
+    release();
+    await settle();
+
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(directory).toEqual([]);
+    expect(tab.has(MARKER)).toBe(false);
+    expect(asked.filter(({ path }) => path === "/api/relay/link" || path === "/api/relay/link/close").map(({ path }) => path))
+      .toEqual(["/api/relay/link", "/api/relay/link/close"]);
+  });
+
   test("says by itself that the PC is in the account once a device added it, and then asks nothing more", async () => {
     const renderer = await waitingFrom();
     await advance(ADDED_POLL_MS);
@@ -771,6 +808,19 @@ describe("AddThisPc", () => {
     expect(asked.filter((request) => request.path === "/api/relay/link").every((request) => request.localOnly)).toBe(true);
     const paths = asked.map((request) => request.path);
     expect(paths.indexOf("/api/relay/start")).toBeLessThan(paths.lastIndexOf("/api/relay/link"));
+  });
+
+  test("the relay-and-add button leaves the relay off when the PC has since bound", async () => {
+    pc.relay = "off";
+    const renderer = await mount(ACCOUNT, false);
+    pc.account = ACCOUNT;
+
+    await press(renderer, "Turn on the relay and add this PC");
+
+    expect(asked.filter(({ path }) => path === "/api/relay/start")).toEqual([]);
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(links()).toBe(0);
+    expect(directory).toEqual([]);
   });
 
   test("a copy offering the relay button takes up the wait another copy begins", async () => {
