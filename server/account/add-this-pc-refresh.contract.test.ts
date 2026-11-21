@@ -2,10 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { listThisPc } from "../../src/lib/account/addThisPc.ts";
-import { myPcs } from "../../src/lib/account/myPcs.ts";
 import { AccountService } from "../../src/lib/account/service.ts";
 import { memoryAccountStore } from "../../src/lib/account/store.ts";
-import { dashboardModel } from "../../src/lib/relay/dashboard.ts";
 import { nativeTransport, setTransport } from "../../src/lib/transport.ts";
 import { pairingPc, setUpFor } from "./pairing.test-helpers.ts";
 
@@ -108,22 +106,6 @@ test.each(["bind", "complete"] as const)("refresh races a real one-press %s with
   expect(f.pc.devices.account()).toBe(ACCOUNT);
   expect(f.changes).toEqual([f.refresh]);
   expect(listed).toMatchObject({ membership: { account: ACCOUNT, enrolling: false } });
-});
-
-test("refreshing a pending invitation keeps its listing age and renews its dashboard countdown", async () => {
-  const f = await fixture("pending");
-  const dashboard = async () => {
-    const rows = myPcs(await f.directory.listPcs(), [], { now: f.now }).map((pc) => ({ ...pc, relay: pc.join?.relay ?? null }));
-    return dashboardModel(rows, { label: "Phone", now: f.now }, RELAY);
-  };
-  expect((await dashboard()).attention[0]?.expiresAt).toBeNull();
-
-  await listThisPc(f.directory, { relistMs: RELIST_MS });
-
-  expect(f.changes).toEqual([f.refresh]);
-  const row = (await dashboard()).attention[0];
-  expect(row).toMatchObject({ server_id: f.serverId, expiresAt: f.now + INVITATION_MS });
-  expect((await f.directory.listPcs())[0]?.added_at).toBe(f.added);
 });
 
 test("a changed-listing response never triggers legacy removal or recreates the row", async () => {

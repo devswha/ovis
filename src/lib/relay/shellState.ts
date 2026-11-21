@@ -22,8 +22,6 @@ import { RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayRefusedE
 import { ServerIdentityChangedError } from "./device.ts";
 import type { TypedCodeFailure } from "./pairCode.ts";
 import type { RelayDevice } from "./device.ts";
-import { formatDashboardHash, isDashboardHash, parseDashboardHash } from "./dashboardRoute.ts";
-import { formatMyMachinesHash, parseMyMachinesHash } from "../account/myMachinesRoute.ts";
 
 export type KeySource = "link" | "saved";
 
@@ -267,17 +265,16 @@ export interface Attempt {
 export interface SheetJoin {
   readonly mode: "new" | "join";
   readonly server_id: string;
-  readonly returnHash?: string;
   /** the join a PC's own page started for itself: drawn alone, with no list behind it */
   readonly alone?: true;
 }
-export function dashboardHash(hash: string): string {
-  return isDashboardHash(hash) ? formatDashboardHash(parseDashboardHash(hash)) : "";
-}
-/** Where a sheet opened from the front page goes back to: the dashboard route or My machines it was opened on, else the front page. */
-export function returnHash(hash: string): string {
-  const machines = parseMyMachinesHash(hash);
-  return machines !== null ? formatMyMachinesHash(machines) : dashboardHash(hash);
+/**
+ * An address of the control page the hosted app had before 0.5.10 (`#overview`, `#pcs`, `#devices`, `#relay`,
+ * `#settings`, with a query, or an older `#relay-dash-*` anchor): the page is gone, and such a link or bookmark lands
+ * on the app as its bare address does.
+ */
+export function oldDashboardHash(hash: string): boolean {
+  return /^#(?:overview|pcs|devices|relay|settings|relay-dash-[a-z]+)(?:\?.*)?$/.test(hash);
 }
 export function sheetContext(serverId?: string): SheetJoin | null {
   try {
@@ -285,12 +282,11 @@ export function sheetContext(serverId?: string): SheetJoin | null {
     sessionStorage.removeItem("ovis-add-pc-sheet");
     if (typeof kept !== "object" || kept === null || !("mode" in kept) || !("server_id" in kept)) return null;
     if ((kept.mode !== "new" && kept.mode !== "join") || kept.server_id !== serverId || typeof kept.server_id !== "string") return null;
-    const back = "returnHash" in kept && typeof kept.returnHash === "string" ? returnHash(kept.returnHash) : "";
-    return { mode: kept.mode, server_id: kept.server_id, ...(back ? { returnHash: back } : {}), ...("alone" in kept && kept.alone === true ? { alone: true as const } : {}) };
+    return { mode: kept.mode, server_id: kept.server_id, ...("alone" in kept && kept.alone === true ? { alone: true as const } : {}) };
   } catch { return null; }
 }
 export function keepSheetContext(join: SheetJoin): void {
-  try { sessionStorage.setItem("ovis-add-pc-sheet", JSON.stringify({ mode: join.mode, server_id: join.server_id, returnHash: returnHash(join.returnHash ?? ""), ...(join.alone ? { alone: true } : {}) })); }
+  try { sessionStorage.setItem("ovis-add-pc-sheet", JSON.stringify({ mode: join.mode, server_id: join.server_id, ...(join.alone ? { alone: true } : {}) })); }
   catch {}
 }
 export function typedJoin(serverId: string): boolean {

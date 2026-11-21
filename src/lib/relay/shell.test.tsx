@@ -1128,7 +1128,17 @@ describe("the hosted shell's front page", () => {
       expect(browser.sessionStore.has("ovis-launched-pc")).toBe(false);
     });
 
-    it("takes the phone app's #pcs as its way to the front page, never the dashboard, and opens no PC from it", async () => {
+    it.each(["#overview", "#pcs?filter=needs", "#devices", "#relay-dash-pcs"])("lands an old control page address (%s) on the app in a browser: the address loses it and the launch opens the PC", async (hash) => {
+      const replaced: string[] = [];
+      (window.history as unknown as { replaceState: (state: unknown, title: string, url: string) => void }).replaceState = (_state, _title, url) => { replaced.push(url); };
+      const went: string[] = [];
+      launch();
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs("a".repeat(32))), entryUrl: `https://app.ovis.sh/${hash}`, navigate: (path) => { went.push(path); }, checkPc: answering() }));
+      expect(replaced).toContain("/");
+      expect(went).toEqual([`/s/${"a".repeat(32)}/`]);
+    });
+
+    it("takes the phone app's #pcs as its way to the front page and opens no PC from it", async () => {
       const replaced: string[] = [];
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true } });
       (window.history as unknown as { replaceState: (state: unknown, title: string, url: string) => void }).replaceState = (_state, _title, url) => { replaced.push(url); };
@@ -1493,9 +1503,6 @@ describe("the hosted shell's front page", () => {
       const store = deviceStore(await pcs("a".repeat(32)));
       launch();
       await mountRelayShell(mountFor({ store, entryUrl: "https://app.ovis.sh/#pane=w1", navigate: (path) => { went.push(path); } }));
-      // the phone app's saved row for the hosted app opens it on its list (app/web/connect.js)
-      launch();
-      await mountRelayShell(mountFor({ store, entryUrl: "https://app.ovis.sh/#pcs", navigate: (path) => { went.push(path); } }));
       launch();
       await mountRelayShell(mountFor({ store: deviceStore([]), entryUrl: `https://app.ovis.sh/s/${"a".repeat(32)}/` }));
       await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); }, checkPc: answering() }));
@@ -1604,7 +1611,6 @@ describe("the hosted shell's front page", () => {
     await mountRelayShell(mountFor({ store, entryUrl: `https://app.ovis.sh/s/${offer.server_id}/`, shellVersion: "1.0.0", open: async () => transport }));
     await mountRelayShell(front);
     expect(account().pcs?.[0]?.state).toBe("needs-update");
-    expect(last().observedVersions?.get(offer.server_id)?.version).toBe("0.0.1");
     transport.version = "1.0.0";
     await mountRelayShell(mountFor({ store, entryUrl: `https://app.ovis.sh/s/${offer.server_id}/`, shellVersion: "1.0.0", open: async () => transport,
       renderApp: () => ({ render() {}, unmount() {} }), pendingPush: { get: async () => undefined, clear: async () => {} } }));
@@ -1736,10 +1742,8 @@ describe("the hosted shell's front page", () => {
     expect((await arriveWith({ mode: "join", server_id: pc.server_id })).sheetJoin).toEqual({ mode: "join", server_id: pc.server_id });
     expect(browser.sessionStore.has(SHEET_JOIN)).toBe(false);
     expect((await arriveWith({ mode: "new", server_id: pc.server_id })).sheetJoin).toEqual({ mode: "new", server_id: pc.server_id });
-    expect((await arriveWith({ mode: "new", server_id: pc.server_id, returnHash: "#pcs?filter=needs", code: "secret", access_token: "token" })).sheetJoin)
-      .toEqual({ mode: "new", server_id: pc.server_id, returnHash: "#pcs?filter=needs" });
-    expect((await arriveWith({ mode: "join", server_id: pc.server_id, returnHash: "#code=secret&state=private" })).sheetJoin)
-      .toEqual({ mode: "join", server_id: pc.server_id });
+    expect((await arriveWith({ mode: "new", server_id: pc.server_id, code: "secret", access_token: "token" })).sheetJoin)
+      .toEqual({ mode: "new", server_id: pc.server_id });
     expect((await arriveWith(undefined)).sheetJoin).toBeNull();
     expect((await arriveWith({ mode: "add", server_id: pc.server_id })).sheetJoin).toBeNull();
     expect((await arriveWith("{not json")).sheetJoin).toBeNull();

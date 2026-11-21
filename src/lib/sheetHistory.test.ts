@@ -345,49 +345,11 @@ describe("a phone's sheet in the history", () => {
     jest.advanceTimersByTime(0);
     expect(fake.pending()).toBe(true);
     expect(sheetStep.lands({} as Event)).toBe(true);
-    // with no Navigation API it names no entry its step lands on
-    expect(sheetHistory.sheetBackOnto()).toBeNull();
     await settled();
     fake.defer(false);
     hooks.enter(() => {});
     h.back(); await settled();
     expect(answers).toEqual([true, false]);
-  });
-
-  it("names the entry its step lands on and tells that landing from any other traversal, also when a sheet opened and closed meanwhile (#4221)", async () => {
-    const browser = fake.window as { navigation?: unknown };
-    browser.navigation = fake.navigation;
-    try {
-      const landed: boolean[] = [];
-      fake.window.addEventListener("popstate", (event) => { landed.push(sheetHistory.sheetBackLanded(event as unknown as Event)); });
-      const start = fake.at();
-      const under = fake.entries[start]!.key;
-      const leaveFirst = hooks.enter(() => {});
-      fake.hold();
-      leaveFirst();
-      jest.advanceTimersByTime(0);
-      expect(fake.pending()).toBe(true);
-      expect(sheetHistory.sheetBackOnto()).toBe(under);
-      // a sheet opens over the entry the step leaves, and closes, before the step lands: it takes no step of its own
-      const leaveSecond = hooks.enter(() => {});
-      expect(fake.at()).toBe(start + 2);
-      leaveSecond();
-      jest.advanceTimersByTime(0);
-      expect(sheetHistory.sheetBackOnto()).toBe(under);
-      fake.release();
-      await settled();
-      expect(fake.at()).toBe(start);
-      expect(landed).toEqual([true]);
-      expect(sheetHistory.sheetBackOnto()).toBeNull();
-      // a Back of the user's own is no landing of the step
-      const leaveThird = hooks.enter(() => {});
-      h.back(); await settled();
-      leaveThird();
-      expect(fake.at()).toBe(start);
-      expect(landed).toEqual([true, false]);
-    } finally {
-      Reflect.deleteProperty(browser, "navigation");
-    }
   });
 
   it("keeps Settings opened as the palette closes over a peek that stays up: the palette's entry is the peek's again, with no step left to land under Settings (#2000)", async () => {

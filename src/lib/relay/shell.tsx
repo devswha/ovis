@@ -3,7 +3,6 @@ import { createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { encodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
 import { AccountOpenUnsupportedError, RelayPcOfflineError } from "../../../shared/relay-channel.ts";
-import { GLOBAL_RELAY } from "../../../shared/relay-regions.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
 import { nextOpenStep, openRefusalOf } from "../account/openPc.ts";
@@ -23,12 +22,12 @@ import { takeEntryUrl, watchNavigation } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
 import { holdWaitMs } from "./joinHold.ts";
-import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, returnHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
+import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, oldDashboardHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { ADMISSION_WAIT_MS, ConsentChangedError, createAccountController } from "./accountController.ts";
-import { keepShellSignOut } from "../account/hostedSignIn.ts";
+import { keepShellAccount } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
 import { refusalOf } from "./firstLink.ts";
 import { CHECK_GAP_MS, createPcSweep } from "./pcSweep.ts";
@@ -165,10 +164,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const scoped = entry.serverId !== null;
   // a front page that came with a fragment (a sign-in's return, a link that starts one, a page view) does not open a PC
   // at once: a sign-in's return does once its sign-in is read (below), the others stay where the link put them
-  const entryHash = new URL(mount.entryUrl).hash;
   // the phone app's saved row for this app opens it at #pcs (app/web/connect.js), so that it is no launch: that is the
-  // app's way to its front page, never a visit to the dashboard, which only its own address in a browser or Settings opens
-  if (!scoped && entryHash === "#pcs" && inNativeApp()) window.history.replaceState(null, "", "/");
+  // app's way to its front page. Anywhere else the old control page's addresses (#overview, #pcs, ...) land on the app,
+  // as its bare address does: dropped from the address, and the launch goes on
+  const linkedHash = new URL(mount.entryUrl).hash;
+  const oldPage = !scoped && oldDashboardHash(linkedHash) && !(linkedHash === "#pcs" && inNativeApp());
+  const entryHash = oldPage ? "" : linkedHash;
+  if (!scoped && oldDashboardHash(linkedHash)) window.history.replaceState(null, "", "/");
   // a PC the person tapped on the phone app's connect screen (app/web/connect.js adds #picked): chosen now, not reopened
   // by the app as it starts, so an off PC keeps its failure card. The mark is dropped from the address at once
   const picked = scoped && entryHash === "#picked";
@@ -308,8 +310,15 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const askNewScan = (offer: RelayOffer): void => { show({ kind: "failed", failure: "scan-expired", name: offer.name ?? null, detail: null, server_id: offer.server_id }); };
   const account = createAccountController(mount, { active: frontUp, changed: accountChanged, outdated: () => new Set([...observedVersions()].filter(([, value]) => value.outdated).map(([id]) => id)) });
   accountRead = !account.enabled;
-  // the PC page this shell opens signs out with the overview's own Sign out, offered where the overview offers it
-  keepShellSignOut(account.enabled ? account.signOut : null);
+  // the PC page this shell opens acts on the account through these: Settings → Devices and PCs → Manage account
+  keepShellAccount(account.enabled ? {
+    signOut: account.signOut, leave: account.leave,
+    deleteAccount: async () => {
+      await account.deleteAccount();
+      const now = account.state;
+      return now?.kind === "signed-in" ? now.deleteError ?? null : null;
+    },
+  } : null);
   /**
    * What the confirm says now. Signed in, nothing can be confirmed until the directory is read: before that, whether
    * the pairing adds the PC to the account is not known. A directory whose read failed, or was not answered in time,
@@ -360,13 +369,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const toFront = (): void => {
     entries++;
     if (shown?.kind === "ready") {
-      const returnHash = sheetJoin?.returnHash ?? "";
       cancelAttempt(); sheetJoin = null; entry = { serverId: null, offer: null, damaged: false };
-      window.history.replaceState(null, "", "/" + returnHash);
+      window.history.replaceState(null, "", "/");
       void account.load(null).then(showFront);
       return;
     }
-    cancelAttempt(); navigate("/" + (sheetJoin?.returnHash ?? ""));
+    cancelAttempt(); navigate("/");
   };
   const show = (state: RelayShellState): void => {
     shown = state;
@@ -378,13 +386,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     }
     shell ??= (mount.createRoot ?? createRoot)(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null, createElement(RelayShell, {
-      state, scoped, iosTab, addEntry: !scoped && entryHash === "#add", pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onCheckPc: (serverId: string) => void sweep.checkOne(serverId), onFindPc: () => void findPc(), onPair: confirmed, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget,
-      onForgetPc: async (serverId: string) => { account.cancelEnrollment(serverId); await forgetSavedPc(serverId, store); await account.refresh(); if (frontUp()) await showFront(); },
-      onUpdate: updates.update, onMatch: match, onJoinInstead: joinInstead, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, onOpenPc: openPc, defaultRelay: GLOBAL_RELAY, meLabel: label,
-      directoryRelays: account.directory, sheetJoin,
-      // a join a PC's own page started for itself stands alone: no list is drawn behind it (the tabs open the list)
-      ...(sheetJoin?.alone ? {} : { continuedAccount: sheetJoin ? account.state : null }), observedVersions: observedVersions(),
-      ...(account.enabled ? { onSignIn: signInFirst ? signInToPair : unpaired !== null ? signInForPc : account.signIn, accountProviders: offered ?? account.providers, onJoin: joinPc, onSignOut: account.signOut, onLeave: account.leave, onDeleteAccount: account.deleteAccount, ...(account.signedInAs?.sign_in_id === undefined ? {} : { accountSignIn: account.signedInAs.sign_in_id }), onRefreshAccount: () => account.refreshNow() } : {}),
+      state, scoped, iosTab, addEntry: !scoped && entryHash === "#add", pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onFindPc: () => void findPc(), onPair: confirmed, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget,
+      onUpdate: updates.update, onMatch: match, onJoinInstead: joinInstead, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, onOpenPc: openPc,
+      sheetJoin,
+      ...(account.enabled ? { onSignIn: signInFirst ? signInToPair : unpaired !== null ? signInForPc : account.signIn, accountProviders: offered ?? account.providers, onRefreshAccount: () => account.refreshNow() } : {}),
     })))); account.armRefresh();
   };
   const showFront = async (): Promise<void> => {
@@ -544,11 +549,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (!pc.join) return;
     const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, ...pc.join, ...(pc.name === undefined ? {} : { name: pc.name }) }, window.location.origin));
     keepTypedJoin(options.typed ? pc.server_id : null);
-    if (options.sheet) {
-      keepSheetContext({ mode: options.sheet, server_id: pc.server_id, returnHash: returnHash(window.location.hash), ...(options.alone ? { alone: true } : {}) });
-      // a join a PC's own page offers waits for its press: a load of that page (a reload, a restore, a relaunch) asks nothing
-      if (!options.alone) keepConfirmedPc(pc.server_id);
-    }
+    // a join a PC's own page offers waits for its press: a load of that page (a reload, a restore, a relaunch) asks nothing
+    if (options.sheet) keepSheetContext({ mode: options.sheet, server_id: pc.server_id, ...(options.alone ? { alone: true } : {}) });
     // a PC's own page that goes on to its own join leaves no entry of its own behind: one Back leaves the join
     if (options.alone && link.pathname === window.location.pathname) replace(link.pathname + link.hash); else navigate(link.pathname + link.hash);
   };
@@ -1009,7 +1011,6 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         return true;
       }
       sheetJoin = sheetContext(entry.offer.server_id);
-      if (sheetJoin?.returnHash) window.history.replaceState(null, "", new URL(mount.entryUrl).pathname + sheetJoin.returnHash);
       if (sheetJoin || !accountRead) void account.load(null).finally(() => { if (!accountRead) void accountChanged(); });
       show(confirmOf(entry.offer));
       if (account.enabled && sheetJoin === null) waitForRead();

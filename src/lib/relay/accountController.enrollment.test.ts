@@ -3,8 +3,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FakeAccountService } from "../../../shared/account-service-fake.ts";
 import { EnrollmentStatus } from "../../components/EnrollmentStatus.tsx";
-import { RelayPcDetails } from "../../components/RelayPcDetails.tsx";
-import { RelayPcTable } from "../../components/RelayPcTable.tsx";
 import { ACCOUNT_FEATURE, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
@@ -15,14 +13,12 @@ import type { PcFetch } from "../account/join.ts";
 import { enrollPc, planEnroll, rememberDevice } from "../account/join.ts";
 import { memoryAccountStore, memoryLock } from "../account/store.ts";
 import { AccountService, AccountServiceUnreachableError } from "../account/service.ts";
-import { myPcs } from "../account/myPcs.ts";
 import { SettingsProvider } from "../settings.ts";
 import { setCurrentLanguage, translate } from "../i18n.ts";
 import { ConsentChangedError, createAccountController } from "./accountController.ts";
 import { ACCOUNT_SENDS, NETWORK_RETRY_MS, RETRY_AFTER_MAX_MS } from "./networkRetry.ts";
 import { offerOf } from "./shellState.ts";
 import { enrollmentOf, type RelayDevice, type ShellDeviceStore } from "./device.ts";
-import { dashboardModel, dashboardPcs } from "./dashboard.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport } from "./transport.ts";
 import { forgetSavedPc } from "./updateFlow.ts";
@@ -305,13 +301,8 @@ describe("account enrollment ownership", () => {
     const devices = await run.store.list();
     const pc = devices[0];
     if (pc === undefined) throw new TypeError("Missing paired PC");
-    const rows = dashboardModel(dashboardPcs(myPcs(directory, devices, { now: Date.now(), account: "account", accountKey: run.key.public_spki }), devices, directory), { label: "Phone" }, pc.relay).rows;
-    const row = rows[0];
-    if (row === undefined) throw new TypeError("Missing dashboard row");
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: [language] } });
     const surfaces = [
-      { element: createElement(RelayPcTable, { rows, onSelect() {}, onOpenSheet() {} }), text: "Account setup is incomplete. Open it to try again." },
-      { element: createElement(RelayPcDetails, { pc: row, onClose() {} }), text: "Account setup is incomplete." },
       { element: createElement(EnrollmentStatus, { state: enrollmentOf(pc) }), text: "Account setup is incomplete." },
     ];
     for (const surface of surfaces) {
