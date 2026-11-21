@@ -93,12 +93,12 @@ test("R1-R10: every mutation registered by dispatch has an action or a proven ha
   }
 });
 
-test("R5, R6, R8: registered relay controls and introductions refuse account-joined callers at their handler guards", async () => {
+test("R5, R6, R8: registered relay controls, introductions and the confirm page refuse account-joined callers at their handler guards", async () => {
   const { rows, device, request } = await listedDispatcher();
   const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
   try {
     expect(rows.access(device.id)).toEqual({ ok: true });
-    for (const path of [...Object.values(RELAY_CONTROLS), "/api/account/introduce"]) {
+    for (const path of [...Object.values(RELAY_CONTROLS), "/api/account/introduce", "/api/account/confirm-page"]) {
       const response = await request("POST", path);
       expect(response?.status, path).toBe(403);
       const code = path === RELAY_CONTROLS.pairing || path === "/api/account/introduce" ? "account_required" : "local_required";

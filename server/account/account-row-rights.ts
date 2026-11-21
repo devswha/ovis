@@ -107,9 +107,12 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
   "POST /api/account/leave": { action: "leave_account" },
 };
 
-/** These exact mutations already refuse an account-joined principal in their handler. */
+/**
+ * These exact mutations already refuse an account-joined principal in their handler. /api/account/confirm-page answers
+ * this PC's own window alone (dispatch.ts ownWindow), which a relayed principal never is.
+ */
 export function accountRouteGuard(method: string, pathname: string): boolean {
-  return method === "POST" && (pathname === "/api/account/introduce"
+  return method === "POST" && (pathname === "/api/account/introduce" || pathname === "/api/account/confirm-page"
     || Object.values(RELAY_CONTROLS).some(path => path === pathname));
 }
 
