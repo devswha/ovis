@@ -737,6 +737,22 @@ names one (a throwaway `sshd -D -f <config>` run as yourself is enough). Where i
   every connection; the next request makes a new one, asking nothing.
 - Android's `FLAG_SECURE` has no iOS counterpart: the setup screen can be screenshotted.
 
+#### Tailscale SSH and the PCs a PC knows (both apps)
+
+- **Tailscale SSH, no key** (`auth` "tailscale"): the phone offers SSH's `none` method, which Tailscale SSH accepts
+  for a login its policy allows. In check mode it holds the sign-in and sends a user-auth banner,
+  "# To authenticate, visit: https://login.tailscale.com/a/…"; the setup screen shows that link (`checkLink`, only
+  `https://login.tailscale.com/`) with Open the link, and waits up to ten minutes. A reconnect has nobody to approve
+  it: the tunnel fails with `tailscale-check` and the link as its command, and `error.html` offers Open the link and
+  Try again. A login the policy does not cover is held silently by Tailscale (its own ssh waits the same), so the
+  screen waits until its deadline. The host key is still confirmed and pinned as for any SSH PC.
+- **The PCs a PC knows**: `OvisSsh.known` asks an SSH PC's own Ovis, over its tunnel's SSH connection as from its
+  loopback (`local` access, which `/api/machines/ssh-candidates` and `/api/machines` answer), and the connect
+  screen lists `knownLogins` (`app/web/shell.js`) under Direct with Add: ssh config hosts by user@hostname (an alias
+  alone means nothing on the phone), Tailscale PCs as the first PC's user, and that PC's SSH PCs by target; those
+  already on the phone are left out. Only an SSH PC is asked: a relay or Tailscale-address PC gives the phone no
+  connection of its own to ask over.
+
 First install from the phone: where the account has no Ovis, the setup screen offers to install it.
 The PC flow's remote bundle (`scripts/build-remote-bundle.ts`) cannot serve the phone: it starts a
 bridge-only server, whose token only the PC that installed it has, with no app of its own to open.

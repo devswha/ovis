@@ -270,7 +270,7 @@ describe("the PCs an SSH PC knows", () => {
   });
 
   it("leaves out the PCs already on this phone, and reads nothing from an answer that is not one", () => {
-    expect(knownLogins(known, from, [{ user: "root", host: "LAB.example", port: 22 }]).map((login) => login.name)).toEqual(["nas", "vps"]);
+    expect(knownLogins(known, from, [{ user: "root", host: "LAB.example", port: 22 }]).map((login: { name: string }) => login.name)).toEqual(["nas", "vps"]);
     expect(knownLogins({ candidates: null, machines: { error: "x" } }, from)).toEqual([]);
     expect(knownLogins(undefined, from)).toEqual([]);
   });
