@@ -5,7 +5,7 @@
  * answer must both be it, and nothing is bound otherwise.
  */
 import { afterEach, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -182,9 +182,12 @@ test.skipIf(process.platform !== "linux").each(["herdr-web-ui", "ovis"])("siblin
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   const link = (id: string, key: string) => expect(devices.linkAccountKey(id, key, key, "acct_1")).not.toBeNull();
   link(plain.id, legacy.key.spki);
-  const code = await phone(), localDigits = await phone(), memberDigits = await phone();
+  const code = await phone(), localDigits = await phone(), memberDigits = await phone(), memberCode = await phone();
   const coded = devices.pairRelay(devices.startPairing().code, "Local code", code.spki)!;
   link(coded.device.id, code.spki);
+  const memberCoded = devices.pairRelay(devices.startPairing().code, "Member code", memberCode.spki)!;
+  link(memberCoded.device.id, memberCode.spki);
+  expect(devices.originOf(memberCoded.device.id)).toMatchObject({ from: "remote", how: "code", by: null });
   const digits = devices.pairRelayApproved("Local digits", localDigits.spki, { path: "account" })!;
   link(digits.device.id, localDigits.spki);
   const member = devices.pairRelayApproved("Member digits", memberDigits.spki, { path: "account", addedBy: plain.id })!;
@@ -199,6 +202,11 @@ test.skipIf(process.platform !== "linux").each(["herdr-web-ui", "ovis"])("siblin
   expect(devices.originOf(digits.device.id)).toMatchObject({ from: "remote", how: "digits", by: null });
   expect(devices.originOf(member.device.id)).toMatchObject({ from: "remote", how: "member", by: legacy.key.spki });
   await f.app.stop();
+  // a code a member device started names that member as `by`: it stood on the account's authority, not this PC's
+  const rowsFile = join(f.stateDir, "devices.json");
+  const rows = JSON.parse(readFileSync(rowsFile, "utf8")) as { devices: { id: string; origin?: object }[] };
+  rows.devices = rows.devices.map(row => row.id === memberCoded.device.id ? { ...row, origin: { ...row.origin, by: legacy.key.spki } } : row);
+  writeFileSync(rowsFile, JSON.stringify(rows), { mode: 0o600 });
   const root = mkdtempSync(join(tmpdir(), "unlisting-siblings-"));
   try {
     const active = join(root, "herdr-web-ui"), sibling = join(root, "ovis");
@@ -218,14 +226,14 @@ test.skipIf(process.platform !== "linux").each(["herdr-web-ui", "ovis"])("siblin
     const closes: (() => void)[] = [];
     try {
       const statuses: number[] = [];
-      for (const [id, key] of [[plain.id, legacy.key], [coded.device.id, code], [screened, proof.device], [digits.device.id, localDigits],
-        [member.device.id, memberDigits], [accountDeviceId(serverId, listed.spki), listed]] as const) {
+      for (const [id, key] of [[plain.id, legacy.key], [coded.device.id, code], [memberCoded.device.id, memberCode], [screened, proof.device],
+        [digits.device.id, localDigits], [member.device.id, memberDigits], [accountDeviceId(serverId, listed.spki), listed]] as const) {
         const session = await relayConnection({ app: offline, stateDir, closes, close() {} });
         statuses.push(await session.auth({ id, keys: key.keys, publicKey: key.spki })
           .then(async () => (await ask(session, "/api/devices")).status, () => 401));
       }
       const own = await fetch(`http://127.0.0.1:${offline.port}/api/account/status`);
-      expect({ own: own.status, account: (await own.json()).account, statuses }).toEqual({ own: 200, account: null, statuses: [200, 200, 200, 200, 401, 401] });
+      expect({ own: own.status, account: (await own.json()).account, statuses }).toEqual({ own: 200, account: null, statuses: [200, 200, 401, 200, 200, 401, 401] });
     } finally { for (const close of closes) close(); await offline.stop(); }
   } finally { rmSync(root, { recursive: true, force: true }); writer.releaseLock(); }
 });

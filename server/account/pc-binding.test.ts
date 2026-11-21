@@ -97,7 +97,8 @@ describe("the PC's account binding (account-pc.json)", () => {
     const keep = [makeRow("pc"), makeRow("legacy"), makeRow("remote", "code", { role: "watch" }), makeRow("remote", "digits")];
     const drop = [makeRow("pc", "code", { imported: true }), makeRow("legacy", "code", { invalid_origin: true }),
       makeRow("remote", "add"), makeRow("remote", "code", { added_by: keep[0]!.id }), makeRow("remote", "code", { link_moved_key: true }),
-      makeRow("remote", "digits", {}, (await accountKey()).spki), makeRow("remote", "digits", { imported: true })];
+      makeRow("remote", "code", {}, (await accountKey()).spki), makeRow("remote", "digits", {}, (await accountKey()).spki),
+      makeRow("remote", "digits", { imported: true })];
     writeFileSync(join(dir, "devices.json"), JSON.stringify({ gate_closed_at: keep[0]!.created_at, devices: [...keep, ...drop] }), { mode: 0o600 });
     const devices = store(dir);
     expect(devices.accountError).toBeNull();
