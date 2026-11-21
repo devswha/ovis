@@ -6,8 +6,9 @@ import { accountDeviceId } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { createServer } from "../index.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
+import { relayConnection } from "../relay/test-helpers.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
-import { phone } from "./pairing.test-helpers.ts";
+import { ask, phone } from "./pairing.test-helpers.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { credentialStatus, v057Fixture } from "./step2-upgrade-v057.test-helpers.ts";
 
@@ -112,24 +113,32 @@ test.each(cells)("boot=%s folders=%s clock=%s history=%s", async (boot, folder, 
   }
   service.opensAll = history !== "saved-step2-off";
   const upgraded = start(boot === "online");
+  const closes: (() => void)[] = [];
   try {
     const { accountMailbox, devices } = upgraded.context.services;
     if (boot === "online") await accountMailbox.readSnapshot();
     const credentials = Object.fromEntries(await Promise.all(Object.entries(cookies).map(async ([label, token]) =>
       [label, await credentialStatus(upgraded.port, token)])));
+    let relayStatus: number | null = null;
+    if (devices.sessionRow(relayId)?.key === trusted.spki) {
+      const link = await relayConnection({ stateDir: active, app: upgraded, closes, close: () => {} }, { serverId });
+      await link.auth({ id: relayId, keys: trusted.keys, publicKey: trusted.spki });
+      relayStatus = (await ask(link, "/api/devices")).status;
+    }
     // A listed candidate cannot use the legacy exception, and an unpaired cookie never opens the gate.
     expect({
-      credentials, existingRelay: devices.sessionRow(relayId)?.key ?? null,
+      credentials, relayStatus,
       unknownCookie: await credentialStatus(upgraded.port, "never-paired"),
       newAccountSession: devices.sessionRow(accountDeviceId(serverId, newcomer.spki)),
       revokedSession: revokedId === undefined ? null : devices.sessionRow(revokedId),
       tombstone: revokedId === undefined || devices.isTombstoned(revoked.spki),
     }, devices.accountError ?? undefined).toEqual({
       credentials: Object.fromEntries(Object.keys(cookies).map(label => [label, 200])),
-      existingRelay: trusted.spki, unknownCookie: 401, newAccountSession: null,
+      relayStatus: 200, unknownCookie: 401, newAccountSession: null,
       revokedSession: null, tombstone: true,
     });
   } finally {
+    for (const close of closes) close();
     await upgraded.stop();
     rmSync(stateDir, { recursive: true, force: true });
   }
