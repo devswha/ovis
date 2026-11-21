@@ -5,7 +5,7 @@ import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
 import { basename, join, posix } from "node:path";
 import { version } from "../package.json";
-import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type AccountAddTarget, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
+import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type AccountAddTarget, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type SetupErrorCode, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, HerdrPane } from "../shared/protocol.ts";
 import type { PushService } from "./push.ts";
 import { alertStatus } from "../shared/notify-policy.ts";
@@ -307,7 +307,7 @@ const ownUpdateOffered = (offer: RemoteOvis): string => `${OWN_UPDATE_OFFER}${of
 const ownUpdateRefused = (offer: RemoteOvis): string => `${independentBridge(REMOTE_BUNDLE_VERSION)} It cannot be updated from here: ${offer.reason}`;
 
 export class MachineActionRequired extends Error {
-  constructor(message: string, readonly action: MachineAction, readonly newerServer = false, readonly foundHerdrSessions?: FoundHerdrSession[], readonly foundOvis?: FoundOvis[]) { super(message); }
+  constructor(message: string, readonly action: MachineAction, readonly newerServer = false, readonly foundHerdrSessions?: FoundHerdrSession[], readonly foundOvis?: FoundOvis[], readonly code?: SetupErrorCode) { super(message); }
 }
 
 
@@ -1233,6 +1233,7 @@ export class MachineManager {
         } else {
           job.public.phase = "failed"; job.public.step = "Connection failed";
           job.public.error = error;
+          job.public.error_code = e instanceof MachineActionRequired ? e.code ?? null : null;
           if (moving) { if (!switchingSession && ownsRuntime && runtime.machine.enabled && !this.stopped) { runtime.machine.error = null; runtime.machine.action_required = null; this.retryLater(runtime); } }
           else if (ownsRuntime && existing && runtime.machine.enabled && !this.stopped && e instanceof MachineActionRequired && e.action === "windows_login") { runtime.machine.error = error; runtime.machine.action_required = e.action; this.retryLater(runtime); }
           else if (ownsRuntime && existing && runtime.machine.enabled && !this.stopped && !(e instanceof MachineActionRequired) && (unreachable || resumeRetry || runtime.machine.action_required === "windows_login")) { runtime.machine.error = error; runtime.machine.action_required = null; this.retryLater(runtime); }
@@ -1561,7 +1562,7 @@ export class MachineManager {
         if (!moving) { runtime.machine.remote_ovis = offer; runtime.remoteRevision = offeredRevision; runtime.installFix = installPlanFor(fix, host.kind, descriptor.pid, target, descriptor.token, descriptor.socket_path); }
         if (job) { job.public.remote_ovis = offer; job.offeredRevision = offeredRevision; }
         if (!offer.updatable) throw offer.reason === OWN_CHECK_RUNNING ? new Error(OWN_CHECK_RUNNING) : new MachineActionRequired(ownUpdateRefused(offer), "setup");
-        if (!update) throw new MachineActionRequired(ownUpdateOffered(offer), "update_bridge");
+        if (!update) throw new MachineActionRequired(ownUpdateOffered(offer), "update_bridge", false, undefined, undefined, { code: "own_ovis_older", version: offer.version, target: offer.latest_version });
         ownUpdate = offer;
         update = false;
         if (job) job.own = true;

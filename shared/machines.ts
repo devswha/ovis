@@ -217,6 +217,8 @@ export interface RemoteOvis {
   url: string | null;
 }
 export const OWN_UPDATE_OFFER = "This PC runs its own Ovis";
+/** A setup failure the app words in its own language from a code and its parameters (versions without the v). */
+export type SetupErrorCode = { code: "own_ovis_older"; version: string | null; target: string | null };
 export function pcAlertKey(machine: Pick<Machine, "name" | "relay" | "server_id">): string {
   return machine.relay?.server_id ?? machine.server_id ?? machine.name;
 }
@@ -352,6 +354,8 @@ export interface SetupJob {
   challenge: SetupChallenge | null;
   installations: string[];
   error: string | null;
+  /** error's code and parameters where the app words it itself; error keeps the server's English */
+  error_code?: SetupErrorCode | null;
   /** An unsaved Windows destination may wait for login; its setup must stay in the current dialog. */
   windows_startup?: boolean;
   /**

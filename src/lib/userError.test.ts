@@ -3,7 +3,7 @@ import { ApiError, fetchSession } from "./api.ts";
 import { withChatReadDeadline } from "./chatReadDeadline.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
 import { RemoteResponseInvalid, RemoteResponseTooLarge } from "../../server/remote-json.ts";
-import { machineErrorText, saysHerdrAway, userErrorMessage, userFailure } from "./userError.ts";
+import { machineErrorText, saysHerdrAway, setupErrorLines, userErrorMessage, userFailure } from "./userError.ts";
 
 const api = (status: number, detail = "herdr said no") => new ApiError("/api/x", status, detail, null);
 
@@ -166,5 +166,34 @@ describe("userFailure", () => {
     setCurrentLanguage("ko");
     expect(userFailure(api(500, "disk full")).cause).toBe(translate("ko", "PC disk is full"));
     expect(userFailure(api(500, "disk full")).cause).not.toBe("PC disk is full");
+  });
+});
+
+describe("setupErrorLines", () => {
+  const keyed = (key: string, params?: Record<string, string | number>): string => params === undefined ? key : `${key} ${JSON.stringify(params)}`;
+
+  it("words an older Ovis from its code and versions, a stable target as a plain update", () => {
+    expect(setupErrorLines({ error: "This PC runs its own Ovis v0.5.1, older than this app.", error_code: { code: "own_ovis_older", version: "0.5.1", target: "0.5.10" } }, keyed)).toEqual([
+      `This PC runs its own Ovis {version}, older than this app. ${JSON.stringify({ version: "v0.5.1" })} Update it to {target} to reconnect. ${JSON.stringify({ target: "v0.5.10" })}`,
+    ]);
+  });
+
+  it("names a prerelease target a preview and adds that it is a test build, never a plain update", () => {
+    for (const target of ["0.5.10-beta.2", "0.5.10-preview.20"]) {
+      const lines = setupErrorLines({ error: "x", error_code: { code: "own_ovis_older", version: "0.5.1", target } }, keyed);
+      expect(lines).toEqual([
+        `This PC runs its own Ovis {version}, older than this app. ${JSON.stringify({ version: "v0.5.1" })} Update it to the preview version {target} to reconnect. ${JSON.stringify({ target: `v${target}` })}`,
+        "A preview version is a test build, not a stable release.",
+      ]);
+    }
+  });
+
+  it("leaves out a version the PC did not name", () => {
+    expect(setupErrorLines({ error: "x", error_code: { code: "own_ovis_older", version: null, target: null } }, keyed)).toEqual(["This PC runs its own Ovis, older than this app. Update it to reconnect."]);
+  });
+
+  it("shows an error with no code in the server's words, as machineErrorText reads them", () => {
+    expect(setupErrorLines({ error: "Start Ovis on that PC, or start a new herdr here", error_code: null }, keyed)).toEqual(["Start Ovis on that PC, or start a new herdr here"]);
+    expect(setupErrorLines({ error: null }, keyed)).toEqual([]);
   });
 });
