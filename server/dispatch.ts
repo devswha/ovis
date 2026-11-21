@@ -295,11 +295,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     },
   });
   // a node the owner removed gets no Tailscale grant, and a device's own credential over the tailnet names its node on
-  // its row (server/tailnet-nodes.ts). Only the address the local tailscaled wrote counts: one source, from loopback
+  // its row (server/tailnet-nodes.ts). Through Serve (loopback) only the address the local tailscaled wrote counts:
+  // one source. A direct connection to a tailnet bind is named by its socket's peer, never by a header it sent
   let tailnetNode: string | null = null;
   if (options.profile !== "machine" && relayPeer === undefined) {
+    const peer = ip?.address.replace(/^::ffff:/i, "") ?? null;
     ({ access, node: tailnetNode } = await tailnetNodeGate(access, {
-      address: loopback && forwarded && !funnel && inTailnet(forwardedFor) ? forwardedFor : null,
+      address: loopback ? (forwarded && !funnel && inTailnet(forwardedFor) ? forwardedFor : null) : inTailnet(peer) ? peer : null,
       owner: identity.owner, nodes: ctx.services.tailnetNodes, rows: devices, whois: ctx.services.whoisNode,
     }));
   }
