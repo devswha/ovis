@@ -275,6 +275,11 @@ export const APPROVED_COMMANDS: ReadonlySet<string> = new Set([
   "windows|iex (irm https://hermes-agent.nousresearch.com/install.ps1)",
   "macos|npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui",
   "linux|npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui",
+  "macos|npm install -g @google/gemini-cli",
+  "macos|brew install gemini-cli",
+  "linux|npm install -g @google/gemini-cli",
+  "linux|brew install gemini-cli",
+  "windows|npm install -g @google/gemini-cli",
 ]);
 
 /** An allowed address: HTTPS, a host, and a path on it, so a prefix can never stand for a whole host. */
@@ -971,6 +976,34 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     // Sign in opens dsh-tui itself: the key goes into its own first-run prompt; Ovis has no field that asks for it
     sign_in: { provider: null, command: null, in_agent: "on its first start: a DeepSeek API key from https://platform.deepseek.com/api_keys typed into its own prompt, or an OpenAI- or Anthropic-compatible provider", api_keys: ["DEEPSEEK_API_KEY"], required: true },
     after_install: ["It needs a model before it can work: a DeepSeek API key (https://platform.deepseek.com/api_keys) or an OpenAI- or Anthropic-compatible provider, entered in dsh-tui's own first-run prompt: Ovis does not ask for the key."],
+    min_version: null,
+  },
+  {
+    id: "gemini",
+    name: "Gemini CLI",
+    vendor: "Google",
+    kind: "harness",
+    description: "Google's open-source terminal agent for Gemini models.",
+    install: {
+      macos: only(
+        method("posix", "npm install -g @google/gemini-cli", [{ tool: "node", min: "20" }, { tool: "npm" }]),
+        method("posix", "brew install gemini-cli", [{ tool: "brew" }]),
+      ),
+      linux: only(
+        method("posix", "npm install -g @google/gemini-cli", [{ tool: "node", min: "20" }, { tool: "npm" }]),
+        method("posix", "brew install gemini-cli", [{ tool: "brew" }]),
+      ),
+      windows: only(method("powershell", "npm install -g @google/gemini-cli", [{ tool: "node", min: "20" }, { tool: "npm" }])),
+    },
+    no_install: {},
+    url_prefixes: [],
+    packages: ["npm:@google/gemini-cli", "brew:gemini-cli"],
+    sources: [{ url: "https://github.com/google-gemini/gemini-cli#-installation", checked: "2026-11-21" }],
+    detect: { binaries: ["gemini"], version_args: ["--version"] },
+    // No usage provider: Ovis reads no Gemini CLI plan limits. Antigravity's provider is a different
+    // product's sign-in and does not cover it.
+    sign_in: { provider: null, command: null, in_agent: "/auth", api_keys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"], required: true },
+    after_install: [],
     min_version: null,
   },
   {
