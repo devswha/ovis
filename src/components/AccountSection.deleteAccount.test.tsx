@@ -450,6 +450,34 @@ describe("deleting the account from Settings", () => {
     expect(shown()).not.toContain("Cancel your subscription first");
   });
 
+  it("drops the delete question when Manage account closes, so the next opening starts unarmed", async () => {
+    await signedIn();
+    await press("Delete account");
+    expect(buttons()).toContain("Delete account for good?");
+    await act(async () => { (renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Close").props as { onClick: () => void }).onClick(); });
+    expect(renderer!.root.findAll((node) => node.props["data-testid"] === "manage-account")).toHaveLength(0);
+    await press("Manage account");
+    expect(buttons()).toContain("Delete account");
+    expect(buttons()).not.toContain("Delete account for good?");
+    expect(fake.deleted(ACCOUNT)).toBe(false);
+  });
+
+  it("asks nothing after Manage account closed while the press still read the sign-in", async () => {
+    await signedIn();
+    const { indexedAccountService } = await import("../lib/account/service.ts");
+    const read = Promise.withResolvers<void>();
+    const session = indexedAccountService.session.bind(indexedAccountService);
+    const held = spyOn(indexedAccountService, "session").mockImplementationOnce(async () => { await read.promise; return await session(); });
+    await press("Delete account");
+    await act(async () => { (renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Close").props as { onClick: () => void }).onClick(); });
+    await act(async () => { read.resolve(); });
+    held.mockRestore();
+    await press("Manage account");
+    expect(buttons()).toContain("Delete account");
+    expect(buttons()).not.toContain("Delete account for good?");
+    expect(fake.deleted(ACCOUNT)).toBe(false);
+  });
+
   it("asks for a sign-in again in Manage account's sheet, then deletes", async () => {
     await signedIn();
     ahead = 11 * 60_000;

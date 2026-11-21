@@ -130,12 +130,13 @@ it("keeps the active account code and polling when recheck changes", async () =>
   expect(signal?.aborted).toBe(false);
 });
 
-it("opens Settings without a tab when only a desktop provider is offered", async () => {
+it("says where to sign in, with no button and no tab, when only a desktop provider is offered", async () => {
   service.offerSignIns(["apple"], []);
   service.offerLinkPage([]);
   await mount(relayView());
-  await act(async () => { button("Sign in to Ovis").props.onClick(); });
-  expect(openAccount).toHaveBeenCalledTimes(1);
+  expect(text(renderer!.root)).toContain("Sign in on this PC's own screen, or in the Ovis app.");
+  expect(renderer!.root.findAll((node) => node.type === "button" && /Sign in|Continue with/.test(text(node)))).toHaveLength(0);
+  expect(openAccount).not.toHaveBeenCalled();
   expect(opened).toEqual([]);
 });
 

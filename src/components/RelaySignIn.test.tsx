@@ -217,6 +217,22 @@ describe("the relay tab's Sign in", () => {
     expect(renderer?.root.findAllByType("a").map(text)).toEqual(["Open Google"]);
   });
 
+  it("starts one device sign-in when a provider's button is pressed twice while it starts", async () => {
+    fake.offerSignIns(["google"], ["google"]);
+    linkPageAvailable = false;
+    const gate = Promise.withResolvers<void>();
+    startGate = gate.promise;
+    await mount();
+    const google = () => renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === "Continue with Google")[0]!;
+    await act(async () => { google().props.onClick(); });
+    // the second press, as a double click lands, before the first one's answer
+    await act(async () => { google().props.onClick(); });
+    expect(opened).toEqual(["about:blank"]);
+    await act(async () => { gate.resolve(); });
+    await act(async () => { await firstPoll; });
+    expect(tab?.location.href).toBe("https://www.google.com/device");
+  });
+
   it("opens the link page with its code filled in, in a new tab, and comes back signed in here", async () => {
     approveOnPoll = true;
     const signedIn = Promise.withResolvers<void>();

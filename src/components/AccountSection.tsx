@@ -804,6 +804,8 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
    * deletes this sign-in's account alone. A sign-out, a sign-in or another account shown drops the question.
    */
   const [deleteAsked, setDeleteAsked] = useState<AccountSession | null>(null);
+  /** bumped when the question is dropped (Manage account closed): a press whose sign-in read is still out then asks nothing */
+  const deleteAsks = useRef(0);
   /**
    * The delete confirmed here, until it ends: a sign-out or a sign-in ends it, and every step of it after a wait (the
    * sign-in again, the delete after it, what is drawn) goes on only while it is still this one.
@@ -888,8 +890,9 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     }
   });
   useEffect(() => { recheckAccount(); }, [offered, load, recheck]);
-  // a sign-out or a deleted account takes Manage account's sheet with it
-  useEffect(() => { if (view.kind !== "signed-in") setManaging(false); }, [view.kind]);
+  // a sign-out or a deleted account takes Manage account's sheet with it; a sign-in again for this account (to add or
+  // remove a way in) keeps it, so the step it asks for next shows where it was asked
+  useEffect(() => { if (view.kind === "signed-out") setManaging(false); }, [view.kind]);
   useEffect(() => {
     const signedIn = view.kind === "signed-in" ? view : null;
     onAccount?.({ signedIn: signedIn !== null, account: signedIn?.account ?? null, pcs: signedIn?.pcs ?? null, provider: signedIn?.provider ?? null,
@@ -1100,7 +1103,9 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     if (deleteOut !== null) return;
     setReauth(null);
     setDeleteFailed(null);
+    const ask = ++deleteAsks.current;
     void indexedAccountService.session().then((session) => {
+      if (ask !== deleteAsks.current) return;
       // another tab signed out, or in as someone else: the section reads what is stored now instead of asking
       if (session === undefined || view.kind !== "signed-in" || session.account !== view.account) { void load(); return; }
       setDeleteAsked(session);
@@ -1345,6 +1350,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     </>
   );
 
+  const errorLine = view.kind === "signed-in" && view.error !== null && <p className="settings-condition" role="alert">{view.error}{view.error === inUseShown && <> <ExternalLink kind="link" className="settings-link" href={IN_USE_HELP}>{t("See how")}</ExternalLink></>}</p>;
   const methodsPart = view.kind === "signed-in" && view.methods !== null && (
     <div className="settings-item account-methods">
       <div className="account-method-row" title={bridge === null ? t("Add another way to sign in from the Ovis desktop app.") : undefined}>
@@ -1420,15 +1426,17 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
           {/* while a search runs the account's rows are the group's own; otherwise they wait in Manage account's sheet */}
           {searching && <>{methodsPart}{deleteParts}</>}
           {managing && !searching && (
-            <ManageAccountSheet onClose={() => setManaging(false)}>
+            <ManageAccountSheet onClose={() => { setManaging(false); deleteAsks.current++; setDeleteAsked(null); }}>
               {methodsPart}
               {plan !== null && <div className="settings-row account-plan-row"><span className="settings-label">{t("Plan|account plan")}</span><span className="account-plan">{plan}</span></div>}
               {deleteParts}
+              {/* a change made in the sheet says why it failed in the sheet */}
+              {view.error !== null && errorLine}
             </ManageAccountSheet>
           )}
           {!signInElsewhere && <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} {...(opensAll === undefined ? {} : { opensAll })} />}
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
-          {view.error !== null && <p className="settings-condition" role="alert">{view.error}{view.error === inUseShown && <> <ExternalLink kind="link" className="settings-link" href={IN_USE_HELP}>{t("See how")}</ExternalLink></>}</p>}
+          {view.error !== null && !(managing && !searching) && errorLine}
         </>
       )}
     </SettingsGroup>

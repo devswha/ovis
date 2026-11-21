@@ -320,4 +320,5 @@ export const DEVICES_JA: Record<string, string> = {
   "This PC is in strict mode.": "この PC は厳格モードです。",
   "Ask to turn strict mode off": "厳格モードのオフを依頼",
   "Phone QR code": "スマホ接続 QR",
+  "Sign in on this PC's own screen, or in the Ovis app.": "この PC の画面か Ovis アプリでサインインしてください。",
 };

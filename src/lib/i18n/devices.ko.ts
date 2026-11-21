@@ -320,4 +320,5 @@ export const DEVICES_KO: Record<string, string> = {
   "This PC is in strict mode.": "이 PC는 엄격 모드예요.",
   "Ask to turn strict mode off": "엄격 모드 끄기 요청",
   "Phone QR code": "폰 연결 QR",
+  "Sign in on this PC's own screen, or in the Ovis app.": "이 PC 화면이나 Ovis 앱에서 로그인하세요.",
 };

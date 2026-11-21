@@ -38,6 +38,8 @@ export interface LinkPageSignIn {
    * null where the one button starts the link page's
    */
   readonly own: readonly AccountProvider[] | null;
+  /** nothing this page can sign in with: no own sign-in, no link page and no device page (sign in elsewhere) */
+  readonly unavailable: boolean;
   /** the providers the link page offers, as its copy names them */
   readonly linkPage: readonly AccountProvider[];
   readonly start: (provider?: AccountProvider) => void;
@@ -71,6 +73,7 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
   // not to sign in its own way)
   const deviceOnly = offer !== null && !ownSignIn && ownRedirect !== undefined && offer.page.length === 0 && offer.device.length > 0;
   const own = offer === null ? null : ownSignIn ? offer.providers : deviceOnly ? offer.device : null;
+  const unavailable = offer !== null && !ownSignIn && ownRedirect !== undefined && offer.page.length === 0 && offer.device.length === 0;
   const start = useCallback((provider?: AccountProvider) => {
     if (offer === null) return;
     if (ownSignIn && provider !== undefined) {
@@ -101,6 +104,8 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       return;
     }
     if (offer.page.length === 0 && offer.device.length === 0) { onOpenAccount(); return; }
+    // a provider's button pressed again while its sign-in starts asks for no second code
+    if (deviceOnly && running.current !== null) return;
     running.current?.abort();
     const tab = reserveTab();
     const controller = new AbortController();
@@ -132,5 +137,5 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
     }).finally(() => { if (running.current === controller) running.current = null; });
   }, [service, offer, ownSignIn, deviceOnly, bridge, ownRedirect, onOpenAccount]);
 
-  return { state, ready: offer !== null && ownRedirect !== undefined, own, linkPage: offer === null ? [] : offer.page.length > 0 ? offer.page : offer.device, start, cancel };
+  return { state, ready: offer !== null && ownRedirect !== undefined, own, unavailable, linkPage: offer === null ? [] : offer.page.length > 0 ? offer.page : offer.device, start, cancel };
 }

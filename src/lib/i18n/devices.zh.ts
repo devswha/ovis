@@ -320,4 +320,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "This PC is in strict mode.": "这台 PC 处于严格模式。",
   "Ask to turn strict mode off": "请求关闭严格模式",
   "Phone QR code": "手机连接二维码",
+  "Sign in on this PC's own screen, or in the Ovis app.": "请在这台电脑上或 Ovis 应用中登录。",
 };
