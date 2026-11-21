@@ -143,3 +143,21 @@ it("rejects malformed or overlong first-line transcript headers", () => {
     expect(validateGjcNativeTranscript({ ...binding, session: { id: "session-a", path: tooLong, cwd: f.cwd } }, f.cwd, f.home)).toBeNull();
   } finally { f.done(); }
 });
+
+it.skipIf(process.platform !== "linux")("reads the binding and transcript under the pane process's custom agent directory", async () => {
+  const f = fixture();
+  const agentDir = join(f.home, "custom");
+  const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
+    env: { GJC_CODING_AGENT_DIR: agentDir },
+  });
+  try {
+    mkdirSync(join(agentDir, GJC_NATIVE_DIRECTORY), { recursive: true });
+    mkdirSync(join(agentDir, "sessions", "project"), { recursive: true });
+    const path = join(agentDir, "sessions", "project", "custom.jsonl");
+    writeFileSync(path, `${JSON.stringify({ type: "session", id: "custom", cwd: f.cwd })}\n`);
+    const binding = f.record({ pid: child.pid, session: { id: "custom", path, cwd: f.cwd } });
+    writeFileSync(join(agentDir, GJC_NATIVE_DIRECTORY, `${child.pid}.json`), JSON.stringify(binding));
+    expect(readGjcNativeBinding(f.home, child.pid, 10_000)).toEqual(binding);
+    expect(validateGjcNativeTranscript(binding, f.cwd, f.home)).toBe(path);
+  } finally { child.kill(); await child.exited; f.done(); }
+});

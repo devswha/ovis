@@ -1,4 +1,4 @@
-import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import nodePath, { join } from "node:path";
 
 import { GJC_NATIVE_DIRECTORY, GJC_NATIVE_LEASE_MS, isGjcNativeBindingShape, type GjcNativeBinding } from "../shared/gjc-native.ts";
@@ -38,9 +38,25 @@ function parseBinding(value: unknown, pid: number, now: number): GjcNativeBindin
   return value;
 }
 
+/**
+ * The agent directory a GJC process uses: its own `GJC_CODING_AGENT_DIR`, or the
+ * default `~/.gjc/agent`. Only Linux process environments are read; elsewhere the
+ * default store answers, as before.
+ */
+export function gjcProcessAgentDir(pid: number, home: string): string {
+  try {
+    if (process.platform === "linux") {
+      const env = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+      const dir = env.find((word) => word.startsWith("GJC_CODING_AGENT_DIR="))?.slice("GJC_CODING_AGENT_DIR=".length);
+      if (dir !== undefined && dir.length > 0 && nodePath.isAbsolute(dir)) return dir;
+    }
+  } catch { /* the process exited or its environment is unreadable: the default store */ }
+  return join(home, ".gjc", "agent");
+}
+
 function readNativeFile(home: string, pid: number): unknown | null {
   if (!nodePath.isAbsolute(home)) return null;
-  const agentPath = join(home, ".gjc", "agent");
+  const agentPath = gjcProcessAgentDir(pid, home);
   const identityPath = join(agentPath, GJC_NATIVE_DIRECTORY);
   const filePath = join(identityPath, `${pid}.json`);
   let fd: number | undefined;
@@ -138,7 +154,7 @@ export function validatedGjcNativeTranscript(
     || typeof session.path !== "string" || typeof session.cwd !== "string"
     || !nodePath.isAbsolute(cwd) || !nodePath.isAbsolute(home)
     || !nodePath.isAbsolute(session.path) || !nodePath.isAbsolute(session.cwd)) return null;
-  const agentDir = join(home, ".gjc", "agent");
+  const agentDir = gjcProcessAgentDir(binding.pid, home);
   const root = canonicalDirectory(join(agentDir, "sessions"));
   const expectedCwd = canonicalDirectory(cwd);
   const recordCwd = canonicalDirectory(session.cwd);
