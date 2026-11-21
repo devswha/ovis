@@ -25,8 +25,8 @@ afterEach(() => { for (const item of fixtures.splice(0)) item.close(); });
 const guard = [["content-type", "application/json"], ["x-herdr-machine", "1"]] as const;
 const fileTarget = (path: string) => `/api/fs/file?path=${encodeURIComponent(path)}`;
 
-it("serves health through real protected channels and records the route template", async () => {
-  const f = fixture();
+it.each([false, true])("serves health through real protected channels and records the route template (Step 2: %s)", async accountOpensAll => {
+  const f = fixture(false, accountOpensAll);
   const device = await relayDevice(f);
   const link = await relayConnection(f);
   await link.auth(device);

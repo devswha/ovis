@@ -7,7 +7,9 @@ import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { parseSnapshotPage } from "../../shared/account-snapshot.ts";
 import { createServer } from "../index.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
-import { relayConnection, TestClock } from "../relay/test-helpers.ts";
+import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
+import { provingDevice } from "./key-proof.test-helpers.ts";
+import { askRecovery } from "./recovery.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { ask, phone } from "./pairing.test-helpers.ts";
@@ -33,9 +35,9 @@ async function fixture(history: "original" | "rollback", signer: "legacy" | "lis
   const now = Date.now();
   let online = false;
   let omitKey: string | undefined;
-  const start = () => createServer({
+  const start = (desktopOwner?: { input: ReadableStream<Uint8Array>; write(line: string): void }) => createServer({
     stateDir, port: 0, hostname: "127.0.0.1", token: "matrix-owner", tailscaleOwner: null, sidecar: false,
-    accountOpensAll: true, accountService: { url: "https://account.test", fetch: async request => {
+    accountOpensAll: true, ...(desktopOwner ? { platform: "linux", desktopOwner } : {}), accountService: { url: "https://account.test", fetch: async request => {
       if (!online) return Promise.reject(new TypeError("fixture offline"));
       const response = await service.fetch(request);
       if (omitKey && new URL(request.url).pathname === "/v1/pc/snapshot" && response.ok) {
@@ -170,6 +172,68 @@ test.skipIf(!available)("a companion freeze still covers a newer account row bef
     await app.stop();
   }
 }, 15_000);
+
+test.skipIf(!available || process.platform !== "linux")("a service companion freeze preserves the owner's exact key decisions", async () => {
+  const pc = await fixture("original");
+  const stream = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = stream.writable.getWriter();
+  const app = pc.start({ input: stream.readable, write() {} });
+  const closes: (() => void)[] = [];
+  const local = { stateDir: pc.stateDir, app, closes, close() {} };
+  try {
+    const { accountMailbox, devices, localConfirms, safetyLog } = app.context.services;
+    const [relay, screen, newScreen, recovered, priorRecovery] = await Promise.all([phone(), phone(), phone(), phone(), phone()]);
+    const confirm = async (key: typeof screen, via: "screen" | "recover") => {
+      const pending = await provingDevice(local, devices.startPairing().code, { serverId: pc.serverId }, key);
+      await pending.pending;
+      const request = localConfirms?.pending().find(entry => entry.action.kind === "approve_key" && entry.action.fingerprint === pending.fingerprint);
+      if (!request || request.action.kind !== "approve_key") throw new Error("No matching PC screen confirmation");
+      if (via === "recover") {
+        const answer = await askRecovery(pc.stateDir, { act: "admit", pending: request.action.pending, fingerprint: pending.fingerprint });
+        expect(answer).toHaveProperty("admitted");
+      } else {
+        const answer = localConfirms?.answer(request.id);
+        await writer.write(new TextEncoder().encode(`${JSON.stringify({ approve: request.id })}\n`));
+        expect(await answer).toBe("approved");
+      }
+      const row = devices.list(null).find(row => devices.relayKeyOf(row.id) === key.spki);
+      if (!row) throw new Error("Owner decision did not write a device row");
+      expect(devices.originOf(row.id)?.from).toBe(via === "screen" ? "pc" : "recover");
+      return row.id;
+    };
+    const signedStatus = async (key: typeof screen, id: string) => {
+      const link = await relayConnection(local, { serverId: pc.serverId });
+      const admitted = await bounded(link.auth({ id, keys: key.keys, publicKey: key.spki }).then(() => true, () => false));
+      return admitted ? (await ask(link, "/api/devices")).status : 401;
+    };
+    const relayRow = devices.pairRelay(devices.startPairing().code, "Ordinary phone", relay.spki);
+    if (!relayRow) throw new Error("Ordinary pairing failed");
+    const screenId = await confirm(screen, "screen");
+    const priorId = await confirm(priorRecovery, "recover");
+    for (const key of [relay, screen, newScreen, recovered, priorRecovery]) expect(pc.service.registerDevice(ACCOUNT, key.spki, "Numbered phone")).toBeGreaterThan(pc.record.target_no);
+    pc.connect();
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(await signedStatus(relay, relayRow.device.id)).toBe(200);
+    expect(await signedStatus(screen, screenId)).toBe(200);
+    expect(await signedStatus(priorRecovery, priorId)).toBe(200);
+    expect((await pc.service.fetch(new Request("https://account.test/v1/safety-records", {
+      method: "POST", headers: { authorization: `Bearer ${pc.service.issueToken(ACCOUNT)}` }, body: JSON.stringify({ record: pc.record }),
+    }))).status).toBe(200);
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(safetyLog?.inForce.freezes.find(entry => entry.record.id === `f:${pc.record.id}`)?.targetOnlyCompanion).toBe(true);
+    const newId = await confirm(newScreen, "screen");
+    const recoverId = await confirm(recovered, "recover");
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect({ existingScreen: await signedStatus(screen, screenId), newScreen: await signedStatus(newScreen, newId),
+      recovered: await signedStatus(recovered, recoverId), relay: await signedStatus(relay, relayRow.device.id),
+      priorRecovery: await signedStatus(priorRecovery, priorId), cookie: await credentialStatus(app.port, pc.cookie) })
+      .toEqual({ existingScreen: 200, newScreen: 200, recovered: 200, relay: 401, priorRecovery: 401, cookie: 200 });
+  } finally {
+    for (const close of closes) close();
+    await app.stop();
+    writer.releaseLock();
+  }
+}, 20_000);
 
 test.skipIf(!available).each(["signer", "target"] as const)(
   "a previous binding's %s pin cannot authorize a target-only block", async missing => {

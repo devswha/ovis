@@ -1,7 +1,7 @@
 import { pairFingerprint, signPairProof } from "../../shared/pair-fingerprint.ts";
 import { FrameType, KEY_PROOF_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
 import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
-import { pairingPc, phone, SERVER_ID, type Pc } from "./pairing.test-helpers.ts";
+import { pairingPc, phone, SERVER_ID, type Phone } from "./pairing.test-helpers.ts";
 
 export async function keyProofPc(accountOpensAll: boolean, platform: NodeJS.Platform = "linux") {
   const told: { pending: { id: string; action: { kind: string; pending?: string; fingerprint?: string } }[] }[] = [];
@@ -19,8 +19,9 @@ export async function keyProofPc(accountOpensAll: boolean, platform: NodeJS.Plat
 }
 
 /** A device that offers the proof: it pairs, answers the challenge, and reports what it saw. */
-export async function provingDevice(made: Pc, code: string, options?: Parameters<typeof relayConnection>[1]) {
-  const device = await phone();
+export async function provingDevice(made: Parameters<typeof relayConnection>[0], code: string, options?: Parameters<typeof relayConnection>[1], named?: Phone) {
+  const device = named ?? await phone();
+  const serverId = options?.serverId ?? SERVER_ID;
   const link = await relayConnection(made, options);
   const challenge = deferred<string>();
   const pending = deferred<MuxFrame>();
@@ -31,8 +32,8 @@ export async function provingDevice(made: Pc, code: string, options?: Parameters
   await link.hello([KEY_PROOF_FEATURE]);
   link.mux.sendSession({ type: FrameType.PAIR, flags: 0, stream_id: 0, payload: { code, label: "New phone", public_key: device.spki } });
   const sent = await bounded(challenge.promise);
-  link.mux.sendSession({ type: FrameType.KEY_PROVE, flags: 0, stream_id: 0, payload: { signature: await signPairProof(SERVER_ID, sent, device.spki, device.keys.privateKey) } });
-  const fingerprint = await pairFingerprint(SERVER_ID, sent, device.spki);
+  link.mux.sendSession({ type: FrameType.KEY_PROVE, flags: 0, stream_id: 0, payload: { signature: await signPairProof(serverId, sent, device.spki, device.keys.privateKey) } });
+  const fingerprint = await pairFingerprint(serverId, sent, device.spki);
   // the bounded wait starts only when a test asks for KEY_PENDING: one that must never come leaves no timer behind
   let waited: Promise<MuxFrame> | undefined;
   return { device, link, challenge: sent, get pending() { return waited ??= bounded(pending.promise); }, fingerprint };

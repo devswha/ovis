@@ -32,7 +32,7 @@ const TAILNET = "100.64.0.7";
 const listener = { port: 0 };
 
 // The shared transport fixture uses legacy offers; exercise the Step 2 refusal explicitly.
-async function twoPcs(options: { direct?: { reachable: (dial: number, host: string) => boolean; held?: (dial: number) => Promise<void> | undefined; named?: (port: number) => readonly string[] }; updates?: UpdateService; accountOpensAll?: boolean } = {}) {
+async function twoPcs(options: { direct?: { reachable: (dial: number, host: string) => boolean; held?: (dial: number) => Promise<void> | undefined; named?: (port: number) => readonly string[] }; updates?: UpdateService; accountOpensAll?: boolean; platform?: NodeJS.Platform } = {}) {
   const opensAll = options.accountOpensAll ?? false;
   const relay = startBunRelay({ port: 0, limiters: {
     perAddress: { async limit() { return { success: true }; } },
@@ -58,7 +58,7 @@ async function twoPcs(options: { direct?: { reachable: (dial: number, host: stri
   const bState = stateDir();
   const service = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local, pairCodeRelay: `wss://127.0.0.1:${relay.port}`,
     ...(options.direct ? { direct: { addresses: () => ["127.0.0.1"], advertise: (port: number) => { listener.port = port; return options.direct!.named?.(port) ?? [`ws://${LAN}:7319`]; }, peerAllowed: () => true, preferredPort: 0 } } : {}) });
-  const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: service, accountOpensAll: opensAll, ...(options.updates ? { updates: options.updates } : {}) });
+  const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: service, accountOpensAll: opensAll, ...(options.platform ? { platform: options.platform } : {}), ...(options.updates ? { updates: options.updates } : {}) });
   cleanup.push(async () => { await service.shutdown(); b.stop(); });
   const bBase = `http://127.0.0.1:${b.port}`;
   const started = await fetch(`${bBase}/api/relay/start`, { method: "POST", headers: { origin: bBase, "x-herdr-update": "1" } });
@@ -143,7 +143,7 @@ async function machineWhen(base: string, wanted: (machine: Machine) => boolean, 
 }
 
 it.each([false, true])("adds a PC through a legacy relay offer only with Step 2 opted out (%s)", async accountOpensAll => {
-  const { b, link, aState, startA } = await twoPcs({ accountOpensAll });
+  const { b, link, aState, startA } = await twoPcs({ accountOpensAll, platform: "linux" });
   let a = startA();
 
   const added = await addRelayPc(a.base, link, "Lab");

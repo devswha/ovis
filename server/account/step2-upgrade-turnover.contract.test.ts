@@ -11,7 +11,8 @@ import { beginSignIn, finishOwnSignIn } from "../../src/lib/account/signin.ts";
 import type { RelayDevice, RelayDeviceStore } from "../../src/lib/relay/device.ts";
 import { memoryAccountStore } from "../../src/lib/account/store.ts";
 import { createServer } from "../index.ts";
-import { relayIdentityPath, rotateRelayIdentity, type RelayIdentity } from "../relay/identity.ts";
+import { readDeviceRegistry } from "../devices.ts";
+import { relayIdentityPath, rotateRelayIdentity, savedServerId, type RelayIdentity } from "../relay/identity.ts";
 import { relayConnection } from "../relay/test-helpers.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
@@ -34,13 +35,13 @@ async function listPc(service: FakeAccountService, account: string, identity: Re
   return call;
 }
 
-async function releasedPc() {
+async function releasedPc(browserOnlySibling = false) {
   const stateDir = mkdtempSync(join(root, "pc-"));
   const folders = { a: join(stateDir, "a"), b: join(stateDir, "b") };
   mkdirSync(folders.a);
   mkdirSync(join(folders.b, "relay"), { recursive: true });
   const identity = rotateRelayIdentity(folders.a);
-  copyFileSync(relayIdentityPath(folders.a), relayIdentityPath(folders.b));
+  if (!browserOnlySibling) copyFileSync(relayIdentityPath(folders.a), relayIdentityPath(folders.b));
   const service = new FakeAccountService();
   service.opensAll = true;
   await registerSnapshotPc(service, { stateDir: folders.a }, identity);
@@ -48,6 +49,8 @@ async function releasedPc() {
   const key = await accountStore.key();
   service.registerDevice(ACCOUNT, key.public_spki, "Account phone");
   const cookies: string[] = [];
+  let deleted: { id: string; token: string } | undefined;
+  let importedId = "";
   let memberId = "";
   for (const folder of ["a", "b"] as const) {
     const old = release(folders[folder]);
@@ -62,6 +65,15 @@ async function releasedPc() {
       if (!browser) throw new Error("Release browser pairing failed");
       expect(await credentialStatus(old.port, browser.token)).toBe(200);
       cookies.push(browser.token);
+      if (folder === "b") {
+        importedId = browser.device.id;
+        if (browserOnlySibling) {
+          const other = devices.pair(devices.startPairing().code, "Browser to revoke", "drive");
+          if (!other) throw new Error("Release failed to pair second sibling browser");
+          expect(await credentialStatus(old.port, other.token)).toBe(200);
+          deleted = { id: other.device.id, token: other.token };
+        }
+      }
     } finally { await old.stop(); }
   }
   const merged = release(folders.a, { siblingStateDir: folders.b });
@@ -71,7 +83,7 @@ async function releasedPc() {
   const start = () => createServer({ stateDir: folders.a, siblingStateDir: folders.b, port: 0, hostname: "127.0.0.1",
     token: "matrix-owner", tailscaleOwner: null, sidecar: false, accountOpensAll: true,
     accountService: { url: SERVICE, fetch: request => online ? service.fetch(request) : Promise.reject(new TypeError("offline")) } });
-  return { folders, identity, service, accountStore, key, cookies, memberId, start, offline: () => { online = false; } };
+  return { folders, identity, service, accountStore, key, cookies, memberId, importedId, deleted, start, offline: () => { online = false; } };
 }
 
 async function memberStatus(pc: Awaited<ReturnType<typeof releasedPc>>, app: ReturnType<typeof createServer>, serverId: string) {
@@ -124,6 +136,12 @@ test.skipIf(!available).each(["sign-out", "leave"] as const)("released phone acc
 test.skipIf(!available).each([ACCOUNT, "acct_other"] as const)("PC browser signs out and back into %s without rebinding its PC", async next => {
   const pc = await releasedPc();
   const app = pc.start();
+  const binding = PcAccountState.open(pc.folders.a).binding();
+  const pcAccount = async (port: number) => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/account/status`, { headers: { authorization: "Bearer matrix-owner" } });
+    expect(response.status).toBe(200);
+    return (await response.json() as { account: string | null }).account;
+  };
   try {
     const browserStore = memoryAccountStore();
     const client = new AccountService({ store: browserStore, fetch: pc.service.fetch });
@@ -137,24 +155,50 @@ test.skipIf(!available).each([ACCOUNT, "acct_other"] as const)("PC browser signs
       expect(back.origin + back.pathname).toBe(redirectUri);
       return finishOwnSignIn(started, back.search, { store: browserStore, fetch: pc.service.fetch });
     };
-    const binding = PcAccountState.open(pc.folders.a).binding();
+    const origin = new URL(redirectUri).origin;
+    const post = (path: string, account: string) => fetch(origin + path, { method: "POST", headers: {
+      origin, authorization: "Bearer matrix-owner", "content-type": "application/json", "x-herdr-machine": "1",
+    }, body: JSON.stringify({ account }) });
     expect(binding?.account).toBe(ACCOUNT);
     expect((await signIn(ACCOUNT)).account).toBe(ACCOUNT);
+    expect((await post("/api/account/relay-account", ACCOUNT)).status).toBe(204);
+    expect(await pcAccount(app.port)).toBe(ACCOUNT);
     await client.signOut();
     expect(await client.session()).toBeUndefined();
+    expect(await pcAccount(app.port)).toBe(ACCOUNT);
     expect((await signIn(next)).account).toBe(next);
     expect((await client.session())?.account).toBe(next);
+    expect((await post("/api/account/relay-account", next)).status).toBe(204);
+    const press = await post("/api/account/one-press", next);
+    expect(press.status).toBe(409);
+    expect(await press.json()).toMatchObject({ error: { code: "in_account" } });
+    expect(await app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(await pcAccount(app.port)).toBe(ACCOUNT);
     expect(PcAccountState.open(pc.folders.a).binding()).toEqual(binding);
     for (const cookie of pc.cookies) expect(await credentialStatus(app.port, cookie)).toBe(200);
   } finally { await app.stop(); }
+  pc.offline();
+  const restarted = pc.start();
+  try {
+    expect(await pcAccount(restarted.port)).toBe(ACCOUNT);
+    expect(PcAccountState.open(pc.folders.a).binding()).toEqual(binding);
+    expect(await memberStatus(pc, restarted, pc.identity.server_id)).toBe(200);
+    for (const cookie of pc.cookies) expect(await credentialStatus(restarted.port, cookie)).toBe(200);
+  } finally { await restarted.stop(); }
 }, 20_000);
 
-test.skipIf(!available).each([ACCOUNT, "acct_other"] as const)("identity reset and a real one-press rebind to %s carry no old account state", async next => {
-  const pc = await releasedPc();
+test.skipIf(!available).each([[ACCOUNT, "shared"], ["acct_other", "shared"], [ACCOUNT, "browser-only"]] as const)(
+  "identity reset and a real one-press rebind to %s preserve imported cookies: %s sibling", async (next, sibling) => {
+  const pc = await releasedPc(sibling === "browser-only");
   const app = pc.start();
   let identity: RelayIdentity | undefined;
   try {
     const { accountMailbox, devices, relay } = app.context.services;
+    const registry = readDeviceRegistry(join(pc.folders.a, "devices.json"));
+    if (registry.kind !== "ok") throw new Error("Missing merged registry");
+    expect(registry.devices.find(row => row.id === pc.importedId)?.imported).toBe(true);
+    expect(savedServerId(pc.folders.b)).toBe(sibling === "browser-only" ? undefined : pc.identity.server_id);
+    if (pc.deleted) expect(await credentialStatus(app.port, pc.deleted.token)).toBe(200);
     expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     pc.service.opensAll = false;
     pc.service.reportsStep2Off = true;
@@ -184,12 +228,23 @@ test.skipIf(!available).each([ACCOUNT, "acct_other"] as const)("identity reset a
     expect(await memberStatus(pc, app, identity.server_id)).toBe(401);
     for (const cookie of pc.cookies) expect(await credentialStatus(app.port, cookie)).toBe(200);
   } finally { await app.stop(); }
+  if (pc.deleted) {
+    const other = release(pc.folders.b);
+    try {
+      expect(other.context.services.devices.revoke(pc.deleted.id)).toBe(true);
+      expect(await credentialStatus(other.port, pc.deleted.token)).toBe(401);
+    } finally { await other.stop(); }
+  }
   pc.offline();
   const restarted = pc.start();
   try {
     expect(restarted.context.services.devices.account()).toBe(next);
     expect(PcAccountState.open(pc.folders.b).serviceStep2Off()).toBe(false);
-    for (const cookie of pc.cookies) expect(await credentialStatus(restarted.port, cookie)).toBe(200);
+    if (pc.deleted) {
+      expect(await credentialStatus(restarted.port, pc.deleted.token)).toBe(401);
+      expect(restarted.context.services.devices.list(null).some(row => row.id === pc.deleted?.id)).toBe(false);
+    }
+    expect(await Promise.all(pc.cookies.map(cookie => credentialStatus(restarted.port, cookie)))).toEqual([200, 200]);
   } finally {
     await restarted.stop();
     rmSync(pc.folders.a, { recursive: true, force: true });

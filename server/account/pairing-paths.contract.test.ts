@@ -39,11 +39,16 @@ const pcFetch = (link: Link) => async (path: string, init?: RequestInit): Promis
 };
 
 for (const [where, account] of [["in an account", "acct_1"], ["in no account", undefined]] as const) {
-  test(`on a PC ${where}, the code started on the PC and carried by a relay offer pairs a device that drives at once`, async () => {
-    const f = await pc(account === undefined ? {} : { rows: [(await memberRow(account)).row] });
+  test.each([false, true])(`on a Linux PC ${where}, a legacy client redeeming a local code follows the configured pairing mode (Step 2: %s)`, async accountOpensAll => {
+    const f = await pc({ server: { accountOpensAll, platform: "linux" }, rows: account === undefined ? [] : [(await memberRow(account)).row] });
     const code = await f.startedCode();
     const key = await phone();
     const made = await pair(f, code, key);
+    if (accountOpensAll) {
+      expect(made).toEqual({ error: "unsupported_version" });
+      expect(f.stored().some(row => row.relay_public_key === key.spki)).toBe(false);
+      return;
+    }
     if ("error" in made) throw new Error(`The pairing was refused: ${made.error}`);
     expect(made.role).toBe("drive");
     // over the session that paired, with nothing more to do: a read only a device that drives gets
