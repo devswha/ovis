@@ -22,6 +22,7 @@ import { AddPcSheet, type AddPcSheetMode } from "./AddPcSheet.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { MyMachinesPage } from "./MyMachinesPage.tsx";
+import { NoPcOnline } from "./NoPcOnline.tsx";
 import { RelayDashboard } from "./RelayDashboard.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
@@ -36,6 +37,8 @@ export interface RelayShellProps {
   state: RelayShellState;
   pcStatus?: ReadonlyMap<string, PcStatus>;
   onCheckPcs?: () => void; onCheckPc?: (serverId: string) => void;
+  /** the front page's Check again when no PC answered a launch (`noneOnline`): opens the first saved PC that answers */
+  onFindPc?: () => void;
   onRefreshAccount?: () => void | Promise<void>;
   /** Admission succeeded; only this action hands the scoped page to the PC app. */
   onOpenPc?: () => void;
@@ -191,6 +194,7 @@ export function RelayShell(props: RelayShellProps) {
   const pc = name ?? t("this PC");
   const stateName = state.kind === "failed" ? state.failure : state.kind === "outdated" ? "pc-outdated" : state.kind === "forged" ? "identity-changed" : state.kind;
   const devices = state.kind === "list" ? state.devices : [];
+  const noneOnline = state.kind === "list" && state.noneOnline === true && props.onFindPc ? <NoPcOnline onCheck={props.onFindPc} /> : null;
   // a pairing's sign-in reads on the plain page, with nothing around it; its other steps are on the step frame
   const plain = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined;
 
@@ -238,7 +242,7 @@ export function RelayShell(props: RelayShellProps) {
     // My machines has its own signed-in address and main landmark; while the directory cannot be read, the dashboard says so and offers its retry
     const machines = signedIn.error === null && machinesRoute !== null;
     const Frame = machines ? "div" : "main";
-    const dash = !manage ? addPc() : machines ? (
+    const dash = !manage ? <>{noneOnline}{addPc()}</> : machines ? (
       <MyMachinesPage route={machinesRoute} pcs={signedIn.pcs} pcStatus={pcStatus ?? new Map()} onCheckPc={(serverId) => onCheckPc?.(serverId)}
         onJoin={(target) => setSheet({ pc: target, mode: newPcs([target], Date.now()).length > 0 ? "new" : "join" })} />
     ) : (
@@ -319,6 +323,7 @@ export function RelayShell(props: RelayShellProps) {
         {signInFirst || plain
           ? <SheepMascot screen="header" size={80} />
           : !adding && <img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="relay-shell-mark" />}
+        {noneOnline}
         {content}
       </div>
     </main>

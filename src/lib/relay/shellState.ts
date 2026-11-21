@@ -81,7 +81,8 @@ export type AccountView =
 export interface EnrollmentCompletion { readonly state: "complete"; readonly admitted?: number }
 
 export type RelayShellState =
-  | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null }
+  /** `noneOnline`: a launch tried every saved PC it may open and none answered */
+  | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null; noneOnline?: true }
   | { kind: "outdated"; name: string | null; serverVersion: string; minVersion: string; update: PcUpdate }
   | { kind: "empty"; account?: AccountView | null }
   /**

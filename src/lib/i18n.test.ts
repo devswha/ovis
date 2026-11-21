@@ -158,7 +158,7 @@ const PART_FILES: Record<string, string[]> = {
   updates: ["components/UpdateControls.tsx", "lib/updateProgress.ts"],
   palette: ["components/CommandPalette.tsx"],
   setup: ["components/AgentSetupCard.tsx", "components/AddAgentPanel.tsx", "components/AgentTile.tsx", "components/AgentsSettings.tsx"],
-  relay: ["components/RelayShell.tsx", "components/RelayShellScreens.tsx", "components/RelayAddPc.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx", "lib/relay/accountController.ts", "components/relayFailureText.ts"],
+  relay: ["components/RelayShell.tsx", "components/RelayShellScreens.tsx", "components/NoPcOnline.tsx", "components/RelayAddPc.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx", "lib/relay/accountController.ts", "components/relayFailureText.ts"],
   guide: ["components/SetupGuide.tsx", "components/RelayOnlyWarning.tsx"],
   dashboard: ["components/AddPcSheet.tsx", "components/RelayDashboard.tsx", "components/RelayMap.tsx", "components/RelayPcTable.tsx", "components/RelayPcDetails.tsx", "components/RelayOverview.tsx", "components/relayMapLayout.ts", "components/relayPcState.tsx"],
   "my-machines": ["components/MyMachines.tsx", "components/MyMachinesParts.tsx", "components/MyMachinesList.tsx", "components/MyMachineDetails.tsx", "components/AddMachineSheet.tsx", "components/myMachinesWords.ts"],

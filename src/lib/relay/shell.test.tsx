@@ -106,6 +106,12 @@ describe("the hosted shell's front page", () => {
     return node.props as RelayShellProps;
   };
   const last = (): RelayShellProps => shellProps(rendered.at(-1)!);
+  const pcs = async (...ids: string[]): Promise<RelayDevice[]> => {
+    const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    return ids.map((server_id) => ({ server_id, server_public_key: "k", relay: AP, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" }));
+  };
+  // every saved PC answers its check, unless a test says which do not
+  const answering = (off: readonly string[] = []): RelayShellMount["checkPc"] => async (device) => off.includes(device.server_id) ? { kind: "offline", reason: "pc" } : { kind: "answered", route: "relay", relay: AP, rttMs: 20 };
   const account = () => { const { state } = last(); if ((state.kind !== "list" && state.kind !== "empty") || state.account?.kind !== "signed-in") throw new Error(`not the signed-in front page: ${state.kind}`); return state.account; };
 
   it("starts a fresh typed challenge after wrong digits and ignores repeated pending submissions", async () => {
@@ -929,13 +935,7 @@ describe("the hosted shell's front page", () => {
   });
 
   describe("a launch", () => {
-    const pcs = async (...ids: string[]): Promise<RelayDevice[]> => {
-      const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-      return ids.map((server_id) => ({ server_id, server_public_key: "k", relay: AP, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" }));
-    };
     const launch = (): void => { browser.sessionStore.delete("ovis-launched"); };
-    // every saved PC answers its check, unless a test says which do not
-    const answering = (off: readonly string[] = []): RelayShellMount["checkPc"] => async (device) => off.includes(device.server_id) ? { kind: "offline", reason: "pc" } : { kind: "answered", route: "relay", relay: AP, rttMs: 20 };
 
     it("opens the PC this device opened last, by its saved pairing, once per tab", async () => {
       launch();
@@ -1004,10 +1004,68 @@ describe("the hosted shell's front page", () => {
         await mountRelayShell(mountFor({ entryUrl: scope, store: deviceStore([{ ...saved!, server_public_key }]), navigate: (path) => { went.push(path); }, open: off }));
         // the launch goes on at the front page with the account's PCs; a PC a person opened leaves nothing behind
         expect(browser.sessionStore.get("ovis-launch-account")).toBe(launched ? "1" : undefined);
+        expect(browser.sessionStore.get("ovis-launch-tried")).toBe(launched ? JSON.stringify([server_id]) : undefined);
         browser.sessionStore.delete("ovis-launch-account");
+        browser.sessionStore.delete("ovis-launch-tried");
         if (!launched) await until(() => rendered.length > 0 && last().state.kind === "failed", "the PC's failure card");
         expect(went).toEqual([...expected]);
         expect(browser.sessionStore.has("ovis-launched-pc")).toBe(false);
+      }
+    });
+
+    it("goes on with the saved PCs it did not try when the PC a launch opened turned out off on its own page", async () => {
+      const [a, b, c] = ["a".repeat(32), "b".repeat(32), "c".repeat(32)];
+      browser.sessionStore.set("ovis-launch-account", "1");
+      browser.sessionStore.set("ovis-launch-tried", JSON.stringify([a]));
+      localStorage.setItem("ovis-last-pc", a);
+      const went: string[] = [];
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs(a, b, c)), navigate: (path) => { went.push(path); }, checkPc: answering([b]) }));
+      expect(went).toEqual([`/s/${c}/`]);
+      expect(browser.sessionStore.get("ovis-launched-pc")).toBe(c);
+    });
+
+    it("says no PC is online once every saved PC a launch may open is off, and Check again opens the first that answers then", async () => {
+      const [a, b] = ["a".repeat(32), "b".repeat(32)];
+      const off = new Set([a, b]);
+      const went: string[] = [];
+      launch();
+      localStorage.setItem("ovis-last-pc", b);
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs(a, b)), navigate: (path) => { went.push(path); },
+        checkPc: async (device) => off.has(device.server_id) ? { kind: "offline", reason: "pc" } : { kind: "answered", route: "relay", relay: AP, rttMs: 20 } }));
+      expect(went).toEqual([]);
+      expect(last().state).toMatchObject({ kind: "list", noneOnline: true });
+      off.delete(a);
+      last().onFindPc?.();
+      await until(() => went.length > 0, "the PC that answers now");
+      expect(went).toEqual([`/s/${a}/`]);
+    });
+
+    it("says no PC is online when a launch that went on finds every saved PC tried", async () => {
+      const a = "a".repeat(32);
+      browser.sessionStore.set("ovis-launch-account", "1");
+      browser.sessionStore.set("ovis-launch-tried", JSON.stringify([a]));
+      const went: string[] = [];
+      await mountRelayShell(mountFor({ store: deviceStore(await pcs(a)), navigate: (path) => { went.push(path); }, checkPc: answering() }));
+      expect(went).toEqual([]);
+      expect(last().state).toMatchObject({ kind: "list", noneOnline: true });
+    });
+
+    it("goes on with the other PCs when the phone app reopens by itself on a PC that is off, and keeps the card in a browser", async () => {
+      const { server_id, server_public_key } = keyFor();
+      const [saved] = await pcs(server_id);
+      const off = async (): Promise<never> => { throw new RelayPcOfflineError(); };
+      for (const [nativeApp, expected] of [[true, ["/"]], [false, []]] as const) {
+        const went: string[] = [];
+        // a new web view, or a new tab, opened right on the PC's address: the first page of its session
+        browser.sessionStore.delete("ovis-launched");
+        if (nativeApp) Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true } });
+        try {
+          await mountRelayShell(mountFor({ entryUrl: `https://app.ovis.sh/s/${server_id}/`, store: deviceStore([{ ...saved!, server_public_key }]), navigate: (path) => { went.push(path); }, open: off }));
+          if (!nativeApp) await until(() => rendered.length > 0 && last().state.kind === "failed", "the PC's failure card");
+        } finally { Reflect.deleteProperty(globalThis, "Capacitor"); }
+        expect(went).toEqual([...expected]);
+        expect(browser.sessionStore.get("ovis-launch-tried")).toBe(nativeApp ? JSON.stringify([server_id]) : undefined);
+        browser.sessionStore.delete("ovis-launch-tried");
       }
     });
 
@@ -1202,6 +1260,7 @@ describe("the hosted shell's front page", () => {
     it("goes on to an account PC's join card when the saved PC a launch opened turned out off on its own page", async () => {
       // the tab's launch is past (ovis-launched): only the mark the off PC's page left sends the front page on
       browser.sessionStore.set("ovis-launch-account", "1");
+      browser.sessionStore.set("ovis-launch-tried", JSON.stringify(["a".repeat(32)]));
       const went: string[] = [];
       const pair = generateKeyPair();
       const listed = { server_id: deriveServerId(pair.publicKey), label: "Office", added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
@@ -1361,6 +1420,77 @@ describe("the hosted shell's front page", () => {
       await mountRelayShell(mountFor({ store: deviceStore([]), entryUrl: `https://app.ovis.sh/s/${"a".repeat(32)}/` }));
       await mountRelayShell(mountFor({ store, navigate: (path) => { went.push(path); }, checkPc: answering() }));
       expect(went).toEqual([]);
+    });
+  });
+
+  describe("a PC page whose PC goes away", () => {
+    class Admitted extends RelayTransport {
+      back = false;
+      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+      override get route() { return this.back ? "relay" as const : undefined; }
+      override async fetch() { return Response.json({ managed: false }); }
+    }
+    /** this PC's page with its app open, and the PCs saved beside it */
+    const opened = async (others: readonly string[], checkPc: RelayShellMount["checkPc"], saved = (rows: RelayDevice[]) => rows) => {
+      const { server_id, server_public_key } = keyFor();
+      const [mine, ...rest] = await pcs(server_id, ...others);
+      const transport = new Admitted({ v: 1, server_id, server_public_key, relay: AP });
+      let options: RelayTransportOptions | undefined;
+      const moves: string[] = [];
+      let apps = 0;
+      await mountRelayShell(mountFor({
+        entryUrl: `https://app.ovis.sh/s/${server_id}/`, store: deviceStore(saved([{ ...mine!, server_public_key }, ...rest])), shellVersion: "1.0.0", checkPc,
+        open: async (_offer, given) => { options = given; return transport; }, replace: (path) => { moves.push(path); },
+        renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} },
+      }));
+      await until(() => apps === 1, "the app");
+      const away = options?.onPcAway;
+      if (away === undefined) throw new Error("the transport was given no way to say its PC went away");
+      return { server_id, transport, moves, away };
+    };
+
+    it("moves to the first other saved PC that answers once the relay has nobody for this one, leaving the page as the app replaces it", async () => {
+      const [b, c] = ["b".repeat(32), "c".repeat(32)];
+      const seen: string[] = [];
+      window.addEventListener("ovis-page-leaving", () => { seen.push("leaving"); });
+      const page = await opened([b, c], answering([b]));
+      page.away();
+      await until(() => page.moves.length > 0, "the move");
+      expect([...seen, ...page.moves]).toEqual(["leaving", `/s/${c}/`]);
+      // the PC it lands on is opened as a launch would: off by then, the launch goes on without this one
+      expect([browser.sessionStore.get("ovis-launched-pc"), browser.sessionStore.get("ovis-launch-tried")]).toEqual([c, JSON.stringify([page.server_id])]);
+      page.transport.close();
+    });
+
+    it("never moves to a PC that only an account introduction saved here", async () => {
+      const asked: string[] = [];
+      const page = await opened(["b".repeat(32)], async (device) => { asked.push(device.server_id); return { kind: "answered", route: "relay", relay: AP, rttMs: 20 }; },
+        ([mine, other]) => [mine!, { ...other!, introduced_at: Date.now() }]);
+      page.away();
+      await drain();
+      expect([asked, page.moves]).toEqual([[], []]);
+      page.transport.close();
+    });
+
+    it("stays when no other PC answers, asks again only after a sweep's gap, and stays when its PC comes back during the checks", async () => {
+      const [b, c] = ["b".repeat(32), "c".repeat(32)];
+      const asked: string[] = [];
+      const quiet = await opened([b, c], async (device) => { asked.push(device.server_id); return { kind: "offline", reason: "pc" }; });
+      quiet.away();
+      await until(() => asked.length === 2, "both checks");
+      await drain();
+      quiet.away();
+      await drain();
+      expect([asked, quiet.moves]).toEqual([[b, c], []]);
+      quiet.transport.close();
+
+      let page: Awaited<ReturnType<typeof opened>> | undefined;
+      page = await opened([b], async () => { if (page) page.transport.back = true; return { kind: "answered", route: "relay", relay: AP, rttMs: 20 }; });
+      page.away();
+      await until(() => page?.transport.back === true, "the check");
+      await drain();
+      expect(page.moves).toEqual([]);
+      page.transport.close();
     });
   });
 

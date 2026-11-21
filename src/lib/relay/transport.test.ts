@@ -31,7 +31,7 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
   const connections: Awaited<ReturnType<typeof relayConnection>>[] = [];
   const carriers: { open: boolean }[] = [];
   const callbacks: NonNullable<RelayChannelOptions["onClose"]>[] = [];
-  const attempts = { count: 0, failures: 0, offline: 0, unreachable, refusal: null as Error | null,
+  const attempts = { count: 0, failures: 0, offline: 0, away: 0, unreachable, refusal: null as Error | null,
     pcAnswerMs: [] as (number | undefined)[], relays: [] as string[], offered: [] as string[] };
   const fatal: Error[] = [];
   const offer = { v: 1 as const, server_id: "0123456789abcdef0123456789abcdef",
@@ -39,6 +39,7 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
   const transport = await openRelayTransport(offer, {
     clock,
     onFatal: (error) => fatal.push(error),
+    onPcAway: () => { attempts.away++; },
     openChannel: async (channelOffer, config = {}) => {
       attempts.count++;
       attempts.pcAnswerMs.push(config.pcAnswerMs);
@@ -534,6 +535,25 @@ it("tries again a second after each attempt the relay held waiting for a PC that
   expect(f.attempts.pcAnswerMs).toEqual([undefined, ...Array<number>(7).fill(RECONNECT_PC_ANSWER_MS)]);
   expect(await (await f.transport.fetch("/api/back")).json()).toEqual({ ok: true });
   expect(f.fatal).toEqual([]);
+});
+
+it("tells the shell each time a reconnect finds nobody for the PC at the relay, and only then, and goes on reconnecting", async () => {
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+  f.attempts.failures = 1;
+  f.attempts.offline = 2;
+  await f.drop();
+  f.clock.advance(1000);
+  await expect(f.transport.connect()).rejects.toBeInstanceOf(TypeError);
+  expect(f.attempts.away).toBe(0);
+  for (const [delay, away] of [[2000, 1], [1000, 2]] as const) {
+    f.clock.advance(delay);
+    await expect(f.transport.connect()).rejects.toBeInstanceOf(RelayPcOfflineError);
+    expect(f.attempts.away).toBe(away);
+  }
+  f.clock.advance(1000);
+  await f.transport.connect();
+  expect(await (await f.transport.fetch("/api/back")).json()).toEqual({ ok: true });
+  expect([f.attempts.away, f.fatal]).toEqual([2, []]);
 });
 
 it("keeps the growing pause after such waits while the page is hidden", async () => {

@@ -129,4 +129,6 @@ export const RELAY_JA: Record<string, string> = {
   "Add a PC|screen": "PC を追加",
   "This pairing link is not this app's. Scan the QR code your PC shows.": "このペアリングリンクはこのアプリのものではありません。PC に表示された QR コードを読み取ってください。",
   "{host} is not on a tailnet or a home network, so plain http would send everything you type across the internet unencrypted. Use its https address, or open it again to go ahead.": "{host} は tailnet やホームネットワークのアドレスではないため、通常の http では入力内容がすべて暗号化されずにインターネットを通ります。https のアドレスを使うか、続けるにはもう一度開いてください。",
+  "No PC is online": "オンラインの PC がありません",
+  "Turn on a PC that runs Ovis, then check again.": "Ovis が動いている PC の電源を入れてから、もう一度確認してください。",
 };
