@@ -35,3 +35,13 @@ it("retry after a failed local block cannot commit a non-durable removal", () =>
   expect(rows.has(row.id)).toBe(false);
   expect(new TailnetNodes(dir).isBlocked(phone.id)).toBe(true);
 });
+
+it("a pending first node association does not authorize a removed row", async () => {
+  const context = fixture();
+  const row = context.pair();
+  const lookup = Promise.withResolvers<typeof phone>();
+  const pending = tailnetNodeGate({ level: "full", via: "device", role: row.role, device: row }, { ...context, whois: () => lookup.promise });
+  expect(context.rows.revoke(row.id)).toBe(true);
+  lookup.resolve(phone);
+  expect((await pending).access.level).toBe("none");
+});

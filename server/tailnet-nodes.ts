@@ -286,7 +286,7 @@ export async function tailnetNodeGate(access: Access, input: {
   readonly address: string | null;
   readonly owner: string | null;
   readonly nodes: TailnetNodes;
-  readonly rows: Pick<TailnetNodeRows, "noteTailnetNode">;
+  readonly rows: Pick<TailnetNodeRows, "noteTailnetNode"> & { has(rowId: string): boolean };
   readonly whois: (address: string) => Promise<TailnetNode | null>;
 }): Promise<{ readonly access: Access; readonly node: string | null }> {
   const as = (next: Access, node: string | null = null) => ({ access: next, node });
@@ -304,6 +304,8 @@ export async function tailnetNodeGate(access: Access, input: {
   }
   if (access.via === "device" && access.device !== undefined && address !== null) {
     const node = await input.whois(address);
+    // the row was matched before the WhoIs read: one removed meanwhile gets nothing, as its revoke already ended the rest
+    if (!input.rows.has(access.device.id)) return as({ level: "none", reason: "pairing_required" });
     if (node === null) return as(access);
     input.rows.noteTailnetNode(access.device.id, node.id);
     if (node.login !== null && input.owner !== null && node.login.toLowerCase() === input.owner.toLowerCase()) nodes.seen(node);
