@@ -1424,6 +1424,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const timeline = useRef<LegendListRef>(null);
   const ChatTimeline = useChatTimeline();
   const stickToBottom = useRef(true);
+  const restoring = useRef<ChatPosition | null>(null);
   const manualLayout = useRef(false);
   const selecting = useRef(false);
   const pagingAway = useRef(false);
@@ -1434,6 +1435,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const scrollDownInputAt = useRef(-Infinity);
   const scrollbarInputAt = useRef(-Infinity);
   const markScrollInput = useCallback((direction: -1 | 1): void => {
+    restoring.current = null;
     const now = performance.now();
     scrollUpInputAt.current = direction < 0 ? now : -Infinity;
     scrollDownInputAt.current = direction > 0 ? now : -Infinity;
@@ -1465,7 +1467,6 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const [historyId, setHistoryId] = useState<string | undefined>(undefined);
   const shownPane = useRef(paneId);
   const prependAnchor = useRef<{ key: string; offset: number } | null>(null);
-  const restoring = useRef<ChatPosition | null>(null);
   const revealing = useRef<{ match: ConversationSearchMatch; done: (result: RevealResult) => void } | null>(null);
   const [revealTick, setRevealTick] = useState(0);
   const newestFailed = useRef(false);
@@ -1535,9 +1536,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   useLayoutEffect(() => {
     shownPane.current = paneId;
     stopRestore.current?.();
-    restoring.current = readChatPosition(paneStorageId(machineId, paneId)) ?? null;
+    const saved = readChatPosition(paneStorageId(machineId, paneId));
+    restoring.current = saved?.atEnd === false ? saved : null;
     history.current = undefined; setHistoryId(undefined); enteredMoves.current = null; shownAt.current = Date.now();
-    pagingAway.current = false; stickToBottom.current = true; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
+    pagingAway.current = restoring.current !== null;
+    stickToBottom.current = !pagingAway.current;
+    signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(pagingAway.current); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
     dropOlder();
     lastAnswer.current = null;
     setSentOver(null);
@@ -1660,6 +1664,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
             const storageId = paneStorageId(machineId, paneId);
             const kept = readChatPosition(storageId);
             if (kept !== undefined && kept.historyId === (history.current ?? null)) rememberChatPosition(storageId, { ...kept, historyId: conversation.history_id ?? null });
+            if (restoring.current !== null && restoring.current.historyId === history.current) restoring.current = { ...restoring.current, historyId: conversation.history_id ?? null };
           }
           else {
             if (history.current !== undefined) {
@@ -1673,7 +1678,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           }
           generation = olderGeneration.current;
           history.current = conversation.history_id; setHistoryId(conversation.history_id);
-          if (!continued) { pagingAway.current = false; stickToBottom.current = true; setNewMessages(false); setAway(false); }
+          if (!continued) {
+            pagingAway.current = conversation.source !== "scrollback" && restoring.current?.historyId === (conversation.history_id ?? null);
+            stickToBottom.current = !pagingAway.current;
+            setNewMessages(false); setAway(pagingAway.current);
+          }
         }
         if (conversation === lastAnswer.current) { setStale(false); setError(null); setErrorStatus(null); setFailures(0); setReadPresentation(proved ? readKey : undefined); return; }
         const previous = lastAnswer.current;
@@ -1786,13 +1795,16 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           setPollKey((key) => key + 1); return;
         }
         if (page.source === "scrollback" || page.cursor === undefined) { setOlderCursor(undefined); setOlderState("idle"); return; }
+        if (page.cursor === before) { setOlderState("failed"); return; }
         const first = heldFrom.current === null;
         heldFrom.current ??= before;
-        const top = node.getBoundingClientRect().top;
-        const anchor = [...node.querySelectorAll<HTMLElement>("[data-chat-row]")]
-          .filter((row) => row.getBoundingClientRect().bottom > top)
-          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
-        if (anchor?.dataset.chatRow) prependAnchor.current = { key: anchor.dataset.chatRow, offset: anchor.getBoundingClientRect().top - top };
+        if (restoring.current === null) {
+          const top = node.getBoundingClientRect().top;
+          const anchor = [...node.querySelectorAll<HTMLElement>("[data-chat-row]")]
+            .filter((row) => row.getBoundingClientRect().bottom > top)
+            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+          if (anchor?.dataset.chatRow) prependAnchor.current = { key: anchor.dataset.chatRow, offset: anchor.getBoundingClientRect().top - top };
+        }
         slots.current = prependChatRowSlots(slots.current, page.turns.length);
         olderCount.current += page.turns.length;
         setOlder((turns) => [...page.turns, ...turns]);
@@ -1906,6 +1918,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const measureEnd = (): void => {
     const node = scroller.current;
     if (!node) return;
+    if (!visible || (restoring.current !== null && state.source === "conversation")) { setEndPresentation(null); return; }
     // Every measurement path must respect a pending restore/minimap/page navigation.
     // Only genuinely short content cannot be moved away from its end, unless the reader opened
     // something in it: the records that make it longer must not pull that away (readOpened).
@@ -2040,6 +2053,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           pointerDragAt.current = -Infinity;
           // Track and arrow presses can scroll in either direction, even after pointerup.
           if (event.button === 0 && event.target === node && event.clientX >= node.getBoundingClientRect().left + node.clientWidth) {
+            restoring.current = null;
             scrollbarInputAt.current = performance.now();
             scrollbarPress.current = { y: event.clientY, movedUp: false };
           }
@@ -2068,7 +2082,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   }, [active, visible, markScrollInput, scrollGesture]);
   const onScroll = (listCorrected = false): void => {
     const node = scroller.current;
-    if (node === null) return;
+    if (node === null || !visible || (restoring.current !== null && state.source === "conversation")) return;
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
     const movedBy = node.scrollTop - lastScrollTop.current;
     const scrollingDown = movedBy > 0;
@@ -2116,7 +2130,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     }
     setAway(!stickToBottom.current);
     measureEnd();
-    if (loaded && restoring.current === null && state.source === "conversation") rememberPlace(node);
+    if (stopRestore.current !== null) return;
+    if (loaded && state.source === "conversation") rememberPlace(node);
     if (node.scrollTop < LOAD_OLDER_PX && olderState === "idle") void loadOlder();
   };
   onScrollRef.current = onScroll;
@@ -2127,22 +2142,24 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       });
       return;
     }
-    const top = node.getBoundingClientRect().top;
+    const { top, bottom } = node.getBoundingClientRect();
     let first: { key: string; top: number } | null = null;
     for (const row of node.querySelectorAll<HTMLElement>("[data-chat-row]")) {
       const rect = row.getBoundingClientRect();
-      if (rect.bottom > top && (first === null || rect.top < first.top)) first = { key: row.dataset.chatRow ?? "", top: rect.top };
+      if (rect.bottom > top && rect.top < bottom && (first === null || rect.top < first.top)) first = { key: row.dataset.chatRow ?? "", top: rect.top };
     }
     const row = first === null ? undefined : timelineRows.find((candidate) => candidate.key === first.key);
+    if (row === undefined || first === null) return;
     rememberChatPosition(paneStorageId(machineId, paneId), {
       historyId: history.current ?? null,
-      turn: row === undefined ? "" : row.turn === null ? `outcome|${row.outcome.id}` : chatTurnAnchor(row.turn),
-      offset: first === null ? 0 : first.top - top,
-      atEnd: row === undefined,
+      turn: row.turn === null ? `outcome|${row.outcome.id}` : chatTurnAnchor(row.turn),
+      offset: first.top - top,
+      atEnd: false,
     });
   };
   const readOpened = useCallback((): void => {
     navigationRef.current += 1;
+    restoring.current = null;
     if (!stickToBottom.current) return;
     pagingAway.current = true; stickToBottom.current = false; openedAway.current = true;
     dropPendingListScroll(timeline.current);
@@ -2153,6 +2170,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const scrollToBottom = (): void => {
     const node = scroller.current;
     if (node === null) return;
+    restoring.current = null;
+    stopRestore.current?.();
     pagingAway.current = false; stickToBottom.current = true;
     manualLayout.current = false;
     rememberPlace(node);
@@ -2302,7 +2321,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       if (row !== null) {
         const delta = row.getBoundingClientRect().top - node.getBoundingClientRect().top - offset;
         if (Math.abs(delta) > 1) { stable = 0; void list.scrollToOffset({ offset: node.scrollTop + delta, animated: false }); }
-        else if (++stable >= 2) { stop(); return; }
+        else if (++stable >= 2) { stop(); rememberPlace(node); return; }
       }
       frame = requestAnimationFrame(settle);
     };
@@ -2311,15 +2330,35 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     stopRestore.current = stop;
     frame = requestAnimationFrame(settle);
   };
+  // A retained pane can scroll during its hidden layout. Only a visible chat supplies a place.
+  useLayoutEffect(() => {
+    if (visible) return;
+    stopRestore.current?.();
+    const saved = readChatPosition(paneStorageId(machineId, paneId));
+    restoring.current = saved?.atEnd === false ? saved : null;
+  }, [visible, machineId, paneId]);
   useLayoutEffect(() => {
     const saved = restoring.current;
-    if (saved === null || !loaded || error !== null || state.source !== "conversation") return;
-    restoring.current = null;
-    const index = chatRestoreIndex(saved, history.current ?? null, timelineRows.map((row) => row.turn === null ? `outcome|${row.outcome.id}` : chatTurnAnchor(row.turn)));
+    if (saved === null || !visible || !loaded || error !== null || state.source !== "conversation") return;
     const list = timeline.current, node = scroller.current;
-    if (index === null || list === null || node === null) return;
-    placeRow(list, node, index, saved.offset);
-  }, [loaded, error, state.source, timelineRows]);
+    if (node === null || list === null) return;
+    if (saved.historyId !== (history.current ?? null)) {
+      scrollToBottom();
+      return;
+    }
+    const index = chatRestoreIndex(saved, history.current ?? null, timelineRows.map((row) => row.turn === null ? `outcome|${row.outcome.id}` : chatTurnAnchor(row.turn)));
+    if (index !== null) {
+      restoring.current = null;
+      placeRow(list, node, index, saved.offset);
+    } else if (typeof olderCursor === "string") {
+      // Remounts initially have only the newest page. Keep the place until its row is loaded.
+      dropPendingListScroll(list);
+      pagingAway.current = true; stickToBottom.current = false; setAway(true);
+    } else scrollToBottom();
+  }, [visible, loaded, error, state.source, timelineRows, olderCursor]);
+  useEffect(() => {
+    if (visible && loaded && error === null && state.source === "conversation" && restoring.current !== null && olderState === "idle" && typeof olderCursor === "string") void loadOlder();
+  }, [visible, loaded, error, state.source, olderState, olderCursor, loadOlder]);
   useLayoutEffect(() => {
     const pick = revealing.current;
     const list = timeline.current, node = scroller.current;
@@ -2350,6 +2389,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     pick.done("shown");
   }, [timelineRows, revealTick]);
   const revealTurn = async (match: ConversationSearchMatch): Promise<RevealResult> => {
+    restoring.current = null;
     const reveal = (): Promise<RevealResult> => new Promise((done) => {
       revealing.current?.done("missing");
       revealing.current = { match, done };
@@ -2383,6 +2423,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   }, [shownTurns, timelineRows]);
   const rowKeys = useMemo(() => timelineRows.map((row) => row.key), [timelineRows]);
   const jumpToTurn = useCallback((index: number) => {
+    restoring.current = null;
     pagingAway.current = true; stickToBottom.current = false; setAway(true);
     navigationRef.current += 1;
     void timeline.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
