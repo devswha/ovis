@@ -477,6 +477,25 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       }
     });
 
+    it("reads no more of the Actions API than the Linux route needs while not opted in", () => {
+      const state = (): string => actions({ queued: { 1: waiting(1, 300), 2: waiting(1, 30) } });
+      const reads = (env: Record<string, string>): string[] => {
+        const fake = state();
+        route({ ...env, FAKE_GH: fake });
+        return readFileSync(join(fake, "calls"), "utf8").trim().split("\n").filter((call) => call.includes("/jobs"));
+      };
+      const off: Record<string, string> = { ...pr };
+      delete off["RUST_SELF_HOSTED"];
+      expect(reads(off).some((call) => call.includes("/runs/2/jobs"))).toBe(false);
+      expect(reads(pr).some((call) => call.includes("/runs/2/jobs"))).toBe(true);
+    });
+
+    it("routes as before when no temporary file can be made", () => {
+      const result = route({ EVENT_NAME: "push", TMPDIR: "/nonexistent/for-this-test" });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('linux=["self-hosted","self-hosted-ovis"]\nfast=["self-hosted","self-hosted-ovis"]\nrust="ubuntu-24.04"\n');
+    });
+
     it("refuses any other CI_RUST_SELF_HOSTED, and never lets it pass the rules that keep the job hosted", () => {
       for (const value of ["yes", "TRUE", "1", " true", '"true"']) {
         const result = route({ ...pr, RUST_SELF_HOSTED: value, FAKE_GH: actions({}) });

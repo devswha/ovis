@@ -377,7 +377,9 @@ minutes at the 90th percentile, behind Integration tests and the browser parts. 
 run one each. Rebuild the
 image with the toolchain (`--build`) before you add the label. The job goes to these slots only once the
 repository variable `CI_RUST_SELF_HOSTED` is `true`; unset (the default), empty or `false` keeps it on
-`ubuntu-24.04` as before the slots existed, and any other value fails Detect changes:
+`ubuntu-24.04` as before the slots existed. Any other value fails Detect changes in the runs that read it,
+a same-repository pull request or a push to a branch; forks, `hosted_only` (the Release's) and manual runs
+stay hosted without reading it, so a typo never stops a release:
 
 ```sh
 gh variable set CI_RUST_SELF_HOSTED --body true   # the Rust job on the Rust slots
@@ -413,11 +415,13 @@ WantedBy=timers.target
 With both Rust slots gone, or the maintainer PC off, the value ages and every later run's job goes
 hosted before it queues. One window stays open: a run routed in the five minutes before the value aged
 still waits for the slots, and GitHub never moves a queued job, so that run's Rust PTY host job (not a
-required check) waits until a Rust slot is back, or until GitHub drops it after a day. Cancel that run and
-run it again in full; its Detect changes then sends the job hosted:
+required check) waits until a Rust slot is back, or until GitHub drops it after a day. Cancel that run, wait
+until it has completed (a re-run of a run still cancelling is refused), and run it again in full; its Detect
+changes then sends the job hosted:
 
 ```sh
-gh run cancel <run id> && gh run rerun <run id>   # after the heartbeat has aged (five minutes)
+# after the heartbeat has aged (five minutes)
+gh run cancel <run id> && gh run watch <run id> >/dev/null; gh run rerun <run id>
 ```
 
 On main a push run left so holds the next push's run behind it (one concurrency group), and a release

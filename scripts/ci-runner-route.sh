@@ -101,15 +101,18 @@ pool_jobs() {
     if (( wait > longest )); then longest=$wait; fi
     if (( rust > rust_longest )); then rust_longest=$rust; fi
     running=$((running + live))
-    if (( longest > queue_limit && rust_longest > rust_queue_limit )); then break; fi
+    # the Rust route reads the scan only when opted in; otherwise the Linux route's answer is enough to stop
+    if (( longest > queue_limit )) && { [[ "${RUST_SELF_HOSTED:-}" != true ]] || (( rust_longest > rust_queue_limit )); }; then break; fi
   done
   echo "$longest $running $rust_longest"
 }
 
-# pool_jobs once for both routes, each of which runs in a subshell: its answer, or "failed".
-pool_file=$(mktemp)
-trap 'rm -f "$pool_file"' EXIT
+# pool_jobs once for both routes, each of which runs in a subshell: its answer, or "failed". Without a
+# temporary file each route reads the jobs itself, as a run with only one route needing them always did.
+pool_file=$(mktemp 2>/dev/null) || pool_file=""
+trap '[ -z "$pool_file" ] || rm -f "$pool_file"' EXIT
 pool_counts() {
+  [ -n "$pool_file" ] || { pool_jobs; return; }
   if [ ! -s "$pool_file" ]; then pool_jobs > "$pool_file" || echo failed > "$pool_file"; fi
   [ "$(cat "$pool_file")" != failed ] && cat "$pool_file"
 }
