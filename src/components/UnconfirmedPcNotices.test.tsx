@@ -10,6 +10,7 @@ import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.t
 import { memoryAccountStore, memoryLock, type AccountProvider, type AccountStore } from "../lib/account/store.ts";
 import { accountOpenablePcs } from "../lib/relay/pcPick.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { keepShellAccount } from "../lib/account/hostedSignIn.ts";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
 
 const ORIGIN = "https://account.ovis.sh";
@@ -134,6 +135,36 @@ describe("a PC the account lists unconfirmed", () => {
     await press("Remove from my account");
     expect(fake.requests).toContain(`DELETE /v1/pcs/${PC}`);
     expect(fake.pcs(ACCOUNT)).toEqual([]);
+  });
+
+it("PCR-1: a removal from a sign-in older than ten minutes removes nothing, and says to sign in again", async () => {
+    await listedByDeviceCode();
+    await signIn();
+    now += 11 * MINUTE;
+    await mount();
+    await press("Remove from my account");
+    expect(text()).toContain("Sign in again to remove it: your sign-in is more than ten minutes old.");
+    expect(fake.pcs(ACCOUNT)).toHaveLength(1);
+    // no sign-in in place here (no app, no PC window, no hosted shell): nothing to press but the removal again
+    expect(buttons()).toEqual(["Remove from my account"]);
+  });
+
+  it("PCR-1: Sign in again signs in fresh in place and removes the same PC", async () => {
+    await listedByDeviceCode();
+    await signIn();
+    now += 11 * MINUTE;
+    keepShellAccount({ signOut() {}, signOutEverywhere: async () => null, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null,
+      freshSignIn: async () => { await signIn(); return (await store.get("session")) ?? null; } });
+    try {
+      await mount();
+      await press("Remove from my account");
+      expect(fake.pcs(ACCOUNT)).toHaveLength(1);
+      await press("Sign in again");
+      expect(fake.requests.filter((request) => request === `DELETE /v1/pcs/${PC}`)).toHaveLength(2);
+      expect(fake.pcs(ACCOUNT)).toEqual([]);
+    } finally {
+      keepShellAccount(null);
+    }
   });
 
   it("confirms with this own sign-in on Add: listed as the account's, new for 24 hours, told as new, and never opened by itself", async () => {

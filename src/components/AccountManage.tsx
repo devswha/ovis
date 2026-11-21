@@ -12,9 +12,10 @@ import { indexedDeviceStore } from "../lib/relay/device.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
 import { getTransport } from "../lib/transport.ts";
 import { DEVICES_CHANGED_EVENT, inRelayShell } from "../lib/useRelay.ts";
-import { removePcFromAccount } from "./AccountPcs.tsx";
+import { signInOfAccount } from "./AccountPcs.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { StatusDot } from "./StatusDot.tsx";
+import { usePcRemoval } from "./usePcRemoval.tsx";
 
 /**
  * Whether `row` can be disconnected from every PC from here: another device of the account, and a
@@ -132,6 +133,11 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
   const service = useMemo(() => new AccountService({ store: indexedAccountStore }), []);
   const [pcs, setPcs] = useState<readonly DirectoryPc[] | "failed" | null>(null);
   const [asked, setAsked] = useState<DirectoryPc | null>(null);
+  const removal = usePcRemoval(service, async (serverId) => {
+    // this device's own pairing with the gone PC goes too, so no list here offers it again
+    if (inRelayShell()) await (await loadRelayShell()).forgetSavedPc(serverId).catch(() => undefined);
+    window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+  });
   const read = useCallback(() => service.listPcs().then(setPcs, () => setPcs("failed")), [service]);
   useEffect(() => {
     void read();
@@ -159,19 +165,18 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
             );
           })}
       </ul>
+      {removal.prompt !== null && <p className="settings-condition">{removal.prompt}</p>}
       {asked !== null && (
         <ConfirmDialog title={t("Remove {name} from your account?", { name: asked.label })}
           body={t("{name} leaves your account's PCs on every device. It revokes nothing on {name}; if it comes back online, add it again.", { name: asked.label })}
           confirmLabel={t("Remove")} onClose={() => setAsked(null)}
           onConfirm={async () => {
-            try { await removePcFromAccount(service, account, asked.server_id); } catch (error) {
+            // a removal that wants a fresh sign-in first closes the question: its Sign in again, below the list, removes it
+            try { await removal.remove(await signInOfAccount(service, account), asked.server_id); } catch (error) {
               console.warn("Ovis: the PC was not removed from the account", error instanceof Error ? error.name : error);
               throw new Error(t("{name} could not be removed. Try again.", { name: asked.label }));
             }
-            // this device's own pairing with the gone PC goes too, so no list here offers it again
-            if (inRelayShell()) await (await loadRelayShell()).forgetSavedPc(asked.server_id).catch(() => undefined);
             setAsked(null);
-            window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
           }} />
       )}
     </section>

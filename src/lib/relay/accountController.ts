@@ -321,6 +321,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     if (error instanceof AnotherAccountError) return t("You signed in to another account. Nothing was deleted.");
     return t("The account could not be deleted. Try again.");
   };
+  /** PCR-1: a PC's removal wants the same fresh own sign-in: null when none was stored for `from`'s account. */
+  const freshSignIn = accountService !== null && nativeSignInAvailable()
+    ? (from: AccountSession): Promise<AccountSession | null> => signInAgainInPlace(from, accountService, () => true, new SignedOutError())
+      .catch((error: unknown) => error instanceof SignedOutError || error instanceof AnotherAccountError ? null : Promise.reject(error))
+    : undefined;
   /**
    * The service wants a sign-in from the last ten minutes: the phone app signs in again in place, with
    * the method this sign-in used, and deletes only if that is the same account; a browser is told to sign in again.
@@ -760,5 +765,5 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const listedNow = (): Promise<readonly AccountProvider[]> => answered().then((said) => said.listed);
   return { get state() { return accountView; }, get directory() { return directory; },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
-    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, signOutEverywhere, prepare, enroll, cancelEnrollment, armRefresh };
+    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }

@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 
 import { ACCOUNT_SIGN_OUT_EVENT } from "./service.ts";
-import { ACCOUNT_SESSION_EVENT, indexedAccountStore, type AccountProvider } from "./store.ts";
+import { ACCOUNT_SESSION_EVENT, indexedAccountStore, type AccountProvider, type AccountSession } from "./store.ts";
+
+/** A fresh own sign-in in `from`'s place, for the same account: the sign-in stored, or null when none was. */
+export type FreshSignIn = (from: AccountSession, blocked: (link: string) => void) => Promise<AccountSession | null>;
 
 /**
  * What this device leaving the account says: why it did not leave (`left` false), or the PCs that kept this device
@@ -24,6 +27,8 @@ export interface ShellAccount {
   readonly signOutEverywhere: () => Promise<string | null>;
   /** a fresh own sign-in with `provider`, whose return comes back to the PC page that asked for it */
   readonly signInAgain?: (provider: AccountProvider) => void;
+  /** the phone app's fresh own sign-in in place (accountController); a browser has none, it signs in by leaving the page */
+  readonly freshSignIn?: FreshSignIn | undefined;
 }
 
 export interface HostedSignIn extends ShellAccount {

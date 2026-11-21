@@ -11,7 +11,7 @@ import { SettingsProvider } from "../lib/settings.ts";
 
 // the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { AccountPcRows, NoAccountPcHint, removePcFromAccount } = await import("./AccountPcs.tsx");
+const { AccountPcRows, NoAccountPcHint, signInOfAccount } = await import("./AccountPcs.tsx");
 
 const DESK = "a".repeat(32);
 const LAPTOP = "b".repeat(32);
@@ -103,24 +103,17 @@ describe("the account's PCs in a PC's own Settings", () => {
   });
 });
 
-describe("removePcFromAccount", () => {
+describe("signInOfAccount", () => {
   const session = (account: string): AccountSession => ({ service: "https://account.example", account, provider: "github", access_token: "a", refresh_token: "r", expires_at: 0, sign_in_id: `id-${account}` });
-  const serviceWith = (stored: AccountSession | undefined, deleted: string[]): Pick<AccountService, "session" | "forSignIn"> => ({
-    session: async () => stored,
-    forSignIn: (signIn: AccountSession) => ({ deletePc: async (id: string) => { deleted.push(`${signIn.account} ${id}`); } }) as unknown as AccountService,
+  const serviceWith = (stored: AccountSession | undefined): Pick<AccountService, "session"> => ({ session: async () => stored });
+
+  it("is the sign-in whose list is shown", async () => {
+    expect(await signInOfAccount(serviceWith(session("acct-1")), "acct-1")).toEqual(session("acct-1"));
   });
 
-  it("removes the PC as the sign-in whose list is shown", async () => {
-    const deleted: string[] = [];
-    await removePcFromAccount(serviceWith(session("acct-1"), deleted), "acct-1", DESK);
-    expect(deleted).toEqual([`acct-1 ${DESK}`]);
-  });
-
-  it("removes nothing once another sign-in, or none, is stored", async () => {
-    const deleted: string[] = [];
-    await expect(removePcFromAccount(serviceWith(session("acct-2"), deleted), "acct-1", DESK)).rejects.toBeInstanceOf(SignedOutError);
-    await expect(removePcFromAccount(serviceWith(undefined, deleted), "acct-1", DESK)).rejects.toBeInstanceOf(SignedOutError);
-    expect(deleted).toEqual([]);
+  it("is none once another sign-in, or none, is stored", async () => {
+    await expect(signInOfAccount(serviceWith(session("acct-2")), "acct-1")).rejects.toBeInstanceOf(SignedOutError);
+    await expect(signInOfAccount(serviceWith(undefined), "acct-1")).rejects.toBeInstanceOf(SignedOutError);
   });
 });
 

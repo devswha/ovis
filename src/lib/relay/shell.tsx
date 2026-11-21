@@ -315,6 +315,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     signOut: account.signOut, leave: account.leave,
     signInAgain: (provider) => account.signIn(provider, undefined, undefined, entry.serverId ?? undefined),
     signOutEverywhere: () => account.signOutEverywhere(entry.serverId ?? undefined),
+    freshSignIn: account.freshSignIn,
     deleteAccount: async () => {
       await account.deleteAccount();
       const now = account.state;

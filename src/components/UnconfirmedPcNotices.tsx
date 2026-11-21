@@ -7,6 +7,7 @@ import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import { NewPcNotice } from "./NewPcNotices.tsx";
+import { usePcRemoval } from "./usePcRemoval.tsx";
 
 import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
@@ -136,6 +137,10 @@ function UnconfirmedPcNotice({ pc, session, service, now, addable, retry, onSign
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<Problem | null>(null);
   const inFlight = useRef(false);
+  const removal = usePcRemoval(service, () => {
+    window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+    onRemoved();
+  });
   useEffect(() => {
     if (!young) return;
     const timer = setTimeout(() => setYoung(false), Math.max(0, Math.min(ADD_WINDOW_MS, added + ADD_WINDOW_MS - now())));
@@ -164,11 +169,8 @@ function UnconfirmedPcNotice({ pc, session, service, now, addable, retry, onSign
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
     onConfirmed(row);
   }, (error) => refusal(t, error));
-  const remove = (): Promise<void> => act(async () => {
-    await directory.deletePc(pc.server_id);
-    window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
-    onRemoved();
-  }, () => ({ text: t("The PC could not be removed. Try again."), signInAgain: false }));
+  const remove = (): Promise<void> => act(async () => { await removal.remove(session, pc.server_id); },
+    () => ({ text: t("The PC could not be removed. Try again."), signInAgain: false }));
   const latestAdd = useRef(add);
   latestAdd.current = add;
   useEffect(() => { if (retry) void latestAdd.current(); }, [retry]);
@@ -185,6 +187,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, addable, retry, onSign
         <span className="settings-hint">{t("A PC was added to your account with a sign-in code at {time}.", { time })}{young && !numberOnly ? ` ${t("Add it only if you typed that code on that PC's own screen a moment ago.")}` : ""}</span>
         {young && shownProblem !== null && <span className={numberOnly && problem === null ? "settings-hint" : "account-error"} role={problem === null ? undefined : "alert"}>{shownProblem.text}</span>}
         {!young && problem !== null && <span className="account-error" role="alert">{problem.text}</span>}
+        {removal.prompt}
       </span>
       <div className="device-paired-actions">
         {problem?.signInAgain === true && onSignInAgain !== undefined && (

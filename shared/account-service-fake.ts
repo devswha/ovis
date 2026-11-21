@@ -646,6 +646,9 @@ export class FakeAccountService {
       return json({ pc: { ...shown, unconfirmed: this.opensAll && listed_by_device === true } });
     }
     if (pc !== undefined && request.method === "DELETE") {
+      // PCR-1: removing unbinds the PC and cuts the account's devices off it, so it asks what deleting the account asks
+      if (this.deviceFamilies.has(session.family)) return problem(403, "own_sign_in_required", "Sign in on this device to remove a PC");
+      if (!recent) return problem(403, "reauth_required", "Sign in again first");
       const removed = directory.get(pc);
       directory.delete(pc);
       this.pcAdmissions.delete(box(pc, account));

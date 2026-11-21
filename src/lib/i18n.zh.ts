@@ -265,6 +265,8 @@ const BASE: Record<string, string> = {
   "The PC could not be added. Try again.": "无法添加这台电脑，请重试。",
   "Sign in again to add it: your sign-in is more than ten minutes old.": "登录已超过 10 分钟，无法添加。请重新登录。",
   "Sign in on this device to add it.": "请在这台设备上直接登录后再添加。",
+  "Sign in again to remove it: your sign-in is more than ten minutes old.": "登录已超过 10 分钟，无法移除。请重新登录。",
+  "Sign in on this device to remove it.": "请在这台设备上直接登录后再移除。",
   "This account has no two-step sign-in to add it here. Add it with the number on the PC's screen.": "这个账号没有两步验证信息，无法在这里直接添加。请在电脑屏幕上用数字添加。",
   "New PC": "新电脑",
   "Rename failed: {reason}": "重命名失败：{reason}",

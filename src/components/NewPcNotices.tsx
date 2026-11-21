@@ -5,6 +5,7 @@ import { newPcNoticeClosed, newPcNoticeKey } from "../lib/account/newPcNotice.ts
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, sameSignIn, SignedOutError, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
+import { usePcRemoval } from "./usePcRemoval.tsx";
 
 import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
@@ -102,6 +103,11 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState(false);
   const inFlight = useRef(false);
+  const removal = usePcRemoval(indexedAccountService, () => {
+    setHidden(true);
+    window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+    onRemoved?.();
+  });
   useEffect(() => {
     if (hidden || !Number.isFinite(expiresAt)) return;
     // The directory can only issue a 24-hour mark. Cap the timer even if an invalid service sends a date farther out.
@@ -116,18 +122,14 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
     setSending(true);
     setFailed(false);
     try {
-      await indexedAccountService.forSignIn(session).deletePc(pc.server_id);
+      await removal.remove(session, pc.server_id);
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       setFailed(true);
-      return;
     } finally {
       inFlight.current = false;
       setSending(false);
     }
-    setHidden(true);
-    window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
-    onRemoved?.();
   };
   return (
     <div className="update-notice is-paired device-notice" role="status">
@@ -136,6 +138,7 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
         <span>{t("New PC added to your account: {name}", { name: pc.label })}</span>
         <span className="settings-hint">{t("If you did not add it, remove it.")}</span>
         {failed && <span className="account-error" role="alert">{t("The PC could not be removed. Try again.")}</span>}
+        {removal.prompt}
       </span>
       <div className="device-paired-actions">
         <button type="button" className="btn" disabled={sending} onClick={remove}>{t("I didn't add this")}</button>

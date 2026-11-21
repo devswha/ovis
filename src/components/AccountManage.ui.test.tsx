@@ -19,6 +19,8 @@ let devices: PairedDevice[] = [];
 let pcs: Service.DirectoryPc[] = [];
 const calls: string[] = [];
 let deleteFails = false;
+/** PCR-1: the service wants a fresh sign-in for a removal, which only the sign-in again below ("fresh") has */
+let refuseStale = false;
 let readsFail = false;
 let deviceReads = 0;
 const SESSION = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "s", access_token: "a", refresh_token: "r", expires_at: NOW + 3_600_000 };
@@ -31,7 +33,11 @@ await mock.module("../lib/account/store.ts", () => ({ ...Store, indexedAccountSt
 class FakeService {
   async listPcs() { if (readsFail) throw new Error("503 from the service"); return pcs; }
   async session() { return { account: "acct" }; }
-  forSignIn() { return { deletePc: async (id: string) => { if (deleteFails) throw new Error("502 from the service"); calls.push(`remove ${id}`); } }; }
+  forSignIn(signIn: { sign_in_id?: string }) { return { deletePc: async (id: string) => {
+    if (deleteFails) throw new Error("502 from the service");
+    if (refuseStale && signIn.sign_in_id !== "fresh") throw new Service.AccountServiceError(403, "reauth_required", "Sign in again first");
+    calls.push(`remove ${id}`);
+  } }; }
 }
 await mock.module("../lib/account/service.ts", () => ({ ...Service, AccountService: FakeService }));
 const { AccountManageLists } = await import("./AccountManage.tsx");
@@ -51,6 +57,7 @@ describe("Manage account's devices and PCs", () => {
     console.warn = () => {};
     calls.length = 0;
     deleteFails = false;
+    refuseStale = false;
     readsFail = false;
     deviceReads = 0;
     devices = [
@@ -138,6 +145,28 @@ describe("Manage account's devices and PCs", () => {
     await act(async () => { action(root, "remove-pc").props.onClick(); });
     await act(async () => { await press(root, "Remove"); });
     expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("Dead box could not be removed. Try again.");
+  });
+
+it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in again removes that PC with the fresh sign-in", async () => {
+    refuseStale = true;
+    const signInsAgain: string[] = [];
+    keepShellAccount({ signOut() {}, signOutEverywhere: async () => null, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null,
+      freshSignIn: async (from) => { signInsAgain.push(from.account); return { ...SESSION, sign_in_id: "fresh" } as Store.AccountSession; } });
+    try {
+      const root = await mount();
+      await act(async () => { action(root, "remove-pc").props.onClick(); });
+      await act(async () => { await press(root, "Remove"); });
+      expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
+      expect(textOf(root.find((node) => node.props["data-pc-removal"] === "b".repeat(32)))).toContain("Sign in again to remove it: your sign-in is more than ten minutes old.");
+      expect(calls).toEqual([]);
+      const again = root.find((node) => node.type === "button" && textOf(node) === "Sign in again");
+      await act(async () => { again.props.onClick(); });
+      expect(signInsAgain).toEqual(["acct"]);
+      expect(calls).toEqual([`remove ${"b".repeat(32)}`]);
+      expect(root.findAll((node) => node.props["data-pc-removal"] !== undefined)).toHaveLength(0);
+    } finally {
+      keepShellAccount(null);
+    }
   });
 
   it("says the lists could not be read rather than show an empty account", async () => {

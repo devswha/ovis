@@ -6,7 +6,7 @@ import { ChevronRight } from "lucide-react";
 
 import { ACCOUNT_PCS_CHANGED_EVENT, isNewAccountPc, type MyPc, type MyPcState } from "../lib/account/myPcs.ts";
 import { SignedOutError, type AccountService } from "../lib/account/service.ts";
-import type { AccountProvider } from "../lib/account/store.ts";
+import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
@@ -159,13 +159,13 @@ export function listedPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string 
 }
 
 /**
- * Takes a PC out of `account`'s directory, as the sign-in whose list the page shows: when another
- * sign-in (or none) took its place meanwhile (another tab), nothing is removed from that one's list.
+ * The sign-in whose list the page shows, for `account`, to take a PC out of that list: when another sign-in (or none)
+ * took its place meanwhile (another tab), SignedOutError, so nothing is removed from that one's list.
  */
-export async function removePcFromAccount(service: Pick<AccountService, "session" | "forSignIn">, account: string, serverId: string): Promise<void> {
+export async function signInOfAccount(service: Pick<AccountService, "session">, account: string): Promise<AccountSession> {
   const session = await service.session();
   if (session === undefined || session.account !== account) throw new SignedOutError();
-  await service.forSignIn(session).deletePc(serverId);
+  return session;
 }
 
 /** The account's PCs in a PC's own Settings list, one row each; an offline one is removed in Manage account. */

@@ -123,6 +123,17 @@ it("A2: a failed removal leaves the notice in place with a retryable alert", asy
   expect(remove.props.disabled).toBe(false);
 });
 
+it("PCR-1: a device code's sign-in removes nothing and is told to sign in on this device", async () => {
+  const token = service.issueToken(ACCOUNT, { device: true });
+  await store.update("session", (current) => current === undefined ? undefined : { ...current, access_token: token });
+  const root = await mount();
+  const remove = root.findAllByType("button").find(({ children }) => children.includes("I didn't add this"));
+  if (remove === undefined) throw new TypeError("Missing removal action");
+  await act(async () => { await remove.props.onClick(); });
+  expect(root.findAllByProps({ role: "alert" }).map(({ children }) => children.join(""))).toEqual(["Sign in on this device to remove it."]);
+  expect(root.findAllByProps({ role: "status" })).toHaveLength(1);
+});
+
 it("A2: Close hides the notice on this device and keeps it hidden after remount", async () => {
   const root = await mount();
   await act(async () => root.findByProps({ "aria-label": "Close" }).props.onClick());
