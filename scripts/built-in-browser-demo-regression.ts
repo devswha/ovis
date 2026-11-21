@@ -181,6 +181,13 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   assert.equal(await page.getByRole("switch", { name: "내장 브라우저", exact: true }).isChecked(), true, `${tag}: the setting row is offered in the desktop app`);
   await page.getByRole("textbox", { name: "차단한 사이트", exact: true }).waitFor();
   await shot(page, "settings");
+  // a site typed in and Settings closed with Escape (no blur first) is kept
+  await page.getByRole("textbox", { name: "차단한 사이트", exact: true }).fill("tracker.example");
+  await page.keyboard.press("Escape");
+  await settings.waitFor({ state: "detached" });
+  await page.keyboard.press("ControlOrMeta+Shift+Comma");
+  await page.getByRole("dialog").first().getByText("채팅", { exact: true }).first().click();
+  assert.equal(await page.getByRole("textbox", { name: "차단한 사이트", exact: true }).inputValue(), "tracker.example", `${tag}: a blocked site typed before Escape is kept`);
   await page.context().close();
 }
 

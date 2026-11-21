@@ -664,12 +664,23 @@ function ChatPage() {
 function BuiltInBrowserRows() {
   const t = useT();
   const { settings, update } = useSettings();
+  // what is typed in the blocked-sites box is kept when it goes away too (Settings closed with Escape before a blur)
+  const latest = useRef({ settings, update });
+  latest.current = { settings, update };
+  const holdBlockedBox = useCallback((box: HTMLTextAreaElement | null) => {
+    if (box === null) return;
+    return () => {
+      const kept = browserBlockedSites(box.value.split("\n"));
+      const { settings: now, update: save } = latest.current;
+      if (kept.join("\n") !== now.browserBlockedSites.join("\n")) save({ browserBlockedSites: kept });
+    };
+  }, []);
   return <>
     <SettingsRow icon={AppWindow} label={t("Built-in browser")} description={t("Opens web pages in tabs inside this app: they are listed under Browser in the sidebar and open beside the pane. Its tabs are signed in to nothing you use elsewhere, and an agent's tabs keep cookies of their own.")} reset={["builtInBrowser"]}>
       <Toggle label={t("Built-in browser")} checked={settings.builtInBrowser} onChange={(builtInBrowser) => update({ builtInBrowser })} />
     </SettingsRow>
     {settings.builtInBrowser && <SettingsRow icon={Ban} label={t("Blocked sites")} description={t("The built-in browser never loads these sites or their subdomains, in your tabs or an agent's. One site per line.")} wide reset={["browserBlockedSites"]}>
-      <textarea key={settings.browserBlockedSites.join("\n")} className="input settings-blocked-sites" rows={4} aria-label={t("Blocked sites")} placeholder="bank.example" defaultValue={settings.browserBlockedSites.join("\n")}
+      <textarea ref={holdBlockedBox} key={settings.browserBlockedSites.join("\n")} className="input settings-blocked-sites" rows={4} aria-label={t("Blocked sites")} placeholder="bank.example" defaultValue={settings.browserBlockedSites.join("\n")}
         autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onBlur={(event) => {
           // what is kept, shown as kept: lines that are not a site are dropped from the box too
           const kept = browserBlockedSites(event.currentTarget.value.split("\n"));

@@ -112,9 +112,9 @@ export class BrowserTabs {
   private nextId = 1;
   private shown: number | null = null;
   /**
-   * Where a tab nobody looks at is drawn: a window of its own, off the screen, see-through and closed to the
-   * pointer, so its page keeps painting and the right panel can show it (thumbnail). None on a Wayland desktop,
-   * which neither places a window off the screen nor makes it see-through: there a tab paints only while shown.
+   * Where an agent's tab nobody looks at is drawn while its picture is taken (thumbnail): a window of its own, off the
+   * screen and closed to the pointer (Linux ignores a window's opacity, so off the screen is what hides it). None on a
+   * Wayland desktop, which does not place a window off the screen: there a tab has a picture only while shown.
    */
   private stage: BrowserWindow | null = null;
   /** the stage turned out visible here (the window manager placed it on a screen): it is not made again */
@@ -294,7 +294,7 @@ export class BrowserTabs {
     if (this.noStage) return null;
     if (this.stage && !this.stage.isDestroyed()) return this.stage;
     if (!stageSupported(process.platform, process.env)) return null;
-    const stage = new BrowserWindow({ show: false, x: -20000, y: -20000, width: 1280, height: 800, frame: false, focusable: false, skipTaskbar: true, opacity: 0, hasShadow: false, title: "Ovis browser stage" });
+    const stage = new BrowserWindow({ show: false, x: -20000, y: -20000, width: 1280, height: 800, frame: false, focusable: false, skipTaskbar: true, hasShadow: false, title: "Ovis browser stage" });
     // nor in macOS's Window menu
     stage.excludedFromShownWindowsMenu = true;
     stage.setIgnoreMouseEvents(true);
