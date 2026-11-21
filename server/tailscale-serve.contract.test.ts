@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
-import { HTTPS_PORT_VARIABLE, tailscaleAppCommand } from "./tailscale.ts";
+import { HTTPS_PORT_VARIABLE, TailnetIdentitySource, tailscaleAppCommand } from "./tailscale.ts";
 
 const TOKEN = "serve-token";
 const DNS = "pc.example.ts.net";
@@ -60,9 +60,12 @@ exit 2
   return { bin: join(bin, "tailscale"), calls, serves: () => calls().filter((call) => call[1] === "serve" && call[2] !== "status") };
 }
 
-function server(fake: Fake) {
+/** this PC's own Tailscale login: null where it is not known (no status read named it) */
+function server(fake: Fake, owner: string | null = "owner@example.com") {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-tailscale-serve-"));
-  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: TOKEN, tailscaleOwner: null, machines: false, sidecar: false, tailscaleBinary: fake.bin });
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: TOKEN, tailscaleOwner: owner, machines: false, sidecar: false, tailscaleBinary: fake.bin,
+    // the access check's own status reads stay off this PC's tailscale too
+    tailnet: new TailnetIdentitySource(async () => null) });
   cleanups.push(() => { app.stop(); rmSync(stateDir, { recursive: true, force: true }); });
   return app;
 }
@@ -112,6 +115,15 @@ describe.skipIf(process.platform === "win32")("POST /api/access/tailscale/serve"
     // served already: a second press answers the address and runs nothing
     expect((await post(app, "/api/access/tailscale/serve", OWN)).body.tailscale?.serving_url).toBe(`https://${DNS}:8443`);
     expect(fake.serves()).toHaveLength(1);
+  });
+
+  it("with no Tailscale owner login known, answers tailscale_owner_unknown and never runs the CLI", async () => {
+    withPorts(undefined);
+    const fake = fakeTailscale({});
+    const app = server(fake, null);
+    const refused = await post(app, "/api/access/tailscale/serve", OWN);
+    expect([refused.status, refused.body.error?.code]).toEqual([409, "tailscale_owner_unknown"]);
+    expect(fake.calls()).toEqual([]);
   });
 
   it("never takes a port OVIS_TAILSCALE_HTTPS_PORT does not allow, and runs nothing while Tailscale is off", async () => {

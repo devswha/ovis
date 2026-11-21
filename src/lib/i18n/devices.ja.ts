@@ -243,6 +243,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Tailscale is on, but Ovis is not open at a Tailscale address yet.": "Tailscale はオンですが、Ovis はまだ Tailscale のアドレスで開かれていません。",
   "Turn on Tailscale and sign in.": "Tailscale をオンにしてサインインしてください。",
   "Open with Tailscale": "Tailscale で開く",
+  "This PC's Tailscale login can't be confirmed, so it can't be opened. Check the sign-in in the Tailscale app.": "この PC の Tailscale のログインを確認できないため、開けません。Tailscale アプリでサインイン状態を確認してください。",
   "Tailscale didn't allow it. Run this once on this PC:": "Tailscale に許可されませんでした。この PC で一度実行してください:",
   "Or allow it once, then press Open with Tailscale again:": "または一度許可してから、もう一度「Tailscale で開く」を押してください:",
   "Type it on the other device where it opens this PC's Ovis: at its Portal address, through a proxy, or from another PC adding this one by its address.": "この PC の Ovis を開いている別のデバイスで入力します: Portal のアドレス、プロキシ、またはこの PC をアドレスで追加する別の PC。",

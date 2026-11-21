@@ -909,6 +909,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       if (opened.detail !== undefined) console.warn(`Tailscale app did not open: ${opened.detail}`);
       return refuse(opened.code, "This PC has no Tailscale app to open.", 409);
     }
+    // a tailnet request gets in as this PC's owner only by that login (server/access.ts decideAccess): with no owner
+    // known, a serve could open Ovis to another login's tailnet request, so nothing is run
+    if ((await identityOf(false, requestHost, true)).owner === null) return refuse("tailscale_owner_unknown", "This PC's Tailscale login is not known: Ovis is not served.", 409);
     const served = await serveTailscale(ctx.port ?? DEFAULT_PORT, undefined, tailscaleCli(ctx));
     if (served.ok) return jsonResponse({ ...served.access, lan_url: lanUrlHere(), relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
     // the CLI's own words go to this PC's log only, never to the page

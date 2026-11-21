@@ -243,6 +243,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Tailscale is on, but Ovis is not open at a Tailscale address yet.": "Tailscale은 켜져 있지만, Ovis가 아직 Tailscale 주소로 열려 있지 않아요.",
   "Turn on Tailscale and sign in.": "Tailscale을 켜고 로그인하세요.",
   "Open with Tailscale": "Tailscale로 열기",
+  "This PC's Tailscale login can't be confirmed, so it can't be opened. Check the sign-in in the Tailscale app.": "이 PC의 Tailscale 로그인을 확인할 수 없어 열 수 없어요. Tailscale 앱에서 로그인 상태를 확인하세요.",
   "Tailscale didn't allow it. Run this once on this PC:": "Tailscale이 허용하지 않았어요. 이 PC에서 한 번 실행하세요:",
   "Or allow it once, then press Open with Tailscale again:": "또는 한 번 허용한 뒤 [Tailscale로 열기]를 다시 누르세요:",
   "Type it on the other device where it opens this PC's Ovis: at its Portal address, through a proxy, or from another PC adding this one by its address.": "다른 기기에서 이 PC의 Ovis를 연 곳에 입력하세요: Portal 주소, 프록시, 또는 이 PC를 주소로 추가하는 다른 PC.",

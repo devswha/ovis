@@ -582,7 +582,7 @@ function useTailscaleWatch(active: boolean, onAccess: (access: RemoteAccess) => 
 function TailscaleStep({ step, platform, onAccess }: { step: NonNullable<LocalWays["tailscaleStep"]>; platform: string | undefined; onAccess: (access: RemoteAccess) => void }) {
   const t = useT();
   const [busy, setBusy] = useState(false);
-  const [refused, setRefused] = useState<{ operator: boolean } | null>(null);
+  const [refused, setRefused] = useState<{ operator: boolean; ownerUnknown: boolean } | null>(null);
   const [noApp, setNoApp] = useState(false);
   if (step.kind === "missing") return (
     <>
@@ -609,7 +609,7 @@ function TailscaleStep({ step, platform, onAccess }: { step: NonNullable<LocalWa
     void serveOnTailscale().catch(() => ({ ok: false as const, code: null, operator: false })).then((answer) => {
       setBusy(false);
       if (answer.ok) onAccess(answer.access);
-      else setRefused({ operator: answer.operator });
+      else setRefused({ operator: answer.operator, ownerUnknown: answer.code === "tailscale_owner_unknown" });
     });
   };
   return (
@@ -618,7 +618,9 @@ function TailscaleStep({ step, platform, onAccess }: { step: NonNullable<LocalWa
       <div className="phone-actions">
         <button type="button" className="btn" disabled={busy} aria-busy={busy} onClick={serve}>{busy ? t("Opening…") : t("Open with Tailscale")}</button>
       </div>
-      {refused !== null && (
+      {/* this PC's Tailscale login is not known: no serve, and no command that would serve it anyway */}
+      {refused?.ownerUnknown === true && <p className="settings-description" role="status" data-testid="tailscale-owner-unknown">{t("This PC's Tailscale login can't be confirmed, so it can't be opened. Check the sign-in in the Tailscale app.")}</p>}
+      {refused !== null && !refused.ownerUnknown && (
         <div data-testid="tailscale-serve-refused">
           <p className="settings-description" role="status">{t("Tailscale didn't allow it. Run this once on this PC:")}</p>
           <CommandToCopy command={step.command} />

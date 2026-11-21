@@ -158,7 +158,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         Tailscale on this PC already serves, or the command to run), no-store
  *  POST   /api/access/tailscale/serve    -> RemoteAccess once Tailscale serves this server (runs `tailscale serve --bg
  *         --https=<first free allowed port> http://127.0.0.1:<port>` unless it serves it already), no-store; this PC's own
- *         window only (403 local_required before anything runs), x-herdr-machine: 1. 409 tailscale_missing /
+ *         window only (403 local_required before anything runs), x-herdr-machine: 1. 409 tailscale_owner_unknown (this
+ *         PC's Tailscale login is not known: nothing runs) / tailscale_missing /
  *         tailscale_not_running / tailscale_no_port / tailscale_serve_refused (operator: true on Linux when the refusal
  *         is for want of operator rights); the CLI's words go to the server log only
  *  POST   /api/access/tailscale/open     -> 204 once the Tailscale app is opened on this PC (macOS, Windows); this PC's own

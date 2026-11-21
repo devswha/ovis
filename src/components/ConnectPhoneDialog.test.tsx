@@ -622,6 +622,15 @@ describe("Connect a phone on a phone", () => {
       await until(() => commands().length === 1, "the refusal without the operator command");
     });
 
+    it("a serve refused for want of this PC's Tailscale login shows one line and no command", async () => {
+      serveReply = () => Response.json({ error: { code: "tailscale_owner_unknown", message: "unknown" } }, { status: 409 });
+      await mountStep(command, "darwin");
+      await act(async () => { button("Open with Tailscale").props.onClick(); });
+      await until(() => panel().findAllByProps({ "data-testid": "tailscale-owner-unknown" }).length === 1, "the owner line");
+      expect(text(panel().findByProps({ "data-testid": "tailscale-owner-unknown" }))).toBe("This PC's Tailscale login can't be confirmed, so it can't be opened. Check the sign-in in the Tailscale app.");
+      expect([commands(), qrCodes(), panel().findAllByProps({ "data-testid": "tailscale-serve-refused" })]).toEqual([[], [], []]);
+    });
+
     it("with no Tailscale, links to its download for this PC's platform and shows no command", async () => {
       await mountStep({ kind: "missing" }, "win32");
       const link = panel().findAll((node) => node.type === "a" && text(node).trim() === "Get Tailscale");

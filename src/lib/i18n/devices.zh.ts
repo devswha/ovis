@@ -243,6 +243,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Tailscale is on, but Ovis is not open at a Tailscale address yet.": "Tailscale 已开启，但 Ovis 还没有在 Tailscale 地址上打开。",
   "Turn on Tailscale and sign in.": "请打开 Tailscale 并登录。",
   "Open with Tailscale": "用 Tailscale 打开",
+  "This PC's Tailscale login can't be confirmed, so it can't be opened. Check the sign-in in the Tailscale app.": "无法确认这台电脑的 Tailscale 登录，因此无法打开。请在 Tailscale 应用中检查登录状态。",
   "Tailscale didn't allow it. Run this once on this PC:": "Tailscale 未允许。请在这台电脑上运行一次：",
   "Or allow it once, then press Open with Tailscale again:": "或者先允许一次，然后再次点击“用 Tailscale 打开”：",
   "Type it on the other device where it opens this PC's Ovis: at its Portal address, through a proxy, or from another PC adding this one by its address.": "在打开这台电脑 Ovis 的另一台设备上输入：Portal 地址、代理，或按地址添加这台电脑的另一台电脑。",
