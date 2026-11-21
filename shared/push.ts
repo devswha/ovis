@@ -1,5 +1,6 @@
 import type { Friend } from "./friends.ts";
 import type { AlertKind } from "./notify-policy.ts";
+import type { InboxDigest } from "./fork/inbox-widget.ts";
 
 /** GET /api/push: base64url VAPID public key, the `applicationServerKey` a browser subscribes with. */
 export interface PushKey {
@@ -44,6 +45,8 @@ export interface PushPayload {
    */
   endpoint?: string;
   server_id?: string;
+  /** fork: a placed home-screen widget's agents, sent quietly (server/fork/inbox-widget.ts) */
+  inbox?: InboxDigest;
 }
 
 /** One answer button on an alert: the prompt's option it picks, and that option's label. */

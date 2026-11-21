@@ -5,10 +5,13 @@ project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor
 apply from: 'capacitor.settings.gradle'
 
 include ':ovis-push'
+// fork: the home-screen widget (ovis-widget)
+include ':ovis-widget'
 gradle.beforeProject { project ->
     if (project.path == ':app') {
         project.plugins.withId('com.android.application') {
             project.dependencies.add('implementation', project.project(':ovis-push'))
+            project.dependencies.add('implementation', project.project(':ovis-widget'))
         }
     }
 }

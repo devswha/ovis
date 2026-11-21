@@ -173,6 +173,8 @@ export interface PushService {
   unsubscribe(endpoint: string): void;
   retired(endpoint: string): boolean;
   sendTest(endpoint: string): Promise<PushDelivery | null>;
+  /** fork: a push that shows nothing, to one subscription; a newer one under the same topic replaces it unread. null for an unknown endpoint */
+  sendQuiet(endpoint: string, message: PushPayload, topic: string): Promise<PushDelivery | null>;
   /**
    * What this server knows of one subscription, for its owner holding its keys: null for anyone
    * else, for an unknown subscription and for a legacy owner (undefined), all alike. A retired
@@ -625,7 +627,7 @@ export function createPushService(options: PushServiceOptions): PushService {
 
   const iso = (at: number | null): string | null => at === null ? null : new Date(at).toISOString();
 
-  async function deliver(subscription: PushSubscriptionRecord, message: PushPayload, urgency: "normal" | "high"): Promise<PushDelivery> {
+  async function deliver(subscription: PushSubscriptionRecord, message: PushPayload, urgency: "normal" | "high", topic?: string): Promise<PushDelivery> {
     // denied here, nothing went out: not a delivery, so nothing is recorded
     if (options.canDeliver && !options.canDeliver(subscription.device_id)) return { ok: false, status: null, gone: false };
     // what the push goes to, taken now: by the time the answer comes the endpoint may be
@@ -637,6 +639,7 @@ export function createPushService(options: PushServiceOptions): PushService {
       TTL: PUSH_TTL_SECONDS,
       urgency,
       contentEncoding: "aes128gcm",
+      ...(topic ? { topic } : {}),
     });
     // which PC sent it, for the phone app's tap (shared/push.ts endpoint): a pane alert to the push
     // relay only, as a browser's worker knows its PC by its own scope
@@ -894,6 +897,11 @@ export function createPushService(options: PushServiceOptions): PushService {
       const subscription = store().get(endpoint);
       if (!subscription) return null;
       return deliver(subscription, { pane_id: null, title: "Ovis", body: "Alerts are on for this device", tag: "herdr-test" }, "normal");
+    },
+
+    async sendQuiet(endpoint, message, topic) {
+      const subscription = store().get(endpoint);
+      return subscription ? deliver(subscription, message, "normal", topic) : null;
     },
 
     async devicePaired(event, origin = []) {

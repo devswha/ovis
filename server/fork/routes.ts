@@ -9,6 +9,8 @@ import { handleSpeechRequest } from "./speech.ts";
 import { handleGithubAction, handleGithubFiles, handleGithubPull, handleGithubPulls } from "./github.ts";
 import { handleGithubClone } from "./github-clone.ts";
 import { handleNotes } from "./notes.ts";
+import { handleInboxWidget } from "./inbox-widget.ts";
+import { INBOX_WIDGET_PATH } from "../../shared/fork/inbox-widget.ts";
 
 /** null is not our route; a promise resolving undefined is a successful socket upgrade. */
 export function routeForkScreen(request: Request, url: URL, ctx: ServerContext, readOnly: boolean): Promise<Response | undefined> | null {
@@ -35,6 +37,7 @@ export function routeForkApi(request: Request, url: URL, ctx: ServerContext, cal
   if (pathname === "/api/fork/github/pull") { setRequestRoute(pathname); ctx.timeout(request, 45); return handleGithubPull(request, caller.readOnly); }
   if (pathname === "/api/fork/github/pulls") { setRequestRoute(pathname); ctx.timeout(request, 75); return handleGithubPulls(request, () => ctx.services.core.clientSnapshot(), caller.readOnly); }
   if (pathname === "/api/fork/notes" || pathname === "/api/fork/notes/file") { setRequestRoute(pathname); return handleNotes(request, url, caller.readOnly); }
+  if (pathname === INBOX_WIDGET_PATH) { setRequestRoute(pathname); return handleInboxWidget(request, ctx.services.core.push, caller.deviceId ?? null); }
   if (pathname === "/api/friends") { setRequestRoute(pathname); return handleFriendsRequest(request, ctx.services.friends, async () => ctx.services.core.machines?.list() ?? [{ id: "local", snapshot: await ctx.services.core.clientSnapshot() }]); }
   if (pathname === "/api/speech") { ctx.timeout(request, 0); return handleSpeechRequest(request, ctx.services.speech); }
   if (pathname !== PI_VOICE_PATH && pathname !== PI_VOICE_STATUS_PATH) return null;

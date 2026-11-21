@@ -51,6 +51,7 @@ import type { Telemetry } from "../telemetry.ts";
 import type { UsageLoginService } from "../usage-login.ts";
 import type { UsageService } from "../usage.ts";
 import { type Client, send } from "./connections.ts";
+import { paneLastWords, watchInbox } from "../fork/inbox-widget.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 const VISIT_READ_MS = 10 * 60_000;
@@ -95,7 +96,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 }) {
   const canDeliver = (id: string | null | undefined): boolean => id === null || (id === undefined ? !devices.gated : devices.has(id));
   const alertWebhook = createAlertWebhook({ stateDir: options.stateDir ?? defaultStateDir(), canDeliver });
-  const push = createPushService({
+  // fork: the phone widget watches what the alerts see (server/fork/inbox-widget.ts)
+  const push = watchInbox(createPushService({
     stateDir: options.stateDir ?? defaultStateDir(),
     webhook: alertWebhook,
     serverId: options.serverId,
@@ -114,7 +116,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       return { title: pushPaneTitle(pane), ...(pane.agent_kind ? { agent_kind: pane.agent_kind } : {}) };
     },
     onAlertDelivered: () => options.telemetry?.tally("alerts_delivered"),
-  });
+  }), { stateDir: options.stateDir ?? defaultStateDir(), friendOf: options.friendOf, serverId: options.serverId, now: options.statusNow, lastWords: paneLastWords(options, (id) => machines?.endpoint(id)) });
   const stopMutes = preferences.subscribe(() => push.mutesChanged());
 
   // on herdr-core every status is the program's own report (completion.ts reportedOnly)

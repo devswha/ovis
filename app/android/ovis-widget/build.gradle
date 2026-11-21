@@ -1,0 +1,22 @@
+apply plugin: 'com.android.library'
+
+// The home-screen widget of the Android app (fork): the agents a PC pushes quietly to a placed
+// widget (server/fork/inbox-widget.ts), handed over by ovis-push's OvisMessagingService.
+android {
+    namespace = "sh.ovis.widget"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        minSdkVersion rootProject.ext.minSdkVersion
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation project(':ovis-push')
+    implementation "androidx.core:core:$androidxCoreVersion"
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+}

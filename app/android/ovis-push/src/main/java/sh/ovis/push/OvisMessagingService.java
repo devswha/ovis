@@ -48,6 +48,8 @@ public class OvisMessagingService extends FirebaseMessagingService {
             try {
                 byte[] plain = WebPushDecrypt.decrypt(Base64.getDecoder().decode(sealed), PushStore.read(this));
                 JSONObject payload = new JSONObject(new String(plain, StandardCharsets.UTF_8));
+                // fork: a quiet inbox digest goes to the home-screen widget (ovis-widget), never to a notification
+                if (payload.has("inbox")) { handOverInbox(payload.getJSONObject("inbox")); return; }
                 title = payload.optString("title", "").isEmpty() ? title : payload.getString("title");
                 body = payload.optString("body", "");
                 tag = payload.optString("tag", "").isEmpty() ? tag : payload.getString("tag");
@@ -57,6 +59,18 @@ public class OvisMessagingService extends FirebaseMessagingService {
             }
         }
         show(title, body, tag, alert);
+    }
+
+    public static final String ACTION_INBOX = "sh.ovis.push.INBOX";
+    public static final String EXTRA_INBOX = "sh.ovis.push.inbox";
+
+    /** To this app's own receivers only, with the PC it came from and the proof its taps carry (AlertProof). */
+    private void handOverInbox(JSONObject inbox) {
+        String endpoint = field(inbox, "endpoint");
+        sendBroadcast(new Intent(ACTION_INBOX).setPackage(getPackageName())
+            .putExtra(EXTRA_INBOX, inbox.toString())
+            .putExtra(EXTRA_ORIGIN, endpoint == null ? null : PushStore.originOf(this, endpoint))
+            .putExtra(AlertProof.EXTRA, PushStore.alertProof(this)));
     }
 
     private static String field(JSONObject payload, String name) {

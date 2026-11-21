@@ -8,6 +8,7 @@ import { ComputerView } from "./computer/ComputerView.tsx";
 import { forgetComputerLogins, useComputerView } from "./computer/computerSettings.ts";
 import { useAgentFriends } from "./friends/friends.ts";
 import { PiVoiceView } from "./voice/PiVoiceView.tsx";
+import { useInboxWidget } from "./inboxWidget.ts";
 
 /** The fork's retained desktop, phone voice, friends and desktop-script title contract. */
 export function useForkApp({ machines, selectedMachine, selectedMachineId, selectedPaneId, snapshot, inboxShown, openWebPage }: {
@@ -25,6 +26,7 @@ export function useForkApp({ machines, selectedMachine, selectedMachineId, selec
   const machineName = (id: string) => machines.find((item) => item.id === id)?.name ?? id;
   const openPaneLink = usePaneLinkOpener(machines, openWebPage);
   useAgentFriends(machines);
+  useInboxWidget();
   const pane = snapshot?.panes.find((item) => item.pane_id === selectedPaneId);
   const tabTitle = pane && !inboxShown ? tabPaneTitle(pane) : null;
   const screenName = screenMachineId !== null ? machineName(screenMachineId) : null;

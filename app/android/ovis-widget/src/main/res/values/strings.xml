@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ovis_widget_label">Ovis agents</string>
+    <string name="ovis_widget_description">Your agents, the ones waiting on you first</string>
+    <string name="ovis_widget_empty">Open Ovis once to show your agents here</string>
+    <string name="ovis_widget_none">No agents</string>
+    <string name="ovis_widget_status_waiting">Waiting on you</string>
+    <string name="ovis_widget_status_done">Finished</string>
+    <string name="ovis_widget_status_working">Working</string>
+    <string name="ovis_widget_status_idle">Idle</string>
+</resources>
