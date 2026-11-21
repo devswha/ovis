@@ -115,6 +115,22 @@ it("#16: a device that signed in after a PC was added is not told of it as new, 
   expect((await mount()).findAllByProps({ role: "status" })).toHaveLength(1);
 });
 
+it("#16 gate B2: a browser that signs in again to remove the PC (a new, later sign-in) still sees the notice and removes it", async () => {
+  const first = await mount();
+  expect(first.findAllByProps({ role: "status" })).toHaveLength(1);
+  // Sign in again leaves the page and comes back with a fresh sign-in, made after the PC was added
+  await Bun.sleep(5);
+  const again = service.issueToken(ACCOUNT, { twoStep: true });
+  await store.update("session", (current) => current === undefined ? undefined : { ...current, access_token: again, sign_in_id: "notice-test-again" });
+  const back = await mount();
+  expect(back.findAllByProps({ role: "status" })).toHaveLength(1);
+  const remove = back.findAllByType("button").find(({ children }) => children.includes("I didn't add this"));
+  if (remove === undefined) throw new TypeError("Missing removal action");
+  await act(async () => { await remove.props.onClick(); });
+  expect(service.requests.filter((request) => request.startsWith("DELETE"))).toEqual([`DELETE /v1/pcs/${PC}`]);
+  expect(back.findAllByProps({ role: "status" })).toHaveLength(0);
+});
+
 it("A2: Not me deletes the PC once, clears the card, and refreshes the account list", async () => {
   const refreshed = Promise.withResolvers<void>();
   const root = await mount(OTHER, refreshed.resolve);
@@ -136,6 +152,8 @@ it("A2: a failed removal leaves the notice in place with a retryable alert", asy
 });
 
 it("PCR-1: a device code's sign-in removes nothing and is told to sign in on this device", async () => {
+  // this device joined the account before the PC was added (its first sign-in); the device code's sign-in comes later
+  await mount();
   const token = service.issueToken(ACCOUNT, { device: true });
   await store.update("session", (current) => current === undefined ? undefined : { ...current, access_token: token });
   const root = await mount();

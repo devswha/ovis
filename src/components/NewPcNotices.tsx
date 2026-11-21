@@ -22,6 +22,18 @@ type NewPc = DirectoryPc;
 
 type Listing = { readonly session: AccountSession; readonly pcs: readonly NewPc[] };
 
+/** When this device first signed in to `account` (ms), kept in this browser and moved only earlier; null when nothing says. */
+function firstJoin(account: string, signedInAt: number | null): number | null {
+  const key = `ovis:account-joined:${account}`;
+  let kept = Number.NaN;
+  try { kept = Number(localStorage.getItem(key) ?? Number.NaN); } catch (error) { if (!(error instanceof DOMException)) throw error; }
+  const first = Number.isFinite(kept) ? (signedInAt === null ? kept : Math.min(kept, signedInAt)) : signedInAt;
+  if (first !== null && first !== kept) {
+    try { localStorage.setItem(key, String(first)); } catch (error) { if (!(error instanceof DOMException)) throw error; }
+  }
+  return first;
+}
+
 export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }: {
   /** the account's step-2 switch is on here (this PC lists account-opens-all/1): off, the list is never read */
   readonly enabled?: boolean;
@@ -54,11 +66,14 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         setListing((prior) => prior !== null && sameSignIn(prior.session, session) ? prior : null);
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]);
         const directory = indexedAccountService.forSignIn(session);
-        const [pcs, joinedAt] = await Promise.all([
+        const [pcs, signedInAt] = await Promise.all([
           directory.listPcs(signal),
           joined !== undefined && joined.sign_in_id === session.sign_in_id ? joined.at : directory.signedInAt(signal),
         ]);
-        joined = { sign_in_id: session.sign_in_id, at: joinedAt };
+        // this device joined the account at its first sign-in to it, kept here: a later sign-in (Sign in again to remove a PC
+        // leaves a browser for the provider and comes back signed in anew) leaves the PCs it was told of told
+        const joinedAt = firstJoin(session.account, signedInAt);
+        joined = { sign_in_id: session.sign_in_id, at: signedInAt };
         const current = await indexedAccountService.session();
         if (mine !== version) return;
         const now = Date.now();
