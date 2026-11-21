@@ -129,7 +129,7 @@ describe("release-validate.yml", () => {
     expect(checks(fast), UPDATE).toEqual(checks(theirs));
     expect(fast["timeout-minutes"], UPDATE).toBe(theirs["timeout-minutes"]!);
     expect(fast.env, UPDATE).toEqual(ciEnv);
-    expect(stepList(fast)).toEqual(["actions/checkout", "./.github/actions/setup-ci", "bun install --frozen-lockfile", "bun run check fast", "Release guards", "Say that Fast checks passed", "Preserve check report and verification logs"]);
+    expect(stepList(fast)).toEqual(["actions/checkout", "./.github/actions/setup-ci", "bun install --frozen-lockfile", "Fetch the previous release for the upgrade matrix", "bun run check fast", "Release guards", "Say that Fast checks passed", "Preserve check report and verification logs"]);
     expect(JSON.stringify(checks(theirs)), UPDATE).not.toMatch(/\b(?:needs|matrix|strategy)\./);
     expect([ciYml.env, (ciYml as { defaults?: unknown }).defaults], UPDATE).toEqual([wrapper.env, (wrapper as { defaults?: unknown }).defaults]);
     const names = (candidate: Job): string[] => (candidate.steps ?? []).filter(uploads).map((upload) => upload.with!["name"]!);
