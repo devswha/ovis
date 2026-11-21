@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeviceStore, type StoredDevice } from "./devices.ts";
 import { mergeRegistries } from "./state-merge.ts";
-import { TAILNET_NODES_FILE, TAILNET_NODES_MAX, TAILNET_PROMPT_MS, TailnetNodes, tailnetNodeGate } from "./tailnet-nodes.ts";
+import { TAILNET_NODES_FILE, TailnetNodes, tailnetNodeGate } from "./tailnet-nodes.ts";
 
 const phone = { id: "nPhone1CNTRL", hostname: "phone", login: "owner@example.com" };
 const dirs: string[] = [];
@@ -21,6 +21,13 @@ function fixture(now: () => number = Date.now) {
   };
   return { dir, nodes, rows, pair, address: "100.64.0.9", owner: phone.login, whois: async () => phone };
 }
+
+it("sibling reconciliation retains the same credential's known nodes", () => {
+  const row: StoredDevice = { id: "a".repeat(16), role: "drive", label: "Phone", token_hash: "t", created_at: new Date().toISOString(), last_seen_at: null };
+  const registry = (device: StoredDevice) => ({ devices: [device], gate_closed_at: null });
+  const merged = mergeRegistries(registry(row), registry({ ...row, tailnet_nodes: [phone.id] }), { own: null, other: null });
+  expect(merged.devices[0]?.tailnet_nodes).toEqual([phone.id]);
+});
 
 it("retry after a failed local block cannot commit a non-durable removal", () => {
   const { dir, nodes, rows, pair } = fixture();

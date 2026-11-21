@@ -497,8 +497,6 @@ function describe(error: unknown): string {
 }
 /** How many keys may hold a reservation of one code at once (T71). */
 export const PENDING_PER_CODE = 5;
-/** How many tailnet nodes a row keeps: a phone's node changes only when it is set up again. */
-const TAILNET_NODES_PER_ROW = 8;
 const tailnetNodesOf = (rows: readonly StoredDevice[]): string[] => [...new Set(rows.flatMap((d) => d.tailnet_nodes ?? []))];
 
 export class DeviceStore {
@@ -2824,7 +2822,8 @@ export class DeviceStore {
   noteTailnetNode(rowId: string, nodeId: string): void {
     const device = this.devices.find((d) => d.id === rowId);
     if (this.error !== null || device === undefined || device.tailnet_nodes?.includes(nodeId)) return;
-    const updated = { ...device, tailnet_nodes: [...device.tailnet_nodes ?? [], nodeId].slice(-TAILNET_NODES_PER_ROW) };
+    // every node is kept, none trimmed: each is one its removal must keep out (a phone's node changes only when set up again)
+    const updated = { ...device, tailnet_nodes: [...device.tailnet_nodes ?? [], nodeId] };
     const next = this.devices.map((d) => d === device ? updated : d);
     try {
       this.save(next);
