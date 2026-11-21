@@ -117,13 +117,16 @@ describe("readAppUpdate", () => {
   });
 
   it("keeps a percent within 0 to 100, and drops one that is no number", () => {
-    expect(readAppUpdate({ ...idle, phase: "downloading", percent: 140 })?.percent).toBe(100);
-    expect(readAppUpdate({ ...idle, phase: "downloading", percent: Number.NaN })?.percent).toBeNull();
-    expect(readAppUpdate({ ...idle, phase: "downloading", percent: "42" })?.percent).toBeNull();
+    const downloading = { ...idle, phase: "downloading", update: "0.5.9" };
+    expect(readAppUpdate({ ...downloading, percent: 140 })?.percent).toBe(100);
+    expect(readAppUpdate({ ...downloading, percent: Number.NaN })?.percent).toBeNull();
+    expect(readAppUpdate({ ...downloading, percent: "42" })?.percent).toBeNull();
   });
 
   it("reads anything else as no answer", () => {
     for (const nothing of [null, undefined, "0.5.8", {}, { ...idle, version: "" }, { ...idle, phase: "installing" }, { ...idle, phase: 3 }]) expect(readAppUpdate(nothing)).toBeNull();
+    // a download or a held update with no version to name
+    for (const phase of ["downloading", "ready"]) expect(readAppUpdate({ ...idle, phase })).toBeNull();
   });
 });
 

@@ -70,6 +70,8 @@ export function readAppUpdate(value: unknown): AppUpdate | null {
   const state = value as Partial<Record<keyof AppUpdate, unknown>> | null;
   if (typeof state?.version !== "string" || state.version === "" || typeof state.phase !== "string" || !APP_PHASES.has(state.phase)) return null;
   const text = (field: unknown) => typeof field === "string" && field !== "" ? field : null;
+  // a download and a held update name their version
+  if ((state.phase === "downloading" || state.phase === "ready") && text(state.update) === null) return null;
   const percent = typeof state.percent === "number" && Number.isFinite(state.percent) ? Math.min(100, Math.max(0, Math.floor(state.percent))) : null;
   return { version: state.version, phase: state.phase as AppUpdate["phase"], update: text(state.update), percent, error: text(state.error) };
 }

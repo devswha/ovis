@@ -491,12 +491,16 @@ function sendUpdateLine(): void {
   window?.webContents.send("ovis:update", updateLine());
 }
 
+/** an update whose file is gone is not offered here either (heldUpdate), checked each time this is told */
 function appUpdate(): AppUpdateState {
+  heldUpdate();
   return appUpdateState(app.getVersion(), checkNow !== null, appCheck, offer);
 }
 
+/** to the server's own page alone, as About is drawn only there (tellBrowser) */
 function sendAppUpdate(): void {
-  window?.webContents.send("ovis:update-state", appUpdate());
+  const contents = window?.webContents;
+  if (contents && serverPage(contents.mainFrame)) contents.send("ovis:update-state", appUpdate());
 }
 
 function setAppCheck(next: AppCheck): void {
@@ -715,9 +719,10 @@ if (!app.requestSingleInstanceLock()) {
     return quitting ? new Promise<void>((answer) => { installWaiters.push(answer); }) : undefined;
   });
   // Settings → About: the app's version and its own check, which the button there starts now
-  ipcMain.handle("ovis:update-state", (event) => ownPage(event.senderFrame?.url) ? appUpdate() : null);
+  // only the server's own page by its frame's origin: the server also shows a file's HTML at its own address
+  ipcMain.handle("ovis:update-state", (event) => serverPage(event.senderFrame) ? appUpdate() : null);
   ipcMain.handle("ovis:update-check", (event) => {
-    if (ownPage(event.senderFrame?.url)) void checkNow?.();
+    if (serverPage(event.senderFrame)) void checkNow?.();
   });
   ipcMain.on("ovis:update-close", (event, version: unknown) => {
     if (!ownPage(event.senderFrame?.url) || !offer.ready || version !== offer.ready.version) return;
