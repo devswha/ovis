@@ -7,7 +7,7 @@ plain password sign-in.
 
 ## Add it
 
-1. On the **Direct** tab, type `user@host` in **Address or SSH** and tap **Connect**: the app's SSH screen opens with it filled in.
+1. On the **SSH** tab, type `user@host` in **SSH** and tap **Connect**: the app's SSH screen opens with it filled in.
 2. Fill in the address (a host name or an IP your phone reaches: on the same Wi-Fi, or over
    Tailscale), the SSH port and your user name there.
 3. Choose how the phone signs in:
@@ -40,7 +40,7 @@ had typed stays a draft until you send it.
 
 ## The PCs your first PC knows
 
-Once one PC is added over SSH, **Direct** lists the PCs it knows, each with **Add**: the hosts of its
+Once one PC is added over SSH, the **SSH** tab lists the PCs it knows, each with **Add**: the hosts of its
 `~/.ssh/config` (by their user@hostname), the PCs of its Tailscale login (as the same user), and the PCs it added
 over SSH itself. Add opens the SSH screen filled in, as typing it would. The list comes from that PC's Ovis over
 the phone's SSH connection; a PC whose Ovis is older lists what it can.

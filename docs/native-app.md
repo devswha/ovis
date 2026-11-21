@@ -748,7 +748,7 @@ names one (a throwaway `sshd -D -f <config>` run as yourself is enough). Where i
   screen waits until its deadline. The host key is still confirmed and pinned as for any SSH PC.
 - **The PCs a PC knows**: `OvisSsh.known` asks an SSH PC's own Ovis, over its tunnel's SSH connection as from its
   loopback (`local` access, which `/api/machines/ssh-candidates` and `/api/machines` answer), and the connect
-  screen lists `knownLogins` (`app/web/shell.js`) under Direct with Add: ssh config hosts by user@hostname (an alias
+  screen lists `knownLogins` (`app/web/shell.js`) on the SSH tab with Add: ssh config hosts by user@hostname (an alias
   alone means nothing on the phone), Tailscale PCs as the first PC's user, and that PC's SSH PCs by target; those
   already on the phone are left out. Only an SSH PC is asked: a relay or Tailscale-address PC gives the phone no
   connection of its own to ask over.
