@@ -14,6 +14,8 @@ import type { AgentStatus } from "../../shared/protocol.ts";
 
 /** how often a card's picture is taken again while the panel shows it */
 const CARD_PICTURE_MS = 4000;
+/** pictures missed in a row after which a card shows none rather than an old one */
+const CARD_PICTURE_MISSES = 3;
 
 export interface BrowserSidePanelPane {
   id: string;
@@ -88,7 +90,17 @@ function TabCard({ tab, agent, onOpen }: { tab: DesktopBrowserTab; agent: string
     if (tab.loading) return;
     let alive = true;
     // nothing to look at while the app is hidden or minimised
-    const take = () => { if (document.visibilityState !== "hidden") void browserTabThumbnail(tab.id).then((next) => { if (alive && next !== null) setPicture(next); }); };
+    // a picture that no longer comes (the app could not draw the tab) is not kept as if it were live
+    let missed = 0;
+    const take = () => {
+      if (document.visibilityState === "hidden") return;
+      void browserTabThumbnail(tab.id).then((next) => {
+        if (!alive) return;
+        missed = next === null ? missed + 1 : 0;
+        if (next !== null) setPicture(next);
+        else if (missed >= CARD_PICTURE_MISSES) setPicture(null);
+      });
+    };
     take();
     const timer = setInterval(take, CARD_PICTURE_MS);
     return () => { alive = false; clearInterval(timer); };

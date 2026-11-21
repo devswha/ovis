@@ -108,6 +108,7 @@ describe.skipIf(!linux)("the built-in browser in Electron", () => {
     expect(result.hiddenThumbnail).toBe(true);
     expect(result.hiddenMine).toBeNull();
     expect(result.pictureResizes).toBe(0);
+    expect(result.pictureColours).toEqual(["rgb(0, 200, 0)", "rgb(0, 0, 200)"]);
     expect(result.afterShown).toEqual({ picture: true, staged: false });
     expect(result.stageGivenUp).toEqual({ had: true, hidden: true, picture: null });
     // the kept download is listed for the page's right panel, the cancelled one is not

@@ -271,8 +271,9 @@ export function MachineSidebar(props: Props) {
         {/* the hosted app on a PC's page: the other PCs this device opens, a tap away (ShellPcs.tsx) */}
         {exitToPcs === "shell" && <ShellPcs {...shellPcs} />}
       </div>
+      {/* part of the PC section, so the split below measures it with the PCs (SidebarSplit.tsx) */}
+      {props.afterPcs}
     </section>
-    {props.afterPcs}
     {!settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={listId} onSplit={changeSplit} onFold={foldSections} />}
     {!settings.agentGroups && agentList}
     <footer className="sidebar-footer">

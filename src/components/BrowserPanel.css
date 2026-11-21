@@ -62,8 +62,11 @@
 }
 
 .browser-tabs-list {
+  max-height: calc(var(--control-h) * 6);
   margin: 0;
   padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   list-style: none;
 }
 

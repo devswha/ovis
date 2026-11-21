@@ -128,6 +128,21 @@ test("takes a card's picture again every few seconds while it is shown, and stop
   expect(pictures).toBe(first + 2);
 });
 
+test("drops a card's picture once three in a row do not come", async () => {
+  const bridge = stub(async () => view);
+  let answer: string | null = "data:image/jpeg;base64,AAAA";
+  bridge.thumbnail = async () => answer;
+  install(bridge);
+  await render();
+  const card = () => renderer!.root.findByProps({ className: "browser-side-card-shot" });
+  expect(card().findAllByType("img")).toHaveLength(1);
+  answer = null;
+  await act(async () => { jest.advanceTimersByTime(8_000); });
+  expect(card().findAllByType("img")).toHaveLength(1);
+  await act(async () => { jest.advanceTimersByTime(4_000); });
+  expect(card().findAllByType("img")).toHaveLength(0);
+});
+
 test("takes no card picture while the app is hidden", async () => {
   pictures = 0;
   install(stub(async () => view));

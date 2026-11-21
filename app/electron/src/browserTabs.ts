@@ -255,16 +255,18 @@ export class BrowserTabs {
     stage.contentView.addChildView(tab.view);
     try {
       // put in as it is, not resized (a page the agent works on gets no resize event from a picture), unless it was
-      // left with no room to draw in (hidden while its window had none), and taken as soon as its compositor has a frame
-      // of it (a frame or two)
+      // left with no room to draw in (hidden while its window had none). The first frame it has there may still be the
+      // one from when it was last drawn, so the picture is the frame after it.
       const { width, height } = tab.view.getBounds();
       if (width < MIN_PICTURED || height < MIN_PICTURED) tab.view.setBounds({ x: 0, y: 0, ...DESKTOP_SIZE });
+      let primed = false;
       for (let attempt = 0; attempt < STAGE_FRAMES; attempt++) {
         await new Promise((next) => setTimeout(next, STAGE_FRAME_MS));
         // shown or closed meanwhile: show() has placed it, or it is gone
         if (!this.onStage(tab) || tab.view.webContents.isDestroyed()) return null;
         const picture = await capture(tab.view.webContents);
-        if (picture !== null) return picture;
+        if (picture !== null && primed) return picture;
+        primed ||= picture !== null;
       }
       return null;
     } finally {

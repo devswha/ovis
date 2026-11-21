@@ -1,5 +1,5 @@
 // Run by browserTabs.test.ts as an Electron main process: drives BrowserTabs against the test's server and prints what happened.
-import { app, BrowserWindow, session, type WebContents, screen } from "electron";
+import { app, BrowserWindow, session, type WebContents, screen, nativeImage } from "electron";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,6 +94,15 @@ void app.whenReady().then(async () => {
   result["hiddenMine"] = await tabs.thumbnail(waitingTab.id);
   // a picture never resizes the page an agent works on
   result["pictureResizes"] = await pictured.contents.executeJavaScript("window.__resizes");
+  // the page as it is now, not the frame from its last picture: each colour shows in the picture taken after it
+  const colours: string[] = [];
+  for (const colour of ["rgb(0, 200, 0)", "rgb(0, 0, 200)"]) {
+    await pictured.contents.executeJavaScript(`document.documentElement.style.background = document.body.style.background = "${colour}"; true`);
+    const shot = await tabs.thumbnail(pictured.id);
+    const pixels = shot === null ? null : nativeImage.createFromDataURL(shot).toBitmap();
+    colours.push(pixels === null ? "none" : `rgb(${pixels[2]}, ${pixels[1]}, ${pixels[0]})`);
+  }
+  result["pictureColours"] = colours;
   // shown, hidden again, then pictured: it is on the stage only while its picture is taken
   tabs.show(cover.id, { x: 0, y: 0, width: 400, height: 300 });
   tabs.hide();
