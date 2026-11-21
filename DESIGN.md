@@ -1169,7 +1169,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - A phone's open drawer has no X: the drawer toggle's place holds the Ovis mark (`.drawer-toggle.is-mark`, `OvisMark`),
   still the toggle, named **Close workspace list**, as the app's mark at the head of the Codex and Claude apps'
   sidebars. Beside it the header names the PC and the workspace the list is on (`.drawer-head-title`: the PC, then
-  the workspace under it, or **Reconnecting…** there), never the pane's agent mark and name: the owner read those
+  the workspace under it, or **Reconnecting…** there, after **View only ·** on a PC this device only watches), never the pane's agent mark and name: the owner read those
   over the open list as the inbox mode (0.5.10 owner test). The way into the inbox is **Inbox** beside the gear at
   the drawer's foot. It closes by a tap on the mark, on the dimmed pane beside
   it, a swipe, Back, Escape, or **Close workspace list** (`.drawer-close`), the modal drawer's first control: read

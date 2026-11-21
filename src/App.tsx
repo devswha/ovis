@@ -214,12 +214,13 @@ function SidebarBrand({ dark }: { dark: boolean }) {
 }
 
 /** a phone's header over its open drawer: the PC and workspace the list is on, not the pane's agent and name */
-function DrawerHeadTitle({ machine, workspace, connection }: { machine: string; workspace: string; connection: HeaderConnection }) {
+function DrawerHeadTitle({ machine, workspace, connection, watching }: { machine: string; workspace: string; connection: HeaderConnection; watching: boolean }) {
   const t = useT();
   return (
     <div className={`context drawer-head-title${connection === null ? "" : " has-connection"}`} title={`${machine} › ${workspace}`}>
       <div className="context-title"><span className="context-title-text">{machine}</span></div>
       <div className={`context-sub${connection === null ? "" : ` context-connection is-${connection}`}`}>
+        {watching && <><span className="context-watch">{t("View only")}</span><span className="context-sep" aria-hidden="true">·</span></>}
         <span>{connection === null ? workspace : t(connection === "connected" ? "Connected" : "Reconnecting…")}</span>
       </div>
     </div>
@@ -1040,7 +1041,7 @@ export function App() {
         ) : note !== null ? null : inbox.shown ? <Brand /> : inMode && selectedPane ? (
           <ThreadTitle machines={machines} activity={activity} machineId={selectedMachineId} pane={selectedPane} connection={headerConnection} watching={viewOnly(selectedMachineId)} severalPcs={sidebarMachines.length > 1} />
         ) : selectedPane && crumb && drawerHead ? (
-          <DrawerHeadTitle machine={crumb.machine} workspace={crumb.workspace} connection={headerConnection} />
+          <DrawerHeadTitle machine={crumb.machine} workspace={crumb.workspace} connection={headerConnection} watching={viewOnly(selectedMachineId)} />
         ) : selectedPane && crumb ? (
           <div className={`context${headerConnection === null ? "" : " has-connection"}${tabsInHeader && selectedWorkspace && !guideShown ? " has-tabs" : ""}`} title={crumb.tooltip}>
             <div className="context-title">
