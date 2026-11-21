@@ -349,6 +349,32 @@ describe("AddThisPc", () => {
       pressedOnce(renderer);
     });
 
+    test("Stop waiting in another copy before Sign in again is pressed here: no sign-in starts, nothing is stored or pressed", async () => {
+      const renderer = await waitingWithOffer();
+      const other = await mount();
+      await press(other, "Stop waiting");
+      // this copy has not polled since: it still shows the offer, and the press finds the wait gone
+      await press(renderer, "Sign in again");
+      await settle();
+      expect(installs).toBe(0);
+      pressedOnce(renderer);
+      expect(words(renderer)).not.toContain("Added");
+      expect(buttons(renderer)).not.toContain("Sign in again");
+    });
+
+    test("a screen closed while its sign-in again is out stores nothing and presses nothing", async () => {
+      comes = "held";
+      const renderer = await waitingWithOffer();
+      await press(renderer, "Sign in again");
+      act(() => { renderer.unmount(); });
+      act(() => { release(); });
+      await settle();
+      expect(installs).toBe(0);
+      // the screen is gone: what reached the service and the PC says it all (only the first, refused press)
+      expect(admitted).toEqual([ACCOUNT]);
+      expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
+    });
+
     test("another sign-in of the account stored after the fresh one: the retry presses with no sign-in but the fresh one", async () => {
       comes = "replaced";
       const renderer = await waitingWithOffer();

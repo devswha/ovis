@@ -836,6 +836,15 @@ own Settings signs in with a code typed on another device, which the service doe
 app's own sign-in, so a press there still ends in that wait; it adds the PC in one press once the PC
 page signs in on its own window.
 
+**Sign in again from the wait.** When the service refuses the press for the sign-in itself
+(`two_step_required`, `session_not_fresh` or `own_sign_in_required`) and the page signs in its own way
+(the desktop app, the PC's own window), the wait offers **Sign in again** once. It signs in afresh
+with the stored provider; the new sign-in is kept only for the same account and only while the wait
+still runs (Stop waiting in any window of the PC ends it). The press is then made again inside that
+wait: for the PC the wait listed (the PC's address must still answer for it, and nothing is listed
+again), with exactly the sign-in just made, never one another tab stored meanwhile. A second refusal
+leaves the plain wait, with no offer: the wait offers it once.
+
 The account's other devices are told: the service sends them its usual push, and at the top of the
 opened Ovis a notice names the new PC, with **I didn't add this**, which removes it from the
 account's list at once (`DELETE /v1/pcs/{server_id}`); its close button only hides it. The overview

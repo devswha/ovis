@@ -197,7 +197,8 @@ export function useSignInAgainHere(): SignInAgain | undefined {
  * sign-in page the browser would not open in a tab of its own), pressing again with the fresh sign-in, or failed.
  */
 type Again =
-  | { readonly until: number; readonly step: "offered"; readonly from: AccountSession; readonly mark: AddPcWaiting }
+  /** `shared`: the wait was kept for this tab's other screens when it was offered, so their Stop withdraws the offer */
+  | { readonly until: number; readonly step: "offered"; readonly from: AccountSession; readonly mark: AddPcWaiting; readonly shared: boolean }
   | { readonly until: number; readonly step: "signing-in"; readonly link: string | null }
   | { readonly until: number; readonly step: "adding" }
   | { readonly until: number; readonly step: "failed"; readonly message: string };
@@ -610,9 +611,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (!current()) return null;
       const now = Date.now();
       const mark = account === null ? null : { name, until: now + WAITING_MS, serverId, account, listedAt: now };
-      if (from !== undefined && mark !== null && from.account === account) setAgain({ until: mark.until, step: "offered", from, mark });
       pressedUntil.current = mark?.until ?? null;
       keepAddPcWaiting(mark);
+      if (from !== undefined && mark !== null && from.account === account) setAgain({ until: mark.until, step: "offered", from, mark, shared: readAddPcWaiting()?.until === mark.until });
       return { kind: "waiting", name, until: now + WAITING_MS, mark, resumed: false, signedIn: as !== null };
     })();
     // an attempt given up, or whose screen went, while its window was still being opened: closed once it is open
@@ -739,13 +740,14 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
    * this address still answers for it (it is listed already): a refusal then is the plain wait, with no offer again.
    * Another account's sign-in stores nothing and the wait goes on; a cancelled or failed one too.
    */
-  const signInAgainNow = ({ until, from, mark }: { until: number; from: AccountSession; mark: AddPcWaiting }): void => {
+  const signInAgainNow = ({ until, from, mark, shared }: { until: number; from: AccountSession; mark: AddPcWaiting; shared: boolean }): void => {
     if (signInAgain === undefined) return;
+    // another copy of this screen stopped the wait, or began another, before this press: no sign-in is started
+    if (shared && readAddPcWaiting()?.until !== until) { setAgain(null); return; }
     const controller = new AbortController();
     againRun.current = controller;
     const running = (): boolean => !controller.signal.aborted;
-    // another copy of this screen that stops the wait, or begins another, ends this sign-in again at once
-    const shared = readAddPcWaiting()?.until === until;
+    // and one that does so while it runs ends it at once
     const off = onAddPcWaiting((kept) => { if (shared && kept?.until !== until) controller.abort(); });
     const over = (next: Again | null): void => {
       off();
