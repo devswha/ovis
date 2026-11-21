@@ -17,6 +17,26 @@
   overflow-y: auto;
 }
 
+/* the body scrolls; it never squeezes a part to fit the window */
+.connect-phone-body > * {
+  flex-shrink: 0;
+}
+
+/* the tab bar stays put between the header and the body that scrolls */
+.connect-tabs-bar {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  padding: var(--space-4) var(--space-5) 0;
+}
+
+/* bound by the window itself (the Mac app's too), not by a percentage of the scrim */
+@media (min-width: 641px) {
+  .modal.connect-phone-dialog {
+    max-height: min(calc(100dvh - 2 * var(--space-4)), var(--dialog-max-h));
+  }
+}
+
 .connect-phone-gate {
   margin: 0;
 }
@@ -131,6 +151,14 @@
   gap: var(--space-2);
   padding-top: var(--space-3);
   border-top: var(--hairline) solid var(--border);
+}
+
+/* first in its tab (Tailscale), the phone part sits above the tab's own part: its line goes below it */
+.connect-tab > .connect-phone-scan:first-child {
+  padding-top: 0;
+  padding-bottom: var(--space-3);
+  border-top: 0;
+  border-bottom: var(--hairline) solid var(--border);
 }
 
 .connect-phone-scan-title {

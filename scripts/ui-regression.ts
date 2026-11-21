@@ -29,6 +29,7 @@ import { checkFolderFilter, checkNewFolder } from "./folder-filter-regression.ts
 import { checkPaletteKeys } from "./palette-keys-regression.ts";
 import { checkFollowHerdrFocus } from "./follow-focus-regression.ts";
 import { checkRelayPanel } from "./relay-panel-regression.ts";
+import { checkConnectDialogScroll } from "./connect-dialog-scroll-regression.ts";
 import { systemUsageContext, UsageService } from "../server/usage.ts";
 import { openSettingsFolds, openSettingsPage } from "./settings-page.ts";
 import { assertCspClean, watchCsp } from "./csp-violations.ts";
@@ -2461,6 +2462,7 @@ try {
     console.log("PASS Settings sign out: cancel preserves access, failure permits retry, token and paired-device sign out return to the access gate");
 
     await checkRelayPanel(browser);
+    await checkConnectDialogScroll(browser);
   }
 } catch (error) {
   for (const evidence of evidenceSessions) {

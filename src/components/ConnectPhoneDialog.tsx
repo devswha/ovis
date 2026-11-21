@@ -19,6 +19,7 @@ import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
 import { tailscalePlan, type PhonePlan } from "../lib/phone.ts";
+import { isTailnetAddress } from "../../shared/relay-mux.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
@@ -218,23 +219,27 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
           <h1 className="modal-title" id={`${id}-title`} tabIndex={-1}>{t("Add a connection")}</h1>
           <button type="button" className="icon-button" aria-label={t("Close")} onClick={onClose}><X aria-hidden="true" /></button>
         </header>
-        <div className="modal-body connect-phone-body">
-          {tabs.length > 0 && (
+        {/* the tabs stay put above the body, which scrolls: a long tab (many PCs) never hides its phone part below the window */}
+        {tabs.length > 0 && (
+          <div className="connect-tabs-bar">
             <div className="segmented connect-tabs" role="group" aria-label={t("How to connect")}>
               {tabs.map((way) => <button key={way} type="button" aria-pressed={tab === way} data-tab={way} onClick={() => setChosen(way)}>{label[way]}</button>)}
             </div>
-          )}
+          </div>
+        )}
+        <div className="modal-body connect-phone-body">
           {waiting && <p className="settings-hint" role="status" data-testid="connect-pending">{t("Loading…")}</p>}
           {tab === null && !waiting && <LocalWay plan={plan} pairUrl={pairUrl} readOnly={readOnly} local={local} phone={phone} platform={platform} onAccess={setFresh} />}
           {opened.current.has("tailscale") && tabs.includes("tailscale") && (
             <div className="connect-tab" data-tab-panel="tailscale" hidden={tab !== "tailscale"}>
-              <TailscaleTab found={found} onAddPc={onAddPc!} />
+              {/* the phone's QR code and code first: the list of tailnet PCs can be long */}
               <PhoneScan>
                 {tailnet.address !== null ? (
                   tailnet.code ? <CodeRoute pairUrl={tailnet.address} startAtOnce={tab === "tailscale"} shared={sharedCode} phone={phone} compact /> : <PhonePanel url={tailnet.address} phone={phone} />
                 ) : tailnet.tailscaleStep !== null ? <TailscaleStep step={tailnet.tailscaleStep} platform={platform} onAccess={setFresh} /> : null}
                 {(tailscale.kind === "served" || tailnet.tailscaleStep !== null) && <p className="settings-hint">{t("The phone needs the Tailscale app turned on too.")}</p>}
               </PhoneScan>
+              <TailscaleTab found={found} onAddPc={onAddPc!} />
             </div>
           )}
           {opened.current.has("ssh") && tabs.includes("ssh") && (
@@ -350,13 +355,16 @@ export function TailscaleTab({ found: { found, unread, failed, withheld, stateOf
             <ul className="connect-found-list">
               {pcs.map((pc) => {
                 const state = stateOf(pc);
+                // an ssh config host written as a tailnet IP goes by its Tailscale name, the IP beside it
+                const byIp = pc.tailnet !== undefined && isTailnetAddress(pc.name);
+                const name = byIp ? pc.tailnet!.split(".")[0]! : pc.name;
                 return (
                   <li key={`${pc.source}:${pc.destination}`} className="connect-found-row">
-                    <span className="connect-found-name">{pc.name}</span>
-                    <span className="connect-found-detail">{pc.tailnet ?? pc.detail ?? pc.destination}</span>
+                    <span className="connect-found-name">{name}</span>
+                    <span className="connect-found-detail">{byIp ? pc.name : pc.tailnet ?? pc.detail ?? pc.destination}</span>
                     {state === "added" ? <span className="connect-found-added"><Check aria-hidden="true" />{t("Added")}</span>
                       : state === "outdated" ? <span className="settings-hint">{t("Update Ovis on that PC to 0.5 first.")}</span>
-                      : <button type="button" className="btn" disabled={state === "waiting"} aria-label={`${t("Connect")} ${pc.name}`} onClick={() => onAddPc({ destination: pc.destination, name: pc.name })}>{t("Connect")}</button>}
+                      : <button type="button" className="btn" disabled={state === "waiting"} aria-label={`${t("Connect")} ${name}`} onClick={() => onAddPc({ destination: pc.destination, name })}>{t("Connect")}</button>}
                   </li>
                 );
               })}

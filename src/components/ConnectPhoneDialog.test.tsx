@@ -546,6 +546,29 @@ describe("Connect a phone on a phone", () => {
     await until(() => qrCodes().some((qr) => String(qr.props.value).endsWith("pair=246810")), "the waiting tab's own code");
   });
 
+  it("puts the Tailscale tab's phone QR code and code above its list of PCs, and its tabs above the body that scrolls", async () => {
+    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
+    const pageEvents = new EventTarget();
+    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
+    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
+    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
+    const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
+    await act(async () => {
+      renderer = create(<SettingsProvider><ConnectPhoneDialog asked="tailscale" plan={served} tailscale={served} pairUrl={served.url} relay={{ ...relayState(), unsupported: true }} readOnly={false} closesGate={false} canPair
+        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
+    });
+    await until(() => renderer!.root.findAll((each) => each.props.className === "connect-found-row").length > 0, "the tailnet PCs");
+    await until(() => qrCodes().length === 1, "the Tailscale address's QR code");
+    const panel = renderer!.root.find((each) => each.props["data-tab-panel"] === "tailscale" && each.type === "div");
+    const parts = panel.children.filter((child): child is ReactTestInstance => typeof child !== "string");
+    const order = (match: (each: ReactTestInstance) => boolean) => parts.findIndex((part) => match(part) || part.findAll(match).length > 0);
+    expect(order((each) => each.type === QrCode)).toBeLessThan(order((each) => each.props.className === "connect-found-row"));
+    const body = renderer!.root.find((each) => each.type === "div" && String(each.props.className).includes("connect-phone-body"));
+    expect(body.findAll((each) => each.props["data-tab"] !== undefined)).toHaveLength(0);
+    expect(renderer!.root.findAll((each) => each.props["data-tab"] !== undefined && each.type === "button").map((each) => each.props["data-tab"])).toEqual(["tailscale", "ssh"]);
+  });
+
   describe("the Tailscale tab's step, one press each and never a terminal step until a serve is refused", () => {
     /** the intervals the page set, the Tailscale watch's among them; any other runs as usual */
     let polls: { tick: () => void; cleared: boolean }[];
@@ -843,6 +866,19 @@ describe("Connect a phone on a phone", () => {
     await flushReads();
     expect(renderer!.root.findAllByProps({ "aria-label": "Connect winvm" })).toHaveLength(0);
     expect(text(renderer!.root)).toContain("Added");
+  });
+
+  it("lists an ssh config host written as a tailnet IP by its Tailscale name, the IP beside it, and adds it under that name", async () => {
+    tailnetOutdated = false;
+    extraCandidates = [{ name: "100.123.228.51", destination: "100.123.228.51", detail: "devswha@100.123.228.51", source: "ssh_config", tailnet: "old-desktop.tail.ts.net" }];
+    const added: (AddPcPreset | undefined)[] = [];
+    await mount(<Tailscale machines={[]} onAddPc={(preset) => { added.push(preset); }} />);
+    await flushReads();
+    const row = renderer!.root.findAll((node) => node.props.className === "connect-found-row").find((node) => text(node).includes("100.123.228.51"))!;
+    expect(text(row.findByProps({ className: "connect-found-name" }))).toBe("old-desktop");
+    expect(text(row.findByProps({ className: "connect-found-detail" }))).toBe("100.123.228.51");
+    await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect old-desktop" }).props.onClick(); });
+    expect(added).toEqual([{ destination: "100.123.228.51", name: "old-desktop" }]);
   });
 
   it("Connect opens SSH without requesting a relay add even when the Tailscale peer is online", async () => {
