@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HealthAuth } from "../shared/protocol.ts";
 import type { TailnetNodesAnswer } from "../shared/tailnet-nodes.ts";
+import { exportAccountKey, newRecordId, signSafetyRecord, type BlockRecord } from "../shared/account-records.ts";
 import { DeviceJournal } from "./account/device-journal.ts";
+import { PcAccountState } from "./account/pc-binding.ts";
+import { RemovalEvidence } from "./account/removal-evidence.ts";
+import { SafetyLog } from "./account/safety-log.ts";
 import { DeviceStore } from "./devices.ts";
 import { createServer } from "./index.ts";
-import { handleTailnetNodeRequest, mergeTailnetNodes, TAILNET_NODES_FILE, TailnetNodes } from "./tailnet-nodes.ts";
+import { handleTailnetNodeRequest, mergeTailnetNodes, TAILNET_NODES_FILE, tailnetNodeGate, TailnetNodes } from "./tailnet-nodes.ts";
 import { parseWhois, TailnetIdentitySource } from "./tailscale.ts";
 
 const OWNER = "owner@example.com";
@@ -170,6 +174,40 @@ describe("the tailnet node list", () => {
     expect(parseWhois(whoisJson("100.64.0.9"))).toEqual({ id: "nPhone1CNTRL", hostname: "pixel", login: OWNER });
     expect(parseWhois(JSON.stringify({ Node: { StableID: "../x" } }))).toBeNull();
     expect(parseWhois(null)).toBeNull();
+  });
+
+  it("an account record's drop keeps the row's node out: Not me, and a member's remove", async () => {
+    const key = async () => { const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]); return { keys, spki: await exportAccountKey(keys.publicKey) }; };
+    for (const how of ["not_me", "remove"] as const) {
+      const dir = stateDir(`record-${how}`);
+      const log = SafetyLog.open(dir);
+      const journal = DeviceJournal.open(dir, () => log.ensureFile());
+      const store = new DeviceStore(dir, null, null, { safety: log, pc: PcAccountState.open(dir), removals: RemovalEvidence.open(dir, log), journal });
+      const nodes = new TailnetNodes(dir);
+      store.attachTailnetNodes(nodes);
+      const member = async () => {
+        const k = await key();
+        const id = store.pairRelay(store.startPairing().code, "Phone", k.spki)!.device.id;
+        store.linkAccountKey(id, k.spki, k.spki, "acct_1");
+        return { ...k, id };
+      };
+      const signer = await member();
+      const target = await member();
+      store.noteTailnetNode(target.id, "nPhone1CNTRL");
+      if (how === "not_me") {
+        const record = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 9, signer_no: 1, signer: signer.spki, signed_at: new Date().toISOString(), nonce: newRecordId() }, signer.keys.privateKey) as BlockRecord;
+        expect(await store.applyBlock(record, "session")).toMatchObject({ outcome: "applied" });
+      } else {
+        expect(store.removeAccountKey(target.spki, "acct_1", { id: newRecordId(), issuedAt: new Date().toISOString(), by: { device_id: signer.id, label: "Phone" } })).toBe(true);
+      }
+      expect(store.has(target.id)).toBe(false);
+      // the same node, by the owner's login, is refused next
+      const next = await tailnetNodeGate({ level: "full", via: "tailscale", role: "drive", login: OWNER }, {
+        address: "100.64.0.9", owner: OWNER, nodes, rows: store, whois: async (address) => parseWhois(whoisJson(address)),
+      });
+      expect(next).toEqual({ level: "none", reason: "tailnet_blocked" });
+      expect(journal.entries().filter((entry) => entry.kind === "tailnet").map(({ how: what, row }) => [what, row])).toEqual([["block", target.id]]);
+    }
   });
 
   it("journals a removal's block before the row goes, and an Allow", () => {

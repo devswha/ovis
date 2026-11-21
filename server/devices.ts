@@ -1238,6 +1238,7 @@ export class DeviceStore {
     }
     this.dropWaiting([record.target], "block");
     safety.unwait(record.id);
+    this.keepOutNodesOfRecordDrop(targets);
     try { this.drop(targets, "pc"); }
     catch (error) { console.error(`[devices] the registry write of a block failed after its deny; the next start finishes it: ${error instanceof Error ? error.message : String(error)}`); }
     return receipt;
@@ -2839,8 +2840,14 @@ export class DeviceStore {
     if (tailnet === null) return [];
     const fresh = nodes.filter((node) => !tailnet.isBlocked(node.id));
     if (fresh.length === 0) return [];
-    for (const node of fresh) this.journalEvent({ kind: "tailnet", how: "block", key: null, no: null, row, label: `${node.hostname ?? tailnet.hostnameOf(node.id)} · ${node.id}`, by: null, account: null });
-    return tailnet.block(fresh);
+    try {
+      for (const node of fresh) this.journalEvent({ kind: "tailnet", how: "block", key: null, no: null, row, label: `${node.hostname ?? tailnet.hostnameOf(node.id)} · ${node.id}`, by: null, account: null });
+      return tailnet.block(fresh);
+    } catch (error) {
+      // a block that did not land keeps every node out for this run: the removal it belongs to may already stand
+      tailnet.failClosed(`A Tailscale device could not be kept out (${describe(error)}): no Tailscale login is let in until this PC restarts.`);
+      throw error;
+    }
   }
 
   /** Allow on this PC's own window: the node is let in by its login again, journalled first. */
@@ -2854,6 +2861,15 @@ export class DeviceStore {
   private keepOutNodesOf(rows: readonly StoredDevice[]): void {
     const ids = [...new Set(rows.flatMap((d) => d.tailnet_nodes ?? []))];
     this.keepOutTailnetNodes(ids.map((id) => ({ id })), rows[0]?.id ?? null);
+  }
+
+  /**
+   * An account record's drop (a block, Not me included, or a member's remove) keeps the dropped rows' nodes out with it.
+   * Its deny is on disk already, so a node block that fails does not undo the drop: the list fails closed instead.
+   */
+  private keepOutNodesOfRecordDrop(rows: readonly StoredDevice[]): void {
+    try { this.keepOutNodesOf(rows); }
+    catch (error) { console.error(`[devices] the Tailscale devices of a dropped row could not be kept out: ${describe(error)}`); }
   }
 
   revoke(id: string, by: DeviceRemovedEvent["by"] = "pc"): boolean {
@@ -3390,6 +3406,7 @@ export class DeviceStore {
       }
       const gone = this.devices.filter((d) => d.relay_public_key === key && this.coveredByEvidence(d));
       const ids = (this.joinedRows?.rowsByKey(key) ?? []).filter((row) => this.coveredByEvidence(this.joinedAsStored(row))).map((row) => row.id);
+      this.keepOutNodesOfRecordDrop(gone);
       this.dropBeforeWrite(gone, record.by, undefined, { ids, reason: "remove" }, undefined, { key, account });
       return added || gone.length > 0 || ids.length > 0;
     }
@@ -3399,6 +3416,7 @@ export class DeviceStore {
     const newer = (d: StoredDevice) => d.relay_public_key === key && pairedHere(d) && this.later(d.created_at, record.issuedAt);
     if (this.devices.some(newer)) {
       const gone = this.devices.filter((d) => d.relay_public_key === key && !newer(d));
+      this.keepOutNodesOfRecordDrop(gone);
       if (gone.length) this.drop(gone, record.by);
       return gone.length > 0;
     }

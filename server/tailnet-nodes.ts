@@ -102,7 +102,7 @@ export function mergeTailnetNodes(active: string, sibling: string): string | nul
 export class TailnetNodes {
   private nodes: StoredTailnetNode[] = [];
   private readonly path: string;
-  readonly problem: string | null = null;
+  private failure: string | null = null;
   private asking: (TailnetNodePrompt & { readonly at: number }) | null = null;
   private readonly declined = new Map<string, number>();
 
@@ -110,10 +110,18 @@ export class TailnetNodes {
   constructor(stateDir: string, blocked: string | null = null, private readonly now: () => number = Date.now) {
     this.path = join(stateDir, TAILNET_NODES_FILE);
     const read = readNodes(this.path);
-    if (read === null) this.problem = `Cannot read ${this.path}: no Tailscale login is let in until it is restored or fixed.`;
+    if (read === null) this.failure = `Cannot read ${this.path}: no Tailscale login is let in until it is restored or fixed.`;
     else this.nodes = read;
-    if (blocked !== null) this.problem ??= blocked;
-    if (this.problem !== null) console.error(this.problem);
+    if (blocked !== null) this.failure ??= blocked;
+    if (this.failure !== null) console.error(this.failure);
+  }
+
+  get problem(): string | null { return this.failure; }
+
+  /** Every node is kept out from now on: a block that should stand did not land. */
+  failClosed(reason: string): void {
+    this.failure ??= reason;
+    console.error(this.failure);
   }
 
   /** Whether `id` is kept out; while the list cannot be read, every node is. */
