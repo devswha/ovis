@@ -1,7 +1,7 @@
 /**
  * Simplified Chinese for the keys only the settings files use:
  * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
- * components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
+ * components/SettingsControls.tsx, components/TelemetryControls.tsx, components/LinkBrowserRow.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_ZH: Record<string, string> = {
@@ -133,7 +133,6 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Auto ({language})": "自动（{language}）",
   "No OpenAI key: the browser's speech recognition is used": "未设置 OpenAI 密钥，将使用浏览器的语音识别",
   "Speech recognition": "语音识别",
-  "Browser": "浏览器",
   "API key": "API 密钥",
   "Save an API key to use the mic": "保存 API 密钥后才能使用麦克风",
   "No OpenAI key saved": "未保存 OpenAI 密钥",
@@ -182,6 +181,10 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Beside the pane": "在窗格旁",
   "In a new tab": "在新标签页中",
   "Reuse tab for external links": "重复使用外部链接标签页",
+  "Browser for links": "打开链接的浏览器",
+  "The browser a web link you click in Ovis opens in, on this computer. Sign-in pages always open in the system's default browser.": "在这台电脑上点击 Ovis 中的网页链接时使用的浏览器。登录页面始终在系统默认浏览器中打开。",
+  "System default": "系统默认",
+  "System default ({name})": "系统默认 ({name})",
   "theme themes palette dark light mode colors density language sidebar logos": "主题 调色板 palette 深色 浅色 模式 颜色 密度 语言 侧边栏 徽标",
   "chat message width composer enter send thinking code": "聊天 消息 宽度 输入框 回车 发送 思考 代码",
   "terminal key bar keyboard clipboard": "终端 按键栏 键盘 剪贴板",
@@ -287,4 +290,10 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Remove PC {name}": "移除 PC {name}",
 
   "Could not read this PC's alert destination ({error}). Close Settings and open it again.": "无法读取此 PC 的外部提醒设置（{error}）。请关闭设置后重新打开。",
+  "Opens the page of every PC this device reaches through the relay, to check, join or forget them.": "打开此设备通过中继连接的所有电脑的页面，可以检查、加入或移除它们。",
+  "Manage|relayed connections": "管理",
+  "Built-in browser": "内置浏览器",
+  "Blocked sites": "屏蔽的网站",
+  "Opens web pages in tabs inside this app: they are listed under Browser in the sidebar and open beside the pane. Its tabs are signed in to nothing you use elsewhere, and an agent's tabs keep cookies of their own.": "在此应用内的标签页中打开网页：标签页列在侧边栏的“浏览器”下，并在窗格旁打开。这些标签页不使用你在别处的登录，Agent 的标签页使用各自的 Cookie。",
+  "The built-in browser never loads these sites or their subdomains, in your tabs or an agent's. One site per line.": "内置浏览器不会在你的标签页或 Agent 的标签页中加载这些网站及其子域名。每行一个网站。",
 };

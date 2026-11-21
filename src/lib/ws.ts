@@ -1,5 +1,6 @@
 import type { ClientMessage, ClientRole, PendingMessage, ServerFeature, ServerMessage } from "../../shared/protocol.ts";
 import { receiptResumeId } from "./receiptResume.ts";
+import { ACCOUNT_OPENS_ALL_CAPABILITY, type NoticeAnswer, type NoticeSeen } from "../../shared/account-devices-api.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { promptSet } from "../../shared/secret-prompt.ts";
 import { ConnectionTrace } from "./connectionTrace.ts";
@@ -143,6 +144,8 @@ export class HerdrSocket {
   private readonly disconnectHandlers = new Set<() => void>();
   private readonly beforeReplayHandlers = new Set<() => void>();
   private featuresKnown = false;
+  /** what the last feature list said of the account release, kept across reconnects (accountReleaseWithdrawn) */
+  private accountOpensAllSaid: boolean | null = null;
   /** `terminal-history` from this connection's latest features frame (trusted or not) or snapshot: it says how to draw, not what to send */
   private terminalHistory = false;
   private machineEventsOffered: boolean | null = null;
@@ -401,6 +404,8 @@ export class HerdrSocket {
       }
     });
 
+    let earlyNoticeOffer = false;
+    const pendingNotices: Extract<ServerMessage, { type: "device-notice-replay" | "device-notice" }>[] = [];
     socket.addEventListener("message", (event) => {
       if (this.socket !== socket) return;
       this.trace.flush();
@@ -442,6 +447,7 @@ export class HerdrSocket {
         const first = !this.featuresKnown;
         this.features = new Set(message.features ?? []);
         this.featuresKnown = true;
+        this.accountOpensAllSaid = this.features.has(ACCOUNT_OPENS_ALL_CAPABILITY);
         // typing lost on another herdr, or on one never proven, is not this herdr's pane's, whatever its ID
         this.lifetime = message.type === "snapshot" ? message.snapshot.herdr_lifetime : message.herdr_lifetime;
         for (const [paneId, lost] of this.lostInput) if (lost.lifetime !== this.lifetime) this.lostInput.delete(paneId);
@@ -528,7 +534,20 @@ export class HerdrSocket {
         this.resolveRequest(message.id, message.ok ? { ok: true } : { ok: false, code: message.code ?? "insert_failed", message: message.message ?? "the pane did not take the text" });
       }
       // A terminal/parser failure is not malformed JSON and must not disappear.
+      if (message.type === "features" && !this.featuresKnown) {
+        earlyNoticeOffer = message.features?.includes(ACCOUNT_OPENS_ALL_CAPABILITY) === true;
+        if (!earlyNoticeOffer) pendingNotices.length = 0;
+      }
+      if ((message.type === "device-notice" || message.type === "device-notice-replay") && !this.accountOpensAll()) {
+        // A first-connect offer can precede its trusted snapshot; retain frames only after that offer.
+        if (earlyNoticeOffer && !this.featuresKnown) pendingNotices.push(message);
+        return;
+      }
       this.emit(message);
+      if (this.featuresKnown && pendingNotices.length > 0) {
+        const confirmed = pendingNotices.splice(0);
+        if (this.accountOpensAll()) for (const notice of confirmed) this.emit(notice);
+      }
       for (const paneId of unwatched) this.emit({ type: "watch-end", pane_id: paneId });
     });
 
@@ -938,6 +957,26 @@ export class HerdrSocket {
 
   featuresListed(): boolean {
     return this.featuresKnown;
+  }
+
+  /** Device table G5: this PC opens to the account's sign-in (ACCOUNT_OPENS_ALL_CAPABILITY), as its trusted features say; never offline. */
+  accountOpensAll(): boolean {
+    return this.connected && this.features.has(ACCOUNT_OPENS_ALL_CAPABILITY);
+  }
+
+  /**
+   * This PC's last feature list lacked the account release (S32-1): an explicit withdrawal, which holds through a
+   * disconnect and a reconnect that has listed nothing yet, until a list offers it again. False before any list.
+   */
+  accountReleaseWithdrawn(): boolean {
+    return this.accountOpensAllSaid === false;
+  }
+
+  /** Device table T57: says what was seen, or answers one notice; only to a PC that offers it. True when sent. */
+  sendNotice(message: NoticeSeen | NoticeAnswer): boolean {
+    if (!this.accountOpensAll()) return false;
+    this.rawSend(message);
+    return true;
   }
 
   hasTerminalHistory(): boolean {

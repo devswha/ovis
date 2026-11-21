@@ -141,8 +141,15 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       await page.waitForFunction(() => document.querySelectorAll('.status-dot[data-state="checking"]').length === 0, null, { timeout: LOAD_MS });
     };
     await page.locator(".account-provider").first().click();
+    // a sign-in lands on Add a PC, never the dashboard: that opens only by its own address, as here
+    await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add, [data-add-pc-mode]').first().waitFor({ timeout: LOAD_MS });
+    expect(await page.locator(".relay-dash").count() === 0, "the sign-in landed on the dashboard");
+    // a fresh load that draws the signed-in dashboard read the account key back from storage: it was committed
+    await page.goto(`${APP}/#overview`);
     await page.locator('.relay-dash[data-dashboard-mode="account"]').waitFor({ timeout: LOAD_MS });
-    await page.locator("[data-qa-account-key-committed]").waitFor({ state: "attached" });
+    // the sign-in's return opens a saved PC by itself once it has read them (#4358): seeded before that read, the PC it
+    // opens aborts the reload below, so the pairings wait until the shell has read its entry to the end
+    await page.locator('[data-relay-shell="mounted"]').waitFor({ state: "attached" });
     if (fleet.seeds.length > 0) {
       await seedPairings(page, fleet.seeds, ACCOUNT);
       await page.reload();
@@ -215,6 +222,10 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
   for (const width of [1440, 390] as const) {
     await check(`signin-${width}`, async () => {
       const { page, account } = await open({ fleet: "F0", width, theme: "light", entry: "providers" });
+      // the hosted build names no providers: the stack is the account service's own list once it answers
+      await page.locator(".account-provider").nth(2).waitFor({ timeout: LOAD_MS });
+      const names = await page.locator(".account-provider").allTextContents();
+      expect(names.join() === "Continue with GitHub,Continue with Google,Continue with Apple", `the service's providers are offered: ${JSON.stringify(names)}`);
       const column = await page.locator(".account-centered").first().evaluate((element) => {
         const style = getComputedStyle(element);
         return { width: element.getBoundingClientRect().width, border: style.borderTopWidth, background: style.backgroundColor };
@@ -223,7 +234,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       expect(width === 1440 ? Math.round(column.width) === 368 : column.width <= 368, `sign-in column ${column.width}px (368px at most, 368 on a desktop)`);
       expect(column.border === "0px" && column.background === "rgba(0, 0, 0, 0)", `sign-in column is unboxed (border ${column.border}, background ${column.background})`);
       expect(providers.length > 0 && providers.every((height) => height === providers[0]) && (providers[0] ?? 0) >= 44, `provider controls ${JSON.stringify(providers)}px: one height, at least 44`);
-      expect(!account.includes("GET /v1/providers"), "the sign-in asks the service for no provider list after it painted");
+      expect(account.filter((request) => request === "GET /v1/providers").length === 1, `the sign-in reads the service's provider list once: ${JSON.stringify(account)}`);
       expect(await page.locator(".account-provider").count() === providers.length, "the provider stack did not change while measured");
       await shot(page, `signin-${width}-light`);
       return `column ${Math.round(column.width)}px unboxed, providers ${JSON.stringify(providers)}px, ${await noOverflow(page)}`;

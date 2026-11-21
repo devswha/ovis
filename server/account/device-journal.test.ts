@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeviceNotice, NoticeReplay } from "../../shared/account-devices-api.ts";
+import { parseSnapshotPage } from "../../shared/account-snapshot.ts";
 import { DEVICE_COOKIE } from "../auth.ts";
 import { DeviceStore, readDeviceRegistry } from "../devices.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
@@ -50,6 +51,41 @@ async function frames(port: number, cookie: string, count: number): Promise<{ li
 }
 
 describe("the device journal (P10, P15)", () => {
+  test.each([
+    ["recognized claims", { provider: "google", two_step: "set" }, "google", "set"],
+    ["missing claims", {}, null, "unknown"],
+    ["unrecognized claims", { provider: "garbage", two_step: "garbage" }, null, "unknown"],
+    ["unknown two-step without a provider", { two_step: "unknown" }, null, "unknown"],
+  ] as const)("T34: replay projects %s from a list admission", async (_scenario, claims, method, two_step) => {
+    const dir = stateDir();
+    const journal = DeviceJournal.open(dir);
+    const evidence = RemovalEvidence.open(dir, SafetyLog.open(dir));
+    const phone = await key();
+    const page = parseSnapshotPage({
+      v: 1, snapshot: "a".repeat(32), account: "acct_1", server_id: "b".repeat(32), version: 1, methods_version: 0, page: 0, last: true,
+      devices: [{ key: phone, no: 2, label: "Phone", eligible: true, ...claims }], removed: [], blocks: [], lifts: [], freezes: [],
+    });
+    const [device] = page.devices;
+    if (!device) throw new Error("The snapshot lost its listed device");
+    const row = "aaaaaaaaaaaaaaaa";
+    journal.recordAccountRow({ ...device, kind: "admit", row, account: page.account }, evidence);
+    journal.openListedRows([row]);
+
+    const replay = DeviceJournal.open(dir).replay("bbbbbbbbbbbbbbbb", () => true);
+    expect(replay.notices).toMatchObject([{ kind: "admit", how: "list", key: phone, method, two_step }]);
+    expect(replay.notices[0]).not.toHaveProperty("provider");
+  });
+
+  test("T34: replay carries no sign-in claim for a non-list pairing", async () => {
+    const dir = stateDir();
+    const devices = store(dir);
+    const phone = await key();
+    const paired = devices.pairRelay(devices.startPairing().code, "Phone", phone);
+    if (!paired) throw new Error("The phone was not paired");
+    const replay = DeviceJournal.open(dir).replay("bbbbbbbbbbbbbbbb", () => true);
+    expect(replay.notices).toMatchObject([{ kind: "admit", row: paired.device.id, method: null, two_step: null }]);
+  });
+
   test("T57: reconnect replays unseen notices before other events and ack never decides a notice", async () => {
     const f = relayFixture(false, { accountOpensAll: true, token: "a-token-long-enough-to-be-a-real-one" });
     fixtures.push(f);
@@ -104,6 +140,60 @@ describe("the device journal (P10, P15)", () => {
     reopened.decide(kept.id);
     expect(DeviceJournal.open(dir).openNotices()).toHaveLength(0);
   }, 30_000);
+
+  test("S2P-10, T57: reconnect replays a decision made after the device acknowledged the open admission", () => {
+    const dir = stateDir();
+    const journal = DeviceJournal.open(dir);
+    const admission = admit(journal, "aaaaaaaaaaaaaaaa", 5);
+    const device = "bbbbbbbbbbbbbbbb";
+    const tells = () => true;
+    expect(journal.replay(device, tells).notices).toMatchObject([{ id: admission.id, open: true }]);
+    journal.ack(device, admission.seq);
+
+    // The device is offline when the PC closes the admission.
+    expect(journal.decide(admission.id)).toBe(true);
+    const reopened = DeviceJournal.open(dir);
+    const replayed = reopened.replay(device, tells).notices;
+    expect(replayed).toMatchObject([{ id: admission.id, kind: "admit", open: false }]);
+    const [close] = replayed;
+    if (!close) throw new Error("Missing replayed close");
+    expect(close.seq).toBeGreaterThan(admission.seq);
+    expect(reopened.replay("cccccccccccccccc", tells).notices).toEqual([close]);
+    reopened.ack(device, close.seq);
+    expect(reopened.replay(device, tells).notices).toEqual([]);
+  });
+
+  test("dori LOW 2: a second decision on a strict journal preserves the first write failure", () => {
+    const dir = stateDir();
+    const journal = DeviceJournal.open(dir);
+    const admission = admit(journal, "aaaaaaaaaaaaaaaa", 5);
+    const file = join(dir, JOURNAL_FILE);
+    rmSync(file);
+    mkdirSync(file);
+
+    expect(() => journal.decide(admission.id)).toThrow();
+    const original = journal.strict;
+    if (original === null) throw new Error("The failed write did not make the journal strict");
+    expect(() => journal.decide(admission.id)).toThrow(original);
+    expect(journal.strict).toBe(original);
+    expect(journal.openNotices()).toEqual([admission]);
+  });
+
+  test("S2P-10: owner reconciliation records a close for the orphan but keeps an owned admission open", () => {
+    const dir = stateDir();
+    const journal = DeviceJournal.open(dir);
+    const lost = admit(journal, "aaaaaaaaaaaaaaaa", 5);
+    const kept = admit(journal, "bbbbbbbbbbbbbbbb", 6);
+    const observer = "cccccccccccccccc";
+    journal.ack(observer, kept.seq);
+    journal.settleList(entry => entry.id === kept.id);
+
+    const reopened = DeviceJournal.open(dir);
+    expect(reopened.openNotices().map(entry => entry.id)).toEqual([kept.id]);
+    expect(reopened.replay(observer, () => true)).toMatchObject({ cut: 0, notices: [
+      { id: kept.id, open: true }, { id: lost.id, open: false },
+    ] });
+  });
 
   test("G14: failed journal write admits nobody and a throwing listener skips nobody else", async () => {
     const dir = stateDir();

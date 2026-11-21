@@ -52,7 +52,13 @@ describe("the hosted shell's front page", () => {
   };
   const last = (): RelayShellProps => shellProps(rendered.at(-1)!);
   const account = () => { const { state } = last(); if ((state.kind !== "list" && state.kind !== "empty") || state.account?.kind !== "signed-in") throw new Error(`not the signed-in front page: ${state.kind}`); return state.account; };
-  const rows = (): number => renderToStaticMarkup(rendered.at(-1)!).match(/<tr[^>]*data-pc-state="/g)?.length ?? 0;
+  // the rows of the dashboard, which a front page draws only at its own address
+  const rows = (): number => {
+    const location = window.location as { hash: string };
+    const before = location.hash;
+    location.hash = "#overview";
+    try { return renderToStaticMarkup(rendered.at(-1)!).match(/<tr[^>]*data-pc-state="/g)?.length ?? 0; } finally { location.hash = before; }
+  };
   const visible = (next: "visible" | "hidden"): void => { browser.setVisibility(next); browser.page.dispatchEvent(new Event("visibilitychange")); };
 
   it("invalidates an in-flight directory read as soon as sign-out starts", async () => {
@@ -94,6 +100,7 @@ describe("the hosted shell's front page", () => {
       await mountRelayShell(mountFor({
         accountService: SERVICE, accountProviders: ["github", "apple"], accountStore, store: deviceStore([]),
         accountFetch: async (input) => {
+          if (["/v1/devices/challenge", "/v1/providers"].includes(new URL(String(input)).pathname)) return new Response(null, { status: 404 });
           if (new URL(String(input)).pathname === "/v1/signout") return Response.json({});
           return ++reads === 2 ? stale.promise : Response.json({ pcs: [] });
         },
@@ -112,6 +119,17 @@ describe("the hosted shell's front page", () => {
       Reflect.deleteProperty(globalThis, "Capacitor");
       globalThis.fetch = savedFetch;
     }
+  });
+
+  // a hosted build names no providers of its own (GitHub alone): the sign-in screen offers what the service names
+  it("offers the providers the account service names on the signed-out front page", async () => {
+    await mountRelayShell(mountFor({
+      accountService: SERVICE, accountProviders: ["github"], accountStore: memoryAccountStore(), store: deviceStore([]),
+      accountFetch: async (input) => new URL(String(input)).pathname === "/v1/providers"
+        ? Response.json({ providers: ["github", "google", "apple"], device: ["github"] }) : Response.json({ pcs: [] }),
+    }));
+    await until(() => last().accountProviders?.join() === "github,google,apple", "the service's providers");
+    expect(last().state).toMatchObject({ account: { kind: "signed-out" } });
   });
 
   it("retains the selected provider while signing in and ignores a second provider tap", async () => {
@@ -311,7 +329,8 @@ describe("the hosted shell's front page", () => {
     let answer: () => void = () => {};
     const held = new Promise<void>((resolve) => { answer = resolve; });
     let reads = 0;
-    const accountFetch = async (): Promise<Response> => {
+    const accountFetch = async (input: RequestInfo | URL): Promise<Response> => {
+      if (new URL(String(input)).pathname === "/v1/providers") return new Response(null, { status: 404 });
       reads += 1;
       await held;
       return { status: 200, ok: true, json: async () => ({ pcs: [] }) } as unknown as Response;
@@ -351,7 +370,8 @@ describe("the hosted shell's front page", () => {
     const now = Date.now();
     const sessionOf = (account: string, provider: "github" | "google") => ({ service: SERVICE, account, provider, access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: now + 3_600_000 });
     const asked: string[] = [];
-    const accountFetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const accountFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (new URL(String(input)).pathname === "/v1/providers") return new Response(null, { status: 404 });
       const bearer = new Headers(init?.headers).get("authorization") ?? "";
       asked.push(bearer);
       const pcs = bearer.endsWith("acct-b") ? [{ server_id: desk.server_id, label: "B's PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: null, public_key: null, relay: AP }] : [];
@@ -408,7 +428,8 @@ describe("the hosted shell's front page", () => {
     let answer: () => void = () => {};
     const held = new Promise<void>((resolve) => { answer = resolve; });
     let asked = 0;
-    const accountFetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const accountFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (new URL(String(input)).pathname === "/v1/providers") return new Response(null, { status: 404 });
       asked += 1;
       if ((new Headers(init?.headers).get("authorization") ?? "").endsWith("acct-b")) return ({ status: 503, ok: false, json: async () => ({}) }) as unknown as Response;
       if (asked === 2) await held;
