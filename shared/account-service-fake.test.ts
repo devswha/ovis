@@ -53,6 +53,19 @@ describe("the fake account service", () => {
     }
   });
 
+  test("PCR-1: a device code's listing made while Step 2 was off stays a member once Step 2 is on: its end counts as a removal", async () => {
+    const service = new FakeAccountService();
+    const used = () => (service as unknown as { usedAccounts: Set<string> }).usedAccounts.has("acct_1");
+    const cli = service.issueToken("acct_1", { device: true });
+    const machine = pc();
+    expect((await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, {
+      method: "PUT", body: JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.test" }), headers: { "content-type": "application/json", authorization: `Bearer ${cli}` },
+    }))).status).toBe(200);
+    service.opensAll = true;
+    expect((await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "DELETE", headers: { authorization: `Bearer ${cli}` } }))).status).toBe(204);
+    expect(used()).toBe(true);
+  });
+
   test("PCR-1 ruling (b): with Step 2 off a device code's own listing is a member: its end counts as a removal, and another sign-in's is 403", async () => {
     const service = new FakeAccountService();
     const used = () => (service as unknown as { usedAccounts: Set<string> }).usedAccounts.has("acct_1");

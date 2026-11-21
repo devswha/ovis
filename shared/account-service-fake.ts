@@ -391,6 +391,14 @@ export class FakeAccountService {
    * included, but one this sign-in registered itself. For the admit (`kind` "admit") they count only once the account
    * had a confirmed or admitted PC, since a person may sign in on the phone first; for a confirm, always.
    */
+  /**
+   * Whether a listing is a member of its account, as the service's memberPc (NO_PC_YET's basis): a PC of the account where
+   * Step 2 is on now, or one never pending under Step 2. A device code's listing made while Step 2 was off stays one.
+   */
+  private member(row: FakePc): boolean {
+    return !this.opensAll || row.listed_by_device !== true || row.pending_under_step2 !== true;
+  }
+
   private everUsed(account: string, serverId: string, family: string, kind: "admit" | "confirm"): boolean {
     const rows = [...(this.directories.get(account)?.values() ?? [])];
     const pending = (row: FakePc): boolean => row.pending_under_step2 === true && row.listed_by_device === true && row.admitted_at == null;
@@ -678,9 +686,8 @@ export class FakeAccountService {
           return problem(403, "own_sign_in_required", "Sign in on this device to remove a PC");
         }
         directory.delete(pc);
-        // ruling (b): with Step 2 off every listing is a member, so its end is a member's removal (the account is used);
-        // with Step 2 on it was pending, never a member, and leaves the account as it was
-        if (!this.opensAll) this.usedAccounts.add(account);
+        // ruling (b): a member's end is a member's removal (the account is used); a listing pending under Step 2 was never one
+        if (this.member(own)) this.usedAccounts.add(account);
         return new Response(null, { status: 204 });
       }
       if (!recent) return problem(403, "reauth_required", "Sign in again first");
@@ -688,7 +695,7 @@ export class FakeAccountService {
       directory.delete(pc);
       this.pcAdmissions.delete(box(pc, account));
       // PCL-1: ending a listing that was never the account's (unconfirmed under Step 2) is no member's removal
-      if (removed !== undefined && !(this.opensAll && removed.listed_by_device === true)) this.usedAccounts.add(account);
+      if (removed !== undefined && this.member(removed)) this.usedAccounts.add(account);
       return new Response(null, { status: 204 });
     }
     if (path === "/v1/records" && request.method === "POST") {
