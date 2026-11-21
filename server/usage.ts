@@ -26,6 +26,7 @@ import { installStatusline, removeStatusline, StatuslineInstallError, statusline
 import type { ProviderUsage, UsageCredits, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
 import { jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
+import { kimiUsage } from "./usage-kimi.ts";
 import { recordedUsages, type RecordedReading, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
 import { gjcRecorded } from "./usage-recorded-gjc.ts";
 import { ompRecorded } from "./usage-recorded-omp.ts";
@@ -63,6 +64,8 @@ interface SignIn {
   token: string;
   expiresAt: number | null;
   plan?: string | null;
+  /** Kimi: the regional API base this credential belongs to */
+  baseUrl?: string;
   chatgptAccount?: string | null;
   fallbacks?: string[];
   account?: Account | null;
@@ -865,7 +868,7 @@ const opencode: UsageProvider = {
   },
 };
 
-export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode];
+export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode, kimiUsage];
 
 /** Keychain services whose read hung (an access prompt nobody answered): not asked again. */
 const promptedServices = new Set<string>();
