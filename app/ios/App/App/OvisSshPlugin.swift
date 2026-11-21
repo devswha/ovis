@@ -120,16 +120,17 @@ final class KeychainSealer: SshPcs.Sealer {
             kSecAttrAccount as String: Self.account, kSecReturnData as String: true
         ]
         var found: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let data = found as? Data, data.count == 32 {
-            return SymmetricKey(data: data)
-        }
+        let status = SecItemCopyMatching(query as CFDictionary, &found)
+        if status == errSecSuccess, let data = found as? Data, data.count == 32 { return SymmetricKey(data: data) }
+        // only a key that is not there is made anew: any other answer (locked, a passing error) leaves the one there,
+        // as a new key would make every sealed secret unreadable for good
+        guard status == errSecItemNotFound else { throw SshFailure("internal", "The Keychain did not give the key (\(status))") }
         let made = SymmetricKey(size: .bits256)
         query[kSecReturnData as String] = nil
-        SecItemDelete(query as CFDictionary)
         query[kSecValueData as String] = made.withUnsafeBytes { Data($0) }
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw SshFailure("internal", "The Keychain refused the key (\(status))") }
+        let added = SecItemAdd(query as CFDictionary, nil)
+        guard added == errSecSuccess else { throw SshFailure("internal", "The Keychain refused the key (\(added))") }
         return made
     }
 

@@ -287,6 +287,8 @@ public final class SshConnection: @unchecked Sendable {
         } catch {
             if expiry.value == true { throw SshFailure("timeout", "The machine did not answer in time") }
             if !channel.isActive { throw SshFailure("unreachable", "The connection ended") }
+            // a cut answer is never read as a whole one
+            throw SshFailure("unreachable", "The command's output broke off: \(error)")
         }
         if expiry.value == true { throw SshFailure("timeout", "The machine did not answer in time") }
         if mustSucceed {

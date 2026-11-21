@@ -51,6 +51,7 @@ public actor SshTunnel {
     private let dialJoined: (@Sendable (Int) -> Void)?
     private var dialWaiters = 0
     private var server: Channel?
+    private var binding: Task<Void, Error>?
     private var link: SshTunnelLink?
     private var dialing: Task<SshTunnelLink, Error>?
     private var relocating: Task<Void, Error>?
@@ -79,6 +80,15 @@ public actor SshTunnel {
     /// have taken); throws when another app holds the address.
     public func listen() async throws {
         if let server, server.isActive { return }
+        // one bind at a time: a second caller (a wake while the PC opens) waits for it rather than binding again
+        if let binding { return try await binding.value }
+        let task = Task { try await self.bind() }
+        binding = task
+        defer { binding = nil }
+        try await task.value
+    }
+
+    private func bind() async throws {
         let bound = try await ServerBootstrap(group: SshConnection.group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .serverChannelOption(ChannelOptions.backlog, value: 64)

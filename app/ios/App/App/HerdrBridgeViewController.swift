@@ -61,7 +61,10 @@ enum PCStore {
     static var sshSetup: String?
 
     /// Opens the SSH PC `origin` the setup screen just added or set up again.
+    /// Saved at once (not only once its page loads, as other PCs are), so a first load that fails never leaves it to
+    /// be forgotten with its host key and keys (OvisSshPlugin.forgetRemoved).
     static func openSsh(_ origin: String) {
+        remember(origin)
         current = origin
         last = origin
         choosing = false

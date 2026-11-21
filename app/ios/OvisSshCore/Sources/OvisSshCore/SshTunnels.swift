@@ -20,23 +20,25 @@ public final class SshTunnels: @unchecked Sendable {
     @discardableResult
     public func open(_ pc: SshPcs.Pc) async throws -> SshTunnel {
         guard let gate = store.gate(pc) else { throw SshFailure("key-unreadable", "This phone can no longer open the gate saved for this PC") }
-        let existing: SshTunnel? = lock.locked {
-            guard let entry = tunnels[pc.origin] else { return nil }
-            if Self.same(entry.pc, pc) { return entry.tunnel }
-            tunnels[pc.origin] = nil
-            Task { await entry.tunnel.close() }
-            return nil
-        }
-        if let existing {
-            try await existing.listen()
-            return existing
-        }
         let store = self.store
-        let tunnel = SshTunnel(gate: gate, port: pc.localPort, dialer: { try await Self.dial(store, pc) },
-                               sshPorts: { [weak self] in self?.ports() ?? [] },
-                               listener: { [weak self] failure in self?.listener?(pc, failure) })
-        try await tunnel.listen()
-        lock.locked { tunnels[pc.origin] = (pc, tunnel) }
+        // the entry is in place before anything waits, so a second open for the same PC finds it and shares its bind
+        let tunnel: SshTunnel = lock.locked {
+            if let entry = tunnels[pc.origin] {
+                if Self.same(entry.pc, pc) { return entry.tunnel }
+                Task { await entry.tunnel.close() }
+            }
+            let made = SshTunnel(gate: gate, port: pc.localPort, dialer: { try await Self.dial(store, pc) },
+                                 sshPorts: { [weak self] in self?.ports() ?? [] },
+                                 listener: { [weak self] failure in self?.listener?(pc, failure) })
+            tunnels[pc.origin] = (pc, made)
+            return made
+        }
+        do {
+            try await tunnel.listen()
+        } catch {
+            lock.locked { if tunnels[pc.origin]?.tunnel === tunnel { tunnels[pc.origin] = nil } }
+            throw error
+        }
         return tunnel
     }
 

@@ -316,6 +316,19 @@ final class SshTunnelTests: XCTestCase {
         XCTAssertEqual(dials.value, 1)
     }
 
+    func testTwoListensAtOnceShareOneBind() async throws {
+        await tunnel.close()
+        port = try await Self.freePort()
+        tunnel = makeTunnel()
+        async let first: Void = tunnel.listen()
+        async let second: Void = tunnel.listen()
+        _ = try await (first, second)
+        let listening = await tunnel.listening
+        XCTAssertTrue(listening)
+        let answer = try await send()
+        XCTAssertTrue(answer.hasPrefix("HTTP/1.1 200"))
+    }
+
     func testReadsTheRequestHeadAndLeavesTheBody() async throws {
         let stream = AsyncStream<ByteBuffer> { continuation in
             continuation.yield(ByteBuffer(string: "POST / HTTP/1.1\r\nContent-Le"))
