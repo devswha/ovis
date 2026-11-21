@@ -573,7 +573,11 @@ describe("mouse on the whole screen", () => {
     expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-logs");
     // the second workspace's row in the sidebar
     expect((await hostScreen(run)).text(3, 3, 6)).toBe("문서");
+    // read while the logs tab's pane still paints, the click waits for its picture and goes one tick after it
     await run.keys("click@3:3");
+    expect(run.loop.model().focus.workspace).toBe("w-ovis");
+    await run.live();
+    await run.advance(1);
     expect(run.loop.model().focus.workspace).toBe("w-docs");
   }, TEST_MS);
 
