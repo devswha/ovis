@@ -665,27 +665,18 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   machines?: readonly Machine[]; onConnectMachine?: (machine: Machine) => void;
 }) {
   const t = useT();
-  const [showAccountPcs, setShowAccountPcs] = useState(false);
-  // signed in to the PC's own account, the account's PCs are listed at once (below); the prompt is for anyone else
+  // signed in to the PC's own account, the account's PCs are listed at once (below); signed in to another, the prompt
+  // opens the account. A window signed out of a PC in an account gets the sign-in alone (below), not this prompt beside it
   const accountAdd = pcAddFromAccount === true && onConnectMachine && !(signedIn && joinBySignIn) ? (
       <div className="connect-found" data-testid="pc-add-source-bound">
         <p className="settings-hint">{t("This PC is in an account. Add PCs from your account.")}</p>
-        <button type="button" className="btn btn-secondary" onClick={() => {
-          if (!signedIn && account !== null) {
-            setShowAccountPcs(true);
-            return;
-          }
-          (onAccountSetup ?? account?.onOpen)?.();
-        }}>{t("Add from account")}</button>
+        <button type="button" className="btn btn-secondary" onClick={() => { (onAccountSetup ?? account?.onOpen)?.(); }}>{t("Add from account")}</button>
       </div>
   ) : null;
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [signedInProvider, setSignedInProvider] = useState<AccountSession["provider"] | null>(null);
   const [pcAccount, setPcAccount] = useState<string | null | undefined>(undefined);
   const signInView = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (showAccountPcs && !signedIn) signInView.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-  }, [showAccountPcs, signedIn]);
   /** the sign-in that just finished on this tab, handed once to Add this PC below, which offers its one press at once */
   const signedInHere = useRef<SignedInHere | null>(null);
   const takeSignedInHere = useCallback((): SignedInHere | null => { const fresh = signedInHere.current; signedInHere.current = null; return fresh; }, []);
@@ -750,7 +741,6 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
-        {!showAccountPcs && accountAdd}
         <RelaySignIn service={account.service} boundPc={pcAddFromAccount === true || pcIn !== null} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(); }} />
       </div>
       {qr(false)}

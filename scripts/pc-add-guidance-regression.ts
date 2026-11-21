@@ -59,25 +59,17 @@ try {
       const sheet = page.locator(".connect-phone-dialog");
       await sheetRisen(page, ".connect-phone-dialog");
       await sheet.locator('.connect-tabs [data-tab="relay"]').click();
-      const message = sheet.getByTestId("pc-add-source-bound");
-      await message.waitFor();
-      assert.equal(await message.locator("p").innerText(), language === "en"
-        ? "This PC is in an account. Add PCs from your account." : "이 PC는 계정에 연결돼 있어요. 계정에서 PC를 추가하세요.");
-      assert.equal(await message.getByRole("button").innerText(), language === "en" ? "Add from account" : "계정에서 추가");
-      assert.equal(await message.getByRole("button").count(), 1);
-      assert.ok(!(await sheet.innerText()).includes("acct_"));
-      assert.equal(await sheet.evaluate(el => el.scrollWidth <= el.clientWidth), true, "No horizontal clipping");
-      await page.screenshot({ path: join(evidence, `source-${language}-${width}-${theme}.png`) });
-      assert.deepEqual(errors, []);
-      console.log(`PASS source ${language} ${width} ${theme}`);
-      await message.getByRole("button").click();
+      // signed out of a PC in an account: one line and the sign-in, never the Add from account prompt beside it (owner, 0.5.10)
       const signin = sheet.getByTestId("connect-signin");
-      await signin.getByText(language === "en" ? "Sign in to this PC's account." : "이 PC의 계정으로 로그인하세요.", { exact: true }).waitFor();
+      await signin.getByText(language === "en" ? "This PC is in an Ovis account." : "이 PC는 Ovis 계정에 있어요.", { exact: true }).waitFor();
+      assert.equal(await sheet.getByTestId("pc-add-source-bound").count(), 0);
+      assert.equal(await signin.locator("p.settings-description, p.settings-hint").count(), 1);
       const provider = signin.getByRole("button", { name: /GitHub/ });
       assert.equal(await provider.isEnabled(), true);
-      assert.equal(await provider.evaluate(el => el === document.activeElement), true);
       assert.ok(!(await sheet.innerText()).includes("acct_"));
+      assert.equal(await sheet.evaluate(el => el.scrollWidth <= el.clientWidth), true, "No horizontal clipping");
       await page.screenshot({ path: join(evidence, `signin-${language}-${width}-${theme}.png`) });
+      assert.deepEqual(errors, []);
       console.log(`PASS signin ${language} ${width} ${theme}`);
     } finally { await context.close(); }
   }

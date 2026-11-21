@@ -1329,7 +1329,7 @@ describe("the relay tab's QR code behind a press", () => {
   for (const [name, options, whose, heading] of [
     ["this browser signed in to the PC's account", { signedIn: true, joinBySignIn: true }, "mine", "This PC is in your account."],
     ["this browser signed in to another account", { signedIn: true, accountId: "acct_mine_0000000000000" }, "other", "Sign in to this PC's account."],
-    ["this browser signed out", { signedIn: false }, "unknown", "Sign in to this PC's account."],
+    ["this browser signed out", { signedIn: false }, "unknown", "This PC is in an Ovis account."],
   ] as const) {
     it(`on a PC already in an account, ${name}: only the QR code that opens it in the Ovis app, no button and no code asked of the PC`, async () => {
       pcAccount = ACCOUNT_ID;
@@ -1352,10 +1352,23 @@ describe("the relay tab's QR code behind a press", () => {
   it("a signed-out browser on a bound PC offers sign-in, not a code, and leaves the relay's switch to More settings", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ signedIn: false, relay: relayState({ ...ONLINE, phase: "off" }) });
-    expect(text(renderer!.root)).toContain("Sign in to this PC's account.");
+    expect(text(renderer!.root)).toContain("This PC is in an Ovis account.");
     expect(renderer!.root.findAllByProps({ label: "Ovis relay" })).toHaveLength(0);
     expect(minted()).toEqual([]);
     expect(text(section())).not.toContain("this PC can show its QR code");
+  });
+
+  it("a window signed out of a PC in an account shows one line and the sign-in, never the Add from account prompt beside it, and keeps the phone QR", async () => {
+    pcAccount = ACCOUNT_ID;
+    await mount({ signedIn: false, pcAdd: true });
+    const signIn = renderer!.root.findByProps({ "data-testid": "connect-signin" });
+    const lines = signIn.findAll((node) => node.type === "p" && typeof node.props.className === "string" && /settings-(description|hint)/.test(node.props.className)).map(text);
+    expect(lines).toEqual(["This PC is in an Ovis account."]);
+    expect(renderer!.root.findAllByProps({ "data-testid": "pc-add-source-bound" })).toHaveLength(0);
+    expect(text(renderer!.root)).not.toContain("Add from account");
+    expect(text(renderer!.root)).not.toContain("acct_");
+    expect(signIn.findAll((node) => node.type === "button").length).toBeGreaterThan(0);
+    expect(qrCodes().map((qr) => qr.props.value)).toEqual([signInLink(ONLINE.app, SERVER_ID, null)]);
   });
 
   it("signed in on a PC already in an account, shows the relay's switch while it is not online, and never says to add this PC", async () => {
@@ -2121,7 +2134,7 @@ describe("the relay tab's QR code behind a press", () => {
     await press("Keep it");
     expect(buttons()).toEqual([]);
     expect(section().props["data-account"]).toBe("unknown");
-    expect(text(renderer!.root)).toContain("Sign in to this PC's account.");
+    expect(text(renderer!.root)).toContain("This PC is in an Ovis account.");
     expect(text(section())).toBe("Scan it with the Ovis app on your phone");
   });
 

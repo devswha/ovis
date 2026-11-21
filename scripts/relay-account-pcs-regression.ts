@@ -234,15 +234,17 @@ try {
   for (const relation of ["other", "signed-out"] as const) {
     const { page } = await accountWindow(browser, pageErrors, relation);
     const tab = await openRelayTab(page);
-    await tab.getByText("Sign in to this PC's account.", { exact: true }).waitFor();
-    await tab.getByRole("button", { name: "Add from account", exact: true }).click();
     if (relation === "signed-out") {
+      // one line and the sign-in: no Add from account prompt beside it
+      await tab.getByText("This PC is in an Ovis account.", { exact: true }).waitFor();
+      assert.equal(await tab.getByRole("button", { name: "Add from account", exact: true }).count(), 0);
       const signIn = tab.getByTestId("connect-signin");
       const first = signIn.getByRole("button").first();
       await first.waitFor();
       assert.equal(await first.isEnabled(), true);
-      assert.equal(await first.evaluate(el => document.activeElement === el), true);
     } else {
+      await tab.getByText("Sign in to this PC's account.", { exact: true }).waitFor();
+      await tab.getByRole("button", { name: "Add from account", exact: true }).click();
       await page.locator(".connect-phone-dialog").waitFor({ state: "detached" });
       await page.locator('.settings-dialog [data-section="account"] button:focus').waitFor();
     }
