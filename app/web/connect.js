@@ -91,7 +91,11 @@ async function open(text) {
   if (relay?.error) { error.textContent = relayErrors[relay.error](); focusField(); return; }
   if (relay) {
     error.textContent = "";
-    try { await shell("open", { url: relay.url, scope: relay.scope, ...(relay.name ? { name: relay.name } : {}) }); }
+    // #picked: the person chose this PC now, so the app does not move on to another one if it is off (src/lib/relay/shell.tsx);
+    // a link that carries its own fragment (a pairing offer) is never a reopen, so it needs none
+    const picked = new URL(relay.url);
+    if (picked.hash === "") picked.hash = "picked";
+    try { await shell("open", { url: picked.href, scope: relay.scope, ...(relay.name ? { name: relay.name } : {}) }); }
     catch (err) { error.textContent = String(err?.message ?? err); }
     return;
   }

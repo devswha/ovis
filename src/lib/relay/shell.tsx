@@ -169,6 +169,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // the phone app's saved row for this app opens it at #pcs (app/web/connect.js), so that it is no launch: that is the
   // app's way to its front page, never a visit to the dashboard, which only its own address in a browser or Settings opens
   if (!scoped && entryHash === "#pcs" && inNativeApp()) window.history.replaceState(null, "", "/");
+  // a PC the person tapped on the phone app's connect screen (app/web/connect.js adds #picked): chosen now, not reopened
+  // by the app as it starts, so an off PC keeps its failure card. The mark is dropped from the address at once
+  const picked = scoped && entryHash === "#picked";
+  if (picked) window.history.replaceState(null, "", window.location.pathname + window.location.search);
   // `left`: the launch sent this page to a PC: nothing more is drawn or probed on the way out
   let launching = !scoped && entryHash === "", signedInNow = false, left = false, launched = false, accountLaunch = false;
   // the card a launch waits on for the account's PCs: only while it is the screen does a read of them go on with the launch
@@ -189,7 +193,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   if (scoped) markLaunched();
   // this PC's page was opened by a launch, not by a person: if the PC turns out off, the launch goes on with the others.
   // So was the PC page the phone app reopens by itself as it starts (a new web view, a new tab session): nobody chose it now
-  const launchedHere = scoped && (launchedPc === entry.serverId || (firstOfTab && inNativeApp()));
+  const launchedHere = scoped && (launchedPc === entry.serverId || (firstOfTab && inNativeApp() && !picked));
   // only a press on a link to that PC (a row of Add a PC, the dashboard, a sidebar) ends a launch's join card: Back, Forward
   // or a reload into it keeps it, so it never opens by the account's key without the person's word
   if (pressedJoin !== null) document.removeEventListener("click", pressedJoin, true);

@@ -1084,6 +1084,22 @@ describe("the hosted shell's front page", () => {
       }
     });
 
+    it("keeps the failure card of a PC the person picked on the phone app's connect screen (#picked) when it is off, and drops the marker", async () => {
+      const { server_id, server_public_key } = keyFor();
+      const [saved] = await pcs(server_id);
+      const off = async (): Promise<never> => { throw new RelayPcOfflineError(); };
+      const went: string[] = [];
+      browser.sessionStore.delete("ovis-launched");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true } });
+      try {
+        // app/web/connect.js opens a saved PC the person tapped with #picked: the first page of a new web view, but chosen
+        await mountRelayShell(mountFor({ entryUrl: `https://app.ovis.sh/s/${server_id}/#picked`, store: deviceStore([{ ...saved!, server_public_key }]), navigate: (path) => { went.push(path); }, open: off }));
+        await until(() => rendered.length > 0 && last().state.kind === "failed", "the PC's failure card");
+      } finally { Reflect.deleteProperty(globalThis, "Capacitor"); }
+      expect(went).toEqual([]);
+      expect(browser.sessionStore.get("ovis-launch-tried")).toBeUndefined();
+    });
+
     it("keeps the card of a launched PC that answered but did not finish connecting in time: it is on, maybe busy", async () => {
       const { server_id, server_public_key } = keyFor();
       const [saved] = await pcs(server_id);
