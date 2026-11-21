@@ -11,6 +11,7 @@ import { BrowserWindow, screen, session as sessions, WebContentsView, type Sessi
 import { mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { BrowserResults, type BrowserResult } from "./browserResults.ts";
+import { stageSupported } from "./browserState.ts";
 import { isIP } from "node:net";
 import { canonicalHost, decide, machineHost, ovisAt, shownAddress, urlPort, type Allowed, type BrowserPolicy } from "../../../shared/browser-policy.ts";
 import { hostForm } from "./browserState.ts";
@@ -25,6 +26,10 @@ function onScreen(bounds: { x: number; y: number; width: number; height: number 
 
 /** how many frames, this far apart, a tab brought to the top of the stage gets to paint before its picture is given up */
 const STAGE_FRAMES = 8;
+/** how long a picture may take before it is given up */
+const PICTURE_MS = 2000;
+/** frames a second a staged page paints at: enough for a picture every few seconds, little for a video nobody watches */
+const STAGE_FRAME_RATE = 4;
 const STAGE_FRAME_MS = 50;
 const AGENT_OPEN_MS = 30_000;
 /** a download larger than this is cancelled, and a profile keeps at most MAX_DOWNLOADS from one start of the app */
@@ -98,8 +103,11 @@ export class BrowserTabs {
   private stage: BrowserWindow | null = null;
   /** the stage turned out visible here (the window manager placed it on a screen): it is not made again */
   private noStage = false;
-  /** the picture being taken, which the next one waits for */
+  /** the picture being taken, which the next one waits for, and each tab's picture asked for and not yet taken */
   private pictures: Promise<void> = Promise.resolve();
+  private waitingPictures = new Map<number, Promise<string | null>>();
+  /** staged tabs already resized once to get a surface: a page is not resized again for each picture */
+  private nudged = new Set<number>();
   /** the sessions this BrowserTabs has guarded: webRequest and permission handlers replace the previous ones */
   private guarded = new Set<Session>();
 
@@ -184,8 +192,10 @@ export class BrowserTabs {
 
   closeAll(): void {
     for (const id of [...this.tabs.keys()]) this.close(id);
-    if (this.stage && !this.stage.isDestroyed()) this.stage.destroy();
+    // let go of it first: its "closed" handler gives up the stage only when something else closed it
+    const stage = this.stage;
     this.stage = null;
+    if (stage && !stage.isDestroyed()) stage.destroy();
   }
 
   /** Draws the tab in `bounds` of the window (in the page's CSS pixels), over the place the page keeps for it. */
@@ -199,6 +209,7 @@ export class BrowserTabs {
     const x = Math.max(0, Math.round(bounds.x * zoom)), y = Math.max(0, Math.round(bounds.y * zoom));
     tab.view.setBounds({ x, y, width: Math.max(0, Math.min(Math.round(bounds.width * zoom), width - x)), height: Math.max(0, Math.min(Math.round(bounds.height * zoom), height - y)) });
     if (this.stage && !this.stage.isDestroyed()) this.stage.contentView.removeChildView(tab.view);
+    tab.view.webContents.setFrameRate(60);
     // a window made anew (the old one closed) holds no view yet
     if (!window.contentView.children.includes(tab.view)) window.contentView.addChildView(tab.view);
     this.shown = id;
@@ -214,9 +225,15 @@ export class BrowserTabs {
 
   /** a picture of the tab as PNG data, or null while it is not drawn (not shown, and no stage to draw it on) */
   thumbnail(id: number): Promise<string | null> {
-    // one picture at a time: a staged tab is put on top to be taken, so two at once would cover each other
-    const taken = this.pictures.then(() => this.takePicture(id));
+    // one picture of a tab asked for while another is waiting is that one
+    const waiting = this.waitingPictures.get(id);
+    if (waiting) return waiting;
+    // one picture at a time (a staged tab is put on top to be taken, so two at once would cover each other), and none
+    // waits on another for long: a capture that never answers gives up after PICTURE_MS
+    const taken = this.pictures.then(() => Promise.race([this.takePicture(id), new Promise<null>((done) => setTimeout(() => done(null), PICTURE_MS))]));
+    this.waitingPictures.set(id, taken);
     this.pictures = taken.then(() => undefined, () => undefined);
+    void taken.finally(() => this.waitingPictures.delete(id));
     return taken;
   }
 
@@ -235,9 +252,10 @@ export class BrowserTabs {
       if (image !== null && !image.isEmpty()) return image.resize({ width: 320 }).toDataURL();
       // a tab shown meanwhile is placed by show() and never resized here; on the stage it always gets the stage's
       // whole size back, whatever another picture of it did in between
-      if (attempt === 0 && this.onStage(tab)) this.fitStage(tab, -1);
+      const nudge = attempt === 0 && this.onStage(tab) && !this.nudged.has(id);
+      if (nudge) { this.nudged.add(id); this.fitStage(tab, -1); }
       await new Promise((next) => setTimeout(next, STAGE_FRAME_MS));
-      if (attempt === 0 && this.onStage(tab)) this.fitStage(tab);
+      if (nudge && this.onStage(tab)) this.fitStage(tab);
       if (!this.onStage(tab) && this.shown !== id) return null;
     }
     return null;
@@ -249,6 +267,8 @@ export class BrowserTabs {
     if (stage === null || stage.contentView.children.includes(tab.view)) return;
     stage.contentView.addChildView(tab.view);
     this.fitStage(tab);
+    this.nudged.delete(tab.id);
+    tab.view.webContents.setFrameRate(STAGE_FRAME_RATE);
   }
 
   /** sizes a staged tab to the whole stage, `less` pixels shorter */
@@ -265,14 +285,15 @@ export class BrowserTabs {
   private stageWindow(): BrowserWindow | null {
     if (this.noStage) return null;
     if (this.stage && !this.stage.isDestroyed()) return this.stage;
-    if ( (process.platform === "linux" && (process.env["XDG_SESSION_TYPE"] === "wayland" || process.env["WAYLAND_DISPLAY"]))) return null;
+    if (!stageSupported(process.platform, process.env)) return null;
     const stage = new BrowserWindow({ show: false, x: -20000, y: -20000, width: 1280, height: 800, frame: false, focusable: false, skipTaskbar: true, opacity: 0, hasShadow: false, title: "Ovis browser stage" });
     // nor in macOS's Window menu
     stage.excludedFromShownWindowsMenu = true;
     stage.setIgnoreMouseEvents(true);
     stage.showInactive();
     stage.setPosition(-20000, -20000);
-    stage.on("closed", () => { if (this.stage === stage) this.stage = null; });
+    // closed from outside (a window manager): its tabs are not staged again, as on Wayland
+    stage.on("closed", () => { if (this.stage === stage) { this.stage = null; this.noStage = true; } });
     // a window manager that keeps windows on the screen would show it: then no stage, as on Wayland
     // dropped after the window manager's move is done: destroying a window inside its own move crashes Electron
     const check = () => { if (!stage.isDestroyed() && onScreen(stage.getBounds())) setImmediate(() => { if (this.stage === stage) this.dropStage(); }); };
