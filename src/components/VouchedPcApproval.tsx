@@ -14,6 +14,8 @@ interface VerifiedPc { readonly name: string; readonly admission: Admission; rea
 export function VouchedPcApproval({ request, through }: { request: RemotePairingRequest; through: string }) {
   const t = useT();
   const [verified, setVerified] = useState<VerifiedPc | null>(null);
+  // a failed Allow drops what was verified and verifies the PC anew: Allow is back only once that holds again
+  const [checks, setChecks] = useState(0);
   useEffect(() => {
     let live = true;
     void (async () => {
@@ -29,7 +31,7 @@ export function VouchedPcApproval({ request, through }: { request: RemotePairing
       if (live && name && admission) setVerified({ name, admission, service, session, pc });
     })().catch(() => { if (live) setVerified(null); });
     return () => { live = false; };
-  }, [request.id, request.key, request.proven_server_id, through]);
+  }, [request.id, request.key, request.proven_server_id, through, checks]);
   const decide = async (decision: "approve" | "decline") => {
     const id = request.proven_server_id;
     if (decision === "decline" || !verified || !id) { await decideRelayPairing(request.id, "decline"); return; }
@@ -43,7 +45,11 @@ export function VouchedPcApproval({ request, through }: { request: RemotePairing
           await decideRelayPairing(request.id, answer, { proven_server_id: id, pc_label: verified.name });
         },
         admit: async () => { throw new TypeError("A vouched PC cannot join the account"); } });
-    } catch (error) { setVerified(null); throw new Error(t("This PC could not be verified."), { cause: error }); }
+    } catch (error) {
+      setVerified(null);
+      setChecks((count) => count + 1);
+      throw new Error(t("This PC could not be verified."), { cause: error });
+    }
   };
   return <AccountApprovalPrompt request={request} pcName="" pcCount={1} asker={null} vouchedName={verified?.name} onDecide={decide} />;
 }
