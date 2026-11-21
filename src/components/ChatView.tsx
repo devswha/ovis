@@ -2017,7 +2017,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       const node = scroller.current;
       if (event instanceof KeyboardEvent) {
         if (!active || event.isComposing || event.keyCode === 229) return;
-        if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]")) return;
+        if (event.target instanceof Element) {
+          if (event.target.closest("input, textarea, select, [contenteditable]")) return;
+          // Space activates the focused control, including a retry of the pending restore.
+          if (event.key === " " && event.target.closest("button, summary, [role='button'], [role='tab']")) return;
+        }
         if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) markScrollInput(-1);
         else if (event.key === "ArrowDown" || event.key === "PageDown" || event.key === "End" || event.key === " ") markScrollInput(1);
         return;

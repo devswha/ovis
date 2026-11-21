@@ -93,6 +93,10 @@ try {
       const pane = url.searchParams.get("pane_id");
       if (url.pathname !== "/api/pane/conversation" || !panels.includes(pane)) return demo(input, init);
       const before = url.searchParams.get("before");
+      if (before !== null && sessionStorage.getItem("fixture:fail-older-read") !== null) {
+        sessionStorage.removeItem("fixture:fail-older-read");
+        return Promise.resolve(Response.json({ error: { code: "internal", message: "Could not read earlier messages" } }, { status: 500 }));
+      }
       const end = before === null ? turns.length : Number(before);
       const start = Number(url.searchParams.get("from") ?? Math.max(0, end - 36));
       return Promise.resolve(Response.json({ source: "codex-transcript", history_id: pane, turns: turns.slice(start, end), cursor: start === 0 ? null : String(start) }));
@@ -139,6 +143,15 @@ try {
             await chat.waitFor({ state: "detached" });
             await openLens(page, "chat");
             await expectSamePlace(chat, place, "Chat → Terminal → Chat in older history");
+            await page.reload();
+            await appFaces(page);
+            await expectSamePlace(chat, place, "reload while reading older history");
+            await openLens(page, "terminal");
+            await chat.waitFor({ state: "detached" });
+            await page.evaluate(() => sessionStorage.setItem("fixture:fail-older-read", "1"));
+            await openLens(page, "chat");
+            await chat.getByRole("button", { name: "Couldn't load earlier messages — retry", exact: true }).press("Space");
+            await expectSamePlace(chat, place, "keyboard retry after an older page fails");
             await page.getByRole("button", { name: "Jump to latest", exact: true }).click();
             await atEnd(chat);
           } else if (scenario === "workspace") {
