@@ -44,13 +44,13 @@ beforeEach(() => {
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
   spyOn(voiceModule, "useDictation").mockReturnValue({ shown: false, voice: { state: "idle" }, forget() {} } as unknown as ReturnType<typeof voiceModule.useDictation>);
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
 });
 
 afterEach(() => {
   act(() => { renderer?.unmount(); });
   renderer = undefined;
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
   mock.restore();
   for (const [key, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
