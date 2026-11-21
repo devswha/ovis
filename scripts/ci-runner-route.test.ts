@@ -401,6 +401,18 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(route({ ...pr, FAKE_GH: actions({}), WINVM_READY: "0" }).stderr).toContain("Windows: windows-latest (winvm's runner is not waiting for a job (CI_WINVM_READY 0))");
     });
 
+    it("takes windows-latest while a job of winvm's label is queued or running, or the jobs cannot be read", () => {
+      const ready = readyAgo(5);
+      expect(windows({ ...pr, WINVM_READY: ready, FAKE_GH: actions({ queued: { 1: waiting(1, 10, winvm) } }) })).toBe("windows-latest");
+      expect(windows({ ...pr, WINVM_READY: ready, FAKE_GH: actions({ in_progress: { 1: running(1, winvm) } }) })).toBe("windows-latest");
+      const result = route({ ...pr, WINVM_READY: ready, FAKE_GH: actions({ in_progress: { 1: [...running(1, winvm), ...waiting(1, 10, winvm)] } }) });
+      expect(result.stderr).toContain("Windows: windows-latest (2 job(s) of winvm's label already queued or running)");
+      expect(windows({ ...pr, WINVM_READY: ready, FAKE_GH: tempDir() })).toBe("windows-latest");
+      // a record "in progress" for more than an hour, another runner's jobs and a finished winvm job leave it free
+      const free = [...running(1, winvm, 2 * 3600), ...running(2), ...waiting(1, 10, ["self-hosted", "self-hosted-ovis-mac"]), { status: "completed", labels: winvm, created_at: ago(600), started_at: ago(500) }];
+      expect(windows({ ...pr, WINVM_READY: ready, FAKE_GH: actions({ in_progress: { 1: free } }) })).toEqual(winvm);
+    });
+
     it("keeps a fork pull request, another event and hosted_only on windows-latest whatever the mark says", () => {
       const ready = readyAgo(5);
       for (const env of [
