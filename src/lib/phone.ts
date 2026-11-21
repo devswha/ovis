@@ -1,5 +1,6 @@
 import type { AccountOs } from "../../shared/account-asker.ts";
 import type { RemoteAccess } from "../../shared/protocol.ts";
+import { isTailnetAddress } from "../../shared/relay-mux.ts";
 
 export interface PageLocation {
   protocol: string;
@@ -17,12 +18,22 @@ export type PhonePlan =
   | { kind: "missing" }
   | { kind: "unknown" };
 
+/** A MagicDNS name or a Tailscale address: a page open at one is this PC's Tailscale address already. */
+export function tailnetHost(hostname: string): boolean {
+  return hostname.toLowerCase().endsWith(".ts.net") || isTailnetAddress(hostname);
+}
+
 export function isLoopbackHost(hostname: string): boolean {
   return hostname === "localhost" || hostname.endsWith(".localhost") || hostname.startsWith("127.") || hostname === "[::1]" || hostname === "::1";
 }
 
 export function phonePlan(page: PageLocation, access: RemoteAccess | null): PhonePlan {
   if (page.protocol === "https:" && page.secure && !page.shell && !isLoopbackHost(page.hostname)) return { kind: "here", url: page.origin };
+  return tailscalePlan(access);
+}
+
+/** What Tailscale alone offers a phone, whatever address this page is open at (Add a connection's Tailscale tab). */
+export function tailscalePlan(access: RemoteAccess | null): Exclude<PhonePlan, { kind: "here" }> {
   if (access === null) return { kind: "unknown" };
   const tailscale = access.tailscale;
   if (tailscale.state !== "running") return { kind: tailscale.state };

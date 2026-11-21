@@ -336,28 +336,6 @@ export function takePairingReturn(offer: RelayOffer | null, now = Date.now()): (
   } catch { return null; }
 }
 
-/**
- * A PC's own page that this device has no pairing for asks a signed-out person to sign in, then joins that PC (the QR
- * code a PC in an account shows on Add a connection, `/s/<id>/#sign-in=<provider>`). A browser's sign-in comes back on
- * the front page alone, so the PC's ID crosses that one load, in this tab, with when the sign-in started. No key, code
- * or token.
- */
-const SIGN_IN_PC = "ovis-sign-in-pc";
-export function keepSignInPc(serverId: string, now = Date.now()): void {
-  try { sessionStorage.setItem(SIGN_IN_PC, JSON.stringify({ server_id: serverId, at: now })); }
-  catch { /* the front page then goes on as after any sign-in */ }
-}
-/** The PC a sign-in was started for, taken once whatever it holds; null once more than `maxMs` passed since its start. */
-export function takeSignInPc(maxMs: number, now = Date.now()): string | null {
-  try {
-    const kept: unknown = JSON.parse(sessionStorage.getItem(SIGN_IN_PC) ?? "null");
-    sessionStorage.removeItem(SIGN_IN_PC);
-    if (kept === null || typeof kept !== "object") return null;
-    const { server_id, at } = kept as Record<string, unknown>;
-    return typeof server_id === "string" && /^[0-9a-f]{32}$/.test(server_id) && typeof at === "number" && now >= at && now - at <= maxMs ? server_id : null;
-  } catch { return null; }
-}
-
 /** One navigation's consent: only the PC ID, consumed even if the next load has no offer. */
 export function keepConfirmedPc(serverId: string): void {
   try { sessionStorage.setItem("ovis-confirmed-pc", serverId); } catch { /* ask again if consent cannot cross the load */ }

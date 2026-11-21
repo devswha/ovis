@@ -20,7 +20,7 @@ import { RelayAccountPcs } from "./RelayAccountPcs.tsx";
 
 // the confirmation before Revoke all is a portal on document.body, which this renderer has none of
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, connectTabs, localWays, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, signInLink, TailscaleTab, DirectTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
+const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, ConnectPhoneDialog, connectTabs, localWays, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, signInLink, TailscaleTab, DirectTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
 const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
 const { announcePairingCode, QR_CODE_ENDED_CHANNEL, useRelay } = await import("../lib/useRelay.ts");
 const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrFindings, accountQrNoticeWaiting, addedBy, accountQrPending, resetAccountQrWatch, unvouched } = await import("../lib/accountQrWatch.ts");
@@ -467,6 +467,38 @@ describe("Connect a phone on a phone", () => {
     await mount(<RelayRoute relay={relayState()} readOnly={false} phone />);
     expect(buttons()).not.toContain("Use the relay on this phone");
     expect(qrCodes()).toHaveLength(0);
+  });
+
+  it("makes no pairing code while the relay's state is still read, then one for both local tabs, each at its own address", async () => {
+    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
+    const pageEvents = new EventTarget();
+    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
+    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
+    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
+    const machines = [{ id: "local", kind: "local", name: "Desk", server_id: SERVER_ID } as unknown as Machine];
+    const dialog = (relay: RelayState) => (
+      <ConnectPhoneDialog plan={{ kind: "here", url: "https://desk.example.com" }} tailscale={{ kind: "served", url: "https://workstation.example.ts.net" }} pairUrl="https://desk.example.com" relay={relay} readOnly={false} closesGate={false} canPair
+        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={machines} onConnectMachine={() => {}} onClose={() => {}} />
+    );
+    const starts = () => requests.filter((path) => path === "/api/devices/pair/start").length;
+    await act(async () => { renderer = create(<SettingsProvider>{dialog({ ...relayState(), status: null })}</SettingsProvider>, { createNodeMock: node }); });
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    expect(renderer!.root.findAllByProps({ "data-testid": "connect-pending" })).toHaveLength(1);
+    expect(starts()).toBe(0);
+    // the relay's state came: the dialog opens on Tailscale (no account here), whose phone part starts one code
+    await act(async () => { renderer!.update(<SettingsProvider>{dialog(relayState())}</SettingsProvider>); });
+    await until(() => starts() === 1, "the Tailscale tab's code");
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    expect(starts()).toBe(1);
+    const values = () => qrCodes().map((qr) => String(qr.props.value));
+    // the Tailscale tab's QR code is its Tailscale address, never the proxy this page is open at
+    expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913"]);
+    // Direct shows the same code at this page's own address, and asks for no second code, which would end the first
+    await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    expect(starts()).toBe(1);
+    expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913", "https://desk.example.com/?pair=482913"]);
   });
 
   it("offers only the ways this window can use: the relay to its owner on a direct page, Tailscale and an address where PCs are added from", () => {
