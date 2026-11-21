@@ -586,14 +586,6 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
     };
     const front = (page: Page) => page.locator('main.relay-add-screen[data-account-state="signed-in"]');
     const pcLink = (page: Page, name: string) => front(page).locator(".relay-add-saved-pc", { hasText: name });
-    const signIn = async (page: Page): Promise<void> => {
-      await page.getByRole("button", { name: "Continue with GitHub" }).click();
-      // a sign-in lands on the connect tabs, or on the join card of an account PC this device is not in yet
-      await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs, [data-add-pc-mode]').first().waitFor();
-      // the tab's launch is past: the front page stays the connect tabs
-      await page.goto(`${APP}/`);
-      await front(page).locator(".connect-start-tabs").waitFor();
-    };
     // signed out, the front page is the connect tabs (the desktop's Add a connection order), the relay's sign-in inside the first
     const signInScreen = async (page: Page): Promise<void> => {
       await page.getByRole("heading", { name: "Connect a PC" }).waitFor();
@@ -706,7 +698,11 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       }));
       assert.equal(put.status, 200, `Mac mini listed itself: ${await put.text()}`);
       assert.equal((await pc2.local("/api/relay/link", { headers: { "x-ovis-local-only": "1" } })).status, 200);
+      // #16: the signed-in front page lists this device's own PCs only; Add a PC lists the account's too
       await a.goto(`${APP}/`);
+      await pcLink(a, "Desk PC").waitFor();
+      assert.equal(await pcLink(a, "Mac mini").count(), 0, "the front page lists no account PC this device is not in");
+      await a.goto(`${APP}/#add`);
       await pcLink(a, "Mac mini").locator(".relay-add-saved-note", { hasText: "Needs approval" }).waitFor();
       const sheetNew = await joinFromFront(a, "Mac mini", pc2.id, "new");
       await settledSheet(a);
@@ -740,14 +736,18 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       const b = B.page;
       await b.goto(`${APP}/`);
       await signInScreen(b);
-      await signIn(b);
-      const sheetJoin = await joinFromFront(b, "Desk PC", pc1.id, "join");
-      await settledSheet(b);
-      await capture(b, "sheet-join-390-dark");
-      await pressOnce(b, sheetJoin.getByRole("button", { name: "Ask to join" }));
-      const digits = b.locator("[role=dialog] .relay-shell-digits");
+      // #16: the sign-in's launch goes to Desk PC (on, this device not in it yet) and asks to join at once, with no press:
+      // one plain screen names the PC and shows the number, with no tabs, no list and no sheet
+      await b.getByRole("button", { name: "Continue with GitHub" }).click();
+      const wait = b.locator('[data-approval-wait="pc"]');
+      await wait.waitFor({ timeout: 45_000 });
+      assert.equal(new URL(b.url()).pathname, `/s/${pc1.id}/`, "the plain wait is on Desk PC's own page");
+      await wait.getByRole("heading", { name: "Desk PC" }).waitFor();
+      const digits = wait.locator(".relay-shell-digits");
       await digits.waitFor();
-      await askedOnce(b, "join");
+      assert.equal(await b.locator(".connect-start-tabs, [data-add-pc-phase], .relay-add-saved-pc").count(), 0, "no tabs, sheet or list while it waits");
+      await wait.getByText("Type this number on Desk PC").waitFor();
+      await capture(b, "approval-wait-390-dark");
       const shown = (await digits.getAttribute("aria-label"))!.replace(/ /g, "");
       const prompt = a.getByTestId("account-approval");
       await prompt.waitFor();
@@ -760,7 +760,7 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await pairedStraightIn(b);
       await inApp(b);
       await until(async () => (await pc1.pairings()).length === 0 && pc1.joined() && (await saved(b, pc1.id))?.enrollment === "complete", "Desk PC settled and this device recorded completion after the member's approval", 75_000);
-      log9(`account join: Desk PC added 11 min ago, its window closed -> second device (390) signed in -> Desk PC on Add a PC -> its own page's join sheet -> Ask to join (no confirm step after it, no second Pair) -> showed ${shown.length} digits; the first device (another member, in Desk PC's app) got the prompt with 3 choices and picked them; Desk PC's own GET /api/relay/pairings = []; -> app`);
+      log9(`account join: Desk PC added 11 min ago, its window closed -> second device (390) signed in -> its launch went to Desk PC and asked to join by itself (plain wait, no tabs, sheet or list) -> showed ${shown.length} digits; the first device (another member, in Desk PC's app) got the prompt with 3 choices and picked them; Desk PC's own GET /api/relay/pairings = []; -> app`);
 
       // the signed-in front page at both widths and themes, and its pairing dialog (the relay tab's Pair with a code),
       // whose Escape closes it and leaves no sheet entry in the history

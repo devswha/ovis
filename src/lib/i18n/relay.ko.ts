@@ -135,4 +135,9 @@ export const RELAY_KO: Record<string, string> = {
   "Needs approval": "승인 필요",
   "Update Ovis on it": "Ovis 업데이트 필요",
   "Ready · not in the account yet": "준비됨 · 아직 계정에 없음",
+  "Press [Allow] on {name}": "{name}에서 [허용]을 누르세요",
+  "Type this number on {name}": "{name}에서 이 숫자를 입력하세요",
+  "Turn on Ovis on the PC": "PC에서 Ovis를 켜세요",
+  "Or scan the QR on the PC's screen": "또는 PC 화면의 QR 찍기",
+  "Or pair with a code": "또는 코드로 페어링",
 };

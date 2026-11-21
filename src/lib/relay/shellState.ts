@@ -82,7 +82,8 @@ export type RelayShellState =
   /** `noneOnline`: a launch tried every PC it may open, saved or the account's, and none answered */
   | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null; noneOnline?: true }
   | { kind: "outdated"; name: string | null; serverVersion: string; minVersion: string; update: PcUpdate }
-  | { kind: "empty"; account?: AccountView | null; noneOnline?: true }
+  /** `waitPc`: signed in with nothing saved here, and none of the account's PCs is on to ask: one line says to turn one on */
+  | { kind: "empty"; account?: AccountView | null; noneOnline?: true; waitPc?: true }
   /**
    * Asks before pairing with the PC a link names. `account` is absent on a device that is signed out: the pairing
    * makes a key of its own. Signed in, the pairing uses the account's key and lists the PC in the account, unless

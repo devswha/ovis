@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { pcHeld } from "./relay/newPcHere.ts";
 import type { DevicePairedEvent, DeviceRemovedEvent, Machine, MachineEvent, PendingKey, RelayPairingRequest, RemotePairingRequest } from "../../shared/machines.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import { ApiError, authenticate, fetchMachines, observePaneSessions, paneSessionEvents, paneSessionsMoving, verifySourceBoot } from "./api.ts";
@@ -390,7 +391,8 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
         if (machine.id === "local") window.dispatchEvent(new Event("herdr-usage-changed"));
         onPaneExited(machine, message, takeNotificationTargetRef);
       }
-      if (message.type === "pane-focused" && followsHerdrFocus({
+      // C3 pin 1 (#16): herdr's focus selects nothing of a PC new in the account here
+      if (message.type === "pane-focused" && !(machine.id === "local" && pcHeld()) && followsHerdrFocus({
         enabled: followFocusRef.current, machineId: machine.id, paneId: message.pane_id, selection: selectionRef.current,
         splitOthers: splitShownRef.current ? otherTargets(splitRef.current) : [], linkPending: pendingLink.current !== null,
         busy: deviceInUse(selectionRef.current), ownMove: movingHerdrFocusOn(machine.id),

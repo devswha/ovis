@@ -1,5 +1,5 @@
 /**
- * A second device of the account, signed in, finds the account's PCs it is not in yet on Add a PC (the front page),
+ * A second device of the account, signed in, finds the account's PCs it is not in yet on Add a PC (/#add; the signed-in front page lists only its own, #16),
  * each noted Needs approval, and joins one from that PC's own page: m1-box, which the directory heard from, asks to
  * join (the join sheet); desk2, never seen and new in the account, takes the number its own screen shows (the new
  * sheet). Escape leaves the sheet for the front page. The shell is the real build on https://app.ovis.sh (routed
@@ -103,12 +103,12 @@ try {
 
         await page.goto(`${APP}/`);
         await page.locator(".account-provider").first().click();
-        // a sign-in lands on Add a PC, or on the join card of an account PC its launch picked
-        await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs, [data-add-pc-mode]').first().waitFor({ timeout: 45_000 });
+        // a sign-in lands on the connect tabs, or on the join an account PC its launch picked asks by itself (#16)
+        await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs, [data-add-pc-mode], [data-approval-wait]').first().waitFor({ timeout: 45_000 });
 
-        // the tab's launch is past: the front page stays Add a PC, listing both PCs as not in on this device yet
+        // the tab's launch is past: Add a PC lists both PCs as not in on this device yet
         const front = async (): Promise<void> => {
-          await page.goto(`${APP}/`);
+          await page.goto(`${APP}/#add`);
           await page.locator('main.relay-add-screen[data-account-state="signed-in"] a.relay-add-saved-pc').filter({ hasText: "desk2" }).waitFor({ timeout: 45_000 });
         };
         const link = (label: string) => page.locator("a.relay-add-saved-pc").filter({ hasText: label });

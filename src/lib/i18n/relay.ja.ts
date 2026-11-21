@@ -135,4 +135,9 @@ export const RELAY_JA: Record<string, string> = {
   "Needs approval": "承認が必要",
   "Update Ovis on it": "Ovis の更新が必要",
   "Ready · not in the account yet": "準備完了 · まだアカウント外",
+  "Press [Allow] on {name}": "{name} で [許可] を押してください",
+  "Type this number on {name}": "{name} でこの番号を入力してください",
+  "Turn on Ovis on the PC": "PC で Ovis を起動してください",
+  "Or scan the QR on the PC's screen": "または PC 画面の QR を読み取る",
+  "Or pair with a code": "またはコードでペアリング",
 };

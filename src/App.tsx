@@ -97,6 +97,7 @@ import { useAccountDeviceNotices } from "./components/AccountDeviceNotices.tsx";
 import { PendingKeys } from "./components/PendingKeys.tsx";
 import { RelayPairingPrompt } from "./components/RelayPairingPrompt.tsx";
 import { useOwnWindowPrompts } from "./lib/useOwnWindowPrompts.ts";
+import { pcHeld } from "./lib/relay/newPcHere.ts";
 import { OwnJoinCard } from "./components/OwnJoins.tsx";
 import { AccountApprovals } from "./components/AccountApprovals.tsx";
 import { TelemetryNotice } from "./components/TelemetryControls.tsx";
@@ -586,10 +587,13 @@ export function App() {
   // nor is an inbox mode thread: the mode's shell has no tab row, split or pane menu to close from
   const closeOffered = selectedPane !== null && auth?.role !== "watch" && !guideShown && !inbox.shown && !inMode && !paneLocked(selectedPane.pane_id);
   const tabCloseOffered = selectedPane !== null && tabStripMounted && auth?.role !== "watch" && !guideShown && !inbox.shown && !inMode;
+  // C3 pin 1 (#16): a PC new in the account here takes no keyboard jump into its sessions, only a tap on one
+  const keyJumpHeld = (): boolean => selectedMachineId === "local" && pcHeld();
   const actions = useMemo<AppActions>(
     () => ({
       selectPane,
       selectAdjacentPane: (direction) => {
+        if (keyJumpHeld()) return;
         const panes = rosterPanes(snapshotRef.current?.panes ?? [], selectedPaneId);
         if (panes.length === 0) return;
         const index = panes.findIndex((pane) => pane.pane_id === selectedPaneId);
@@ -597,18 +601,21 @@ export function App() {
         if (next) selectPane(next.pane_id);
       },
       selectAdjacentTab: (direction) => {
+        if (keyJumpHeld()) return;
         const roster = snapshotRef.current;
         const viewed: ViewedPane = (scope, id) => lastViewedPane(scope, selectedMachineId, id);
         const next = roster ? adjacentTabPane(roster, selectedPaneId, direction, viewed) : null;
         if (next) selectPane(next);
       },
       selectTabNumber: (number) => {
+        if (keyJumpHeld()) return;
         const roster = snapshotRef.current;
         const viewed: ViewedPane = (scope, id) => lastViewedPane(scope, selectedMachineId, id);
         const next = roster ? numberedTabPane(roster, selectedPaneId, number, viewed) : null;
         if (next) selectPane(next);
       },
       selectAdjacentWorkspace: (direction) => {
+        if (keyJumpHeld()) return;
         const roster = snapshotRef.current;
         if (!roster) return;
         const unfolded = (): string[] => {

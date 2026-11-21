@@ -23,6 +23,7 @@ import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
 import { holdWaitMs } from "./joinHold.ts";
 import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, oldDashboardHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
+import { setPcNewness, type PcNewness } from "./newPcHere.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
@@ -80,6 +81,18 @@ function launchJoinFor(serverId: string): boolean {
 }
 
 /**
+ * A PC's new window (new_until, in ms) as this browser last read it from the account's PCs, by PC: a load that opens the PC
+ * before it reads them (a launch reopening it) still holds its sessions from any selection made without a tap (#16, C3).
+ */
+const NEW_PC = "ovis-new-pc:";
+function keepNewPc(serverId: string, until: number | null): void {
+  try { if (until === null) localStorage.removeItem(NEW_PC + serverId); else localStorage.setItem(NEW_PC + serverId, String(until)); } catch { /* the account's next read says it again */ }
+}
+function keptNewPc(serverId: string): number | null {
+  try { const kept = Number(localStorage.getItem(NEW_PC + serverId) ?? Number.NaN); return Number.isFinite(kept) ? kept : null; } catch { return null; }
+}
+
+/**
  * A launch whose saved PC turned out off on its own page goes on at the front page with the account's PCs, as it would
  * have had the check said so in time: one mark in this tab, taken by the front page that follows.
  */
@@ -132,16 +145,16 @@ function launchOrder(devices: readonly RelayDevice[], opens: boolean, signedIn =
 }
 
 /**
- * The account's PC a launch with no saved PC to open goes to, to join it on its own page (its join card, approved from a
- * device already in): one this device has no pairing for, that has a way to join and was seen lately, the one opened
- * last first, else the one seen most recently. Null when there is none: Add a PC.
+ * The account's PCs a launch with no saved PC to open may go to, to ask to join one on its own page (approved on that PC
+ * or a device already in): those this device has no pairing for, that have a way to join and were seen lately, the one
+ * opened last first, then the one seen most recently. The launch asks the first its check does not find off. A PC new in the account (new_until) is asked
+ * too (security-triage, #16): the request grants nothing, and its approval opens no session without a tap (App).
  */
-function accountLaunchPc(pcs: readonly MyPc[], now: number): MyPc | null {
-  // a PC new in the account (new_until) is never picked by itself: security-triage condition 3
-  const open = pcs.filter((pc) => !pc.paired && pc.join !== undefined && pc.state !== "offline" && !isNewAccountPc(pc, now));
+function accountLaunchPcs(pcs: readonly MyPc[]): (MyPc & { readonly join: NonNullable<MyPc["join"]> })[] {
+  const open = pcs.filter((pc): pc is MyPc & { readonly join: NonNullable<MyPc["join"]> } => !pc.paired && pc.join !== undefined && pc.state !== "offline");
   const last = lastPc();
   const seen = (pc: MyPc): number => pc.last_seen_at === null ? 0 : Date.parse(pc.last_seen_at);
-  return open.find((pc) => pc.server_id === last) ?? [...open].sort((a, b) => seen(b) - seen(a))[0] ?? null;
+  return [...open].sort((a, b) => Number(b.server_id === last) - Number(a.server_id === last) || seen(b) - seen(a));
 }
 
 export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
@@ -179,6 +192,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let launching = !scoped && entryHash === "", signedInNow = false, left = false, launched = false, accountLaunch = false;
   // the card a launch waits on for the account's PCs: only while it is the screen does a read of them go on with the launch
   let launchCard: RelayShellState | null = null, accountTried = false;
+  // a sign-in's launch found none of the account's PCs on to ask (#16): the front page says to turn one on while that holds
+  let waitingPc = false;
   let launchWait: ReturnType<typeof setTimeout> | undefined;
   // `noneOnline`: this page's launch asked every saved PC it may open and none answered (the front page says so)
   let launchResumed = false, noneOnline = false;
@@ -291,6 +306,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       else show({ ...shown, account: withRefusal(account.state) });
       return;
     }
+    if (app !== null && last !== null) setPcNewness(newnessOf(last.offer.server_id));
     if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
     // a launch waiting on its card for the account's PCs goes on once they are read
     else if (frontUp() || (accountLaunch && app === null && !left && launchCard !== null && shown === launchCard)) { if (sheetJoin && shown) show(shown); else await showFront(); }
@@ -391,7 +407,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null, createElement(RelayShell, {
       state, scoped, iosTab, addEntry: !scoped && entryHash === "#add", pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onFindPc: () => void findPc(), onPair: confirmed, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget,
       onUpdate: updates.update, onMatch: match, onJoinInstead: joinInstead, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, onOpenPc: openPc,
-      sheetJoin,
+      sheetJoin, launchJoin: entry.serverId !== null && launchJoinFor(entry.serverId), onWaitAgain: () => void waitAgain(),
       ...(account.enabled ? { onSignIn: signInFirst ? signInToPair : unpaired !== null ? signInForPc : account.signIn, accountProviders: offered ?? account.providers, onRefreshAccount: () => account.refreshNow() } : {}),
     })))); account.armRefresh();
   };
@@ -456,17 +472,34 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         const now = sweep.status.get(serverId), found = now?.kind === "checking" ? now.previous : now;
         return found?.kind === "offline" && found.reason === "pc";
       };
-      const pc = view?.kind === "signed-in" ? accountLaunchPc((view.pcs ?? []).filter((row) => !foundOff(row.server_id)), Date.now()) : null;
-      // its join card, waiting for the person's press: never the PC's bare page, which opens a PC the account lets this
-      // device into by itself (security-triage condition 3: nothing this device did not choose opens without a press)
-      // no storage for the mark: no card a reload could open by the account's key; the front page lists the PC instead
+      const order = view?.kind === "signed-in" ? accountLaunchPcs((view.pcs ?? []).filter((row) => !foundOff(row.server_id))).slice(0, LAUNCH_PCS) : [];
+      let pc: MyPc | null = null;
+      if (order.length > 0) {
+        // #16: only one that is on is asked; with none on, the front page says to turn one on
+        const loaded = entries, asking: RelayShellState = { kind: "connecting", name: order[0]?.name ?? null };
+        show(asking);
+        const on = await reachable(order.map((row) => ({ server_id: row.server_id, server_public_key: row.join.server_public_key, relay: row.join.relay, name: row.name })));
+        if (entries !== loaded || shown !== asking || left) return;
+        pc = order.find((row) => row.server_id === on) ?? null;
+      }
+      // its join, asked at once (#16: the PC pops its approval by itself), on the PC's own page: never the PC's bare page,
+      // which opens a PC the account lets this device into by itself (security-triage condition 3)
+      // no storage for the mark: no join a reload could open by the account's key; the front page draws the account instead
       if (pc !== null && keepLaunchJoin(pc.server_id)) {
         // a PC new in the account that no device is in yet takes the number its screen shows, as on its own page
         const fresh = newPcs([pc], Date.now()).length > 0;
+        keepConfirmedPc(pc.server_id);
+        // its new window, kept for its own page, which opens it before it reads the account's PCs (#16, C3 pin 1)
+        newnessOf(pc.server_id);
         left = true; joinPc(pc, { sheet: fresh ? "new" : "join", alone: true, ...(fresh ? { typed: true } : {}) }); return;
       }
+      // signed in with nothing saved here and none of the account's PCs to ask: one line says to turn a PC on (#16)
+      if (view?.kind === "signed-in") waitingPc = true;
     }
-    show({ ...(devices.length ? { kind: "list", devices } : { kind: "empty" }), account: account.state, ...(noneOnline ? { noneOnline: true as const } : {}) });
+    // the line to turn a PC on stays while it holds: signed in, nothing saved here, and the account lists PCs not on yet
+    const view = account.state;
+    waitingPc = waitingPc && devices.length === 0 && view?.kind === "signed-in" && (view.pcs ?? []).some((row) => !row.paired);
+    show({ ...(devices.length ? { kind: "list", devices } : { kind: "empty", ...(waitingPc ? { waitPc: true as const } : {}) }), account: account.state, ...(noneOnline ? { noneOnline: true as const } : {}) });
     if (devices.length && !checked) { checked = true; void sweep.check(); }
   };
   /**
@@ -536,6 +569,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (entries !== loaded || shown !== asking) return;
     if (pc !== null && !moved) { leaveFor(pc); return; }
     await showFront();
+  };
+  /** Check again on the line that says to turn a PC on: the sign-in's launch once more, over the account's PCs as read now. */
+  const waitAgain = async (): Promise<void> => {
+    if (left || !frontUp()) return;
+    await account.load(null);
+    accountTried = false; signedInNow = true;
+    try { await showFront(); } finally { signedInNow = false; }
   };
   /** when this page last asked the other PCs whether one is on, after its own PC went away */
   let awayCheckAt = -Infinity;
@@ -773,8 +813,28 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
 
 
+  /**
+   * How new this PC is in the account (pcHeld, newPcHere.ts): its window as the account's PCs were last read, kept in this
+   * browser for the loads that open it before they read them (a launch reopening the PC); null for a PC past its window,
+   * not in the account, or with no account here.
+   */
+  const newnessOf = (serverId: string): PcNewness => {
+    const view = account.enabled && accountRead ? account.state : null;
+    if (view?.kind === "signed-in" && view.pcs !== null) {
+      const row = view.pcs.find((pc) => pc.server_id === serverId);
+      const known: { readonly until: number } | null = row === undefined || !isNewAccountPc(row, Date.now()) ? null
+        // a window that does not parse may still be open: held for the longest a window lasts
+        : { until: row.new_until_unreadable === true ? Date.now() + 86_400_000 : Date.parse(row.new_until ?? "") };
+      keepNewPc(serverId, known === null ? null : known.until);
+      return known;
+    }
+    const until = keptNewPc(serverId);
+    return until !== null && until > Date.now() ? { until } : null;
+  };
   const enterApp = (opened: RelayTransport, attempt: Attempt): void => {
     if (launchJoinFor(attempt.offer.server_id)) keepLaunchJoin(null);
+    // C3 pin 1 (#16): a PC new in the account opens with nothing of it selected (accountChanged reads it again)
+    setPcNewness(newnessOf(attempt.offer.server_id));
     rememberPc(attempt.offer.server_id);
     keepLaunchTried([]);
     // opened here: a PC an introduction alone saved is now one this device chose, which a later launch may reopen

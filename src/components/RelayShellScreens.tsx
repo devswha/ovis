@@ -17,8 +17,28 @@ import { approveOnLine } from "./approveOnLine.ts";
 import { relayFailureText } from "./relayFailureText.ts";
 import { CodeEntry, ReadyCheckpoint, type RelayShellProps } from "./RelayShell.tsx";
 import { ConnectStart } from "./ConnectStart.tsx";
-import { RelayAddPc } from "./RelayAddPc.tsx";
+import { canScanQr, RelayAddPc } from "./RelayAddPc.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
+
+/**
+ * #16: the one screen a phone waits on after its sign-in, with no tabs and no list: while an account PC it asked to join
+ * approves it (`name`, the number when the join shows one, and whether the PC asks for it typed), or while none of the
+ * account's PCs is on (`name` null, with Check again). Under it the PC screen's QR way in, a code in a browser.
+ */
+export function PcApprovalWait({ name, digits = null, typedOnPc = false, onQr, onCheck }: { readonly name: string | null; readonly digits?: string | null; readonly typedOnPc?: boolean; readonly onQr: () => void; readonly onCheck?: () => void }) {
+  const t = useT();
+  const line = name === null ? t("Turn on Ovis on the PC") : typedOnPc ? t("Type this number on {name}", { name }) : t("Press [Allow] on {name}", { name });
+  return (
+    <div className="relay-shell account-centered relay-approval-wait" data-approval-wait={name === null ? "no-pc" : "pc"}>
+      {name !== null && <h1 className="relay-shell-title">{name}</h1>}
+      <p className="relay-shell-copy" role="status">{line}</p>
+      {digits !== null && digits !== "" && <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>}
+      <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /></div>
+      {onCheck && <button type="button" className="btn" onClick={onCheck}>{t("Check again")}</button>}
+      <button type="button" className="btn btn-ghost account-link" data-action="approval-wait-qr" onClick={onQr}>{canScanQr() ? t("Or scan the QR on the PC's screen") : t("Or pair with a code")}</button>
+    </div>
+  );
+}
 
 function PcCard({ name, detail = null }: { readonly name: string; readonly detail?: string | null }) {
   return (

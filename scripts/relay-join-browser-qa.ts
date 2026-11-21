@@ -70,10 +70,10 @@ try {
         page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(APP);
         await page.locator(".account-provider").first().click();
-        // a sign-in lands on Add a PC, or on the join card of an account PC its launch picked
-        await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs, [data-add-pc-mode]').first().waitFor({ timeout: 45_000 });
-        // the tab's launch is past: the front page stays Add a PC
-        await page.goto(`${APP}/`);
+        // a sign-in lands on the connect tabs, or on the join an account PC its launch picked asks by itself (#16)
+        await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs, [data-add-pc-mode], [data-approval-wait]').first().waitFor({ timeout: 45_000 });
+        // the tab's launch is past; the account's PCs are listed on Add a PC, not on the signed-in front page (#16)
+        await page.goto(`${APP}/#add`);
         const pc = mode === "new" ? "New mini PC" : "Old MacBook";
         await page.locator('main.relay-add-screen[data-account-state="signed-in"] a.relay-add-saved-pc').filter({ hasText: pc }).click();
         const sheet = page.locator(`[data-add-pc-mode="${mode}"][data-add-pc-phase="confirm"]`);

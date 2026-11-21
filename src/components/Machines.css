@@ -230,6 +230,21 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
 
 .machine-state.visually-hidden { padding: 0; }
 
+/* the hosted app's own PC, new in the account (NewPcRowTag): its tag and one-tap removal under the PC's name */
+.new-pc-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--side-gutter) var(--space-2) var(--machine-indent);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+}
+
+.new-pc-row-tag { color: var(--accent); }
+
+.new-pc-row-remove { font-size: var(--fs-xs); }
+
 .machine-state-word {
   color: var(--text-dim);
   font-weight: var(--fw-medium);

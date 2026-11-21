@@ -19,6 +19,7 @@ import { SidebarFilterProvider, useSidebarFilter } from "../lib/sidebarFilterCon
 import { UsageMeters } from "./UsageMeters.tsx";
 import { SidebarAccountPcs } from "./SidebarAccountPcs.tsx";
 import { ShellPcs, unlistedShellPcs, useShellPcs } from "./ShellPcs.tsx";
+import { NewPcRowTag } from "./NewPcRowTag.tsx";
 import { RowMenu, rowMenuAnchor, type RowMenuItem } from "./RowMenu.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { sidebarAgents } from "../lib/sidebarAgents.ts";
@@ -480,6 +481,8 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
       dot={online ? null : { state: machineDotState(machine), title: quiet ? dotWords : stateWords }}
       actions={machine.kind !== "local" && <button ref={manageButton} type="button" className="sidebar-row-action machine-manage" aria-label={t("Manage {name}", { name: machine.name })} title={t("Manage PC")} aria-haspopup={sheet ? "dialog" : "menu"} aria-expanded={menu !== null} onClick={(event) => setMenu(menu === null ? event.currentTarget : null)}><SlidersHorizontal aria-hidden="true" /></button>}
       end={<button className="sidebar-row-action machine-new" disabled={!canCreate} aria-label={t("New workspace on {name}", { name: machine.name })} title={createTitle} onClick={() => props.onNew(machine.id)}><Plus aria-hidden="true" /></button>} />}
+    {/* C3 pin 2 (#16): the hosted app's own PC, new in the account: its tag and one-tap removal on the row itself */}
+    {machine.kind === "local" && <NewPcRowTag serverId={machine.server_id ?? undefined} />}
     {noticed && <MachineActionNotice machine={machine} onSetup={props.onSetup} />}
     {away !== null && !quiet ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} failure={recheck.failure} onCheck={props.watching || machine.kind === "relay" ? undefined : recheck.check} returnFocus={() => titleButton.current} />
     : quiet ? <p className="machine-state visually-hidden" role="status">{online ? null : dotWords}</p>

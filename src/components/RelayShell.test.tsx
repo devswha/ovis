@@ -93,7 +93,7 @@ describe("the front page's account part", () => {
     expect(html).not.toContain("relay-add-manage");
   });
 
-  it("opens a signed-in front page on the connect tabs, the account's PCs under them, whatever the address", () => {
+  it("opens a signed-in front page on the connect tabs, this device's own PCs under them and not the account's (#16), whatever the address", () => {
     Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } });
     const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
     const pcStatus = new Map([["b".repeat(32), { kind: "offline", reason: "pc" }]] as const);
@@ -108,7 +108,8 @@ describe("the front page's account part", () => {
     expect(tabsOf(html).map(([tab, , pressed]) => [tab, pressed])).toEqual([["relay", "true"], ["tailscale", "false"], ["direct", "false"]]);
     expect(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]).toBe("Connect a PC");
     const rows = [...html.matchAll(/<a class="relay-add-saved-pc" href="([^"]+)">([\s\S]*?)<\/a>/g)].map(([, href, inner]) => [href, inner!.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, " ").trim().replace(/\s+/g, " ")]);
-    expect(rows).toEqual([[`/s/${"a".repeat(32)}/`, "p620"], [`/s/${"b".repeat(32)}/`, "nuc Off"], [`/s/${"c".repeat(32)}/`, "desk Needs approval"], [`/s/${"d".repeat(32)}/`, "attic Off"]]);
+    expect(rows).toEqual([[`/s/${"a".repeat(32)}/`, "p620"], [`/s/${"b".repeat(32)}/`, "nuc Off"]]);
+    expect(html).not.toContain("Needs approval");
     // the old control page's address is the same front page
     (window.location as { hash: string }).hash = "#pcs";
     expect(render({ ...props({ kind: "list", devices, account }), scoped: false, onSignIn: none, pcStatus })).toBe(html);
@@ -608,5 +609,42 @@ describe("Back from Add a PC opened by its address", () => {
     const linked = history();
     leaveAddEntry(null, linked);
     expect(linked.calls).toEqual(["replace /"]);
+  });
+});
+
+describe("#16: the one plain screen a phone waits on after its sign-in", () => {
+  let windowBefore: PropertyDescriptor | undefined;
+  beforeEach(() => { windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window"); Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } }); });
+  afterEach(() => { if (windowBefore) Object.defineProperty(globalThis, "window", windowBefore); else Reflect.deleteProperty(globalThis, "window"); });
+  const id = "a".repeat(32);
+  const noTabsNoList = (html: string): void => {
+    expect(html).not.toContain("data-tab=");
+    expect(html).not.toContain("New PC added to your account");
+    expect(html).not.toContain("Needs approval");
+    expect(html).not.toContain("add-pc-sheet");
+  };
+
+  it("names the PC and what to press there while the join a launch asked waits, with the number when it shows one", () => {
+    const waiting = render({ ...props({ kind: "connecting", name: "Mac", pairing: true }), sheetJoin: { mode: "join", server_id: id }, launchJoin: true });
+    expect(waiting).toContain('data-approval-wait="pc"');
+    expect(waiting).toContain("Press [Allow] on Mac");
+    expect(waiting).toContain("Or pair with a code");
+    noTabsNoList(waiting);
+    const first = render({ ...props({ kind: "compare", name: "Mac", digits: "123456", confirmed: true, alone: true, approveOn: "mac" }), sheetJoin: { mode: "join", server_id: id }, launchJoin: true });
+    expect(first).toContain("Press [Allow] on Mac");
+    expect(first).toContain("123 456");
+    // a PC that already has a member asks for the number typed on its own window
+    const typed = render({ ...props({ kind: "compare", name: "Mac", digits: "123456", confirmed: true, alone: true }), sheetJoin: { mode: "join", server_id: id }, launchJoin: true });
+    expect(typed).toContain("Type this number on Mac");
+    expect(typed).toContain("123 456");
+  });
+
+  it("says to turn a PC on when none of the account's PCs is on, with Check again and no tabs or list", () => {
+    const html = render({ ...props({ kind: "empty", waitPc: true, account: { kind: "signed-in", provider: "github", error: null, pcs: [{ server_id: id, name: "Mac", state: "offline", last_seen_at: null, added_at: null, listed: true, paired: false, linked: false }] } }), scoped: false, onSignIn: none, onWaitAgain: none });
+    expect(html).toContain('data-approval-wait="no-pc"');
+    expect(html).toContain("Turn on Ovis on the PC");
+    expect(html).toContain("Check again");
+    noTabsNoList(html);
+    expect(html).not.toContain(">Mac<");
   });
 });

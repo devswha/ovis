@@ -9,6 +9,7 @@ import { memoryAccountStore, newKey } from "../account/store.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDevice, ShellDeviceStore } from "./device.ts";
 import { ACCOUNT_READ_WAIT_MS, ACCOUNT_STEPS_WAIT_MS, mountRelayShell, type RelayShellMount } from "./shell.tsx";
+import { pcHeld, setPcNewness } from "./newPcHere.ts";
 import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
 import { RelayAdmissionTimeoutError, RelayPcOfflineError } from "./channel.ts";
 import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
@@ -196,6 +197,32 @@ describe("the hosted shell's front page", () => {
     expect(apps).toBe(1);
     expect(rendered.map((element) => shellProps(element).state.kind)).not.toContain("ready");
     opened.close();
+  });
+
+  it.each([
+    ["inside its 24 hours", 3_600_000, true],
+    ["past its 24 hours", -60_000, false],
+  ] as const)("#16, C3 pin 1: a PC %s in the account, as this browser last read it, opens with its sessions held from any selection made without a tap: %p", async (_case, newFor, held) => {
+    const { server_id, server_public_key } = keyFor();
+    const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const saved: RelayDevice = { server_id, server_public_key, relay: AP, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" };
+    class Admitted extends RelayTransport {
+      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+    }
+    let apps = 0;
+    setPcNewness(null);
+    // the window the launch's join kept for it (shell.tsx keepNewPc)
+    localStorage.setItem(`ovis-new-pc:${server_id}`, String(Date.now() + newFor));
+    try {
+      await mountRelayShell(mountFor({
+        entryUrl: `https://app.ovis.sh/s/${server_id}/`, store: deviceStore([saved]), shellVersion: "1.0.0",
+        open: async (offer) => new Admitted(offer),
+        renderApp: () => { apps++; return { render() {}, unmount() {} }; },
+        pendingPush: { get: async () => undefined, clear: async () => {} },
+      }));
+      await until(() => apps === 1, "the app");
+      expect(pcHeld()).toBe(held);
+    } finally { setPcNewness(null); }
   });
 
   // the account service's provider list landing while a PC that turned this phone away is still being cleaned up draws
@@ -1277,6 +1304,74 @@ describe("the hosted shell's front page", () => {
       expect(last().state.kind).toBe("empty");
     });
 
+    it("#16: asks to join a PC new in the account after a sign-in too, at once: its page sends the request with no press", async () => {
+      browser.setVisibility("hidden");
+      const went: string[] = [];
+      const pair = generateKeyPair();
+      const fresh = { server_id: deriveServerId(pair.publicKey), label: "Mac", added_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP,
+        new_until: new Date(Date.now() + 3_600_000).toISOString(), admitted_at: new Date(Date.now() - 3_600_000).toISOString() };
+      await returned(deviceStore([]), went, [fresh]);
+      await until(() => went.length > 0, "the account's PC opened");
+      expect(went).toEqual([expect.stringMatching(new RegExp(`^/s/${fresh.server_id}/#offer=`))]);
+      expect(browser.sessionStore.get("ovis-confirmed-pc")).toBe(fresh.server_id);
+      expect(browser.sessionStore.get("ovis-launch-join")).toBe(fresh.server_id);
+      // its window, kept for its own page, which holds its sessions from any selection made without a tap (C3 pin 1)
+      expect(Number(localStorage.getItem(`ovis-new-pc:${fresh.server_id}`))).toBe(Date.parse(fresh.new_until));
+    });
+
+    it("#16: the hosted web in a desktop browser (no phone app around it) asks the PC to let it in after a sign-in, as the app does", async () => {
+      browser.setVisibility("hidden");
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+      expect("Capacitor" in globalThis).toBe(false);
+      const went: string[] = [];
+      const pair = generateKeyPair();
+      const mac = { server_id: deriveServerId(pair.publicKey), label: "hasang-uui-MacBookPro.local", added_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP,
+        new_until: new Date(Date.now() + 3_600_000).toISOString(), admitted_at: new Date(Date.now() - 3_600_000).toISOString() };
+      await returned(deviceStore([]), went, [mac]);
+      await until(() => went.length > 0, "the Mac's own page");
+      expect(went).toEqual([expect.stringMatching(new RegExp(`^/s/${mac.server_id}/#offer=`))]);
+      expect(browser.sessionStore.get("ovis-confirmed-pc")).toBe(mac.server_id);
+      // no connect tabs, list or banner were left on screen for it: the front page was never drawn signed in
+      expect(rendered.map((element) => shellProps(element).state).some((state) => (state.kind === "list" || state.kind === "empty") && state.account?.kind === "signed-in")).toBe(false);
+    });
+
+    it("#16: a device a PC already let in signs in again and opens that PC straight away, asking it nothing", async () => {
+      browser.setVisibility("hidden");
+      const went: string[] = [];
+      const { server_id, server_public_key } = keyFor();
+      const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+      // the pairing its first sign-in's approval saved here, kept through the sign-out
+      const saved: RelayDevice = { server_id, server_public_key, relay: AP, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone", account: "acct-test" };
+      const row = { server_id, label: "Mac", added_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: null, relay: AP,
+        new_until: new Date(Date.now() + 3_600_000).toISOString(), admitted_at: new Date(Date.now() - 3_600_000).toISOString() };
+      await returned(deviceStore([saved]), went, [row]);
+      await until(() => went.length > 0, "the PC opened");
+      expect(went).toEqual([`/s/${server_id}/`]);
+      expect(browser.sessionStore.has("ovis-confirmed-pc")).toBe(false);
+      expect(browser.sessionStore.has("ovis-launch-join")).toBe(false);
+    });
+
+    it("#16: signed in with nothing saved and none of the account's PCs on, the front page says to turn one on, with no tabs", async () => {
+      browser.setVisibility("hidden");
+      const went: string[] = [];
+      const pair = generateKeyPair();
+      const off = { server_id: deriveServerId(pair.publicKey), label: "Mac", added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: new Date(Date.now() - 864e5).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
+      await returned(deviceStore([]), went, [off]);
+      expect(went).toEqual([]);
+      expect(last().state).toMatchObject({ kind: "empty", waitPc: true });
+    });
+
+    it("#16: an account PC the directory saw lately that its relay check finds off is not asked: the front page says to turn one on", async () => {
+      browser.setVisibility("hidden");
+      const went: string[] = [];
+      const pair = generateKeyPair();
+      const row = { server_id: deriveServerId(pair.publicKey), label: "Mac", added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
+      await returned(deviceStore([]), went, [row], async () => ({ kind: "offline", reason: "pc" }));
+      expect(went).toEqual([]);
+      expect(last().state).toMatchObject({ kind: "empty", waitPc: true });
+      expect(browser.sessionStore.has("ovis-confirmed-pc")).toBe(false);
+    });
+
     it("opens the account's PC this device is not in yet after a sign-in, to join it on its own page, the one seen last first", async () => {
       browser.setVisibility("hidden");
       const went: string[] = [];
@@ -1285,13 +1380,11 @@ describe("the hosted shell's front page", () => {
         return { server_id: deriveServerId(pair.publicKey), label, added_at: new Date(Date.now() - 864e5).toISOString(), last_seen_at: seenAgo === null ? null : new Date(Date.now() - seenAgo).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
       };
       const older = row("Older", 5 * 60_000), recent = row("Recent", 60_000), off = row("Off", null);
-      // new in the account: never picked by itself, however recently seen (security-triage condition 3)
-      const fresh = { ...row("New", 1_000), new_until: new Date(Date.now() + 3_600_000).toISOString() };
-      await returned(deviceStore([]), went, [off, older, fresh, recent]);
+      await returned(deviceStore([]), went, [off, older, recent]);
       await until(() => went.length > 0, "the account's PC opened");
       expect(went).toEqual([expect.stringMatching(new RegExp(`^/s/${recent.server_id}/#offer=`))]);
-      // its join card waits for the person's press: nothing was confirmed for it
-      expect(browser.sessionStore.get("ovis-confirmed-pc")).toBeUndefined();
+      // #16: its join is asked at once, with no press; only its approval lets this device in
+      expect(browser.sessionStore.get("ovis-confirmed-pc")).toBe(recent.server_id);
     });
 
     it("opens the account's PC on a cold launch with a stored sign-in and nothing saved here, once both are read", async () => {
@@ -1491,9 +1584,10 @@ describe("the hosted shell's front page", () => {
       ["its new window does not parse (it may still be inside it)", () => ({ row: accountRow({ new_until: "not a date" }), saved: [] as RelayDevice[] })],
     ])("C3: a launch never opens an account-only PC when %s", async (_case, make) => {
       const { row, saved } = make();
-      const { went, asked, bare } = await accountOnlyLaunch(row, saved);
-      expect(asked).toEqual([]);
+      const { went, bare } = await accountOnlyLaunch(row, saved);
+      // #16: it may be asked to let this device in (its join, on its own page), never opened by the account's key
       expect(went).not.toContain(bare);
+      expect(went.every((path) => path.startsWith(`${bare}#offer=`))).toBe(true);
     });
 
     it("C3: a launch never opens an account-listed PC that only an account introduction saved here", async () => {
@@ -1507,7 +1601,10 @@ describe("the hosted shell's front page", () => {
       const admitted_at = new Date(Date.now() - 3 * 864e5).toISOString();
       const row = accountRow({ admitted_at, admitted_before_you: true });
       const open = await accountOnlyLaunch(row);
-      expect([open.asked, open.went.includes(open.bare)]).toEqual([[], false]);
+      // #16: asked to let this device in at most, never opened by the account's key while the notice is open
+      expect(open.went.includes(open.bare)).toBe(false);
+      browser.sessionStore.delete("ovis-launch-join");
+      browser.sessionStore.delete("ovis-confirmed-pc");
       localStorage.setItem(`ovis:new-pc:${JSON.stringify(["acct-test", row.server_id, admitted_at])}`, "1");
       rendered.length = 0;
       const closed = await accountOnlyLaunch(row);

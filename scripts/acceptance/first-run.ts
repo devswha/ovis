@@ -255,8 +255,8 @@ async function typeInto(device: Device, pane: string, what: string): Promise<str
 
 async function listedPcs(device: Device): Promise<string[]> {
   const { page } = device;
-  await page.goto(`${APP}/`, { waitUntil: "domcontentloaded" });
-  // Add a PC, the signed-in front page: each PC a link to its own page, /s/<id>/
+  // Add a PC (#16: the signed-in front page lists only this device's own PCs): each PC a link to its own page, /s/<id>/
+  await page.goto(`${APP}/#add`, { waitUntil: "domcontentloaded" });
   await page.locator("a.relay-add-saved-pc").first().waitFor();
   return page.locator("a.relay-add-saved-pc").evaluateAll((links) => [...new Set(links.map((link) => /^\/s\/([^/]+)\/$/.exec(link.getAttribute("href") ?? "")?.[1] ?? ""))]);
 }
@@ -413,8 +413,9 @@ const steps: Step<World>[] = [
     await openSettingsPage(page, "Devices and PCs");
     await page.locator(".settings-dialog").getByRole("button", { name: "Forget this PC", exact: true }).click();
     await page.getByRole("button", { name: "Forget", exact: true }).click();
-    // Forget goes to the front page, where the PC, still in the account, is listed only as one needing approval
+    // Forget goes to the front page; Add a PC lists the PC, still in the account, only as one needing approval
     await page.waitForURL(`${APP}/`);
+    await page.goto(`${APP}/#add`, { waitUntil: "domcontentloaded" });
     await page.locator("a.relay-add-saved-pc").first().waitFor();
     assert.equal(await savedKey(page, id), false, "the desktop's key for the PC is gone");
     const notes = await page.locator(`a.relay-add-saved-pc[href="/s/${id}/"]`).evaluateAll((links) => links.map((link) => link.querySelector(".relay-add-saved-note")?.textContent ?? null));
