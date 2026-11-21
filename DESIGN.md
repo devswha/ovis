@@ -5075,7 +5075,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   signed in with this PC in no account, one full-width primary **Add this PC to my account**
   (`.account-add-pc-button`), which also turns the relay on when it is off, and then **Added** in
   the done green (`--status-done` on `--status-done-tint`), or, where the one press does not
-  apply, one line naming the device to choose Add on and **Stop waiting**; signed in with this PC
+  apply, one line naming the device to choose Add on and **Stop waiting** (when the service refused
+  the sign-in itself and the page signs in its own way, once per wait also **Sign in again**, whose
+  fresh sign-in of the same account presses again); signed in with this PC
   in the account and the relay online, **Your account's PCs**: this PC first with a **This PC**
   pill, then the account's others, one row and at most one button each (**Open**, **Add**). The
   relay's own switch is in More settings, and on this tab only while a PC in the account has its

@@ -10,12 +10,12 @@ import { Check, Plus, X } from "lucide-react";
 import type { AccountLimits } from "../../shared/protocol.ts";
 import { AddPcWaitOver, addInOnePress, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
-import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
+import { desktopAccount, desktopProviders, desktopSignIn, type DesktopAccountBridge } from "../lib/account/desktop.ts";
 import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { AccountPcError, within } from "../lib/account/join.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
-import { ownWindowSignIn, useOwnWindowRedirect } from "../lib/account/ownWindow.ts";
+import { ownSignIn, ownWindowSignIn, useOwnWindowRedirect } from "../lib/account/ownWindow.ts";
 import { AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, pcAccountServiceOf, sameSignIn, SignedOutError, type AccountIdentity, type AccountService, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
@@ -166,6 +166,42 @@ const waitKept = (): boolean => { const kept = readAddPcWaiting(); return kept !
  */
 export interface SignedInHere { readonly account: string; readonly adds: boolean }
 
+/**
+ * Signs this device in again, fresh, with the provider `from` signed in with (called in the press itself, so no popup
+ * blocker takes its page; `blocked` is told the page to offer as a link), and stores it in `from`'s place for the same
+ * account only: the sign-in it stored, or null. Another account's sign-in, or one that finished after `signal` ended it,
+ * once `wanted` (asked inside that store's write) says no, or after a sign-out or another sign-in meanwhile, is never stored.
+ */
+export type SignInAgain = (from: AccountSession, options: { readonly signal: AbortSignal; readonly wanted: () => boolean; readonly blocked: (link: string) => void }) => Promise<AccountSession | null>;
+
+/**
+ * This page's own sign-in again: the desktop app's, or the PC's own window's. Undefined where the page signs in with a
+ * code (the account service never adds a PC in one press for such a sign-in), and while that is still asked.
+ */
+function signInAgainWith(bridge: DesktopAccountBridge | null, service: string | null, redirect: string | null | undefined): SignInAgain | undefined {
+  if (service === null || (bridge === null && !redirect)) return undefined;
+  return (from, { signal, wanted, blocked }) => ownSignIn(from.provider, { bridge, service, redirect: redirect ?? null, store: holdingSessionStore(indexedAccountStore), signal, blocked })
+    .then(async (again) => again.account === from.account && await installSignInAgain(indexedAccountStore, from, again, () => !signal.aborted && wanted()) ? again : null);
+}
+
+/** `signInAgainWith` for a screen that has no sign-in of its own while signed in (the relay tab). */
+export function useSignInAgainHere(): SignInAgain | undefined {
+  const bridge = desktopAccount();
+  const service = bridge?.service ?? pcServiceHere();
+  return signInAgainWith(bridge, service, useOwnWindowRedirect(bridge === null && service !== null));
+}
+
+/**
+ * The one offer of a fresh sign-in a wait gets when the account service refused the one press for the sign-in itself,
+ * for the wait that ends `until`: offered (`from`, the sign-in stored then; `mark`, the wait), under way (`link`: the
+ * sign-in page the browser would not open in a tab of its own), pressing again with the fresh sign-in, or failed.
+ */
+type Again =
+  | { readonly until: number; readonly step: "offered"; readonly from: AccountSession; readonly mark: AddPcWaiting }
+  | { readonly until: number; readonly step: "signing-in"; readonly link: string | null }
+  | { readonly until: number; readonly step: "adding" }
+  | { readonly until: number; readonly step: "failed"; readonly message: string };
+
 let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc> } | null = null;
 
 /**
@@ -180,8 +216,10 @@ let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc>
  * nobody is closed. A sign-in whose button said nothing of adding lists and opens nothing: it gets the offer.
  * The relay is never turned on without a press. Nothing else is listed or opened without one. A device that only
  * watches this PC can list nothing, and is shown nothing.
+ * A wait whose one press the account service refused for the sign-in itself (not two-step, not fresh) offers once to
+ * sign in again here (`signInAgain`): stored in that sign-in's place, it alone presses again, for the PC that waited.
  */
-export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service, signedInHere, onListed, opensAll = () => false }: {
+export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service, signedInHere, onListed, opensAll = () => false, signInAgain }: {
   relayAbove?: boolean;
   /**
    * The relay's state as a switch beside this one shows it (the relay tab): once it is on, an offer to turn it on and
@@ -199,9 +237,16 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
    * already there): only that one adds the PC without another press, and only when its button said so.
    */
   signedInHere?: () => SignedInHere | null;
+  /** this page's own sign-in again (`signInAgainWith`); without it a wait offers none */
+  signInAgain?: SignInAgain | undefined;
 }) {
   const t = useT();
   const [state, setState] = useState<AddThisPcState>({ kind: "hidden" });
+  const [again, setAgain] = useState<Again | null>(null);
+  const againRun = useRef<AbortController | null>(null);
+  const waitingUntil = state.kind === "waiting" ? state.until : null;
+  // the wait ended (stopped, added, run out, replaced) or the screen went: its sign-in again stores nothing and adds nothing
+  useEffect(() => () => { againRun.current?.abort(); againRun.current = null; }, [waitingUntil]);
   const accountService = useCallback((): AccountService => service?.() ?? indexedAccountService, [service]);
   /** What the screen shows of a PC that has an account: "in your account" only when it is the one signed in to now, else nothing here is true of it. */
   const joinedAs = useCallback(async (account: string, enrolling: boolean): Promise<AddThisPcState> => {
@@ -304,7 +349,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     read();
     return () => { live = false; if (again !== null) clearTimeout(again); };
   }, [accountService, joinedAs, signedInHere]);
-  const pressed = useRef<number | null>(null);
+  const pressedUntil = useRef<number | null>(null);
   /** how many listings and relay starts this copy began: a window is closed late only while none began since */
   const starts = useRef(0);
   const stops = useRef(0);
@@ -313,7 +358,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     if (!idle) return;
     let live = true;
     const off = onAddPcWaiting((kept) => {
-      if (kept === null || kept.until === pressed.current || !resumable(kept, Date.now())) return;
+      if (kept === null || kept.until === pressedUntil.current || !resumable(kept, Date.now())) return;
       accountService().session().then((session) => {
         const now = readAddPcWaiting();
         // only under the sign-in the wait was begun in, and only while it is still the wait the tab keeps
@@ -550,7 +595,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         return await joinedAs(membership.account, membership.enrolling);
       }
       // in one press when the account service admits it; the window this listing opened is then needed no more
-      if (account !== null && await addInOnePress(accountService(), serverId, account, current, opensAll())) {
+      const pressed = account === null ? "refused" : await addInOnePress(accountService(), serverId, account, current, opensAll());
+      if (account !== null && pressed === "added") {
         // an attempt given up or replaced meanwhile clears nothing that a newer one owns
         if (!current()) return null;
         // the account lists this PC now: whoever shows the account's PCs reads them again
@@ -559,10 +605,13 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         closeOpened();
         return await joinedAs(account, false);
       }
+      // refused for the sign-in itself: the wait offers one fresh sign-in here, never again after it
+      const from = pressed === "sign-in-again" && signInAgain !== undefined ? await accountService().session() : undefined;
       if (!current()) return null;
       const now = Date.now();
       const mark = account === null ? null : { name, until: now + WAITING_MS, serverId, account, listedAt: now };
-      pressed.current = mark?.until ?? null;
+      if (from !== undefined && mark !== null && from.account === account) setAgain({ until: mark.until, step: "offered", from, mark });
+      pressedUntil.current = mark?.until ?? null;
       keepAddPcWaiting(mark);
       return { kind: "waiting", name, until: now + WAITING_MS, mark, resumed: false, signedIn: as !== null };
     })();
@@ -683,7 +732,58 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     setState({ kind: "offer" });
     closeWindow();
   };
+  /**
+   * The wait's one sign-in again, with the provider of the sign-in it began under. It runs only while its wait does, in
+   * this copy of the screen and in every other (a Stop waiting anywhere ends it, and its sign-in is then not stored).
+   * Stored in that one's place, the fresh sign-in and no other presses again, for the PC that waited and only while
+   * this address still answers for it (it is listed already): a refusal then is the plain wait, with no offer again.
+   * Another account's sign-in stores nothing and the wait goes on; a cancelled or failed one too.
+   */
+  const signInAgainNow = ({ until, from, mark }: { until: number; from: AccountSession; mark: AddPcWaiting }): void => {
+    if (signInAgain === undefined) return;
+    const controller = new AbortController();
+    againRun.current = controller;
+    const running = (): boolean => !controller.signal.aborted;
+    // another copy of this screen that stops the wait, or begins another, ends this sign-in again at once
+    const shared = readAddPcWaiting()?.until === until;
+    const off = onAddPcWaiting((kept) => { if (shared && kept?.until !== until) controller.abort(); });
+    const over = (next: Again | null): void => {
+      off();
+      if (againRun.current !== controller) return;
+      againRun.current = null;
+      setAgain(next);
+    };
+    setAgain({ until, step: "signing-in", link: null });
+    signInAgain(from, { signal: controller.signal, wanted: running, blocked: (link) => { if (running()) setAgain({ until, step: "signing-in", link }); } }).then(async (session) => {
+      if (session === null || !running()) { over(null); return; }
+      setAgain({ until, step: "adding" });
+      try {
+        // asked first: this address may answer for another PC now, and nothing is pressed for that one
+        const added = await within(ANSWER_MS, pcAnswers(mark.serverId)) && running()
+          && await addInOnePress(accountService(), mark.serverId, mark.account, running, opensAll(), session) === "added";
+        if (!added || !running()) { over(null); return; }
+        over(null);
+        listed();
+        keepAddPcWaiting(null);
+        const next = await joinedAs(mark.account, false);
+        setState((current) => current.kind === "waiting" && current.until === until ? next : current);
+      } catch (error) {
+        warned("Ovis: this PC was not added in one press")(error);
+        over(null);
+      }
+    }, (error: unknown) => {
+      if (!running() || (error instanceof DOMException && error.name === "AbortError")) { over(null); return; }
+      console.warn("Ovis: the sign-in did not finish", error instanceof SignInError ? error.code : error instanceof Error ? error.name : error);
+      over({ until, step: "failed", message: t("The sign-in did not finish. Try again.") });
+    });
+  };
+  const cancelAgain = (): void => {
+    againRun.current?.abort();
+    againRun.current = null;
+    setAgain(null);
+  };
   if (state.kind === "hidden") return null;
+  const againShown = state.kind === "waiting" && again?.until === state.until ? again : null;
   return (
     <div className="settings-item account-add-pc">
       {state.kind === "adding" ? (
@@ -699,7 +799,22 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       ) : state.kind === "waiting" ? (
         <>
           <p className="settings-description" role="status">{t("On another device of your account, choose Add on {name}.", { name: state.name })}</p>
-          <button type="button" className="btn" onClick={stop}>{t("Stop waiting")}</button>
+          {againShown !== null && againShown.step !== "failed" ? (
+            <>
+              {againShown.step === "offered" ? <p className="settings-description">{t("Sign in again now to add it right away.")}</p>
+                : againShown.step === "signing-in" ? <p className="settings-description" role="status">{t("Finish signing in in your browser.")}</p>
+                : <p className="settings-description" role="status">{t("Signed in. Adding this PC to your account…")}</p>}
+              <div className="account-device-actions">
+                {againShown.step === "offered" && <button type="button" className="btn btn-primary" onClick={() => signInAgainNow(againShown)}>{t("Sign in again")}</button>}
+                {againShown.step === "signing-in" && <>
+                  {againShown.link !== null && <ExternalLink kind="sign-in" className="btn btn-primary" href={againShown.link}>{t("Open the sign-in page")}</ExternalLink>}
+                  <button type="button" className="btn" onClick={cancelAgain}>{t("Cancel")}</button>
+                </>}
+                <button type="button" className="btn" onClick={stop}>{t("Stop waiting")}</button>
+              </div>
+            </>
+          ) : <button type="button" className="btn" onClick={stop}>{t("Stop waiting")}</button>}
+          {againShown?.step === "failed" && <p className="settings-condition" role="alert">{againShown.message}</p>}
         </>
       ) : state.kind === "done" ? (
         state.enrolling
@@ -1440,7 +1555,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
               {view.error !== null && errorLine}
             </ManageAccountSheet>
           )}
-          {!signInElsewhere && <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} {...(opensAll === undefined ? {} : { opensAll })} />}
+          {!signInElsewhere && <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} signInAgain={signInAgainWith(bridge, service, ownRedirect)} {...(opensAll === undefined ? {} : { opensAll })} />}
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
           {view.error !== null && !managing && errorLine}
         </>

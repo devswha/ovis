@@ -26,7 +26,7 @@ import { announcePairingCode, announceQrCodeEnded, DEVICES_CHANGED_EVENT, inRela
 import type { PairedDevice, PairingCode, PortalStatus } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
-import { AddThisPc, type SignedInHere } from "./AccountSection.tsx";
+import { AddThisPc, useSignInAgainHere, type SignedInHere } from "./AccountSection.tsx";
 import { PhonePanel, QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { failureText, openOwnOffer, RelayPairing, statusText } from "./RelayPanel.tsx";
@@ -627,6 +627,8 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
   // a sheet opened already signed in gets the same next step as one signed in just now: the relay's own button when it is off
   const mineNow = signedIn ? accountId : null;
   const takeSignedInNow = useCallback((): SignedInHere | null => takeSignedInHere() ?? (mineNow === null ? null : { account: mineNow, adds: false }), [takeSignedInHere, mineNow]);
+  /** signed in, the tab has no sign-in of its own: Add this PC's one sign-in again is this page's own */
+  const signInAgain = useSignInAgainHere();
   useLayoutEffect(() => {
     const view = signInView.current;
     if (!signedIn || signedInProvider === null || view === null || view.closest("[hidden]") !== null) return;
@@ -701,7 +703,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBy
           <>
             {/* one button: with the relay off, it turns the relay on as it adds the PC */}
             {startFailure}
-            <AddThisPc relayOn={on} gateNote={false} signedInHere={takeSignedInNow} {...(account.opensAll === undefined ? {} : { opensAll: account.opensAll })} />
+            <AddThisPc relayOn={on} gateNote={false} signedInHere={takeSignedInNow} signInAgain={signInAgain} {...(account.opensAll === undefined ? {} : { opensAll: account.opensAll })} />
           </>
         )}
       </div>

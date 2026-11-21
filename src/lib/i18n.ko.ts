@@ -507,6 +507,7 @@ const BASE: Record<string, string> = {
   "Manage account": "계정 관리",
   "Plan|account plan": "요금제",
   "On another device of your account, choose Add on {name}.": "내 계정의 다른 기기에서 {name}의 추가를 고르세요.",
+  "Sign in again now to add it right away.": "방금 다시 로그인하면 바로 추가돼요.",
   "This PC stopped waiting after 30 minutes.": "30분이 지나 이 PC가 기다리기를 멈췄습니다.",
   "Keep waiting": "계속 기다리기",
   "Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.": "아직 끝나지 않았습니다. 이 PC를 추가한 기기가 설정을 마무리하는 중입니다. 멈췄다면 그 기기에서 이 PC를 열고 다시 시도를 누르세요.",

@@ -509,6 +509,7 @@ const BASE: Record<string, string> = {
   "Manage account": "アカウント管理",
   "Plan|account plan": "プラン",
   "On another device of your account, choose Add on {name}.": "アカウントの別のデバイスで {name} の「追加」を選んでください。",
+  "Sign in again now to add it right away.": "今サインインし直すと、すぐ追加できます。",
   "This PC stopped waiting after 30 minutes.": "30分が過ぎたため、このPCは待機を終了しました。",
   "Keep waiting": "待機を続ける",
   "Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.": "まだ終わっていません。この PC を追加した端末が設定を続けています。止まった場合は、その端末でこの PC を開き「もう一度試す」を選んでください。",

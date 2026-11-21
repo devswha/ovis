@@ -514,6 +514,7 @@ const BASE: Record<string, string> = {
   "Manage account": "管理账号",
   "Plan|account plan": "套餐",
   "On another device of your account, choose Add on {name}.": "在你账号的另一台设备上，为 {name} 选择“添加”。",
+  "Sign in again now to add it right away.": "现在重新登录即可立即添加。",
   "This PC stopped waiting after 30 minutes.": "已过 30 分钟，此电脑已停止等待。",
   "Keep waiting": "继续等待",
   "Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.": "尚未完成：添加这台电脑的设备仍在设置中。如果它停止了，请在那台设备上打开这台电脑并选择“重试”。",

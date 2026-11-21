@@ -10,9 +10,10 @@ import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { CLOSE_ANSWER_MS } from "../lib/account/addThisPc.ts";
 import { AccountServiceError, SignedOutError, type AccountService } from "../lib/account/service.ts";
+import type { AccountSession } from "../lib/account/store.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
-import { ADDED_POLL_MS, ADDING_MS, AddThisPc, ANSWER_MS, REOPEN_MS, SIGNED_IN_RETRY_MS, WAITING_MS } from "./AccountSection.tsx";
+import { ADDED_POLL_MS, ADDING_MS, AddThisPc, ANSWER_MS, REOPEN_MS, SIGNED_IN_RETRY_MS, WAITING_MS, type SignInAgain } from "./AccountSection.tsx";
 
 // the real PC of realRelay reads no herdr: its status reads would put their timeouts on this suite's fake timer queue
 afterAll(unitHerdrOnly());
@@ -48,6 +49,8 @@ describe("AddThisPc", () => {
     healthId?: string | null;
   };
   let signedIn: string | null;
+  /** which sign-in of that account is stored: a sign-in again, or another one, stores the next */
+  let signInNo: number;
   /** whether the account service admits this PC in one press (a fresh two-step sign-in), and what the PC answers the press with */
   let onePress: { admits: boolean; pcStatus: number; opensAll: boolean };
   let admitted: string[];
@@ -61,15 +64,15 @@ describe("AddThisPc", () => {
   const loopbackFetch = globalThis.fetch;
   let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null; close: Promise<void> | null; press: Promise<void> | null };
   /** the account service; `bound` is the account of the one sign-in it acts for (forSignIn), which refuses once another is stored */
-  const service = (bound?: string): AccountService => {
-    const mine = (): void => { if (bound !== undefined && signedIn !== bound) throw new SignedOutError(); };
+  const service = (bound?: string, boundSignIn?: string): AccountService => {
+    const mine = (): void => { if (bound !== undefined && (signedIn !== bound || (boundSignIn !== undefined && boundSignIn !== `r-${signInNo}`))) throw new SignedOutError(); };
     return {
       listPcs: async () => { mine(); await held.listPcs; return []; },
       putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); await held.putPc; },
       deletePc: async () => { mine(); directory.push("deletePc"); },
       admitPc: async () => { mine(); admitted.push(signedIn ?? ""); if (!onePress.admits) throw new AccountServiceError(403, "two_step_required", "Set up two-step sign-in first"); return { account: signedIn, new_until: new Date(at + 86_400_000).toISOString() }; },
-      session: async () => { await held.session; return signedIn === null ? undefined : { account: signedIn }; },
-      forSignIn: (session: { account: string }) => service(session.account),
+      session: async () => { await held.session; return signedIn === null ? undefined : { account: signedIn, refresh_token: `r-${signInNo}` }; },
+      forSignIn: (session: { account: string; refresh_token?: string }) => service(session.account, session.refresh_token),
     } as unknown as AccountService;
   };
   const hold = (what: "listPcs" | "putPc" | "session" | "link" | "start" | "close" | "press"): (() => void) => {
@@ -82,6 +85,7 @@ describe("AddThisPc", () => {
     renderers = [];
     pc = { account: null, enrolling: false, linkError: null, statusDown: false, offer: offerOf(publicKey, "desk"), hang: null, relay: "on", blocked: null, start: "ok", closeMissing: false, gate: "closed", via: "loopback", paired: false, cookieSticks: true, healthDown: false, role: "drive" };
     signedIn = ACCOUNT;
+    signInNo = 0;
     onePress = { admits: false, pcStatus: 200, opensAll: true };
     admitted = [];
     asked = [];
@@ -279,6 +283,153 @@ describe("AddThisPc", () => {
     expect([directory, admitted]).toEqual([["putPc"], [ACCOUNT]]);
     expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
     expect(words(renderer)).toContain("On another device of your account, choose Add on desk.");
+  });
+
+  describe("sign in again from the wait", () => {
+    const WAIT = "On another device of your account, choose Add on desk.";
+    const OFFER = "Sign in again now to add it right away.";
+    /**
+     * this page's own sign-in again, as these tests make it: `comes` says what the fresh sign-in comes to (a two-step
+     * one or a plain one stored in the old one's place, another account's stored nowhere, a failure, no end yet, a
+     * two-step one held until `release`, or a two-step one that another sign-in of the account replaces at once)
+     */
+    let comes: "two-step" | "plain" | "other" | "fail" | "open" | "held" | "replaced";
+    let calls: { account: string; signal: AbortSignal }[];
+    let installs: number;
+    let release: () => void;
+    /** stores the fresh sign-in in the old one's place, only while it is still wanted at that write */
+    const install = (wanted: () => boolean): AccountSession | null => {
+      if (!wanted()) return null;
+      installs++;
+      signInNo++;
+      return { account: ACCOUNT, refresh_token: `r-${signInNo}` } as AccountSession;
+    };
+    const signInAgain: SignInAgain = (from, { signal, wanted }) => {
+      calls.push({ account: from.account, signal });
+      switch (comes) {
+        case "two-step": onePress.admits = true; return Promise.resolve(install(wanted));
+        case "plain": return Promise.resolve(install(wanted));
+        case "other": return Promise.resolve(null);
+        case "fail": return Promise.reject(new Error("no sign-in"));
+        case "open": return new Promise<AccountSession | null>((_, reject) => signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError"))));
+        case "held": return new Promise<AccountSession | null>((done) => { release = () => { onePress.admits = true; done(install(wanted)); }; });
+        case "replaced": {
+          onePress.admits = true;
+          const fresh = install(wanted);
+          signInNo++;
+          return Promise.resolve(fresh);
+        }
+      }
+    };
+    const waitingWithOffer = async (): Promise<ReactTestRenderer> => {
+      let renderer!: ReactTestRenderer;
+      act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere: () => null, opensAll: () => onePress.opensAll, signInAgain }) })); });
+      renderers.push(renderer);
+      await settle();
+      await press(renderer, "Add this PC to my account");
+      return renderer;
+    };
+    beforeEach(() => { comes = "two-step"; calls = []; installs = 0; });
+    const pressedOnce = (renderer: ReactTestRenderer): void => {
+      expect(admitted).toEqual([ACCOUNT]);
+      expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
+      expect(words(renderer)).not.toContain("Added");
+    };
+
+    test("Stop waiting in another copy of the screen while the sign-in is out: the fresh sign-in is not stored and nothing is pressed", async () => {
+      comes = "held";
+      const renderer = await waitingWithOffer();
+      const other = await mount();
+      expect(buttons(other)).toEqual(["Stop waiting"]);
+      await press(renderer, "Sign in again");
+      await press(other, "Stop waiting");
+      act(() => { release(); });
+      await settle();
+      expect(installs).toBe(0);
+      pressedOnce(renderer);
+    });
+
+    test("another sign-in of the account stored after the fresh one: the retry presses with no sign-in but the fresh one", async () => {
+      comes = "replaced";
+      const renderer = await waitingWithOffer();
+      await press(renderer, "Sign in again");
+      expect(installs).toBe(1);
+      pressedOnce(renderer);
+      expect(words(renderer)).toContain(WAIT);
+    });
+
+    test("the address answers for another PC once the sign-in is back: nothing is listed or pressed for that PC", async () => {
+      comes = "held";
+      const renderer = await waitingWithOffer();
+      await press(renderer, "Sign in again");
+      pc.offer = offerOf(otherKey, "other");
+      act(() => { release(); });
+      await settle();
+      expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+      pressedOnce(renderer);
+      expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    });
+
+    test("a one press refused for the sign-in itself offers to sign in again, beside Stop waiting", async () => {
+      const renderer = await waitingWithOffer();
+      expect(words(renderer)).toContain(WAIT);
+      expect(words(renderer)).toContain(OFFER);
+      expect(buttons(renderer)).toEqual(["Sign in again", "Stop waiting"]);
+      expect(calls).toEqual([]);
+    });
+
+    test("a fresh two-step sign-in adds the PC in one press, under the same account", async () => {
+      const renderer = await waitingWithOffer();
+      await press(renderer, "Sign in again");
+      expect(calls.map((call) => call.account)).toEqual([ACCOUNT]);
+      expect(admitted).toEqual([ACCOUNT, ACCOUNT]);
+      expect(asked.map((request) => request.path)).toContain("/api/account/one-press");
+      expect(words(renderer)).toContain("Added");
+      expect(tab.has(MARKER)).toBe(false);
+    });
+
+    test("a fresh sign-in that is still not two-step goes back to the plain wait, with no second offer", async () => {
+      comes = "plain";
+      const renderer = await waitingWithOffer();
+      await press(renderer, "Sign in again");
+      expect(admitted).toEqual([ACCOUNT, ACCOUNT]);
+      expect(words(renderer)).toContain(WAIT);
+      expect(words(renderer)).not.toContain(OFFER);
+      expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    });
+
+    test("another account's sign-in adds nothing: the plain wait goes on", async () => {
+      comes = "other";
+      const renderer = await waitingWithOffer();
+      await press(renderer, "Sign in again");
+      expect(admitted).toEqual([ACCOUNT]);
+      expect(words(renderer)).toContain(WAIT);
+      expect(words(renderer)).not.toContain(OFFER);
+      expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    });
+
+    test("a failed sign-in adds nothing: the plain wait goes on, and the failure is said", async () => {
+      comes = "fail";
+      const failed = await waitingWithOffer();
+      await press(failed, "Sign in again");
+      expect(admitted).toEqual([ACCOUNT]);
+      expect(words(failed)).toContain(WAIT);
+      expect(words(failed)).toContain("The sign-in did not finish. Try again.");
+      expect(buttons(failed)).toEqual(["Stop waiting"]);
+    });
+
+    test("Stop waiting still stops, also while the sign-in again is under way, which then adds nothing", async () => {
+      comes = "open";
+      const renderer = await waitingWithOffer();
+      await press(renderer, "Sign in again");
+      expect(words(renderer)).toContain("Finish signing in in your browser.");
+      expect(buttons(renderer)).toEqual(["Cancel", "Stop waiting"]);
+      await press(renderer, "Stop waiting");
+      expect(calls[0]!.signal.aborted).toBe(true);
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(tab.has(MARKER)).toBe(false);
+      expect(admitted).toEqual([ACCOUNT]);
+    });
   });
 
   test("a PC whose step-2 switch is off is never tried in one press: the account service is not asked, and the digit wait comes", async () => {

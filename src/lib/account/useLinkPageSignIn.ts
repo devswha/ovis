@@ -14,9 +14,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { reserveTab } from "../externalLink.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
 import { holdingSessionStore } from "./deleteAccount.ts";
-import { desktopAccount, desktopSignIn } from "./desktop.ts";
+import { desktopAccount } from "./desktop.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignIn } from "./deviceSignIn.ts";
-import { ownWindowSignIn, useOwnWindowRedirect } from "./ownWindow.ts";
+import { ownSignIn as startOwnSignIn, useOwnWindowRedirect } from "./ownWindow.ts";
 import { offeredProviders, type OfferedProviders } from "./service.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession } from "./store.ts";
 
@@ -84,10 +84,7 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       // held back until it is known not to be cancelled: a sign-in finished after Cancel is never kept
       const store = holdingSessionStore(indexedAccountStore);
       const blocked = (link: string): void => setState({ kind: "redirecting", link });
-      const signing = bridge !== null ? desktopSignIn(provider, bridge, store)
-        : ownRedirect ? ownWindowSignIn(provider, { service, redirect: ownRedirect, store, signal: controller.signal, blocked })
-        : Promise.reject(new Error("no own sign-in here"));
-      signing.then(async (session) => {
+      startOwnSignIn(provider, { bridge, service, redirect: ownRedirect ?? null, store, signal: controller.signal, blocked }).then(async (session) => {
         // kept only if not cancelled, decided inside the write itself: a Cancel after it is too late and shows the sign-in
         let kept = false;
         await indexedAccountStore.update("session", (current) => { if (controller.signal.aborted) return current; kept = true; return session; });
