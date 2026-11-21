@@ -85,7 +85,7 @@ const BASE: Record<string, string> = {
   "Your account was deleted.": "アカウントを削除しました。",
   "Sign out every device": "すべてのデバイスからサインアウト",
   "Sign out every device?": "すべてのデバイスからサインアウトしますか？",
-  "Every browser and app will need to sign in again. Your PCs stay.": "すべてのブラウザーとアプリでもう一度サインインが必要になります。PC はそのまま残ります。",
+  "Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.": "すべてのブラウザーとアプリがアカウントからサインアウトされます。PC とペアリングしたデバイスは引き続きその PC を開けるため、紛失したデバイスは［切断］で切り離してください。",
   "Every device was signed out.": "すべてのデバイスからサインアウトしました。",
   "Could not sign out every device. Try again.": "すべてのデバイスからサインアウトできませんでした。もう一度お試しください。",
   "You signed in to another account. No device was signed out.": "別のアカウントにサインインしました。サインアウトしたデバイスはありません。",

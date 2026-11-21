@@ -87,7 +87,7 @@ const BASE: Record<string, string> = {
   "Your account was deleted.": "账户已删除。",
   "Sign out every device": "在所有设备上退出登录",
   "Sign out every device?": "要在所有设备上退出登录吗？",
-  "Every browser and app will need to sign in again. Your PCs stay.": "所有浏览器和应用都需要重新登录。你的 PC 会保留。",
+  "Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.": "所有浏览器和应用都会退出账户登录。已与 PC 配对的设备仍能打开该 PC，丢失的设备请用［断开连接］断开。",
   "Every device was signed out.": "已在所有设备上退出登录。",
   "Could not sign out every device. Try again.": "无法在所有设备上退出登录。请重试。",
   "You signed in to another account. No device was signed out.": "你登录了另一个账户。没有设备退出登录。",

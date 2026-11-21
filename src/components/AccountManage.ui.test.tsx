@@ -182,7 +182,7 @@ describe("Manage account's devices and PCs", () => {
     expect(textOf(action(root, "sign-out-everywhere"))).toBe("Sign out every device");
     await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
     expect(asked).toBe(0);
-    expect(textOf(root.find((node) => node.props["data-testid"] === "sign-out-everywhere-says"))).toBe("Every browser and app will need to sign in again. Your PCs stay.");
+    expect(textOf(root.find((node) => node.props["data-testid"] === "sign-out-everywhere-says"))).toBe("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.");
     expect(action(root, "sign-out-everywhere").props["data-confirm"]).toBe("sign-out-everywhere");
     await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
     expect(asked).toBe(1);

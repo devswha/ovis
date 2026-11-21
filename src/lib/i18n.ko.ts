@@ -83,7 +83,7 @@ const BASE: Record<string, string> = {
   "Your account was deleted.": "계정을 삭제했습니다.",
   "Sign out every device": "모든 기기 로그아웃",
   "Sign out every device?": "모든 기기에서 로그아웃할까요?",
-  "Every browser and app will need to sign in again. Your PCs stay.": "모든 브라우저와 앱에서 다시 로그인해야 합니다. PC는 그대로 남습니다.",
+  "Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.": "모든 브라우저와 앱이 계정에서 로그아웃돼요. PC와 연결된 기기는 그대로 PC를 열 수 있으니, 잃어버린 기기는 [연결 끊기]로 끊으세요.",
   "Every device was signed out.": "모든 기기에서 로그아웃했습니다.",
   "Could not sign out every device. Try again.": "모든 기기에서 로그아웃하지 못했습니다. 다시 시도하세요.",
   "You signed in to another account. No device was signed out.": "다른 계정으로 로그인했습니다. 로그아웃한 기기는 없습니다.",
