@@ -1,5 +1,4 @@
 import { useMemo, type CSSProperties, type ReactNode } from "react";
-import { Inbox } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
@@ -108,14 +107,4 @@ export function InboxConnecting({ wide, sidebarWidth = null }: { wide: boolean; 
 export function InboxUnchosen() {
   const t = useT();
   return <p className="inbox-unchosen" role="status">{t("Choose one from the list to open its chat here.")}</p>;
-}
-
-export function InboxFootEntry({ onOpen }: { onOpen(): void }) {
-  const t = useT();
-  return (
-    <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-pc inbox-foot-entry" onClick={onOpen}>
-      <Inbox aria-hidden="true" />
-      <span className="sidebar-footer-pc-name">{t("Open agent inbox")}</span>
-    </button>
-  );
 }

@@ -395,7 +395,7 @@ async function openDrawerForMark(page: Page): Promise<void> {
     return at !== undefined && performance.now() - at >= secondTapMs;
   }, SECOND_TAP_MS, { timeout: 5_000 });
 }
-const OVIS_MARK = ".header-side .sidebar-brand.is-entry";
+const FOOT_INBOX = "#workspace-drawer .sidebar-footer-row > .sidebar-footer-settings + .sidebar-footer-inbox";
 async function enterFromMore(page: Page): Promise<void> {
   await openSheet(page, ".header-more-button");
   await page.locator('.row-sheet [data-item="enter-inbox"]').tap();
@@ -752,14 +752,14 @@ try {
           pass(12, "over a thread More counts the other agent that waits and offers it after Back to Ovis; Back to Ovis from a thread opens that thread's pane in the classic app; Back then returns to the thread, to the list, and to the pane the mode was entered from");
         });
 
-        await withPage(browser, base, off, "/", block("the Ovis mark at the drawer's head, and no drawer in the mode"), async (page) => {
+        await withPage(browser, base, off, "/", block("Inbox at the drawer's foot, and no drawer in the mode"), async (page) => {
           await page.locator(".pane-slot").first().waitFor();
           await openDrawerForMark(page);
-          assert.equal(await page.locator(".sidebar.is-open .inbox-foot-entry").count(), 0, "the drawer's foot has no Open agent inbox: the mark at its head is the way in");
-          const mark = page.locator(".app-header #drawer-toggle.is-mark");
-          assert.deepEqual([await mark.getAttribute("aria-label"), await mark.getAttribute("title")], ["Open agent inbox", "Open agent inbox"]);
+          assert.equal(await page.locator(".app-header #drawer-toggle.is-mark").getAttribute("aria-label"), "Close workspace list", "the Ovis mark at the drawer's head closes it: it is no way into the inbox");
+          const entry = page.locator(FOOT_INBOX);
+          assert.equal(await entry.getAttribute("title"), "Inbox", "the drawer's foot holds Inbox beside the gear");
           await shot(page, `inbox-mode-drawer-entry-390-${theme}.png`);
-          await mark.tap();
+          await entry.tap();
           await listScreen(page);
           await rowCount(page, 6);
           await page.locator("#workspace-drawer, .scrim.is-open").waitFor({ state: "detached" });
@@ -771,7 +771,7 @@ try {
           await frames(page);
           assert.equal(await page.locator("#workspace-drawer, .scrim.is-open").count(), 0, "a swipe from the edge opens no drawer in the mode");
           await page.locator(".mode-inbox").waitFor();
-          pass(13, "the open drawer's head is the Ovis mark, named Open agent inbox, which opens the list, and its foot has no row for it; in the mode a swipe from the left edge opens no drawer");
+          pass(13, "the open drawer's head is the Ovis mark, which closes it, and Inbox beside the gear at its foot opens the list; in the mode a swipe from the left edge opens no drawer");
         });
 
         await withPage(browser, base, off, "/?app=inbox", block("New workspace from the list"), async (page) => {
@@ -944,13 +944,13 @@ try {
             await page.locator(".app-header.is-zoned").waitFor();
             const classic = { sidebar: await box(page, "#workspace-drawer"), pane: await box(page, ".pane-column"), terminal: await terminalBox(page) };
             const entries = await historyLength(page);
-            assert.equal(await page.locator("#workspace-drawer .inbox-foot-entry").count(), 0, "the sidebar's foot has no Open agent inbox beside the mark");
+            assert.equal(await page.locator(".header-side .sidebar-brand").evaluate((node) => node.tagName), "DIV", "the Ovis wordmark at the sidebar's head is no way into the inbox");
             await page.locator(".header-more-button").click();
             await page.locator(".row-menu").waitFor();
-            assert.equal(await page.locator('.row-menu [data-item="enter-inbox"]').count(), 0, "More has no Open agent inbox beside the mark");
+            assert.equal(await page.locator('.row-menu [data-item="enter-inbox"]').count(), 0, "More has no Open agent inbox beside the foot's Inbox");
             await page.keyboard.press("Escape");
             await page.locator(".row-menu").waitFor({ state: "detached" });
-            await page.locator(OVIS_MARK).click();
+            await page.locator(FOOT_INBOX).click();
             await page.locator(".inbox-column .mode-inbox").waitFor();
             await page.locator(".app-header").waitFor({ state: "detached" });
             await rowCount(page, 6);
@@ -1098,9 +1098,9 @@ try {
             await addressIs(page, { app: "inbox", pane: WORKING }, "Back from the classic app returns to the thread the mode was left on");
             await page.goForward();
             await page.locator(".app-header.is-zoned").waitFor();
-            await page.locator(OVIS_MARK).click();
+            await page.locator(FOOT_INBOX).click();
             await page.locator(".inbox-column .mode-inbox").waitFor();
-            pass(viewport.width === 1440 ? 24 : 25, `at ${at}: entered by the Ovis mark (More and the sidebar's foot offering no second way), the column is classic's sidebar (${column.w}px) and the pane classic's (${pane.w}px), the rail (${rail.w}px) cut out of the column and the list (${Math.round(list.w)}px) beside it; 34px round controls on one centre line with the rail's first button and the chip, the filter among them and no foot; 56px rows 4px apart with the open one current, the lane and the composer on one column; another row takes the thread's entry; the terminal is classic's size (${Math.round(terminal.w)} by ${Math.round(terminal.h)}); the one More is the pane's, and the rail holds the way out, the app's items and the count; the open search field takes the top row; a narrowed window keeps the thread; the Ovis mark at the rail's top leads out by one entry that Back undoes, and the Ovis mark at the sidebar's head leads in`);
+            pass(viewport.width === 1440 ? 24 : 25, `at ${at}: entered by Inbox at the sidebar's foot (More offering no second way), the column is classic's sidebar (${column.w}px) and the pane classic's (${pane.w}px), the rail (${rail.w}px) cut out of the column and the list (${Math.round(list.w)}px) beside it; 34px round controls on one centre line with the rail's first button and the chip, the filter among them and no foot; 56px rows 4px apart with the open one current, the lane and the composer on one column; another row takes the thread's entry; the terminal is classic's size (${Math.round(terminal.w)} by ${Math.round(terminal.h)}); the one More is the pane's, and the rail holds the way out, the app's items and the count; the open search field takes the top row; a narrowed window keeps the thread; the Ovis mark at the rail's top leads out by one entry that Back undoes, and Inbox beside the sidebar's gear leads in`);
           }, viewport);
         }
 
@@ -1133,7 +1133,7 @@ try {
               if (setup.path.endsWith("sidebar=hidden")) {
                 await page.locator(".header-more-button").click();
                 await page.locator('.row-menu [data-item="enter-inbox"]').click();
-              } else await page.locator(OVIS_MARK).click();
+              } else await page.locator(FOOT_INBOX).click();
               await page.locator(".inbox-column .mode-inbox").waitFor();
             } else await enterFromMore(page);
             await rowCount(page, 6);
@@ -1186,7 +1186,7 @@ try {
             assert.equal(panes.length, setup.panes, `classic draws the split's ${setup.panes} terminals: ${panes.join(", ")}`);
             const before = (await frames()).length;
 
-            await page.locator(OVIS_MARK).click();
+            await page.locator(FOOT_INBOX).click();
             await page.locator(".inbox-column .mode-inbox").waitFor();
             await rowCount(page, 6);
             await paneHiddenUnderList(page, "the split's panes are mounted under the list, hidden");
@@ -1215,7 +1215,7 @@ try {
           const other = await page.evaluate((working) => [...document.querySelectorAll("[data-layout-pane]")].map((frame) => frame.getAttribute("data-layout-pane")).find((pane) => pane !== null && pane !== working) ?? "", WORKING);
           const held = (await page.evaluate(() => window.inboxFixture.frames.slice())).filter((frame) => frame.pane === other && (frame.type === "attach" || frame.type === "resize")).at(-1);
           assert.ok(other !== "" && held !== undefined, `the tab's other pane (${other}) holds the pty's size in classic`);
-          await page.locator(OVIS_MARK).click();
+          await page.locator(FOOT_INBOX).click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await row(page, WORKING).click();
           await page.locator(".thread-chip").waitFor();
@@ -1243,7 +1243,7 @@ try {
           await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2, undefined, { timeout: 15_000 });
           await terminalSettled(page, 2);
           const half = await page.evaluate((pane) => window.inboxFixture.frames.filter((frame) => frame.pane === pane && (frame.type === "attach" || frame.type === "resize")).at(-1)!, WORKING);
-          await page.locator(OVIS_MARK).click();
+          await page.locator(FOOT_INBOX).click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await rowCount(page, 6);
           await row(page, WORKING).click();
@@ -1284,7 +1284,7 @@ try {
           const classicHalves = await halves();
           assert.deepEqual(classicHalves, { a: WORKING, b: BLOCKED }, "classic draws the split's two halves, each its own pane");
           assert.equal(await page.locator(".pane-slot.is-active").getAttribute("data-slot"), "b", "the dropped half is the active one");
-          await page.locator(OVIS_MARK).click();
+          await page.locator(FOOT_INBOX).click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await rowCount(page, 6);
           await row(page, opened).click();
@@ -1454,7 +1454,7 @@ try {
             await page.waitForFunction((selector) => document.querySelector(selector)?.textContent?.includes("6 tests pass") === true, view, { timeout: 15_000 });
             assert.ok(await atEnd(), "the classic app's chat follows its transcript's end");
             if (wide) {
-              await page.locator(OVIS_MARK).click();
+              await page.locator(FOOT_INBOX).click();
               await page.locator(".inbox-column .mode-inbox").waitFor();
               await page.locator(".thread-chip").waitFor();
               await addressIs(page, { app: "inbox", pane: WORKING }, "a wide window's way in opens the pane's thread");
@@ -1506,7 +1506,7 @@ try {
         await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "the thread's controls in the band over its terminal under a coarse pointer at 1440", async (page) => {
           assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true, "the pointer is coarse");
           await page.locator(".app-header.is-zoned").waitFor();
-          await page.locator(OVIS_MARK).click();
+          await page.locator(FOOT_INBOX).click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await row(page, WORKING).click();
           await page.locator(".thread-chip").waitFor();
@@ -1747,7 +1747,7 @@ try {
             if (route === "entered from a pane") {
               await page.locator(".conn-live").waitFor({ state: "attached" });
               if (wide) {
-                await page.locator(OVIS_MARK).click();
+                await page.locator(FOOT_INBOX).click();
                 await page.locator(".inbox-column .mode-inbox").waitFor();
                 await page.locator(".thread-chip").waitFor();
                 await addressIs(page, { app: "inbox", pane: WORKING }, "a wide window's way in opens the pane's thread");
@@ -1854,7 +1854,7 @@ try {
 
         await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat&demo_connection=switch`, "one word for a lost connection beside a wide thread", async (page) => {
           await page.locator(".conn-live").waitFor({ state: "attached" });
-          await page.locator(OVIS_MARK).click();
+          await page.locator(FOOT_INBOX).click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await rowCount(page, 6);
           await row(page, WORKING).click();
@@ -1994,22 +1994,22 @@ try {
           }
         }
 
-        await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "the Ovis mark at the top left enters the mode", async (page) => {
+        await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "Inbox beside the sidebar's gear enters the mode", async (page) => {
           await page.locator(".app-header.is-zoned").waitFor();
           const classic = await terminalBox(page);
           await terminalSettled(page, 1);
           const sent = async (since: number): Promise<Window["inboxFixture"]["frames"]> => (await page.evaluate(() => window.inboxFixture.frames.slice())).slice(since)
             .filter((frame) => frame.type === "attach" || frame.type === "detach" || frame.type === "resize" || frame.type === "release-size");
           const before = await page.evaluate(() => window.inboxFixture.frames.length);
-          const mark = page.locator(".header-side .sidebar-brand");
-          assert.deepEqual(await mark.evaluate((node) => [node.tagName, node.getAttribute("aria-label"), node.getAttribute("title")]), ["BUTTON", "Open agent inbox", "Open agent inbox"],
-            "the Ovis mark at the top left is a button named, and titled, for the way in");
-          assert.ok((await mark.boundingBox())!.height < 44, "with a mouse the mark keeps its slim box");
+          const mark = page.locator(FOOT_INBOX);
+          assert.deepEqual(await mark.evaluate((node) => [node.tagName, node.getAttribute("aria-label")?.split(" \u00b7 ")[0], node.getAttribute("title")]), ["BUTTON", "Inbox", "Inbox"],
+            "Inbox beside the gear is a button named, and titled, for the way in");
+          assert.ok((await mark.boundingBox())!.height < 44, "with a mouse Inbox keeps the gear's slim box");
           const entries = await historyLength(page);
           await mark.click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await page.locator(".inbox-unchosen").waitFor();
-          await addressIs(page, { app: "inbox", pane: null }, "a click on the Ovis mark enters the mode on its list");
+          await addressIs(page, { app: "inbox", pane: null }, "a click on Inbox enters the mode on its list");
           assert.equal(await historyLength(page), entries + 1, "entering is one entry");
           assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is open: the pane showed its terminal");
           await terminalSettled(page);
@@ -2026,14 +2026,22 @@ try {
           await page.keyboard.press("Enter");
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await page.locator(".inbox-unchosen").waitFor();
-          assert.equal(await historyLength(page), again + 1, "Enter on the mark enters by one entry");
-          console.log("PASS at 1440 the Ovis mark at the sidebar's head is a button named Open agent inbox: a click, and Enter on it, enter the mode by one entry; from a pane on its terminal on the list with nothing chosen, and neither the way in nor Back to Ovis, which shows the terminal in its box, sends any pane an attach, detach, size or release");
+          assert.equal(await historyLength(page), again + 1, "Enter on Inbox enters by one entry");
+          console.log("PASS at 1440 Inbox beside the sidebar's gear is a button named Inbox: a click, and Enter on it, enter the mode by one entry; from a pane on its terminal on the list with nothing chosen, and neither the way in nor Back to Ovis, which shows the terminal in its box, sends any pane an attach, detach, size or release");
         }, desktop);
-        await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, "the Ovis mark under a finger from 769px", async (page) => {
+        await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, "Inbox under a finger from 769px", async (page) => {
           await page.locator(".app-header.is-zoned").waitFor();
-          const target = (await page.locator(".header-side .sidebar-brand").boundingBox())!;
-          assert.ok(target.height >= 44 && target.width >= 44, `under a coarse pointer the mark is a 44px target: ${Math.round(target.width)} by ${Math.round(target.height)}`);
-          console.log(`PASS at 1024 under a coarse pointer the Ovis mark is a ${Math.round(target.width)} by ${Math.round(target.height)} target`);
+          const reach = await page.locator(FOOT_INBOX).evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            const x = box.left + box.width / 2;
+            const y = box.top + box.height / 2;
+            const hits = (dx: number, dy: number): boolean => document.elementFromPoint(x + dx, y + dy)?.closest(".sidebar-footer-inbox") === node;
+            const gear = node.previousElementSibling as HTMLElement;
+            const gearBox = gear.getBoundingClientRect();
+            return { all: [hits(-21, 0), hits(21, 0), hits(0, -21), hits(0, 21)], gear: document.elementFromPoint(gearBox.right - 1, gearBox.top + gearBox.height / 2)?.closest(".sidebar-footer-settings") === gear };
+          });
+          assert.deepEqual(reach, { all: [true, true, true, true], gear: true }, "under a coarse pointer Inbox answers a 44px target, and the gear keeps its own edge");
+          console.log("PASS at 1024 under a coarse pointer Inbox is a 44px target beside the gear, overlapping none of it");
         }, { width: 1024, height: 768 }, true);
 
         await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, "the classic app and the mode are one place", async (page) => {
@@ -2054,7 +2062,7 @@ try {
           await page.locator('.view-switch .lens-option.is-chat[aria-pressed="true"]').waitFor();
           const framesBefore = await page.evaluate(() => window.inboxFixture.frames.length);
 
-          await page.locator(OVIS_MARK).click();
+          await page.locator(FOOT_INBOX).click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await addressIs(page, { app: "inbox", pane: WORKING }, "entering opens the thread of the pane the classic app was on");
           await page.locator(".thread-chip").waitFor();
@@ -2085,7 +2093,7 @@ try {
           await addressIs(page, { app: null, pane: BLOCKED }, "Back to Ovis shows the thread's pane in the classic app");
           assert.ok(await draftIs(draftY), `the classic app's composer has the thread's draft: it has "${await composer.inputValue()}"`);
 
-          await page.locator(OVIS_MARK).click();
+          await page.locator(FOOT_INBOX).click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await addressIs(page, { app: "inbox", pane: BLOCKED }, "entering again opens the thread that was left");
           assert.ok(await draftIs(draftY), `the thread's draft waits in its composer: it has "${await composer.inputValue()}"`);
@@ -2149,7 +2157,7 @@ try {
             const classic = await drawnScreens(page);
             const before = await page.evaluate(() => window.inboxFixture.frames.length);
 
-            await page.locator(OVIS_MARK).click();
+            await page.locator(FOOT_INBOX).click();
             await page.locator(".inbox-column .mode-inbox").waitFor();
             await page.locator(".inbox-unchosen").waitFor();
             await addressIs(page, { app: "inbox", pane: null }, "the way in opens the list");
@@ -2203,7 +2211,7 @@ try {
           const shell = await page.evaluate((working) => [...document.querySelectorAll("[data-layout-pane]")].map((frame) => frame.getAttribute("data-layout-pane")).find((pane) => pane !== null && pane !== working) ?? "", WORKING);
           await page.locator(`[data-layout-pane="${shell}"] .xterm-screen`).click();
           await addressIs(page, { pane: shell }, "the shell's pane is the one the classic app is on");
-          await page.locator(OVIS_MARK).click();
+          await page.locator(FOOT_INBOX).click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await page.locator(".inbox-unchosen").waitFor();
           assert.equal(await page.locator(".thread-chip").count(), 0, "no thread is opened for a pane with no row");
@@ -2222,7 +2230,7 @@ try {
           await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, `the sidebar ${setup.name} under ${pointer}`, async (page) => {
             const sent = (): Promise<Window["inboxFixture"]["frames"]> => page.evaluate(() => window.inboxFixture.frames.slice());
             const enter = async (): Promise<void> => {
-              await page.locator(OVIS_MARK).click();
+              await page.locator(FOOT_INBOX).click();
               await page.locator(".inbox-column .mode-inbox").waitFor();
               await rowCount(page, 6);
             };
@@ -2845,7 +2853,7 @@ try {
           assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true, "the pointer is coarse");
           await page.locator(".app-header.is-zoned").waitFor();
           const classic = { sidebar: await box(page, "#workspace-drawer"), pane: await box(page, ".pane-column") };
-          await page.locator(OVIS_MARK).click();
+          await page.locator(FOOT_INBOX).click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await page.locator(".thread-chip").waitFor();
           await rowCount(page, 6);

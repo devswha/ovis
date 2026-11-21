@@ -6,6 +6,7 @@
  */
 export const MACHINES_ZH: Record<string, string> = {
   "1 agent": "1 个代理",
+  "Inbox": "收件箱",
   "{n} agents": "{n} 个代理",
   "{where} refused the SSH connection: the PC may be off, or nothing answers on that port.": "{where} 拒绝了 SSH 连接：PC 可能已关机，或该端口上没有服务响应。",
   "{where} is not a name this web server can look up: check the address.": "{where} 不是此 Web 服务器能解析的名称：请检查地址。",

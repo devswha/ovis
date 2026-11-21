@@ -9,7 +9,7 @@ export function collapsedKey(machineId: string, page: { relayShell: boolean; pat
 
 import { tally } from "../lib/usageCounters.ts";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, Download, EyeOff, Monitor, Pencil, Plug, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Trash2, Unplug, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, EyeOff, Inbox, Monitor, Pencil, Plug, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Trash2, Unplug, X } from "lucide-react";
 import { OWN_UPDATE_OFFER, pairedPc, type Machine, type MachineState, type MachineUpdate, type RemoteOvis } from "../../shared/machines.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { AppLayoutContext, FULL_LAYOUT, MachineContext, type LayoutOffer } from "../lib/machineContext.tsx";
@@ -89,7 +89,7 @@ export const STATE_WORD: Readonly<Record<MachineState, string>> = {
   error: "Connection error",
 };
 
-interface Props { machines: Machine[]; footerStart?: ReactNode; afterPcs?: ReactNode; allMachines?: Machine[]; selectedMachineId: string; selectedPaneId: string | null; activity: SidebarActivity; actions: AppActions; watching?: boolean; appLayout?: (machineId: string) => LayoutOffer; drawerOpen?: boolean; filterRequest?: number; onSelect(machineId: string, paneId: string | null): void; onNew(machineId: string): void; onSetup(machine: Machine, update?: boolean): void; onUsageLogin(paneId: string): void }
+interface Props { machines: Machine[]; footerStart?: ReactNode; inbox?: { waiting: number; open(): void } | null; afterPcs?: ReactNode; allMachines?: Machine[]; selectedMachineId: string; selectedPaneId: string | null; activity: SidebarActivity; actions: AppActions; watching?: boolean; appLayout?: (machineId: string) => LayoutOffer; drawerOpen?: boolean; filterRequest?: number; onSelect(machineId: string, paneId: string | null): void; onNew(machineId: string): void; onSetup(machine: Machine, update?: boolean): void; onUsageLogin(paneId: string): void }
 export function MachineSidebar(props: Props) {
   const t = useT();
   const activity = props.activity;
@@ -280,10 +280,23 @@ export function MachineSidebar(props: Props) {
           showing in every tab. */}
       <div className="sidebar-footer-row">
         <button className="btn btn-ghost sidebar-footer-action sidebar-footer-settings" aria-label={t("Settings")} title={t("Settings (⌘⇧,)")} onClick={() => { tally(() => props.actions.counted?.("settings", "button")); props.actions.openSettings(); }}><Settings aria-hidden="true" /></button>
+        {props.inbox && <InboxEntry {...props.inbox} />}
         <UsageMeters watching={props.watching} onLocalLogin={props.watching ? undefined : props.onUsageLogin} />
       </div>
     </footer>
   </div></SidebarFilterProvider></SidebarActivityProvider>;
+}
+
+/** the way into the agent inbox, beside the gear; its badge counts the sessions waiting for you, as More's dot does */
+function InboxEntry({ waiting, open }: { waiting: number; open(): void }) {
+  const t = useT();
+  const label = waiting > 0 ? `${t("Inbox")} · ${t("{count} waiting for you", { count: waiting })}` : t("Inbox");
+  return (
+    <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-inbox" aria-label={label} title={t("Inbox")} onClick={open}>
+      <Inbox aria-hidden="true" />
+      {waiting > 0 && <span className="header-more-dot is-waiting" data-count={String(waiting)} aria-hidden="true" />}
+    </button>
+  );
 }
 
 function SidebarCount({ className, n, words, tooltip = true }: { className: string; n: number; words: string; tooltip?: boolean }) {

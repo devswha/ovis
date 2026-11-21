@@ -127,7 +127,7 @@ import { fileViewerKey, useFilePanels } from "./lib/useFilePanels.ts";
 import { usePaneCoverage } from "./lib/usePaneCoverage.ts";
 import { useT } from "./lib/i18n.ts";
 import { useConnectionChip, useServerMessageHandler } from "./lib/useConnectionChip.ts";
-import { useHeaderConnection } from "./lib/headerConnection.ts";
+import { useHeaderConnection, type HeaderConnection } from "./lib/headerConnection.ts";
 import { ConnectionRouteMark } from "./components/ConnectionRouteMark.tsx";
 import { StatusBar } from "./components/StatusBar.tsx";
 import { LensToggle } from "./components/LensToggle.tsx";
@@ -165,7 +165,7 @@ import { inboxOrder } from "./lib/agentInbox.ts";
 import { layoutCells } from "./lib/layoutMap.ts";
 import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
-import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
+import { InboxConnecting, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { InboxRail } from "./components/InboxRail.tsx";
 import { OvisMark } from "./components/OvisMark.tsx";
 import { catchTypeAhead } from "./lib/typeAhead.ts";
@@ -205,17 +205,24 @@ function ConnectionChip({ connected, word, title, quiet }: { connected: boolean;
   );
 }
 
-function SidebarBrand({ dark, onOpenInbox }: { dark: boolean; onOpenInbox: (() => void) | null }) {
-  const t = useT();
-  if (onOpenInbox === null) return (
+function SidebarBrand({ dark }: { dark: boolean }) {
+  return (
     <div className="brand sidebar-brand">
       <img src={dark ? logoDark : logoLight} alt="Ovis" width="68" height="24" />
     </div>
   );
+}
+
+/** a phone's header over its open drawer: the PC and workspace the list is on, not the pane's agent and name */
+function DrawerHeadTitle({ machine, workspace, connection }: { machine: string; workspace: string; connection: HeaderConnection }) {
+  const t = useT();
   return (
-    <button type="button" className="brand sidebar-brand is-entry" aria-label={t("Open agent inbox")} title={t("Open agent inbox")} onClick={onOpenInbox}>
-      <img src={dark ? logoDark : logoLight} alt="" width="68" height="24" />
-    </button>
+    <div className={`context drawer-head-title${connection === null ? "" : " has-connection"}`} title={`${machine} › ${workspace}`}>
+      <div className="context-title"><span className="context-title-text">{machine}</span></div>
+      <div className={`context-sub${connection === null ? "" : ` context-connection is-${connection}`}`}>
+        <span>{connection === null ? workspace : t(connection === "connected" ? "Connected" : "Reconnecting…")}</span>
+      </div>
+    </div>
   );
 }
 
@@ -387,8 +394,10 @@ export function App() {
     thread: inMode && !inbox.shown && selectedPaneId !== null && linkLanded ? sidebarPinKey(selectedMachineId, selectedPaneId) : null,
     focusInput: () => paneControls.current?.focusInput() });
   const modeOffered = !guideShown;
-  const markEnters = modeOffered && wideScreen && !sidebarCollapsed && !inMode;
-  const markInDrawer = modeOffered && !wideScreen && drawerOpen && !inMode;
+  // the sidebar's foot, with its Inbox beside the gear, is on screen: More need not offer the way in too
+  const footShown = modeOffered && wideScreen && !sidebarCollapsed && !inMode;
+  // a phone's open drawer: the header's toggle is the Ovis mark, and its title the PC and workspace
+  const drawerHead = !wideScreen && drawerOpen && !inMode;
   const { enter: enterInbox, leave: leaveMode } = useCountedInboxWays(enterInboxShell, leaveModeShell);
   useShownCount("inbox", modeOffered, LOCAL_MACHINE);
 
@@ -835,7 +844,7 @@ export function App() {
     ...paneMoreItems.filter((item) => !(foldFind && item.id === "search-conversation") && (!foldPane || item.id.startsWith("pane:")))
       .map((item, index) => index === 0 ? { ...item, divider: true } : item),
     ...(foldPane && more ? [{ id: "pane-group", label: t("Pane and tab…"), icon: PanelsTopLeft, divider: true, run: () => openMoreGroup("pane", more.anchor) }] : []),
-    ...(modeOffered && !markEnters ? [{ id: "enter-inbox", label: t("Open agent inbox"), icon: Inbox, divider: true, run: () => { actions.counted?.("inbox", "menu"); enterInbox(); } }] : []),
+    ...(modeOffered && !footShown ? [{ id: "enter-inbox", label: t("Open agent inbox"), icon: Inbox, divider: true, run: () => { actions.counted?.("inbox", "menu"); enterInbox(); } }] : []),
     // a phone's account and Sign out of the hosted app, last, as the overview's foot had it: a desktop has them in
     // Settings → Devices and PCs, which the account line opens
     ...(isSheetWidth ? hostedAccountItems(hostedSignIn, t, () => { setSettingsLinkPage("devices"); setSettingsLinkSection("account"); setSettingsOpen(true); }) : []),
@@ -963,24 +972,22 @@ export function App() {
       {selectedPane !== null && !guideShown && !inbox.shown && <h1 className="visually-hidden">{selectedTitle}</h1>}
       {listScreen || inboxWide ? null : <header className={`app-header is-zoned${chatShown ? " is-chat" : ""}${stripInHeader && !phoneTabRow ? " has-tab-row" : ""}${phoneTabRow && stripInHeader ? " has-phone-tabs" : ""}`}>
         <div className="header-side">
-          {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} onOpenInbox={markEnters ? () => { actions.counted?.("inbox", "button"); enterInbox(); } : null} />}
+          {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} />}
           {inboxBack ? <button type="button" id="inbox-back" className="icon-button inbox-back" aria-label={t("Back")} title={t("Back")} onClick={inbox.back}><ChevronLeft /></button> : <button
             type="button"
             id="drawer-toggle"
-            className={`icon-button drawer-toggle${markInDrawer ? " is-mark" : ""}`}
-            aria-label={t(markInDrawer ? "Open agent inbox" : drawerOpen ? "Close workspace list" : "Open workspace list")}
-            title={markInDrawer ? t("Open agent inbox") : undefined}
-            aria-haspopup={markInDrawer ? undefined : "dialog"}
-            aria-expanded={markInDrawer ? undefined : drawerOpen}
-            aria-controls={markInDrawer ? undefined : "workspace-drawer"}
+            className={`icon-button drawer-toggle${drawerHead ? " is-mark" : ""}`}
+            aria-label={t(drawerOpen ? "Close workspace list" : "Open workspace list")}
+            aria-haspopup="dialog"
+            aria-expanded={drawerOpen}
+            aria-controls="workspace-drawer"
             onClick={(event) => {
-              if (!markInDrawer) { toggleDrawerByButton(event.timeStamp); return; }
-              if (secondTapOfOpening(event.timeStamp)) return;
-              actions.counted?.("inbox", "button");
-              enterInbox();
+              // the mark stands where the menu button was: the opening double tap's second half does not close it
+              if (drawerHead && secondTapOfOpening(event.timeStamp)) return;
+              toggleDrawerByButton(event.timeStamp);
             }}
           >
-            {markInDrawer ? <OvisMark width="22" height="22" /> : drawerOpen ? <X /> : <Menu />}
+            {drawerHead ? <OvisMark width="22" height="22" /> : drawerOpen ? <X /> : <Menu />}
           </button>}
           {!inMode && wideScreen && !sidebarCollapsed && settings.sidebarRows !== "two" && <button type="button" className="icon-button new-workspace-button" disabled={viewOnly(selectedMachineId) || selectedMachine?.state !== "connected"} aria-label={t("New workspace")} title={viewOnly(selectedMachineId) ? `${t("New workspace")} · ${t("View only")}` : t("New workspace")} onClick={() => { actions.counted?.("new_workspace", "button"); actions.openNewSession(); }}>
             <Plus aria-hidden="true" />
@@ -1032,6 +1039,8 @@ export function App() {
           </div>
         ) : note !== null ? null : inbox.shown ? <Brand /> : inMode && selectedPane ? (
           <ThreadTitle machines={machines} activity={activity} machineId={selectedMachineId} pane={selectedPane} connection={headerConnection} watching={viewOnly(selectedMachineId)} severalPcs={sidebarMachines.length > 1} />
+        ) : selectedPane && crumb && drawerHead ? (
+          <DrawerHeadTitle machine={crumb.machine} workspace={crumb.workspace} connection={headerConnection} />
         ) : selectedPane && crumb ? (
           <div className={`context${headerConnection === null ? "" : " has-connection"}${tabsInHeader && selectedWorkspace && !guideShown ? " has-tabs" : ""}`} title={crumb.tooltip}>
             <div className="context-title">
@@ -1146,13 +1155,13 @@ export function App() {
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>) : <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}
           aria-owns={drawerModal ? "drawer-toggle" : undefined} ref={drawerRef} {...peekSidebarHandlers}>
-          {markInDrawer && <button type="button" className="visually-hidden drawer-close" aria-controls="workspace-drawer" aria-expanded="true" onClick={() => setDrawerOpen(false)}>{t("Close workspace list")}</button>}
+          {drawerHead && <button type="button" className="visually-hidden drawer-close" aria-controls="workspace-drawer" aria-expanded="true" onClick={() => setDrawerOpen(false)}>{t("Close workspace list")}</button>}
           {error && <div className="error-state" role="alert"><p>{error}</p><button className="btn" onClick={() => void load()}>{t("Retry")}</button></div>}
           <RenderBoundary resetKey={null} fallback={(retry) => <RegionCrash message={t("The sidebar can't be shown.")} retry={retry} />}>
             <CrashProbe region="sidebar" />
             <ReorderContext.Provider value={reorderCoordinator}><MachineSidebar machines={sidebarMachines} allMachines={machines} watching={auth?.role === "watch"} appLayout={appLayoutOn} drawerOpen={drawerOpen} filterRequest={sidebarFilterRequest} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} activity={activity} actions={actions} onSelect={selectTarget} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={openNewOn}
               afterPcs={browserTabs !== null && filePanelAvailable ? <BrowserTabsGroup tabs={browserTabs} selected={browserTab} onSelect={openBrowserTab} /> : undefined}
-              footerStart={<>{setupRow}{modeOffered && wideScreen && !markEnters && <InboxFootEntry onOpen={() => { actions.counted?.("inbox", "button"); enterInbox(); }} />}</>} /></ReorderContext.Provider>
+              footerStart={setupRow} inbox={modeOffered && !inMode ? { waiting: sessionTally.waiting, open: () => { actions.counted?.("inbox", "button"); enterInbox(); } } : null} /></ReorderContext.Provider>
           </RenderBoundary>
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>}

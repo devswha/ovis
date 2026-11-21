@@ -2397,32 +2397,6 @@ button {
   height: var(--space-5);
 }
 
-/* a button, so the installed app's title-bar drag region gives it the click */
-.sidebar-brand.is-entry {
-  padding: var(--space-half) var(--space-1);
-  margin-left: calc(-1 * var(--space-1));
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background-color var(--dur-fast) var(--ease-out);
-}
-
-@media (hover: hover) {
-  .sidebar-brand.is-entry:hover {
-    background: var(--bg-hover);
-  }
-}
-
-@media (pointer: coarse) {
-  .sidebar-brand.is-entry {
-    min-height: var(--touch-target);
-  }
-}
-
-.sidebar-brand.is-entry:active {
-  background: var(--bg-elevated);
-}
 
 .header-text-button {
   display: inline-flex;

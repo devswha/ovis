@@ -6,6 +6,7 @@
  */
 export const MACHINES_JA: Record<string, string> = {
   "1 agent": "エージェント: 1 件",
+  "Inbox": "受信トレイ",
   "{n} agents": "エージェント: {n} 件",
   "{where} refused the SSH connection: the PC may be off, or nothing answers on that port.": "{where} が SSH 接続を拒否しました。PC の電源が切れているか、そのポートで応答するものがない可能性があります。",
   "{where} is not a name this web server can look up: check the address.": "{where} はこのウェブサーバーが解決できない名前です。アドレスを確認してください。",
