@@ -30,6 +30,8 @@ interface ServeJson {
   Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }>;
   /** "host:port" -> true for a listener Tailscale Funnel opens to the public internet */
   AllowFunnel?: Record<string, boolean>;
+  /** the listeners a foreground `tailscale serve` session holds while it runs, by session */
+  Foreground?: Record<string, ServeJson>;
 }
 
 const NONE: TailscaleAccess = { state: "missing", dns_name: null, serving_url: null, serve_command: null, serve_url: null };
@@ -78,13 +80,15 @@ export function parseTailscale(output: TailscaleOutput | null, port: number, can
 }
 
 /** `parseTailscale`'s answer and the free allowed HTTPS port its command names (null when it names none). */
-function readServe(output: TailscaleOutput | null, port: number, candidates: readonly number[]): { access: TailscaleAccess; free: number | null } {
-  if (output === null) return { access: NONE, free: null };
+function readServe(output: TailscaleOutput | null, port: number, candidates: readonly number[]): { access: TailscaleAccess; free: number | null; known: boolean } {
+  if (output === null) return { access: NONE, free: null, known: false };
   const status = parseJson<StatusJson>(output.status);
-  if (status === null || status.BackendState !== "Running") return { access: { ...NONE, state: "stopped" }, free: null };
+  if (status === null || status.BackendState !== "Running") return { access: { ...NONE, state: "stopped" }, free: null, known: false };
   const dns = parseNodeName(output.status);
   const serve = parseJson<ServeJson>(output.serve);
-  const taken = new Set(Object.keys(serve?.TCP ?? {}).map(Number).filter(Number.isFinite));
+  // a foreground session's listeners are taken too, though they end with it
+  const listeners = [serve?.TCP, ...Object.values(serve?.Foreground ?? {}).map((session) => session.TCP)];
+  const taken = new Set(listeners.flatMap((tcp) => Object.keys(tcp ?? {})).map(Number).filter(Number.isFinite));
   let servingUrl: string | null = null;
   for (const [hostPort, site] of Object.entries(serve?.Web ?? {})) {
     const separator = hostPort.lastIndexOf(":");
@@ -99,6 +103,8 @@ function readServe(output: TailscaleOutput | null, port: number, candidates: rea
   const free = servingUrl === null ? candidates.find((candidate) => !taken.has(candidate)) ?? null : null;
   return {
     free,
+    // whether the serve status was read at all: only then are the taken ports known
+    known: serve !== null,
     access: {
       state: "running",
       dns_name: dns,
@@ -163,6 +169,8 @@ export async function serveTailscale(port: number, candidates: readonly number[]
   const before = readServe(await readTailscale(binary), port, candidates);
   if (before.access.state !== "running") return { ok: false, code: "tailscale_not_running" };
   if (before.access.serving_url !== null) return { ok: true, access: { port, platform, tailscale: before.access } };
+  // a port is only taken when it is shown free: a serve status that could not be read changes nothing
+  if (!before.known) return { ok: false, code: "tailscale_serve_refused", detail: "tailscale serve status could not be read" };
   if (before.free === null) return { ok: false, code: "tailscale_no_port" };
   const proc = Bun.spawn([binary, "serve", "--bg", `--https=${before.free}`, `http://127.0.0.1:${port}`], { windowsHide: true, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const timer = setTimeout(() => proc.kill(), SERVE_TIMEOUT_MS);
