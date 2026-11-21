@@ -122,6 +122,29 @@ public class HerdrShellPlugin extends Plugin {
         call.resolve(result);
     }
 
+    /** For the connect screen's Tailscale tab: `on`, Tailscale's VPN is up on this phone (Tailnet.on). */
+    @PluginMethod
+    public void tailscale(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("on", Tailnet.on());
+        call.resolve(result);
+    }
+
+    /** Opens the Tailscale app to turn it on, or its store page when it is not installed (the manifest's queries). */
+    @PluginMethod
+    public void openTailscale(PluginCall call) {
+        android.content.Intent open = getContext().getPackageManager().getLaunchIntentForPackage(Tailnet.PACKAGE);
+        if (open == null) {
+            open = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://play.google.com/store/apps/details?id=" + Tailnet.PACKAGE));
+        }
+        try {
+            getActivity().startActivity(open);
+            call.resolve();
+        } catch (android.content.ActivityNotFoundException e) {
+            call.reject("Tailscale could not be opened on this phone.");
+        }
+    }
+
     @PluginMethod
     public void forget(PluginCall call) {
         String key = call.getString("url");

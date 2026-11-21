@@ -7,6 +7,7 @@ import { RelayShell, type RelayShellProps } from "../../components/RelayShell.ts
 import { memoryAccountStore } from "../account/store.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { mountRelayShell, type RelayShellMount } from "./shell.tsx";
+import { shellAccountActions } from "../account/hostedSignIn.ts";
 
 const SERVICE = "https://account.ovis.sh";
 const ACCOUNT = "acct-test";
@@ -60,7 +61,7 @@ describe("deleting the account from the hosted shell", () => {
 
   it("deletes the account at the service, signs this device out and says so", async () => {
     const { fake, accountStore } = await signedInShell();
-    last().onDeleteAccount?.();
+    void shellAccountActions()?.deleteAccount();
     await until(() => accountView()?.kind === "signed-out", "the signed-out front page");
     expect(fake.deleted(ACCOUNT)).toBe(true);
     expect(accountView()).toEqual({ kind: "signed-out", error: null, notice: "Your account was deleted." });
@@ -71,7 +72,7 @@ describe("deleting the account from the hosted shell", () => {
     let now = Date.now();
     const { fake, accountStore } = await signedInShell(() => now);
     now += 11 * 60_000;
-    last().onDeleteAccount?.();
+    void shellAccountActions()?.deleteAccount();
     await until(() => { const view = accountView(); return view?.kind === "signed-in" && view.deleteError !== undefined; }, "the refusal");
     expect(fake.deleted(ACCOUNT)).toBe(false);
     expect(accountView()).toMatchObject({ kind: "signed-in", error: null, deleteError: "To delete your account, sign out, sign in again, then delete it within ten minutes." });
@@ -83,7 +84,7 @@ describe("deleting the account from the hosted shell", () => {
     const shown = (await accountStore.get("session"))!;
     await accountStore.set("session", { ...shown, account: "acct-two", access_token: fake.issueToken("acct-two"), refresh_token: "refresh-two", sign_in_id: "another-sign-in" });
     const before = fake.requests.length;
-    await (last().onDeleteAccount?.() as Promise<void> | undefined);
+    await shellAccountActions()?.deleteAccount();
     expect(fake.requests.slice(before)).not.toContain("DELETE /v1/account");
     expect(fake.deleted("acct-two")).toBe(false);
     expect(accountView()).toMatchObject({ kind: "signed-in", error: null });
@@ -95,7 +96,7 @@ describe("deleting the account from the hosted shell", () => {
       const mine = (await store.get("session"))!;
       await store.set("session", { ...mine, account: "acct-two", access_token: service.issueToken("acct-two"), refresh_token: "refresh-two", sign_in_id: "another-sign-in" });
     });
-    last().onDeleteAccount?.();
+    void shellAccountActions()?.deleteAccount();
     const readAfter = () => fake.requests.slice(fake.requests.indexOf("DELETE /v1/account") + 1).includes("GET /v1/pcs");
     await until(() => fake.deleted(ACCOUNT) && (accountView()?.kind === "signed-out" || (readAfter() && (accountView() as { pcs?: unknown }).pcs != null)), "the delete settled");
     expect(accountView()?.kind).toBe("signed-in");
@@ -106,7 +107,7 @@ describe("deleting the account from the hosted shell", () => {
     const { fake, accountStore } = await signedInShell();
     await accountStore.set("session", undefined);
     const before = fake.requests.length;
-    await (last().onDeleteAccount?.() as Promise<void> | undefined);
+    await shellAccountActions()?.deleteAccount();
     expect(fake.requests.slice(before)).not.toContain("DELETE /v1/account");
     expect(accountView()?.kind).toBe("signed-out");
   });
@@ -117,10 +118,10 @@ describe("deleting the account from the hosted shell", () => {
       if (++deletes === 1) throw new TypeError("network connection lost");
     });
     const key = (await accountStore.key()).public_spki;
-    await (last().onDeleteAccount?.() as Promise<void> | undefined);
+    await shellAccountActions()?.deleteAccount();
     expect(fake.deleted(ACCOUNT)).toBe(true);
     expect(accountView()).toMatchObject({ kind: "signed-in", deleteError: "The account could not be deleted. Try again." });
-    await (last().onDeleteAccount?.() as Promise<void> | undefined);
+    await shellAccountActions()?.deleteAccount();
     expect(accountView()).toMatchObject({ kind: "signed-out", error: "Your sign-in ended. Sign in again to see every PC of your account." });
     expect(await accountStore.get("session")).toBeUndefined();
     // a 401 is no proof the account went: the key stays rather than risk a live account's
@@ -133,10 +134,10 @@ describe("deleting the account from the hosted shell", () => {
       if (++deletes === 1) throw new TypeError("offline");
     });
     const key = (await accountStore.key()).public_spki;
-    await (last().onDeleteAccount?.() as Promise<void> | undefined);
+    await shellAccountActions()?.deleteAccount();
     expect(fake.deleted(ACCOUNT)).toBe(false);
     await accountStore.set("session", undefined);
-    await (last().onDeleteAccount?.() as Promise<void> | undefined);
+    await shellAccountActions()?.deleteAccount();
     expect(fake.deleted(ACCOUNT)).toBe(false);
     expect(accountView()).toMatchObject({ kind: "signed-out", error: "Your sign-in ended. Sign in again to see every PC of your account." });
     expect((await accountStore.key()).public_spki).toBe(key);
@@ -157,7 +158,7 @@ describe("deleting the account from the hosted shell", () => {
       const { fake, accountStore } = await signedInShell(() => now, "apple");
       now += 11 * 60_000;
       const tokened = nativeSignInTo(fake, ACCOUNT);
-      last().onDeleteAccount?.();
+      void shellAccountActions()?.deleteAccount();
       await tokened;
       await until(() => accountView()?.kind === "signed-out", "the signed-out front page");
       expect(fake.deleted(ACCOUNT)).toBe(true);
@@ -175,7 +176,7 @@ describe("deleting the account from the hosted shell", () => {
       const tokened = nativeSignInTo(fake, ACCOUNT);
       let signedInAgain = false;
       void tokened.then(() => { signedInAgain = true; });
-      await (last().onDeleteAccount?.() as Promise<void> | undefined);
+      await shellAccountActions()?.deleteAccount();
       expect(signedInAgain).toBe(false);
       expect(accountView()).toMatchObject({ kind: "signed-in", error: null });
       expect(fake.deleted(ACCOUNT)).toBe(false);
@@ -193,10 +194,10 @@ describe("deleting the account from the hosted shell", () => {
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true, getPlatform: () => "ios", PluginHeaders: [{ name: "OvisAuth" }], nativePromise: () => { opened.resolve(); return sheet.promise; } } });
       globalThis.fetch = Object.assign(async () => { tokened.resolve(); return Response.json({ access_token: fake.issueToken(ACCOUNT), refresh_token: "refresh-again", expires_in: 3600, account: ACCOUNT, provider: "apple" }); }, { preconnect: savedFetch.preconnect });
       let settled = false;
-      const done = (last().onDeleteAccount?.() as Promise<void> | undefined);
+      const done = shellAccountActions()?.deleteAccount();
       void done?.then(() => { settled = true; });
       await opened.promise;
-      last().onSignOut?.();
+      shellAccountActions()?.signOut();
       await until(() => accountView()?.kind === "signed-out", "the signed-out front page");
       sheet.resolve({ idToken: "apple-id-token" });
       await tokened.promise;
@@ -221,9 +222,9 @@ describe("deleting the account from the hosted shell", () => {
       }) as typeof accountStore.update;
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true, getPlatform: () => "ios", PluginHeaders: [{ name: "OvisAuth" }], nativePromise: async () => ({ idToken: "apple-id-token" }) } });
       globalThis.fetch = Object.assign(async () => { armed = true; return Response.json({ access_token: fake.issueToken(ACCOUNT), refresh_token: "refresh-again", expires_in: 3600, account: ACCOUNT, provider: "apple" }); }, { preconnect: savedFetch.preconnect });
-      const done = last().onDeleteAccount?.() as Promise<void> | undefined;
+      const done = shellAccountActions()?.deleteAccount();
       await reached.promise;
-      last().onSignOut?.();
+      shellAccountActions()?.signOut();
       gate.resolve();
       await done;
       expect(fake.requests.filter((line) => line === "DELETE /v1/account")).toHaveLength(1);
@@ -236,7 +237,7 @@ describe("deleting the account from the hosted shell", () => {
       const { fake } = await signedInShell(() => now, "apple");
       now += 11 * 60_000;
       const tokened = nativeSignInTo(fake, "acct-other");
-      last().onDeleteAccount?.();
+      void shellAccountActions()?.deleteAccount();
       await tokened;
       await until(() => { const view = accountView(); return view?.kind === "signed-in" && view.deleteError !== undefined; }, "the refusal");
       expect(fake.deleted(ACCOUNT)).toBe(false);
@@ -248,7 +249,7 @@ describe("deleting the account from the hosted shell", () => {
   it("says to cancel a subscription that still renews first", async () => {
     const { fake } = await signedInShell();
     fake.subscribe(ACCOUNT);
-    last().onDeleteAccount?.();
+    void shellAccountActions()?.deleteAccount();
     await until(() => { const view = accountView(); return view?.kind === "signed-in" && view.deleteError !== undefined; }, "the refusal");
     expect(fake.deleted(ACCOUNT)).toBe(false);
     expect(accountView()).toMatchObject({ kind: "signed-in", error: null, deleteError: "Cancel your subscription first, then delete the account." });

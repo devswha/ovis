@@ -128,11 +128,9 @@ let stepping: Set<string> | null = null;
 /**
  * Where the browser tells its entries (the Navigation API), the key of the one the step on its way lands on: the entry
  * under the one it leaves, named as the step is asked, as the browser names it then. A sheet that makes its entry
- * meanwhile changes neither. Its landing is the popstate onto that entry (`landing`); any other is not the step's.
+ * meanwhile changes neither.
  */
 let stepOnto: string | null = null;
-let landing: Event | null = null;
-let landedOn: (event: Event) => boolean = () => false;
 let steppedOff = false;
 /**
  * A step the browser drops lands nowhere: the wait ends by itself (LANDING_MS), so the next Back is
@@ -176,16 +174,6 @@ export function onSheetTraversalOver(listener: () => void): () => void {
 function tellTraversalOver(): void {
   if (sheetTraversalPending()) return;
   for (const listener of [...traversalOver]) listener();
-}
-
-/** The key of the entry the step on its way lands on; null with no step on its way, or where the browser tells no entries. */
-export function sheetBackOnto(): string | null {
-  return stepping === null ? null : stepOnto;
-}
-
-/** Whether a popstate is the step on its way landing on the entry it was asked for, and no traversal of anyone else's. */
-export function sheetBackLanded(event: Event): boolean {
-  return landedOn(event);
 }
 
 function stepBack(): void {
@@ -393,7 +381,6 @@ if (typeof window !== "undefined") {
     holding = false;
     const was = here;
     here = where();
-    landing = stepping !== null && stepOnto !== null && here?.key === stepOnto ? event : null;
     settle(here);
     ahead = null;
     took = climbing !== null && here?.key === climbing.key;
@@ -514,7 +501,6 @@ if (typeof window !== "undefined") {
   };
   window.addEventListener("popstate", hear);
   sheetStep.holds = (event) => { hear(event as PopStateEvent); return holding; };
-  landedOn = (event) => { hear(event as PopStateEvent); return event === landing; };
   if (sheetOf(window.history.state) !== null) window.history.replaceState(ordinary(window.history.state, true), "");
 }
 

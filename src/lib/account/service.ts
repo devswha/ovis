@@ -181,6 +181,8 @@ export interface DirectoryPc {
    * hand meanwhile. Null for any other PC, and once that time has passed.
    */
   readonly new_until: string | null;
+  /** the service sent a new window this device cannot read as a time: `new_until` is null, and a vouched approval refuses the PC (vouched-pc.ts) */
+  readonly new_until_unreadable?: true;
   /** when the PC was added in one press (kept after its 24 hours), or null */
   readonly admitted_at: string | null;
   /** the PC was added in one press under the first-PC exemption before this device joined: nobody was told of it */
@@ -248,7 +250,8 @@ function parsePc(value: unknown): DirectoryPc | null {
   const listing_id = "listing_id" in value ? (typeof value.listing_id === "string" && SERVER_ID.test(value.listing_id) ? value.listing_id : null) : undefined;
   const invited_at = typeof value.invited_at === "string" && !Number.isNaN(Date.parse(value.invited_at)) ? value.invited_at : undefined;
   return { server_id: value.server_id, label: value.label, added_at: value.added_at, last_seen_at: value.last_seen_at, public_key, relay, new_until, admitted_at, admitted_before_you: admitted_at !== null && value.admitted_before_you === true,
-    ...(listing_id === undefined ? {} : { listing_id }), ...(invited_at === undefined ? {} : { invited_at }) };
+    ...(listing_id === undefined ? {} : { listing_id }), ...(invited_at === undefined ? {} : { invited_at }),
+    ...(value.new_until != null && new_until === null ? { new_until_unreadable: true as const } : {}) };
 }
 
 export function sessionOf(body: unknown, service: string, now: number): AccountSession {

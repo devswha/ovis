@@ -87,12 +87,13 @@ import { RelayNotice } from "./components/RelayNotice.tsx";
 import { InstallHint } from "./components/InstallHint.tsx";
 import { DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
 import { NewPcNotices } from "./components/NewPcNotices.tsx";
-import { hostedSignOutItems } from "./components/AccountHead.tsx";
+import { hostedAccountItems } from "./components/AccountHead.tsx";
 import { useHostedSignIn } from "./lib/account/hostedSignIn.ts";
 import { ownWindowHere } from "./lib/account/addThisPc.ts";
 import { useAccountDeviceNotices } from "./components/AccountDeviceNotices.tsx";
 import { PendingKeys } from "./components/PendingKeys.tsx";
 import { RelayPairingPrompt } from "./components/RelayPairingPrompt.tsx";
+import { useOwnWindowPrompts } from "./lib/useOwnWindowPrompts.ts";
 import { AccountApprovals } from "./components/AccountApprovals.tsx";
 import { TelemetryNotice } from "./components/TelemetryControls.tsx";
 import { FilesDialog } from "./components/FilesDialog.tsx";
@@ -244,6 +245,8 @@ export function App() {
   const [updateRemote, setUpdateRemote] = useState(false);
   const { machineDialog, setMachineDialog, addPcPreset, setAddPcPreset, addPcFocusReturn, closeMachineDialog } = useMachineDialog();
   const { newSessionMachineId, setNewSessionMachineId } = useNewSessionMachine();
+  // a PC this one only watches there (Machine.view_only) is drawn as a watching device draws every PC
+  const viewOnly = (machineId: string): boolean => auth?.role === "watch" || machines.find((machine) => machine.id === machineId)?.view_only === true;
   const { health, localFreshness, shownHealth, readLocalHealth } = useLocalHealth();
   const exposure = health?.lan_exposure ?? health?.direct_exposure;
   const exposureDirect = !health?.lan_exposure || health.lan_exposure.direct === true;
@@ -257,6 +260,8 @@ export function App() {
   const { locked, setLocked, lockReason, pairCode, consumePairCode, pairingUnconfirmed, onPaired, auth, canSignOut, security, readBridgeHealth } = useAccessState({ ui: settings.uiFontFamily, chat: settings.chatFontFamily });
   const pendingAccess = locked === true ? false : auth === null ? undefined : auth.authenticated && auth.role === "drive" && auth.via !== "open";
   const { pairedNotices, setPairedNotices, dismissPairedNotice, relayPairings, setRelayPairings, remotePairings, setRemotePairings, removedNotices, setRemovedNotices, dismissRemovedNotice, pendingKeys, setPendingKeys, clearPendingKeys } = usePairedNotices(pendingAccess);
+  const ownWindow = ownWindowHere(health?.auth);
+  const prompts = useOwnWindowPrompts(relayPairings, pendingKeys, ownWindow);
   const updates = useUpdates(locked === false);
   const desktopUpdate = useDesktopUpdate();
   const { selectedPaneId, setSelectedPaneId, notificationViewTarget, setNotificationViewTarget, terminalPeek, setTerminalPeek, endPeek, pendingLink, linkLanded, setLinkLanded, rosterSeq, linkSince, selectionSince, rosterTick, setRosterTick, linkTick, setLinkTick } = useSelectionState({ initialLink });
@@ -820,8 +825,9 @@ export function App() {
       .map((item, index) => index === 0 ? { ...item, divider: true } : item),
     ...(foldPane && more ? [{ id: "pane-group", label: t("Pane and tab…"), icon: PanelsTopLeft, divider: true, run: () => openMoreGroup("pane", more.anchor) }] : []),
     ...(modeOffered && !markEnters ? [{ id: "enter-inbox", label: t("Open agent inbox"), icon: Inbox, divider: true, run: () => { actions.counted?.("inbox", "menu"); enterInbox(); } }] : []),
-    // a phone's Sign out of the hosted app, last, as the overview's foot had it: a desktop has it in Settings → Devices and PCs
-    ...(isSheetWidth ? hostedSignOutItems(hostedSignIn, t) : []),
+    // a phone's account and Sign out of the hosted app, last, as the overview's foot had it: a desktop has them in
+    // Settings → Devices and PCs, which the account line opens
+    ...(isSheetWidth ? hostedAccountItems(hostedSignIn, t, () => { setSettingsLinkPage("devices"); setSettingsLinkSection("account"); setSettingsOpen(true); }) : []),
   ];
   const fromMore = (id: string): RowMenuItem[] => moreItems.filter((item) => item.id === id);
   const moreOnList = inbox.shown;
@@ -965,7 +971,7 @@ export function App() {
           >
             {markInDrawer ? <OvisMark width="22" height="22" /> : drawerOpen ? <X /> : <Menu />}
           </button>}
-          {!inMode && wideScreen && !sidebarCollapsed && settings.sidebarRows !== "two" && <button type="button" className="icon-button new-workspace-button" disabled={auth?.role === "watch" || selectedMachine?.state !== "connected"} aria-label={t("New workspace")} title={auth?.role === "watch" ? `${t("New workspace")} · ${t("View only")}` : t("New workspace")} onClick={() => { actions.counted?.("new_workspace", "button"); actions.openNewSession(); }}>
+          {!inMode && wideScreen && !sidebarCollapsed && settings.sidebarRows !== "two" && <button type="button" className="icon-button new-workspace-button" disabled={viewOnly(selectedMachineId) || selectedMachine?.state !== "connected"} aria-label={t("New workspace")} title={viewOnly(selectedMachineId) ? `${t("New workspace")} · ${t("View only")}` : t("New workspace")} onClick={() => { actions.counted?.("new_workspace", "button"); actions.openNewSession(); }}>
             <Plus aria-hidden="true" />
           </button>}
           {!inMode && <button type="button" className="icon-button palette-button" aria-label={t("Command palette")} title={shortcutTitle(t("Command palette"), "palette")} onClick={() => openPalette()}>
@@ -1006,7 +1012,7 @@ export function App() {
             </PanePressContext.Provider>
             </RenderBoundary>
             {phoneTabRow && headerConnection !== null && <span className={`header-tabs-connection is-${headerConnection}`}>{t(headerConnection === "connected" ? "Connected" : "Reconnecting…")}</span>}
-            {phoneTabRow && auth?.role === "watch" && <span className="header-tabs-watch" title={t("View only")}><Eye aria-hidden="true" /><span className="visually-hidden">{t("View only")}</span></span>}
+            {phoneTabRow && viewOnly(selectedMachineId) && <span className="header-tabs-watch" title={t("View only")}><Eye aria-hidden="true" /><span className="visually-hidden">{t("View only")}</span></span>}
             {phoneTabRow && <button type="button" className="icon-button header-tabs-sheet" aria-label={t("Tabs of {workspace}", { workspace: selectedWorkspace.label })}
               title={t("Tabs of {workspace}", { workspace: selectedWorkspace.label })} aria-haspopup="dialog" aria-expanded={tabSheet !== null} onClick={(event) => toggleTabSheet(event.currentTarget)}>
               {workspaceTabCount > 1 && <span className="header-tabs-count" aria-hidden="true">{workspaceTabCount}</span>}
@@ -1014,7 +1020,7 @@ export function App() {
             </button>}
           </div>
         ) : note !== null ? null : inbox.shown ? <Brand /> : inMode && selectedPane ? (
-          <ThreadTitle machines={machines} activity={activity} machineId={selectedMachineId} pane={selectedPane} connection={headerConnection} watching={auth?.role === "watch"} severalPcs={sidebarMachines.length > 1} />
+          <ThreadTitle machines={machines} activity={activity} machineId={selectedMachineId} pane={selectedPane} connection={headerConnection} watching={viewOnly(selectedMachineId)} severalPcs={sidebarMachines.length > 1} />
         ) : selectedPane && crumb ? (
           <div className={`context${headerConnection === null ? "" : " has-connection"}${tabsInHeader && selectedWorkspace && !guideShown ? " has-tabs" : ""}`} title={crumb.tooltip}>
             <div className="context-title">
@@ -1030,7 +1036,7 @@ export function App() {
               </button>}
             </div>
             <div className={`context-sub${headerConnection === null ? "" : ` context-connection is-${headerConnection}`}`}>
-              {auth?.role === "watch" && !statusBarShown && <><span className="context-watch">{t("View only")}</span><span className="context-sep" aria-hidden="true">·</span></>}
+              {viewOnly(selectedMachineId) && !statusBarShown && <><span className="context-watch">{t("View only")}</span><span className="context-sep" aria-hidden="true">·</span></>}
               {headerConnection !== null ? <span>{t(headerConnection === "connected" ? "Connected" : "Reconnecting…")}</span> : <>
                 {crumb.showMachine && <><span className="machine-context-name">{crumb.machine}</span><span className="context-sep" aria-hidden="true">›</span></>}
                 <span>{crumb.workspace}</span>
@@ -1156,13 +1162,13 @@ export function App() {
         <PushHealthNotice onRepair={repairNotifications} onOpen={() => { setSettingsLinkPage("alerts"); setSettingsOpen(true); }} />
         <InstallHint />
         {setupGuide.guide !== null && setupGuide.paused && <SetupGuideResume onResume={setupGuide.resume} />}
-        {relayPairings.length > 0 && <RelayPairingPrompt pairings={relayPairings} />}
+        {prompts.length > 0 && <RelayPairingPrompt pairings={prompts} />}
         {remotePairings.length > 0 && <AccountApprovals pairings={remotePairings} />}
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         {deviceNotices}
         {health !== null && <NewPcNotices enabled={machineSessions.peek("local")?.socket?.accountOpensAll() === true} ownWindowOf={ownWindowHere(health.auth) ? health.web_ui?.server_id : undefined} signIn={accountSignedIn ?? undefined} />}
         {/* The PC's pending-redemptions stream owns the list; a decline response can arrive after a newer event. */}
-        <PendingKeys pending={pendingKeys} onDecline={(id) => { void declinePendingKey(id).catch((error: unknown) => console.warn("Ovis: the device was not declined", error instanceof Error ? error.name : error)); }} />
+        <PendingKeys pending={ownWindow ? [] : pendingKeys} onDecline={(id) => { void declinePendingKey(id).catch((error: unknown) => console.warn("Ovis: the device was not declined", error instanceof Error ? error.name : error)); }} />
         {removedNotices.length > 0 && <DeviceRemovedNotice events={removedNotices} onDismiss={dismissRemovedNotice} />}
         {setupGuide.guide === null && <FirstStartHints active={locked === false} />}
         {setupGuide.guide !== null && <MachineContext.Provider value="local"><SetupGuide auth={auth} security={security} opensAll={machineSessions.peek("local")?.socket?.accountOpensAll() === true} onEnableAlerts={enableNotifications} settingsOpen={settingsOpen} pushOn={pushOn} sharedSettingsKnown={sharedSettingsKnown} notifications={notifications} hidden={setupGuide.paused} state={setupGuide.guide} dispatch={setupGuide.dispatch} onClose={setupGuide.close} onOpenSettings={(page) => { setSettingsLinkPage(page); setSettingsOpen(true); }}
@@ -1176,7 +1182,7 @@ export function App() {
         {guideShown ? null :
         <div ref={paneAreaRef} className={`pane-split${paneSplit ? " is-split" : ""}${inbox.shown ? " is-under-inbox" : ""}`} onDragEnterCapture={paneDragOver} onDragOverCapture={paneDragOver} onDragLeave={paneDragLeave} onDropCapture={paneDrop}>
           {inboxWide && <ThreadTop note={<HeaderNote note={herdrPrefixWaiting ? t("herdr prefix: press a key") : note} />}
-            thread={!inbox.shown && selectedPane !== null && note === null ? { machines, activity, machineId: selectedMachineId, pane: selectedPane, connection: headerConnection, watching: auth?.role === "watch", severalPcs: sidebarMachines.length > 1 } : null}
+            thread={!inbox.shown && selectedPane !== null && note === null ? { machines, activity, machineId: selectedMachineId, pane: selectedPane, connection: headerConnection, watching: viewOnly(selectedMachineId), severalPcs: sidebarMachines.length > 1 } : null}
             controls={!inbox.shown && selectedPane !== null ? <>
               <LensToggle view={view} peek={terminalPeek !== null} terminalAttach={terminalAttach} thread round
                 title={(label) => shortcutTitle(label, "toggle-view")} onToggle={() => actions.toggleView("header")} />
@@ -1263,7 +1269,7 @@ export function App() {
                 )}
                 <main className="terminal-host">
                   <div id={slotPanelId} className="terminal-tabpanel" role={slotPanelLabel === null ? undefined : "tabpanel"} aria-label={slotPanelLabel ?? undefined}>
-                  <PaneCanvas key={machineId} snapshot={slotSnapshot} pane={pane} selectedPaneId={paneId} onSelect={onSelect} onChanged={actions.refresh} actionsRef={active ? paneActionsRef : undefined} watching={auth?.role === "watch"}
+                  <PaneCanvas key={machineId} snapshot={slotSnapshot} pane={pane} selectedPaneId={paneId} onSelect={onSelect} onChanged={actions.refresh} actionsRef={active ? paneActionsRef : undefined} watching={viewOnly(machineId)}
                     mirrored={herdr?.terminal_attach === false || herdr?.terminal_mirror === true}
                     onOpenInHalf={wideScreen && !threadDrawn ? (id, side) => dockSide({ machineId, paneId: id }, side) : undefined}
                     onRecoverUnsent={(target) => openUnsent({ machineId, pane: target })}
@@ -1277,7 +1283,7 @@ export function App() {
                     renderPane={(item, itemActive, herdrSplit) => <OpenFileContext.Provider value={item ? (path) => openFile({ path, paneId: item.pane_id, machineId }) : null}>
                       <PaneTerminal
                         presentationKey={paneContentKey(machine, item, item ? lensOf(item) : slotView)}
-                        deviceWatching={auth?.role === "watch"}
+                        deviceWatching={viewOnly(machineId)}
                         finishEpoch={machine?.snapshot?.finish_epoch}
                         finishId={item?.finish_id}
                         title={item ? displayPaneTitle(item) : active ? selectedTitle : null}
@@ -1334,7 +1340,7 @@ export function App() {
           machine={crumb.machine} place={crumb.folder === null ? crumb.workspace : `${crumb.workspace} › ${crumb.folder}`} path={crumb.path}
           session={sessionShort.length > 0 ? sessionShort.join(" · ") : null}
           pcLoad={pcLoadOn(settings, machines) ? <PcLoadStatus key={selectedMachine?.id ?? ""} machine={selectedMachine ?? null} /> : null}
-          watching={auth?.role === "watch"}
+          watching={viewOnly(selectedMachineId)}
           waiting={sessionTally.waiting} onNextWaiting={nextWaiting === null ? null : openNextWaiting}
           connection={headerConnection ?? (connected ? "live" : "lost")}
           connectionWord={headerConnection === "reconnecting" ? t("Reconnecting…") : connected ? t("Connected") : connWord} />}
@@ -1370,7 +1376,7 @@ export function App() {
         onClose={closeNewSession}
         onPending={(pending) => { newSessionPending.current = pending; }}
         onOpenPane={(paneId) => { closeNewSession(); selectTarget(newSessionMachineId, paneId, "terminal"); void load(); }}
-        watching={auth?.role === "watch"}
+        watching={viewOnly(newSessionMachineId)}
         groupKept={(groupOf) => liveGroupKeys(groupOf, machines, hiddenMachines)}
         onCreated={(paneId, agentStarted, messageWaits = false) => {
           closeNewSession();
@@ -1441,7 +1447,7 @@ export function App() {
       }} />}
       {unsentFor && <UnsentTextDialog machines={machines} target={unsentFor} canRecover={unsentFor.pane.agent != null} onClose={closeUnsent} onRecover={recover} />}
       <CommandPalette key={selectedMachineId} machines={sidebarMachines} onSelect={selectTarget} open={paletteOpen} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} snapshot={snapshot} online={selectedMachine?.state === "connected"} selectedPaneId={selectedPaneId}
-        view={terminalPeek !== null ? "terminal" : view} actions={actions} watching={auth?.role === "watch"} inboxMode={inMode} />
+        view={terminalPeek !== null ? "terminal" : view} actions={actions} watching={viewOnly(selectedMachineId)} inboxMode={inMode} />
       <MarkdownLinkMenu />
     </div></AppLayoutContext.Provider></MachineContext.Provider></MachineSessionsProvider>
   );

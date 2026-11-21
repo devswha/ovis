@@ -103,6 +103,9 @@
 
 .relay-add-saved { width: 100%; margin-top: var(--space-6); }
 
+/* the start screen's one way into Manage account (AccountHead.tsx StartScreenManage) */
+.relay-add-manage { margin: var(--space-6) 0 0; text-align: center; }
+
 .relay-add-saved-title {
   margin: 0 0 var(--space-2);
   color: var(--text-dim);

@@ -110,6 +110,9 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
 }
 
 .machine-dot.is-connected { background: var(--status-done); }
+
+/* a PC that is off fades its name, mark and dot to half, as an away PC's agent rows do (AgentSidebar.css) */
+.machine-group.is-offline > .machine-header .machine-title { opacity: 0.5; }
 .machine-dot.is-error { background: var(--status-blocked); }
 
 .machine-dot.is-connecting,

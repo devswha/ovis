@@ -75,7 +75,7 @@ import { PendingRedemptions, type PendingRedemption } from "./account/pending.ts
 import { askScreenForKey, KeyProofPairings } from "./account/key-proof.ts";
 import { lockRoutes } from "./account/lock-routes.ts";
 import { LockSignal } from "./lock-boundary.ts";
-import { desktopOwnerChannel, desktopOwnerFdChannel, LOCAL_CONFIRM_FILE, LocalConfirms, openConfirmListener, takeDesktopOwnerFd } from "./account/local-confirm.ts";
+import { desktopOwnerChannel, desktopOwnerFdChannel, LOCAL_CONFIRM_FILE, LocalConfirms, openConfirmListener, openOnDesktop, takeDesktopOwnerFd } from "./account/local-confirm.ts";
 import { Telemetry } from "./telemetry.ts";
 import { UsageService } from "./usage.ts";
 import { createSystemSampler, type SystemSampler } from "./system-stats.ts";
@@ -231,6 +231,8 @@ export function createServer(
     platform?: NodeJS.Platform;
     /** the desktop app's end of the desktop-owner channel (`takeDesktopOwnerFd`); used only with `accountOpensAll` */
     desktopOwner?: { input: ReadableStream<Uint8Array>; write(line: string): void };
+    /** opens the local confirm page on this PC's desktop (openOnDesktop); tests name another */
+    openBrowser?: (url: string) => boolean;
     backgroundWait?: { grace: number; limit: number };
     statusNow?: () => number;
     herdrIdentity?: () => string | null;
@@ -676,6 +678,10 @@ export function createServer(
     get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
     get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },
     get askScreenForKey() { return devices.screenApprovalActive() ? askScreen : undefined; },
+    get openConfirmPage() {
+      if (!devices.screenApprovalActive()) return undefined;
+      return () => confirmListener !== null && (options.openBrowser ?? openOnDesktop)(`http://127.0.0.1:${confirmListener.port}/`);
+    },
     get lockRoutes() { return devices.screenApprovalActive() ? lockHandler : undefined; },
     get portalStartupResult() { return portalStartupResult; },
   };

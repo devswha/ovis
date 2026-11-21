@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
-import { APP_ORIGIN, homeHost, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, tailnetHost } from "../app/web/shell.js";
+import { APP_ORIGIN, directTarget, homeHost, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, tailnetHost, tailnetPcs } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
 
@@ -19,6 +19,31 @@ describe("the sign-in buttons", () => {
 
   it("reads nothing from an answer with no list, so the build's buttons stay", () => {
     for (const body of [null, "github", {}, { providers: "github" }, { providers: ["google"] }]) expect(listedProviders(body)).toBeNull();
+  });
+});
+
+describe("Direct's one field", () => {
+  it("takes user@host, with a port or ssh://, as SSH", () => {
+    expect(directTarget(" me@my-server.example.com ")).toEqual({ ssh: { user: "me", host: "my-server.example.com", port: 22 } });
+    expect(directTarget("pi@192.168.0.20:2222")).toEqual({ ssh: { user: "pi", host: "192.168.0.20", port: 2222 } });
+    expect(directTarget("ssh://dev@nas.tail1e211e.ts.net/")).toEqual({ ssh: { user: "dev", host: "nas.tail1e211e.ts.net", port: 22 } });
+    expect(directTarget("me@[fd7a:115c:a1e0::1]:22")).toEqual({ ssh: { user: "me", host: "fd7a:115c:a1e0::1", port: 22 } });
+  });
+
+  it("leaves every other text an address, an http user@host and an impossible port among them", () => {
+    for (const text of ["192.168.0.10:7317", "https://my-pc.tailnet.ts.net", "http://me@my-pc:7317", "my-pc.local", "me@host:70000", "me@host/path", "demo"]) {
+      expect(directTarget(text)).toEqual({ address: text });
+    }
+  });
+});
+
+describe("the Tailscale tab's PCs", () => {
+  it("offers the PCs this phone opened at a Tailscale address, by their saved name or their host's first word", () => {
+    const saved = ["http://100.101.12.7:7317", "https://nas.tail1e211e.ts.net", "http://192.168.0.10:7317", "https://app.ovis.sh", "not an address"];
+    expect(tailnetPcs(saved, { "http://100.101.12.7:7317": "home-server", "http://192.168.0.10:7317": "desk" })).toEqual([
+      { origin: "http://100.101.12.7:7317", label: "home-server" },
+      { origin: "https://nas.tail1e211e.ts.net", label: "nas" },
+    ]);
   });
 });
 
@@ -42,6 +67,14 @@ describe("relay pairing links", () => {
   it("reopens a saved relay PC by its scope", () => {
     const scope = `https://app.ovis.sh/s/${SERVER_ID}/`;
     expect(link(scope)).toEqual({ url: scope, scope, name: undefined });
+  });
+
+  it("opens a PC's page that asks for a provider's sign-in first, with that fragment kept, and no other fragment", () => {
+    const scope = `https://app.ovis.sh/s/${SERVER_ID}/`;
+    expect(link(`${scope}#sign-in=github`)).toEqual({ url: `${scope}#sign-in=github`, scope, name: undefined });
+    for (const text of [`${scope}#sign-in=`, `${scope}#sign-in=github&pane=w1`, `${scope}#sign-in=GitHub`]) {
+      expect([text, link(text)]).toEqual([text, { error: "not-a-pc" }]);
+    }
   });
 
   it("refuses an offer on any other origin", () => {

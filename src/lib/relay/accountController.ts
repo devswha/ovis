@@ -12,6 +12,7 @@ import type { SignInReturn } from "../account/signin.ts";
 import type { AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
+import type { LeaveOutcome } from "../account/hostedSignIn.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable, SignInNotWanted } from "../account/native.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
@@ -226,8 +227,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     void changed();
     void ending.then((session) => session === undefined ? undefined : account.forSignIn(session).signOut()).catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
   };
-  const leave = (): void => {
-    if (leaving) return;
+  /** This device leaves the account; the outcome is the asking page's to show (hostedSignIn.ts, LeaveOutcome). */
+  const leave = (): Promise<LeaveOutcome> => {
+    if (leaving) return Promise.resolve({ left: false, message: null });
     deletion = undefined;
     leaving = true;
     const epoch = ++generation;
@@ -235,21 +237,20 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const from = account.session();
     // an enrollment of this tab stops here; one still linking, here or in another tab, is in the leave's snapshot (leave.ts)
     for (const serverId of running.values()) cancelEnrollment(serverId);
-    void from.then((session) => {
+    return from.then((session) => {
       if (session === undefined) throw new SignedOutError();
       return leaveAccount({ service: account, accountStore, relayStore: store, session });
-    }).then(async ({ unconfirmed }) => {
-      if (epoch !== generation) return;
+    }).then(async ({ unconfirmed }): Promise<LeaveOutcome> => {
       // a PC the account does not list kept this device: say so, rather than claim it is gone everywhere
       const names = new Map((await store.list()).map((device) => [device.server_id, device.name ?? device.server_id.slice(0, 8)]));
-      accountView = { kind: "signed-out", error: unconfirmed.length === 0 ? null
-        : t("This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}", { pcs: unconfirmed.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ") }) };
-      await changed();
-    }, async (error: unknown) => {
+      const message = unconfirmed.length === 0 ? null
+        : t("This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}", { pcs: unconfirmed.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ") });
+      if (epoch === generation) { accountView = { kind: "signed-out", error: message }; await changed(); }
+      return { left: true, message };
+    }, async (error: unknown): Promise<LeaveOutcome> => {
       console.warn("Ovis: this device did not leave the account", error instanceof Error ? error.name : error);
-      if (epoch !== generation) return;
-      if (accountView?.kind === "signed-in") accountView = { ...accountView, error: t("This device could not leave the account. Try again.") };
-      await changed();
+      if (epoch === generation) await changed();
+      return { left: false, message: t("This device could not leave the account. Try again.") };
     }).finally(() => { leaving = false; });
   };
 
@@ -331,7 +332,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
   /** `pairing`: a web sign-in leaves the page, so the pairing it is for waits in its pending record (load hands it back) */
   /** `wanted`: asked again right before the page leaves for the provider (after its pending record is written); false leaves the sign-in unstarted */
-  const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean | Promise<boolean>): void => {
+  /** `pc`: the PC whose own page this is: a web sign-in's return goes back to it (load's `toPc`) */
+  const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean | Promise<boolean>, pc?: string): void => {
     if (accountService === null) return;
     if (accountView?.kind === "signing-in") return;
     deletion = undefined;
@@ -347,7 +349,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     // the app's sheet) leaves for the provider (the link entry, shell.tsx)
     const started = nativeSignInAvailable()
       ? (wanted === undefined ? native() : Promise.resolve(wanted()).then((go) => go ? native() : unwanted()))
-      : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...(pairing ? { pairing } : {}) })
+      : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...(pairing ? { pairing } : {}), ...(pc ? { pc } : {}) })
         .then(async (url) => wanted === undefined || await wanted() ? leave(url) : unwanted());
     started.catch(async (error: unknown) => {
       console.warn("Ovis: the sign-in did not start", error);
@@ -359,23 +361,29 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * `carried`: told of the pairing the returned sign-in was started for, once it is taken, before the code is traded.
    * `ended`: told how that sign-in itself ended (`refused`: the reason shown; null once its code was traded), whatever
    * session another tab may have stored meanwhile, as soon as the code is traded and before the directory is read;
-   * undefined when the return carried no pairing.
+   * undefined when the return carried no pairing and no PC. `toPc`: told of the PC whose own page started the returned
+   * sign-in, once it is taken, before the code is traded (as `carried`).
    */
-  const load = async (returned: SignInReturn | null, carried?: (pairing: PendingPairing) => void, ended?: (outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined) => void): Promise<void> => {
+  const load = async (returned: SignInReturn | null, carried?: (pairing: PendingPairing) => void, ended?: (outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined) => void, toPc?: (serverId: string) => void): Promise<void> => {
     let outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined;
     let registrationJustTried: AccountSession | undefined;
     if (returned !== null && accountService !== null) {
       const pending = await takePendingSignIn(accountStore, returned.state);
       accountView = { kind: "signing-in", ...(pending ? { provider: pending.provider } : {}) };
       if (pending?.pairing) carried?.(pending.pairing);
+      else if (pending?.pc !== undefined) toPc?.(pending.pc);
       await changed();
       try {
         const session = await redeemSignIn(pending, returned, { store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
         if (pending?.pairing) outcome = { refused: null, provider: pending.provider };
-        else { registrationJustTried = session; await registerSignIn(session); }
+        else {
+          registrationJustTried = session;
+          await registerSignIn(session);
+          if (pending?.pc !== undefined) outcome = { refused: null, provider: pending.provider };
+        }
       } catch (error) {
         accountView = { kind: "signed-out", error: signInFailure(error), ...(pending ? { provider: pending.provider } : {}) };
-        if (pending?.pairing) outcome = { refused: signInFailure(error), provider: pending.provider };
+        if (pending?.pairing || pending?.pc !== undefined) outcome = { refused: signInFailure(error), provider: pending!.provider };
         await changed();
       }
       ended?.(outcome);

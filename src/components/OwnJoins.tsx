@@ -7,17 +7,14 @@ import { lastSeen } from "../lib/lastSeen.ts";
 import { ADDED_POLL_MS } from "./AccountSection.tsx";
 
 /**
- * Account joins no pairing window invited, listed in this PC's own window only (server/relay/routes.ts, /api/relay/joins):
- * nothing pops up, and the owner lets one in by typing the digits its screen shows. A wrong number ends that join.
+ * The account joins waiting for this PC's own window (server/relay/routes.ts, /api/relay/joins), read every
+ * ADDED_POLL_MS while `enabled` and the page shows, and at once whenever `again` changes. A 403, 404 or 405 is final:
+ * a window that is not the PC's own, or a PC without the route, is not asked again.
  */
-export function OwnJoins() {
-  const t = useT();
-  const [joins, setJoins] = useState<OwnJoinRequest[]>([]);
-  const [open, setOpen] = useState<string | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const [checks, setChecks] = useState(0);
-  const id = useId();
+export function useOwnJoins(enabled: boolean, again = 0): readonly OwnJoinRequest[] {
+  const [joins, setJoins] = useState<readonly OwnJoinRequest[]>([]);
   useEffect(() => {
+    if (!enabled) { setJoins([]); return; }
     let live = true;
     let refused = false;
     const read = (): void => {
@@ -30,7 +27,22 @@ export function OwnJoins() {
     read();
     const timer = setInterval(read, ADDED_POLL_MS);
     return () => { live = false; clearInterval(timer); };
-  }, [checks]);
+  }, [enabled, again]);
+  return joins;
+}
+
+/**
+ * Account joins no pairing window invited, listed in this PC's own window only (server/relay/routes.ts, /api/relay/joins):
+ * nothing pops up, and the owner lets one in by typing the digits its screen shows. A wrong number ends that join. A
+ * first join, which comes with its digits, is asked on the window's prompt instead (RelayPairingPrompt, firstJoinPrompts).
+ */
+export function OwnJoins() {
+  const t = useT();
+  const [open, setOpen] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [checks, setChecks] = useState(0);
+  const id = useId();
+  const joins = useOwnJoins(true, checks).filter((join) => join.digits === undefined);
 
   const approve = (join: OwnJoinRequest) => (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();

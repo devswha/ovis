@@ -10,6 +10,7 @@
  * the acts write; Ovis has no boundary there.
  */
 import { dlopen, FFIType } from "bun:ffi";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, fstatSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
@@ -403,6 +404,16 @@ export function openConfirmListener(confirms: LocalConfirms, options: {
       catch (error) { console.error(`${file} was not removed: ${error instanceof Error ? error.message : String(error)}`); }
     },
   };
+}
+
+/**
+ * Opens `url` (this listener's page) in a browser on this PC's own desktop, as `ovis confirm` does: on Linux, under X11
+ * or Wayland only. False where there is no desktop to open it on.
+ */
+export function openOnDesktop(url: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== "linux" || !(Boolean(env["DISPLAY"]) || Boolean(env["WAYLAND_DISPLAY"]))) return false;
+  spawn("xdg-open", [url], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+  return true;
 }
 
 function listPage(open: readonly OpenConfirm[]): string {

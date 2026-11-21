@@ -61,32 +61,39 @@ function Way({ icon: Icon, title, sub, onClick, action }: { readonly icon: Lucid
   );
 }
 
+export type SavedPc = { readonly server_id: string; readonly name?: string | undefined; readonly note?: string | undefined };
+
+/** The PCs this device paired before (and, signed in, the account's PCs not on it yet), each by its page. */
+export function SavedPcs({ devices }: { readonly devices: readonly SavedPc[] }) {
+  const t = useT();
+  return (
+    <section className="relay-add-saved">
+      <h2 className="relay-add-saved-title">{t("Your PCs")}</h2>
+      <ul>
+        {devices.map((device) => (
+          <li key={device.server_id}><a className="relay-add-saved-pc" href={serverScopePath(device.server_id)}><span className="relay-add-saved-name">{device.name ?? t("Unnamed PC")}</span>{device.note !== undefined && <span className="relay-add-saved-note">{device.note}</span>}<ChevronRight aria-hidden="true" /></a></li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 /**
- * Add a PC, the one screen behind "Start without signing in" and the app's Add a PC: scan the PC's QR code, enter an
- * address on Tailscale or Wi-Fi, or SSH where the phone app can, then the PCs this device paired before and, signed in,
- * the account's PCs not on it yet, each with what is known of it (`note`: off, needs approval). `qr`: the screen that
- * says where the QR code is and offers a code, for a page with no scanner of its own (a browser).
+ * What a scanned or typed address does, with the error it ends on: `cancel` stops an address the phone app is still
+ * checking (Android asks it for up to 20 s), which leaving the screen does by itself.
  */
-export function RelayAddPc({ onBack, devices, qr }: {
-  readonly onBack?: (() => void) | undefined;
-  readonly devices: readonly { readonly server_id: string; readonly name?: string | undefined; readonly note?: string | undefined }[];
-  readonly qr: (back: () => void) => ReactNode;
-}) {
-  const t = useT(), fieldId = useId(), title = useRef<HTMLHeadingElement>(null);
-  const [step, setStep] = useState<"ways" | "address" | "qr">("ways");
+function useAddressOpen() {
+  const t = useT();
   const [error, setError] = useState<string | null>(null);
   // the public http address the person was just warned about: opening it again goes ahead
   const warned = useRef<string | null>(null);
-  // an address the phone app is still checking (Android asks it for up to 20 s): Back cancels it
   const opening = useRef(false);
-  const failed = (cause: unknown): void => { setError(cause instanceof Error ? cause.message : String(cause)); };
-  const go = (next: "ways" | "address" | "qr"): void => {
+  const cancel = (): void => {
     if (opening.current && hasNativePlugin("HerdrShell")) void callNative("HerdrShell", "cancelOpen").catch(() => undefined);
     opening.current = false;
-    setError(null); setStep(next);
   };
-  // a step that replaces the control that had the focus gives it to its own title, so a keyboard keeps its place
-  useEffect(() => { if (step === "ways" && document.activeElement === document.body) title.current?.focus(); }, [step]);
+  useEffect(() => cancel, []);
+  const failed = (cause: unknown): void => { setError(cause instanceof Error ? cause.message : String(cause)); };
   /**
    * What a scanned or typed address does: a pairing link of this app opens at its PC's page, where the pairing asks
    * first; one of another origin is refused; a PC's own address opens (a public http one only after a warning); anything
@@ -110,6 +117,48 @@ export function RelayAddPc({ onBack, devices, qr }: {
     opening.current = true;
     openAddress(url).catch(failed).finally(() => { opening.current = false; });
   };
+  return { error, setError, failed, cancel, take };
+}
+
+/** A PC's address in one field (`label` names it) and its submit button, then what opening it ended on. */
+export function AddressForm({ label, placeholder, submit: submitLabel, labelShown = false, autoFocus = false }: {
+  readonly label: string; readonly placeholder: string; readonly submit: string; readonly labelShown?: boolean; readonly autoFocus?: boolean;
+}) {
+  const fieldId = useId();
+  const { error, take } = useAddressOpen();
+  const submit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    take(addressOf((event.currentTarget.elements.namedItem("address") as HTMLInputElement).value));
+  };
+  return (
+    <>
+      <form className="relay-add-form" onSubmit={submit} noValidate>
+        {labelShown && <label className="relay-shell-field-label" htmlFor={fieldId}>{label}</label>}
+        <input id={fieldId} name="address" className="input" type="url" inputMode="url" {...(labelShown ? {} : { "aria-label": label })} placeholder={placeholder} autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="url" autoFocus={autoFocus} />
+        <button type="submit" className="btn btn-primary">{submitLabel}</button>
+      </form>
+      {error !== null && <p className="account-error" role="alert">{error}</p>}
+    </>
+  );
+}
+
+/**
+ * Add a PC, the app's Add a PC (More → Add a PC, `/#add`): scan the PC's QR code, enter an address on Tailscale or
+ * Wi-Fi, or SSH where the phone app can, then the PCs this device paired before and, signed in, the account's PCs not
+ * on it yet, each with what is known of it (`note`: off, needs approval). `qr`: the screen that says where the QR code
+ * is and offers a code, for a page with no scanner of its own (a browser).
+ */
+export function RelayAddPc({ onBack, devices, qr }: {
+  readonly onBack?: (() => void) | undefined;
+  readonly devices: readonly SavedPc[];
+  readonly qr: (back: () => void) => ReactNode;
+}) {
+  const t = useT(), title = useRef<HTMLHeadingElement>(null);
+  const [step, setStep] = useState<"ways" | "address" | "qr">("ways");
+  const { error, setError, failed, cancel, take } = useAddressOpen();
+  const go = (next: "ways" | "address" | "qr"): void => { cancel(); setError(null); setStep(next); };
+  // a step that replaces the control that had the focus gives it to its own title, so a keyboard keeps its place
+  useEffect(() => { if (step === "ways" && document.activeElement === document.body) title.current?.focus(); }, [step]);
   const scan = (): void => {
     if (!hasNativePlugin(SCANNER)) { go("qr"); return; }
     setError(null);
@@ -118,10 +167,6 @@ export function RelayAddPc({ onBack, devices, qr }: {
     void callNative<{ ScanResult?: string }>(SCANNER, "scanBarcode", { hint: 0, scanInstructions: t("Point at the QR code on the PC's screen"), scanButton: false, scanText: " ", cameraDirection: 1, scanOrientation: 3 }).then((result) => {
       if (result.ScanResult) take(addressOf(result.ScanResult));
     }, () => go("qr"));
-  };
-  const submit = (event: FormEvent<HTMLFormElement>): void => {
-    event.preventDefault();
-    take(addressOf((event.currentTarget.elements.namedItem("address") as HTMLInputElement).value));
   };
   const back = step === "ways" ? onBack : () => go("ways");
   if (step === "qr") return <>{qr(() => go("ways"))}</>;
@@ -138,24 +183,12 @@ export function RelayAddPc({ onBack, devices, qr }: {
             {/* only where the phone app can reach a PC over SSH itself: a page without it draws no way it cannot take */}
             {hasNativePlugin(SSH) && <Way icon={SquareTerminal} title="SSH" sub="user@host" action="add-ssh" onClick={() => { setError(null); callNative(SSH, "add").catch(failed); }} />}
           </div>
-          {devices.length > 0 && (
-            <section className="relay-add-saved">
-              <h2 className="relay-add-saved-title">{t("Your PCs")}</h2>
-              <ul>
-                {devices.map((device) => (
-                  <li key={device.server_id}><a className="relay-add-saved-pc" href={serverScopePath(device.server_id)}><span className="relay-add-saved-name">{device.name ?? t("Unnamed PC")}</span>{device.note !== undefined && <span className="relay-add-saved-note">{device.note}</span>}<ChevronRight aria-hidden="true" /></a></li>
-                ))}
-              </ul>
-            </section>
-          )}
+          {devices.length > 0 && <SavedPcs devices={devices} />}
         </>
       ) : (
         <>
           <h1 className="relay-add-title">{t("Enter an address")}</h1>
-          <form className="relay-add-form" onSubmit={submit} noValidate>
-            <input id={fieldId} name="address" className="input" type="url" inputMode="url" aria-label={t("PC address")} placeholder="https://my-pc.tailnet.ts.net" autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="url" autoFocus />
-            <button type="submit" className="btn btn-primary">{t("Open")}</button>
-          </form>
+          <AddressForm label={t("PC address")} placeholder="https://my-pc.tailnet.ts.net" submit={t("Open")} autoFocus />
         </>
       )}
       {error !== null && <p className="account-error" role="alert">{error}</p>}

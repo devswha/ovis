@@ -1,6 +1,7 @@
 import { Monitor, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
+import { newPcNoticeClosed, newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, sameSignIn, SignedOutError, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
@@ -15,12 +16,6 @@ const READ_TIMEOUT_MS = 10_000;
 /** a PC still in its 24 hours, or one added under the first-PC exemption before this device joined (told once, with no end) */
 type NewPc = DirectoryPc;
 
-const newPcKey = (account: string, pc: NewPc): string => `ovis:new-pc:${JSON.stringify([account, pc.server_id, pc.admitted_at ?? pc.new_until])}`;
-
-function dismissed(key: string): boolean {
-  try { return localStorage.getItem(key) !== null; }
-  catch (error) { if (error instanceof DOMException) return false; throw error; }
-}
 type Listing = { readonly session: AccountSession; readonly pcs: readonly NewPc[] };
 
 export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }: {
@@ -58,7 +53,7 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         const now = Date.now();
         const told = pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now));
         // a notice this device already closed is nothing left to tell
-        telling = told.some((pc) => pc.server_id !== ownWindowOf && !dismissed(newPcKey(session.account, pc)));
+        telling = told.some((pc) => pc.server_id !== ownWindowOf && !newPcNoticeClosed(newPcNoticeKey(session.account, pc)));
         setListing(current !== undefined && sameSignIn(current, session) ? { session, pcs: told } : null);
       } catch (error) {
         if (mine !== version) return;
@@ -90,7 +85,7 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
 
   if (listing === null) return null;
   return listing.pcs.filter((pc) => pc.server_id !== ownWindowOf).map((pc) => {
-    const dismissalKey = newPcKey(listing.session.account, pc);
+    const dismissalKey = newPcNoticeKey(listing.session.account, pc);
     return <NewPcNotice key={`${listing.session.sign_in_id}:${dismissalKey}`} pc={pc} session={listing.session} dismissalKey={dismissalKey} onRemoved={onRemoved} />;
   });
 }
@@ -103,10 +98,7 @@ function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
 }) {
   const t = useT();
   const expiresAt = pc.admitted_before_you ? Number.POSITIVE_INFINITY : Date.parse(pc.new_until ?? "");
-  const [hidden, setHidden] = useState(() => {
-    try { return localStorage.getItem(dismissalKey) !== null; }
-    catch (error) { if (error instanceof DOMException) return false; throw error; }
-  });
+  const [hidden, setHidden] = useState(() => newPcNoticeClosed(dismissalKey));
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState(false);
   const inFlight = useRef(false);

@@ -19,7 +19,6 @@ import { UPDATES_JA } from "./i18n/updates.ja.ts";
 import { PALETTE_JA } from "./i18n/palette.ja.ts";
 import { RELAY_JA } from "./i18n/relay.ja.ts";
 import { DASHBOARD_JA } from "./i18n/dashboard.ja.ts";
-import { MY_MACHINES_JA } from "./i18n/my-machines.ja.ts";
 import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
 
 /**
@@ -37,7 +36,6 @@ const BASE: Record<string, string> = {
   "Type the number": "番号を入力",
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "キーがターミナルに届いていない可能性があります: 確認される前に接続が切れました。",
   "Open PC": "PC を開く",
-  "Open {name}": "{name} を開く",
   "View only": "表示のみ",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "貼り付けていません: ファイルのパスに改行があり、ターミナルが Enter として受け取ります。",
   "Attach files": "ファイルを添付",
@@ -94,6 +92,8 @@ const BASE: Record<string, string> = {
   "Your sign-in ended. Sign in again to see every PC of your account.": "サインインが終了しました。アカウントのすべての PC を表示するには、もう一度サインインしてください。",
   "The account service could not be reached. The PCs this device is paired with still work.": "アカウントサービスに接続できません。このデバイスとペアリング済みの PC はそのまま使えます。",
   "Add a new device?": "新しいデバイスを追加しますか？",
+  "Pair this PC?": "このPCをペアリングしますか？",
+  "This PC could not be verified.": "このPCを確認できませんでした。",
   "Check the number, then approve": "番号を確かめてから承認してください",
   "Through {pc} · joins your {n} PCs": "{pc} 経由 · {n} 台の PC に参加します",
   "Pick the number on {device}": "{device} に表示されている数字を選んでください",
@@ -446,7 +446,6 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "PCを切り替え",
-  "Relayed connections": "リレー接続",
   "Forget this PC": "このPCを削除",
   "Selected": "選択中",
   "Unsent text · {destination}": "未送信のテキスト · {destination}",
@@ -479,6 +478,14 @@ const BASE: Record<string, string> = {
   "{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here.": "{name} がこの PC をアカウントに追加しようとしています。{name} で {digits} を入力するか、{name} に同じ数字が表示されていることを確認してから、ここで「承認」を押してください。",
   "{n} s left": "残り {n} 秒",
   "Decline": "拒否",
+  "Allow": "許可",
+  "Allow only if your phone shows this number": "スマホに同じ数字が表示されているときだけ許可してください",
+  "Confirm on this PC": "この PC で確認",
+  "Run ovis confirm on this PC to open it.": "この PC のターミナルで ovis confirm を実行して開いてください。",
+  "{name} wants to connect {digits}": "{name} が接続しようとしています {digits}",
+  "Press [Allow] on your Mac": "Mac で [許可] を押してください",
+  "Press [Allow] on your PC": "PC で [許可] を押してください",
+  "Press [Allow] on your Linux PC": "Linux で [許可] を押してください",
   "differs": "不一致",
   "A code has ten letters and digits, like 7K3QD-M2XHA.": "コードは 7K3QD-M2XHA のような英数字 10 文字です。",
   "No PC shows this code. Check it, or show a new one on the PC.": "このコードを表示している PC はありません。確認するか、PC で新しいコードを表示してください。",
@@ -528,6 +535,10 @@ const BASE: Record<string, string> = {
   "Sign out anyway": "それでもサインアウト",
   "Could not check whether a block still waits to reach the account.": "まだアカウントに届いていないブロックがあるか確認できませんでした。",
   "Ovis relay": "Ovis リレー",
+  "Tailscale address": "Tailscaleアドレス",
+  "How to connect": "接続方法",
+  "The phone needs the Tailscale app turned on too.": "スマホでも Tailscale アプリをオンにしておく必要があります。",
+  "Direct": "直接接続",
   "Reset relay identity": "リレー ID をリセット",
   "Reset the relay identity?": "リレー ID をリセットしますか？",
   "Phones paired through the relay will need to scan a new code.": "リレー経由でペアリングしたスマートフォンは、新しいコードを読み取り直す必要があります。",
@@ -547,14 +558,9 @@ const BASE: Record<string, string> = {
   "Approve this device on {name} within 90 seconds to finish.": "90 秒以内に {name} でこのデバイスを承認すると完了します。",
   "Type the number {name} shows": "{name} に表示された番号を入力してください",
   "Ready": "準備完了",
-  "Needs approval": "承認が必要",
   "Offline": "オフライン",
-  "Update Ovis on it": "Ovis の更新が必要",
   "Open": "開く",
   "Add a PC": "PC を追加",
-  "Relay": "リレー",
-  "Add": "追加",
-  "Update": "更新",
   "All": "すべて",
   "Search": "検索",
   "Choose one from the list to open its chat here.": "リストから選ぶと、チャットがここに開きます。",
@@ -571,25 +577,11 @@ const BASE: Record<string, string> = {
   "Dark": "ダーク",
   "Light": "ライト",
   "System": "システム",
-  "Density": "表示密度",
-  "Comfortable": "ゆったり",
-  "Compact": "コンパクト",
-  "Language": "言語",
-  "Interface font size": "インターフェースの文字サイズ",
-  "Decrease interface font size": "インターフェースの文字サイズを小さく",
-  "Increase interface font size": "インターフェースの文字サイズを大きく",
-  "Forget this PC?": "このPCを削除しますか？",
-  "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "このスマホ側のキーを削除します。PC側ではそこで取り消すまでこのスマホが一覧に残ります。再度ペアリングするにはPCの新しいQRコードが必要です。",
-  "Forget": "削除",
   "No answer": "応答なし",
-  "Ready · not in the account yet": "準備完了 · まだアカウント外",
   "Machine offline": "マシンがオフライン",
   "Could not reach this machine": "このマシンに接続できません",
   "Switched off": "電源オフ",
   "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name}は応答しましたが、時間内に接続を完了できませんでした。ビジー状態か、再起動中の可能性があります。もう一度お試しください。繰り返す場合は{name}で Ovis を再起動してください。",
-  "Last seen {when}.": "最終確認: {when}。",
-  "It is off, has no network, or Ovis is not running on it.": "電源が切れているか、ネットワークがないか、Ovis が実行されていません。",
-  "This device could not reach the relay. Check this device's network.": "このデバイスからリレーに接続できませんでした。このデバイスのネットワークを確認してください。",
   "Account setup is incomplete.": "アカウントの設定が完了していません。",
   "{name} is ready to open on this device.": "このデバイスで {name} を開く準備ができました。",
   "In your account": "アカウントに追加済み",
@@ -658,6 +650,7 @@ const BASE: Record<string, string> = {
   "Browser": "ブラウザー",
   "Reload page": "ページを再読み込み",
   "Stop": "停止",
+  "Disconnect": "切断",
 };
 
 export const JA_PARTS: Record<string, Record<string, string>> = {
@@ -678,7 +671,6 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   palette: PALETTE_JA,
   relay: RELAY_JA,
   dashboard: DASHBOARD_JA,
-  "my-machines": MY_MACHINES_JA,
   "runtime-move": RUNTIME_MOVE_JA,
 };
 

@@ -89,9 +89,31 @@
   color: var(--text-dim);
 }
 
-/* the sign-in: the two lines over the buttons, then one quiet line and the way past it, small */
-.relay-shell-signin-hero {
-  margin-bottom: var(--space-6);
+/* the signed-out front page (ConnectStart): its title, the desktop's Add a connection tabs, then the chosen tab's way in */
+.connect-start-title {
+  margin-bottom: var(--space-4);
+  font-size: var(--fs-display);
+}
+
+.connect-start-tabs {
+  display: flex;
+  align-self: stretch;
+  margin-bottom: var(--space-5);
+}
+
+.connect-start-tabs > button {
+  flex: 1;
+}
+
+.connect-start-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  text-align: start;
+}
+
+.connect-start-panel > p {
+  margin: 0;
 }
 
 .relay-shell-first-time {
@@ -101,9 +123,8 @@
   text-align: center;
 }
 
-.relay-shell-no-account {
+.connect-start-code {
   align-self: center;
-  margin-top: var(--space-5);
 }
 
 .relay-shell-pair-signin {
@@ -364,4 +385,3 @@
   margin: var(--space-4) 0;
 }
 
-.relay-add-manage { display: block; margin-top: var(--space-4); text-align: center; }

@@ -13,6 +13,15 @@ contextBridge.exposeInMainWorld("ovisUpdate", {
   /** Restart to Update; settles only when Ovis keeps running after it (a .deb's password prompt cancelled) */
   install: (): Promise<void> => ipcRenderer.invoke("ovis:update-install"),
   close: (version: string): void => ipcRenderer.send("ovis:update-close", version),
+  // Settings → About: the app's version and its own check (main.ts appUpdate, updates.ts AppUpdateState)
+  state: (): Promise<unknown> => ipcRenderer.invoke("ovis:update-state"),
+  onState: (listener: (state: unknown) => void): (() => void) => {
+    const heard = (_event: unknown, state: unknown) => listener(state);
+    ipcRenderer.on("ovis:update-state", heard);
+    return () => { ipcRenderer.removeListener("ovis:update-state", heard); };
+  },
+  /** checks now, and downloads what it finds: what follows comes through onState */
+  check: (): Promise<void> => ipcRenderer.invoke("ovis:update-check"),
 });
 
 // only the app's own connection screen gets the bridge, never a page the server serves

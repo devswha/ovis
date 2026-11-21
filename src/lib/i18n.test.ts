@@ -86,7 +86,6 @@ describe.each(Object.entries(DICTIONARIES))("%s state words", (_name, dictionary
   it.each([
     ["Ready", "Ready · not in the account yet"],
     ["Offline", "Offline · {when}"],
-    ["Not checked", "Paired · not checked"],
   ])("reuses the %p word inside %p", (word, composed) => {
     expect(dictionary[composed]).toBeString();
     expect(dictionary[composed]).toContain(dictionary[word]!);
@@ -95,10 +94,9 @@ describe.each(Object.entries(DICTIONARIES))("%s state words", (_name, dictionary
 
 describe.each([["Korean", KO, ["업데이트", "갱신"]], ["Japanese", JA, ["アップデート", "更新"]], ["Chinese", ZH, ["更新", "升级"]]] as const)("%s update journey", (_name, dictionary, synonyms) => {
   it("names the update with one word", () => {
-    const term = synonyms.find((word) => dictionary["Needs update"]?.includes(word));
+    const term = synonyms.find((word) => dictionary["Update needed"]?.includes(word));
     expect(term).toBeString();
     const journey = [
-      "Updating",
       "Update needed",
       "Update Ovis on {name}",
       "Update it from here: the PC installs the latest release and restarts Ovis, then this app reconnects.",
@@ -153,15 +151,14 @@ const PART_FILES: Record<string, string[]> = {
   machines: ["components/MachineSidebar.tsx", "components/MachineDialog.tsx", "components/FoundHerdrChoices.tsx", "lib/bridgeProgress.ts", "components/MachineStats.tsx", "lib/systemReport.ts"],
   workspace: ["components/NewSessionDialog.tsx", "components/WorktreeDialog.tsx", "components/DirectoryBrowser.tsx", "components/RecentFolderChips.tsx", "components/SessionHistory.tsx", "lib/sessionHistory.ts", "lib/useAgentSkills.ts"],
   files: ["lib/fileFailure.ts", "components/Visualization.tsx", "components/FileViewer.tsx", "components/RelayRenderedPage.tsx", "components/FilesDialog.tsx", "components/FileReader.tsx", "components/TextFileView.tsx", "components/TextFileEditor.tsx", "components/FilePathLink.tsx", "components/FilePanelResizer.tsx", "components/HighlightedCode.tsx", "components/RepoDiffViewer.tsx", "components/RepoChanges.tsx", "components/RepoDiff.tsx", "lib/repoDiff.ts", "lib/diffLineNotes.ts", "components/WebPanel.tsx", "components/PullRequestPanel.tsx", "lib/pullRequest.ts", "components/FileTextSizeRow.tsx", "components/FilesPanelRow.tsx", "components/MarkdownDocuments.tsx", "components/MarkdownOutline.tsx", "components/BrowserSidePanel.tsx"],
-  devices: ["components/DevicesPanel.tsx", "components/ConnectPhoneDialog.tsx", "components/RelayAccountPcs.tsx", "components/SidebarAccountPcs.tsx", "components/RelaySignIn.tsx", "components/CompactPair.tsx", "components/PhonePanel.tsx", "components/PortalPanel.tsx", "components/RelayPanel.tsx", "components/RelayNotice.tsx", "components/PortalAuth.tsx", "components/PortalInvite.tsx", "components/PushTestControls.tsx", "components/AccessGate.tsx", "components/LanExposureNotice.tsx", "components/DevicePairedNotice.tsx", "components/StrictModePanel.tsx", "components/PendingKeys.tsx", "components/JoinWait.tsx", "components/BlockOutcomes.tsx", "components/InstallHint.tsx", "lib/install.ts", "lib/installHint.ts", "lib/portalAuth.ts", "../shared/portal.ts"],
+  devices: ["components/DevicesPanel.tsx", "components/AccountManage.tsx", "components/ConnectPhoneDialog.tsx", "components/RelayAccountPcs.tsx", "components/SidebarAccountPcs.tsx", "components/RelaySignIn.tsx", "components/CompactPair.tsx", "components/PhonePanel.tsx", "components/PortalPanel.tsx", "components/RelayPanel.tsx", "components/RelayNotice.tsx", "components/PortalAuth.tsx", "components/PortalInvite.tsx", "components/PushTestControls.tsx", "components/AccessGate.tsx", "components/LanExposureNotice.tsx", "components/DevicePairedNotice.tsx", "components/StrictModePanel.tsx", "components/PendingKeys.tsx", "components/JoinWait.tsx", "components/BlockOutcomes.tsx", "components/InstallHint.tsx", "lib/install.ts", "lib/installHint.ts", "lib/portalAuth.ts", "../shared/portal.ts"],
   usage: ["components/UsageAccountDialog.tsx", "components/UsageSignInDialog.tsx", "components/UsageLocalLogin.tsx", "components/UsageHubConnect.tsx", "components/CLIProxyLogin.tsx", "components/UsageMeters.tsx", "components/UsageRemoveAccount.tsx", "lib/usage.ts"],
   updates: ["components/UpdateControls.tsx", "lib/updateProgress.ts"],
   palette: ["components/CommandPalette.tsx"],
   setup: ["components/AgentSetupCard.tsx", "components/AddAgentPanel.tsx", "components/AgentTile.tsx", "components/AgentsSettings.tsx"],
-  relay: ["components/RelayShell.tsx", "components/RelayShellScreens.tsx", "components/RelayAddPc.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx", "lib/relay/accountController.ts", "components/relayFailureText.ts"],
+  relay: ["components/RelayShell.tsx", "components/RelayShellScreens.tsx", "components/NoPcOnline.tsx", "components/RelayAddPc.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx", "lib/relay/accountController.ts", "components/relayFailureText.ts"],
   guide: ["components/SetupGuide.tsx", "components/RelayOnlyWarning.tsx"],
-  dashboard: ["components/AddPcSheet.tsx", "components/RelayDashboard.tsx", "components/RelayMap.tsx", "components/RelayPcTable.tsx", "components/RelayPcDetails.tsx", "components/RelayOverview.tsx", "components/relayMapLayout.ts", "components/relayPcState.tsx"],
-  "my-machines": ["components/MyMachines.tsx", "components/MyMachinesParts.tsx", "components/MyMachinesList.tsx", "components/MyMachineDetails.tsx", "components/AddMachineSheet.tsx", "components/myMachinesWords.ts"],
+  dashboard: ["components/AddPcSheet.tsx", "components/relayPcState.tsx"],
   "runtime-move": ["components/RuntimeMove.tsx", "components/RuntimeMoveViews.tsx", "lib/runtimeMove.ts"],
 };
 
@@ -197,7 +194,7 @@ describe("dictionary parts", () => {
   });
 
   it("writes Korean particles per word, never as a dual-particle template", () => {
-    const relayFiles = [...(PART_FILES.relay ?? []), ...(PART_FILES.dashboard ?? []), ...(PART_FILES["my-machines"] ?? []), "components/RelayPairingPrompt.tsx", "components/AccountApprovalPrompt.tsx"];
+    const relayFiles = [...(PART_FILES.relay ?? []), ...(PART_FILES.dashboard ?? []), "components/RelayPairingPrompt.tsx", "components/AccountApprovalPrompt.tsx"];
     const templated = [...keysInCode()]
       .filter(([, files]) => files.every((file) => relayFiles.includes(file)))
       .map(([key]) => key)

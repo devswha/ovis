@@ -243,7 +243,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "agents hooks claude codex install": "エージェント フック claude codex インストール",
   "onboarding first run getting started welcome": "オンボーディング 初回 はじめに ようこそ",
   "Agent integrations": "エージェント連携",
-  "This page shows one PC. The front page lists every PC this phone is paired with.": "このページは1台のPCを表示します。トップページにこのスマホとペアリング済みのすべてのPCが並びます。",
   "Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.": "このPC用のこのスマホのキーを削除します。再度ペアリングするにはPCの新しいQRコードが必要です。",
 
   "Through Portal": "Portal経由",
@@ -290,10 +289,18 @@ export const SETTINGS_JA: Record<string, string> = {
   "Remove PC {name}": "PC {name} を削除",
 
   "Could not read this PC's alert destination ({error}). Close Settings and open it again.": "この PC の外部通知の設定を読み取れませんでした（{error}）。設定を閉じてもう一度開いてください。",
-  "Opens the page of every PC this device reaches through the relay, to check, join or forget them.": "このデバイスがリレーでつなぐすべてのPCのページを開き、確認・参加・削除ができます。",
-  "Manage|relayed connections": "管理",
   "Built-in browser": "内蔵ブラウザー",
   "Blocked sites": "ブロックするサイト",
   "Opens web pages in tabs inside this app: they are listed under Browser in the sidebar and open beside the pane. Its tabs are signed in to nothing you use elsewhere, and an agent's tabs keep cookies of their own.": "ウェブページをこのアプリ内のタブで開きます。タブはサイドバーの「ブラウザー」に並び、ペインの横に開きます。これらのタブは他でのログインを使わず、エージェントのタブは別の Cookie を使います。",
   "The built-in browser never loads these sites or their subdomains, in your tabs or an agent's. One site per line.": "内蔵ブラウザーは、自分のタブでもエージェントのタブでも、これらのサイトとそのサブドメインを読み込みません。1 行に 1 サイトずつ入力します。",
+  "Density": "表示密度",
+  "Comfortable": "ゆったり",
+  "Compact": "コンパクト",
+  "Language": "言語",
+  "Interface font size": "インターフェースの文字サイズ",
+  "Decrease interface font size": "インターフェースの文字サイズを小さく",
+  "Increase interface font size": "インターフェースの文字サイズを大きく",
+  "Forget this PC?": "このPCを削除しますか？",
+  "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "このスマホ側のキーを削除します。PC側ではそこで取り消すまでこのスマホが一覧に残ります。再度ペアリングするにはPCの新しいQRコードが必要です。",
+  "Forget": "削除",
 };

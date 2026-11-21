@@ -2525,7 +2525,10 @@ export class DeviceStore {
       : id !== undefined && this.has(id);
     if (collision) { this.noteRelayFailure(approval.path, now); return null; }
     if (admit && this.isNewKey(publicKey) && !admit()) return null;
-    const paired = this.enrollRelay(label, publicKey, now, false, { addedBy: approval.addedBy, approvedIn: approval.addedBy === undefined ? undefined : this.approverAccount(approval.addedBy) ?? undefined, digits: true, pairingHere }, id);
+    // another PC of the account's server only watches here (docs/account.md, "Adding a PC of your account"): it is one row for
+    // every device of that PC, and a Revoke or block of one of them here cannot reach it through that PC
+    const role = approval.path === "vouched" ? "watch" : "drive";
+    const paired = this.enrollRelay(label, publicKey, now, false, { addedBy: approval.addedBy, approvedIn: approval.addedBy === undefined ? undefined : this.approverAccount(approval.addedBy) ?? undefined, digits: true, pairingHere, role }, id);
     if (paired === null) return null;
     // written after the row, so a stop between the two leaves a row newer than its tombstone: the next start ends that
     // Revoke (finishInterruptedWrites, or with the flag on RemovalEvidence.takeIn)
@@ -2575,9 +2578,9 @@ export class DeviceStore {
     return this.isAccountApprover(id) ? this.devices.find((d) => d.id === id)?.account ?? null : null;
   }
 
-  private enrollRelay(label: string, publicKey: string, now: number, codeSpent: boolean, { addedBy, approvedIn, digits, pairingHere }: { addedBy?: string | undefined; approvedIn?: string | undefined; digits?: boolean; pairingHere: boolean }, id = randomBytes(8).toString("hex")): { device: DeviceMatch } | null {
+  private enrollRelay(label: string, publicKey: string, now: number, codeSpent: boolean, { addedBy, approvedIn, digits, pairingHere, role = "drive" }: { addedBy?: string | undefined; approvedIn?: string | undefined; digits?: boolean; pairingHere: boolean; role?: DeviceRole }, id = randomBytes(8).toString("hex")): { device: DeviceMatch } | null {
     const device: StoredDevice = {
-      id, label: normalizeLabel(label, "Device"), role: "drive",
+      id, label: normalizeLabel(label, "Device"), role,
       token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: publicKey,
       // PAIR authenticates this relay session too, so the device is seen as it pairs.
       created_at: new Date(now).toISOString(), last_seen_at: new Date(now).toISOString(),

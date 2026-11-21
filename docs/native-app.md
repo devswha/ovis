@@ -176,11 +176,15 @@ To repeat it:
 
 What is there:
 
-- `app/web`: the app's own pages. `index.html` opens on the account's sign-in (the buttons the
-  account service names at `/v1/providers`; a press opens the hosted app on that sign-in,
-  `#sign-in=<provider>`), with Start without signing in below it. That and a build with
-  `OVIS_APP_ACCOUNT=0` lead to Add a PC: Scan a QR code, Enter an address (Tailscale or Wi-Fi),
-  SSH (only in an app that announces the `OvisSsh` plugin), and the PCs opened before. The address `demo` opens the bundled demo, which has no button
+- `app/web`: the app's own pages. `index.html` is Connect a PC, with the desktop's Add a connection
+  tabs in its order, picked without a history entry (the phone's Back leaves the app): Ovis relay
+  (the default; the sign-ins the account service names at `/v1/providers`, a press opens the hosted
+  app on that sign-in, `#sign-in=<provider>`), Tailscale (the PCs this phone opened at a Tailscale
+  address, with Connect, a Tailscale address and Scan a QR code; on Android, while no interface holds
+  a Tailscale address, one line and Open Tailscale alone) and Direct (one field for an address or
+  SSH's `user@host`, which opens the SSH setup filled in, only in an app that announces the `OvisSsh`
+  plugin, and Scan a QR code). The PCs opened before are listed below. A build with
+  `OVIS_APP_ACCOUNT=0` has no relay tab and opens on Tailscale. The address `demo` opens the bundled demo, which has no button
   of its own: the store review notes (app/store) send reviewers there. `error.html` is shown when a PC cannot be
   reached or answers with an HTTP error (a 502 from `tailscale serve` while Ovis is stopped), with the
   reason, Try again and Change PC. Both are in English and Korean: an element's
@@ -206,7 +210,10 @@ What is there:
   as is an offer that names another PC than its path. The app opens the link as the WebView's
   first page, like any PC (the offer stays in the fragment through
   `instanceDescriptor().serverURL` on iOS, a 2026-10-30 Simulator spike, and through the start
-  path on Android), and the hosted shell pairs from there. Every relay PC shares that origin, so
+  path on Android), and the hosted shell pairs from there. The QR code of a PC already in an
+  account, `https://app.ovis.sh/s/<server_id>/#sign-in=<provider>`, opens the same way with its
+  fragment kept: the hosted shell signs in with that provider (the app's own sheet), then joins
+  the PC as a device of the account. Every relay PC shares that origin, so
   the app saves it by its scope (`https://app.ovis.sh/s/<server_id>/`) and labels it with the
   offer's `name`; a PC opened at its own address is still saved by its origin, and lists saved
   before keep their entries as they are. The allowed host (iOS) and the bridge's origin
@@ -486,8 +493,8 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   hosted shell). `MainActivity` takes only a link to a PC's scope (`PCStore.appLink`); one to
   another page of the hosted shell leaves the open page alone. A view of a PC (a file's `#read=`, a
   pane's `#pane=` or an older `?pane=`) opens that PC at that view when the app has it saved, and
-  otherwise leaves the open page alone too. A link to pair from (the scope alone or with its
-  `#offer=`) is kept in memory (`PCStore.link`) for the connect screen, which takes it once (`HerdrShellPlugin.takeLink`, which an activity showing a PC never answers, as its
+  otherwise leaves the open page alone too. A link to pair from (the scope alone, with its
+  `#offer=`, or with a provider's `#sign-in=`) is kept in memory (`PCStore.link`) for the connect screen, which takes it once (`HerdrShellPlugin.takeLink`, which an activity showing a PC never answers, as its
   page has the bridge too) and opens it as a scanned QR code, so `relayLink()` checks the offer the
   same way. A link handed back when the app is restored or started from Recents is not opened again. Until the link is verified, Android opens such links in the
   browser as before. The hosted shell also serves `apple-app-site-association` for the iOS app,

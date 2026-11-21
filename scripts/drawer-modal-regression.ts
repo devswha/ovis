@@ -166,25 +166,21 @@ try {
     await page.locator("#workspace-drawer.is-open").waitFor();
     assert.equal(await page.locator("#workspace-drawer .sidebar-footer-pc").count(), 0, "a phone's drawer has no Change PC row");
     await page.locator("#workspace-drawer .sidebar-footer-settings").tap();
-    const change = page.locator(".settings-dialog .settings-change-pc");
-    await change.waitFor();
-    assert.equal((await change.textContent())?.trim(), "Change PC");
-    await change.tap();
-    await page.waitForFunction(() => window.nativeCalls.includes("HerdrShell.disconnect"), undefined, { timeout: 5_000 });
+    await page.locator(".settings-dialog .settings-tabs").waitFor();
+    assert.equal(await page.getByRole("button", { name: "Change PC", exact: true }).count(), 0, "Settings' list has no Change PC: the sidebar lists every PC");
     const tablet = await app.newPage();
     await tablet.setViewportSize({ width: 700, height: 1000 });
     await openPane(tablet);
     await tablet.getByRole("button", { name: "Open workspace list", exact: true }).tap();
     await tablet.locator("#workspace-drawer.is-open").waitFor();
     assert.equal(await tablet.locator("#workspace-drawer .sidebar-footer-pc").count(), 0, "at 700px the drawer has no Change PC row");
-    await tablet.locator("#workspace-drawer .sidebar-footer-settings").tap();
-    await tablet.locator(".settings-dialog .settings-change-pc").waitFor();
     const wide = await app.newPage();
     await wide.setViewportSize({ width: 1440, height: 900 });
     await openPane(wide);
-    await wide.locator("#workspace-drawer .sidebar-footer-pc").waitFor();
+    await wide.locator("#workspace-drawer .sidebar-footer-settings").waitFor();
+    assert.equal(await wide.locator("#workspace-drawer .sidebar-footer-pc").count(), 0, "a wide window has no Change PC row either");
     await app.close();
-    console.log("PASS in the phone app the drawer's foot is the gear alone, and the gear's Settings list ends in Change PC, which goes back to the app's list, at 390 and at 700; a wide window keeps its Change PC row");
+    console.log("PASS in the phone app the sidebar's foot is the gear alone and Settings' list ends without Change PC, at 390, 700 and 1440: the sidebar lists every PC");
   }
 } finally {
   await browser.close();

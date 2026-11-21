@@ -1016,21 +1016,13 @@ Comfortable values are `:root`; the final column is the complete compact overrid
 | `--chat-fold-lines` | `12` | — | Lines of prose a long user message shows before it folds behind Show full message (Chat turn); `lib/userMessageFold.ts` folds a message past the same count |
 | `--palette-w` | `640px` | — | Command palette |
 | `--palette-top` | `12vh` | — | Palette top offset |
-| `--table-row-h` | `44px` | `40px` | The hosted relay app's rows that carry an action (PC table, attention list); a coarse pointer gets `--touch-target` in either density. `--row-h` stays for the lists above |
-| `--tabbar-h` | `56px` | — | The relay app's phone tab bar, before the bottom safe area; a minimum, larger text grows it |
-| `--relay-sidebar-w` | `240px` | — | The relay dashboard's sidebar: its own width, never the terminal sidebar's density step |
-| `--relay-content-w` | `1280px` | — | The relay dashboard's main column cap, gutters included |
 | `--relay-signin-w` | `368px` | — | The relay sign-in column |
 | `--relay-step-w` | `440px` | — | A pairing step's column (RelayStepFrame): the whole width of a phone, this on a wider screen |
 | `--relay-step-h` | `720px` | — | A pairing step's height on a wider screen, so its actions sit at the column's foot and not the window's |
 | `--relay-step-bar` | `3px` | — | The pairing step's progress bar |
 | `--relay-step-icon` | `48px` | — | The square behind a pairing card's glyph (the PC card) |
 | `--relay-sheet-w` | `520px` | — | The Add-a-PC sheet |
-| `--relay-detail-w` | `360px` | — | The PC details column from `1100px` |
-| `--relay-table-head-h` | `36px` | — | The PC table's sticky header |
 | `--relay-control-icon-size` | `16px` | — | One glyph size for the relay app's controls and navigation, and every segmented control's glyph (the old `15px` is retired) |
-| `--relay-fs-min` | `11px` | — | Floor under a compact or scaled tab label: `max(var(--relay-fs-min), var(--fs-2xs))` |
-| `--relay-fs-body-min` | `12px` | — | Floor under scaled relay body text |
 | `--context-line` | `calc(var(--fs-lg) * var(--lh-base))` = `24px` | `21.75px`, through the scale | The selected pane's crumb row, min and max height. Scoped to `.context`, not `:root`, so it follows `--fs-lg`/`--lh-base` in either density |
 
 ### Focus and layers
@@ -2212,22 +2204,18 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Phone & devices → Install offers it when the browser can install, and the steps otherwise,
   as the Claude web app keeps getting its apps in the account menu rather than a sidebar row.
 - The footer's first row, above every other, is **Open agent inbox** (`.inbox-foot-entry`, a
-  full-width `.sidebar-footer-action` as the Change PC row is: lucide `Inbox` in the icon's
+  full-width `.sidebar-footer-action`: lucide `Inbox` in the icon's
   column, then the words, and no chevron at its end: the Agents disclosure row above it starts
   with one, and one foot does not draw two with two meanings): the way into the inbox mode
   (Inbox mode, below), only in a collapsed sidebar's peek. With the sidebar shown from `769px` the
   Ovis wordmark at the sidebar's head is the way in, and on a phone the Ovis mark in the open
   drawer's head: a row saying the same thing above the gear was one too many, and a phone's drawer
   keeps its foot to the gear. The setup guide's shell does not draw it.
-- Above that row, only where the page is one PC of a phone's list (a PC's page on the hosted
-  relay shell, or the phone app), one full-width row (`.sidebar-footer-pc`) names the PC, the lone
-  Host's name its header no longer shows, then **Change PC** in `--text-dim` and a switch glyph: a
-  tap goes back to the list of PCs (the shell's front page, or the app's list), as the Claude app's
-  sidebar foot names whose account it is and switches it in one tap. Only from `769px`: below that
-  the drawer keeps its foot to the gear, and Settings' list of pages ends in **Change PC** at the
-  same widths (`.settings-change-pc`, under the pages, `DRAWER_QUERY`), so the way back is the gear
-  and that row. Settings →
-  Devices and PCs keeps its Change PC row. A PC's own app never shows it: its sidebar lists its PCs itself.
+- No foot row and no Settings page switches PCs: every PC's sidebar lists the account's PCs itself
+  (SidebarAccountPcs.tsx adds the ones missing), and the hosted shell and phone app open an online
+  PC by themselves (lib/relay/pcPick.ts), so there is nothing to switch to. The phone app keeps one
+  way back to its own connect screen, Settings → This app, and an access refusal's card keeps its
+  button.
 
 ### Inbox mode (`.mode-inbox`, `.inbox-rail`, `.thread-title`, `.thread-top`)
 - The agent inbox is a mode of the app: the list of agents and the thread a row opens, in the
@@ -5038,8 +5026,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   under its title. The account is one line, as the ChatGPT and Claude apps keep the signed-in
   account to one row with its sign-out: signed in, **Signed in with GitHub** (the provider's mark,
   no account id anywhere), a neutral **Manage account** and **Sign out**; **Manage account** opens
-  a `.modal` sheet (`ManageAccountSheet` in `components/AccountHead.tsx`) with the ways to sign in,
-  the plan and **Delete account** at its foot. Where Add a connection's relay tab signs in (a page
+  a `.modal` sheet (`ManageAccountSheet` in `components/AccountHead.tsx`, rows from
+  `AccountManageLists` in `components/AccountManage.tsx`), as the Claude and Codex apps keep
+  account settings to compact rows with each destructive action behind one confirm. In order: the
+  ways to sign in; the plan, when known; **Devices**, a status dot, the name and **Disconnect** on
+  each other device of the account (on the hosted app first **This device**, whose Disconnect leaves
+  the account); **PCs**, a dot and the name on each PC in the directory, with **Remove** only on one
+  not heard from for 15 minutes; **Delete account** last. Each action asks once in a
+  `ConfirmDialog` ("Disconnect {name}?", "Remove {name} from your account?"); Delete account on the
+  hosted app asks twice. Where Add a connection's relay tab signs in (a page
   of this PC that offers the relay), a signed-out page draws no account card at all: only why a
   sign-in ended, when one did. A page without that tab keeps its sign-in in the card, and Add this
   PC under it. Strict mode is one row of More settings → Devices and access, **Strict mode (Linux)**
@@ -5092,47 +5087,51 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   primary **Done** is only for the browser's own account, and no **Done** or **Keep it** shows
   while a device is unanswered (one still being checked is named in a plain line). Another
   account's notice takes the `--status-blocked` border on `--danger-tint`. On a PC that is in an
-  account the part has no button and no QR code: its label says which account (the browser's own,
-  another one, or one it cannot tell while signed out), one sentence says to sign in to that
-  account on the device, and a hint says the QR code is only for a PC in no account; the
-  relay's switch stays above while the relay is not online. On a PC that no account was named
+  account the part has no button: its label says which account (the browser's own, another one,
+  or one it cannot tell while signed out), and while the relay is online the phone part below shows
+  the QR code of this PC's page in the hosted app (`signInLink`: `/s/<server_id>/`, with
+  `#sign-in=<provider>` when the account is the browser's own), which signs in on the phone and
+  joins the PC there; no code, key or token is in it. The relay's switch stays above while the
+  relay is not online. On a PC that no account was named
   for, nothing stands where the button would be: the sign-in or **Add this PC to my account**
   above names one. Only a relay that asks for a pass keeps its one hint line, to sign in above first.
   Linked-device apps draw the same
   line (WhatsApp shows its linking QR code on the device being added, never on one already
-  linked), and it is deliberate here: a QR code on a PC with members would let in whoever scans
-  it with nobody approving. Relay pairing without the
-  account, a code from another PC and Tailscale PCs added through the relay are gone from it. A phone
-  opens on Phones and devices, a PC's window on SSH; a tab once opened stays mounted, so its code
-  is not minted again. The dialog closes by itself once My devices sees the device a code let in.
+  linked), and it is deliberate here: a pairing QR code on a PC with members would let in whoever
+  scans it with nobody approving, so that PC's QR code only opens its page and the account's own
+  approval decides. Relay pairing without the
+  account, a code from another PC and Tailscale PCs added through the relay are gone from it. Every tab
+  ends in its phone part (`PhoneScan`, `.connect-phone-scan`: a hairline above, a phone icon and
+  one line, **Scan it with the Ovis app on your phone**, then that way's QR code with the code it
+  carries in `CompactPair`, or the one Tailscale step that gives this PC an address); there is no
+  separate Phones and devices tab (owner, 2026-11-22: a phone sees at once which QR code is its
+  own), as Tailscale's and WhatsApp's add-a-device screens put the QR code on the screen of the way
+  it connects. A window with no tab (a phone's page, the hosted shell, a device that only watches)
+  shows what pairs a device without signing in alone. A tab once opened stays mounted, so its code
+  is not minted again; Tailscale and Direct share the PC's one pending code. The dialog closes by itself once My devices sees the device a code let in.
 - The Ovis relay's own group in More settings: its state as the row's sentence with the switch,
   then **Reset relay identity** (confirmed in the shared `ConfirmDialog`; none for a serve-only
   install, which refuses it). Not shown in the hosted shell or to a read-only device.
 - Install (a row of More settings' This device, shown only when the browser can install) offers it;
   About links the repository.
 - In the hosted relay shell (app.ovis.sh, `<meta name="ovis-shell">`, lib/shellMode.ts) the page
-  opens with a **This app** group of three rows the native build never shows: **Change PC** (a neutral button to the
-  shell's front page: Add a PC, listing this device's PCs and the account's, or, signed out where the account
-  service runs, the sign-in screen with that list behind **Start without signing in**; the same row the iOS app
-  gets for its own list), **Relayed connections** with **Manage** (a neutral button to `/#overview`, the relay
-  dashboard, which no launch, sign-in or pairing ever lands on: people open it on purpose to manage the PCs they
-  reach through the relay)
-  and **Forget this PC** (a neutral button that asks once in a `ConfirmDialog`, **Forget**, then
+  opens with a **This app** row the native build never shows: **Forget this PC** (a neutral button that asks once in a `ConfirmDialog`, **Forget**, then
   deletes this phone's key for the PC and leaves for the front page). Neither is destructive on the
   PC, which keeps listing the phone until it is revoked there, so neither is a `.btn-danger`.
-- The hosted shell's front page is never the dashboard. A launch opens the PC this device opened last unless its
+- The hosted shell's front page is Add a PC; it has no account overview page. A launch opens the PC this device opened last unless its
   check finds it off (the relay had nobody for it), then the next saved PC not found off (`launchOrder`, at most
   four, two at a time; signed in with none saved here or every saved one found off, the account's PC opened last, else the one seen most
   recently that has a way to join and is not off, on its own page with its join card; a check still running after four seconds, or one the relay refused, opens that PC, and when its
   page then hears from the relay that it is off, the launch goes on to the front page, once; a PC a person opened
   keeps its failure card and Try again; the connecting card meanwhile); every one off, a later visit, Back, a sign-in's return or the phone app's own row
   (`#pcs` inside the app) shows Add a PC, whose list says Off or Needs approval beside a PC, as the Claude and
-  ChatGPT apps open on the last conversation and keep account pages behind Settings. The dashboard opens only by
-  its own addresses (`#overview`, `#pcs`, `#devices`, `#relay`, `#settings`), which a signed-in Add a PC offers as
-  one `.account-link` under its list (**Relayed connections**: the account's sign-out and device removal live there).
+  ChatGPT apps open on the last conversation and keep account pages behind Settings. An old link to
+  `#overview`, `#pcs`, `#devices`, `#relay`, `#settings` or `#relay-dash-*` lands like the bare address:
+  the hash is dropped and the launch goes on. The account's devices and PCs are managed in Settings →
+  Devices and PCs → Manage account.
   A launch is asked once a page; an address taken while it waits wins over it, and a page Back restores whole from
   the browser's cache loads again rather than keep the launch's wait.
-- Portal, in Add a connection's Phones and devices tab where the server offers it: while it runs,
+- Portal, under the phone part of Add a connection's Direct tab where the server offers it: while it runs,
   the address and QR code as the Tailscale way draws them over a Relay row with Stop; otherwise one
   hint for what blocks it (no token, serve-only, no `portal` or an old one, with a link to get it)
   or a wide Relay row whose text field and Start stack on a phone. Starting and stopping are one
@@ -5865,29 +5864,6 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   label, autofocused field, primary Unlock button and linked alert text.
 - Success mounts the shell; Lock unsubscribes push, deletes auth and returns to the gate.
 
-### My machines (`.acct-*`)
-- `#my-machines` opens the signed-in machine list in the hosted shell. The front page is Add a PC;
-  the relay dashboard opens only by its own address. `MyMachinesPage` adapts the account directory, local pairings and connection
-  checks already held by the shell; the screens make no requests of their own. Today's source
-  does not offer Devices, Invites or removal.
-- Layout: a section nav beside one column of rows -> the relay dashboard's shell; scroll owner:
-  the document. On a phone its bottom tab stays clear of the last row. A machine's details open
-  beside the list from 1100 px and replace it below that width, with Back and focus returned to
-  the row. Add a machine is a dialog, a bottom sheet at 640 px and under; its `.modal-body`
-  scrolls and the page behind it is inert.
-- **Add a machine** is the primary action. The list puts machines that need attention first; PCs
-  follow under **My PCs** when both kinds are present. Each row gives the name, state glyph and
-  word, why it cannot open, engine and route when known. **Open** is offered for a ready or
-  unchecked machine, and for one that needs an update but knows this device. **Try again** is
-  offered when the machine could not be reached; **Join** uses the shell's existing way in.
-- Details show State, Engine, Route, Kind, Came in, Own Ovis when applicable, Account list when
-  known, and Key ID. Today's add sheet shows `ovis add` and **Copy**, followed by what the
-  command does. The isolated fixture also exercises the signed-list form of the sheet: the
-  command and the bare join line are separate, with the waiting and joined states below them.
-- Follows Tailscale's admin console in putting machine state and the next available action in
-  the list. Codex, Claude, Paseo, T3 Code, Zed, Warp and Conductor have no equivalent account
-  machine list. The screen uses Ovis's dashboard, details and dialog styles.
-
 ### Relay shell (`.relay-shell*`)
 - The hosted shell's screens before the app (components/RelayShell.tsx, lib/relay/shell.tsx): the
   token gate's card, one sidebar wide on `--bg`, the sheep mark, a `--fs-lg` title that says what
@@ -5954,9 +5930,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   never changes. Reduced motion draws the loop's first
   frame and leaves it. The engine and its paths are a chunk of their own, fetched when the first
   sheep shows (about 13 KB gzipped), never in the page's entry.
-- Account part (components/AccountPcs.tsx, RelayDashboard.tsx, RelayOverview.tsx,
-  RelayPcTable.tsx, RelayPcDetails.tsx, RelayMap.tsx, AddPcSheet.tsx, EnrollmentStatus.tsx,
-  StatusDot.tsx, relayPcState.tsx, lib/account/, lib/relay/dashboard.ts), only on the front page
+- Account part (components/AccountPcs.tsx, AddPcSheet.tsx, EnrollmentStatus.tsx,
+  StatusDot.tsx, relayPcState.tsx, lib/account/), only on the front page
   and only when the page names an account service
   (`<meta name="ovis-account-service">`, account.ovis.sh unless the build names another) and, in a
   browser, it is app.ovis.sh, the one page a sign-in comes back to; otherwise the front page is the
@@ -5968,92 +5943,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (44 px) tall with the provider's mark at a fixed inset; then, only when this device holds
   pairings, **Continue without an account (N PCs)**; a hairline divider; **Pair with a QR or
   code**, a quiet ghost button; and last a `--fs-xs` dim line, "The account only lists your PCs.
-  Sessions stay end-to-end encrypted." Continuing without an account opens the dashboard in local
-  mode (this device's own pairings, `data-dashboard-mode="local"`, the nav's foot offering the
-  sign-in).
-- Routes: the dashboard is one page with five hash routes, `#overview` (the default), `#pcs`,
-  `#devices`, `#relay` and `#settings`. Devices shows **This device** and the **Account** controls (**Sign out** and **Remove this device from your account**, or **Sign in** in local mode); Relay holds the connection map open and lists each relay host with its PC count and regional or global; Settings is a real page (theme, density, interface
-  font size, language) built from the app's own settings rows.
-- Frame: on a desktop a left nav `--relay-sidebar-w` (240 px) wide on `--bg-panel`, the five places
-  with Overview and PCs carrying their counts, the current one on `--bg-elevated`, and the provider
-  and **Sign out** (or **Without an account** and **Sign in** in local mode) at its foot. The content column stops at `--relay-content-w` (1280 px). A top
-  bar holds the view's title and **Add a PC**, the one primary action on every view (quiet `.btn`
-  when Overview or PCs shows the empty state, which holds the primary **Add a PC**). At 768 px and
-  under the nav becomes a bottom tab bar (`--tabbar-h` over the safe area) of the same places, and
-  the brand bar turns sticky glass at the top with **Add a PC** as a 44 px icon button (`#devices`
-  carries the account controls on a phone). `html:has(.relay-dash)` sets `scroll-padding-top` and
-  `scroll-padding-bottom` so keyboard focus stays above the fixed bottom tab bar and below the
-  sticky top bar, and below 280 px (including 200% zoom on a 390 px phone, 195 CSS px) the tab bar
-  shows icons only while keeping each label as a visually hidden accessible name and 44 px targets.
-- Overview: a strip of three cells with hairlines between them, **Ready** | **Needs you** |
-  **Relays in use** (or **Paired with this device** | **Relays** in local mode), each a state dot,
-  its word and one `--fs-xl` numeral (stacking to one column below 320 px so words never split at
-  200% zoom or +40% text, with `overflow-wrap: break-word` on headings and labels and `word-break:
-  auto-phrase` in Japanese). Needs you counts every
-  PC that wants something, offline ones included, and says so on a dim line under the numeral
-  ("incl. 1 offline"), so the cells add up to the PCs listed. A pressed cell filters the table below
-  (`aria-pressed`). Under the strip, one mono chip per relay host with its PC count,
-  regional or global, and the fastest measured relay RTT when a check answered through it; a chip
-  filters the table to that relay, and once a check has run a dim line summarizes reachability
-  ("Reachable now: {direct} direct · {relay} via relay · {none} no answer"). Then the attention list: PCs that
-  need you, most urgent first, at most three rows of state dot, name, reason (or relay / last seen
-  when the reason is shared) and action, with **View all N** above when more than three need you.
-  When the rows share one reason it's said once as a caption above them ("Join · a device of your
-  account connected to it approves") rather than on every row. Then the PC table (below), and last the
-  **Connection map**, a 44 px disclosure row that opens `#relay` with "N relays · M PCs" on its right.
-  A first-time account gets one empty state instead of the strip: an icon, one title ("No PCs yet"),
-  then three numbered steps read from the start edge: install Ovis on the PC (the macOS or Linux
-  line and the Windows PowerShell line, each a mono box with its own **Copy**, which wraps under the
-  box where the row has no room for both and is described by the system its line is for), sign in
-  there with the same provider account as on this device, and choose Add this PC to my account. A
-  dim line under them says which sign-in this is and that GitHub and Google are separate Ovis
-  accounts until linked; an Apple account, which a PC's page cannot sign in with, is told to use a
-  linked GitHub or Google sign-in or to pair with a QR or code. Then **Check again**, **Add a PC**
-  (the one primary) and **Pair with a QR or code**. Check again reads the account's PCs at once,
-  and once more after a read that was already out; while it reads (1 s at least) it says
-  "Checking…" and stays a button, `aria-disabled`, so a keyboard's focus is not dropped. Under
-  the banner of a list that could not be read there is only the title and the two pairing
-  buttons, with the banner's **Try again**: an unread list is not known to be empty. Without an
-  account the empty state keeps one line ("Sign in on a PC, or scan the QR code it shows, to see it
-  here.") and the two buttons. None of the apps this design looks at has an account that lists PCs
-  to add, so the steps follow this app's own pieces instead: the command box with Copy of the
-  manual-update screen, and the Agents page's Check again.
-- PCs table (RelayPcTable.tsx), filtered by All / Ready / Needs you / Offline with **Check now**
-  beside the filters, `--table-row-h` (44 px) rows under a 36 px head, or a two-line `<ul>` list
-  on phones (768 px and under) and narrow containers. Columns: **Name** (state dot and name),
-  **State** (the specific word below, plus a separate enrollment line `data-pc-enrollment` when
-  account enrollment is pending "Adding it to your account…" or failed "Account setup is incomplete.
-  Open it to try again." on a `paired` or `unchecked` row where **Open** retries setup, or "Account
-  setup is incomplete." otherwise, and a dim subline for a fresh Add countdown "new · {n} min
-  left", "Update Ovis on it", or this device's check result after **Check now**; on a phone row a
-  closed Add window also shows "Join · approve on a connected device of your account, or type the
-  number the PC shows", which is the state word's `title` in the table), **Relay** (how this device
-  reaches a paired PC right now and
-  the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms", the answering relay host as
-  a mono chip followed by " · 62 ms", or "Checking…" / "No answer" / "Not checked", or the assigned
-  host as a mono chip for a PC it isn't paired with), **Last seen**, and the one action its state
-  allows (Open, Add, Join, Update, Details; during pending or failed enrollment each row keeps its
-  own `displayState` word and action, so an `offline` row shows "Offline" or "Offline · {when}" with
-  **Details**, a `needs-update` row shows "Needs update" with **Update**, an unlisted or local `paired`
-  or `unchecked` row shows its local check word ("Paired · not checked", "Answers", or "No answer"),
-  a listed `paired` row shows "Ready" when linked or when enrollment failed and "Ready · not in the
-  account yet" when unlinked and not failed, and only `paired` and `unchecked` rows show **Open**,
-  which reopens the PC's scope at the Ready checkpoint to retry enrollment, so only they get "Open
-  it to try again."). Selecting a
-  row or **Details** opens RelayPcDetails without opening a socket to the PC: beside the list as a
-  `--relay-detail-w` (360 px) side panel at 1100 px and wider, sitting beside the two-line narrow
-  list from 1100 to 1391 px (`NARROW_SPLIT_TABLE_QUERY`) and beside the four-column table (dropping
-  **Last seen** so rows stay on one line) at 1392 px and wider; below 1100 px the details replace the list as a full view with **Back**,
-  moving focus to the details heading and returning it to the PC's row on close (including browser Back), or when an unlisted pairing's row is gone after **Forget**, to the next row, else the previous row, else the **PCs** view heading (`tabIndex={-1}`). Details holds
-  seven labelled rows (state, with an "Account setup is incomplete." subline when enrollment failed;
-  route; relay; last seen; this device; key ID; version) and the PC's
-  actions (Open or Update, Add or Join, Check now for this PC alone, Forget this PC) at its foot; pressing **Forget this PC** opens a portalled `ConfirmDialog` ("Forget this PC?", "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.", **Cancel** and **Forget**) over the `inert` dashboard (`.relay-dash`), moving initial focus to **Cancel**, returning focus to **Forget this PC** on **Cancel** or Escape, and after **Forget** returning focus to the row when the PC stays listed or to the next row, else the previous row, else the **PCs** view heading (`tabIndex={-1}`) when an unlisted pairing's row is removed.
-- Connection map (RelayMap.tsx): this device, each relay hub, the PCs behind it. A PC that answered
-  by the same network or Tailscale draws its wire straight from this device and skips the hub; a
-  PC reached through a relay hangs off that hub. Wires are still lines (`--accent` when live or seen
-  lately, `--text-dim` when unchecked or offline, `--status-working` while checking);
-  only a wire whose PC is being checked animates. On a phone, or past eight PCs, the map is an
-  ordered route list of hops.
+  Sessions stay end-to-end encrypted." Continuing without an account opens Add a PC with this device's own
+  pairings.
 - Add-a-PC sheet and Ready checkpoint (AddPcSheet.tsx, RelayShell.tsx, EnrollmentStatus.tsx,
   lib/relay/shell.tsx): a modal sheet `--relay-sheet-w` (520 px) wide with four
   segmented bars and a step list, in the mode the row picked, named in `data-add-pc-mode` and its
@@ -6066,10 +5957,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   **Add this PC** or **Ask to join** in the sheet records the consent once (`keepConfirmedPc`) and
   starts pairing at once on `/s/<id>/` (`start` -> `connecting` -> `compare`) without a second
   "Pair with {name}?" step; "Pair with {name}?" with **Pair** remains only for pairing links and QR
-  codes opened from outside the dashboard (or when `sessionStorage` is blocked). **Add a
+  codes opened from outside Add a PC (or when `sessionStorage` is blocked). **Add a
   PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs → Add a connection →
   Ovis relay, sign in, then choose Add this PC to my account. It then shows here.") and leads to the QR and code
-  modal sheet (`PairQrDialog`, over the scrimmed inert dashboard), whose QR and code screens name
+  modal sheet (`PairQrDialog`, over the scrimmed inert page), whose QR and code screens name
   only the current path ("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay
   and scan the QR code." and "On the PC, open Settings → Devices and PCs → Add a connection → Ovis
   relay and type the code it shows."). The sheet drives the
@@ -6087,8 +5978,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   account" alone when `state === "complete"`); if enrollment fails or times
   out (`"failed"`), the checkpoint stays on Ready and `EnrollmentStatus` shows "Account setup is
   incomplete." with **Try again** (`data-action="retry-enrollment"`). The enrolling transport stays open in the
-  background if the user opens the PC or closes the checkpoint before enrollment settles; on the
-  dashboard row, a PC whose enrollment is pending or failed keeps its own `displayState` word and
+  background if the user opens the PC or closes the checkpoint before enrollment settles; on its
+  row in Add a PC, a PC whose enrollment is pending or failed keeps its own `displayState` word and
   action (an `offline` row shows "Offline" or "Offline · {when}" with **Details**, a `needs-update`
   row shows "Needs update" with **Update**, an unlisted or local `paired` or `unchecked` row shows
   its local check word, a listed `paired` row shows "Ready" when linked or when enrollment failed
@@ -6106,39 +5997,28 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   for a paired PC in local mode or not listed in the account (`unchecked`), Paired · not checked,
   Answers, or No answer (with pending or failed account enrollment shown on its own line under the
   state: "Adding it to your account…", "Account setup is incomplete. Open it to try again." on a
-  `paired` or `unchecked` row, or "Account setup is incomplete." otherwise);
-  the strip groups them as Ready, Needs you and Offline. The summary, the filters,
-  the attention list, the table, Details and the map all read one model (`dashboardModel` and
-  `dashboardState()` in lib/relay/dashboard.ts: a live answer from this device beats a stale
-  directory Offline on every surface, while an unlisted pairing without a live answer stays
-  `unchecked` and out of Ready and Needs you). Color rule: color sits only on the state dot (StatusDot.tsx, `--dot-size`
+  `paired` or `unchecked` row, or "Account setup is incomplete." otherwise).
+  A live answer from this device beats a stale directory Offline, while an unlisted pairing
+  without a live answer stays `unchecked`. Color rule: color sits only on the state dot (StatusDot.tsx, `--dot-size`
   7 px): filled `--status-done` for ready, half `--notice` for needs you, ring with an arrow up
   `--notice` for updating, hollow `--text-dim` for offline, `--status-working` for checking and
   `--status-blocked` for failed, so the shape alone still reads in forced colors.
   The words stay `--text`, and no row, badge or cell is tinted by state; the one tinted surface is
   the error banner (`--danger-tint` with `--danger-text`) when the account read fails.
-- Motion: nothing enters. Hover and the pressed strip cell change background over `--dur-fast`.
-  The only loop is a checking wire's flow in the map (`--dur-spin`); every other wire is still.
-  Under `prefers-reduced-motion: reduce` the flow is hidden and the transitions stop; a checking
-  wire stays as a still line, and its dot and word still say Checking…. Loading skeletons never
-  shimmer.
+- Motion: nothing enters. Hover changes background over `--dur-fast`. Under
+  `prefers-reduced-motion: reduce` the transitions stop. Loading skeletons never shimmer.
 - Tokens used: `--bg`, `--bg-panel`, `--bg-elevated`, `--bg-hover`, `--border`, `--divider`,
   `--text`, `--text-strong`, `--text-dim`, `--status-done`, `--notice`, `--status-working`,
   `--status-blocked`, `--danger-tint`, `--danger-text`, `--fs-xs` to
-  `--fs-xl`, `--touch-target`, `--control-h`, `--table-row-h`, `--chip-h`, `--dot-size`,
-  `--tabbar-h`, and the relay sizes `--relay-sidebar-w`, `--relay-content-w`, `--relay-signin-w`,
-  `--relay-sheet-w`, `--relay-detail-w`, `--relay-table-head-h`, `--relay-control-icon-size`,
-  `--relay-fs-min` and `--relay-fs-body-min` (the floors that keep small text readable). No
+  `--fs-xl`, `--touch-target`, `--control-h`, `--chip-h`, `--dot-size`, and the relay sizes
+  `--relay-signin-w`, `--relay-sheet-w` and `--relay-control-icon-size`. No
   color literal lives in the relay CSS.
 - One account read on load, again when the page comes into view and every 60 s while it stays in
   view. The `<main>` adds `data-account-state` (`signed-out`, `signing-in`, `signed-in`) for
   scripts; each row `data-pc-state`.
-- Precedent: Linear for the nav, the summary strip and the rows; Geist for the table, the empty
-  state and the sign-in column; Kumo for the banner and the Add-a-PC wizard; Ryu for the status
-  pairs (dot and word) and the actions docked at the foot of Details. Tailscale's admin machine
-  list (every machine of the account, its state in words) and Signal's linked devices (trust
-  kept on devices already linked, not on the sign-in) still hold for what the table and Devices
-  say. Patterns only: no code or pixels are borrowed, so THIRD_PARTY_NOTICES gains nothing.
+- Precedent: Geist for the sign-in column; Kumo for the banner and the Add-a-PC wizard; Ryu for
+  the status pairs (dot and word). Signal's linked devices (trust kept on devices already linked,
+  not on the sign-in) still holds for what the account's device list says. Patterns only: no code or pixels are borrowed, so THIRD_PARTY_NOTICES gains nothing.
 - Relay files keep the existing file viewer and its Paseo-style file bar, rather than adding a
   separate remote-files screen. A client without a resource-capable service worker shows the
   usual file note as an alert when the 64 MiB limit is exceeded. Copy link and new-tab actions

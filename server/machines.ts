@@ -39,6 +39,8 @@ import { warmSshAddresses } from "./ssh-address.ts";
 import { readMoveOffer } from "./remote-move.ts";
 
 import { TargetAccountPcError, type RelaySocket } from "../shared/relay-channel.ts";
+import { savedIdentityReader } from "./relay/identity.ts";
+import { MuxProtocolError } from "../shared/relay-mux.ts";
 import { newRouteProbes, openRelayPcTunnel, RelayPcKey, RelayPcOutdated, RelayPcRefused, relayPcLabel, removeRelayPcKey, vouchedSupport, type RelayPcTunnel, type RouteProbes, type VouchedSupport } from "./relay-pc.ts";
 import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { deriveServerId } from "../shared/relay-server-proof.ts";
@@ -52,7 +54,7 @@ const RELAY_FOUND_MS = 10 * 60_000;
 const ACCOUNT_PC_MS = 10 * 60_000;
 const ACCOUNT_PC_ANSWER_MS = 10_000;
 
-export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "cancelled";
+export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "unanswered" | "cancelled";
 
 /** A key this PC made for another PC of the account (startAccountPc), in memory only, and its comparison while one runs. */
 type HeldAccountPc = { offer: RelayOffer; key: RelayPcKey; id: string; name: string; at: number; running?: { comparison: AbortController; done: Promise<void> } };
@@ -1933,7 +1935,7 @@ export class MachineManager {
     await this.refresh(runtime);
     if (generation !== runtime.generation || this.stopped) throw new Error("Connection cancelled");
     runtime.machine.state = "connected"; runtime.machine.action_required = null; runtime.machine.found_herdr_sessions = undefined; runtime.machine.found_ovis = undefined; runtime.machine.remote_ovis = null; runtime.remoteRevision = undefined; runtime.installFix = undefined; runtime.attempts = 0; runtime.updateCancelled = false;
-    if (runtime.tunnel) runtime.machine.route = runtime.tunnel.route;
+    if (runtime.tunnel) { runtime.machine.route = runtime.tunnel.route; viewOnlyFrom(runtime.machine, runtime.tunnel); }
     this.openObserver(runtime, generation);
     this.watchOwnOffer(runtime, generation);
     if (runtime.ssh) runtime.ssh.onExit = () => this.lost(runtime, generation, new Error("SSH connection ended"));
@@ -2402,12 +2404,11 @@ export class MachineManager {
   private readonly pairing = new Set<string>();
 
   /**
-   * Add a connection → Ovis relay → Add, once the page posted its admission: compares digits with that PC through
-   * the relay, as another PC of the account vouched for (PAIR_INTENT_VOUCHED), `onDigits` told them for the page to
-   * show, and adds it as addRelay does once a member of the account approved it there. `signal` ends the comparison,
+   * After the page posts its admission, prove this server’s identity over the pinned relay channel.
+   * Tell the page when a member can allow this join; add the PC only after the member allows it. `signal` ends the comparison,
    * and nothing is written: no key, no PC (the key stays in memory for the next Add of that PC).
    */
-  async pairAccountPc(ticket: unknown, onDigits: (digits: string) => void, signal: AbortSignal): Promise<Machine> {
+  async pairAccountPc(ticket: unknown, onWaiting: () => void, signal: AbortSignal): Promise<Machine> {
     if (this.stopped) throw new Error("Server stopping");
     const held = typeof ticket === "string" ? this.accountPcTickets.get(ticket) : undefined;
     if (held !== undefined) this.accountPcTickets.delete(ticket as string);
@@ -2436,17 +2437,15 @@ export class MachineManager {
     held.running = { comparison, done: new Promise<void>((resolve) => { ended = resolve; }) };
     this.pairing.add(id);
     try {
+      const identity = savedIdentityReader(this.stateDir)();
+      if (!identity) throw new RelayPcRefused("This PC has no server identity");
       tunnel = await openRelayPcTunnel(offer, key, { ...this.tunnelOptions(runtime, runtime.generation), pairing: {
-        compare: async (digits) => { shown = true; onDigits(digits); }, signal: comparison.signal,
+        identity, waiting: () => { shown = true; onWaiting(); }, signal: comparison.signal,
       } });
     } catch (error) {
       removeRelayPcKey(keyPath);
       if (key.paired && this.accountPcs.get(serverId) === held) this.accountPcs.delete(serverId);
-      if (comparison.signal.aborted) throw new AccountPcError("cancelled", "Cancelled. Nothing was added.", { cause: error });
-      if (error instanceof RelayPcOutdated) throw new AccountPcError("outdated", error.message, { cause: error });
-      if (shown) throw new AccountPcError("declined", "That PC was not approved. Nothing was added.", { cause: error });
-      if (error instanceof RelayPcRefused) throw new AccountPcError("refused", "That PC did not take the request. Check that it is in your account, then try again.", { cause: error });
-      throw new AccountPcError("offline", `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      throw accountPcFailure(error, { shown, aborted: comparison.signal.aborted });
     } finally {
       this.pairing.delete(id);
       signal.removeEventListener("abort", cancel);
@@ -2539,6 +2538,29 @@ function snapshotAfterStatus(snapshot: SessionSnapshot, message: Extract<ServerM
     const { finish_id: _finish, ...rest } = pane;
     return rest;
   }) };
+}
+
+/**
+ * Why adding another PC of the account failed (pairAccountPc). Once the request was shown there, the PC closing it at its
+ * deadline (`timeout`, server/relay/session.ts) is nobody answering, kept apart from a member's Deny: a page remembers a
+ * Deny, never an unanswered request.
+ */
+export function accountPcFailure(error: unknown, { shown, aborted }: { shown: boolean; aborted: boolean }): AccountPcError {
+  if (aborted) return new AccountPcError("cancelled", "Cancelled. Nothing was added.", { cause: error });
+  if (error instanceof RelayPcOutdated) return new AccountPcError("outdated", error.message, { cause: error });
+  if (shown) {
+    for (let at: unknown = error; at instanceof Error; at = at.cause) {
+      if (at instanceof MuxProtocolError && at.code === "timeout") return new AccountPcError("unanswered", "Nobody approved that PC in time. Nothing was added.", { cause: error });
+    }
+    return new AccountPcError("declined", "That PC was not approved. Nothing was added.", { cause: error });
+  }
+  if (error instanceof RelayPcRefused) return new AccountPcError("refused", "That PC did not take the request. Check that it is in your account, then try again.", { cause: error });
+  return new AccountPcError("offline", `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+}
+
+/** A PC that admitted this one only to watch says so, so no device here is offered writes that PC refuses. */
+function viewOnlyFrom(machine: Machine, tunnel: RelayPcTunnel): void {
+  if (tunnel.role === "watch") machine.view_only = true; else delete machine.view_only;
 }
 
 function pcServerId(machine: Machine): string | undefined {

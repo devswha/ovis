@@ -189,14 +189,45 @@ export function parseAddress(text) {
   return url;
 }
 
+const SSH_TARGET = /^(?:ssh:\/\/)?([^\s@/:]+)@([^\s@/:[\]]+|\[[0-9a-f:.]+\])(?::(\d{1,5}))?\/?$/i;
+
+/**
+ * What Direct's one field holds: an SSH login, `user@host` or `user@host:port` (or `ssh://` with them), as
+ * `{ ssh: { user, host, port } }`, and anything else as an address (`{ address }`, for open). A `user@host` with a
+ * scheme other than ssh is an address with its credentials, never SSH.
+ */
+export function directTarget(text) {
+  const value = String(text).trim();
+  const ssh = SSH_TARGET.exec(value);
+  if (ssh === null) return { address: value };
+  const port = ssh[3] === undefined ? 22 : Number(ssh[3]);
+  if (port < 1 || port > 65535) return { address: value };
+  return { ssh: { user: ssh[1], host: ssh[2].replace(/^\[|\]$/g, ""), port } };
+}
+
+/**
+ * The PCs this phone opened at a Tailscale address, which the Tailscale tab offers again: a phone has no list of its
+ * tailnet's machines, only the ones opened here. `saved` and `names` as HerdrShell's getState gives them.
+ */
+export function tailnetPcs(saved, names) {
+  return saved.flatMap((origin) => {
+    let url;
+    try { url = new URL(origin); } catch { return []; }
+    return tailnetHost(url.hostname) ? [{ origin, label: names[origin] || url.hostname.split(".")[0] }] : [];
+  });
+}
+
 const OFFER = "#offer=";
 const SCOPE = /^\/s\/([0-9a-f]{32})\/?$/;
+/** a PC's page that asks for that provider's sign-in first (the QR code a PC in an account shows): no key, code or token */
+const SIGN_IN = /^#sign-in=[a-z]{1,32}$/;
 
 /**
  * What `url` (from parseAddress) opens through the Ovis relay, or null for a PC's own address.
  * A PC's page on the app's origin, `/s/<server_id>/`, with its pairing offer (`#offer=`, the QR code
- * the PC shows for the relay) or without (a PC saved before), is `{ url, scope, name }`: the address
- * to open, the fragment kept, the scope the app saves the PC under, and its label from the offer.
+ * the PC shows for the relay), with a provider's sign-in (`#sign-in=`, the QR code a PC in an account
+ * shows) or with neither (a PC saved before), is `{ url, scope, name }`: the address to open, the
+ * fragment kept, the scope the app saves the PC under, and its label from the offer.
  * Anything else is `{ error }`: "foreign-offer" for an offer on another origin, which only the app's
  * origin may take, "bad-offer" for an offer that does not name this scope's PC, and "not-a-pc" for
  * another page of the app's origin. The hosted shell checks the offer in full before it pairs.
@@ -207,6 +238,7 @@ export function relayLink(url, appOrigin = APP_ORIGIN) {
   if (serverId === undefined) return { error: "not-a-pc" };
   const scope = `${url.origin}/s/${serverId}/`;
   if (url.hash === "") return { url: scope, scope, name: undefined };
+  if (SIGN_IN.test(url.hash)) return { url: scope + url.hash, scope, name: undefined };
   if (!url.hash.startsWith(OFFER)) return { error: "not-a-pc" };
   const offer = offerOf(url.hash.slice(OFFER.length));
   if (offer === null || offer.server_id !== serverId) return { error: "bad-offer" };

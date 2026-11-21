@@ -9,7 +9,7 @@ export function collapsedKey(machineId: string, page: { relayShell: boolean; pat
 
 import { tally } from "../lib/usageCounters.ts";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeftRight, ChevronDown, ChevronRight, Download, EyeOff, Monitor, Pencil, Plug, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Trash2, Unplug, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, EyeOff, Monitor, Pencil, Plug, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Trash2, Unplug, X } from "lucide-react";
 import { OWN_UPDATE_OFFER, pairedPc, type Machine, type MachineState, type MachineUpdate, type RemoteOvis } from "../../shared/machines.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { AppLayoutContext, FULL_LAYOUT, MachineContext, type LayoutOffer } from "../lib/machineContext.tsx";
@@ -26,7 +26,7 @@ import { filterSuggestions, machineFilter, sidebarFilter, type SidebarBranchLabe
 import { SidebarFilterProvider, useSidebarFilter } from "../lib/sidebarFilterContext.ts";
 import { UsageMeters } from "./UsageMeters.tsx";
 import { SidebarAccountPcs } from "./SidebarAccountPcs.tsx";
-import { ShellPcs, useShellPcs } from "./ShellPcs.tsx";
+import { ShellPcs, unlistedShellPcs, useShellPcs } from "./ShellPcs.tsx";
 import { RowMenu, rowMenuAnchor, type RowMenuItem } from "./RowMenu.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { sidebarAgents } from "../lib/sidebarAgents.ts";
@@ -55,10 +55,6 @@ export function pcListExit(page: { nativeApp: boolean; relayShell: boolean; path
   if (page.nativeApp) return "app";
   if (page.relayShell && serverIdOfPath(page.pathname) !== null) return "shell";
   return null;
-}
-
-export function leavePcList(exit: "app" | "shell"): void {
-  if (exit === "app") void changePc(); else window.location.assign("/");
 }
 
 /**
@@ -116,11 +112,13 @@ export function MachineSidebar(props: Props) {
 
   const exitToPcs = useMemo(() => pcListExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname }), []);
   const drawerWidth = useMediaQuery(DRAWER_QUERY);
-  const shellPcs = useShellPcs(exitToPcs === "shell", drawerWidth ? props.drawerOpen === true : true);
+  const pagePcs = useShellPcs(exitToPcs === "shell", drawerWidth ? props.drawerOpen === true : true);
+  const listedPcs = props.allMachines ?? props.machines;
+  const [accountRows, setAccountRows] = useState<readonly string[]>([]);
+  const shellPcs = useMemo(() => ({ ...pagePcs, pcs: unlistedShellPcs(pagePcs.pcs, listedPcs, accountRows) }), [pagePcs, listedPcs, accountRows]);
   // the lone host goes unnamed only while it is drawn without its header: beside other PCs its name is shown, and found
   const headerless = loneHost !== null && shellPcs.pcs.length === 0;
   const unnamed = useMemo(() => new Set(headerless ? [loneHost] : []), [headerless, loneHost]);
-  const loneHostName = loneHost === null ? null : props.machines[0]!.name || null;
   const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels, unnamed), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels, unnamed]);
   const filterView = useMemo(() => ({ filter, reportBranches }), [filter, reportBranches]);
   // the field offers the labels the rows show, as the browser's own suggestions: nothing typed is kept
@@ -264,9 +262,9 @@ export function MachineSidebar(props: Props) {
     <section className="pcs-sidebar" aria-label={t("PCs")}>
       <div ref={machineList} className="machine-list" id={listId} aria-label={t("PCs and workspaces")}>
         <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
-        {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={headerless && machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
-        {/* a PC's own window, driven by its owner: the account's PCs not added yet (the phone app and the hosted shell list their own) */}
-        {exitToPcs === null && !props.watching && <SidebarAccountPcs machines={roster} hidden={filter.active} onAdded={props.actions.connectPc} />}
+        {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} watching={props.watching || machine.view_only === true} machine={machine} headerless={headerless && machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
+        {/* a driving window on any PC, the phone app and the hosted shell too: the account's PCs this PC does not list yet, added to it one by one */}
+        {!props.watching && <SidebarAccountPcs machines={roster} hidden={filter.active} onAdded={props.actions.connectPc} onListed={setAccountRows} />}
         <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>
         {/* the hosted app on a PC's page: the other PCs this device opens, a tap away (ShellPcs.tsx) */}
         {exitToPcs === "shell" && <ShellPcs {...shellPcs} />}
@@ -278,14 +276,6 @@ export function MachineSidebar(props: Props) {
     {!settings.agentGroups && agentList}
     <footer className="sidebar-footer">
       {props.footerStart}
-      {exitToPcs !== null && !drawerWidth && (
-        <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-pc" onClick={() => leavePcList(exitToPcs)}>
-          <Monitor aria-hidden="true" />
-          <span className="sidebar-footer-pc-name">{loneHostName ?? t("Change PC")}</span>
-          {loneHostName !== null && <span className="sidebar-footer-pc-action">{t("Change PC")}</span>}
-          <ArrowLeftRight aria-hidden="true" />
-        </button>
-      )}
       {/* no Install app here: a page knows it is installed only in the app's own window, so a row kept
           showing in every tab. */}
       <div className="sidebar-footer-row">
@@ -407,6 +397,10 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     finally { inFlight.current = false; setBusy(false); }
   };
   const recheck = useRecheck(machine.id, () => askMachineRetry(machine.id), away !== null);
+  // a PC of the relay (one of the account's) says where it is by the dot beside its name alone, its words a tooltip:
+  // the server keeps trying it, so there is nothing to read or press under it
+  const quiet = machine.kind === "relay" && !noticed;
+  const dotWords = away === "off" ? t("Switched off") : away !== null ? awayReason ?? machineErrorText(machine.error!, t) : t(STATE_WORD[machine.state]);
   const closeMenu = useCallback(() => setMenu(null), []);
   const endRename = (save: boolean) => {
     setRenaming(false);
@@ -469,7 +463,9 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
           }}
     /> : <span className="machine-name" title={machine.name}>{machine.name}</span>}
     {machine.kind === "local" && <span className="machine-kind" title={t("The computer this app runs on")}>{t("Host")}</span>}
-    <span className={`machine-dot is-${machine.action_required === "setup" || asksWhatToConnect(machine) ? "setup" : away !== null ? "disconnected" : machine.state}`} title={stateWords} aria-hidden="true" />
+    {machine.view_only === true && <span className="machine-kind">{t("View only")}</span>}
+    {/* where a PC is, beside its name: nothing once it is connected */}
+    {!online && <span className={`machine-dot is-${machine.action_required === "setup" || asksWhatToConnect(machine) ? "setup" : away !== null ? "disconnected" : machine.state}`} title={quiet ? dotWords : stateWords} aria-hidden="true" />}
   </>;
   return <section className={`machine-group${current ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}${compact ? "" : " is-two-line"}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
     {!headerless && <header className={`machine-header${compact ? " is-compact" : ""}`}>
@@ -482,7 +478,8 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
       <button className="sidebar-row-action machine-new" disabled={!canCreate} aria-label={t("New workspace on {name}", { name: machine.name })} title={createTitle} onClick={() => props.onNew(machine.id)}><Plus aria-hidden="true" /></button>
     </header>}
     {noticed && <MachineActionNotice machine={machine} onSetup={props.onSetup} />}
-    {away !== null ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} failure={recheck.failure} onCheck={props.watching ? undefined : recheck.check} returnFocus={() => titleButton.current} />
+    {away !== null && !quiet ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} failure={recheck.failure} onCheck={props.watching || machine.kind === "relay" ? undefined : recheck.check} returnFocus={() => titleButton.current} />
+    : quiet ? <p className="machine-state visually-hidden" role="status">{online ? null : dotWords}</p>
     : <p className={`machine-state is-${machine.state}${online || stateWord === null ? " visually-hidden" : ""}`} role={machine.state === "error" ? "alert" : "status"} title={noticed || machine.error === null ? undefined : machineErrorText(machine.error, t)}>
       <span className="machine-state-word">{stateWord}</span>
       {!noticed && machine.error && <span className="machine-state-detail">{sshWords ?? machineErrorText(machine.error, t)}</span>}
@@ -498,7 +495,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     {confirmRemove && <ConfirmDialog title={t("Remove PC {name}?", { name: machine.name })} body={t(pairedPc(machine) ? "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC." : "Removes this registration. Remote sessions keep running.")} confirmLabel={t("Remove PC")}
       onConfirm={async () => { await mutate("DELETE", undefined, true); setConfirmRemove(false); }} onClose={() => setConfirmRemove(false)} />}
     {error && <p className="machine-error" role="alert">{error}</p>}
-    {!folded && !online && !machine.snapshot && (machine.state === "disconnected" || machine.state === "error") && <p className="tree-state machine-empty" role="status">{t("No saved sessions")}</p>}
+    {!quiet && !folded && !online && !machine.snapshot && (machine.state === "disconnected" || machine.state === "error") && <p className="tree-state machine-empty" role="status">{t("No saved sessions")}</p>}
     {(!folded || filtered !== null) && (machine.snapshot !== null || online) && <div className={online ? "" : "machine-offline"} inert={!online} hidden={folded}>
       <MachineContext.Provider value={machine.id}><AppLayoutContext.Provider value={props.appLayout?.(machine.id) ?? FULL_LAYOUT}><Sidebar snapshot={machine.snapshot} online={online} selectedPaneId={props.selectedMachineId === machine.id ? props.selectedPaneId : null} actions={actions} watching={props.watching} /></AppLayoutContext.Provider></MachineContext.Provider>
     </div>}

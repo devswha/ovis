@@ -12,6 +12,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { startBunRelay } from "../relay/bun.ts";
 import { createServer } from "../server/index.ts";
+import { savedServerId } from "../server/relay/identity.ts";
 import { RelayService } from "../server/relay/service.ts";
 import { bounded, deferred, relayConnection } from "../server/relay/test-helpers.ts";
 import { UsageService } from "../server/usage.ts";
@@ -79,11 +80,13 @@ const memberKey = Buffer.from(await crypto.subtle.exportKey("spki", memberKeys.p
 const member = { id: randomBytes(8).toString("hex"), label: "Owner's phone", role: "drive", token_hash: randomBytes(32).toString("hex"),
   relay_public_key: memberKey, account: ACCOUNT, created_at: new Date().toISOString(), last_seen_at: null };
 writeFileSync(join(bState, "devices.json"), JSON.stringify({ gate_closed_at: member.created_at, devices: [member] }), { mode: 0o600 });
+service.opensAll = true;
+service.registerDevice(ACCOUNT, memberKey, "Owner phone");
 const bRelay = relayService(bState);
 // This fixture uses the legacy account-vouched flow and its existing phone approver,
 // not a Step 2 admission or a new account-service grant.
 const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false,
-  relay: bRelay.relayService, accountService, accountOpensAll: false, usage: new UsageService(undefined, []) });
+  relay: bRelay.relayService, accountService, accountOpensAll: true, platform: "linux", usage: new UsageService(undefined, []) });
 cleanup.push(() => b.stop());
 const bBase = `http://127.0.0.1:${b.port}`;
 await startRelay(bBase, bRelay.synced);
@@ -91,6 +94,7 @@ const offered = await fetch(`${bBase}/api/relay/offer`, { method: "POST", header
 const { code: _code, ...offer } = decodeOffer((await offered.json() as { url: string }).url)!;
 await service.fetch(new Request(`${ACCOUNT_SERVICE}/v1/pcs/${offer.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
   body: JSON.stringify({ label: "Desk", public_key: bytesToHex(importPublicKey(offer.server_public_key)), relay: offer.relay }) }));
+assert.equal((await b.context.services.accountMailbox.readSnapshot())?.committed, true);
 // a PC of the account that is never on: its relay route answers nobody
 const awayKey = randomBytes(32);
 await service.fetch(new Request(`${ACCOUNT_SERVICE}/v1/pcs/${deriveServerId(awayKey)}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
@@ -110,9 +114,9 @@ async function approver() {
   cleanup.push(() => { for (const close of holder.closes) close(); });
   const link = await relayConnection(holder as never, { serverId: offer.server_id });
   await link.auth({ keys: memberKeys, publicKey: memberKey, id: member.id });
-  return async (id: string, digits: string): Promise<number> => {
+  return async (id: string, serverId: string): Promise<number> => {
     const request = link.open("/api/relay/pairing", { method: "POST", headers: [["content-type", "application/json"], ["x-herdr-machine", "1"]], body: "stream" });
-    void request.stream.sendBody(new Response(JSON.stringify({ id, decision: "approve", digits })).body!).catch(() => {});
+    void request.stream.sendBody(new Response(JSON.stringify({ id, decision: "approve", proven_server_id: serverId, pc_label: "Source PC" })).body!).catch(() => {});
     return (await request.response).status;
   };
 }
@@ -199,25 +203,17 @@ try {
   // signed in, with nothing opened: the sidebar lists the account's PCs that are not in this app yet
   const away = accountRow(adding.page, "Away");
   await away.getByText("Switched off", { exact: true }).waitFor({ timeout: 30_000 });
-  const checkAway = away.getByRole("button", { name: "Check again", exact: true });
   const deskRow = accountRow(adding.page, "Desk");
-  const add = deskRow.getByRole("button", { name: "Add Desk", exact: true });
-  await add.waitFor();
-  assert.equal(await adding.page.locator(".settings-dialog, .connect-phone-dialog").count(), 0, "no settings or Add a connection was opened for the list");
+  const request = await remotePrompt(); // the sidebar starts the ready PC once, without an Add button
+  assert.equal(await deskRow.getByRole("button").count(), 0);
+  assert.equal(await away.locator('.machine-dot[title="Switched off"]').count(), 1);
+  assert.equal(await adding.page.locator(".settings-dialog, .connect-phone-dialog").count(), 0, "the sidebar starts without opening settings");
   await shot(adding.page, "sidebar");
-  await checkAway.click();
-  // held while that PC is asked again, then offered again since it still does not answer
-  await away.getByRole("button", { name: "Checking…", exact: true }).waitFor();
-  await checkAway.waitFor({ timeout: 30_000 });
-  assert.equal(await away.getByText("Switched off", { exact: true }).count(), 1, "it still reads Switched off");
   const approve = await approver();
-  const prompted = remotePrompt();
-  await add.click();
-  const digits = (await deskRow.locator(".relay-account-digits").innerText()).replace(/\s/g, "");
-  assert.match(digits, /^\d{6}$/, "the sidebar shows the six digits to approve");
-  const request = await prompted;
-  assert.ok(request.choices.includes(digits), "B's member is offered the digits the sidebar shows");
-  assert.equal(await approve(request.id, digits), 200, "B's member approves");
+  const source = savedServerId(aState);
+  assert.ok(source && request.proven_server_id === source, "B asks only about the proven source PC");
+  assert.deepEqual(request.choices, []);
+  assert.equal(await approve(request.id, source), 200, "B's member approves that PC");
   await opened(adding.page, "Desk");
   await deskRow.waitFor({ state: "detached" });
   const listed = await (await fetch(`${origin}/api/machines`, { headers: { origin } })).json() as { machines: { kind: string; name: string }[] };
@@ -262,7 +258,7 @@ try {
     if (!strict) await shot(page, "unavailable");
   }
   assert.deepEqual(pageErrors, [], "no page error");
-  console.log("PASS the account's PCs: the sidebar lists those not in this app yet with nothing opened, Switched off with Check again for one that does not answer, and its Add pairs once a member approves; Add a connection → Ovis relay's Open opens one already added; both select it in the sidebar with no SSH setup dialog");
+  console.log("PASS the account's PCs: the sidebar lists those not in this app yet with nothing opened, marks offline PCs and automatically asks a member to pair a ready PC; Add a connection → Ovis relay's Open opens one already added; both select it in the sidebar with no SSH setup dialog");
 } catch (error) {
   code = 1;
   console.error("FAIL relay account PCs:", error);

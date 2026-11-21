@@ -43,6 +43,8 @@ export interface Machine {
    * through the relay. Absent while it is not connected, and for other kinds of PC.
    */
   route?: "relay" | "direct";
+  /** a relay PC that admitted this server only to watch (another PC of the account joined through it): reads pass, writes are refused there */
+  view_only?: true;
   /**
    * The PC's relay ID (server/relay/identity.ts) as its own server has it: the local PC's own, an SSH PC's
    * from its /api/health. Absent where that server has none, or is older. What a device turns its alerts off by.
@@ -394,13 +396,15 @@ export interface DevicePairedEvent {
 export type PairingIntent = "pc" | "account";
 /**
  * An account join taken outside the pairing window, as this PC's own window lists it (GET /api/relay/joins): never its
- * digits, which the owner types from the new device's screen (POST /api/relay/join).
+ * digits, which the owner types from the new device's screen (POST /api/relay/join). `digits`: a first join, asked while
+ * the PC had no member to approve it, which the owner compares and allows or declines by a tap there.
  */
 export interface OwnJoinRequest {
   id: string;
   label: string;
   asked_at: string;
   left_ms: number;
+  digits?: string;
 }
 /**
  * A phone asking to pair through the relay by comparing digits (docs/relay.md): the six digits its
@@ -435,7 +439,7 @@ export interface RemotePairingRequest {
   id: string;
   label: string;
   intent: PairingIntent;
-  choices: [string, string, string];
+  choices: [] | [string, string, string];
   expires_at: string;
   /** the new device's key (P-256 SPKI, base64url) from PAIR_REQUEST, bound by its commitment and the digits: what the approver signs an `add` for */
   key: string;
@@ -445,6 +449,8 @@ export interface RemotePairingRequest {
    * the admission as for an account join. Absent from an older server, or when false.
    */
   vouched?: true;
+  /** Derived by the receiving PC only after the joining server answered its channel-bound challenge. */
+  proven_server_id?: string;
 }
 
 export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "machine-message"; machine_id: string; message: ServerMessage }

@@ -186,9 +186,16 @@ A downloaded update says so, in three places:
   may be what a server that cannot start needs. A window a page opens has no line.
 - **Restart to Update** in the tray, as long as the update waits.
 
-The line is drawn by the pages, from what the app's preload tells them (`ovisUpdate`): the
-downloaded version and whether its line was closed. Only the connection screen and the server's
-own pages are answered.
+**Settings → About** in the app's window shows the app's own version on the Ovis row, with
+**Check for updates**: it checks now, the same check the hourly one runs (one at a time), and
+says how it goes there: checking, up to date, the version it downloads and how far, then
+**Restart to Update** once the app holds it, or the error in one line. A build that does not
+update itself says so instead. A browser on the app's server keeps the sentence that updates come
+with the app.
+
+The line and About's row are drawn by the pages, from what the app's preload tells them
+(`ovisUpdate`): the downloaded version and whether its line was closed, and the app's version and
+where its check stands. Only the connection screen and the server's own pages are answered.
 
 On Linux the AppImage replaces itself, so one kept in a folder the user cannot write (under
 `/opt`, say) does not update itself: the log says why its updates are off. A .deb install

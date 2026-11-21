@@ -7,7 +7,7 @@ import type { openRelayTransport } from "./transport.ts";
 import type { checkPc } from "./pcStatus.ts";
 import type { offerFromCode } from "./pairCode.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
-import { MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { MuxProtocolError, type PairApprover } from "../../../shared/relay-mux.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { decodeOffer, encodeOffer } from "../../../shared/relay-offer.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -22,8 +22,6 @@ import { RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayRefusedE
 import { ServerIdentityChangedError } from "./device.ts";
 import type { TypedCodeFailure } from "./pairCode.ts";
 import type { RelayDevice } from "./device.ts";
-import { formatDashboardHash, isDashboardHash, parseDashboardHash } from "./dashboardRoute.ts";
-import { formatMyMachinesHash, parseMyMachinesHash } from "../account/myMachinesRoute.ts";
 
 export type KeySource = "link" | "saved";
 
@@ -81,9 +79,10 @@ export type AccountView =
 export interface EnrollmentCompletion { readonly state: "complete"; readonly admitted?: number }
 
 export type RelayShellState =
-  | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null }
+  /** `noneOnline`: a launch tried every PC it may open, saved or the account's, and none answered */
+  | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null; noneOnline?: true }
   | { kind: "outdated"; name: string | null; serverVersion: string; minVersion: string; update: PcUpdate }
-  | { kind: "empty"; account?: AccountView | null }
+  | { kind: "empty"; account?: AccountView | null; noneOnline?: true }
   /**
    * Asks before pairing with the PC a link names. `account` is absent on a device that is signed out: the pairing
    * makes a key of its own. Signed in, the pairing uses the account's key and lists the PC in the account, unless
@@ -103,7 +102,7 @@ export type RelayShellState =
   /** a typed code found a PC: its full ID to compare with the PC's screen before anything is paired */
   | { kind: "code-compare"; offer: RelayOffer }
   /** pairing without a code: the digits to compare with the PC's screen; `confirmed` once this phone said they match */
-  | { kind: "compare"; name: string | null; digits: string; confirmed: boolean; /** the digits are typed from the PC's screen, never shown here */ typed?: boolean; /** the typed digits were not the PC's: the comparison ended */ wrong?: boolean; challenge?: number; /** a join a PC's own page started for itself: the PC takes the number, nothing is pressed here */ alone?: true }
+  | { kind: "compare"; name: string | null; digits: string; confirmed: boolean; /** the digits are typed from the PC's screen, never shown here */ typed?: boolean; /** the typed digits were not the PC's: the comparison ended */ wrong?: boolean; challenge?: number; /** a join a PC's own page started for itself: the PC takes the number, nothing is pressed here */ alone?: true; /** the PC itself approves it on its own screen (a first join), named by its system */ approveOn?: PairApprover }
   /** the phone's key for a PC whose identity changed is gone; only a new QR code from the PC pairs it again */
   | { kind: "forgotten"; name: string | null }
   /** a link with another key under a PC's id (forgedOffer): refused every time, and no saved key is touched */
@@ -266,17 +265,16 @@ export interface Attempt {
 export interface SheetJoin {
   readonly mode: "new" | "join";
   readonly server_id: string;
-  readonly returnHash?: string;
   /** the join a PC's own page started for itself: drawn alone, with no list behind it */
   readonly alone?: true;
 }
-export function dashboardHash(hash: string): string {
-  return isDashboardHash(hash) ? formatDashboardHash(parseDashboardHash(hash)) : "";
-}
-/** Where a sheet opened from the front page goes back to: the dashboard route or My machines it was opened on, else the front page. */
-export function returnHash(hash: string): string {
-  const machines = parseMyMachinesHash(hash);
-  return machines !== null ? formatMyMachinesHash(machines) : dashboardHash(hash);
+/**
+ * An address of the control page the hosted app had before 0.5.10 (`#overview`, `#pcs`, `#devices`, `#relay`,
+ * `#settings`, with a query, or an older `#relay-dash-*` anchor; `#my-machines` of 0.5.6 to 0.5.9): the page is gone, and such a link or bookmark lands
+ * on the app as its bare address does.
+ */
+export function oldDashboardHash(hash: string): boolean {
+  return /^#(?:overview|pcs|devices|relay|settings|my-machines|relay-dash-[a-z]+)(?:\?.*)?$/.test(hash);
 }
 export function sheetContext(serverId?: string): SheetJoin | null {
   try {
@@ -284,12 +282,11 @@ export function sheetContext(serverId?: string): SheetJoin | null {
     sessionStorage.removeItem("ovis-add-pc-sheet");
     if (typeof kept !== "object" || kept === null || !("mode" in kept) || !("server_id" in kept)) return null;
     if ((kept.mode !== "new" && kept.mode !== "join") || kept.server_id !== serverId || typeof kept.server_id !== "string") return null;
-    const back = "returnHash" in kept && typeof kept.returnHash === "string" ? returnHash(kept.returnHash) : "";
-    return { mode: kept.mode, server_id: kept.server_id, ...(back ? { returnHash: back } : {}), ...("alone" in kept && kept.alone === true ? { alone: true as const } : {}) };
+    return { mode: kept.mode, server_id: kept.server_id, ...("alone" in kept && kept.alone === true ? { alone: true as const } : {}) };
   } catch { return null; }
 }
 export function keepSheetContext(join: SheetJoin): void {
-  try { sessionStorage.setItem("ovis-add-pc-sheet", JSON.stringify({ mode: join.mode, server_id: join.server_id, returnHash: returnHash(join.returnHash ?? ""), ...(join.alone ? { alone: true } : {}) })); }
+  try { sessionStorage.setItem("ovis-add-pc-sheet", JSON.stringify({ mode: join.mode, server_id: join.server_id, ...(join.alone ? { alone: true } : {}) })); }
   catch {}
 }
 export function typedJoin(serverId: string): boolean {

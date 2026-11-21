@@ -27,6 +27,7 @@ import { deviceLabel, deviceOs } from "../lib/phone.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark, providerChoice } from "./AccountPcs.tsx";
 import { AccountHead, ManageAccountSheet } from "./AccountHead.tsx";
+import { AccountManageLists } from "./AccountManage.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { statusText } from "./RelayPanel.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
@@ -886,8 +887,10 @@ const pcServiceHere = (): string | null => desktopAccount() === null && !inNativ
 
 export const accountServiceHere = (): string | null => desktopAccount()?.service ?? pcServiceHere();
 
-export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, signInElsewhere = false }: {
+export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, signInElsewhere = false, watching = false }: {
   onAccount?: (state: AccountState) => void;
+  /** this device only watches the PC: Manage account offers no PC removal */
+  watching?: boolean;
   recheck?: number;
   /** this PC lists account-opens-all/1 now (App, from the local socket's features) */
   opensAll?: () => boolean;
@@ -1552,6 +1555,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
             <ManageAccountSheet onClose={() => { setManagedAccount(null); deleteAsks.current++; setDeleteAsked(null); }}>
               {methodsPart}
               {plan !== null && <div className="settings-row account-plan-row"><span className="settings-label">{t("Plan|account plan")}</span><span className="account-plan">{plan}</span></div>}
+              <AccountManageLists key={view.account} account={view.account} watching={watching} />
               {deleteParts}
               {/* a change made in the sheet says why it failed in the sheet */}
               {view.error !== null && errorLine}

@@ -50,9 +50,8 @@ export function signedInAccount(): AccountPcsSource {
 /** one listing of one account on this PC: the PCs asked so far, and those this PC cannot use */
 type Round = { asked: Set<string>; invalid: Set<string>; failed: Set<string>; scope: string | null };
 
-export type Pairing = { server_id: string; digits: string | null; abort: AbortController };
-
-export const spaced = (digits: string): string => `${digits.slice(0, 3)} ${digits.slice(3)}`;
+/** an Add under way: `waiting` once that PC took the request and waits for a member's approval on another device */
+export type Pairing = { server_id: string; waiting: boolean; abort: AbortController };
 
 /** The account's other PCs as both lists use them: which would pair, and Add, which pairs one once a member approves it. */
 export interface AccountPcs {
@@ -63,7 +62,8 @@ export interface AccountPcs {
   /** what the PC answered when asked whether it would pair; undefined while it is asked */
   stateOf(serverId: string): AccountPcState | undefined;
   pairing: Pairing | null;
-  failure: { server_id: string; message: string } | null;
+  /** `code`: the server's refusal (ApiError.code), absent for one this page decided */
+  failure: { server_id: string; message: string; code?: string } | null;
   add(pc: AccountPcEntry): Promise<void>;
   cancel(): void;
   /** asks that PC again whether it would pair (Check again on one that did not answer); rejects when it could not be asked */
@@ -91,7 +91,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
   }, []);
   const [states, setStates] = useState<ReadonlyMap<string, AccountPcState>>(new Map());
   const [pairing, setPairing] = useState<Pairing | null>(null);
-  const [failure, setFailure] = useState<{ server_id: string; message: string } | null>(null);
+  const [failure, setFailure] = useState<{ server_id: string; message: string; code?: string } | null>(null);
   const own = machines.find((machine) => machine.kind === "local")?.server_id;
   const added = (serverId: string): Machine | undefined => machines.find((machine) => machine.kind !== "local" && (machine.relay?.server_id ?? machine.server_id) === serverId);
   const listed = useRef<Round>({ asked: new Set(), invalid: new Set(), failed: new Set(), scope: null });
@@ -178,7 +178,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     const abort = new AbortController();
     running.current = abort;
     setFailure(null);
-    setPairing({ server_id: pc.server_id, digits: null, abort });
+    setPairing({ server_id: pc.server_id, waiting: false, abort });
     try {
       // signed out, or into another account, since the list was read: nothing is asked of that PC
       if (!await stillOurs()) {
@@ -189,7 +189,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       const { ticket, key, label } = await startAccountPc(pc);
       abort.signal.throwIfAborted();
       await account.current!.admit(pc.server_id, label, key);
-      const machine = await pairAccountPc(ticket, (digits) => setPairing((current) => current?.abort === abort ? { ...current, digits } : current), abort.signal);
+      const machine = await pairAccountPc(ticket, () => setPairing((current) => current?.abort === abort ? { ...current, waiting: true } : current), abort.signal);
       if (running.current === abort) running.current = null;
       setPairing(null);
       onAdded(machine);
@@ -197,8 +197,11 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       if (running.current === abort) running.current = null;
       if (abort.signal.aborted) return;
       setPairing(null);
+      // another window (the sidebar's own add, or another relay tab) is adding that PC now: nothing failed here, and the
+      // roster shows it added once that one ends
+      if (error instanceof ApiError && error.code === "account_pc_busy") return;
       if (error instanceof ApiError && error.code === "account_pc_outdated") setStates((current) => new Map(current).set(pc.server_id, "outdated"));
-      setFailure({ server_id: pc.server_id, message: error instanceof ApiError ? error.detail : t("That PC could not be added. Try again.") });
+      setFailure(error instanceof ApiError ? { server_id: pc.server_id, message: error.detail, ...(error.code === null ? {} : { code: error.code }) } : { server_id: pc.server_id, message: t("That PC could not be added. Try again.") });
     }
   };
   const cancel = (): void => {
@@ -260,12 +263,7 @@ export function RelayAccountPcs({ machines, onConnectMachine, source, self = nul
               </div>
               {waiting && (
                 <div className="relay-account-wait" role="status">
-                  {pairing.digits === null ? <span className="settings-hint">{t("Asking {name}…", { name: pc.name })}</span> : (
-                    <>
-                      <span className="settings-hint">{t("Approve on another device of your account")}</span>
-                      <span className="relay-account-digits">{spaced(pairing.digits)}</span>
-                    </>
-                  )}
+                  <span className="settings-hint">{pairing.waiting ? t("Approve on another device of your account") : t("Asking {name}…", { name: pc.name })}</span>
                 </div>
               )}
               {failure?.server_id === pc.server_id && <p className="settings-hint relay-error" role="alert">{failure.message}</p>}

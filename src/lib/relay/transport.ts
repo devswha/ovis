@@ -16,6 +16,11 @@ export interface RelayTransportOptions extends RelayChannelOptions {
   readonly clock?: MuxClock;
   readonly onFatal?: (error: Error) => void;
   /**
+   * A reconnect found the relay with nobody for this PC for its whole wait (RECONNECT_PC_ANSWER_MS): the PC is off or
+   * gone from the relay. Reconnecting goes on; the hosted shell may move to another PC (shell.tsx).
+   */
+  readonly onPcAway?: () => void;
+  /**
    * Opens a socket to one of the PC's direct carriers (`ws://<private IPv4>:<port>`, docs/relay.md "Direct on the
    * same network"): the native apps' plugin, as a page on https cannot.
    */
@@ -466,6 +471,7 @@ export class RelayTransport implements Transport {
       // (a hidden page keeps the growing pause: showing it again reconnects at once, through wake)
       if (error instanceof RelayPcOfflineError && globalThis.document?.visibilityState !== "hidden") this.delay = 1000;
       this.retry();
+      if (error instanceof RelayPcOfflineError) this.options.onPcAway?.();
       return;
     }
     this.close();
