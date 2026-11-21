@@ -118,6 +118,15 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, source,
     retried.current.clear();
     setTried(new Set());
   }, [listing]);
+  // the relay back on after it was off is a new look at every PC but a declined one, as a new listing is
+  const wasJoined = useRef(false);
+  useEffect(() => {
+    if (joined && !wasJoined.current && lastListing.current !== "") {
+      retried.current.clear();
+      setTried(new Set());
+    }
+    wasJoined.current = joined;
+  }, [joined]);
   // only a PC being added stands in for this device's own link to it (ShellPcs.tsx): one that is outdated, off,
   // declined or failed leaves that link where it was, so an update never costs a phone the way to a PC it drives
   const adding = waiting.filter((pc) => accountPcs.stateOf(pc.server_id) === "ready" && (accountPcs.pairing?.server_id === pc.server_id || (!tried.has(pc.server_id) && !declined(pc))));

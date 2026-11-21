@@ -245,6 +245,23 @@ describe("the account's PCs in the sidebar", () => {
     expect(starts()).toBe(2);
   });
 
+  it("tries a PC that used its one more try again once the relay comes back on", async () => {
+    await mount();
+    const fail = async (code: string) => {
+      await act(async () => { pairLines!.enqueue(line({ error: { code, message: "no" } })); pairLines!.close(); });
+      await settle();
+    };
+    await fail("account_pc_offline");
+    await comeBack();
+    await fail("account_pc_offline");
+    expect(starts()).toBe(2);
+    relayPhase = "off";
+    await comeBack();
+    relayPhase = "online";
+    await comeBack();
+    expect(starts()).toBe(3);
+  });
+
   it("does not ask a declined PC again after one failed read of the account's list", async () => {
     await mount();
     await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_declined", message: "That PC was not approved. Nothing was added." } })); pairLines!.close(); });
