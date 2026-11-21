@@ -106,12 +106,12 @@ describe("the front page's account part", () => {
     expect(failed).toMatch(/role="alert">The account service did not answer\. <button[^>]*>Try again<\/button>/);
     expect(html).toContain('data-account-state="signed-in"');
     expect(tabsOf(html).map(([tab, , pressed]) => [tab, pressed])).toEqual([["relay", "true"], ["tailscale", "false"], ["direct", "false"]]);
-    expect(html).not.toContain("relay-dash");
+    expect(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]).toBe("Connect a PC");
     const rows = [...html.matchAll(/<a class="relay-add-saved-pc" href="([^"]+)">([\s\S]*?)<\/a>/g)].map(([, href, inner]) => [href, inner!.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, " ").trim().replace(/\s+/g, " ")]);
     expect(rows).toEqual([[`/s/${"a".repeat(32)}/`, "p620"], [`/s/${"b".repeat(32)}/`, "nuc Off"], [`/s/${"c".repeat(32)}/`, "desk Needs approval"], [`/s/${"d".repeat(32)}/`, "attic Off"]]);
     // the old control page's address is the same front page
     (window.location as { hash: string }).hash = "#pcs";
-    expect(render({ ...props({ kind: "list", devices, account }), scoped: false, onSignIn: none })).not.toContain("relay-dash");
+    expect(render({ ...props({ kind: "list", devices, account }), scoped: false, onSignIn: none, pcStatus })).toBe(html);
   });
 
   it("opens a pairing link straight into pairing, without the sign-in", () => {
@@ -523,10 +523,8 @@ describe("the hosted front page", () => {
       (window.location as { hash?: string }).hash = "#add";
       await mount({ ...signedIn(four()), addEntry: true });
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Add a PC");
-      expect(renderer!.root.findAll((node) => node.props.className === "relay-dash")).toHaveLength(0);
       await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Back").props.onClick(); });
       // the front page it leaves for is the connect tabs, with no Back, and never the dashboard
-      expect(renderer!.root.findAll((node) => node.props.className === "relay-dash")).toHaveLength(0);
       expect(renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back")).toHaveLength(0);
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Connect a PC");
     });
