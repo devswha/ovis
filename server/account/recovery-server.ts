@@ -5,6 +5,7 @@ import type { DeviceJournal } from "./device-journal.ts";
 import type { KeyProofPairings } from "./key-proof.ts";
 import type { PcAccountState } from "./pc-binding.ts";
 import type { PendingRedemptions } from "./pending.ts";
+import { RelayIdentityError } from "../relay/identity.ts";
 import type { RelayService } from "../relay/service.ts";
 import type { AccountMailbox } from "./mailbox.ts";
 import { takeForAccount } from "./one-press.ts";
@@ -76,6 +77,12 @@ export function openPcRecovery(options: {
   const accountAdd: AccountAddSeams = {
     inspect: () => {
       if (managed()) return { refused: "This is a bridge another PC started, not this PC's own Ovis", code: "managed" };
+      // an SSH install skips the first browser visit: the add itself makes the missing identity, never a damaged one's
+      try { relay.ensureIdentity(); }
+      catch (error) {
+        if (error instanceof RelayIdentityError) return { refused: "This PC's relay identity cannot be read", code: "identity_unreadable" };
+        throw error;
+      }
       const fields = relay.publicFields();
       if (fields === null) return { refused: "This PC has no relay identity yet", code: "no_identity" };
       const { name, ...shown } = fields;

@@ -214,6 +214,14 @@ export class RelayService {
   }
 
 
+  /**
+   * An explicit SSH add of a PC whose relay never started (an SSH install skips onboarding): its identity, created when
+   * none is saved yet. A damaged one is never replaced (RelayIdentityError), and no pairing window opens.
+   */
+  ensureIdentity(): RelayIdentity {
+    return this.currentIdentity() ?? loadRelayIdentity(this.options.stateDir);
+  }
+
   private get advertised(): string {
     return this.regionalRelay !== null && this.regionalPhase === "online" ? this.regionalRelay : this.relay;
   }
