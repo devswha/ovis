@@ -319,9 +319,9 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await ui.openTab("relay");
     await addRelayOff.waitFor();
     assert.equal(await sheet.getByRole("switch").count(), 0, "the sheet has no relay switch: its one button turns the relay on as it adds this PC");
-    assert.deepEqual(await relayTab.getByRole("button").allInnerTexts(), ["Add this PC to my account"], "signed in, the tab is that one button");
+    assert.deepEqual(await relayTab.getByRole("button").allInnerTexts(), ["Add this PC to my account", "Get a pairing code"], "signed in, the tab is that one button and Pair with a code's");
     assert.equal(await sheet.getByRole("button", { name: "Sign in to Ovis", exact: true }).count(), 0, "signed in, no sign-in");
-    assert.equal(await relayTab.locator("p:not(.visually-hidden)").count(), 0, "and no sentence (the sign-in's live region stays, unseen)");
+    assert.equal(await relayTab.locator('p:not(.visually-hidden):not([data-testid="pair-with-code"] *)').count(), 0, "and no sentence beside Pair with a code's title (the sign-in's live region stays, unseen)");
     assert.equal(await sheet.getByTestId("relay-owner-help").count(), 0, "the direct owner needs no relay restriction explanation");
     await addRelayOff.and(page.locator("[title]")).waitFor();
     assert.equal(await addRelayOff.getAttribute("title"), GATE_NOTE, "with no token and nothing paired, the button's tooltip says turning the relay on closes the gate");
