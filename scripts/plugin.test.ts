@@ -617,6 +617,25 @@ describe("port", () => {
 });
 
 describe("stop", () => {
+  it("leaves the desktop app's server to the app: its ovis command neither starts nor stops one", async () => {
+    const server = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    try {
+      mkdirSync(join(scratch, "state"));
+      writeFileSync(join(scratch, "state", "server.pid"), `${server.pid}\n`);
+      const stopped = await run("stop", { OVIS_DESKTOP_COMMAND: "1", PORT: "1" });
+      expect({ code: stopped.exitCode, out: stopped.out }).toEqual({ code: 1, out: "" });
+      expect(stopped.err).toBe("The Ovis app stops its own server: quit the app from its menu or tray.\n");
+      expect(() => process.kill(server.pid!, 0)).not.toThrow();
+      expect(readFileSync(join(scratch, "state", "server.pid"), "utf8")).toBe(`${server.pid}\n`);
+      rmSync(join(scratch, "state", "server.pid"));
+      const started = await run("start", { OVIS_DESKTOP_COMMAND: "1", PORT: "1" });
+      expect({ code: started.exitCode, err: started.err }).toEqual({ code: 1, err: "The Ovis app starts its own server: open the app.\n" });
+      expect(existsSync(join(scratch, "state", "server.pid"))).toBe(false);
+    } finally {
+      try { process.kill(-server.pid!, "SIGKILL"); } catch {}
+    }
+  });
+
   it("stops the server an install started under its old id after herdr updated the plugin to the new id", async () => {
     const plugins = join(scratch, "plugins");
     const legacy = join(plugins, "devswha.herdr-web-ui");

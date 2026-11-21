@@ -1410,6 +1410,11 @@ export async function runPlugin(): Promise<void> {
     process.exit(2);
   }
   const { command, args } = parsed;
+  // the desktop app's ovis command (app/electron/src/terminalCommand.ts): the app runs its server, with no server.pid here
+  if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && (command === "start" || command === "stop")) {
+    process.stderr.write(command === "start" ? "The Ovis app starts its own server: open the app.\n" : "The Ovis app stops its own server: quit the app from its menu or tray.\n");
+    process.exit(1);
+  }
   switch (command) {
     case "start": process.exit(await start());
     case "stop": process.exit(await stop());

@@ -44,6 +44,7 @@ export function launcherText(platform: NodeJS.Platform, places: LauncherPlaces):
       `if not exist "${cmdQuote(places.serverBinary)}" goto closed`,
       `set "OVIS_STATE_DIR=${cmdQuote(places.stateDir)}"`,
       'set "HC_SESSION=ovis"',
+      'set "OVIS_DESKTOP_COMMAND=1"',
       `set "HERDR_PLUGIN_CONFIG_DIR=${cmdQuote(places.configDir)}"`,
       'set "HOST=127.0.0.1"',
       'set "HC_SOCKET="',
@@ -68,10 +69,12 @@ export function launcherText(platform: NodeJS.Platform, places: LauncherPlaces):
     "unset HC_SOCKET HERDR_PLUGIN_ROOT HERDR_PLUGIN_STATE_DIR",
     `OVIS_STATE_DIR=${shQuote(places.stateDir)}`,
     "HC_SESSION=ovis",
+    // `ovis start` and `ovis stop` say the app runs its server (scripts/plugin.ts)
+    "OVIS_DESKTOP_COMMAND=1",
     `HERDR_PLUGIN_CONFIG_DIR=${shQuote(places.configDir)}`,
     "HOST=127.0.0.1",
     'PORT="$port"',
-    "export OVIS_STATE_DIR HC_SESSION HERDR_PLUGIN_CONFIG_DIR HOST PORT",
+    "export OVIS_STATE_DIR HC_SESSION OVIS_DESKTOP_COMMAND HERDR_PLUGIN_CONFIG_DIR HOST PORT",
     ...(places.accountService === null ? [] : [`OVIS_ACCOUNT_SERVICE_URL=${shQuote(places.accountService)}`, "export OVIS_ACCOUNT_SERVICE_URL"]),
     `exec ${shQuote(places.serverBinary)} plugin "$@"`,
   ];

@@ -20,7 +20,7 @@ function fakeServer(dir: string): string {
   mkdirSync(join(dir, "server"), { recursive: true });
   writeFileSync(file, [
     "#!/bin/sh",
-    'for name in PORT OVIS_STATE_DIR HC_SESSION HERDR_PLUGIN_CONFIG_DIR HOST OVIS_ACCOUNT_SERVICE_URL HC_SOCKET HERDR_PLUGIN_ROOT; do eval "printf \'%s=%s\\n\' $name \\"\\${$name-<unset>}\\""; done',
+    'for name in PORT OVIS_STATE_DIR HC_SESSION OVIS_DESKTOP_COMMAND HERDR_PLUGIN_CONFIG_DIR HOST OVIS_ACCOUNT_SERVICE_URL HC_SOCKET HERDR_PLUGIN_ROOT; do eval "printf \'%s=%s\\n\' $name \\"\\${$name-<unset>}\\""; done',
     'for word in "$@"; do printf "arg=%s\\n" "$word"; done',
   ].join("\n"), { mode: 0o755 });
   return file;
@@ -49,6 +49,7 @@ describe("the launcher on a Mac or Linux", () => {
       "PORT=49152",
       `OVIS_STATE_DIR=${at.stateDir}`,
       "HC_SESSION=ovis",
+      "OVIS_DESKTOP_COMMAND=1",
       `HERDR_PLUGIN_CONFIG_DIR=${at.configDir}`,
       "HOST=127.0.0.1",
       "OVIS_ACCOUNT_SERVICE_URL=https://account-staging.example",
@@ -101,6 +102,7 @@ describe("the launcher on Windows", () => {
     expect(lines).toContain(`if exist "${at.desktopJson}" for /f "usebackq tokens=2 delims=:,}" %%p in ("${at.desktopJson}") do if not defined PORT set "PORT=%%p"`);
     expect(lines).toContain('set "OVIS_STATE_DIR=C:\\Users\\Ann\\AppData\\Roaming\\Ovis 100%%\\server"');
     expect(lines).toContain('set "HC_SESSION=ovis"');
+    expect(lines).toContain('set "OVIS_DESKTOP_COMMAND=1"');
     expect(lines).toContain(`set "HERDR_PLUGIN_CONFIG_DIR=${at.configDir}"`);
     expect(lines).toContain('set "OVIS_ACCOUNT_SERVICE_URL=https://account-staging.example/?a=1&b=2"');
     expect(lines).toContain(`"${at.serverBinary}" plugin %*`);
