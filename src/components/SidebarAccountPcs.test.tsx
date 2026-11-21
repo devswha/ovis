@@ -144,12 +144,52 @@ describe("the account's PCs in the sidebar", () => {
     await settle();
   };
 
-  it("lists the account's PCs not in this app yet: Add where one would pair, Off with Check again where one did not answer", async () => {
+  it("lists the account's PCs not in this app yet and adds one that would pair on its own: Off with Check again where one did not answer", async () => {
     await mount();
     expect(groups()).toEqual([
-      ["PC Desk", "ready", "Add"], ["PC Old box", "outdated", ""], ["PC Away", "offline", "Check again"],
+      ["PC Desk", "ready", "Cancel"], ["PC Old box", "outdated", ""], ["PC Away", "offline", "Check again"],
     ]);
+    expect(admitted).toEqual([DESK.server_id]);
     expect(text(renderer!.root)).toContain("Switched off");
+  });
+
+  it("adds one PC at a time: the next waits, Connecting…, until the one pairing ends", async () => {
+    awayAnswers = ["ready"];
+    let machines: readonly Machine[] = [local, lab];
+    await mount((machine) => { machines = [...machines, machine]; });
+    expect(groups()).toEqual([["PC Desk", "ready", "Cancel"], ["PC Old box", "outdated", ""], ["PC Away", "ready", ""]]);
+    expect(text(renderer!.root.find((node) => node.type === "section" && node.props["aria-label"] === "PC Away"))).toContain("Connecting…");
+    expect(requests.filter((request) => request.path.endsWith("/start"))).toHaveLength(1);
+    await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ machine: desk })}\n`)); pairLines!.close(); });
+    await settle();
+    await act(async () => { renderer!.update(tree(() => {}, machines)); });
+    await settle();
+    expect(admitted).toEqual([DESK.server_id, AWAY.server_id]);
+    expect(groups()).toEqual([["PC Old box", "outdated", ""], ["PC Away", "ready", "Cancel"]]);
+  });
+
+  it("tells the sidebar which PCs it shows as rows, and none once it shows none", async () => {
+    const told: (readonly string[])[] = [];
+    await act(async () => { renderer = create(<SettingsProvider><SidebarAccountPcs machines={[local, lab]} onAdded={() => {}} onListed={(ids) => told.push(ids)} source={source} /></SettingsProvider>); });
+    await settle();
+    expect(told.at(-1)).toEqual([DESK.server_id, OLD.server_id, AWAY.server_id]);
+    relayPhase = "off";
+    await comeBack();
+    expect(told.at(-1)).toEqual([]);
+  });
+
+  it("never asks a cancelled or failed PC again on its own: Retry adds it again", async () => {
+    await mount();
+    await act(async () => { renderer!.root.find((node) => node.type === "button" && text(node) === "Cancel").props.onClick(); });
+    await settle();
+    expect(pairSignal?.aborted).toBe(true);
+    expect(groups()[0]).toEqual(["PC Desk", "ready", "Retry"]);
+    await comeBack();
+    expect(requests.filter((request) => request.path.endsWith("/start"))).toHaveLength(1);
+    await act(async () => { button("Add Desk").props.onClick(); });
+    await settle();
+    expect(admitted).toEqual([DESK.server_id, DESK.server_id]);
+    expect(groups()[0]).toEqual(["PC Desk", "ready", "Cancel"]);
   });
 
   it("A3: marks only the sidebar PC whose admission has not expired", async () => {
@@ -167,7 +207,7 @@ describe("the account's PCs in the sidebar", () => {
     expect(marks()).toHaveLength(0);
   });
 
-  it("asks only that PC again on Check again, and offers Add once it answers", async () => {
+  it("asks only that PC again on Check again, and queues it to be added once it answers", async () => {
     awayAnswers = ["offline", "ready"];
     await mount();
     const asked = () => requests.filter((request) => request.path.endsWith("/check")).map((request) => (request.body as { pcs: AccountPcEntry[] }).pcs.map((entry) => entry.name).join());
@@ -176,14 +216,12 @@ describe("the account's PCs in the sidebar", () => {
     await act(async () => { away.find((node) => node.type === "button" && text(node) === "Check again").props.onClick(); });
     await settle();
     expect(asked()).toEqual(["Desk", "Old box", "Away", "Away"]);
-    expect(groups()[2]).toEqual(["PC Away", "ready", "Add"]);
+    expect(groups()[2]).toEqual(["PC Away", "ready", ""]);
   });
 
   it("adds a PC as the relay tab does, with the digits to approve on another device, then hands it over", async () => {
     const opened: Machine[] = [];
     await mount((machine) => opened.push(machine));
-    await act(async () => { button("Add Desk").props.onClick(); });
-    await settle();
     await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
     expect(admitted).toEqual([DESK.server_id]);
     expect(text(renderer!.root.findByProps({ className: "account-pc-wait" }))).toBe("Approve on another device of your account123 456");
@@ -234,14 +272,14 @@ describe("the account's PCs in the sidebar", () => {
     expect(requests.some((request) => request.path.startsWith("/api/machines/relay/account"))).toBe(false);
   });
 
-  it("asks nothing on Add once this page is signed out, and says to sign in again", async () => {
+  it("asks nothing when this page signed out before its turn, and says to sign in again", async () => {
+    let reads = 0;
+    source.account = async () => (reads += 1) === 1 ? "acct" : null;
     await mount();
-    mine = null;
-    await act(async () => { button("Add Desk").props.onClick(); });
-    await settle();
     expect(requests.some((request) => request.path.endsWith("/start"))).toBe(false);
     expect(admitted).toEqual([]);
     expect(text(renderer!.root)).toContain("Sign in again");
+    expect(groups()[0]).toEqual(["PC Desk", "ready", "Retry"]);
   });
 
   it("keeps every row when a Check again fails, and tells it on that PC's row", async () => {
@@ -256,8 +294,6 @@ describe("the account's PCs in the sidebar", () => {
 
   it("steps aside for the sidebar filter without ending a pairing under way", async () => {
     await mount();
-    await act(async () => { button("Add Desk").props.onClick(); });
-    await settle();
     await act(async () => { renderer!.update(tree(() => {}, [local, lab], true)); });
     const hidden = Object.fromEntries(renderer!.root.findAll((node) => node.type === "section").map((group) => [group.props["aria-label"], group.props.hidden]));
     expect(hidden).toEqual({ "PC Desk": false, "PC Old box": true, "PC Away": true });
@@ -323,8 +359,6 @@ describe("the account's PCs in the sidebar", () => {
 
   it("keeps a pairing under way, its digits and its Cancel, when the window comes back", async () => {
     await mount();
-    await act(async () => { button("Add Desk").props.onClick(); });
-    await settle();
     await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
     const checks = requests.filter((request) => request.path.endsWith("/check")).length;
     await comeBack();
@@ -336,8 +370,6 @@ describe("the account's PCs in the sidebar", () => {
 
   it("keeps a pairing under way when a read on the window's return fails", async () => {
     await mount();
-    await act(async () => { button("Add Desk").props.onClick(); });
-    await settle();
     await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
     statusFails = true;
     await comeBack();
@@ -347,11 +379,11 @@ describe("the account's PCs in the sidebar", () => {
   it("shows a PC whose first check failed as not answering, keeps the others, and asks it again when the window comes back", async () => {
     failAwayCheck = true;
     await mount();
-    expect(groups()).toEqual([["PC Desk", "ready", "Add"], ["PC Old box", "outdated", ""], ["PC Away", "offline", "Check again"]]);
+    expect(groups()).toEqual([["PC Desk", "ready", "Cancel"], ["PC Old box", "outdated", ""], ["PC Away", "offline", "Check again"]]);
     failAwayCheck = false;
     awayAnswers = ["ready"];
     await comeBack();
-    expect(groups()[2]).toEqual(["PC Away", "ready", "Add"]);
+    expect(groups()[2]).toEqual(["PC Away", "ready", ""]);
   });
 
   it("during a pairing, a PC whose first check fails reads as not answering, with Check again, and the pairing stays", async () => {
@@ -360,8 +392,6 @@ describe("the account's PCs in the sidebar", () => {
     awayHold = new Promise<void>((resolve) => { releaseAway = resolve; });
     failAwayCheck = true;
     await mount();
-    await act(async () => { button("Add Desk").props.onClick(); });
-    await settle();
     await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
     await act(async () => { releaseAway(); });
     await settle();
@@ -380,8 +410,6 @@ describe("the account's PCs in the sidebar", () => {
 
   it("keeps the rows and a pairing under way while the relay only reconnects, and ends them when it is off", async () => {
     await mount();
-    await act(async () => { button("Add Desk").props.onClick(); });
-    await settle();
     await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
     relayPhase = "connecting";
     await comeBack();
@@ -408,8 +436,6 @@ describe("the account's PCs in the sidebar", () => {
 
   it("keeps a pairing under way when the roster changes", async () => {
     await mount();
-    await act(async () => { button("Add Desk").props.onClick(); });
-    await settle();
     await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify({ digits: "123456" })}\n`)); });
     await act(async () => { renderer!.update(tree(() => {}, [{ ...local }, { ...lab }])); });
     await settle();
@@ -423,7 +449,7 @@ describe("the account's PCs in the sidebar", () => {
     const away = renderer!.root.find((node) => node.type === "section" && node.props["aria-label"] === "PC Away");
     await act(async () => { away.find((node) => node.type === "button" && text(node) === "Check again").props.onClick(); });
     await settle();
-    expect(groups()[2]).toEqual(["PC Away", "ready", "Add"]);
+    expect(groups()[2]).toEqual(["PC Away", "ready", ""]);
     const awayChecks = () => requests.filter((request) => request.path.endsWith("/check") && (request.body as { pcs: AccountPcEntry[] }).pcs[0]?.server_id === AWAY.server_id).length;
     const before = awayChecks();
     await comeBack();

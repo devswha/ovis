@@ -16,12 +16,14 @@ import { signedInAccount, spaced, useAccountPcs, type AccountPcs, type AccountPc
 
 /**
  * Signed in to the Ovis account on a PC that is in that account with its relay online: the account's other PCs that
- * are not in this app yet, under the PCs the sidebar lists, without Add a connection being opened first. Each says
- * what it answered: Add where it would pair (the same Add, and the same approval on another device, as the relay tab's
- * list), Switched off with Check again where it did not answer, or that its Ovis needs an update. A PC once added is
+ * are not in this app yet, under the PCs the sidebar lists, each added to this PC on its own as soon as it answers, one
+ * at a time (the relay tab's Add, and the same approval on another device), so every PC of the account lists every
+ * other whichever one a device opens. Each row says where it is: Connecting… until its turn, the digits to approve
+ * while it pairs, Retry once a pairing failed or was cancelled (never retried on its own, so a declined PC is not asked
+ * again), Switched off with Check again where it did not answer, or that its Ovis needs an update. A PC once added is
  * the sidebar's own group above. A page that is not signed in asks this PC nothing for it.
  */
-export function SidebarAccountPcs({ machines, onAdded, source, hidden = false }: { machines: readonly Machine[]; onAdded: (machine: Machine) => void; source?: AccountPcsSource; /** the sidebar filter is on: the rows step aside, a pairing under way stays */ hidden?: boolean }) {
+export function SidebarAccountPcs({ machines, onAdded, onListed, source, hidden = false }: { machines: readonly Machine[]; onAdded: (machine: Machine) => void; /** the relay IDs of the rows shown, empty when none are (the hosted app's own list leaves them out) */ onListed?: (serverIds: readonly string[]) => void; source?: AccountPcsSource; /** the sidebar filter is on: the rows step aside, a pairing under way stays */ hidden?: boolean }) {
   const account = useRef<AccountPcsSource | null>(null);
   account.current ??= source ?? signedInAccount();
   const [mine, setMine] = useState<string | null>(null);
@@ -54,14 +56,14 @@ export function SidebarAccountPcs({ machines, onAdded, source, hidden = false }:
   }, [reads]);
   if (mine === null) return null;
   // another account is another list from scratch: nothing read for the one before carries over
-  return <JoinedAccountPcs key={mine} account={mine} reads={reads} machines={machines} onAdded={onAdded} source={account.current} hidden={hidden} />;
+  return <JoinedAccountPcs key={mine} account={mine} reads={reads} machines={machines} onAdded={onAdded} onListed={onListed} source={account.current} hidden={hidden} />;
 }
 
 /**
  * Signed in to `account`: its PCs once this PC is in that same account with its relay online. Both are read once, and
  * again when the window comes back, never polled: a sidebar adds no request of its own while the window just sits there.
  */
-function JoinedAccountPcs({ account, reads, machines, onAdded, source, hidden }: { account: string; reads: number; machines: readonly Machine[]; onAdded: (machine: Machine) => void; source: AccountPcsSource; hidden: boolean }) {
+function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, source, hidden }: { account: string; reads: number; machines: readonly Machine[]; onAdded: (machine: Machine) => void; onListed?: (serverIds: readonly string[]) => void; source: AccountPcsSource; hidden: boolean }) {
   const [joined, setJoined] = useState(false);
   useEffect(() => {
     let live = true;
@@ -77,12 +79,25 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, source, hidden }:
   }, [account, reads]);
   const accountPcs = useAccountPcs({ machines, source, enabled: joined, expect: account, refresh: reads, onAdded });
   const waiting = accountPcs.pcs?.filter((pc) => accountPcs.added(pc.server_id) === undefined) ?? [];
+  const listed = waiting.map((pc) => pc.server_id).join("\n");
+  useEffect(() => {
+    onListed?.(listed === "" ? [] : listed.split("\n"));
+    return () => onListed?.([]);
+  }, [listed, onListed]);
+  // each PC is added on its own once, for this sign-in on this page: a failed, declined or cancelled one waits for Retry
+  const [tried, setTried] = useState<ReadonlySet<string>>(new Set());
+  const next = accountPcs.pairing === null ? waiting.find((pc) => accountPcs.stateOf(pc.server_id) === "ready" && !tried.has(pc.server_id)) : undefined;
+  useEffect(() => {
+    if (next === undefined) return;
+    setTried((current) => new Set(current).add(next.server_id));
+    void accountPcs.add(next);
+  }, [next?.server_id]);
   if (waiting.length === 0) return null;
-  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} hidden={hidden} />)}</>;
+  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} queued={!tried.has(pc.server_id)} hidden={hidden} />)}</>;
 }
 
 /** One PC of the account not in this app yet, as a PC group's header with its state under it. */
-function AccountPcRow({ pc, hidden, pcs: { stateOf, pairing, failure, add, cancel, recheck } }: { pc: AccountPcEntry & { readonly new_until?: string | null }; hidden: boolean; pcs: AccountPcs }) {
+function AccountPcRow({ pc, hidden, queued, pcs: { stateOf, pairing, failure, add, cancel, recheck } }: { pc: AccountPcEntry & { readonly new_until?: string | null }; hidden: boolean; /** not added on its own yet: its turn comes */ queued: boolean; pcs: AccountPcs }) {
   const t = useT();
   const row = useRef<HTMLElement>(null);
   const [expiredAt, setExpiredAt] = useState<string>();
@@ -116,7 +131,8 @@ function AccountPcRow({ pc, hidden, pcs: { stateOf, pairing, failure, add, cance
             {state === "outdated" && <span className="machine-state-word" role="status">{t("Update Ovis on that PC")}</span>}
             {state === "ready" && (adding
               ? <button type="button" className="btn account-pc-action" onClick={cancel}>{t("Cancel")}</button>
-              : <button type="button" className="btn account-pc-action" disabled={pairing !== null} aria-label={t("Add {name}", { name: pc.name })} onClick={() => void add(pc)}>{t("Add")}</button>)}
+              : queued ? <span className="machine-state-word" role="status">{t("Connecting…")}</span>
+              : <button type="button" className="btn account-pc-action" disabled={pairing !== null} aria-label={t("Add {name}", { name: pc.name })} onClick={() => void add(pc)}>{t("Retry")}</button>)}
           </div>
         )}
       {adding && (
