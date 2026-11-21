@@ -314,8 +314,11 @@ function ladderText(acc: Acc, event: TextInput): void {
       acc.levels.push(3);
       if (s.mode.name === "copy") {
         if (s.mode.phase === "query") {
-          toCopy(acc, s.mode, run);
-          return;
+          // the search box takes its text as every other field does: a code point at a time, the field joining marks
+          // to their letters, and whatever follows once the box is gone goes on down the ladder
+          toCopy(acc, s.mode, { ...run, text: first });
+          rest = after;
+          continue;
         }
         toCopy(acc, s.mode, { ...run, text: first });
         if (acc.s.mode.name !== "copy") return;

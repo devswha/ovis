@@ -365,8 +365,9 @@ describe("the loop", () => {
     // prefix actions (moves, zoom, close, help, the workspace picker, resize mode, rename, a new tab's name, detach), text
     // with combining marks, a ZWJ emoji, CJK and wide characters, and Enter; with the default prefix (a key of its own)
     // and with a printable one (one text run holds the actions and what follows them)
-    const ACTIONS = ["l", "h", "z", "x", "?", "q", "w", "r", "P", "c"];
-    const TEXT = ["a", "q", "e\u0301", "\u0301", "\u{1F469}\u200D\u{1F4BB}", "한", "中", "\uFF21", "\r"];
+    // copy mode (prefix+[) and its search box (/) too
+    const ACTIONS = ["l", "h", "z", "x", "?", "q", "w", "r", "P", "c", "["];
+    const TEXT = ["a", "q", "/", "e\u0301", "\u0301", "\u{1F469}\u200D\u{1F4BB}", "한", "中", "\uFF21", "\r"];
     let seed = 0x5eed;
     const random = () => {
       seed = (seed + 0x6d2b79f5) | 0;
@@ -447,6 +448,33 @@ describe("the loop", () => {
       for (let cut = 1; cut < gate.length; cut++) expect({ pinned, cut, outcome: compared(await outcome("\x02", [gate.slice(0, cut), gate.slice(cut)], true)) }).toEqual({ pinned, cut, outcome: whole });
     }
   }, SOAK_MS);
+
+  it("copy mode's search box takes text alike read whole, split at every byte, and a byte at a time, and text after its choice goes on", async () => {
+    const search = async (reads: Uint8Array[]) => {
+      const run = await Run.start({ fixture: demo });
+      try {
+        await run.live();
+        await run.advance(1);
+        for (const [at, read] of reads.entries()) {
+          run.host.feed(read);
+          if ((reads[at + 1]?.[0] ?? 0) >> 6 === 0b10) await run.advance(1);
+          else await settled(run);
+        }
+        const model = run.loop.model();
+        const mode = model.mode;
+        return { mode: mode.name === "copy" ? `copy:${mode.phase}:${"field" in mode ? mode.field.graphemes.join("|") : ""}` : mode.name, received: ["t1", "t2"].map((terminal) => sentTo(run, terminal)) };
+      } finally {
+        await run.close();
+      }
+    };
+    // copy mode, the search box, text with a mark, a ZWJ emoji and CJK; then the search chosen by Enter, and text after it
+    for (const text of ["\x02[/e\u0301\u{1F469}\u200D\u{1F4BB}中", "\x02[/ab\rq"]) {
+      const bytes = new TextEncoder().encode(text);
+      const joined = await search([bytes]);
+      expect({ text, outcome: await search([...bytes].map((byte) => Uint8Array.of(byte))) }).toEqual({ text, outcome: joined });
+      for (let cut = 1; cut < bytes.length; cut++) expect({ text, cut, outcome: await search([bytes.slice(0, cut), bytes.slice(cut)]) }).toEqual({ text, cut, outcome: joined });
+    }
+  }, TEST_MS);
 
   it("a text field keeps whole graphemes however the reads split them: 129 decomposed letters, a mark read apart, a ZWJ emoji", async () => {
     const field = async (reads: (string | Uint8Array)[]) => {
