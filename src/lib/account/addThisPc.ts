@@ -133,7 +133,12 @@ export function keepAddPcWaiting(waiting: AddPcWaiting | null): void {
   for (const heard of [...watchers]) heard(waiting);
 }
 
-export interface ListedPc { readonly name: string; readonly serverId: string; readonly account: string | null }
+export interface ListedPc {
+  readonly name: string;
+  readonly serverId: string;
+  readonly account: string | null;
+  readonly membership?: { readonly account: string; readonly enrolling: boolean };
+}
 
 export class AddPcWaitOver extends Error {
   constructor(readonly why: "pc" | "sign-in" | "ended") {
@@ -194,11 +199,17 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   const runs = (): boolean => (wait === undefined || wait.running()) && (as === undefined || as.running());
   const running = (): void => { if (!runs()) throw new AddPcWaitOver("ended"); as?.reached?.("writing"); };
   const listed = (await directory.listPcs()).find((pc) => pc.server_id === offer.server_id);
+  const name = (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48);
+  const result = { name, serverId: offer.server_id, account: session?.account ?? null };
+  if (!runs()) throw new AddPcWaitOver("ended");
+  // A first link or one-press bind can finish while the listing is being read. A refresh must not remove it.
+  const { account, enrolling } = await thisPcMembership();
+  if (!runs()) throw new AddPcWaitOver("ended");
+  if (account !== null) return { ...result, membership: { account, enrolling } };
   if (listed !== undefined && Date.now() - Date.parse(listed.added_at) >= NEW_PC_MS - options.relistMs) {
     running();
     await directory.deletePc(offer.server_id);
   }
-  const name = (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48);
   const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
   running();
   await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });
@@ -212,7 +223,7 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
       (error: unknown) => console.warn("Ovis: this PC did not take the account for its relay pass", error instanceof Error ? error.name : error),
     );
   }
-  return { name, serverId: offer.server_id, account: session?.account ?? null };
+  return result;
 }
 
 /**

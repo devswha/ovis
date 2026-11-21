@@ -322,8 +322,7 @@ describe("AddThisPc", () => {
     pc.account = ACCOUNT;
     await advance(ADDED_POLL_MS);
     expect(words(renderer)).toContain("This PC is in your account. A new device of your account may need one approval here.");
-    expect(words(renderer)).toContain("Account acct_0123456…");
-    expect(words(renderer)).not.toContain(ACCOUNT);
+    expect(words(renderer)).not.toContain("acct_");
     expect(buttons(renderer)).toEqual([]);
     expect(tab.has(MARKER)).toBe(false);
     const before = asked.length;
@@ -1021,7 +1020,8 @@ describe("AddThisPc", () => {
     pc.statusDown = false;
     pc.account = ACCOUNT;
     await advance(ADDED_POLL_MS);
-    expect(renderer.toJSON()).toBeNull();
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(buttons(renderer)).toEqual([]);
     expect(links()).toBe(0);
     expect(directory).toEqual([]);
   });

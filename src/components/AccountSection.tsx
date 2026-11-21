@@ -236,7 +236,13 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         const kept = stored !== null && resumable(stored, Date.now()) ? stored : null;
         if (kept === null) {
           keepAddPcWaiting(null);
-          if (account !== null) return;
+          if (account !== null) {
+            const page = pagePc();
+            if (stored !== null && page !== null && page !== stored.serverId) return;
+            const next = await joinedAs(account, enrolling);
+            if (live) setState(next);
+            return;
+          }
           // a device that only watches this PC lists nothing (the PC refuses it the window): no listing, and no button that could only fail
           const watching = await within(ANSWER_MS, fetchBridgeHealth()).then(({ auth }) => auth?.role === "watch", (error: unknown) => {
             warned("Ovis: what this browser may do on this PC could not be read")(error);
@@ -298,7 +304,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     };
     read();
     return () => { live = false; if (again !== null) clearTimeout(again); };
-  }, [accountService, signedInHere]);
+  }, [accountService, joinedAs, signedInHere]);
   const pressed = useRef<number | null>(null);
   /** how many listings and relay starts this copy began: a window is closed late only while none began since */
   const starts = useRef(0);
@@ -434,10 +440,11 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         // when the attempt is (a listing whose directory never answers is never over)
         if (flying === null) void listed.then(closeAsked, closeAsked);
         if (shared && flying === null) relistOnItsWay = mine = { until, listed };
-        await listed;
+        const { membership } = await listed;
         if (!live) return true;
         // another copy stopped the wait while the PC was being listed: what it forgot is not kept again
         if (withdrawn()) { left(); return true; }
+        if (membership !== undefined) { await joined(membership.account, membership.enrolling); return true; }
         if (mark !== null) { mark = { ...mark, listedAt: Date.now() }; keepAddPcWaiting(mark); }
         return true;
       })()).catch((error: unknown) => {
@@ -527,8 +534,12 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       const { account: joined, enrolling } = await thisPcMembership();
       if (!current()) return null;
       if (joined !== null) { keepAddPcWaiting(null); return await joinedAs(joined, enrolling); }
-      const { name, serverId, account } = await listThisPc(accountService(), { relistMs: RELIST_MS, ...(as === null ? {} : { as: { account: as, running: current, reached } }) });
+      const { name, serverId, account, membership } = await listThisPc(accountService(), { relistMs: RELIST_MS, ...(as === null ? {} : { as: { account: as, running: current, reached } }) });
       if (!current()) return null;
+      if (membership !== undefined) {
+        keepAddPcWaiting(null);
+        return await joinedAs(membership.account, membership.enrolling);
+      }
       // in one press when the account service admits it; the window this listing opened is then needed no more
       if (account !== null && await addInOnePress(accountService(), serverId, account, current, opensAll())) {
         // an attempt given up or replaced meanwhile clears nothing that a newer one owns
@@ -628,6 +639,13 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (!current()) return;
       if (auth?.via === "open") await pairThisBrowser();
       if (!current()) return;
+      const membership = await thisPcMembership();
+      if (!current()) return;
+      if (membership.account !== null) {
+        const next = await joinedAs(membership.account, membership.enrolling);
+        if (current()) setState(next);
+        return;
+      }
       const status = await requestRelay("start");
       if (!current()) return;
       if (status.blocked !== null) { setState({ kind: "relay-off", account, error: statusText(t, status) }); return; }
@@ -681,7 +699,6 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
           <p className="settings-description" role="status">{state.enrolling
             ? t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")
             : t("This PC is in your account. A new device of your account may need one approval here.")}</p>
-          <p className="settings-description" title={state.account}>{t("Account")} <code className="account-id">{state.account.length > 12 ? `${state.account.slice(0, 12)}…` : state.account}</code></p>
         </>
       ) : state.kind === "expired" ? (
         <>

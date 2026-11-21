@@ -17,6 +17,7 @@ test("a failure of the relay pass setup never keeps Add this PC from its pairing
   const answer = async (input: RequestInfo | URL): Promise<Response> => {
     const path = new URL(String(input), "http://localhost").pathname;
     asked.push(path);
+    if (path === "/api/account/status") return Response.json({ account: null });
     if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: serverId, server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh") });
     return Response.json({ error: { code: "internal", message: "relay/account.json is not writable" } }, { status: 500 });
   };
@@ -40,6 +41,7 @@ test("a pass setup that never answers does not hold Add this PC either", async (
   const answer = async (input: RequestInfo | URL): Promise<Response> => {
     const path = new URL(String(input), "http://localhost").pathname;
     asked.push(path);
+    if (path === "/api/account/status") return Response.json({ account: null });
     if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: serverId, server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh") });
     return new Promise<Response>(() => {});
   };
