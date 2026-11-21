@@ -24,6 +24,9 @@ const latin1 = (bytes: readonly number[]): string => String.fromCharCode(...byte
 // U+FEFF is a character someone typed or pasted: a host terminal's input starts with no byte order mark
 const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
+/** A bracketed paste read so far: its chunks, their size, whether it is refused, and how much of the end mark matched. */
+const emptyPaste = () => ({ chunks: [] as Uint8Array[], size: 0, refused: false, endMatched: 0 });
+
 /** How many continuation bytes a UTF-8 lead byte announces; 0 for a byte no character starts with. */
 function continuationCount(lead: number): number {
   if (lead >= 0xc2 && lead <= 0xdf) return 1;
@@ -81,7 +84,7 @@ export class Framer {
   private charAt = 0;
   private charNeed = 0;
   private charAlt = false;
-  private paste = { chunks: [] as Uint8Array[], size: 0, refused: false, endMatched: 0 };
+  private paste = emptyPaste();
 
   setModes(modes: Partial<HostModes>): void {
     this.modes = { ...this.modes, ...modes };
@@ -94,6 +97,7 @@ export class Framer {
    */
   reset(): void {
     this.ground();
+    this.paste = emptyPaste();
     this.pending = undefined;
   }
 
@@ -346,7 +350,7 @@ export class Framer {
   private beginPaste(): void {
     this.state = "paste";
     this.seq = [];
-    this.paste = { chunks: [], size: 0, refused: false, endMatched: 0 };
+    this.paste = emptyPaste();
   }
 
   /** Reads paste bytes from `i` on and returns where it stopped: at the end of the read or after the end mark. */
@@ -393,12 +397,11 @@ export class Framer {
   private endPaste(): void {
     const { chunks, refused } = this.paste;
     const at = this.seqAt;
-    this.paste = { chunks: [], size: 0, refused: false, endMatched: 0 };
+    this.paste = emptyPaste();
     this.ground();
     if (!refused) this.emit({ type: "paste", text: utf8.decode(Buffer.concat(chunks)), complete: true }, at);
   }
 
-  /** Sets the wait a read leaves behind: the Esc wait after a lone ESC, `ESC [` or `ESC O`, the drop wait inside a longer sequence. */
   /** Only the introducer of a CSI, an SS3 or a string is read, nothing after it: the bytes a lone Alt key also sends. */
   private introducerOnly(): boolean {
     if (this.seq.length !== 2) return false;
@@ -409,6 +412,7 @@ export class Framer {
     return this.modes.mouse || this.modes.kitty ? ESC_WAIT_SLOW_MS : ESC_WAIT_MS;
   }
 
+  /** Sets the wait a read leaves behind: the Esc wait after a lone ESC, `ESC [` or `ESC O`, the drop wait inside a longer sequence. */
   private arm(now: number): void {
     const introducerOnly = this.state === "esc" || this.introducerOnly();
     if (introducerOnly) this.pending = now + this.escWait();
