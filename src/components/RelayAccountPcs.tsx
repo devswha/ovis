@@ -196,6 +196,9 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       if (running.current === abort) running.current = null;
       if (abort.signal.aborted) return;
       setPairing(null);
+      // another window (the sidebar's own add, or another relay tab) is adding that PC now: nothing failed here, and the
+      // roster shows it added once that one ends
+      if (error instanceof ApiError && error.code === "account_pc_busy") return;
       if (error instanceof ApiError && error.code === "account_pc_outdated") setStates((current) => new Map(current).set(pc.server_id, "outdated"));
       setFailure({ server_id: pc.server_id, message: error instanceof ApiError ? error.detail : t("That PC could not be added. Try again.") });
     }

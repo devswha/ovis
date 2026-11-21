@@ -129,6 +129,16 @@ describe("the account's PCs in the relay tab", () => {
     expect(renderer!.root.findAllByProps({ className: "relay-account-wait" })).toEqual([]);
   });
 
+  it("says nothing went wrong when another window is already adding that PC, and shows it added once the roster has it", async () => {
+    await mount();
+    await act(async () => { button("Add Desk").props.onClick(); });
+    await line({ error: { code: "account_pc_busy", message: "That PC is being added in another window." } });
+    expect(renderer!.root.findAll((node) => node.props.role === "alert").map(text)).toEqual([]);
+    expect(renderer!.root.findAllByProps({ className: "relay-account-wait" }).map(text)).toEqual([]);
+    await act(async () => { renderer!.update(tree([local, lab, added], () => {})); });
+    expect(rows()[0]).toEqual(["Desk", "In this app", "Open"]);
+  });
+
   it("cancels the comparison on this PC's server when the sheet closes while it waits", async () => {
     await mount();
     await act(async () => { button("Add Desk").props.onClick(); });
