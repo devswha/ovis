@@ -80,6 +80,12 @@
         <input id="web-address" name="address" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://my-pc.example.com" autocomplete="url" aria-label="PC address" data-ko-label="PC 주소">
         <button type="submit" class="primary" data-ko="연결">Connect</button>
       </form>
+      <!-- the PCs an SSH PC on this phone knows (its ssh config, its Tailscale login, the PCs it added): suggestions to add,
+           so with the tab's controls, before the PCs this phone is on (connect.js showKnown) -->
+      <section id="known-section" hidden>
+        <h2 id="known-title"></h2>
+        <ul id="known-pcs" class="card list"></ul>
+      </section>
       <!-- the PCs this phone added over SSH (each with Manage) or opened at any other address, one list (connect.js renderPcs) -->
       <section id="ssh-section" hidden>
         <h2 data-ko="이 폰이 연결한 PC">PCs this phone is on</h2>

@@ -1,7 +1,7 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, savedPcLabel, sshDetails, sshOrAddress, t, tabPcs } from "./shell.js";
+import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, followScheme, knownLogins, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, savedPcLabel, sshDetails, sshOrAddress, t, tabPcs } from "./shell.js";
 
 localize();
 followScheme();
@@ -41,10 +41,10 @@ function stopPending() {
 /** PCs that loaded before (an origin, or a relay PC's scope), and the public http address the user was just warned about. */
 let savedOrigins = [];
 let warned = "";
-/** The PCs added over SSH (Android's OvisSsh plugin), by their loopback origin on this phone. */
+/** The PCs added over SSH (the app's OvisSsh plugin), by their loopback origin on this phone. */
 let sshPcs = {};
 
-/** Calls Android's OvisSsh plugin (app/android/.../OvisSshPlugin.java). */
+/** Calls the app's OvisSsh plugin (app/android/.../OvisSshPlugin.java, app/ios/App/App/OvisSshPlugin.swift). */
 function ssh(method, options = {}) {
   return window.Capacitor.nativePromise("OvisSsh", method, options);
 }
@@ -169,8 +169,8 @@ document.querySelector('[role="tablist"]').addEventListener("keydown", (event) =
 });
 pick(tab);
 
-// a machine reached over SSH from this phone: Android's OvisSsh plugin asks the rest on a screen of its own. An app
-// without it (iOS, or an Android build before it) has no SSH to offer, so the SSH tab's field takes addresses alone
+// a machine reached over SSH from this phone: the app's OvisSsh plugin asks the rest on a screen of its own. An app
+// without it (an Android or iOS build before it) has no SSH to offer, so the SSH tab's field takes addresses alone
 // the plugins the app announces to the page before its first script runs (src/lib/nativeApp.ts, hasNativePlugin)
 const sshOffered = (window.Capacitor?.PluginHeaders ?? []).some((header) => header.name === "OvisSsh");
 sshAdd.hidden = !sshOffered;
@@ -189,7 +189,7 @@ async function connectField(text) {
   const target = sshOrAddress(text);
   if (!target.ssh) { await open(target.address); return; }
   if (!sshOffered) {
-    error.textContent = t("SSH works in the Android app. Type the PC's https address instead.", "SSH는 안드로이드 앱에서 돼요. PC의 https 주소를 넣으세요.");
+    error.textContent = t("SSH needs the latest version of this app. Update it, or type the PC's https address instead.", "SSH는 이 앱의 최신 버전에서 돼요. 앱을 업데이트하거나 PC의 https 주소를 넣으세요.");
     input.focus();
     return;
   }
@@ -334,6 +334,53 @@ function renderPcs(which, list, section, state) {
   return pcs.length;
 }
 
+const KNOWN_SOURCES = { tailscale: () => "Tailscale", ssh_config: () => t("SSH config", "SSH 설정"), pc: () => t("Its PC", "그 PC의 PC") };
+
+/**
+ * After the first PC: the PCs an SSH PC on this phone knows (its ssh config's hosts, its Tailscale login's PCs, the PCs
+ * it added), as its own Ovis answers over its tunnel (OvisSsh known), each with Add, which opens the SSH setup screen
+ * filled in. Asked of the PC last opened (else the first saved), once per screen; one that does not answer shows nothing.
+ */
+async function showKnown(state) {
+  const section = document.getElementById("known-section");
+  const from = sshPcs[state.last] ?? Object.values(sshPcs).find((pc) => pc.fingerprint);
+  section.hidden = true;
+  if (!sshOffered || from === undefined || !from.fingerprint) return;
+  let known;
+  try { known = await ssh("known", { origin: from.origin }); }
+  catch { return; }
+  const logins = knownLogins(known, from, Object.values(sshPcs));
+  const label = savedPcLabel(from.origin, state.names ?? {}, sshPcs);
+  document.getElementById("known-title").textContent = t(`PCs ${label} knows`, `${label}이(가) 아는 PC`);
+  document.getElementById("known-pcs").replaceChildren(...logins.map((login) => {
+    const item = document.createElement("li");
+    const text = document.createElement("span");
+    text.className = "way-text";
+    const title = document.createElement("span");
+    title.className = "way-title pc-name";
+    title.textContent = login.name;
+    const sub = document.createElement("span");
+    sub.className = "sub pc-sub";
+    const tag = document.createElement("span");
+    tag.className = "pc-tag";
+    tag.textContent = KNOWN_SOURCES[login.source]();
+    const address = document.createElement("span");
+    address.className = "pc-address";
+    address.textContent = `${login.user}@${login.host}${login.port === 22 ? "" : `:${login.port}`}`;
+    sub.append(tag, address);
+    text.append(title, sub);
+    const add = button(t("Add", "추가"), async () => {
+      error.textContent = "";
+      try { await ssh("add", { user: login.user, host: login.host, port: login.port }); }
+      catch (err) { error.textContent = String(err?.message ?? err); }
+    }, "primary");
+    add.setAttribute("aria-label", t(`Add ${login.name}`, `${login.name} 추가`));
+    item.append(text, add);
+    return item;
+  }));
+  section.hidden = logins.length === 0;
+}
+
 function button(text, onClick, className = "") {
   const element = document.createElement("button");
   element.type = "button";
@@ -451,7 +498,7 @@ async function load() {
   const state = await shell("getState");
   savedOrigins = state.saved ?? [];
   sshPcs = {};
-  if (android) {
+  if (sshOffered) {
     try { for (const pc of (await ssh("list")).pcs ?? []) sshPcs[pc.origin] = pc; }
     catch { /* an app without the plugin lists its PCs as before */ }
   }
@@ -460,6 +507,7 @@ async function load() {
   const tailnet = renderPcs("tailscale", document.getElementById("tailnet"), document.getElementById("tailnet-section"), state);
   document.getElementById("tailnet-none").hidden = tailnet > 0;
   renderPcs("ssh", document.getElementById("ssh-pcs"), document.getElementById("ssh-section"), state);
+  void showKnown(state);
   // an SSH PC whose address on this phone another app took first is not opened (OvisSshPlugin.listen)
   if (state.kind === "ssh-port") {
     error.textContent = t(

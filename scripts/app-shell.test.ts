@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
-import { APP_ORIGIN, homeHost, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, sshOrAddress, savedPcLabel, tabPcs, tailnetHost } from "../app/web/shell.js";
+import { APP_ORIGIN, homeHost, knownLogins, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, sshOrAddress, savedPcLabel, tabPcs, tailnetHost } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
 
@@ -48,19 +48,22 @@ describe("the connect tabs", () => {
   it("put on SSH user@host first, Add by address as a text link to an https address's field, then the PCs this phone is on", () => {
     const ssh = panel("ssh");
     const at = (needle: string) => ssh.indexOf(needle);
-    const order = ['id="address"', 'id="by-address"', 'id="web-address"', 'id="ssh-pcs"'];
+    // the PCs an SSH PC knows are suggestions to add, so with the controls, before the PCs this phone is on
+    const order = ['id="address"', 'id="by-address"', 'id="web-address"', 'id="known-pcs"', 'id="ssh-pcs"'];
     for (const needle of order) expect(at(needle)).toBeGreaterThan(-1);
     expect(order.map(at)).toEqual([...order.map(at)].sort((a: number, b: number) => a - b));
     expect(ssh).toMatch(/<button type="button" class="text-link" id="by-address"[^>]*data-ko="주소로 추가">Add by address</);
     expect(ssh).toMatch(/<form id="address-connect"[^>]*hidden>/);
   });
 
-  it("ends each tab in its one list of the PCs this phone is on, under the tab's controls", () => {
+  it("ends each tab in exactly one list of the PCs this phone is on, under the tab's controls", () => {
+    const heading = 'data-ko="이 폰이 연결한 PC">PCs this phone is on</h2>';
     for (const [tab, list, last] of [["relay", 'id="relay-pcs"', "data-scan"], ["tailscale", 'id="tailnet"', "data-scan"], ["ssh", 'id="ssh-pcs"', 'id="web-address"']] as const) {
       const shown = panel(tab);
-      expect(shown.match(/class="card list"/g)?.length).toBe(1);
+      expect(shown.split(heading).length - 1).toBe(1);
       expect(shown.indexOf(list)).toBeGreaterThan(shown.lastIndexOf(last));
-      expect(shown).toContain('data-ko="이 폰이 연결한 PC">PCs this phone is on</h2>');
+      // the last list of the tab
+      expect(shown.lastIndexOf('class="card list"')).toBe(shown.indexOf(`${list} class="card list"`) + list.length + 1);
     }
   });
 });
@@ -248,6 +251,39 @@ describe("why an address did not open", () => {
   });
 });
 
+describe("the PCs an SSH PC knows", () => {
+  const from = { origin: "http://127.0.0.1:47320", user: "me", host: "desk.tail1e211e.ts.net", port: 22 };
+  const known = {
+    candidates: { pcs: [
+      { name: "desk", destination: "desk.tail1e211e.ts.net", detail: "desk.tail1e211e.ts.net", source: "tailscale" },
+      { name: "nas", destination: "nas.tail1e211e.ts.net", detail: "nas.tail1e211e.ts.net", source: "tailscale" },
+      { name: "lab", destination: "lab", detail: "root@lab.example", source: "ssh_config" },
+      { name: "bare", destination: "bare", detail: "bare.example", source: "ssh_config" },
+      { name: "alias", destination: "alias", detail: null, source: "ssh_config" },
+    ] },
+    machines: { machines: [
+      { kind: "ssh", name: "vps", target: { destination: "can@10.0.0.7", port: 2222 } },
+      { kind: "ssh", name: "aliased", target: { destination: "vps" } },
+      { kind: "relay", name: "far" },
+      { kind: "ssh", name: "again", target: { destination: "root@lab.example" } },
+    ] },
+  };
+
+  it("offers each as a login the phone can reach: a Tailscale PC as the same user, an ssh config host by its user@hostname, a PC it added by its target", () => {
+    expect(knownLogins(known, from)).toEqual([
+      { user: "me", host: "nas.tail1e211e.ts.net", port: 22, name: "nas", source: "tailscale" },
+      { user: "root", host: "lab.example", port: 22, name: "lab", source: "ssh_config" },
+      { user: "can", host: "10.0.0.7", port: 2222, name: "vps", source: "pc" },
+    ]);
+  });
+
+  it("leaves out the PCs already on this phone, and reads nothing from an answer that is not one", () => {
+    expect(knownLogins(known, from, [{ user: "root", host: "LAB.example", port: 22 }]).map((login: { name: string }) => login.name)).toEqual(["nas", "vps"]);
+    expect(knownLogins({ candidates: null, machines: { error: "x" } }, from)).toEqual([]);
+    expect(knownLogins(undefined, from)).toEqual([]);
+  });
+});
+
 describe("an SSH PC under Manage", () => {
   const pc = { origin: "http://127.0.0.2:47317", host: "studio.lan", port: 22, user: "me", auth: "phone-key", keyType: "", hostKeyAlgorithm: "ssh-ed25519", fingerprint: "SHA256:abc" };
 
@@ -260,6 +296,8 @@ describe("an SSH PC under Manage", () => {
     expect(pasted.address).toBe("me@studio.lan:2222");
     expect(pasted.how).toContain("rsa 3072");
     expect(pasted.how).not.toBe(details.how);
+    const tailscale = sshDetails({ ...pc, auth: "tailscale" });
+    expect([details.how, pasted.how]).not.toContain(tailscale.how);
   });
 
   it("is not confirmed once its host key was forgotten", () => {
