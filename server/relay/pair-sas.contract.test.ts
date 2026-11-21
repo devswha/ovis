@@ -929,7 +929,7 @@ test("a PC vouched for is refused by a PC with no drive account member to approv
   expect((await vouched(f, (key) => admit(key))).refused).toBe("auth_failed");
 });
 
-test("a PC vouched for waits for a member as 'pair this PC', and an approval makes a plain row the approver added, no member", async () => {
+test("a PC vouched for waits for a member as 'pair this PC', and an approval makes a watch row the approver added, no member", async () => {
   const { f, member, admit } = await joinFixture();
   const link = await signedIn(f, member);
   const prompt = remotePrompt(f);
@@ -944,7 +944,7 @@ test("a PC vouched for waits for a member as 'pair this PC', and an approval mak
   expect((await p.inbox.next()).type).toBe(FrameType.AUTH_OK);
   const registry = readDeviceRegistry(join(f.stateDir, "devices.json"));
   const row = registry.kind === "ok" ? registry.devices.find((device) => device.relay_public_key === p.publicKey) : undefined;
-  expect(row).toMatchObject({ label: "Mac app", role: "drive", added_by: member.id });
+  expect(row).toMatchObject({ label: "Mac app", role: "watch", added_by: member.id });
   expect(row).not.toHaveProperty("account");
   expect(row).not.toHaveProperty("account_add");
 });

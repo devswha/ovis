@@ -397,6 +397,10 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     finally { inFlight.current = false; setBusy(false); }
   };
   const recheck = useRecheck(machine.id, () => askMachineRetry(machine.id), away !== null);
+  // a PC of the relay (one of the account's) says where it is by the dot beside its name alone, its words a tooltip:
+  // the server keeps trying it, so there is nothing to read or press under it
+  const quiet = machine.kind === "relay" && !noticed;
+  const dotWords = away === "off" ? t("Switched off") : away !== null ? awayReason ?? machineErrorText(machine.error!, t) : t(STATE_WORD[machine.state]);
   const closeMenu = useCallback(() => setMenu(null), []);
   const endRename = (save: boolean) => {
     setRenaming(false);
@@ -459,7 +463,8 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
           }}
     /> : <span className="machine-name" title={machine.name}>{machine.name}</span>}
     {machine.kind === "local" && <span className="machine-kind" title={t("The computer this app runs on")}>{t("Host")}</span>}
-    <span className={`machine-dot is-${machine.action_required === "setup" || asksWhatToConnect(machine) ? "setup" : away !== null ? "disconnected" : machine.state}`} title={stateWords} aria-hidden="true" />
+    {/* where a PC is, beside its name: nothing once it is connected */}
+    {!online && <span className={`machine-dot is-${machine.action_required === "setup" || asksWhatToConnect(machine) ? "setup" : away !== null ? "disconnected" : machine.state}`} title={quiet ? dotWords : stateWords} aria-hidden="true" />}
   </>;
   return <section className={`machine-group${current ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}${compact ? "" : " is-two-line"}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
     {!headerless && <header className={`machine-header${compact ? " is-compact" : ""}`}>
@@ -472,7 +477,8 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
       <button className="sidebar-row-action machine-new" disabled={!canCreate} aria-label={t("New workspace on {name}", { name: machine.name })} title={createTitle} onClick={() => props.onNew(machine.id)}><Plus aria-hidden="true" /></button>
     </header>}
     {noticed && <MachineActionNotice machine={machine} onSetup={props.onSetup} />}
-    {away !== null ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} failure={recheck.failure} onCheck={props.watching || machine.kind === "relay" ? undefined : recheck.check} returnFocus={() => titleButton.current} />
+    {away !== null && !quiet ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} failure={recheck.failure} onCheck={props.watching || machine.kind === "relay" ? undefined : recheck.check} returnFocus={() => titleButton.current} />
+    : quiet ? <p className="machine-state visually-hidden" role="status">{online ? null : dotWords}</p>
     : <p className={`machine-state is-${machine.state}${online || stateWord === null ? " visually-hidden" : ""}`} role={machine.state === "error" ? "alert" : "status"} title={noticed || machine.error === null ? undefined : machineErrorText(machine.error, t)}>
       <span className="machine-state-word">{stateWord}</span>
       {!noticed && machine.error && <span className="machine-state-detail">{sshWords ?? machineErrorText(machine.error, t)}</span>}
@@ -488,7 +494,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     {confirmRemove && <ConfirmDialog title={t("Remove PC {name}?", { name: machine.name })} body={t(pairedPc(machine) ? "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC." : "Removes this registration. Remote sessions keep running.")} confirmLabel={t("Remove PC")}
       onConfirm={async () => { await mutate("DELETE", undefined, true); setConfirmRemove(false); }} onClose={() => setConfirmRemove(false)} />}
     {error && <p className="machine-error" role="alert">{error}</p>}
-    {!folded && !online && !machine.snapshot && (machine.state === "disconnected" || machine.state === "error") && <p className="tree-state machine-empty" role="status">{t("No saved sessions")}</p>}
+    {!quiet && !folded && !online && !machine.snapshot && (machine.state === "disconnected" || machine.state === "error") && <p className="tree-state machine-empty" role="status">{t("No saved sessions")}</p>}
     {(!folded || filtered !== null) && (machine.snapshot !== null || online) && <div className={online ? "" : "machine-offline"} inert={!online} hidden={folded}>
       <MachineContext.Provider value={machine.id}><AppLayoutContext.Provider value={props.appLayout?.(machine.id) ?? FULL_LAYOUT}><Sidebar snapshot={machine.snapshot} online={online} selectedPaneId={props.selectedMachineId === machine.id ? props.selectedPaneId : null} actions={actions} watching={props.watching} /></AppLayoutContext.Provider></MachineContext.Provider>
     </div>}

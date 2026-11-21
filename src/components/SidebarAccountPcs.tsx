@@ -11,7 +11,6 @@ import { apiFetch } from "../lib/api-request-id.ts";
 import { fetchRelay } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import type { AccountPcEntry } from "../lib/api.ts";
-import { MachineOffLine } from "./MachineOffLine.tsx";
 import { signedInAccount, useAccountPcs, type AccountPcs, type AccountPcsSource } from "./RelayAccountPcs.tsx";
 
 /**
@@ -112,26 +111,20 @@ function AccountPcRow({ pc, hidden, pcs: { stateOf, pairing, failure } }: { pc: 
   const state = stateOf(pc.server_id);
   const adding = pairing?.server_id === pc.server_id;
   const failed = !adding && failure?.server_id === pc.server_id;
+  const away = state === "offline" || state === "outdated" || failed;
+  // where it is, beside its name only: the words are the dot's tooltip and what a screen reader hears
+  const words = failed ? failure.message : state === undefined ? t("Checking…") : state === "offline" ? t("Switched off") : state === "outdated" ? t("Update Ovis on that PC") : t("Connecting…");
   return (
-    <section hidden={hidden && !adding} className="machine-group is-offline account-pc-group" aria-label={t("PC {name}", { name: pc.name })} data-pc-state={state ?? "checking"}>
+    <section hidden={hidden && !adding} className={`machine-group account-pc-group${away ? " is-offline" : ""}`} aria-label={t("PC {name}", { name: pc.name })} data-pc-state={state ?? "checking"}>
       <header className="machine-header">
         <div className="machine-title">
           <span className="sidebar-mark" aria-hidden="true"><Monitor /></span>
           <span className="machine-name" title={pc.name}>{pc.name}</span>
           {newUntil !== expiredAt && isNewAccountPc(pc, Date.now()) && <span className="machine-state-word">{t("New PC")}</span>}
-          <span className={`machine-dot is-${state === undefined || (state === "ready" && !failed) ? "connecting" : "disconnected"}`} aria-hidden="true" />
+          <span className={`machine-dot is-${away ? "disconnected" : "connecting"}`} title={words} aria-hidden="true" />
         </div>
       </header>
-      {state === "offline"
-        ? <MachineOffLine state="off" reason={null} checking={false} />
-        : (
-          <div className="account-pc-line">
-            {state === undefined && <span className="machine-state-word" role="status">{t("Checking…")}</span>}
-            {state === "outdated" && <span className="machine-state-word" role="status">{t("Update Ovis on that PC")}</span>}
-            {state === "ready" && !failed && <span className="machine-state-word" role="status">{t("Connecting…")}</span>}
-          </div>
-        )}
-      {failed && <p className="machine-error" role="alert">{failure.message}</p>}
+      <p className="machine-state visually-hidden" role={failed ? "alert" : "status"}>{words}</p>
     </section>
   );
 }

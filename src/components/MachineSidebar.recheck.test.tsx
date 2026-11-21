@@ -145,12 +145,14 @@ it("offers no Check again for a connected PC or an off PC of the relay, and to a
   await mount([local, relayPc({ state: "connected", error: null })]);
   expect(recheckButtons()).toHaveLength(0);
   await act(async () => renderer?.unmount());
-  // the server keeps trying a relay PC by itself: the sidebar only says it is off
+  // the server keeps trying a relay PC by itself: the dot beside its name says it is off, with nothing under it
   await mount([local, relayPc({})]);
   expect(recheckButtons()).toHaveLength(0);
-  expect(textOf(renderer!.root.find((element) => element.props.className === "machine-off"))).toContain("Switched off");
+  expect(renderer!.root.findAll((element) => element.props.className === "machine-off")).toHaveLength(0);
+  expect(renderer!.root.find((element) => typeof element.props.className === "string" && element.props.className.startsWith("machine-dot")).props.title).toBe("Switched off");
+  expect(textOf(renderer!.root.find((element) => element.props.className === "machine-state visually-hidden"))).toBe("Switched off");
   await act(async () => renderer?.unmount());
-  await mount([local, relayPc({})], true);
+  await mount([local, sshPc({})], true);
   expect(recheckButtons()).toHaveLength(0);
-  expect(textOf(renderer!.root.find((element) => element.props.className === "machine-off"))).toContain("It is off, has no network, or Ovis is not running on it.");
+  expect(textOf(renderer!.root.find((element) => element.props.className === "machine-off"))).toContain("refused the SSH connection");
 });
