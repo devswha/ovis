@@ -14,6 +14,15 @@ import { isWssOrigin } from "./relay-offer.ts";
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./relay-server-proof.ts";
 
 export const CHALLENGE_TTL_MS = 60_000;
+
+/** account#57's completion scope, and the context its challenge is stored and proved under */
+function completionScope(value: unknown): { account: string; listing_id: string } | null {
+  if (value === null || typeof value !== "object") return null;
+  const { account, listing_id } = value as Record<string, unknown>;
+  return Object.keys(value).length === 2 && typeof account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(account) && typeof listing_id === "string" && /^[0-9a-f]{32}$/.test(listing_id)
+    ? { account, listing_id } : null;
+}
+const completionKey = (scope: { account: string; listing_id: string }, nonce: string): string => `pc-complete/1:${scope.account}:${scope.listing_id}:${nonce}`;
 export const MAILBOX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAILBOX_PAGE = 100;
 export const MAILBOX_MAX = 1000;
@@ -66,7 +75,9 @@ interface Session { account: string; provider: SignInProvider | "test"; family: 
 /** `public_key`: the PC's relay key (X25519, 64 hex), from which `server_id` derives; `relay`: the wss origin it is reached through. */
 export interface FakePc { server_id: string; label: string; public_key: string; relay: string; added_at: string; last_seen_at: string | null; new_until?: string | null; admitted_at?: string | null; exempt?: boolean;
   /** PCL-1: listed by a sign-in that was no app's own (a device code) and not confirmed since, as the service's `listed_by_device` */
-  listed_by_device?: boolean }
+  listed_by_device?: boolean;
+  /** with `completions` (account#57): this listing's own ID, and when the PC said it is bound to it (POST /v1/pc/complete) */
+  listing_id?: string; completed_at?: string | null }
 /** How long a PC added in one press stays new to the account's other devices. */
 export const PC_NEW_MS = 24 * 60 * 60_000;
 /** One-press PC adds one account may make per rolling day; past it 429 `pc_add_cap`. */
@@ -145,6 +156,11 @@ export class FakeAccountService {
   opensAll = false;
   /** Newer services distinguish a listed PC's snapshot opt-out from a hidden 404. */
   reportsStep2Off = false;
+  /**
+   * account#57: each listing has its own ID; a PC's admission may name it (`with_listing_id`), and the PC, once bound,
+   * records its add complete with a proof scoped to that account and listing (POST /v1/pc/complete). Off: an older service.
+   */
+  completions = false;
   private seq = 0;
   readonly requests: string[] = [];
 
@@ -607,7 +623,8 @@ export class FakeAccountService {
       const confirming = confirm && before?.listed_by_device === true;
       const entry: FakePc = { server_id: pc, label: body.label, public_key: body.public_key as string, relay: body.relay, added_at: before?.added_at ?? this.iso(), last_seen_at: before?.last_seen_at ?? null,
         ...(before?.new_until == null ? {} : { new_until: before.new_until, admitted_at: before.admitted_at ?? null, exempt: before.exempt ?? false }),
-        listed_by_device: before === undefined ? !own : before.listed_by_device === true && !confirming };
+        listed_by_device: before === undefined ? !own : before.listed_by_device === true && !confirming,
+        ...(this.completions ? { listing_id: before?.listing_id ?? randomHex(16), completed_at: before?.completed_at ?? null } : {}) };
       // a confirm makes the PC one the account's devices open, as the admit does: new to them for PC_NEW_MS (C3)
       if (confirming) {
         this.usedAccounts.add(account);
@@ -674,9 +691,28 @@ export class FakeAccountService {
       const key = proofKey(body.public_key);
       if (!key || typeof body.server_id !== "string" || deriveServerId(key) !== body.server_id) return problem(401, "server_key_mismatch", "That key does not give that server_id");
       const challengeId = randomHex(16);
-      const { expected, frame } = serverChallenge(key, { server_id: body.server_id, role: "account", connection_id: challengeId });
-      this.challenges.set(challengeId, { server_id: body.server_id, expected, expires: this.now() + CHALLENGE_TTL_MS });
+      // a completion's proof is scoped to its account and listing: its context is not a wire nonce (account#57)
+      const scope = this.completions ? completionScope(body.completion) : null;
+      if (body.completion !== undefined && scope === null) return problem(400, "invalid_body", "Name the account and listing");
+      const context = scope ? completionKey(scope, challengeId) : challengeId;
+      const { expected, frame } = serverChallenge(key, { server_id: body.server_id, role: "account", connection_id: context });
+      this.challenges.set(context, { server_id: body.server_id, expected, expires: this.now() + CHALLENGE_TTL_MS });
       return json({ challenge_id: challengeId, frame });
+    }
+    if (path === "/v1/pc/complete" && this.completions) {
+      const scope = completionScope({ account: body.account, listing_id: body.listing_id });
+      const context = scope && typeof body.challenge_id === "string" ? completionKey(scope, body.challenge_id) : null;
+      const challenge = context === null ? undefined : this.challenges.get(context);
+      if (context !== null) this.challenges.delete(context);
+      if (!scope || !challenge || challenge.server_id !== body.server_id || this.now() > challenge.expires || !verifyServerProof(body.proof, challenge.expected)) {
+        return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
+      }
+      const entry = this.directories.get(scope.account)?.get(challenge.server_id);
+      // the listing still current, and its own evidence: an admission of it taken (or a completion already stamped)
+      const taken = this.pcAdmissions.get(box(challenge.server_id, scope.account))?.taken === true;
+      if (entry?.listing_id !== scope.listing_id || (entry.completed_at == null && !taken)) return problem(409, "listing_changed", "This add is no longer waiting for that action");
+      entry.completed_at ??= this.iso();
+      return json({ completed_at: entry.completed_at });
     }
     if (path === "/v1/pc/mailbox" || (path === "/v1/pc/admission" && this.opensAll)
       || (path === "/v1/pc/snapshot" && (this.opensAll || this.reportsStep2Off))) {
@@ -693,7 +729,8 @@ export class FakeAccountService {
         // retry-safe for 10 minutes, inclusive; it ends with the sign-in that made it
         if (open === undefined || this.now() - open.at > ADMISSION_TTL_MS || this.revokedFamilies.has(open.family) || entry?.new_until == null) return problem(404, "no_admission", "No account added this PC in one press");
         open.taken = true;
-        return json({ account: body.account, admitted_at: new Date(open.at).toISOString(), new_until: entry.new_until });
+        return json({ account: body.account, admitted_at: new Date(open.at).toISOString(), new_until: entry.new_until,
+          ...(this.completions && body.with_listing_id === true ? { listing_id: entry.listing_id ?? null } : {}) });
       }
       if (path === "/v1/pc/snapshot") {
         // P6: only a PC the account lists reads the account's devices and records

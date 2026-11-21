@@ -142,8 +142,22 @@ function removedKey(record: unknown): string | null {
   return kind === "remove" && typeof key === "string" ? key : null;
 }
 
+const LISTING_ID = /^[0-9a-f]{32}$/;
+type CompletionScope = { readonly account: string; readonly listing_id: string };
+
+function readCompletion(path: string | undefined): CompletionScope | null {
+  if (!path) return null;
+  try {
+    const kept = JSON.parse(readFileSync(path, "utf8")) as Partial<Record<keyof CompletionScope, unknown>> | null;
+    return kept !== null && typeof kept === "object" && typeof kept.account === "string" && typeof kept.listing_id === "string" && LISTING_ID.test(kept.listing_id)
+      ? { account: kept.account, listing_id: kept.listing_id } : null;
+  } catch { return null; }
+}
+
 export interface AccountMailboxOptions {
   readonly pendingPath?: string;
+  /** where a bound add's completion receipt waits until the account service has it (complete) */
+  readonly completionPath?: string;
   readonly devices: DeviceStore;
   readonly identity: () => RelayIdentity | undefined;
   readonly service: string | Error;
@@ -180,7 +194,11 @@ export class AccountMailbox {
   private vouchNextAt = Number.NEGATIVE_INFINITY;
   private vouchTimer: (() => void) | undefined;
 
+  /** A bind's completion receipt the account service has not taken yet (account#57): sent again after each pull. */
+  private completion: CompletionScope | null;
+
   constructor(private readonly options: AccountMailboxOptions) {
+    this.completion = readCompletion(options.completionPath);
     const pending = readPending(options.pendingPath);
     this.pending = pending ?? [];
     this.pendingError = pending === null ? `Cannot read ${options.pendingPath}: account adds wait until it is restored or fixed.` : null;
@@ -244,7 +262,9 @@ export class AccountMailbox {
   pull(readmission?: Readmission): Promise<number> {
     this.pulling ??= this.exclusively(async () => {
       const applied = await this.drain();
-      return applied + (await this.readSnapshotNow(readmission)).adds;
+      const adds = applied + (await this.readSnapshotNow(readmission)).adds;
+      await this.sendCompletion();
+      return adds;
     }).finally(() => { this.pulling = undefined; });
     return this.pulling;
   }
@@ -311,17 +331,50 @@ export class AccountMailbox {
    * One press (docs/account.md): the account service's word that `account`, the one this PC's owner named, admitted
    * this PC within the last ten minutes. The admission is spent by this read. Null when there is none (404).
    */
-  async admission(account: string): Promise<{ readonly account: string; readonly new_until: string } | null> {
+  async admission(account: string): Promise<{ readonly account: string; readonly new_until: string; readonly listing_id?: string } | null> {
     const identity = this.options.identity();
     if (!identity) throw new Error("This PC has no relay identity");
     try {
-      const answer = (await this.proved(identity, "/v1/pc/admission", { account }))!;
+      // the listing it was admitted in: the completion receipt after the bind names it (an older service names none)
+      const answer = (await this.proved(identity, "/v1/pc/admission", { account, with_listing_id: true }))!;
       if (typeof answer.account !== "string" || typeof answer.new_until !== "string") throw new Error("The account service sent a malformed admission");
-      return { account: answer.account, new_until: answer.new_until };
+      const listing = typeof answer.listing_id === "string" && LISTING_ID.test(answer.listing_id) ? { listing_id: answer.listing_id } : {};
+      return { account: answer.account, new_until: answer.new_until, ...listing };
     } catch (error) {
       if (error instanceof AccountServiceRefusal && error.status === 404) return null;
       throw error;
     }
+  }
+
+  /**
+   * This PC is bound to `account` by an admission of `listing_id`: it tells the account service, with a proof scoped to
+   * that account and listing (POST /v1/pc/complete, account#57), so its add is complete rather than only listed. Kept on
+   * disk first and sent again after each pull until the service has it; never throws. A listing changed or gone since
+   * (409) ends it: that add is no longer the one to complete.
+   */
+  async complete(account: string, listingId: string): Promise<void> {
+    this.completion = { account, listing_id: listingId };
+    try { if (this.options.completionPath) writePrivateState(this.options.completionPath, this.completion); }
+    catch (error) { console.error(`[account] the completion receipt could not be kept: ${error instanceof Error ? error.message : String(error)}`); }
+    await this.sendCompletion();
+  }
+
+  private async sendCompletion(): Promise<void> {
+    const scope = this.completion;
+    const identity = this.options.identity();
+    if (scope === null || !identity) return;
+    // a PC that left that account since has nothing of it to complete
+    const done = this.options.devices.account() !== scope.account;
+    try { if (!done) await this.proved(identity, "/v1/pc/complete", { ...scope }, false, scope); }
+    catch (error) {
+      if (!(error instanceof AccountServiceRefusal && error.status === 409)) {
+        console.warn(`[account] the account service did not take this PC's completed add yet: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    }
+    if (this.completion !== scope) return;
+    this.completion = null;
+    try { if (this.options.completionPath) writePrivateState(this.options.completionPath, null); } catch {}
   }
 
   /** The waiting records are retried by one run at a time (a pull, or settle), so none of them is ever out of the gate's sight. */
@@ -693,12 +746,14 @@ export class AccountMailbox {
   }
 
   /** A PC route called with a fresh proof of this PC's relay key for the `account` role. */
-  private async proved(identity: RelayIdentity, path: string, body: Record<string, unknown>, gone = false): Promise<Record<string, unknown> | null> {
-    const challenge = (await this.call("/v1/pc/challenge", { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)) }))!;
+  private async proved(identity: RelayIdentity, path: string, body: Record<string, unknown>, gone = false, completion?: CompletionScope): Promise<Record<string, unknown> | null> {
+    const challenge = (await this.call("/v1/pc/challenge", { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)), ...(completion ? { completion } : {}) }))!;
     // Rollback exposes the original native property-read error for a JSON null response.
     if ((this.options.devices.opensAll() && challenge === null) || typeof challenge.challenge_id !== "string") throw new Error("The account service sent no challenge");
+    // a completion's proof answers for its account and listing alone (account#57): its context is not the wire nonce
+    const context = completion ? `pc-complete/1:${completion.account}:${completion.listing_id}:${challenge.challenge_id}` : challenge.challenge_id;
     const proof = answerServerChallenge(challenge.frame, importSecretKey(identity.secret_key),
-      { server_id: identity.server_id, role: "account", connection_id: challenge.challenge_id });
+      { server_id: identity.server_id, role: "account", connection_id: context });
     if (!proof) throw new Error("The account service sent a malformed challenge");
     return await this.call(path, { server_id: identity.server_id, challenge_id: challenge.challenge_id, proof, ...body }, gone);
   }

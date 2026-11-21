@@ -44,6 +44,8 @@ export async function pressOnce(services: PressServices, account: string): Promi
   await accountMailbox.readSnapshot();
   // the account may have stopped listing this PC during that first read: then it is in no account, and says so
   if (devices.account() !== account) return refuse("not_listed", "The account removed this PC while it was being added", 409);
+  // bound: the add is complete, on this PC's own scoped word (account#57), so the account never shows it only listed
+  if (admitted.listing_id !== undefined) await accountMailbox.complete(account, admitted.listing_id);
   return { account };
 }
 
