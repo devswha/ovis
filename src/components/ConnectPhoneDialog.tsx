@@ -191,7 +191,7 @@ export function ConnectPhoneDialog({ plan, tailscale = plan, pairUrl, pageUrl = 
   // a phone on the same Wi-Fi opens Portal's address where it runs, else this page's own when it is no Tailscale one
   const directUrl = portal?.phase === "running" && portal.url !== null ? portal.url : pageUrl !== null && pageUrl !== tailnet.address ? pageUrl : null;
   // one pairing code for both tabs that show one: the PC keeps one pending code, so a second would end the first
-  const sharedCode = useRef<SharedCode>({ code: null, asking: false });
+  const sharedCode = useRef<SharedCode>({ code: null, asking: false, waiting: new Set() });
 
   return createPortal(
     <SettingsQuery.Provider value={[]}>
@@ -1274,8 +1274,24 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
   );
 }
 
-/** the code views of one dialog share (CodeRoute `shared`): the last one made or announced, and whether one is being asked for */
-interface SharedCode { code: PairingCode | null; asking: boolean }
+/**
+ * the code views of one dialog share (CodeRoute `shared`): the last one made or announced, whether one is being asked
+ * for, and the views waiting on that ask, told when it ends with no code so one of them asks itself
+ */
+interface SharedCode { code: PairingCode | null; asking: boolean; readonly waiting: Set<() => void> }
+
+/**
+ * The ask in `shared` ended: with `code`, its announcement reaches the waiting views; with none, the first waiting view
+ * asks itself, and the others wait on that ask (two asks would end each other's code).
+ */
+function askEnded(shared: MutableRefObject<SharedCode>, code: PairingCode | null): void {
+  shared.current = { ...shared.current, ...(code === null ? {} : { code }), asking: false };
+  if (code !== null) { shared.current.waiting.clear(); return; }
+  const [first] = shared.current.waiting;
+  if (first === undefined) return;
+  shared.current.waiting.delete(first);
+  first();
+}
 
 /** the newest code request of any opening: the server keeps one pending code, so an older answer is a dead code */
 let latestPairRequest = 0;
@@ -1302,7 +1318,7 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
       // a QR code shown alone (the relay tab's) is never shown here as digits; the PC's one pending code is now that
       // one, so the code this showed is gone
       const next = detail.qrOnly === true ? null : detail;
-      if (shared) shared.current = { code: next, asking: false };
+      if (shared) { shared.current.waiting.clear(); shared.current = { ...shared.current, code: next, asking: false }; }
       setCode(next);
     };
     window.addEventListener(PAIRING_CODE_EVENT, onCode);
@@ -1332,11 +1348,15 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
       const fresh = await startPairing();
       // a dialog closed and opened again asked after this one: its answer is the code that pairs, not this one
       if (request !== latestPairRequest) return;
-      if (shared) shared.current = { code: fresh, asking: false };
+      if (shared) askEnded(shared, fresh);
       setCode(fresh);
       announcing.current = true;
       try { announcePairingCode(fresh); } finally { announcing.current = false; }
-    } catch (reason) { setError(failureText(reason)); if (shared) shared.current = { ...shared.current, asking: false }; }
+    } catch (reason) {
+      setError(failureText(reason));
+      // the views waiting on this ask get no announcement: told, one of them asks for its own code
+      if (shared) askEnded(shared, null);
+    }
     finally {
       requesting.current = false;
       setBusy(false);
@@ -1348,8 +1368,14 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
     if (!startAtOnce || started.current) return;
     started.current = true;
     const held = shared?.current;
-    // another view's code is good, or on its way (its announcement brings it here): no second code ends it
-    if (held?.asking) return;
+    // another view's code is good, or on its way (its announcement brings it here): no second code ends it. If that ask
+    // fails, this view asks itself
+    if (held?.asking) {
+      const ask = (): void => { void pair(); };
+      held.waiting.add(ask);
+      // a view that goes before the ask ends asks nothing; one whose effect runs again waits again
+      return () => { held.waiting.delete(ask); started.current = false; };
+    }
     if (held?.code && Date.parse(held.code.expires_at) > Date.now()) { setCode(held.code); return; }
     void pair();
   }, [startAtOnce, shared]);

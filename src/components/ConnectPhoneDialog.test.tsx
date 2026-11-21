@@ -61,7 +61,7 @@ describe("Connect a phone on a phone", () => {
   /** the next success body of POST /api/machines/address, when not the added PC */
   let addressAnswer: unknown;
   let pending: string;
-  let pairStarts: { code: string; gate: Promise<void> }[];
+  let pairStarts: { code: string; gate: Promise<void>; refused?: true }[];
   /** what each POST /api/relay/offer said it is for (x-ovis-no-account-only), in the order the PC got them */
   let offersAsked: (string | null)[];
   /** whether the pending code is the relay tab's QR code's own: the PC keeps one pending code, of one kind */
@@ -135,6 +135,7 @@ describe("Connect a phone on a phone", () => {
         const held = pairStarts.shift();
         if (held === undefined) return Response.json({ code: pending, expires_at });
         await held.gate;
+        if (held.refused) return Response.json({ error: { code: "pairing_unavailable", message: "refused" } }, { status: 503 });
         return Response.json({ code: held.code, expires_at });
       }
       if (path === "/api/machines/tailnet") {
@@ -524,6 +525,31 @@ describe("Connect a phone on a phone", () => {
     await until(() => qrCodes().length === 2, "both tabs' QR codes");
     expect(starts()).toBe(1);
     expect(qrCodes().map((qr) => String(qr.props.value))).toEqual(["https://workstation.example.ts.net/?pair=135792", "http://192.168.0.12:7317/?pair=135792"]);
+  });
+
+  it("a tab that waited on the first tab's code asks for its own when that request fails", async () => {
+    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
+    const pageEvents = new EventTarget();
+    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
+    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
+    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
+    const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
+    const starts = () => requests.filter((path) => path === "/api/devices/pair/start").length;
+    let refuse = (): void => {};
+    pairStarts.push({ code: "000000", gate: new Promise<void>((resolve) => { refuse = resolve; }), refused: true }, { code: "246810", gate: Promise.resolve() });
+    await act(async () => {
+      renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} pageUrl="http://192.168.0.12:7317" relay={relayState()} readOnly={false} closesGate={false} canPair
+        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
+    });
+    await until(() => starts() === 1, "the Tailscale tab's code asked for");
+    await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    expect(starts()).toBe(1);
+    await act(async () => { refuse(); });
+    // the request it waited on failed: nothing will announce a code, so the waiting tab asks itself
+    await until(() => starts() === 2, "the waiting tab's own request");
+    await until(() => qrCodes().some((qr) => String(qr.props.value) === "http://192.168.0.12:7317/?pair=246810"), "the waiting tab's QR code");
   });
 
   it("offers only the ways this window can use: the relay to its owner on a direct page, Tailscale and an address where PCs are added from", () => {
