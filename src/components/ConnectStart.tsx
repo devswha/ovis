@@ -10,8 +10,8 @@ import { NewPcNotices } from "./NewPcNotices.tsx";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
 import { AddressForm, canScanQr, SavedPcs, scanQr, sshHandoff, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
 
-type ConnectWay = "relay" | "tailscale" | "direct";
-const CONNECT_WAYS: readonly ConnectWay[] = ["relay", "tailscale", "direct"];
+type ConnectWay = "relay" | "tailscale" | "ssh";
+const CONNECT_WAYS: readonly ConnectWay[] = ["relay", "tailscale", "ssh"];
 
 /** The phone app's shell plugin (app/android HerdrShellPlugin): the PCs this phone opened, and whether Tailscale is on. */
 const SHELL = "HerdrShell";
@@ -122,17 +122,19 @@ function TailscalePanel() {
 }
 
 /**
- * The Direct tab: a PC's address on this network in one field, and its QR scan where the phone app can scan. In the phone
- * app the field takes SSH's user@host too, which opens the app's own SSH screen with it filled in (sshHandoff).
+ * The SSH tab: in the phone app SSH's user@host first, which opens the app's own SSH screen with it filled in
+ * (sshHandoff); then Add by address, a text link that opens a field for a PC's https address.
  */
-function DirectPanel() {
+function SshPanel() {
   const t = useT();
   const open = useAddressOpen();
   const ssh = sshHandoff();
+  const [byAddress, setByAddress] = useState(false);
   return (
-    <div className="connect-start-panel" data-tab-panel="direct">
-      <AddressForm open={open} labelShown ssh={ssh} label={ssh ? t("Address or SSH") : t("PC address")} placeholder={ssh ? "192.168.0.10:7317 · user@host" : "192.168.0.10:7317"} submit={t("Connect")} />
-      {canScanQr() && <ScanWay open={open} failed={open.failed} />}
+    <div className="connect-start-panel" data-tab-panel="ssh">
+      {ssh && <AddressForm open={open} labelShown ssh label="SSH" placeholder="user@host" submit={t("Connect")} />}
+      <button type="button" className="connect-address-link" aria-expanded={byAddress} onClick={() => { open.setError(null); setByAddress((shown) => !shown); }}>{t("Add by address")}</button>
+      {byAddress && <AddressForm open={open} labelShown label={t("PC address")} placeholder="https://my-pc.example.com" submit={t("Connect")} autoFocus />}
       <OpenError open={open} />
     </div>
   );
@@ -141,13 +143,13 @@ function DirectPanel() {
 /**
  * The hosted front page: the desktop's Add a connection tabs in its order, the Ovis relay chosen, so nothing asks for a
  * sign-in first. `relay`: that tab's way in (signed out its sign-in, signed in what to do on the PC); `menu`: the
- * account's menu at the top, signed in. A browser cannot see the tailnet or the Wi-Fi, so Tailscale and Direct each take
+ * account's menu at the top, signed in. A browser cannot see the tailnet or reach SSH, so Tailscale and SSH each take
  * a PC's address (RelayAddPc's AddressForm, which opens that PC's own Ovis); the phone app adds what it knows.
  */
 export function ConnectStart({ relay, devices, menu }: { readonly relay: ReactNode; readonly devices: readonly SavedPc[]; readonly menu?: ReactNode }) {
   const t = useT();
   const [way, setWay] = useState<ConnectWay>("relay");
-  const label: Record<ConnectWay, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", direct: t("Direct") };
+  const label: Record<ConnectWay, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", ssh: "SSH" };
   const title = <h1 className="relay-shell-title connect-start-title">{t("Connect a PC")}</h1>;
   return (
     <>
@@ -157,7 +159,7 @@ export function ConnectStart({ relay, devices, menu }: { readonly relay: ReactNo
       </div>
       {way === "relay" && <div className="connect-start-panel" data-tab-panel="relay">{relay}</div>}
       {way === "tailscale" && <TailscalePanel />}
-      {way === "direct" && <DirectPanel />}
+      {way === "ssh" && <SshPanel />}
       {devices.length > 0 && <SavedPcs devices={devices} />}
     </>
   );

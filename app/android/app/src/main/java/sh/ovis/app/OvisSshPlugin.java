@@ -78,7 +78,7 @@ public class OvisSshPlugin extends Plugin {
         SshTunnels.wakeAll();
     }
 
-    /** `user`, `host`, `port`: what Direct's field held (user@host), filled in on the setup screen; each may be left out. */
+    /** `user`, `host`, `port`: what the SSH tab's field held (user@host), filled in on the setup screen; each may be left out. */
     @PluginMethod
     public void add(PluginCall call) {
         if (!fromAppPage(call)) return;

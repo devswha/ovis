@@ -45,7 +45,7 @@ describe("the front page's account part", () => {
     expect(html).toContain('data-account-state="signed-out"');
     expect(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]).toBe("Connect a PC");
     expect(html.match(/<h1/g)).toHaveLength(1);
-    expect(tabsOf(html)).toEqual([["relay", "Ovis relay", "true"], ["tailscale", "Tailscale", "false"], ["direct", "Direct", "false"]]);
+    expect(tabsOf(html)).toEqual([["relay", "Ovis relay", "true"], ["tailscale", "Tailscale", "false"], ["ssh", "SSH", "false"]]);
     const relay = panelOf(html, "relay");
     const buttons = [...relay.matchAll(/<button type="button" class="([^"]+)"[^>]*>(?:<svg[\s\S]*?<\/svg>)?(Continue with [^<]+)</g)].map(([, kind, label]) => [kind, label]);
     expect(buttons).toEqual([["btn account-provider", "Continue with GitHub"], ["btn account-provider", "Continue with Apple"]]);
@@ -71,7 +71,7 @@ describe("the front page's account part", () => {
     const signedIn = render({ ...props({ kind: "list", devices, account: { kind: "signed-in", provider: "github", error: null, pcs: [pc("a".repeat(32), "p620", "paired")] } }), scoped: false, onSignIn: none });
     expect(panelOf(signedIn, "relay")).not.toContain("Continue with GitHub");
     const after = render({ ...props({ kind: "list", devices, account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-    expect(tabsOf(after).map(([tab, , pressed]) => [tab, pressed])).toEqual([["relay", "true"], ["tailscale", "false"], ["direct", "false"]]);
+    expect(tabsOf(after).map(([tab, , pressed]) => [tab, pressed])).toEqual([["relay", "true"], ["tailscale", "false"], ["ssh", "false"]]);
     expect(panelOf(after, "relay")).toContain("Continue with GitHub");
     expect(after).not.toContain("Sign out");
     expect(after).not.toContain("relay-shell-pc");
@@ -82,7 +82,7 @@ describe("the front page's account part", () => {
     expect(html).toContain('data-account-state="signed-in"');
     expect(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]).toBe("Connect a PC");
     expect(html.match(/<h1/g)).toHaveLength(1);
-    expect(tabsOf(html)).toEqual([["relay", "Ovis relay", "true"], ["tailscale", "Tailscale", "false"], ["direct", "Direct", "false"]]);
+    expect(tabsOf(html)).toEqual([["relay", "Ovis relay", "true"], ["tailscale", "Tailscale", "false"], ["ssh", "SSH", "false"]]);
     const relay = panelOf(html, "relay");
     expect(relay).toContain("Turn on Ovis on the PC and sign in with the same account.");
     // a browser has no scanner: the code pairs a PC that is in no account
@@ -105,7 +105,7 @@ describe("the front page's account part", () => {
     const failed = render({ ...props({ kind: "list", devices, account: { ...account, error: "The account service did not answer." } }), scoped: false, onSignIn: none, onRefreshAccount: none });
     expect(failed).toMatch(/role="alert">The account service did not answer\. <button[^>]*>Try again<\/button>/);
     expect(html).toContain('data-account-state="signed-in"');
-    expect(tabsOf(html).map(([tab, , pressed]) => [tab, pressed])).toEqual([["relay", "true"], ["tailscale", "false"], ["direct", "false"]]);
+    expect(tabsOf(html).map(([tab, , pressed]) => [tab, pressed])).toEqual([["relay", "true"], ["tailscale", "false"], ["ssh", "false"]]);
     expect(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]).toBe("Connect a PC");
     const rows = [...html.matchAll(/<a class="relay-add-saved-pc" href="([^"]+)">([\s\S]*?)<\/a>/g)].map(([, href, inner]) => [href, inner!.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, " ").trim().replace(/\s+/g, " ")]);
     expect(rows).toEqual([[`/s/${"a".repeat(32)}/`, "p620"], [`/s/${"b".repeat(32)}/`, "nuc Off"]]);
@@ -364,8 +364,8 @@ describe("the hosted front page", () => {
     it("opens on the relay tab again after a sign-out that follows another tab and a sign-in", async () => {
       const signedOut = { ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none };
       await mount(signedOut);
-      await act(async () => { tab("direct").props.onClick(); });
-      expect(panel()).toBe("direct");
+      await act(async () => { tab("ssh").props.onClick(); });
+      expect(panel()).toBe("ssh");
       await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) })); });
       await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedOut) })); });
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Connect a PC");
@@ -373,20 +373,25 @@ describe("the hosted front page", () => {
       expect(tab("relay").props["aria-pressed"]).toBe(true);
     });
 
-    it("opens a typed address from the Tailscale and Direct tabs, each in one field with Connect", async () => {
+    it("opens a typed address from the Tailscale tab's field, and from the SSH tab's behind Add by address, each with Connect", async () => {
       const opened: string[] = [];
       (window.location as unknown as { assign: (href: string) => void }).assign = (href) => { opened.push(href); };
       await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-      for (const [way, typed] of [["tailscale", "my-pc.tailnet.ts.net"], ["direct", "192.168.0.10:7317"]] as const) {
+      for (const [way, typed] of [["tailscale", "my-pc.tailnet.ts.net"], ["ssh", "https://my-pc.example.com"]] as const) {
         await act(async () => { tab(way).props.onClick(); });
         expect(panel()).toBe(way);
+        if (way === "ssh") {
+          // a browser has no SSH: the tab is Add by address alone, a text link to the field
+          expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(0);
+          await act(async () => { button("Add by address").props.onClick(); });
+        }
         const fields = renderer!.root.findAll((node) => node.type === "input");
         expect(fields).toHaveLength(1);
         expect(renderer!.root.findAll((node) => node.type === "button" && node.props.className === "btn account-provider")).toHaveLength(0);
         const form = renderer!.root.find((node) => node.type === "form");
         await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: typed }) } } }); });
       }
-      expect(opened).toEqual(["https://my-pc.tailnet.ts.net/", "http://192.168.0.10:7317/"]);
+      expect(opened).toEqual(["https://my-pc.tailnet.ts.net/", "https://my-pc.example.com/"]);
     });
 
     it("takes the relay tab's Pair with a code to the code field alone, and Cancel back to the tabs", async () => {
@@ -463,18 +468,18 @@ describe("the hosted front page", () => {
       }
     });
 
-    it("hands SSH from the Direct tab to the phone app's own SSH screen, and offers no SSH in a browser", async () => {
+    it("hands SSH from the SSH tab's first field to the phone app's own SSH screen, with Add by address under it, and offers no SSH in a browser", async () => {
       const called: string[] = [];
       const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false } satisfies RelayShellProps;
-      const directField = () => renderer!.root.find((node) => node.type === "input" && node.props.name === "address");
-      const submitDirect = async (typed: string) => {
+      const sshField = () => renderer!.root.find((node) => node.type === "input" && node.props.name === "address");
+      const submitSsh = async (typed: string) => {
         const form = renderer!.root.find((node) => node.type === "form");
         await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: typed }) } } }); });
       };
       await mount(shown);
-      await act(async () => { tab("direct").props.onClick(); });
-      expect(directField().props.placeholder).toBe("192.168.0.10:7317");
-      expect(textOf(renderer!.root.find((node) => node.type === "label"))).toBe("PC address");
+      await act(async () => { tab("ssh").props.onClick(); });
+      expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(0);
+      expect(button("Add by address").props.className).toBe("connect-address-link");
       await act(async () => { renderer!.unmount(); });
       const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
@@ -487,9 +492,10 @@ describe("the hosted front page", () => {
       } });
       try {
         await mount(shown);
-        await act(async () => { tab("direct").props.onClick(); });
-        expect(textOf(renderer!.root.find((node) => node.type === "label"))).toBe("Address or SSH");
-        await submitDirect("pi@192.168.0.20:2222");
+        await act(async () => { tab("ssh").props.onClick(); });
+        expect(textOf(renderer!.root.find((node) => node.type === "label"))).toBe("SSH");
+        expect(sshField().props.placeholder).toBe("user@host");
+        await submitSsh("pi@192.168.0.20:2222");
         expect(called).toEqual(["HerdrShell.openSshSetup pi@192.168.0.20:2222"]);
         // the hosted page never adds an SSH PC itself: the app's own page does, after the person confirms there
         expect(called.some((line) => line.startsWith("OvisSsh."))).toBe(false);

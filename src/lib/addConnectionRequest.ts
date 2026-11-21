@@ -1,5 +1,5 @@
 /** A way of Add a connection (ConnectPhoneDialog's tabs). */
-export type AddConnectionTab = "relay" | "tailscale" | "direct";
+export type AddConnectionTab = "relay" | "tailscale" | "ssh";
 
 export const ADD_CONNECTION_EVENT = "ovis:add-connection";
 

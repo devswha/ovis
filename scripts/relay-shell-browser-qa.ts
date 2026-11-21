@@ -590,18 +590,23 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
     const signInScreen = async (page: Page): Promise<void> => {
       await page.getByRole("heading", { name: "Connect a PC" }).waitFor();
       assert.deepEqual(await page.locator(".connect-start-tabs > button").evaluateAll((tabs) => tabs.map((tab) => [tab.textContent, tab.getAttribute("aria-pressed")])),
-        [["Ovis relay", "true"], ["Tailscale", "false"], ["Direct", "false"]], "the three tabs, Ovis relay chosen");
+        [["Ovis relay", "true"], ["Tailscale", "false"], ["SSH", "false"]], "the three tabs, Ovis relay chosen");
       assert.equal(await page.locator('[data-tab-panel="relay"]').getByRole("button", { name: "Continue with GitHub" }).count(), 1, "the sign-in is inside the relay tab");
       assert.equal(await page.getByRole("heading", { name: /Sign in to your Ovis account/ }).count(), 0, "no sign-in screen first");
       assert.equal(await page.getByRole("button", { name: "Start without signing in" }).count(), 0);
       assert.equal(await page.locator(".relay-shell-pcs, input").count(), 0, "no code field on the relay tab");
     };
-    // Tailscale and Direct: a PC's address in one field with Connect, no sign-in
+    // Tailscale and SSH (behind Add by address): a PC's address in one field with Connect, no sign-in
     const addressTabs = async (page: Page): Promise<void> => {
-      for (const tab of ["tailscale", "direct"] as const) {
+      for (const tab of ["tailscale", "ssh"] as const) {
         await page.locator(`.connect-start-tabs > [data-tab="${tab}"]`).click();
         const panel = page.locator(`[data-tab-panel="${tab}"]`);
         await panel.waitFor();
+        // a browser has no SSH: its tab is Add by address alone, a text link to the field
+        if (tab === "ssh") {
+          assert.equal(await panel.locator("input").count(), 0, "ssh: no field before Add by address");
+          await panel.getByRole("button", { name: "Add by address", exact: true }).click();
+        }
         assert.equal(await panel.locator("input").count(), 1, `${tab}: one address field`);
         assert.equal(await panel.getByRole("button", { name: "Connect", exact: true }).count(), 1, `${tab}: Connect`);
         assert.equal(await panel.locator(".account-provider").count(), 0, `${tab}: no sign-in`);
@@ -621,7 +626,7 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           await closeMarked(context);
         }
       }
-      log9("connect tabs: Connect a PC, Ovis relay (chosen, Continue with GitHub inside) / Tailscale / Direct (one address field + Connect each); no sign-in screen first, no Start without signing in");
+      log9("connect tabs: Connect a PC, Ovis relay (chosen, Continue with GitHub inside) / Tailscale / SSH (one address field + Connect each); no sign-in screen first, no Start without signing in");
 
       const pc1 = await accountPc("Desk PC");
       const A = await hosted({ width: 1440, height: 900, theme: "dark" });

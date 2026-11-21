@@ -1,13 +1,16 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, directTarget, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, savedPcLabel, sshDetails, t, tabPcs } from "./shell.js";
+import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, savedPcLabel, sshDetails, sshOrAddress, t, tabPcs } from "./shell.js";
 
 localize();
 followScheme();
 
 const form = document.getElementById("connect");
 const input = document.getElementById("address");
+const byAddress = document.getElementById("by-address");
+const addressForm = document.getElementById("address-connect");
+const webInput = document.getElementById("web-address");
 const error = document.getElementById("error");
 const spinner = document.getElementById("spinner");
 const statusText = document.getElementById("status-text");
@@ -125,7 +128,7 @@ let tab = ACCOUNT_SIGN_IN ? "relay" : "tailscale";
 
 /** The field of the tab that is up, for an open that did not go: none on the relay's tab. */
 function focusField() {
-  if (tab === "direct") input.focus();
+  if (tab === "ssh") (addressForm.hidden ? input : webInput).focus();
   else if (tab === "tailscale" && !tailnetInput.closest("[hidden]")) tailnetInput.focus();
 }
 
@@ -163,21 +166,26 @@ document.querySelector('[role="tablist"]').addEventListener("keydown", (event) =
 pick(tab);
 
 // a machine reached over SSH from this phone: Android's OvisSsh plugin asks the rest on a screen of its own. An app
-// without it (iOS, or an Android build before it) has no SSH to offer, so Direct's field takes addresses alone
+// without it (iOS, or an Android build before it) has no SSH to offer, so the SSH tab's field takes addresses alone
 // the plugins the app announces to the page before its first script runs (src/lib/nativeApp.ts, hasNativePlugin)
 const sshOffered = (window.Capacitor?.PluginHeaders ?? []).some((header) => header.name === "OvisSsh");
-if (!sshOffered) {
-  input.placeholder = "192.168.0.10:7317";
-  document.getElementById("address-label").textContent = t("Address", "주소");
-  document.getElementById("address-hint").textContent = t("A same Wi-Fi address or an https address", "같은 Wi-Fi 주소 또는 https 주소");
-}
+document.getElementById("ssh-add").hidden = !sshOffered;
 
-/** Direct's one field: SSH's user@host goes to the SSH setup screen with it filled in, anything else opens as an address. */
-async function connectDirect(text) {
-  const target = directTarget(text);
+/** Add by address: the field for a PC's https address, behind its text link; open with `address` filled in. */
+function showAddressForm(shown, address = "") {
+  addressForm.hidden = !shown;
+  byAddress.setAttribute("aria-expanded", String(shown));
+  if (shown && address !== "") webInput.value = address;
+}
+byAddress.addEventListener("click", () => { showAddressForm(addressForm.hidden); if (!addressForm.hidden) webInput.focus(); });
+addressForm.addEventListener("submit", (event) => { event.preventDefault(); void open(webInput.value); });
+
+/** The SSH field: SSH's user@host goes to the SSH setup screen with it filled in; anything else opens as an address. */
+async function connectField(text) {
+  const target = sshOrAddress(text);
   if (!target.ssh) { await open(target.address); return; }
   if (!sshOffered) {
-    error.textContent = t("SSH works in the Android app. Type the PC's Ovis address instead.", "SSH는 안드로이드 앱에서 돼요. PC의 Ovis 주소를 넣으세요.");
+    error.textContent = t("SSH works in the Android app. Type the PC's https address instead.", "SSH는 안드로이드 앱에서 돼요. PC의 https 주소를 넣으세요.");
     input.focus();
     return;
   }
@@ -193,7 +201,7 @@ cancel.addEventListener("click", () => {
   focusField();
 });
 
-form.addEventListener("submit", (event) => { event.preventDefault(); void connectDirect(input.value); });
+form.addEventListener("submit", (event) => { event.preventDefault(); void connectField(input.value); });
 document.getElementById("tailnet-connect").addEventListener("submit", (event) => { event.preventDefault(); void open(tailnetInput.value); });
 
 /**
@@ -256,15 +264,17 @@ for (const scan of document.querySelectorAll("[data-scan]")) scan.addEventListen
   }
 });
 
-const WAY_TAGS = { relay: () => t("Relay", "릴레이"), tailscale: () => "Tailscale", direct: () => t("Direct", "직접"), ssh: () => "SSH", broken: () => t("Unreadable", "읽을 수 없음") };
+/** the way a row connects, on its second line; a saved address has none, its list's title says it */
+const WAY_TAGS = { relay: () => t("Relay", "릴레이"), tailscale: () => "Tailscale", ssh: () => "SSH", address: () => null, broken: () => t("Unreadable", "읽을 수 없음") };
 
 /**
- * A tab's own saved PCs (tabPcs: the relay tab's paired over the relay, the Tailscale tab's at a tailnet address, Direct's at any other):
+ * A list's saved PCs (tabPcs: the relay tab's paired over the relay, the Tailscale tab's at a tailnet address, the SSH tab's
+ * added over SSH, and its saved addresses, any other):
  * each a compact row of its name, the way it connects and, for the PC this screen was opened from, Connected; with
  * Connect, and Forget (an SSH PC's Manage, as its keys live on this phone).
  */
-function renderPcs(tab, list, section, state) {
-  const pcs = tabPcs(savedOrigins, tab, state.names ?? {}, sshPcs);
+function renderPcs(which, list, section, state) {
+  const pcs = tabPcs(savedOrigins, which, state.names ?? {}, sshPcs);
   list.replaceChildren(...pcs.flatMap(({ origin, label, way }) => {
     const item = document.createElement("li");
     const text = document.createElement("span");
@@ -275,10 +285,13 @@ function renderPcs(tab, list, section, state) {
     // the second line: the way it connects, Connected for the PC this screen was opened from, then its address
     const sub = document.createElement("span");
     sub.className = "sub pc-sub";
-    const tag = document.createElement("span");
-    tag.className = "pc-tag";
-    tag.textContent = WAY_TAGS[way]();
-    sub.append(tag);
+    const tagText = WAY_TAGS[way]();
+    if (tagText !== null) {
+      const tag = document.createElement("span");
+      tag.className = "pc-tag";
+      tag.textContent = tagText;
+      sub.append(tag);
+    }
     if (state.choosing === true && origin === state.current) {
       const on = document.createElement("span");
       on.className = "pc-on";
@@ -442,7 +455,8 @@ async function load() {
   renderPcs("relay", document.getElementById("relay-pcs"), document.getElementById("relay-section"), state);
   const tailnet = renderPcs("tailscale", document.getElementById("tailnet"), document.getElementById("tailnet-section"), state);
   document.getElementById("tailnet-none").hidden = tailnet > 0;
-  renderPcs("direct", document.getElementById("direct-pcs"), document.getElementById("direct-section"), state);
+  renderPcs("ssh", document.getElementById("ssh-pcs"), document.getElementById("ssh-section"), state);
+  renderPcs("saved", document.getElementById("saved-pcs"), document.getElementById("saved-section"), state);
   // an SSH PC whose address on this phone another app took first is not opened (OvisSshPlugin.listen)
   if (state.kind === "ssh-port") {
     error.textContent = t(
@@ -460,23 +474,23 @@ async function openAppLink() {
   if (window.Capacitor?.getPlatform?.() !== "android") return;
   const { url } = await shell("takeLink");
   if (!url) return;
-  pick("direct");
-  input.value = url;
+  pick("ssh");
+  showAddressForm(true, url);
   await open(url);
 }
 
 void openAppLink();
 
-// SSH asked for on a PC's page (the hosted app's Direct tab, HerdrShell openSshSetup): only the app's own pages add an
-// SSH PC, so it comes here, on Direct with the login filled in, and goes to the SSH setup screen as typed here would
+// SSH asked for on a PC's page (the hosted app's SSH tab, HerdrShell openSshSetup): only the app's own pages add an
+// SSH PC, so it comes here, on SSH with the login filled in, and goes to the SSH setup screen as typed here would
 async function openSshSetupAsked() {
   let asked;
   try { asked = await shell("takeSshSetup"); }
   catch { return; }
   if (!asked?.asked) return;
-  pick("direct");
+  pick("ssh");
   input.value = asked.target;
-  if (directTarget(asked.target).ssh) await connectDirect(asked.target);
+  if (sshOrAddress(asked.target).ssh) await connectField(asked.target);
   else input.focus();
 }
 

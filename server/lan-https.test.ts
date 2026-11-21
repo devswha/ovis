@@ -8,7 +8,7 @@ import { forgetAuthAttempts } from "./auth.ts";
 import { handleRequest, type ServerContext } from "./dispatch.ts";
 import { createServer } from "./index.ts";
 import { PortalService } from "./portal.ts";
-import { lanHttpsCertificate, lanHttpsConfig, lanUrl, privateLanAddresses, privateLanPeer, selfSignedCertificate } from "./lan-https.ts";
+import { lanHttpsCertificate, lanHttpsConfig, privateLanAddresses, privateLanPeer, selfSignedCertificate } from "./lan-https.ts";
 
 const dirs: string[] = [];
 const tempDir = (): string => {
@@ -38,21 +38,6 @@ describe("lanHttpsConfig", () => {
     expect(lanHttpsConfig({ OVIS_LAN_HTTPS_PORT: "7318", OVIS_LAN_HTTPS_CERT: "/c.pem" })).toMatchObject({ error: expect.stringContaining("OVIS_LAN_HTTPS_KEY") });
     expect(lanHttpsConfig({ OVIS_LAN_HTTPS_PORT: "7318", OVIS_LAN_HTTPS_KEY: "/k.pem" })).toMatchObject({ error: expect.stringContaining("OVIS_LAN_HTTPS_CERT") });
     for (const host of ["lan.example", "::", "192.168.1"]) expect(lanHttpsConfig({ OVIS_LAN_HTTPS_PORT: "7318", OVIS_LAN_HTTPS_HOST: host })).toMatchObject({ error: expect.stringContaining("OVIS_LAN_HTTPS_HOST") });
-  });
-});
-
-describe("lanUrl", () => {
-  const addresses = ["192.168.0.12", "10.0.0.5"];
-  it("names the LAN HTTPS listener while it is configured, at its own host or this PC's first private address", () => {
-    expect(lanUrl({ hostname: "127.0.0.1", port: 7317, lanHttps: { port: 7443 }, addresses })).toBe("https://192.168.0.12:7443");
-    expect(lanUrl({ hostname: "127.0.0.1", port: 7317, lanHttps: { port: 7443, host: "10.0.0.5" }, addresses })).toBe("https://10.0.0.5:7443");
-    expect(lanUrl({ hostname: "127.0.0.1", port: 7317, lanHttps: { port: 7443 }, addresses: [] })).toBeNull();
-  });
-  it("names the main listener where it is bound to a private address or every interface, and nothing on loopback or the tailnet alone", () => {
-    expect(lanUrl({ hostname: "192.168.0.12", port: 7317, lanHttps: undefined, addresses })).toBe("http://192.168.0.12:7317");
-    expect(lanUrl({ hostname: "0.0.0.0", port: 7317, lanHttps: undefined, addresses })).toBe("http://192.168.0.12:7317");
-    for (const hostname of ["127.0.0.1", "localhost", "100.64.0.9", "pc.example.ts.net"]) expect(lanUrl({ hostname, port: 7317, lanHttps: undefined, addresses })).toBeNull();
-    expect(lanUrl({ hostname: "0.0.0.0", port: 7317, lanHttps: undefined, addresses: [] })).toBeNull();
   });
 });
 

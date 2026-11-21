@@ -435,3 +435,18 @@
   justify-content: flex-end;
   width: 100%;
 }
+
+/* Add by address on the SSH tab: a text link, its field behind it */
+.connect-start-panel .connect-address-link {
+  align-self: flex-start;
+  min-height: var(--touch-target);
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}

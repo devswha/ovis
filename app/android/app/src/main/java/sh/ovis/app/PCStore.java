@@ -51,7 +51,7 @@ final class PCStore {
     /** A PC's page on the hosted shell the app was opened with (appLink), until the connect screen takes it. In memory only, as it can hold a pairing offer's code. */
     static volatile String link;
 
-    /** The SSH login a page asked the connect screen to open on Direct with (HerdrShellPlugin.openSshSetup), until it takes it. In memory only. */
+    /** The SSH login a page asked the connect screen to open on its SSH tab with (HerdrShellPlugin.openSshSetup), until it takes it. In memory only. */
     static volatile String sshSetup;
 
     private static final Pattern PC_SCOPE = Pattern.compile("/s/([0-9a-f]{32})/?");

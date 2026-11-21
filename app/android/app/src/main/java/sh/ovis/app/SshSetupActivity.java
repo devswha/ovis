@@ -45,7 +45,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class SshSetupActivity extends Activity {
     static final String EXTRA_ORIGIN = "origin";
-    /** A new PC's login as Direct's field held it (user@host:port), filled in to check and change. */
+    /** A new PC's login as the SSH tab's field held it (user@host:port), filled in to check and change. */
     static final String EXTRA_USER = "user";
     static final String EXTRA_HOST = "host";
     static final String EXTRA_PORT = "port";

@@ -179,7 +179,7 @@ function relayUi(page: Page) {
   const sheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
   const relayTab = sheet.locator('[data-tab-panel="relay"]');
   const tailscaleTab = sheet.locator('[data-tab-panel="tailscale"]');
-  const directTab = sheet.locator('[data-tab-panel="direct"]');
+  const sshTab = sheet.locator('[data-tab-panel="ssh"]');
   return {
     dialog,
     connect: dialog.locator('[data-section="devices"]').getByRole("button", { name: "Add a connection", exact: true }),
@@ -194,20 +194,20 @@ function relayUi(page: Page) {
     },
     sheet,
     tabs: sheet.locator(".connect-tabs [data-tab]"),
-    async openTab(name: "relay" | "tailscale" | "direct"): Promise<void> {
+    async openTab(name: "relay" | "tailscale" | "ssh"): Promise<void> {
       await sheet.locator(`.connect-tabs [data-tab="${name}"]`).click();
       await sheet.locator(`[data-tab-panel="${name}"]`).waitFor();
     },
     relayTab,
     tailscaleTab,
-    directTab,
+    sshTab,
     toggle: relayTab.getByRole("switch", { name: "Ovis relay", exact: true }),
     /** Add this PC to my account where it also turns the relay on */
     addRelayOff: relayTab.locator('button[data-relay="off"]'),
     addPlain: relayTab.getByRole("button", { name: "Add this PC to my account", exact: true }).and(relayTab.locator("button:not([data-relay])")),
-    /** the six-digit code under each way's phone QR code */
+    /** the six-digit code under the Tailscale tab's phone QR code, and under the relay tab's Pair with a code */
     tailscaleCode: tailscaleTab.locator(".connect-phone-scan .compact-pair-code"),
-    directCode: directTab.locator(".connect-phone-scan .compact-pair-code"),
+    pairCode: relayTab.getByTestId("pair-with-code").locator(".compact-pair-code"),
     async closeSheet(): Promise<void> { await page.keyboard.press("Escape"); await sheet.waitFor({ state: "detached" }); },
   };
 }
@@ -248,7 +248,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     page.on("pageerror", (error) => pageErrors.push(error.message));
     await openPhoneSettings(page, fixture.origin);
     const ui = relayUi(page);
-    const { dialog, connect, sheet, tabs, relayTab, tailscaleTab, directTab, toggle, addRelayOff, addPlain, tailscaleCode, directCode, moreState, moreSwitch } = ui;
+    const { dialog, connect, sheet, tabs, relayTab, tailscaleTab, sshTab, toggle, addRelayOff, addPlain, tailscaleCode, pairCode, moreState, moreSwitch } = ui;
     const pairStart = () => answered(page, "/api/devices/pair/start");
     const startedCode = async (answer: Promise<Response>) => {
       const response = await answer;
@@ -268,14 +268,14 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await sheet.locator('[data-tab-panel="relay"]').waitFor();
     assert.equal(await sheet.getByRole("group", { name: "How to connect", exact: true }).count(), 1, "the tabs are one labelled group");
     assert.deepEqual(await tabs.evaluateAll((buttons) => buttons.map((button) => [button.getAttribute("data-tab"), button.textContent, button.getAttribute("aria-pressed")])),
-      [["relay", "Ovis relay", "true"], ["tailscale", "Tailscale", "false"], ["direct", "Direct", "false"]], "an owner's PC window gets Ovis relay, Tailscale and Direct, opened on the relay");
+      [["relay", "Ovis relay", "true"], ["tailscale", "Tailscale", "false"], ["ssh", "SSH", "false"]], "an owner's PC window gets Ovis relay, Tailscale and SSH, opened on the relay");
     assert.equal(await sheet.locator(".connect-other, .connect-way, .connect-way-body, .connect-phone-relay, .tailnet-pcs").count(), 0, "no other ways fold, no ways list, no relay pairing QR code and no tailnet PCs");
     assert.equal(await sheet.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true }).count(), 0, "the sheet offers no relay pairing QR code");
     assert.equal((await relayState()).phase, "off", "opening the sheet turns nothing on");
     assert.equal(await sheet.locator('[data-tab="devices"], [data-tab-panel="devices"]').count(), 0, "no separate tab for phones: each way's tab shows its own phone QR code");
     await ui.openTab("tailscale");
     assert.equal(await sheet.locator('[data-tab-panel="relay"]').isHidden(), true, "Tailscale takes the relay tab's place");
-    await ui.openTab("direct");
+    await ui.openTab("ssh");
     await sheet.getByLabel("Add another PC from this one", { exact: true }).waitFor();
 
     await ui.openTab("relay");
@@ -387,7 +387,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await relayQr.count(), 1, "the QR code stays up");
     assert.equal(await sheet.isVisible(), true, "and the sheet stays open");
     const codeEnded = answered(page, "/api/devices/pair/cancel");
-    await ui.openTab("direct");
+    await ui.openTab("ssh");
     assert.equal((await codeEnded).status(), 200, "another tab ends the QR code's pairing code");
     await ui.openTab("relay");
     await accountQr.getByRole("button", { name: "Show a new code", exact: true }).waitFor();
@@ -444,22 +444,22 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.deepEqual(askedAgain, [], "the tab asked the PC for no code");
 
     // this loopback page with no Tailscale has no address a phone can open: the Tailscale tab's phone part offers the step
-    // that makes one, and Direct's code stands alone, with no QR box
+    // that makes one, and the relay tab's Pair with a code makes this PC's code on a press, with no QR box
     await ui.openTab("tailscale");
     await tailscaleTab.getByTestId("connect-phone-scan").getByRole("link", { name: "Get Tailscale", exact: true }).waitFor();
     assert.equal(await tailscaleTab.getByText("The phone needs the Tailscale app turned on too.", { exact: true }).count(), 1, "it says the phone needs Tailscale too");
     assert.equal(await tailscaleCode.count(), 0, "no Tailscale address: no code under it either");
-    const codeStart = pairStart();
-    await ui.openTab("direct");
-    const codeStarted = await startedCode(codeStart);
-    await directCode.filter({ hasText: exactly(spaced(codeStarted)) }).waitFor();
-    assert.equal(await directTab.locator(".connect-phone-scan .compact-pair-qr-empty, .connect-phone-scan [role='img']").count(), 0, "no address: no QR code and no empty box beside the code");
-    await directTab.evaluate((panel) => { (panel as HTMLElement & { kept?: boolean }).kept = true; });
     await ui.openTab("relay");
-    assert.equal(await directTab.isHidden(), true, "another tab hides Direct");
-    await ui.openTab("direct");
-    assert.equal(await directTab.evaluate((panel) => (panel as HTMLElement & { kept?: boolean }).kept === true), true, "Direct is kept while the sheet is open, not mounted again");
-    assert.equal(await directCode.innerText(), spaced(codeStarted), "back on Direct, its code is the same");
+    const codeStart = pairStart();
+    await relayTab.getByTestId("pair-with-code").getByRole("button", { name: "Get a pairing code", exact: true }).click();
+    const codeStarted = await startedCode(codeStart);
+    await pairCode.filter({ hasText: exactly(spaced(codeStarted)) }).waitFor();
+    assert.equal(await relayTab.getByTestId("pair-with-code").locator(".compact-pair-qr-empty, [role='img']").count(), 0, "no address: no QR code and no empty box beside the code");
+    await ui.openTab("ssh");
+    assert.equal(await relayTab.isHidden(), true, "another tab hides the relay tab");
+    await sshTab.getByLabel("Add another PC from this one", { exact: true }).waitFor();
+    await ui.openTab("relay");
+    assert.equal(await pairCode.innerText(), spaced(codeStarted), "back on the relay tab, its code is the same")
     await ui.closeSheet();
 
     // the page shows this PC's relay ID nowhere: the reset is read from the PC itself
@@ -676,7 +676,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal((await (await fetch(`${unwritable.origin}/api/relay`)).json() as RelayStatus).phase, "online", "the button turned the relay on once the cause was gone");
     await failed.relayTab.getByRole("alert").filter({ hasText: /relay/i }).waitFor({ state: "detached" });
     assert.deepEqual(pageErrors, [], "the relay panel raises no page error");
-    console.log("PASS Add a connection's tabs: Ovis relay, Tailscale and Direct, each with its phone QR code (a kept pairing code that closes the sheet once used), the relay's (the sign-in, then one Add this PC); the relay turns off from More settings and resets the identity; a Portal visitor and a serve-only install get no switch; a relay-paired device says how it reaches the PC now, or that it is offline");
+    console.log("PASS Add a connection's tabs: Ovis relay, Tailscale and SSH, the relay's Pair with a code and Tailscale's phone QR code (a kept pairing code that closes the sheet once used), the relay's (the sign-in, then one Add this PC); the relay turns off from More settings and resets the identity; a Portal visitor and a serve-only install get no switch; a relay-paired device says how it reaches the PC now, or that it is offline");
   } finally {
     for (const context of contexts) await context.close();
     for (const fixture of fixtures) await fixture.stop();

@@ -51,27 +51,31 @@ const remoteAccess = {
 const portalFetchPage = async (context: BrowserContext): Promise<void> => {
   await context.route("**/api/access", (route) => route.fulfill({ json: remoteAccess }));
 };
-const openPhoneSettings = async (page: Page): Promise<void> => {
+const openPhoneSettings = async (page: Page, portalOffered = true): Promise<void> => {
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   await page.locator(".settings-dialog").waitFor({ timeout: 10_000 });
   await openSettingsPage(page, "Devices and PCs");
   await page.locator('.settings-dialog [data-section="devices"]').getByRole("button", { name: "Add a connection", exact: true }).click();
   const connect = settingsOf(page);
   await connect.waitFor({ timeout: 10_000 });
-  // Portal sits under Direct's phone QR code; a window with no tab (a visitor) shows it alone
-  const direct = connect.locator('.connect-tabs [data-tab="direct"]');
-  if (await direct.count() > 0) {
-    await direct.click();
-    await connect.locator('[data-tab-panel="direct"]').waitFor({ timeout: 10_000 });
+  // Portal is one row at the foot of the SSH tab, its controls behind Settings; a window with no tab (a visitor) shows them alone
+  const ssh = connect.locator('.connect-tabs [data-tab="ssh"]');
+  if (await ssh.count() > 0) {
+    await ssh.click();
+    await connect.locator('[data-tab-panel="ssh"]').waitFor({ timeout: 10_000 });
+    if (!portalOffered) return;
+    const row = connect.getByTestId("portal-row");
+    await row.waitFor({ timeout: 10_000 });
+    await row.getByRole("button", { name: "Settings", exact: true }).click();
   }
 };
 const settingsOf = (page: Page) => page.getByRole("dialog", { name: "Add a connection", exact: true });
-const reopenPhoneSettings = async (page: Page): Promise<void> => {
+const reopenPhoneSettings = async (page: Page, portalOffered = true): Promise<void> => {
   await settingsOf(page).getByRole("button", { name: "Close", exact: true }).click();
   await settingsOf(page).waitFor({ state: "detached", timeout: 10_000 });
   await page.locator(".settings-dialog").getByRole("button", { name: "Close settings", exact: true }).click();
   await page.locator(".settings-dialog").waitFor({ state: "detached", timeout: 10_000 });
-  await openPhoneSettings(page);
+  await openPhoneSettings(page, portalOffered);
 };
 
 const servers: ServerInstance[] = [];
@@ -302,10 +306,10 @@ try {
   answer = "older";
   for (const page of [ownerPage, watchPage]) {
     const asked = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/portal" && response.status() === 404, { timeout: 10_000 });
-    await reopenPhoneSettings(page);
+    await reopenPhoneSettings(page, false);
     await asked;
     const settings = settingsOf(page);
-    await settings.locator('[data-tab-panel="direct"] .connect-phone-scan, .connect-phone-body > .connect-section, .connect-phone-body > .settings-description').first().waitFor({ timeout: 10_000 });
+    await settings.locator('[data-tab-panel="ssh"], .connect-phone-body > .connect-section, .connect-phone-body > .settings-description').first().waitFor({ timeout: 10_000 });
     assert.equal(await settings.locator('section[aria-label="Portal"]').count(), 0, "an older server offers no Portal in Add a connection");
     assert.equal(await settings.locator("#portal-relay").count(), 0, "an older server's page offers no relay");
   }
@@ -378,9 +382,9 @@ try {
   blockedPage.on("pageerror", (error) => pageErrors.push(error.message));
   await blockedPage.goto(`http://127.0.0.1:${blockedServer.port}`, { waitUntil: "domcontentloaded" });
   await blockedPage.locator(".conn-live").waitFor({ state: "attached", timeout: 15_000 });
-  await openPhoneSettings(blockedPage);
+  await openPhoneSettings(blockedPage, false);
   const blockedSettings = settingsOf(blockedPage);
-  await blockedSettings.locator('[data-tab-panel="direct"] .connect-phone-scan, .connect-phone-body > .connect-section, .connect-phone-body > .settings-description').first().waitFor({ timeout: 10_000 });
+  await blockedSettings.locator('[data-tab-panel="ssh"], .connect-phone-body > .connect-section, .connect-phone-body > .settings-description').first().waitFor({ timeout: 10_000 });
   assert.equal(await blockedSettings.locator('section[aria-label="Portal"]').count(), 0, "a Portal that needs a configured token is not offered");
   assert.equal(await blockedSettings.getByRole("button", { name: "Start", exact: true }).count(), 0, "Portal Start is unavailable without a configured token");
   assert.deepEqual(pageErrors, [], "the token-required page has no browser errors");

@@ -20,7 +20,7 @@ import { QrCode } from "./QrCode.tsx";
 
 // the confirmation before Revoke all is a portal on document.body, which this renderer has none of
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, ConnectPhoneDialog, connectTabs, TAILSCALE_POLL_MS, localWays, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, signInLink, TailscaleTab, DirectTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
+const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, ConnectPhoneDialog, connectTabs, TAILSCALE_POLL_MS, localWays, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, signInLink, TailscaleTab, SshTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
 const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
 const { announcePairingCode, QR_CODE_ENDED_CHANNEL, useRelay } = await import("../lib/useRelay.ts");
 const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrFindings, accountQrNoticeWaiting, addedBy, accountQrPending, resetAccountQrWatch, unvouched } = await import("../lib/accountQrWatch.ts");
@@ -54,6 +54,8 @@ describe("Connect a phone on a phone", () => {
   let extraCandidates: object[];
   let candidatesRefused: string | null;
   /** the bodies of POST /api/machines/address, and whether the next one is refused as a wrong code */
+  /** what GET /api/portal answers; null: a PC with no Portal (404) */
+  let portalNow: PortalStatus | null;
   let addressAsked: unknown[];
   let addressRefusal: string | null;
   /** holds the next answer of POST /api/machines/address until it resolves */
@@ -97,6 +99,7 @@ describe("Connect a phone on a phone", () => {
     extraCandidates = [];
     candidatesRefused = null;
     addressAsked = [];
+    portalNow = null;
     addressRefusal = null;
     addressGate = null;
     addressAnswer = undefined;
@@ -162,6 +165,7 @@ describe("Connect a phone on a phone", () => {
         if (addressAnswer !== undefined) return Response.json(addressAnswer, { status: 201 });
         return Response.json({ machine: { id: "desk", name: "desk.tail.ts.net", kind: "address", address: "https://desk.tail.ts.net:7317", enabled: true, state: "connecting", error: null, snapshot: null } }, { status: 201 });
       }
+      if (path === "/api/portal") return portalNow === null ? Response.json({ error: { code: "not_found" } }, { status: 404 }) : Response.json(portalNow);
       if (path === "/api/access") return Response.json(accessNow);
       if (path === "/api/access/tailscale/serve") return serveReply();
       if (path === "/api/access/tailscale/open") return openReply();
@@ -480,7 +484,7 @@ describe("Connect a phone on a phone", () => {
     expect(qrCodes()).toHaveLength(0);
   });
 
-  it("makes no pairing code while the relay's state is still read, then one for both local tabs, each at its own address", async () => {
+  it("makes no pairing code while the relay's state is still read, then one for the Tailscale tab, and the relay tab's Pair with a code asks for no second one", async () => {
     Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
     const pageEvents = new EventTarget();
     Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
@@ -505,37 +509,12 @@ describe("Connect a phone on a phone", () => {
     const values = () => qrCodes().map((qr) => String(qr.props.value));
     // the Tailscale tab's QR code is its Tailscale address, never the proxy this page is open at
     expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913"]);
-    // Direct shows the same code, as a code with no QR code, and asks for no second code, which would end the first
-    await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
+    // the relay tab's Pair with a code shows the same code, with no QR code, and asks for no second code, which would end the first
+    await act(async () => { renderer!.root.findByProps({ "data-tab": "relay" }).props.onClick(); });
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     expect(starts()).toBe(1);
-    expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913"]);
-    expect(text(renderer!.root.findByProps({ "data-tab-panel": "direct" }))).toContain("482 913");
-  });
-
-  it("a tab opened while the first tab's code is asked for asks for none, and shows that code", async () => {
-    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
-    const pageEvents = new EventTarget();
-    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
-    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
-    const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
-    const starts = () => requests.filter((path) => path === "/api/devices/pair/start").length;
-    let release = (): void => {};
-    pairStarts.push({ code: "135792", gate: new Promise<void>((resolve) => { release = resolve; }) });
-    await act(async () => {
-      renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
-        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
-    });
-    await until(() => starts() === 1, "the Tailscale tab's code asked for");
-    // Direct opens while that code is on its way: it waits for it rather than ask for a second, which would end it
-    await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
-    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
-    await act(async () => { release(); });
-    await until(() => text(renderer!.root.findByProps({ "data-tab-panel": "direct" })).includes("135 792"), "Direct's code");
-    expect(starts()).toBe(1);
-    expect(qrCodes().map((qr) => String(qr.props.value))).toEqual(["https://workstation.example.ts.net/?pair=135792"]);
+    // the relay's own pairing then shows its code there (the PC keeps one pending code)
+    expect(text(renderer!.root.findByProps({ "data-tab-panel": "relay" }).findByProps({ "data-testid": "pair-with-code" }))).toMatch(/\d{3} \d{3}/);
   });
 
   it("a tab that waited on the first tab's code asks for its own when that request fails", async () => {
@@ -550,17 +529,21 @@ describe("Connect a phone on a phone", () => {
     let refuse = (): void => {};
     pairStarts.push({ code: "000000", gate: new Promise<void>((resolve) => { refuse = resolve; }), refused: true }, { code: "246810", gate: Promise.resolve() });
     await act(async () => {
-      renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
+      renderer = create(<SettingsProvider><ConnectPhoneDialog asked="ssh" plan={served} tailscale={served} pairUrl={served.url} relay={{ ...relayState(), unsupported: true }} readOnly={false} closesGate={false} canPair
         signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
     });
-    await until(() => starts() === 1, "the Tailscale tab's code asked for");
-    await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    // with no relay tab, Pair with a code is under SSH, and makes its code on a press only
+    expect(starts()).toBe(0);
+    await act(async () => { renderer!.root.findByProps({ "data-testid": "pair-with-code" }).find((each) => each.type === "button" && text(each) === "Get a pairing code").props.onClick(); });
+    expect(starts()).toBe(1);
+    await act(async () => { renderer!.root.findByProps({ "data-tab": "tailscale" }).props.onClick(); });
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     expect(starts()).toBe(1);
     await act(async () => { refuse(); });
     // the request it waited on failed: nothing will announce a code, so the waiting tab asks itself
     await until(() => starts() === 2, "the waiting tab's own request");
-    await until(() => text(renderer!.root.findByProps({ "data-tab-panel": "direct" })).includes("246 810"), "the waiting tab's own code");
+    await until(() => qrCodes().some((qr) => String(qr.props.value).endsWith("pair=246810")), "the waiting tab's own code");
   });
 
   describe("the Tailscale tab's step, one press each and never a terminal step until a serve is refused", () => {
@@ -667,8 +650,8 @@ describe("Connect a phone on a phone", () => {
     });
   });
 
-  describe("Direct in 0.5.10: this PC's same-Wi-Fi address as a line and the pairing code under it, never a QR code", () => {
-    const mountDirect = async (lanUrl: string | null, desktopApp?: boolean) => {
+  describe("the SSH tab holds what Direct held, but the same-Wi-Fi line; the code is the relay tab's", () => {
+    const mountDialog = async (options: { relay?: RelayState; tab?: "ssh" | "relay" } = {}) => {
       Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
       const pageEvents = new EventTarget();
       Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
@@ -676,60 +659,82 @@ describe("Connect a phone on a phone", () => {
       Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
       const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
       const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
-      // this PC's own window on loopback: its page is no address a phone opens
       await act(async () => {
-        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} lanUrl={lanUrl} desktopApp={desktopApp} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
+        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} relay={options.relay ?? relayState()} readOnly={false} closesGate={false} canPair
           signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
       });
-      await act(async () => { renderer!.root.findByProps({ "data-tab": "direct" }).props.onClick(); });
+      await act(async () => { renderer!.root.findByProps({ "data-tab": options.tab ?? "ssh" }).props.onClick(); });
       for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
-      return () => renderer!.root.findByProps({ "data-tab-panel": "direct" });
+      return () => renderer!.root.findByProps({ "data-tab-panel": options.tab ?? "ssh" });
     };
+    // counted, not compared: a failing diff of test instances never finishes printing
+    const count = (panel: ReactTestInstance, props: Record<string, unknown>) => panel.findAllByProps(props).length;
 
-    const lanLine = (panel: ReactTestInstance) => panel.findByProps({ "data-testid": "direct-lan" });
-    const scan = (panel: ReactTestInstance) => panel.findByProps({ "data-testid": "connect-phone-scan" });
-
-    it("with a same-Wi-Fi address, names it in one line with the code and its refresh and copy under it, and no QR code", async () => {
-      const panel = await mountDirect("http://192.168.0.12:7317");
-      await until(() => text(panel()).includes("482 913"), "Direct's code");
-      expect(text(lanLine(panel()))).toBe("Same Wi-Fi address: http://192.168.0.12:7317");
-      expect(scan(panel()).findAllByType(QrCode)).toEqual([]);
-      expect(panel().findAllByType(QrCode)).toEqual([]);
-      expect(scan(panel()).findAll((node) => node.type === "button").map(text).map((label) => label.trim())).toEqual(expect.arrayContaining(["Copy"]));
-      expect(text(scan(panel()))).not.toContain("Scan it with the Ovis app on your phone");
-      expect(panel().findAll((node) => node.type === "label").map(text)[0]).toBe("Add another PC from this one");
-      expect(panel().findAll((node) => node.type === "a").map(text)).toEqual([]);
+    it("is the three tabs Ovis relay, Tailscale and SSH, with no Direct tab", async () => {
+      await mountDialog();
+      expect(renderer!.root.findAll((each) => each.type === "button" && typeof each.props["data-tab"] === "string").map((each) => [each.props["data-tab"], text(each)]))
+        .toEqual([["relay", "Ovis relay"], ["tailscale", "Tailscale"], ["ssh", "SSH"]]);
     });
 
-    it("on loopback alone, says same-Wi-Fi connections are off, and still shows the code, with no QR code", async () => {
-      const panel = await mountDirect(null);
-      await until(() => text(panel()).includes("482 913"), "Direct's code");
-      expect(text(lanLine(panel()))).toBe("Same Wi-Fi connections are off on this PC.");
-      expect(panel().findAllByType(QrCode)).toEqual([]);
-      expect(text(scan(panel()))).toContain("Pairing code");
+    it("SSH: user@host first, Add by address a text link to the https address and its code, no same-Wi-Fi line and no code of this PC", async () => {
+      const panel = await mountDialog();
+      expect(panel().findAll((each) => each.type === "label").map(text)).toEqual(["Add another PC from this one"]);
+      expect(panel().findAllByType("input").map((each) => each.props.placeholder)).toEqual(["user@host"]);
+      expect(count(panel(), { "data-testid": "direct-lan" })).toBe(0);
+      expect(count(panel(), { "data-testid": "connect-phone-scan" })).toBe(0);
+      expect(count(panel(), { "data-testid": "pair-with-code" })).toBe(0);
+      // the https address takes that PC's code (#4264), behind the link
+      const link = () => panel().find((each) => each.type === "button" && text(each) === "Add by address");
+      expect(link().props.className).toBe("connect-address-link");
+      expect(link().props["aria-expanded"]).toBe(false);
+      await act(async () => { link().props.onClick(); });
+      expect(link().props["aria-expanded"]).toBe(true);
+      expect(panel().findAllByType("input").map((each) => each.props.autoComplete)).toEqual(["off", "off", "one-time-code"]);
+      // an https address typed in the SSH field moves to that form
+      await act(async () => { link().props.onClick(); });
+      await act(async () => { panel().findAllByType("input")[0]!.props.onChange({ target: { value: "https://desk.tail.ts.net" } }); });
+      await act(async () => { panel().findAllByType("form")[0]!.props.onSubmit({ preventDefault() {} }); });
+      expect(panel().findAllByType("input").map((each) => each.props.value)).toEqual(["", "https://desk.tail.ts.net", undefined]);
     });
 
-    it("in the desktop app with no same-Wi-Fi address, shows only adding another PC from this one: no Wi-Fi line and no code for a phone", async () => {
-      const panel = await mountDirect(null, true);
-      expect(panel().findAll((node) => node.type === "label").map(text)[0]).toBe("Add another PC from this one");
-      // counted, not compared: a failing diff of test instances never finishes printing
-      expect(panel().findAllByProps({ "data-testid": "direct-lan" }).length).toBe(0);
-      expect(panel().findAllByProps({ "data-testid": "connect-phone-scan" }).length).toBe(0);
-      expect(text(panel())).not.toContain("Pairing code");
+    it("the relay tab: Pair with a code shows this PC's six-digit code", async () => {
+      const panel = await mountDialog({ tab: "relay" });
+      const code = () => panel().findByProps({ "data-testid": "pair-with-code" });
+      expect(text(code())).toContain("Pair with a code");
+      await until(() => /\d{3} \d{3}/.test(text(code())), "the relay tab's code");
     });
 
-    it("in the desktop app with a same-Wi-Fi address, still names it with the code under it", async () => {
-      const panel = await mountDirect("http://192.168.0.12:7317", true);
-      await until(() => text(panel()).includes("482 913"), "Direct's code");
-      expect(text(lanLine(panel()))).toBe("Same Wi-Fi address: http://192.168.0.12:7317");
+    it("with no relay tab, Pair with a code sits under SSH instead, showing the code the Tailscale tab made", async () => {
+      const panel = await mountDialog({ relay: { ...relayState(), unsupported: true } });
+      const code = () => panel().findByProps({ "data-testid": "pair-with-code" });
+      await until(() => text(code()).includes("482 913"), "the code under SSH");
+    });
+
+    it("Portal: one row at the foot of the SSH tab where this PC has it, its controls behind a press", async () => {
+      portalNow = { supported: true, usable: true, blocked: null, phase: "running", url: "https://desk.portal.example", short_url: null, relay: "https://relay.example", auth: { method: "none", issuer: null, allow: [] }, auth_methods: ["none"], error: null, output: null } as unknown as PortalStatus;
+      const panel = await mountDialog();
+      await until(() => count(panel(), { "data-testid": "portal-row" }) === 1, "Portal's row");
+      const row = () => panel().findByProps({ "data-testid": "portal-row" });
+      expect(text(row())).toContain("https://desk.portal.example");
+      const toggle = () => row().find((each) => each.type === "button" && text(each) === "Settings");
+      expect(toggle().props["aria-expanded"]).toBe(false);
+      await act(async () => { toggle().props.onClick(); });
+      // the same one press closes it again: no second Close in a dialog that has its own
+      expect(toggle().props["aria-expanded"]).toBe(true);
+      expect(text(row())).toContain("Stop");
+      await act(async () => { renderer!.unmount(); });
+      portalNow = null;
+      const without = await mountDialog();
+      for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+      expect(count(without(), { "data-testid": "portal-row" })).toBe(0);
     });
   });
 
-  it("offers only the ways this window can use: the relay to its owner on a direct page, Tailscale and an address where PCs are added from", () => {
+  it("offers only the ways this window can use: the relay to its owner on a direct page, Tailscale and SSH where PCs are added from", () => {
     const off = relayState({ ...ONLINE, phase: "off" });
-    expect(connectTabs({ sshOffered: true, relay: off, readOnly: false })).toEqual(["relay", "tailscale", "direct"]);
+    expect(connectTabs({ sshOffered: true, relay: off, readOnly: false })).toEqual(["relay", "tailscale", "ssh"]);
     expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: false })).toEqual(["relay"]);
-    expect(connectTabs({ sshOffered: true, relay: { ...off, unsupported: true }, readOnly: false })).toEqual(["tailscale", "direct"]);
+    expect(connectTabs({ sshOffered: true, relay: { ...off, unsupported: true }, readOnly: false })).toEqual(["tailscale", "ssh"]);
     // a watching device or a Portal visitor cannot use the relay, and the hosted shell already is on it: no tab at all
     expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: true })).toEqual([]);
     shellMeta = true;
@@ -737,19 +742,19 @@ describe("Connect a phone on a phone", () => {
   });
 
   it("opens on its first way, the relay only where the page has the account; a waiting notice on the relay tab only where it can show it", () => {
-    const all = ["relay", "tailscale", "direct"] as const;
+    const all = ["relay", "tailscale", "ssh"] as const;
     expect(openingTab({ tabs: all, noticeWaiting: false, hasAccount: true })).toBe("relay");
     // without the account the relay tab is the relay's own pairing, which makes a code as it opens: not opened on it
     expect(openingTab({ tabs: all, noticeWaiting: false, hasAccount: false })).toBe("tailscale");
     expect(openingTab({ tabs: ["relay"], noticeWaiting: false, hasAccount: false })).toBe("relay");
     expect(openingTab({ tabs: all, noticeWaiting: true, hasAccount: true })).toBe("relay");
-    expect(openingTab({ tabs: ["tailscale", "direct"], noticeWaiting: true, hasAccount: true })).toBe("tailscale");
+    expect(openingTab({ tabs: ["tailscale", "ssh"], noticeWaiting: true, hasAccount: true })).toBe("tailscale");
     expect(openingTab({ tabs: [], noticeWaiting: false, hasAccount: true })).toBeNull();
   });
 
   it("opens on the Ovis relay tab when the setup checklist's Connect your phone asked for it, account or not; Tailscale only when picked", async () => {
     const { askAddConnection, takeAddConnection } = await import("../lib/addConnectionRequest.ts");
-    const all = ["relay", "tailscale", "direct"] as const;
+    const all = ["relay", "tailscale", "ssh"] as const;
     let asked = 0;
     const heard = (): void => { asked += 1; };
     window.addEventListener("ovis:add-connection", heard);
@@ -760,7 +765,7 @@ describe("Connect a phone on a phone", () => {
     // taken once: a later Add a connection opens as before
     expect(takeAddConnection()).toBeNull();
     expect(openingTab({ tabs: all, noticeWaiting: false, hasAccount: false, asked: tab })).toBe("relay");
-    expect(openingTab({ tabs: ["tailscale", "direct"], noticeWaiting: false, hasAccount: false, asked: tab })).toBe("tailscale");
+    expect(openingTab({ tabs: ["tailscale", "ssh"], noticeWaiting: false, hasAccount: false, asked: tab })).toBe("tailscale");
   });
 
   it("the QR code of a PC in an account opens its page in the hosted app with this page's sign-in, and carries nothing else", () => {
@@ -796,12 +801,12 @@ describe("Connect a phone on a phone", () => {
   function Tailscale({ machines, onAddPc }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void }) {
     return <TailscaleTab found={useFoundPcs(machines)} onAddPc={onAddPc} />;
   }
-  function Direct({ machines, onAddPc, onConnectMachine }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
-    return <DirectTab found={useFoundPcs(machines)} machines={machines} onAddPc={onAddPc} onConnectMachine={onConnectMachine} />;
+  function Ssh({ machines, onAddPc, onConnectMachine }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
+    return <SshTab found={useFoundPcs(machines)} machines={machines} onAddPc={onAddPc} onConnectMachine={onConnectMachine} />;
   }
   function Both({ machines }: { machines: readonly Machine[] }) {
     const found = useFoundPcs(machines);
-    return <><TailscaleTab found={found} onAddPc={() => undefined} /><DirectTab found={found} machines={machines} onAddPc={() => undefined} onConnectMachine={() => undefined} /></>;
+    return <><TailscaleTab found={found} onAddPc={() => undefined} /><SshTab found={found} machines={machines} onAddPc={() => undefined} onConnectMachine={() => undefined} /></>;
   }
 
   it("lists only the PCs of the Tailscale login: Connect opens Add PC with that address, an added one says so", async () => {
@@ -853,57 +858,63 @@ describe("Connect a phone on a phone", () => {
     expect(renderer!.root.findAll((node) => node.type === "span" && text(node) === "Update Ovis on that PC to 0.5 first.")).toHaveLength(2);
   });
 
-  it("takes one typed address: an SSH one opens Add PC, an https:// one pairs by the code that PC shows and opens it here", async () => {
+  const openByAddress = async () => { await act(async () => { renderer!.root.find((node) => node.type === "button" && text(node) === "Add by address").props.onClick(); }); };
+  /** the field and the form of Add by address, once opened: after the SSH field and its form */
+  const typeAddress = async (value: string) => { await act(async () => { renderer!.root.findAllByType("input")[1]!.props.onChange({ target: { value } }); }); };
+  const submitAddress = async () => { await act(async () => { renderer!.root.findAllByType("form")[1]!.props.onSubmit({ preventDefault() {} }); }); };
+
+  it("takes user@host in its field, and another PC's https address behind Add by address with the code that PC shows, opening it here", async () => {
     const added: (AddPcPreset | undefined)[] = [];
     const connected: Machine[] = [];
     const code = { value: "" };
     await act(async () => {
-      renderer = create(<SettingsProvider><Direct machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={(machine) => { connected.push(machine); }} /></SettingsProvider>,
+      renderer = create(<SettingsProvider><Ssh machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={(machine) => { connected.push(machine); }} /></SettingsProvider>,
         { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
     });
     await flushReads();
-    const type = async (value: string) => { await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value } }); }); };
-    const submit = async () => { await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); }); };
     const kind = () => renderer!.root.findAll((node) => node.props["data-address-kind"] !== undefined).map((node) => node.props["data-address-kind"]);
     expect(kind()).toEqual([]);
-    await type("https://desk.tail.ts.net:7317");
+    await openByAddress();
     expect(kind()).toEqual(["ovis"]);
-    expect(renderer!.root.findAllByType("input")[1]!.props.autoComplete).toBe("one-time-code");
+    await typeAddress("https://desk.tail.ts.net:7317");
+    expect(renderer!.root.findAllByType("input")[2]!.props.autoComplete).toBe("one-time-code");
     addressRefusal = "address_pc_wrong_code";
     code.value = "123450 ";
-    await submit();
+    await submitAddress();
     expect(addressAsked).toEqual([{ address: "https://desk.tail.ts.net:7317", code: "123450" }]);
     expect(renderer!.root.findByProps({ role: "alert" }).children.join("")).toBe("That code is wrong, spent or expired. Show a new code on that PC and type it.");
     expect(code.value).toBe("123450 ");
     expect(connected).toEqual([]);
     addressRefusal = null;
     code.value = "123456";
-    await submit();
+    await submitAddress();
     expect(addressAsked.at(-1)).toEqual({ address: "https://desk.tail.ts.net:7317", code: "123456" });
     expect(connected.map((machine) => [machine.id, machine.kind])).toEqual([["desk", "address"]]);
     expect(code.value).toBe("");
     expect(added).toEqual([]);
+    // the SSH field never adds an https address over SSH: one written in any case moves to the address form
     for (const written of ["https:desk.tail.ts.net", "HTTP:/desk"]) {
-      await type(written);
-      expect(kind()).toEqual(["ovis"]);
-      await submit();
+      await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value: written } }); });
+      await act(async () => { renderer!.root.findAllByType("form")[0]!.props.onSubmit({ preventDefault() {} }); });
+      expect(renderer!.root.findAllByType("input")[1]!.props.value).toBe(written);
     }
     expect(added).toEqual([]);
-    await type(" dev@10.0.0.5 ");
-    expect(kind()).toEqual(["ssh"]);
-    await submit();
+    await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value: " dev@10.0.0.5 " } }); });
+    expect(kind()).toContain("ssh");
+    await act(async () => { renderer!.root.findAllByType("form")[0]!.props.onSubmit({ preventDefault() {} }); });
     expect(added).toEqual([{ destination: "dev@10.0.0.5" }]);
   });
 
   it("words every refusal of an address in the app's language, and pairs once however often Connect is pressed", async () => {
     const code = { value: "123456" };
     await act(async () => {
-      renderer = create(<SettingsProvider><Direct machines={[]} onAddPc={() => undefined} onConnectMachine={() => undefined} /></SettingsProvider>,
+      renderer = create(<SettingsProvider><Ssh machines={[]} onAddPc={() => undefined} onConnectMachine={() => undefined} /></SettingsProvider>,
         { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
     });
     await flushReads();
-    await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value: "https://desk.tail.ts.net" } }); });
-    const submit = async () => { await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); }); };
+    await openByAddress();
+    await typeAddress("https://desk.tail.ts.net");
+    const submit = submitAddress;
     const words: Record<string, string> = {
       address_pc_address: "Enter only that PC's Ovis address, starting with https://",
       address_pc_target: "That address cannot be another PC's Ovis.",
@@ -925,7 +936,7 @@ describe("Connect a phone on a phone", () => {
     let open = () => undefined as void;
     addressGate = new Promise((resolve) => { open = resolve; });
     await act(async () => {
-      const form = renderer!.root.findByType("form");
+      const form = renderer!.root.findAllByType("form")[1]!;
       form.props.onSubmit({ preventDefault() {} });
       form.props.onSubmit({ preventDefault() {} });
     });
@@ -938,18 +949,19 @@ describe("Connect a phone on a phone", () => {
     const code = { value: "" };
     const mountDirect = async () => {
       await act(async () => {
-        renderer = create(<SettingsProvider><Direct machines={[]} onAddPc={() => undefined} onConnectMachine={() => undefined} /></SettingsProvider>,
+        renderer = create(<SettingsProvider><Ssh machines={[]} onAddPc={() => undefined} onConnectMachine={() => undefined} /></SettingsProvider>,
           { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
       });
       await flushReads();
+      await openByAddress();
     };
-    const type = async (value: string) => { await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value } }); }); };
-    const submit = async () => { await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); }); };
+    const type = typeAddress;
+    const submit = submitAddress;
     (window as { isSecureContext: boolean }).isSecureContext = false;
     await mountDirect();
     await type("https://desk.tail.ts.net");
-    expect(renderer!.root.findAllByType("input")[1]!.props.disabled).toBe(true);
-    expect(renderer!.root.findByProps({ type: "submit" }).props.disabled).toBe(true);
+    expect(renderer!.root.findAllByType("input")[2]!.props.disabled).toBe(true);
+    expect(renderer!.root.findAllByType("form")[1]!.findByProps({ type: "submit" }).props.disabled).toBe(true);
     expect(text(renderer!.root)).toContain("Needs HTTPS or localhost.");
     code.value = "123456";
     await submit();
@@ -970,13 +982,14 @@ describe("Connect a phone on a phone", () => {
     const connected: string[] = [];
     const code = { value: "" };
     await act(async () => {
-      renderer = create(<SettingsProvider><Direct machines={[]} onAddPc={() => undefined} onConnectMachine={(machine) => { connected.push(machine.id); }} /></SettingsProvider>,
+      renderer = create(<SettingsProvider><Ssh machines={[]} onAddPc={() => undefined} onConnectMachine={(machine) => { connected.push(machine.id); }} /></SettingsProvider>,
         { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
     });
     await flushReads();
-    const type = async (value: string) => { await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value } }); }); };
-    const submit = async () => { await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); }); };
+    const type = typeAddress;
+    const submit = submitAddress;
     const alerts = () => renderer!.root.findAllByProps({ role: "alert" }).map((node) => node.children.join(""));
+    await openByAddress();
     await type("https://alpha.tail.ts.net");
     let open = () => undefined as void;
     addressGate = new Promise((resolve) => { open = resolve; });
@@ -1007,10 +1020,10 @@ describe("Connect a phone on a phone", () => {
     const added: (AddPcPreset | undefined)[] = [];
     const connected: string[] = [];
     const machines = [ssh("build-box", { herdr_profile_id: "p1", action_required: "connect" })];
-    await mount(<Direct machines={machines} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={(machine) => { connected.push(machine.id); }} />);
+    await mount(<Ssh machines={machines} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={(machine) => { connected.push(machine.id); }} />);
     await flushReads();
     // the Tailscale PC is the Tailscale tab's
-    expect(buttons()).toEqual(["Connect", "build-box", "nuc12"]);
+    expect(buttons()).toEqual(["Connect", "Add by address", "build-box", "nuc12"]);
     await act(async () => { button("nuc12").props.onClick(); });
     expect(added).toEqual([{ destination: "nuc12", name: "nuc12" }]);
     await act(async () => { button("build-box").props.onClick(); });
@@ -1018,12 +1031,12 @@ describe("Connect a phone on a phone", () => {
     expect(renderer!.root.findAllByType("a")).toEqual([]);
   });
 
-  it("in Direct, says an added host is added and an older-Ovis Tailscale host needs an update, in words, and offers neither", async () => {
+  it("in SSH, says an added host is added and an older-Ovis Tailscale host needs an update, in words, and offers neither", async () => {
     extraCandidates = [{ name: "lab", destination: "lab", detail: "rise@winvm.tail.ts.net", source: "ssh_config", tailnet: "winvm.tail.ts.net" }];
     const added: (AddPcPreset | undefined)[] = [];
-    await mount(<Direct machines={[ssh("nuc12")]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={() => undefined} />);
+    await mount(<Ssh machines={[ssh("nuc12")]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={() => undefined} />);
     await flushReads();
-    expect(buttons()).toEqual(["Connect", "lab"]);
+    expect(buttons()).toEqual(["Connect", "Add by address", "lab"]);
     expect(button("lab").props.disabled).toBe(true);
     expect(text(renderer!.root)).toContain("nuc12 · Added");
     expect(text(renderer!.root)).toContain("lab: Update Ovis on that PC to 0.5 first.");
@@ -1052,7 +1065,7 @@ describe("Connect a phone on a phone", () => {
     const added: (AddPcPreset | undefined)[] = [];
     // an open LAN window: the one window that shows these tabs and is refused the list
     candidatesRefused = "owner_only";
-    await mount(<Direct machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={() => {}} />);
+    await mount(<Ssh machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={() => {}} />);
     await flushReads();
     expect(text(renderer!.root)).toContain(hint);
     await act(async () => { renderer!.root.findByType("input").props.onChange({ target: { value: "mymac" } }); });

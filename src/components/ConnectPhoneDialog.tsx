@@ -52,7 +52,7 @@ export const TAILSCALE_POLL_MS = 3000;
 /** the command that lets this Linux user run `tailscale serve` without root, shown only after Tailscale refused it for want of it */
 const TAILSCALE_OPERATOR = "sudo tailscale set --operator=$USER";
 
-/** an address the direct tab takes for another PC's Ovis rather than SSH: any http(s) scheme, as a browser reads `https:host` too */
+/** an address the SSH tab takes for another PC's Ovis rather than SSH: any http(s) scheme, as a browser reads `https:host` too */
 const OVIS_ADDRESS = /^https?:/i;
 
 const PHONE_QUERY = "(pointer: coarse), (max-width: 768px)";
@@ -86,11 +86,12 @@ export function signInLink(app: string, serverId: string, provider: AccountProvi
 const relayOn = (relay: RelayState): boolean => relay.status !== null && relay.status.blocked === null && relay.status.phase !== "off";
 
 /**
- * The relay's tab is the owner's on a direct page of a PC that has the relay; Tailscale and a typed address go over
- * SSH, the owner's on a page of this PC (not the hosted shell, not a device that only watches).
+ * The relay's tab is the owner's on a direct page of a PC that has the relay; Tailscale and SSH (an SSH login, or another
+ * PC's Ovis by its https address) add a PC from here, the owner's on a page of this PC (not the hosted shell, not a
+ * device that only watches).
  */
 export function connectTabs({ sshOffered, relay, readOnly }: { sshOffered: boolean; relay: RelayState; readOnly: boolean }): ConnectTab[] {
-  return [...(relayOffered(relay) && !readOnly ? ["relay" as const] : []), ...(sshOffered ? ["tailscale" as const, "direct" as const] : [])];
+  return [...(relayOffered(relay) && !readOnly ? ["relay" as const] : []), ...(sshOffered ? ["tailscale" as const, "ssh" as const] : [])];
 }
 
 /**
@@ -125,10 +126,6 @@ export interface ConnectPhoneDialogProps {
   tailscale?: PhonePlan;
   /** the platform this PC's server reports (RemoteAccess.platform): which Tailscale download and app this PC takes */
   platform?: string | undefined;
-  /** the address this PC answers at on its own network (RemoteAccess.lan_url): Direct names it as text, with no QR code (0.5.10) */
-  lanUrl?: string | null | undefined;
-  /** this PC's server is the desktop app's (RemoteAccess.desktop_app): loopback only, with no same-Wi-Fi listener to turn on */
-  desktopApp?: boolean | undefined;
   pairUrl: string | null;
   relay: RelayState;
   /** a watching device or a Portal visitor: it reads, and starts nothing */
@@ -161,7 +158,7 @@ export interface ConnectPhoneDialogProps {
   onClose: () => void;
 }
 
-export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, lanUrl: givenLanUrl = null, desktopApp: givenDesktopApp = false, pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -186,9 +183,6 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   const plan = fresh !== null && tailscaleStepKind(givenPlan) ? tailscalePlan(fresh) : givenPlan;
   const tailscale = fresh !== null && tailscaleStepKind(givenTailscale) ? tailscalePlan(fresh) : givenTailscale;
   const platform = fresh?.platform ?? givenPlatform;
-  const lanUrl = fresh?.lan_url !== undefined ? fresh.lan_url : givenLanUrl;
-  // the desktop app's PC with no same-Wi-Fi address: no phone reaches it directly, so Direct shows neither the line nor a code
-  const phoneUnreachable = (fresh?.desktop_app ?? givenDesktopApp) && lanUrl === null;
   const tabs = connectTabs({ sshOffered: onAddPc !== null && !readOnly && !inRelayShell(), relay, readOnly });
   const hasAccount = account !== null;
   // until a tab is picked, the opening one follows the tabs as they arrive (the relay's state comes a moment later)
@@ -205,12 +199,15 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   const waiting = !readOnly && relayPending(relay);
   const opened = useRef(new Set<ConnectTab>());
   if (tab !== null && !waiting) opened.current.add(tab);
-  const label: Record<ConnectTab, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", direct: t("Direct") };
+  const label: Record<ConnectTab, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", ssh: "SSH" };
   const { status: portal } = usePortal();
   const local = localWays({ plan, readOnly, canPair, portal });
   const tailnet = localWays({ plan: tailscale, readOnly, canPair, portal: null });
   // one pairing code for both tabs that show one: the PC keeps one pending code, so a second would end the first
   const sharedCode = useRef<SharedCode>({ code: null, asking: false, waiting: new Set() });
+  // the six-digit code a device types where it opens this PC's Ovis: under the relay tab, else under SSH
+  const codeTab: ConnectTab = tabs.includes("relay") ? "relay" : "ssh";
+  const pairByCode = local.code && <PairByCode shared={sharedCode} phone={phone} />;
   useTailscaleWatch(!waiting && ((tab === "tailscale" && tailnet.tailscaleStep !== null) || (tab === null && local.tailscaleStep !== null)), setFresh);
 
   return createPortal(
@@ -240,20 +237,11 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
               </PhoneScan>
             </div>
           )}
-          {opened.current.has("direct") && tabs.includes("direct") && (
-            <div className="connect-tab" data-tab-panel="direct" hidden={tab !== "direct"}>
-              <DirectTab found={found} machines={machines} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} />
-              {/* 0.5.10: this PC's same-Wi-Fi address as text and the pairing code under it, no QR code (joining by the
-                  address, with the PC's approval, comes in 0.5.11) */}
-              {local.code && !phoneUnreachable && (
-                <PhoneScan codeOnly>
-                  <p className="settings-description" data-testid="direct-lan" data-lan={lanUrl === null ? "off" : "on"}>
-                    {lanUrl === null ? t("Same Wi-Fi connections are off on this PC.") : t("Same Wi-Fi address: {address}", { address: lanUrl })}
-                  </p>
-                  <CodeRoute pairUrl={null} startAtOnce={tab === "direct"} shared={sharedCode} phone={phone} compact />
-                </PhoneScan>
-              )}
-              {local.portal && <section className="connect-section" aria-label="Portal"><PortalPanel readOnly={readOnly} /></section>}
+          {opened.current.has("ssh") && tabs.includes("ssh") && (
+            <div className="connect-tab" data-tab-panel="ssh" hidden={tab !== "ssh"}>
+              <SshTab found={found} machines={machines} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} />
+              {codeTab === "ssh" && pairByCode}
+              {local.portal && portal !== null && <PortalRow readOnly={readOnly} status={portal} />}
             </div>
           )}
           {opened.current.has("relay") && tabs.includes("relay") && (
@@ -261,6 +249,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
               <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} accountId={accountId} provider={provider} joinBySignIn={joinBySignIn} account={account} phone={phone}
                 pcAddFromAccount={pcAddFromAccount} onAccountSetup={onAccountSetup}
                 active={tab === "relay"} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll} machines={machines} onConnectMachine={onConnectMachine} />
+              {codeTab === "relay" && pairByCode}
             </div>
           )}
         </div>
@@ -275,7 +264,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
 type FoundPcState = "added" | "outdated" | "waiting" | "open";
 
 /**
- * The PCs this PC's server could reach over SSH (its ssh config, its Tailscale login), for the Tailscale and direct
+ * The PCs this PC's server could reach over SSH (its ssh config, its Tailscale login), for the Tailscale and SSH
  * tabs. A window the server will not tell (owner_only, read_only) gets an empty list that says nothing of the PC
  * (`unread`); one refused as owner_only is told where the list can be seen, so an empty tab is not taken for a PC that
  * knows none.
@@ -397,73 +386,38 @@ function addressFailureText(t: ReturnType<typeof useT>, error: unknown): string 
 }
 
 /**
- * Direct: one field for an address. An SSH alias, user@host or a tailnet name opens Add PC with it (the host's
- * fingerprint first); an https:// address, another PC's Ovis, takes the six-digit code that PC shows and opens it in this
- * window once this PC's server paired with it (server/address-pc.ts); the code stays in its input alone. Under it
- * the hosts of this PC's ssh config and the PCs saved in herdr, one press each, and the guide's way to open a PC from
- * outside.
+ * SSH: its one field takes an SSH alias, user@host or a tailnet name, which opens Add PC with it (the host's fingerprint
+ * first). Add by address, a text link under it, opens AddressPcForm: another PC's Ovis by its https address and the code
+ * that PC shows. Under them the hosts of this PC's ssh config and the PCs saved in herdr, one press each.
  */
-export function DirectTab({ found: { found, failed, withheld, stateOf, retry }, machines, onAddPc, onConnectMachine }: { found: FoundPcs; machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
+export function SshTab({ found: { found, failed, withheld, stateOf, retry }, machines, onAddPc, onConnectMachine }: { found: FoundPcs; machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
   const t = useT();
   const id = useId();
   const [typed, setTyped] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const codeRef = useRef<HTMLInputElement>(null);
-  // a second press before the first one's render would spend the same code twice
-  const pairing = useRef(false);
-  // what the pairing in flight was asked for: its answer is dropped once the address changes or the tab closes
-  const asked = useRef<string | null>(null);
-  useEffect(() => () => { asked.current = null; }, []);
-  // the code admits whoever holds it: it is typed only where it cannot cross the network in clear (as an SSH password)
-  const secretAllowed = window.isSecureContext;
+  // the address form, once opened: with the address it opens on (an https address typed in the SSH field moves there)
+  const [byAddress, setByAddress] = useState<string | null>(null);
   const address = typed.trim();
-  const ovis = OVIS_ADDRESS.test(address);
   const saved = machines.filter((machine) => machine.herdr_profile_id !== undefined && machine.action_required === "connect");
   const hosts = (found?.filter((pc) => pc.source === "ssh_config") ?? []).map((pc) => ({ pc, state: stateOf(pc) }));
   const outdated = hosts.filter(({ state }) => state === "outdated").map(({ pc }) => pc.name);
   const add = (event: FormEvent) => {
     event.preventDefault();
     if (address === "") return;
-    if (!ovis) { onAddPc({ destination: address }); return; }
-    const code = codeRef.current;
-    if (code === null || pairing.current || !secretAllowed) return;
-    pairing.current = true;
-    asked.current = address;
-    setAdding(true);
-    setFailure(null);
-    const current = () => asked.current === address;
-    void addAddressPc(address, code.value.replace(/\s/g, "")).then(({ machine }) => {
-      if (!current()) return;
-      code.value = "";
-      if (machine && typeof machine.id === "string") onConnectMachine(machine); else setFailure(t("That PC could not be added. Try again."));
-    }, (error: unknown) => { if (current()) setFailure(addressFailureText(t, error)); })
-      .finally(() => { pairing.current = false; setAdding(false); });
+    if (OVIS_ADDRESS.test(address)) { setByAddress(address); setTyped(""); return; }
+    onAddPc({ destination: address });
   };
   return (
     <>
       <form className="connect-ssh-form" onSubmit={add}>
         <label className="settings-label" htmlFor={`${id}-address`}>{t("Add another PC from this one")}</label>
         <div className="connect-ssh-field">
-          <input id={`${id}-address`} className="input" type="text" value={typed} placeholder="user@host, desk.tailnet.ts.net, https://…" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-describedby={address === "" ? undefined : `${id}-kind`} onChange={(event) => {
-            // a code typed for one PC is never sent to another
-            if (codeRef.current) codeRef.current.value = "";
-            asked.current = null;
-            setFailure(null);
-            setTyped(event.target.value);
-          }} />
-          <button type="submit" className="btn" disabled={address === "" || adding || (ovis && !secretAllowed)}>{t("Connect")}</button>
+          <input id={`${id}-address`} className="input" type="text" value={typed} placeholder="user@host" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-describedby={address === "" ? undefined : `${id}-kind`} onChange={(event) => setTyped(event.target.value)} />
+          <button type="submit" className="btn" disabled={address === ""}>{t("Connect")}</button>
         </div>
-        {address !== "" && <p className="settings-hint" id={`${id}-kind`} role="status" data-address-kind={ovis ? "ovis" : "ssh"}>{ovis
-          ? t("Opens that PC's Ovis here. On that PC, open Settings → Devices and PCs → Add a connection → Direct, and type the six-digit pairing code it shows. This PC can then drive that PC.")
-          : t("An SSH address: Connect checks that PC's fingerprint first.")}</p>}
-        {ovis && <>
-          <label className="settings-label" htmlFor={`${id}-code`}>{t("Pairing code")}</label>
-          <input ref={codeRef} id={`${id}-code`} className="input connect-address-code" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={7} placeholder="000000" required pattern="\d{3} ?\d{3}" spellCheck={false} disabled={adding || !secretAllowed} />
-          {!secretAllowed && <p className="settings-hint">{t("Needs HTTPS or localhost.")}</p>}
-        </>}
-        {failure !== null && <p className="settings-hint" role="alert">{failure}</p>}
+        {address !== "" && !OVIS_ADDRESS.test(address) && <p className="settings-hint" id={`${id}-kind`} role="status" data-address-kind="ssh">{t("An SSH address: Connect checks that PC's fingerprint first.")}</p>}
       </form>
+      <button type="button" className="connect-address-link" aria-expanded={byAddress !== null} aria-controls={`${id}-by-address`} onClick={() => setByAddress((open) => open === null ? "" : null)}>{t("Add by address")}</button>
+      {byAddress !== null && <AddressPcForm key={byAddress} id={`${id}-by-address`} initial={byAddress} onConnectMachine={onConnectMachine} />}
       {(saved.length > 0 || hosts.length > 0) && (
         <section className="connect-picks" aria-label="ssh config">
           <p className="settings-label">ssh config</p>
@@ -480,6 +434,62 @@ export function DirectTab({ found: { found, failed, withheld, stateOf, retry }, 
       {found === null && <p className="settings-hint" role="status">{t("Looking for PCs…")}</p>}
       <FoundPcsTrouble failed={failed} withheld={withheld} retry={retry} />
     </>
+  );
+}
+
+/**
+ * Add by address: another PC's Ovis by its https address takes the six-digit code that PC shows and opens it in this
+ * window once this PC's server paired with it (server/address-pc.ts); the code stays in its input alone.
+ */
+function AddressPcForm({ id, initial, onConnectMachine }: { id: string; initial: string; onConnectMachine: (machine: Machine) => void }) {
+  const t = useT();
+  const [typed, setTyped] = useState(initial);
+  const [adding, setAdding] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const codeRef = useRef<HTMLInputElement>(null);
+  // a second press before the first one's render would spend the same code twice
+  const pairing = useRef(false);
+  // what the pairing in flight was asked for: its answer is dropped once the address changes or the tab closes
+  const asked = useRef<string | null>(null);
+  useEffect(() => () => { asked.current = null; }, []);
+  // the code admits whoever holds it: it is typed only where it cannot cross the network in clear (as an SSH password)
+  const secretAllowed = window.isSecureContext;
+  const address = typed.trim();
+  const add = (event: FormEvent) => {
+    event.preventDefault();
+    const code = codeRef.current;
+    if (address === "" || code === null || pairing.current || !secretAllowed) return;
+    pairing.current = true;
+    asked.current = address;
+    setAdding(true);
+    setFailure(null);
+    const current = () => asked.current === address;
+    void addAddressPc(address, code.value.replace(/\s/g, "")).then(({ machine }) => {
+      if (!current()) return;
+      code.value = "";
+      if (machine && typeof machine.id === "string") onConnectMachine(machine); else setFailure(t("That PC could not be added. Try again."));
+    }, (error: unknown) => { if (current()) setFailure(addressFailureText(t, error)); })
+      .finally(() => { pairing.current = false; setAdding(false); });
+  };
+  return (
+    <form id={id} className="connect-ssh-form connect-address-form" onSubmit={add}>
+      <label className="settings-label" htmlFor={`${id}-input`}>{t("PC address")}</label>
+      <input id={`${id}-input`} className="input" type="url" inputMode="url" value={typed} placeholder="https://my-pc.example.com" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" autoFocus onChange={(event) => {
+        // a code typed for one PC is never sent to another
+        if (codeRef.current) codeRef.current.value = "";
+        asked.current = null;
+        setFailure(null);
+        setTyped(event.target.value);
+      }} />
+      <label className="settings-label" htmlFor={`${id}-code`}>{t("Pairing code")}</label>
+      <div className="connect-ssh-field">
+        <input ref={codeRef} id={`${id}-code`} className="input connect-address-code" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={7} placeholder="000000" required pattern="\d{3} ?\d{3}" spellCheck={false} disabled={adding || !secretAllowed} />
+        <button type="submit" className="btn" disabled={address === "" || adding || !secretAllowed}>{t("Connect")}</button>
+      </div>
+      <p className="settings-hint" data-address-kind="ovis">{t("Opens that PC's Ovis here. On that PC, open Settings → Devices and PCs → Add a connection → Ovis relay → Pair with a code, and type the six-digit code it shows. This PC can then drive that PC.")}</p>
+      {!secretAllowed && <p className="settings-hint">{t("Needs HTTPS or localhost.")}</p>}
+      {failure !== null && <p className="settings-hint" role="alert">{failure}</p>}
+    </form>
   );
 }
 
@@ -512,13 +522,43 @@ export function localWays({ plan, readOnly, canPair, portal }: { plan: PhonePlan
 }
 
 /** What a phone scans on each way's tab, under that way's own part: the QR code and the code it carries, or the step that gives this PC an address a phone opens. */
-function PhoneScan({ children, codeOnly = false }: { children: ReactNode; codeOnly?: boolean }) {
+function PhoneScan({ children }: { children: ReactNode }) {
   const t = useT();
   return (
     <section className="connect-phone-scan" aria-label={t("Phone")} data-testid="connect-phone-scan">
-      {/* a code with no address a phone opens is typed, not scanned */}
-      <p className="settings-label connect-phone-scan-title"><Smartphone aria-hidden="true" />{codeOnly ? t("Pairing code") : t("Scan it with the Ovis app on your phone")}</p>
+      <p className="settings-label connect-phone-scan-title"><Smartphone aria-hidden="true" />{t("Scan it with the Ovis app on your phone")}</p>
       {children}
+    </section>
+  );
+}
+
+/**
+ * Pair with a code: the six-digit code a device types where it opens this PC's Ovis (Portal, a proxy, another PC adding
+ * this one by its https address). Made on a press, as the relay tab opens by itself; one the Tailscale tab made shows here.
+ */
+function PairByCode({ shared, phone }: { shared: MutableRefObject<SharedCode>; phone: boolean }) {
+  const t = useT();
+  return (
+    <section className="connect-section" aria-label={t("Pair with a code")} data-testid="pair-with-code">
+      <p className="settings-label">{t("Pair with a code")}</p>
+      <CodeRoute pairUrl={null} startAtOnce={false} shared={shared} phone={phone} compact />
+    </section>
+  );
+}
+
+/** Portal at the foot of the SSH tab, where this PC has it: one row, with its controls (PortalPanel) behind a press. */
+function PortalRow({ readOnly, status }: { readOnly: boolean; status: PortalStatus }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <section className="connect-section connect-portal" aria-label="Portal" data-testid="portal-row">
+      <div className="connect-portal-row">
+        <span className="settings-label">Portal</span>
+        <span className="settings-hint connect-portal-state">{status.url ?? (status.phase === "idle" ? t("Not running") : t("Starting…"))}</span>
+        <button type="button" className="btn" aria-expanded={open} aria-controls={id} onClick={() => setOpen((shown) => !shown)}>{t("Settings")}</button>
+      </div>
+      {open && <div id={id}><PortalPanel readOnly={readOnly} /></div>}
     </section>
   );
 }
@@ -1368,7 +1408,11 @@ let latestPairRequest = 0;
  */
 export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact = false }: { pairUrl: string | null; startAtOnce: boolean; shared?: MutableRefObject<SharedCode>; phone?: boolean; compact?: boolean }) {
   const t = useT();
-  const [code, setCode] = useState<PairingCode | null>(null);
+  // a view made on a press shows the code another view of the dialog shows already, while it is good
+  const [code, setCode] = useState<PairingCode | null>(() => {
+    const held = shared?.current.code;
+    return !startAtOnce && held && Date.parse(held.expires_at) > Date.now() ? held : null;
+  });
   const [left, setLeft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);

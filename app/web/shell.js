@@ -192,11 +192,11 @@ export function parseAddress(text) {
 const SSH_TARGET = /^(?:ssh:\/\/)?([^\s@/:]+)@([^\s@/:[\]]+|\[[0-9a-f:.]+\])(?::(\d{1,5}))?\/?$/i;
 
 /**
- * What Direct's one field holds: an SSH login, `user@host` or `user@host:port` (or `ssh://` with them), as
+ * What the SSH tab's one field holds: an SSH login, `user@host` or `user@host:port` (or `ssh://` with them), as
  * `{ ssh: { user, host, port } }`, and anything else as an address (`{ address }`, for open). A `user@host` with a
  * scheme other than ssh is an address with its credentials, never SSH.
  */
-export function directTarget(text) {
+export function sshOrAddress(text) {
   const value = String(text).trim();
   const ssh = SSH_TARGET.exec(value);
   if (ssh === null) return { address: value };
@@ -220,23 +220,23 @@ export function savedPcLabel(origin, names, ssh = {}) {
 }
 
 /**
- * The saved PCs a connect tab lists, each under the one tab of the way it connects: the relay tab, under its sign-in,
- * the PCs paired over the relay (a scope on the app's origin; the app's own front page is no PC), the Tailscale tab
- * those at a Tailscale address (a phone has no list of its tailnet's machines, only the ones opened here), and Direct
- * every other address, an SSH PC's own (way "ssh") among them, and an entry saved unreadable (way "broken"), there to be
- * forgotten. Each is `{ origin, label, way }` (savedPcLabel). `saved` and `names` as HerdrShell's getState gives them,
- * `ssh` the SSH PCs by origin (OvisSsh list).
+ * The saved PCs a list of the connect screen shows, each in the one list of the way it connects: the relay tab's, under
+ * its sign-in, the PCs paired over the relay (a scope on the app's origin; the app's own front page is no PC), the
+ * Tailscale tab's those at a Tailscale address (a phone has no list of its tailnet's machines, only the ones opened
+ * here), and on the SSH tab the PCs added over SSH (`ssh`) and, as its saved addresses (`saved`), every other address
+ * (way "address") and an entry saved unreadable (way "broken"), there to be forgotten. Each is `{ origin, label, way }`
+ * (savedPcLabel). `saved` and `names` as HerdrShell's getState gives them, `ssh` the SSH PCs by origin (OvisSsh list).
  */
-export function tabPcs(saved, tab, names, ssh = {}, appOrigin = APP_ORIGIN) {
+export function tabPcs(saved, list, names, ssh = {}, appOrigin = APP_ORIGIN) {
   const app = new URL(appOrigin).origin;
   return saved.flatMap((origin) => {
     let url = null;
-    try { url = new URL(origin); } catch { /* listed on Direct, to forget */ }
+    try { url = new URL(origin); } catch { /* a saved address to forget */ }
     const way = url === null ? "broken"
       : url.origin === app ? (/^\/s\/[0-9a-f]{32}\/?$/.test(url.pathname) ? "relay" : null)
-      : tailnetHost(url.hostname) ? "tailscale" : ssh[origin] ? "ssh" : "direct";
-    const home = way === "relay" || way === "tailscale" ? way : way === null ? null : "direct";
-    return home === tab ? [{ origin, label: savedPcLabel(origin, names, ssh), way }] : [];
+      : tailnetHost(url.hostname) ? "tailscale" : ssh[origin] ? "ssh" : "address";
+    const home = way === "address" || way === "broken" ? "saved" : way;
+    return home === list ? [{ origin, label: savedPcLabel(origin, names, ssh), way }] : [];
   });
 }
 

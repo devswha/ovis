@@ -767,7 +767,7 @@ try {
     await openSettingsPage(page, "Devices and PCs");
     await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Add a connection", exact: true }).click();
     const connectSheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
-    await connectSheet.locator('.connect-tabs [data-tab="direct"]').click();
+    await connectSheet.locator('.connect-tabs [data-tab="ssh"]').click();
     const sshAdd = connectSheet.locator(".connect-ssh-form").getByRole("button", { name: "Connect", exact: true });
     assert.equal(await sshAdd.isDisabled(), true, "Connect waits for an address");
     await connectSheet.getByLabel("Add another PC from this one", { exact: true }).fill("qa@pc.invalid");

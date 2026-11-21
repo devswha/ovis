@@ -156,6 +156,48 @@
   border-top: var(--hairline) solid var(--border);
 }
 
+/* Add by address under the SSH field: a text link, its form behind it */
+.connect-address-link {
+  align-self: flex-start;
+  min-height: var(--touch-target);
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .connect-address-link:hover {
+    color: var(--text-strong);
+  }
+}
+
+/* Portal at the foot of the SSH tab: one row, its controls behind Settings */
+.connect-portal {
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.connect-portal-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.connect-portal-state {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .connect-found {
   display: flex;
   flex-direction: column;

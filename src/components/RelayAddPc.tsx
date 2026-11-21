@@ -16,7 +16,7 @@ const SSH_TARGET = /^(?:ssh:\/\/)?([^\s@/:]+)@([^\s@/:[\]]+|\[[0-9a-f:.]+\])(?::
 
 /**
  * An SSH login typed where an address goes, `user@host` or `user@host:port` (or `ssh://` with them), as the app's own
- * Direct field reads it (app/web/shell.js `directTarget`): its text as `user@host[:port]`, or null for anything else.
+ * SSH field reads it (app/web/shell.js `sshOrAddress`): its text as `user@host[:port]`, or null for anything else.
  */
 export function sshTarget(text: string): string | null {
   const found = SSH_TARGET.exec(text.trim());

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
-import { APP_ORIGIN, directTarget, homeHost, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, savedPcLabel, tabPcs, tailnetHost } from "../app/web/shell.js";
+import { APP_ORIGIN, homeHost, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, sshOrAddress, savedPcLabel, tabPcs, tailnetHost } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
 
@@ -22,17 +22,43 @@ describe("the sign-in buttons", () => {
   });
 });
 
-describe("Direct's one field", () => {
-  it("takes user@host, with a port or ssh://, as SSH", () => {
-    expect(directTarget(" me@my-server.example.com ")).toEqual({ ssh: { user: "me", host: "my-server.example.com", port: 22 } });
-    expect(directTarget("pi@192.168.0.20:2222")).toEqual({ ssh: { user: "pi", host: "192.168.0.20", port: 2222 } });
-    expect(directTarget("ssh://dev@nas.tail1e211e.ts.net/")).toEqual({ ssh: { user: "dev", host: "nas.tail1e211e.ts.net", port: 22 } });
-    expect(directTarget("me@[fd7a:115c:a1e0::1]:22")).toEqual({ ssh: { user: "me", host: "fd7a:115c:a1e0::1", port: 22 } });
+describe("the connect tabs", () => {
+  const page = readFileSync(join(import.meta.dir, "../app/web/index.html"), "utf8");
+  /** a tab's panel in the markup: from its own id to the next panel, or to what an open says under every tab */
+  const panel = (name: string) => {
+    const start = page.indexOf(`id="panel-${name}"`);
+    const ends = [page.indexOf('id="panel-', start + 1), page.indexOf('<div id="feedback">', start)].filter((end) => end > start);
+    return page.slice(start, Math.min(...ends));
+  };
+
+  it("are the Ovis relay, Tailscale and SSH, with no Direct tab", () => {
+    expect([...page.matchAll(/role="tab" id="tab-(\w+)" data-tab="(\w+)"/g)].map(([, id, tab]) => [id, tab])).toEqual([["relay", "relay"], ["tailscale", "tailscale"], ["ssh", "ssh"]]);
+    expect(page).not.toContain("panel-direct");
   });
 
-  it("leaves every other text an address, an http user@host and an impossible port among them", () => {
-    for (const text of ["192.168.0.10:7317", "https://my-pc.tailnet.ts.net", "http://me@my-pc:7317", "my-pc.local", "me@host:70000", "me@host/path", "demo"]) {
-      expect(directTarget(text)).toEqual({ address: text });
+  it("put on SSH user@host first, Add by address as a text link to an https address's field, then the SSH PCs and the saved addresses", () => {
+    const ssh = panel("ssh");
+    const at = (needle: string) => ssh.indexOf(needle);
+    const order = ['id="address"', 'id="by-address"', 'id="web-address"', 'id="ssh-pcs"', 'id="saved-pcs"'];
+    for (const needle of order) expect(at(needle)).toBeGreaterThan(-1);
+    expect(order.map(at)).toEqual([...order.map(at)].sort((a: number, b: number) => a - b));
+    expect(ssh).toMatch(/<button type="button" class="text-link" id="by-address"[^>]*data-ko="주소로 추가">Add by address</);
+    expect(ssh).toMatch(/<form id="address-connect"[^>]*hidden>/);
+    expect(ssh).toContain('data-ko="저장된 주소"');
+  });
+});
+
+describe("the SSH tab's one field", () => {
+  it("takes user@host, with a port or ssh://, as SSH", () => {
+    expect(sshOrAddress(" me@my-server.example.com ")).toEqual({ ssh: { user: "me", host: "my-server.example.com", port: 22 } });
+    expect(sshOrAddress("pi@192.168.0.20:2222")).toEqual({ ssh: { user: "pi", host: "192.168.0.20", port: 2222 } });
+    expect(sshOrAddress("ssh://dev@nas.tail1e211e.ts.net/")).toEqual({ ssh: { user: "dev", host: "nas.tail1e211e.ts.net", port: 22 } });
+    expect(sshOrAddress("me@[fd7a:115c:a1e0::1]:22")).toEqual({ ssh: { user: "me", host: "fd7a:115c:a1e0::1", port: 22 } });
+  });
+
+  it("leaves every other text an address to open, an https PC's among them", () => {
+    for (const text of ["https://my-pc.example.com", "https://my-pc.tailnet.ts.net", "http://me@my-pc:7317", "my-pc.local", "me@host:70000", "me@host/path", "demo"]) {
+      expect(sshOrAddress(text)).toEqual({ address: text });
     }
   });
 });
@@ -62,17 +88,21 @@ describe("each connect tab's saved PCs", () => {
     ]);
   });
 
-  it("lists the PCs opened at any other address, and those added over SSH, on the Direct tab, and one saved unreadable to forget", () => {
-    expect(tabPcs(saved, "direct", names, ssh)).toEqual([
-      { origin: "http://192.168.0.10:7317", label: "desk", way: "direct" },
-      { origin: "http://127.0.0.1:41234", label: "pi@nas", way: "ssh" },
+  it("lists the PCs added over SSH on the SSH tab", () => {
+    expect(tabPcs(saved, "ssh", names, ssh)).toEqual([{ origin: "http://127.0.0.1:41234", label: "pi@nas", way: "ssh" }]);
+  });
+
+  it("keeps the PCs opened at any other address as the SSH tab's saved addresses, and one saved unreadable to forget", () => {
+    expect(tabPcs(saved, "saved", names, ssh)).toEqual([
+      { origin: "http://192.168.0.10:7317", label: "desk", way: "address" },
       { origin: "not an address", label: "not an address", way: "broken" },
     ]);
   });
 
-  it("lists each PC on one tab at most", () => {
-    const listed = ["relay", "tailscale", "direct"].flatMap((tab) => tabPcs(saved, tab, names, ssh).map((pc: { origin: string }) => pc.origin));
+  it("lists each PC in one list at most, and every saved one but the app's own front page in some list", () => {
+    const listed = ["relay", "tailscale", "ssh", "saved"].flatMap((tab) => tabPcs(saved, tab, names, ssh).map((pc: { origin: string }) => pc.origin));
     expect(new Set(listed).size).toBe(listed.length);
+    expect(new Set(listed)).toEqual(new Set(saved.filter((origin) => origin !== "https://app.ovis.sh")));
   });
 });
 

@@ -14,6 +14,8 @@ input { width: 100%; font: inherit; color: var(--strong); background: var(--inpu
 input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 button { font: inherit; border-radius: .6rem; padding: .75rem 1rem; border: 1px solid var(--border); background: var(--panel); color: var(--strong); cursor: pointer; }
 button.primary { background: var(--primary); color: var(--primary-text); border-color: var(--primary); font-weight: 600; }
+/* Add by address on the SSH tab: a text link, its field behind it */
+button.text-link { align-self: flex-start; min-height: 2.75rem; padding: 0; border: 0; background: none; color: var(--dim); font-size: .9rem; text-decoration: underline; text-underline-offset: .15em; }
 .row { display: flex; gap: .6rem; margin-top: .75rem; }
 .row > button { flex: 1; }
 .error { color: var(--danger); margin: .5rem 0 0; }

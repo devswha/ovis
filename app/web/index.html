@@ -11,8 +11,8 @@
 <body>
   <!-- data-ko: the Korean text of the element, put in as text by localize() (shell.js) on a Korean
        phone, so markup inside a sentence gets its own element. One screen, Connect a PC, with the desktop's Add a
-       connection tabs in its order (connect.js pick): the Ovis relay (its sign-in), Tailscale and Direct. No sign-in comes
-       first: Tailscale and Direct need none. -->
+       connection tabs in its order (connect.js pick): the Ovis relay (its sign-in), Tailscale and SSH. No sign-in comes
+       first: Tailscale and SSH need none. -->
   <!-- opened from a PC's Connect a PC (HerdrShell chooseAnother): back to that PC, which stays open until another is picked (connect.js) -->
   <header class="bar"><img src="ovis-sheep.svg" alt="" width="28" height="28"><span>Ovis</span><button type="button" id="back-to-pc" class="bar-back" hidden></button></header>
   <main id="connect-screen" class="first">
@@ -21,7 +21,7 @@
     <div class="tabs" role="tablist" aria-label="How to connect" data-ko-label="연결 방법">
       <button type="button" role="tab" id="tab-relay" data-tab="relay" aria-controls="panel-relay" data-ko="Ovis 릴레이">Ovis relay</button>
       <button type="button" role="tab" id="tab-tailscale" data-tab="tailscale" aria-controls="panel-tailscale">Tailscale</button>
-      <button type="button" role="tab" id="tab-direct" data-tab="direct" aria-controls="panel-direct" data-ko="직접 연결">Direct</button>
+      <button type="button" role="tab" id="tab-ssh" data-tab="ssh" aria-controls="panel-ssh">SSH</button>
     </div>
     <section id="panel-relay" class="panel" role="tabpanel" aria-labelledby="tab-relay">
       <div class="card">
@@ -34,7 +34,7 @@
     </div>
         <p class="note" data-ko="처음이면 계정이 바로 만들어져요">First time? Your account is made right away.</p>
       </div>
-      <p class="note" data-ko="Tailscale · 직접 연결은 로그인 없이 돼요">Tailscale and Direct need no sign-in.</p>
+      <p class="note" data-ko="Tailscale · SSH는 로그인 없이 돼요">Tailscale and SSH need no sign-in.</p>
       <!-- the PCs this phone paired over the relay (a pairing link, ovis pair --relay), under the sign-in (connect.js renderPcs) -->
       <section id="relay-section" hidden>
         <h2 data-ko="릴레이로 연결한 PC">PCs paired over the relay</h2>
@@ -61,20 +61,31 @@
         <button type="button" class="way" data-scan><span class="way-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 20h2M20 14v2" stroke-linecap="round"/></g></svg></span><span class="way-text"><span class="way-title" data-ko="QR 찍기">Scan a QR code</span><span class="sub" data-ko="PC의 Tailscale QR">The PC&#39;s Tailscale QR</span></span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
     </section>
-    <section id="panel-direct" class="panel" role="tabpanel" aria-labelledby="tab-direct" hidden>
-      <!-- the PCs this phone opened at an address or over SSH (connect.js renderPcs), each listed under its own tab only -->
-      <section id="direct-section" hidden>
-        <h2 data-ko="직접 연결한 PC">PCs connected directly</h2>
-        <ul id="direct-pcs" class="card list"></ul>
-      </section>
-      <!-- one field for an address or SSH's user@host (shell.js directTarget); SSH only where the app has OvisSsh -->
-      <label class="label" for="address" id="address-label" data-ko="주소 또는 SSH">Address or SSH</label>
-      <form id="connect" class="field" novalidate>
-        <input id="address" name="address" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="192.168.0.10:7317 · user@host" autocomplete="url">
-        <button type="submit" class="primary" id="open" data-ko="연결">Connect</button>
+    <section id="panel-ssh" class="panel" role="tabpanel" aria-labelledby="tab-ssh" hidden>
+      <!-- SSH's user@host first (shell.js sshOrAddress), only where the app has OvisSsh (connect.js sshOffered) -->
+      <div id="ssh-add">
+        <label class="label" for="address" id="address-label">SSH</label>
+        <form id="connect" class="field" novalidate>
+          <input id="address" name="address" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="user@host" autocomplete="off">
+          <button type="submit" class="primary" id="open" data-ko="연결">Connect</button>
+        </form>
+      </div>
+      <!-- a PC's https address, behind a text link -->
+      <button type="button" class="text-link" id="by-address" aria-expanded="false" aria-controls="address-connect" data-ko="주소로 추가">Add by address</button>
+      <form id="address-connect" class="field" novalidate hidden>
+        <input id="web-address" name="address" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://my-pc.example.com" autocomplete="url" aria-label="PC address" data-ko-label="PC 주소">
+        <button type="submit" class="primary" data-ko="연결">Connect</button>
       </form>
-      <p class="note hint" id="address-hint" data-ko="같은 Wi-Fi 주소, https 주소, 또는 SSH (user@host)">A same Wi-Fi address, an https address, or SSH (user@host)</p>
-      <button type="button" class="way" data-scan><span class="way-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 20h2M20 14v2" stroke-linecap="round"/></g></svg></span><span class="way-text"><span class="way-title" data-ko="QR 찍기">Scan a QR code</span><span class="sub" data-ko="PC 화면의 QR (직접 주소)">The QR on the PC&#39;s screen (its direct address)</span></span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <!-- the PCs this phone added over SSH, each with Manage (connect.js renderPcs) -->
+      <section id="ssh-section" hidden>
+        <h2 data-ko="SSH로 연결한 PC">PCs added over SSH</h2>
+        <ul id="ssh-pcs" class="card list"></ul>
+      </section>
+      <!-- the PCs this phone opened at any other address before (a same-Wi-Fi one among them): kept, to open or forget -->
+      <section id="saved-section" hidden>
+        <h2 data-ko="저장된 주소">Saved addresses</h2>
+        <ul id="saved-pcs" class="card list"></ul>
+      </section>
     </section>
     <!-- what an open does, under whichever tab is up: the status text stays in the page, empty until an open starts,
          since a live region that appears with its text is not announced (connect.js showStatus) -->

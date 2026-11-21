@@ -246,9 +246,15 @@ try {
           const press = async (target: Locator): Promise<void> => { if (phone) await target.tap(); else await target.click(); };
           const startCode = async (page: Page): Promise<void> => {
             await press(page.locator('.settings-dialog [data-section="devices"]').getByRole("button", { name: label("Add a connection"), exact: true }));
-            await press(page.locator('.connect-phone-dialog .connect-tabs [data-tab="direct"]'));
+            // Pair with a code is under the relay tab, or under SSH where the PC has no relay tab
+            const relayTab = page.locator('.connect-phone-dialog .connect-tabs [data-tab="relay"]');
+            await press((await relayTab.count()) > 0 ? relayTab : page.locator('.connect-phone-dialog .connect-tabs [data-tab="ssh"]'));
+            const pairByCode = page.locator('.connect-phone-dialog .connect-tab:not([hidden]) [data-testid="pair-with-code"]');
+            const getCode = pairByCode.getByRole("button", { name: label("Get a pairing code"), exact: true });
+            await pairByCode.locator(".compact-pair-code").or(getCode).first().waitFor();
+            if (await getCode.count() > 0) await press(getCode);
           };
-          const shownCode = (page: Page): Locator => page.locator('.connect-phone-dialog [data-tab-panel="direct"] .connect-phone-scan .compact-pair-code');
+          const shownCode = (page: Page): Locator => page.locator('.connect-phone-dialog .connect-tab:not([hidden]) [data-testid="pair-with-code"] .compact-pair-code');
           const closeSettings = async (page: Page): Promise<void> => {
             await page.locator(".connect-phone-dialog").waitFor({ state: "detached", timeout: PAIRS_WITHIN_MS });
             await page.keyboard.press("Escape");

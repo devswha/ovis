@@ -181,9 +181,11 @@ What is there:
   (the default; the sign-ins the account service names at `/v1/providers`, a press opens the hosted
   app on that sign-in, `#sign-in=<provider>`), Tailscale (the PCs this phone opened at a Tailscale
   address, with Connect, a Tailscale address and Scan a QR code; on Android, while no interface holds
-  a Tailscale address, one line and Open Tailscale alone) and Direct (one field for an address or
-  SSH's `user@host`, which opens the SSH setup filled in, only in an app that announces the `OvisSsh`
-  plugin, and Scan a QR code). The PCs opened before are listed below. A build with
+  a Tailscale address, one line and Open Tailscale alone) and SSH (SSH's `user@host` first, which opens the SSH
+  setup filled in, only in an app that announces the `OvisSsh` plugin; Add by address, a text link to a field
+  for a PC's https address; then the PCs added over SSH, and as Saved addresses those opened before at any other address, each
+  with Connect and Forget, and one saved unreadable with Forget alone). The relay and Tailscale tabs list
+  their own PCs opened before. A build with
   `OVIS_APP_ACCOUNT=0` has no relay tab and opens on Tailscale. The address `demo` opens the bundled demo, which has no button
   of its own: the store review notes (app/store) send reviewers there. `error.html` is shown when a PC cannot be
   reached or answers with an HTTP error (a 502 from `tailscale serve` while Ovis is stopped), with the
@@ -616,8 +618,8 @@ the iOS plan is [ios-ssh-plan.md](ios-ssh-plan.md). Nothing in `server/` or `sha
 runs the Ovis it already has.
 
 Only the app's own pages add an SSH PC (`OvisSshPlugin.fromAppPage`); a PC's page, the hosted app's included,
-never gets that. The hosted app's Direct tab takes `user@host` in the phone app all the same: it calls
-`HerdrShell.openSshSetup`, which opens the connect screen on Direct with that login filled in
+never gets that. The hosted app's SSH tab takes `user@host` in the phone app all the same: it calls
+`HerdrShell.openSshSetup`, which opens the connect screen on its SSH tab with that login filled in
 (`PCStore.sshSetup`, taken once with `takeSshSetup`, which only the connect screen answers), and the connect
 screen takes it to the SSH setup screen as a login typed there would. An app without that method, and a
 browser, offer no SSH on the hosted page.

@@ -23,7 +23,7 @@ export function PhonePanel({ url, phone = false }: { url: string; phone?: boolea
   );
 }
 
-/** `qr` false: the address alone, where a QR code of it is drawn already (Add a connection's Direct tab) */
+/** `qr` false: the address alone, where a QR code of it is drawn already (Portal's address under Add a connection's SSH tab) */
 export function Address({ url, title, qr = true }: { url: string; title?: string; qr?: boolean }) {
   return (
     <div className="phone-address">
