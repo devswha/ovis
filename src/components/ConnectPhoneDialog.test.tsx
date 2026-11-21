@@ -710,6 +710,25 @@ describe("Connect a phone on a phone", () => {
       await until(() => text(code()).includes("482 913"), "the code under SSH");
     });
 
+    it("Portal: always a row at the foot of the SSH tab; not installed, one line and How to install, and nothing to press", async () => {
+      const help = "https://github.com/devswha/ovis/blob/main/docs/guide.md#behind-a-reverse-proxy";
+      const base = { supported: true, min_version: "v2.6.1", phase: "idle", relay: null, url: null, short_url: null, blocked: null, error: null, output: null, auth: { method: "none", issuer: null, allow: [] }, auth_methods: [] };
+      for (const [status, line, link] of [
+        [{ ...base, version: null, usable: false }, "Portal is not installed on this PC.", "How to install"],
+        [{ ...base, version: "v2.5.0", usable: false }, "Update Portal on this PC to v2.6.1 or later.", "How to install"],
+        [{ ...base, version: "v2.7.3", usable: true, blocked: "token_required" }, "Portal needs an access token on this PC.", "How to set up"],
+      ] as const) {
+        portalNow = status as unknown as PortalStatus;
+        const panel = await mountDialog();
+        await until(() => count(panel(), { "data-testid": "portal-row" }) === 1, `Portal's row: ${line}`);
+        const row = () => panel().findByProps({ "data-testid": "portal-row" });
+        expect(text(row())).toBe(`Portal${line}${link}`);
+        expect(row().findAll((each) => each.type === "a").map((each) => each.props.href)).toEqual([help]);
+        expect(row().findAll((each) => each.type === "button").length).toBe(0);
+        await act(async () => { renderer!.unmount(); });
+      }
+    });
+
     it("Portal: one row at the foot of the SSH tab where this PC has it, its controls behind a press", async () => {
       portalNow = { supported: true, usable: true, blocked: null, phase: "running", url: "https://desk.portal.example", short_url: null, relay: "https://relay.example", auth: { method: "none", issuer: null, allow: [] }, auth_methods: ["none"], error: null, output: null } as unknown as PortalStatus;
       const panel = await mountDialog();
@@ -876,6 +895,8 @@ describe("Connect a phone on a phone", () => {
     expect(kind()).toEqual([]);
     await openByAddress();
     expect(kind()).toEqual(["ovis"]);
+    // one short line: where that PC shows its code
+    expect(text(renderer!.root.findByProps({ "data-address-kind": "ovis" }))).toBe("The code is on that PC under Pair with a code.");
     await typeAddress("https://desk.tail.ts.net:7317");
     expect(renderer!.root.findAllByType("input")[2]!.props.autoComplete).toBe("one-time-code");
     addressRefusal = "address_pc_wrong_code";

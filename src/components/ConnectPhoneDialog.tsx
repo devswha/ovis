@@ -241,7 +241,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
             <div className="connect-tab" data-tab-panel="ssh" hidden={tab !== "ssh"}>
               <SshTab found={found} machines={machines} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} />
               {codeTab === "ssh" && pairByCode}
-              {local.portal && portal !== null && <PortalRow readOnly={readOnly} status={portal} />}
+              {portal?.supported === true && <PortalRow readOnly={readOnly} status={portal} />}
             </div>
           )}
           {opened.current.has("relay") && tabs.includes("relay") && (
@@ -486,7 +486,7 @@ function AddressPcForm({ id, initial, onConnectMachine }: { id: string; initial:
         <input ref={codeRef} id={`${id}-code`} className="input connect-address-code" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={7} placeholder="000000" required pattern="\d{3} ?\d{3}" spellCheck={false} disabled={adding || !secretAllowed} />
         <button type="submit" className="btn" disabled={address === "" || adding || !secretAllowed}>{t("Connect")}</button>
       </div>
-      <p className="settings-hint" data-address-kind="ovis">{t("Opens that PC's Ovis here. On that PC, open Settings → Devices and PCs → Add a connection → Pair with a code (under Ovis relay, or under SSH where it has no relay), and type the six-digit code it shows. This PC can then drive that PC.")}</p>
+      <p className="settings-hint" data-address-kind="ovis">{t("The code is on that PC under Pair with a code.")}</p>
       {!secretAllowed && <p className="settings-hint">{t("Needs HTTPS or localhost.")}</p>}
       {failure !== null && <p className="settings-hint" role="alert">{failure}</p>}
     </form>
@@ -546,11 +546,32 @@ function PairByCode({ shared, phone }: { shared: MutableRefObject<SharedCode>; p
   );
 }
 
-/** Portal at the foot of the SSH tab, where this PC has it: one row, with its controls (PortalPanel) behind a press. */
+/** where the guide says how to install Portal and run it with a token (docs/guide.md) */
+const PORTAL_HELP = "https://github.com/devswha/ovis/blob/main/docs/guide.md#behind-a-reverse-proxy";
+
+/**
+ * Portal at the foot of the SSH tab, always: one row. Where it can run, its controls (PortalPanel) behind Settings; where it
+ * cannot (not installed, too old, or no token here), one line why and the guide's way to it, and nothing to press.
+ */
 function PortalRow({ readOnly, status }: { readOnly: boolean; status: PortalStatus }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const id = useId();
+  const ready = status.phase !== "idle" || (status.usable && status.blocked === null);
+  if (!ready) {
+    const [line, link] = !status.usable
+      ? [status.version === null ? t("Portal is not installed on this PC.") : t("Update Portal on this PC to {version} or later.", { version: status.min_version }), t("How to install")]
+      : [status.blocked === "serve_only" ? t("Portal is off while only tailscale serve may reach this PC.") : t("Portal needs an access token on this PC."), t("How to set up")];
+    return (
+      <section className="connect-section connect-portal" aria-label="Portal" data-testid="portal-row">
+        <div className="connect-portal-row">
+          <span className="settings-label">Portal</span>
+          <span className="settings-hint connect-portal-state">{line}</span>
+          <ExternalLink kind="link" className="settings-link connect-portal-help" href={PORTAL_HELP}>{link}</ExternalLink>
+        </div>
+      </section>
+    );
+  }
   return (
     <section className="connect-section connect-portal" aria-label="Portal" data-testid="portal-row">
       <div className="connect-portal-row">

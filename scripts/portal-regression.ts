@@ -385,7 +385,10 @@ try {
   await openPhoneSettings(blockedPage, false);
   const blockedSettings = settingsOf(blockedPage);
   await blockedSettings.locator('[data-tab-panel="ssh"], .connect-phone-body > .connect-section, .connect-phone-body > .settings-description').first().waitFor({ timeout: 10_000 });
-  assert.equal(await blockedSettings.locator('section[aria-label="Portal"]').count(), 0, "a Portal that needs a configured token is not offered");
+  // the SSH tab always keeps Portal's row: here one line saying the token is missing, and the guide's way to set it
+  await blockedSettings.getByTestId("portal-row").getByText("Portal needs an access token on this PC.", { exact: true }).waitFor();
+  assert.equal(await blockedSettings.getByTestId("portal-row").getByRole("link", { name: "How to set up", exact: true }).count(), 1, "the token-required row links the guide");
+  assert.equal(await blockedSettings.locator("#portal-relay").count(), 0, "a Portal that needs a configured token offers no relay field");
   assert.equal(await blockedSettings.getByRole("button", { name: "Start", exact: true }).count(), 0, "Portal Start is unavailable without a configured token");
   assert.deepEqual(pageErrors, [], "the token-required page has no browser errors");
   console.log("PASS Portal token-required UI: a Portal that cannot start without a configured token is left out");
